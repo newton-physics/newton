@@ -22,7 +22,6 @@ import warp as wp
 
 from ..sim.rod import _CIRCULAR_SECTION_TRANSVERSE_SHEAR_CORRECTION, Rod
 from ..usd import utils as usd
-from ..usd._resolution_policy import _resolve_shape_contact
 
 if TYPE_CHECKING:
     from pxr import Usd
@@ -63,7 +62,19 @@ def _resolve_cable_contact(ctx: _DeformableImportContext, prim: Usd.Prim) -> dic
     material_prim = usd._find_physics_material_prim(prim)
     material_path = str(material_prim.GetPath()) if material_prim is not None else ""
     material = ctx.material_specs.get(material_path, ctx.material_specs[""])
-    return _resolve_shape_contact(prim, ctx.resolver, material, ctx.builder.default_shape_cfg, verbose=ctx.verbose)
+    contact = ctx.resolution_policy.resolve_contact_response(
+        prim,
+        material,
+        ctx.builder.default_shape_cfg,
+        has_mjc_solref=usd.get_attribute(prim, "mjc:solref") is not None,
+    )
+    return {
+        **dict(contact.items()),
+        "mu": material.dynamic_friction,
+        "restitution": material.restitution,
+        "mu_torsional": material.torsional_friction,
+        "mu_rolling": material.rolling_friction,
+    }
 
 
 # Attributes introduced after the family-prefix rename; density is shared and intentionally omitted.

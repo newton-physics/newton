@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from pxr import Usd
 
     from ..sim.builder import ModelBuilder
-    from ..usd._resolution_policy import _PhysicsMaterial
+    from ..usd._resolution_policy import _UsdResolutionPolicy
 
 # AOUSD SI fallbacks: density [kg/m^3], thickness [m], Young's modulus [Pa],
 # and dimensionless Poisson's ratio.
@@ -1385,7 +1385,8 @@ class _DeformableImportContext:
     stage: Usd.Stage
     root_prim: Usd.Prim
     resolver: Any
-    material_specs: dict[str, _PhysicsMaterial]
+    resolution_policy: Any
+    material_specs: dict[str, _UsdResolutionPolicy.PhysicsMaterial]
     collect_schema_attrs: bool
     deformable_read: Callable
     get_prim_world_mat: Callable

@@ -1,28 +1,53 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Interpret USD properties for the importer."""
+"""Importer-specific USD property resolution."""
 
 from __future__ import annotations
 
 import math
 import warnings
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
+from typing import Any, ClassVar, Literal
 
-from ..sim.enums import JointTargetMode
-from ..solvers.mujoco.constants import SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_MJCF_DEFAULT, SOLREF_MODE_RAW
-from . import utils as usd
-from .schema_resolver import PrimType, SchemaResolver, SchemaResolverManager
+from .schema_resolver import (
+    PrimType,
+    SchemaResolver,
+    SchemaResolverManager,
+    _ImporterDefault,
+    _PolicySelection,
+    _ResolvedValue,
+    _ResolverValue,
+    _values_equal,
+    _ValueSource,
+)
 
-if TYPE_CHECKING:
-    from pxr import Usd, UsdPhysics
-
-    from ..sim.builder import ModelBuilder
-
-
-# Stiffness used for a hard joint limit (NewtonJointAPI newton:limitStiffness == +inf).
 _HARD_LIMIT_KE = 1.0e8
+_VALID_SDF_TEXTURE_FORMATS = ("float32", "uint16", "uint8")
+
+
+def _interpret_usd_joint_velocity_limit(value: Any) -> float | None:
+    """Interpret an unlimited USD joint velocity as absent."""
+    return None if value == float("inf") else value
+
+
+def _interpret_usd_joint_state(value: Any, _resolver: SchemaResolver | None = None) -> float:
+    """Interpret an absent USD joint state as the builder's zero state."""
+    return 0.0 if value is None else value
+
+
+def _interpret_usd_contact_parameter(value: Any) -> float | None:
+    """Interpret an unspecified USD contact response parameter as absent."""
+    if value is None:
+        return None
+    value = float(value)
+    return value if math.isfinite(value) else None
+
+
+def _interpret_usd_contact_result(resolved: _ResolvedValue) -> float | None:
+    """Interpret a resolved USD contact response parameter."""
+    return _interpret_usd_contact_parameter(resolved.value)
 
 
 def _resolve_newton_limit_ke(
@@ -31,22 +56,7 @@ def _resolve_newton_limit_ke(
     fallback_source: str,
     builder_default: float,
 ) -> tuple[float, str]:
-    """Resolve a NewtonJointAPI ``newton:limitStiffness`` value.
-
-    ``limit_ke`` is ``None`` when the attribute is not authored, ``-inf`` when
-    authored as the engine-default sentinel, ``+inf`` for a hard limit, or a
-    finite stiffness value.
-
-    ``fallback`` is the per-DOF stiffness resolved from lower-priority schemas
-    (PhysX/MuJoCo).  ``builder_default`` is the ModelBuilder engine default.
-
-    An explicit ``-inf`` takes precedence over the per-DOF fallback and selects
-    the builder default so that a lower-priority schema cannot override an
-    authored Newton sentinel.
-
-    Returns (resolved_value, source) where source is ``"force"`` when Newton
-    broadcast values are used, or the original ``fallback_source`` otherwise.
-    """
+    """Resolve a Newton limit-stiffness value and its consumer source."""
     if limit_ke is None:
         return fallback, fallback_source
     if limit_ke == float("-inf"):
@@ -63,627 +73,1516 @@ def _resolve_newton_limit_kd(
     fallback_source: str,
     builder_default: float,
 ) -> tuple[float, str]:
-    """Resolve a NewtonJointAPI ``newton:limitDamping`` value.
-
-    Hard limits (``limit_ke`` or ``limit_kd`` == ``+inf``) have no damping.
-    An authored ``-inf`` selects the builder default (engine default), taking
-    precedence over per-DOF fallbacks from lower-priority schemas.
-    When neither Newton attribute is authored (``None``), the per-DOF ``fallback``
-    from other resolvers is used.
-
-    Returns (resolved_value, source) where source is ``"force"`` when Newton
-    broadcast values are used, or the original ``fallback_source`` otherwise.
-    """
-    # Hard (rigid) limit: infinite ke or kd means no dissipation is needed.
-    if limit_ke is not None and limit_ke == float("inf"):
+    """Resolve a Newton limit-damping value and its consumer source."""
+    if limit_ke == float("inf") or limit_kd == float("inf"):
         return 0.0, "force"
-    if limit_kd is not None and limit_kd == float("inf"):
-        return 0.0, "force"
-    # Not authored → lower-priority per-DOF fallback.
     if limit_kd is None:
         return fallback, fallback_source
-    # Authored -inf → builder default.
     if limit_kd == float("-inf"):
         return builder_default, "force"
     return limit_kd, "force"
 
 
-@dataclass
-class _DofParams:
-    """Resolved limits, drive, and initial state for one revolute/prismatic DOF, in Newton units."""
+class _UsdResolutionPolicy:
+    """Resolve and interpret importer properties without traversing a USD stage."""
 
-    armature: float
-    friction: float
-    damping: float
-    velocity_limit: float | None
-    limit_lower: float
-    limit_upper: float
-    limit_ke: float
-    limit_kd: float
-    has_drive: bool
-    target_pos: float
-    target_vel: float
-    target_ke: float
-    target_kd: float
-    effort_limit: float | None
-    actuator_mode: JointTargetMode
-    initial_position: float | None
-    initial_velocity: float | None
-    limit_solref_mode: int
+    @dataclass(frozen=True)
+    class SceneProperties:
+        """Hold interpreted PhysicsScene properties."""
 
+        physics_dt: float
+        """Simulation time step [s]."""
+        gravity_enabled: bool
+        """Whether gravity is enabled for the scene."""
+        max_solver_iterations: int
+        """Maximum solver iterations, or ``-1`` when unspecified."""
 
-def _shift_joint_limits_for_reference(dof: _DofParams, joint_custom_attrs: dict[str, Any]) -> None:
-    """Convert absolute MuJoCo joint limits to Newton joint coordinates."""
-    ref_key = "mujoco:dof_ref"
-    if ref_key not in joint_custom_attrs:
-        return
-    ref = float(joint_custom_attrs[ref_key])
-    dof.limit_lower -= ref
-    dof.limit_upper -= ref
+    @dataclass(frozen=True)
+    class ContactResponse:
+        """Group the four contact-response fields used by the importer."""
 
+        names: ClassVar[tuple[str, ...]] = ("ke", "kd", "kf", "ka")
 
-@dataclass
-class _UsdJointProperties:
-    """Resolve joint properties using defaults sampled at the start of one import."""
+        ke: Any
+        """Contact stiffness [N/m]."""
+        kd: Any
+        """Contact damping [N·s/m]."""
+        kf: Any
+        """Contact friction gain [N·s/m]."""
+        ka: Any
+        """Contact adhesion distance [m]."""
 
-    resolver: SchemaResolverManager
-    degrees_to_radian: float
-    default_armature: float
-    default_friction: float
-    default_damping: float
-    default_limit_ke: float
-    default_limit_kd: float
-    limit_gains_configured: bool
-    """Whether the sampled limit gains differ from the builder's standard defaults."""
-    mjc_resolver: SchemaResolver | None
-    verbose: bool
+        @classmethod
+        def from_getter(cls, getter: Callable[[str], Any]) -> _UsdResolutionPolicy.ContactResponse:
+            return cls(*(getter(name) for name in cls.names))
 
-    # Keep source tracking local until schema applicability and provenance are modeled globally (#3307).
-    def _mjc_joint_limit_source(self, prim: Usd.Prim) -> Literal["mjc_authored", "mjc_default"] | None:
-        if self.mjc_resolver is None:
-            return None
-        solreflimit_attr = prim.GetAttribute("mjc:solreflimit")
-        if solreflimit_attr is not None and solreflimit_attr.HasAuthoredValue():
-            return "mjc_authored"
-        if prim and prim.IsValid() and usd.has_applied_api_schema(prim, "MjcJointAPI"):
-            return "mjc_default"
-        return None
+        def get(self, name: str, default: Any = None) -> Any:
+            return getattr(self, name, default)
 
-    def resolve_joint_limit_gain(
-        self, prim: Usd.Prim, key: str, builder_default: float
-    ) -> tuple[float, Literal["force", "builder_default"]]:
-        """Resolve a limit gain and report the semantics of its source."""
-        for resolver in self.resolver.resolvers:
-            if resolver.name == "mjc":
-                continue
+        def items(self) -> tuple[tuple[str, Any], ...]:
+            return tuple(zip(self.names, self.values(), strict=True))
 
-            spec = resolver.mapping.get(PrimType.JOINT, {}).get(key)
-            if spec is None:
-                continue
+        def values(self) -> tuple[Any, Any, Any, Any]:
+            return (self.ke, self.kd, self.kf, self.ka)
 
-            authored_value = resolver.get_value(prim, PrimType.JOINT, key)
-            if authored_value is not None:
-                self.resolver._collect_on_first_use(resolver, prim)
-                return authored_value, "force"
+    @dataclass(frozen=True)
+    class _ContactResponseSelection:
+        """Keep selected contact values and their owning input group."""
 
-        return builder_default, "builder_default"
+        values: _UsdResolutionPolicy.ContactResponse
+        """Contact values selected for one resolution policy."""
+        owners: _UsdResolutionPolicy.ContactResponse
+        """Input group that supplied each selected contact value."""
 
-    def joint_limit_solref_mode(self, prim: Usd.Prim, ke_source: str, kd_source: str) -> int:
-        """Choose MuJoCo limit-solref semantics from the resolved gain sources."""
-        mjc_source = self._mjc_joint_limit_source(prim)
-        if mjc_source is not None and self.mjc_resolver is not None:
-            self.resolver._collect_on_first_use(self.mjc_resolver, prim)
-        if mjc_source == "mjc_authored":
-            return SOLREF_MODE_RAW
-        if (
-            mjc_source == "mjc_default"
-            and ke_source == kd_source == "builder_default"
-            and not self.limit_gains_configured
-        ):
-            return SOLREF_MODE_MJCF_DEFAULT
-        return SOLREF_MODE_FORCE_SPACE
+    @dataclass
+    class PhysicsMaterial:
+        """Keep one parsed physics material and its resolution policies."""
 
-    def resolve_joint_damping(self, jp_prim: Usd.Prim) -> tuple[float, float]:
-        """Resolve passive damping for linear and angular DOFs.
+        static_friction: float
+        """Static friction coefficient."""
+        dynamic_friction: float
+        """Dynamic friction coefficient."""
+        torsional_friction: float
+        """Torsional friction coefficient [m]."""
+        rolling_friction: float
+        """Rolling friction coefficient [m]."""
+        restitution: float
+        """Restitution coefficient."""
+        density: float
+        """Material density [kg/m³]."""
+        ke: float | None = None
+        """Contact stiffness [N/m], or ``None`` when unspecified."""
+        kd: float | None = None
+        """Contact damping [N·s/m], or ``None`` when unspecified."""
+        kf: float | None = None
+        """Contact friction gain [N·s/m], or ``None`` when unspecified."""
+        ka: float | None = None
+        """Contact adhesion distance [m], or ``None`` when unspecified."""
+        prim: Any = None
+        """PXR material prim used for migration diagnostics."""
+        policies: dict[str, SchemaResolverManager._InterpretedPolicyValues] = field(default_factory=dict)
+        """Resolution-policy values keyed by logical material property."""
 
-        MuJoCo authors SI damping per radian for angular DOFs, while Newton's
-        regular USD damping mapping follows USD's per-degree convention.
+        @classmethod
+        def from_shape_config(cls, config: Any) -> _UsdResolutionPolicy.PhysicsMaterial:
+            """Create the importer material from the builder shape defaults."""
+            return cls(
+                static_friction=config.mu,
+                dynamic_friction=config.mu,
+                torsional_friction=config.mu_torsional,
+                rolling_friction=config.mu_rolling,
+                restitution=config.restitution,
+                density=config.density,
+            )
 
-        Returns:
-            The linear and angular damping values in Newton units.
-        """
-        for resolver in self.resolver.resolvers:
-            for key, angular_scale in (("damping", 1.0 / self.degrees_to_radian), ("damping_per_rad", 1.0)):
-                damping = resolver.get_value(jp_prim, PrimType.JOINT, key)
-                if damping is not None:
-                    self.resolver._collect_on_first_use(resolver, jp_prim)
-                    damping = float(damping)
-                    return damping, damping * angular_scale
-        return self.default_damping, self.default_damping
+    @dataclass(frozen=True)
+    class ShapeProperties:
+        """Hold interpreted properties shared by rigid collision shapes."""
 
-    def resolve_dof_params(
+        margin: float
+        """Collision margin [m]."""
+        gap: float
+        """Collision gap [m]."""
+        sdf_max_resolution: int | None
+        """Maximum SDF resolution, or ``None`` when unspecified."""
+        sdf_narrow_band_range: tuple[float, float]
+        """Inner and outer SDF narrow-band widths [m]."""
+        sdf_target_voxel_size: float | None
+        """Target SDF voxel size [m], or ``None`` when unspecified."""
+        sdf_texture_format: str
+        """SDF texture storage format."""
+        sdf_padding: float | None
+        """SDF padding [m], or ``None`` when inferred from shape offsets."""
+        is_hydroelastic: bool
+        """Whether the shape uses hydroelastic contact."""
+        kh: float
+        """Hydroelastic stiffness [Pa/m]."""
+        is_solid: bool
+        """Whether geometric mass integration treats the shape as solid."""
+        shell_thickness: float | None
+        """Shell thickness [m], or ``None`` when not applicable."""
+        inertia_margin: float
+        """Margin used for geometric inertia integration [m]."""
+
+    @dataclass(frozen=True)
+    class _ShapeOffsets:
+        """Keep resolved contact offsets and their policy values."""
+
+        margin: float
+        """Collision margin selected by the active policy [m]."""
+        gap: float
+        """Collision gap selected by the active policy [m]."""
+        margin_policies: SchemaResolverManager._InterpretedPolicyValues
+        """Interpreted margin under each resolution policy."""
+        gap_policies: SchemaResolverManager._InterpretedPolicyValues
+        """Interpreted gap under each resolution policy."""
+
+    @dataclass(frozen=True)
+    class _SdfResolutionSettings:
+        """Keep the coupled SDF resolution settings for one policy."""
+
+        target_voxel_size: float | None
+        """Target SDF voxel size [m], or ``None`` when unspecified."""
+        max_resolution: int | None
+        """Maximum SDF resolution, or ``None`` when unspecified."""
+
+    @dataclass(frozen=True)
+    class _ShapeSdfProperties:
+        """Keep resolved SDF settings used by shape validation."""
+
+        narrow_band_range: tuple[float, float]
+        """Inner and outer SDF narrow-band widths [m]."""
+        texture_format: str
+        """SDF texture storage format."""
+        padding: float | None
+        """Active SDF padding [m], or ``None`` when inferred."""
+        padding_policies: SchemaResolverManager._InterpretedPolicyValues
+        """Interpreted padding under each resolution policy."""
+        active_settings: _UsdResolutionPolicy._SdfResolutionSettings
+        """Resolution settings selected by the active policy."""
+        legacy_settings: _UsdResolutionPolicy._SdfResolutionSettings | None
+        """Legacy resolution settings when migration auditing is active."""
+        composed_settings: _UsdResolutionPolicy._SdfResolutionSettings | None
+        """Registered-schema settings when migration auditing is active."""
+
+    @dataclass(frozen=True)
+    class _ShapeHydroelasticProperties:
+        """Keep validated hydroelastic shape properties."""
+
+        enabled: bool
+        """Validated hydroelastic state selected by the active policy."""
+        stiffness: float
+        """Hydroelastic stiffness [Pa/m]."""
+        legacy_enabled: bool | None
+        """Validated legacy state when migration auditing is active."""
+        composed_enabled: bool | None
+        """Validated registered-schema state during migration auditing."""
+
+    @dataclass(frozen=True)
+    class _ShapeMassProperties:
+        """Keep interpreted shell mass properties."""
+
+        is_solid: bool
+        """Whether geometric mass integration treats the shape as solid."""
+        shell_thickness: float | None
+        """Shell thickness [m], or ``None`` when not applicable."""
+        inertia_margin: float
+        """Margin used for geometric inertia integration [m]."""
+
+    @dataclass(frozen=True)
+    class _JointDampingValue:
+        """Keep the angular unit selected by a damping mapping key."""
+
+        value: float
+        """Joint damping value in its declared angular unit."""
+        angular_unit: Literal["degrees", "radians"] | None
+        """Angular unit for a rotational degree of freedom."""
+
+    @dataclass(frozen=True)
+    class JointLimitDefaults:
+        """Hold builder defaults for one joint limit."""
+
+        ke: float
+        """Default limit stiffness [N/m or N·m/rad]."""
+        kd: float
+        """Default limit damping [N·s/m or N·m·s/rad]."""
+
+    @dataclass(frozen=True)
+    class JointLimitResult:
+        """Hold one assembled joint-limit result and its source semantics."""
+
+        ke: float
+        """Resolved limit stiffness [N/m or N·m/rad]."""
+        kd: float
+        """Resolved limit damping [N·s/m or N·m·s/rad]."""
+        ke_source: Literal["force", "builder_default"]
+        """Consumer semantics associated with ``ke``."""
+        kd_source: Literal["force", "builder_default"]
+        """Consumer semantics associated with ``kd``."""
+
+    @dataclass(frozen=True)
+    class _JointLimitAudit:
+        """Describe one legacy-to-composed joint-limit comparison."""
+
+        legacy: _UsdResolutionPolicy.JointLimitResult
+        """Joint-limit result under legacy precedence."""
+        composed: _UsdResolutionPolicy.JointLimitResult
+        """Joint-limit result under registered-schema precedence."""
+        legacy_owners: tuple[str, str]
+        """Legacy owner for stiffness and damping, respectively."""
+        composed_owners: tuple[str, str]
+        """Registered-schema owner for stiffness and damping, respectively."""
+
+    def __init__(
         self,
-        jp_prim: Usd.Prim,
-        jd: UsdPhysics.JointDesc,
-        is_revolute: bool,
+        resolver: SchemaResolverManager,
         *,
-        joint_drive_gains_scaling: float,
-        force_position_velocity_actuation: bool,
-    ) -> _DofParams:
-        """Resolve limits, drive, and initial state for one revolute/prismatic DOF.
+        degrees_to_radian: float,
+        default_joint_damping: float,
+        default_joint_velocity_limit: float,
+        verbose: bool,
+    ) -> None:
+        self._resolver = resolver
+        self._degrees_to_radian = degrees_to_radian
+        self._default_joint_damping = default_joint_damping
+        self._default_joint_velocity_limit = default_joint_velocity_limit
+        self._mjc_has_priority = False
+        for candidate in resolver.resolvers:
+            if candidate.name == "mjc":
+                self._mjc_has_priority = True
+                break
+            if candidate.name == "newton":
+                break
+        self._verbose = verbose
 
-        Returns values in Newton units (radians for revolute DOFs). ``velocity_limit``,
-        ``effort_limit``, and the initial state stay ``None`` when unauthored so callers
-        can apply their own fallbacks; drive targets/gains are zero when ``has_drive`` is False.
-        """
-        limit_gains_scaling = self.degrees_to_radian if is_revolute else 1.0
-        armature = self.resolver.get_value(
-            jp_prim, prim_type=PrimType.JOINT, key="armature", default=self.default_armature, verbose=self.verbose
-        )
-        friction = self.resolver.get_value(
-            jp_prim, prim_type=PrimType.JOINT, key="friction", default=self.default_friction, verbose=self.verbose
-        )
-        linear_damping, angular_damping = self.resolve_joint_damping(jp_prim)
-        damping = angular_damping if is_revolute else linear_damping
-        velocity_limit = self.resolver.get_value(
-            jp_prim, prim_type=PrimType.JOINT, key="velocity_limit", default=None, verbose=self.verbose
-        )
-        # NewtonJointAPI uses +inf for "unlimited"; treat it as the builder default below.
-        if velocity_limit == float("inf"):
-            velocity_limit = None
-        newton_limit_ke = self.resolver.get_value(
-            jp_prim, prim_type=PrimType.JOINT, key="limit_ke", default=None, verbose=self.verbose
-        )
-        newton_limit_kd = self.resolver.get_value(
-            jp_prim, prim_type=PrimType.JOINT, key="limit_kd", default=None, verbose=self.verbose
-        )
-        limit_key = "limit_angular" if is_revolute else "limit_linear"
-        fallback_limit_ke, limit_ke_source = self.resolve_joint_limit_gain(
-            jp_prim,
-            f"{limit_key}_ke",
-            self.default_limit_ke * limit_gains_scaling,
-        )
-        fallback_limit_kd, limit_kd_source = self.resolve_joint_limit_gain(
-            jp_prim,
-            f"{limit_key}_kd",
-            self.default_limit_kd * limit_gains_scaling,
-        )
-        limit_ke, limit_ke_source = _resolve_newton_limit_ke(
-            newton_limit_ke, fallback_limit_ke, limit_ke_source, self.default_limit_ke * limit_gains_scaling
-        )
-        limit_kd, limit_kd_source = _resolve_newton_limit_kd(
-            newton_limit_ke,
-            newton_limit_kd,
-            fallback_limit_kd,
-            limit_kd_source,
-            self.default_limit_kd * limit_gains_scaling,
-        )
-        limit_lower = jd.limit.lower
-        limit_upper = jd.limit.upper
+    def resolve_scene(self, prim: Any) -> SceneProperties:
+        """Resolve the PhysicsScene properties consumed by the importer."""
 
-        has_drive = jd.drive.enabled
-        target_pos = jd.drive.targetPosition if has_drive else 0.0
-        target_vel = jd.drive.targetVelocity if has_drive else 0.0
-        target_ke = jd.drive.stiffness if has_drive else 0.0
-        target_kd = jd.drive.damping if has_drive else 0.0
-        effort_limit = jd.drive.forceLimit if has_drive else None
-        # A joint-level limit such as MuJoCo's actuatorfrcrange bounds the same
-        # effort as the drive force limit, so keep the tighter one.
-        joint_effort_limit = self.resolver.get_value(jp_prim, PrimType.JOINT, "effort_limit")
-        if joint_effort_limit is not None:
-            effort_limit = joint_effort_limit if effort_limit is None else min(effort_limit, joint_effort_limit)
-        if has_drive:
-            actuator_mode = JointTargetMode.from_gains(
-                target_ke, target_kd, force_position_velocity_actuation, has_drive=True
-            )
-        else:
-            actuator_mode = JointTargetMode.NONE
+        def interpret_time_steps_per_second(result: _ResolvedValue) -> float:
+            value = result.value
+            return (1.0 / value) if value is not None and value > 0 else 0.001
 
-        state_prefix = "angular" if is_revolute else "linear"
-        initial_position = self.resolver.get_value(
-            jp_prim, PrimType.JOINT, f"{state_prefix}_position", default=None, verbose=self.verbose
-        )
-        initial_velocity = self.resolver.get_value(
-            jp_prim, PrimType.JOINT, f"{state_prefix}_velocity", default=None, verbose=self.verbose
-        )
-
-        if is_revolute:
-            limit_lower *= self.degrees_to_radian
-            limit_upper *= self.degrees_to_radian
-            limit_ke /= self.degrees_to_radian
-            limit_kd /= self.degrees_to_radian
-            if has_drive:
-                target_pos *= self.degrees_to_radian
-                target_vel *= self.degrees_to_radian
-                target_ke /= self.degrees_to_radian / joint_drive_gains_scaling
-                target_kd /= self.degrees_to_radian / joint_drive_gains_scaling
-            if velocity_limit is not None:
-                velocity_limit *= self.degrees_to_radian
-            if initial_position is not None:
-                initial_position *= self.degrees_to_radian
-            if initial_velocity is not None:
-                initial_velocity *= self.degrees_to_radian
-
-        return _DofParams(
-            armature=armature,
-            friction=friction,
-            damping=damping,
-            velocity_limit=velocity_limit,
-            limit_lower=limit_lower,
-            limit_upper=limit_upper,
-            limit_ke=limit_ke,
-            limit_kd=limit_kd,
-            has_drive=has_drive,
-            target_pos=target_pos,
-            target_vel=target_vel,
-            target_ke=target_ke,
-            target_kd=target_kd,
-            effort_limit=effort_limit,
-            actuator_mode=actuator_mode,
-            initial_position=initial_position,
-            initial_velocity=initial_velocity,
-            limit_solref_mode=self.joint_limit_solref_mode(jp_prim, limit_ke_source, limit_kd_source),
-        )
-
-
-@dataclass
-class _PhysicsMaterial:
-    """Physics-material values used by the USD shape importer."""
-
-    staticFriction: float
-    dynamicFriction: float
-    torsionalFriction: float
-    rollingFriction: float
-    restitution: float
-    density: float
-    ke: float | None = None
-    kd: float | None = None
-    kf: float | None = None
-    ka: float | None = None
-
-
-def _resolve_physics_material(
-    prim: Usd.Prim,
-    desc: UsdPhysics.RigidBodyMaterialDesc,
-    resolver: SchemaResolverManager,
-    defaults: ModelBuilder.ShapeConfig,
-    *,
-    default_shape_density: float,
-    verbose: bool,
-) -> _PhysicsMaterial:
-    """Read material values, retaining the importer's sampled density default."""
-
-    def _resolve_contact_attr(key, _prim=prim):
-        val = resolver.get_value(_prim, prim_type=PrimType.MATERIAL, key=key, verbose=verbose)
-        if val is None:
-            return None
-        return float(val)
-
-    if not math.isfinite(desc.density):
-        warnings.warn(
-            f"{prim.GetPath()}: authored material density must be finite; treating it as unspecified.",
-            stacklevel=3,
-        )
-
-    return _PhysicsMaterial(
-        staticFriction=desc.staticFriction,
-        dynamicFriction=desc.dynamicFriction,
-        restitution=desc.restitution,
-        torsionalFriction=resolver.get_value(
+        physics_dt = self._resolver._get_interpreted_value(
             prim,
-            prim_type=PrimType.MATERIAL,
-            key="mu_torsional",
-            default=defaults.mu_torsional,
-            verbose=verbose,
-        ),
-        rollingFriction=resolver.get_value(
+            prim_type=PrimType.SCENE,
+            key="time_steps_per_second",
+            default=1000,
+            verbose=self._verbose,
+            interpreter=interpret_time_steps_per_second,
+        ).value
+        gravity_enabled = self.resolve_gravity_enabled(prim)
+        max_solver_iterations = self._resolver.get_value(
             prim,
-            prim_type=PrimType.MATERIAL,
-            key="mu_rolling",
-            default=defaults.mu_rolling,
-            verbose=verbose,
-        ),
-        # Treat non-positive, non-finite, or unauthored material density as "use importer default".
-        # Effective collider/body MassAPI mass+inertia is handled later.
-        density=desc.density if math.isfinite(desc.density) and desc.density > 0.0 else default_shape_density,
-        ke=_resolve_contact_attr("ke"),
-        kd=_resolve_contact_attr("kd"),
-        kf=_resolve_contact_attr("kf"),
-        ka=_resolve_contact_attr("ka"),
-    )
+            prim_type=PrimType.SCENE,
+            key="max_solver_iterations",
+            default=-1,
+            legacy_default=None,
+            verbose=self._verbose,
+        )
+        return self.SceneProperties(physics_dt, gravity_enabled, max_solver_iterations)
 
+    def resolve_gravity_enabled(self, prim: Any) -> bool:
+        """Resolve gravity enablement with the shared boolean interpretation."""
+        return self._resolver._get_interpreted_value(
+            prim,
+            prim_type=PrimType.SCENE,
+            key="gravity_enabled",
+            default=True,
+            verbose=self._verbose,
+            interpreter=lambda result: bool(result.value),
+        ).value
 
-# Shape-property warnings pass through _parse_colliders() and parse_usd()
-# before reaching ModelBuilder.add_usd(), so they use stacklevel=4.
-def _resolve_shape_offsets(
-    prim: Usd.Prim,
-    resolver: SchemaResolverManager,
-    defaults: ModelBuilder.ShapeConfig,
-    *,
-    legacy_margin_gap: bool,
-    verbose: bool,
-) -> tuple[float, float | None]:
-    """Resolve collision margin and gap, including the legacy MuJoCo translation."""
-    margin_val, margin_resolver = resolver.get_value_with_resolver(
-        prim,
-        prim_type=PrimType.SHAPE,
-        key="margin",
-        default=defaults.margin,
-        verbose=verbose,
-    )
-    gap_val = resolver.get_value(
-        prim,
-        prim_type=PrimType.SHAPE,
-        key="gap",
-        verbose=verbose,
-    )
-    if gap_val == float("-inf"):
-        gap_val = defaults.gap
-    if legacy_margin_gap and margin_resolver is not None and margin_resolver.name == "mjc":
-        # Legacy pre-3.9 import: newton_margin = mjc_margin - mjc_gap.
-        mjc_gap = usd.get_attribute(prim, "mjc:gap")
-        mjc_gap = 0.0 if mjc_gap is None else float(mjc_gap)
-        newton_margin = float(margin_val) - mjc_gap
-        if newton_margin < 0.0:
-            warnings.warn(
-                f"Prim '{prim.GetPath()}': legacy translation yields "
-                f"negative margin (mjc_margin={margin_val}, mjc_gap={mjc_gap}).",
-                stacklevel=4,
+    def resolve_contact_response(
+        self,
+        shape_prim: Any,
+        material: PhysicsMaterial,
+        shape_defaults: Any,
+        *,
+        has_mjc_solref: bool,
+    ) -> ContactResponse:
+        """Resolve and audit the final per-shape contact response."""
+        has_solref = self._mjc_has_priority and has_mjc_solref
+        shape_policies = self.ContactResponse.from_getter(
+            lambda key: self._resolver._resolve_interpreted_policies(
+                shape_prim,
+                PrimType.SHAPE,
+                key,
+                None,
+                interpreter=_interpret_usd_contact_result,
             )
-        margin_val = newton_margin
-    return margin_val, gap_val
-
-
-def _resolve_shape_contact(
-    prim: Usd.Prim,
-    resolver: SchemaResolverManager,
-    material: _PhysicsMaterial,
-    defaults: ModelBuilder.ShapeConfig,
-    *,
-    verbose: bool,
-) -> dict[str, float]:
-    """Select contact response values from shape, material, and builder settings."""
-    # Contact response precedence:
-    #   per-shape mjc:solref (non-legacy) > material > legacy per-shape > default
-    mjc_has_priority = False
-    for _r in resolver.resolvers:
-        if _r.name == "mjc":
-            mjc_has_priority = True
-            break
-        if _r.name == "newton":
-            break
-    has_solref = mjc_has_priority and usd.get_attribute(prim, "mjc:solref") is not None
-    shape_contact = {
-        "mu": material.dynamicFriction,
-        "restitution": material.restitution,
-        "mu_torsional": material.torsionalFriction,
-        "mu_rolling": material.rollingFriction,
-    }
-    for _ck in ("ke", "kd", "kf", "ka"):
-        per_shape_val = resolver.get_value(prim, prim_type=PrimType.SHAPE, key=_ck, verbose=verbose)
-        has_shape = per_shape_val is not None and math.isfinite(float(per_shape_val))
-        mat_val = getattr(material, _ck)
-        has_mat = mat_val is not None and math.isfinite(mat_val)
-
-        if has_solref and _ck in ("ke", "kd") and has_shape:
-            shape_contact[_ck] = float(per_shape_val)
-        elif has_mat:
-            shape_contact[_ck] = mat_val
-        elif has_shape:
-            shape_contact[_ck] = float(per_shape_val)
-        else:
-            shape_contact[_ck] = getattr(defaults, _ck)
-
-    return shape_contact
-
-
-@dataclass
-class _ShapeSdfProperties:
-    """Resolved SDF settings, including whether the shape applies the SDF schema."""
-
-    has_api: bool
-    max_resolution: int | None
-    narrow_band_range: tuple[float, float]
-    target_voxel_size: float | None
-    texture_format: str
-    padding: float | None
-
-
-def _resolve_shape_sdf(
-    prim: Usd.Prim,
-    resolver: SchemaResolverManager,
-    defaults: ModelBuilder.ShapeConfig,
-    *,
-    verbose: bool,
-) -> _ShapeSdfProperties:
-    """Resolve SDF settings and validate authored values before shape construction."""
-    # SDF parameters. Applying NewtonSDFCollisionAPI is the canonical
-    # signal that SDF generation is configured for this shape.
-    has_sdf_api = prim.HasAPI("NewtonSDFCollisionAPI")
-    # NewtonSDFCollisionAPI and NewtonMeshCollisionAPI are independent
-    # collision representations and should not be co-applied. SDF wins
-    # when both are present.
-    if has_sdf_api and prim.HasAPI("NewtonMeshCollisionAPI"):
-        warnings.warn(
-            f"{prim.GetPath()}: NewtonSDFCollisionAPI and NewtonMeshCollisionAPI are "
-            f"independent collision representations and should not be co-applied; "
-            f"SDF configuration will be used.",
-            stacklevel=4,
         )
+        material_contact_policies = self.ContactResponse.from_getter(material.policies.get)
 
-    # Resolve target_voxel_size first because it overrides
-    # sdf_max_resolution and the two are mutually exclusive in
-    # ShapeConfig.validate().
-    sdf_target_voxel_size = resolver.get_value(
-        prim, prim_type=PrimType.SHAPE, key="sdf_target_voxel_size", verbose=verbose
-    )
-    if sdf_target_voxel_size == float("-inf"):
-        sdf_target_voxel_size = None
-    elif sdf_target_voxel_size is not None and sdf_target_voxel_size <= 0:
-        warnings.warn(
-            f"{prim.GetPath()}: newton:sdfTargetVoxelSize={sdf_target_voxel_size!r} is invalid "
-            f"(must be > 0); falling back to default.",
-            stacklevel=4,
-        )
-        sdf_target_voxel_size = None
-    if sdf_target_voxel_size is None:
-        sdf_target_voxel_size = defaults.sdf_target_voxel_size
+        def select_field(
+            key: str,
+            policy: _PolicySelection,
+        ) -> tuple[float, Literal["shape", "material", "default"]]:
+            shape_result = shape_policies.get(key).select(policy)
+            shape_value = None if shape_result is None else shape_result.value
+            has_shape_value = shape_value is not None
 
-    sdf_max_resolution = resolver.get_value(prim, prim_type=PrimType.SHAPE, key="sdf_max_resolution", verbose=verbose)
-    if sdf_max_resolution == float("-inf"):
-        sdf_max_resolution = None
-    elif sdf_max_resolution is not None and sdf_max_resolution <= 0:
-        warnings.warn(
-            f"{prim.GetPath()}: newton:sdfMaxResolution={sdf_max_resolution!r} is invalid "
-            f"(must be > 0); falling back to default.",
-            stacklevel=4,
-        )
-        sdf_max_resolution = None
-    elif sdf_max_resolution is not None and sdf_max_resolution % 8 != 0:
-        warnings.warn(
-            f"{prim.GetPath()}: newton:sdfMaxResolution={sdf_max_resolution!r} must be "
-            f"divisible by 8 (SDF volumes are allocated in 8x8x8 tiles); falling back to default.",
-            stacklevel=4,
-        )
-        sdf_max_resolution = None
-    if sdf_target_voxel_size is not None and sdf_max_resolution is not None:
-        warnings.warn(
-            f"{prim.GetPath()}: both newton:sdfTargetVoxelSize and newton:sdfMaxResolution "
-            f"are set; sdfTargetVoxelSize takes precedence.",
-            stacklevel=4,
-        )
-        sdf_max_resolution = None
-    if sdf_max_resolution is None:
-        # When the API is applied but neither attribute is authored,
-        # fall back to the schema default (64). When target voxel
-        # size already drives the resolution, leave max_resolution
-        # unset so the two don't conflict in ShapeConfig.validate().
-        if has_sdf_api and sdf_target_voxel_size is None:
-            sdf_max_resolution = 64
-        else:
-            sdf_max_resolution = defaults.sdf_max_resolution
+            material_policy = material_contact_policies.get(key)
+            material_result = None if material_policy is None else material_policy.select(policy)
+            material_value = None if material_result is None else material_result.value
+            has_material_value = material_value is not None
 
-    sdf_narrow_band_inner = resolver.get_value(
-        prim, prim_type=PrimType.SHAPE, key="sdf_narrow_band_inner", verbose=verbose
-    )
-    if sdf_narrow_band_inner == float("-inf"):
-        sdf_narrow_band_inner = None
-    sdf_narrow_band_outer = resolver.get_value(
-        prim, prim_type=PrimType.SHAPE, key="sdf_narrow_band_outer", verbose=verbose
-    )
-    if sdf_narrow_band_outer == float("-inf"):
-        sdf_narrow_band_outer = None
-    default_nb = defaults.sdf_narrow_band_range
-    sdf_narrow_band_range = (
-        sdf_narrow_band_inner if sdf_narrow_band_inner is not None else default_nb[0],
-        sdf_narrow_band_outer if sdf_narrow_band_outer is not None else default_nb[1],
-    )
+            if has_solref and key in ("ke", "kd") and has_shape_value:
+                return float(shape_value), "shape"
+            if has_material_value:
+                return material_value, "material"
+            if has_shape_value:
+                return float(shape_value), "shape"
+            return getattr(shape_defaults, key), "default"
 
-    sdf_texture_format = resolver.get_value(prim, prim_type=PrimType.SHAPE, key="sdf_texture_format", verbose=verbose)
-    _valid_sdf_tex_fmts = ("float32", "uint16", "uint8")
-    if sdf_texture_format is not None and sdf_texture_format not in _valid_sdf_tex_fmts:
-        warnings.warn(
-            f"{prim.GetPath()}: newton:sdfTextureFormat={sdf_texture_format!r} is invalid "
-            f"(expected one of {list(_valid_sdf_tex_fmts)}); falling back to default.",
-            stacklevel=4,
-        )
-        sdf_texture_format = None
-    if sdf_texture_format is None:
-        sdf_texture_format = defaults.sdf_texture_format
-
-    sdf_padding = resolver.get_value(prim, prim_type=PrimType.SHAPE, key="sdf_padding", verbose=verbose)
-    if sdf_padding == float("-inf"):
-        sdf_padding = None
-    elif sdf_padding is not None and sdf_padding < 0:
-        warnings.warn(
-            f"{prim.GetPath()}: newton:sdfPadding={sdf_padding!r} is invalid (must be >= 0); falling back to default.",
-            stacklevel=4,
-        )
-        sdf_padding = None
-
-    return _ShapeSdfProperties(
-        has_api=has_sdf_api,
-        max_resolution=sdf_max_resolution,
-        narrow_band_range=sdf_narrow_band_range,
-        target_voxel_size=sdf_target_voxel_size,
-        texture_format=sdf_texture_format,
-        padding=sdf_padding,
-    )
-
-
-def _resolve_shape_hydroelastic(
-    prim: Usd.Prim,
-    resolver: SchemaResolverManager,
-    defaults: ModelBuilder.ShapeConfig,
-    sdf: _ShapeSdfProperties,
-    *,
-    is_mesh: bool,
-    verbose: bool,
-) -> tuple[bool, float]:
-    """Resolve hydroelastic settings and require an SDF source for mesh shapes."""
-    hydroelastic_enabled = resolver.get_value(
-        prim, prim_type=PrimType.SHAPE, key="hydroelastic_enabled", verbose=verbose
-    )
-    kh = resolver.get_value(prim, prim_type=PrimType.SHAPE, key="kh", verbose=verbose)
-    if kh == float("-inf"):
-        kh = None
-    elif kh is not None and kh <= 0:
-        warnings.warn(
-            f"{prim.GetPath()}: newton:hydroelasticStiffness={kh!r} is invalid (must be > 0); falling back to default.",
-            stacklevel=4,
-        )
-        kh = None
-    if hydroelastic_enabled is True:
-        is_hydroelastic = True
-    elif hydroelastic_enabled is False:
-        is_hydroelastic = False
-    elif sdf.has_api:
-        # API applied but hydroelasticEnabled unauthored -> schema default False, not builder default.
-        is_hydroelastic = False
-    else:
-        is_hydroelastic = defaults.is_hydroelastic
-    if kh is None:
-        kh = defaults.kh
-
-    # Hydroelastic meshes need an SDF source. For primitives, a texture
-    # SDF is generated from a synthesized watertight mesh at finalize(),
-    # but meshes require either an attached mesh.sdf or a
-    # resolution/voxel_size so one can be built deferred. Warn and
-    # disable hydroelastic on this shape rather than aborting the whole
-    # import — typically reached when newton:hydroelasticEnabled=true
-    # is authored without applying NewtonSDFCollisionAPI.
-    if is_hydroelastic and is_mesh and sdf.max_resolution is None and sdf.target_voxel_size is None:
-        warnings.warn(
-            f"{prim.GetPath()}: hydroelastic mesh requires newton:sdfMaxResolution "
-            f"or newton:sdfTargetVoxelSize so an SDF can be generated; "
-            f"disabling hydroelastic for this shape.",
-            stacklevel=4,
-        )
-        is_hydroelastic = False
-
-    return is_hydroelastic, kh
-
-
-def _resolve_shape_shell(
-    prim: Usd.Prim, resolver: SchemaResolverManager, margin_val: float
-) -> tuple[bool, float, float | None]:
-    """Return solidity, the inertia margin, and the raw thickness for margin restoration."""
-    # Mass model and shell thickness (resolved across Newton / MuJoCo schemas)
-    mass_model = resolver.get_value(prim, PrimType.SHAPE, "mass_model", default="solid")
-    shape_is_solid = mass_model != "shell"
-    shell_thickness_val = resolver.get_value(prim, PrimType.SHAPE, "shell_thickness")
-    # When shell thickness is authored, pass it as margin so compute_inertia_shape
-    # uses the correct thickness. The real collision margin is restored after add_shape.
-    if shell_thickness_val is not None and math.isfinite(float(shell_thickness_val)):
-        if float(shell_thickness_val) >= 0.0:
-            inertia_margin = float(shell_thickness_val)
-        else:
-            warnings.warn(
-                f"Shape {prim.GetPath()}: negative shell thickness {shell_thickness_val}; falling back to margin.",
-                stacklevel=4,
+        def select(policy: _PolicySelection) -> _UsdResolutionPolicy._ContactResponseSelection:
+            selected = self.ContactResponse.from_getter(lambda key: select_field(key, policy))
+            return self._ContactResponseSelection(
+                self.ContactResponse.from_getter(lambda key: selected.get(key)[0]),
+                self.ContactResponse.from_getter(lambda key: selected.get(key)[1]),
             )
-            inertia_margin = margin_val
-    else:
-        inertia_margin = margin_val
 
-    return shape_is_solid, inertia_margin, shell_thickness_val
+        active = select("active")
+        policy_inputs = [*shape_policies.values(), *material.policies.values()]
+        can_audit = not self._resolver._uses_composed_fallbacks and all(
+            policies.legacy is not None and policies.composed is not None for policies in policy_inputs
+        )
+        if not can_audit:
+            return active.values
+
+        legacy = select("legacy")
+        composed = select("composed")
+
+        def candidate(
+            key: str,
+            policies: SchemaResolverManager._InterpretedPolicyValues,
+            owner: Literal["shape", "material"],
+        ) -> SchemaResolverManager._PolicyChangeCandidate | None:
+            if owner not in {legacy.owners.get(key), composed.owners.get(key)}:
+                return None
+            return policies.contribution(
+                legacy_comparison=policies.legacy.value,
+                composed_comparison=policies.composed.value,
+            )
+
+        shape_candidates = tuple(
+            change
+            for key, policies in shape_policies.items()
+            if (change := candidate(key, policies, "shape")) is not None
+        )
+        self._resolver._audit_assembled_property(
+            shape_prim,
+            PrimType.SHAPE,
+            legacy.values.values(),
+            composed.values.values(),
+            shape_candidates,
+        )
+
+        if material.prim is None or not material.policies:
+            return active.values
+
+        material_contact_candidates = tuple(
+            change
+            for key, policies in material_contact_policies.items()
+            if policies is not None and (change := candidate(key, policies, "material")) is not None
+        )
+        self._resolver._audit_assembled_property(
+            material.prim,
+            PrimType.MATERIAL,
+            legacy.values.values(),
+            composed.values.values(),
+            material_contact_candidates,
+        )
+
+        def material_friction(key: str, policy: Literal["legacy", "composed"]) -> float:
+            policies = material.policies.get(key)
+            resolved = None if policies is None else policies.select(policy)
+            if resolved is not None:
+                return resolved.value
+            if key == "mu_torsional":
+                return material.torsional_friction
+            return material.rolling_friction
+
+        friction_keys = ("mu_torsional", "mu_rolling")
+        legacy_friction = tuple(material_friction(key, "legacy") for key in friction_keys)
+        composed_friction = tuple(material_friction(key, "composed") for key in friction_keys)
+        friction_candidates = tuple(
+            policies.contribution(
+                legacy_comparison=material_friction(key, "legacy"),
+                composed_comparison=material_friction(key, "composed"),
+            )
+            for key in friction_keys
+            if (policies := material.policies.get(key)) is not None
+        )
+        self._resolver._audit_assembled_property(
+            material.prim,
+            PrimType.MATERIAL,
+            legacy_friction,
+            composed_friction,
+            friction_candidates,
+        )
+        return active.values
+
+    def resolve_material(
+        self,
+        prim: Any,
+        *,
+        static_friction: float,
+        dynamic_friction: float,
+        restitution: float,
+        density: float,
+        default_shape: Any,
+    ) -> PhysicsMaterial:
+        """Resolve the material properties consumed by rigid shapes."""
+        value_policies = {}
+
+        def resolve_property(key: str, default: Any = None, *, interpret_contact: bool = False):
+            policies = self._resolver._resolve_interpreted_policies(
+                prim,
+                PrimType.MATERIAL,
+                key,
+                default,
+                interpreter=_interpret_usd_contact_result if interpret_contact else None,
+            )
+            value_policies[key] = policies
+            return policies.active.value
+
+        return self.PhysicsMaterial(
+            static_friction=static_friction,
+            dynamic_friction=dynamic_friction,
+            restitution=restitution,
+            torsional_friction=resolve_property("mu_torsional", default_shape.mu_torsional),
+            rolling_friction=resolve_property("mu_rolling", default_shape.mu_rolling),
+            density=density,
+            ke=resolve_property("ke", interpret_contact=True),
+            kd=resolve_property("kd", interpret_contact=True),
+            kf=resolve_property("kf", interpret_contact=True),
+            ka=resolve_property("ka", interpret_contact=True),
+            prim=prim,
+            policies=value_policies,
+        )
+
+    def resolve_shape(
+        self,
+        prim: Any,
+        *,
+        prim_path: str,
+        defaults: Any,
+        has_sdf_api: bool,
+        is_mesh: bool,
+        is_plane: bool,
+        collider_is_enabled: bool,
+        rigid_gap: float,
+        legacy_margin_gap: bool,
+        read_legacy_mjc_gap: Callable[[], float],
+    ) -> ShapeProperties:
+        """Resolve and interpret properties shared by collision shapes."""
+        offsets = self._resolve_shape_offsets(
+            prim,
+            prim_path=prim_path,
+            defaults=defaults,
+            rigid_gap=rigid_gap,
+            legacy_margin_gap=legacy_margin_gap,
+            read_legacy_mjc_gap=read_legacy_mjc_gap,
+        )
+
+        sdf = self._resolve_shape_sdf(
+            prim,
+            prim_path=prim_path,
+            defaults=defaults,
+            has_sdf_api=has_sdf_api,
+        )
+
+        hydroelastic = self._resolve_shape_hydroelastic(
+            prim,
+            prim_path=prim_path,
+            defaults=defaults,
+            has_sdf_api=has_sdf_api,
+            is_mesh=is_mesh,
+            is_plane=is_plane,
+            sdf=sdf,
+        )
+        self._audit_shape_sdf_padding(
+            prim,
+            collider_is_enabled=collider_is_enabled,
+            rigid_gap=rigid_gap,
+            offsets=offsets,
+            sdf=sdf,
+            hydroelastic=hydroelastic,
+        )
+        mass = self._resolve_shape_mass(
+            prim,
+            prim_path=prim_path,
+            margin=offsets.margin,
+            margin_policies=offsets.margin_policies,
+        )
+
+        return self.ShapeProperties(
+            margin=offsets.margin,
+            gap=offsets.gap,
+            sdf_max_resolution=sdf.active_settings.max_resolution,
+            sdf_narrow_band_range=sdf.narrow_band_range,
+            sdf_target_voxel_size=sdf.active_settings.target_voxel_size,
+            sdf_texture_format=sdf.texture_format,
+            sdf_padding=sdf.padding,
+            is_hydroelastic=hydroelastic.enabled,
+            kh=hydroelastic.stiffness,
+            is_solid=mass.is_solid,
+            shell_thickness=mass.shell_thickness,
+            inertia_margin=mass.inertia_margin,
+        )
+
+    # Shape warnings pass through resolve_shape(), _parse_colliders(), and
+    # parse_usd() before reaching ModelBuilder.add_usd(), so they use stacklevel=5.
+    def _resolve_shape_offsets(
+        self,
+        prim: Any,
+        *,
+        prim_path: str,
+        defaults: Any,
+        rigid_gap: float,
+        legacy_margin_gap: bool,
+        read_legacy_mjc_gap: Callable[[], float],
+    ) -> _ShapeOffsets:
+        """Resolve contact margin and gap values."""
+
+        def interpret_margin(result: _ResolvedValue) -> float:
+            value = defaults.margin if result.value is None else result.value
+            if legacy_margin_gap and result.resolver is not None and result.resolver.name == "mjc":
+                value = float(value) - read_legacy_mjc_gap()
+            return value
+
+        def interpret_gap(result: _ResolvedValue) -> float:
+            value = defaults.gap if result.value == float("-inf") else result.value
+            return rigid_gap if value is None else value
+
+        margin_policies = self._resolver._resolve_interpreted_policies(
+            prim,
+            PrimType.SHAPE,
+            "margin",
+            defaults.margin,
+            interpreter=interpret_margin,
+        )
+        gap_policies = self._resolver._resolve_interpreted_policies(
+            prim,
+            PrimType.SHAPE,
+            "gap",
+            _ImporterDefault(defaults.gap),
+            legacy_default=None,
+            interpreter=interpret_gap,
+        )
+        self._audit_policy_value(prim, PrimType.SHAPE, gap_policies)
+        self._audit_policy_value(prim, PrimType.SHAPE, margin_policies)
+
+        margin = margin_policies.active.value
+        raw_margin = margin_policies.active.raw_value
+        margin_resolver = margin_policies.active.resolver
+        if legacy_margin_gap and margin_resolver is not None and margin_resolver.name == "mjc" and margin < 0.0:
+            warnings.warn(
+                f"Prim '{prim_path}': legacy translation yields negative margin "
+                f"(mjc_margin={raw_margin}, mjc_gap={read_legacy_mjc_gap()}).",
+                stacklevel=5,
+            )
+        return self._ShapeOffsets(margin, gap_policies.active.value, margin_policies, gap_policies)
+
+    def _resolve_shape_sdf(
+        self,
+        prim: Any,
+        *,
+        prim_path: str,
+        defaults: Any,
+        has_sdf_api: bool,
+    ) -> _ShapeSdfProperties:
+        """Resolve and validate SDF generation settings."""
+
+        def interpret_target_voxel_size(result: _ResolvedValue) -> float | None:
+            value = result.value
+            if value == float("-inf") or (value is not None and value <= 0):
+                value = None
+            return defaults.sdf_target_voxel_size if value is None else value
+
+        target_policies = self._resolver._resolve_interpreted_policies(
+            prim,
+            PrimType.SHAPE,
+            "sdf_target_voxel_size",
+            defaults.sdf_target_voxel_size,
+            legacy_default=None,
+            interpreter=interpret_target_voxel_size,
+        )
+        raw_target = target_policies.active.raw_value
+        if raw_target is not None and raw_target != float("-inf") and raw_target <= 0:
+            warnings.warn(
+                f"{prim_path}: newton:sdfTargetVoxelSize={raw_target!r} is invalid "
+                f"(must be > 0); falling back to default.",
+                stacklevel=5,
+            )
+
+        def interpret_max_resolution(result: _ResolvedValue, target: float | None) -> int | None:
+            value = result.value
+            if value == float("-inf") or (value is not None and (value <= 0 or value % 8 != 0)):
+                value = None
+            if target is not None and value is not None:
+                value = None
+            if value is None:
+                if has_sdf_api and target is None:
+                    return 64
+                return defaults.sdf_max_resolution
+            return value
+
+        max_resolution_policies = self._resolver._resolve_interpreted_policies(
+            prim,
+            PrimType.SHAPE,
+            "sdf_max_resolution",
+            defaults.sdf_max_resolution,
+            legacy_default=None,
+        )
+        target_voxel_size = target_policies.active.value
+        raw_max_resolution = max_resolution_policies.active.raw_value
+        if raw_max_resolution is not None and raw_max_resolution != float("-inf") and raw_max_resolution <= 0:
+            warnings.warn(
+                f"{prim_path}: newton:sdfMaxResolution={raw_max_resolution!r} is invalid "
+                f"(must be > 0); falling back to default.",
+                stacklevel=5,
+            )
+        elif raw_max_resolution is not None and raw_max_resolution != float("-inf") and raw_max_resolution % 8 != 0:
+            warnings.warn(
+                f"{prim_path}: newton:sdfMaxResolution={raw_max_resolution!r} must be divisible by 8 "
+                f"(SDF volumes are allocated in 8x8x8 tiles); falling back to default.",
+                stacklevel=5,
+            )
+        elif target_voxel_size is not None and raw_max_resolution not in (None, float("-inf")):
+            warnings.warn(
+                f"{prim_path}: both newton:sdfTargetVoxelSize and newton:sdfMaxResolution are set; "
+                f"sdfTargetVoxelSize takes precedence.",
+                stacklevel=5,
+            )
+
+        def resolution_settings(
+            policy: _PolicySelection,
+        ) -> _UsdResolutionPolicy._SdfResolutionSettings:
+            target = target_policies.select(policy).value
+            max_result = max_resolution_policies.select(policy).resolved
+            return self._SdfResolutionSettings(
+                target_voxel_size=target,
+                max_resolution=interpret_max_resolution(max_result, target),
+            )
+
+        sdf_max_resolution = interpret_max_resolution(max_resolution_policies.active.resolved, target_voxel_size)
+        legacy_sdf_settings = None
+        composed_sdf_settings = None
+        if all(
+            result is not None
+            for result in (
+                target_policies.legacy,
+                target_policies.composed,
+                max_resolution_policies.legacy,
+                max_resolution_policies.composed,
+            )
+        ):
+            legacy_sdf_settings = resolution_settings("legacy")
+            composed_sdf_settings = resolution_settings("composed")
+            self._resolver._audit_assembled_property(
+                prim,
+                PrimType.SHAPE,
+                legacy_sdf_settings.target_voxel_size,
+                composed_sdf_settings.target_voxel_size,
+                (
+                    target_policies.contribution(
+                        legacy_comparison=legacy_sdf_settings.target_voxel_size,
+                        composed_comparison=composed_sdf_settings.target_voxel_size,
+                    ),
+                ),
+            )
+            self._resolver._audit_assembled_property(
+                prim,
+                PrimType.SHAPE,
+                legacy_sdf_settings.max_resolution,
+                composed_sdf_settings.max_resolution,
+                (
+                    max_resolution_policies.contribution(
+                        legacy_comparison=interpret_max_resolution(max_resolution_policies.legacy.resolved, None),
+                        composed_comparison=interpret_max_resolution(max_resolution_policies.composed.resolved, None),
+                    ),
+                ),
+            )
+
+        def interpret_narrow_band(result: _ResolvedValue, default: float) -> float:
+            if result.value is None or result.value == float("-inf"):
+                return default
+            return result.value
+
+        default_narrow_band = defaults.sdf_narrow_band_range
+        sdf_narrow_band_range = (
+            self._resolver._get_interpreted_value(
+                prim,
+                PrimType.SHAPE,
+                "sdf_narrow_band_inner",
+                default=default_narrow_band[0],
+                legacy_default=None,
+                interpreter=lambda result: interpret_narrow_band(result, default_narrow_band[0]),
+                verbose=self._verbose,
+            ).value,
+            self._resolver._get_interpreted_value(
+                prim,
+                PrimType.SHAPE,
+                "sdf_narrow_band_outer",
+                default=default_narrow_band[1],
+                legacy_default=None,
+                interpreter=lambda result: interpret_narrow_band(result, default_narrow_band[1]),
+                verbose=self._verbose,
+            ).value,
+        )
+
+        def interpret_texture_format(result: _ResolvedValue) -> str:
+            if result.value is None or result.value not in _VALID_SDF_TEXTURE_FORMATS:
+                return defaults.sdf_texture_format
+            return result.value
+
+        texture_format_result = self._resolver._get_interpreted_value(
+            prim,
+            PrimType.SHAPE,
+            "sdf_texture_format",
+            default=defaults.sdf_texture_format,
+            legacy_default=None,
+            interpreter=interpret_texture_format,
+        )
+        raw_texture_format = texture_format_result.raw_value
+        if raw_texture_format is not None and raw_texture_format not in _VALID_SDF_TEXTURE_FORMATS:
+            warnings.warn(
+                f"{prim_path}: newton:sdfTextureFormat={raw_texture_format!r} is invalid "
+                f"(expected one of {list(_VALID_SDF_TEXTURE_FORMATS)}); falling back to default.",
+                stacklevel=5,
+            )
+
+        def interpret_padding(result: _ResolvedValue) -> float | None:
+            value = result.value
+            if value == float("-inf") or (value is not None and value < 0):
+                return None
+            return value
+
+        padding_policies = self._resolver._resolve_interpreted_policies(
+            prim,
+            PrimType.SHAPE,
+            "sdf_padding",
+            defaults.sdf_padding,
+            legacy_default=None,
+            interpreter=interpret_padding,
+        )
+        raw_padding = padding_policies.active.raw_value
+        if raw_padding is not None and raw_padding != float("-inf") and raw_padding < 0:
+            warnings.warn(
+                f"{prim_path}: newton:sdfPadding={raw_padding!r} is invalid (must be >= 0); falling back to default.",
+                stacklevel=5,
+            )
+        return self._ShapeSdfProperties(
+            narrow_band_range=sdf_narrow_band_range,
+            texture_format=texture_format_result.value,
+            padding=padding_policies.active.value,
+            padding_policies=padding_policies,
+            active_settings=self._SdfResolutionSettings(
+                target_voxel_size=target_voxel_size,
+                max_resolution=sdf_max_resolution,
+            ),
+            legacy_settings=legacy_sdf_settings,
+            composed_settings=composed_sdf_settings,
+        )
+
+    def _resolve_shape_hydroelastic(
+        self,
+        prim: Any,
+        *,
+        prim_path: str,
+        defaults: Any,
+        has_sdf_api: bool,
+        is_mesh: bool,
+        is_plane: bool,
+        sdf: _ShapeSdfProperties,
+    ) -> _ShapeHydroelasticProperties:
+        """Resolve and validate hydroelastic shape settings."""
+
+        def interpret_enabled(result: _ResolvedValue) -> bool:
+            if result.value is True or result.value is False:
+                return result.value
+            if has_sdf_api:
+                return False
+            return defaults.is_hydroelastic
+
+        enabled_policies = self._resolver._resolve_interpreted_policies(
+            prim,
+            PrimType.SHAPE,
+            "hydroelastic_enabled",
+            False if has_sdf_api else defaults.is_hydroelastic,
+            legacy_default=None,
+            interpreter=interpret_enabled,
+        )
+
+        def validate_enabled(
+            enabled: bool,
+            sdf_settings: _UsdResolutionPolicy._SdfResolutionSettings,
+        ) -> bool:
+            if is_plane:
+                return False
+            if enabled and is_mesh and sdf_settings.target_voxel_size is None and sdf_settings.max_resolution is None:
+                return False
+            return enabled
+
+        requested = enabled_policies.active.value
+        enabled = validate_enabled(requested, sdf.active_settings)
+        legacy_enabled = None
+        composed_enabled = None
+        if (
+            enabled_policies.legacy is not None
+            and enabled_policies.composed is not None
+            and sdf.legacy_settings is not None
+            and sdf.composed_settings is not None
+        ):
+            legacy_enabled = validate_enabled(enabled_policies.legacy.value, sdf.legacy_settings)
+            composed_enabled = validate_enabled(enabled_policies.composed.value, sdf.composed_settings)
+            self._resolver._audit_assembled_property(
+                prim,
+                PrimType.SHAPE,
+                legacy_enabled,
+                composed_enabled,
+                (
+                    enabled_policies.contribution(
+                        legacy_comparison=enabled_policies.legacy.value,
+                        composed_comparison=enabled_policies.composed.value,
+                    ),
+                ),
+            )
+
+        def interpret_stiffness(result: _ResolvedValue) -> float:
+            if result.value == float("-inf") or result.value is None or result.value <= 0:
+                return defaults.kh
+            return result.value
+
+        stiffness = self._resolver._get_interpreted_value(
+            prim,
+            PrimType.SHAPE,
+            "kh",
+            default=defaults.kh,
+            legacy_default=None,
+            interpreter=interpret_stiffness,
+            verbose=self._verbose,
+        )
+        raw_stiffness = stiffness.raw_value
+        if raw_stiffness is not None and raw_stiffness != float("-inf") and raw_stiffness <= 0:
+            warnings.warn(
+                f"{prim_path}: newton:hydroelasticStiffness={raw_stiffness!r} is invalid "
+                f"(must be > 0); falling back to default.",
+                stacklevel=5,
+            )
+        if (
+            requested
+            and is_mesh
+            and sdf.active_settings.max_resolution is None
+            and sdf.active_settings.target_voxel_size is None
+        ):
+            warnings.warn(
+                f"{prim_path}: hydroelastic mesh requires newton:sdfMaxResolution or "
+                f"newton:sdfTargetVoxelSize so an SDF can be generated; disabling "
+                f"hydroelastic for this shape.",
+                stacklevel=5,
+            )
+        return self._ShapeHydroelasticProperties(enabled, stiffness.value, legacy_enabled, composed_enabled)
+
+    def _audit_shape_sdf_padding(
+        self,
+        prim: Any,
+        *,
+        collider_is_enabled: bool,
+        rigid_gap: float,
+        offsets: _ShapeOffsets,
+        sdf: _ShapeSdfProperties,
+        hydroelastic: _ShapeHydroelasticProperties,
+    ) -> None:
+        """Audit SDF padding after contact and hydroelastic interpretation."""
+        padding_policies = sdf.padding_policies
+        margin_policies = offsets.margin_policies
+        gap_policies = offsets.gap_policies
+        if (
+            hydroelastic.legacy_enabled is None
+            or hydroelastic.composed_enabled is None
+            or padding_policies.legacy is None
+            or padding_policies.composed is None
+            or margin_policies.legacy is None
+            or margin_policies.composed is None
+            or gap_policies.legacy is None
+            or gap_policies.composed is None
+        ):
+            return
+
+        def effective_padding(
+            padding: float | None,
+            margin: float,
+            gap: float | None,
+            hydroelastic_enabled: bool,
+        ) -> float:
+            if padding is not None:
+                return padding
+            gap = rigid_gap if gap is None else gap
+            if collider_is_enabled and hydroelastic_enabled:
+                return margin + gap
+            return gap
+
+        self._resolver._audit_assembled_property(
+            prim,
+            PrimType.SHAPE,
+            effective_padding(
+                padding_policies.legacy.value,
+                margin_policies.legacy.value,
+                gap_policies.legacy.value,
+                hydroelastic.legacy_enabled,
+            ),
+            effective_padding(
+                padding_policies.composed.value,
+                margin_policies.composed.value,
+                gap_policies.composed.value,
+                hydroelastic.composed_enabled,
+            ),
+            (
+                padding_policies.contribution(),
+                margin_policies.contribution(),
+                gap_policies.contribution(),
+            ),
+        )
+
+    def _resolve_shape_mass(
+        self,
+        prim: Any,
+        *,
+        prim_path: str,
+        margin: float,
+        margin_policies: SchemaResolverManager._InterpretedPolicyValues,
+    ) -> _ShapeMassProperties:
+        """Resolve mass model and shell thickness settings."""
+        mass_model_policies = self._resolver._resolve_interpreted_policies(
+            prim,
+            PrimType.SHAPE,
+            "mass_model",
+            "solid",
+            interpreter=lambda result: result.value != "shell",
+        )
+        self._audit_policy_value(prim, PrimType.SHAPE, mass_model_policies)
+
+        def usable_shell_thickness(result: _ResolvedValue) -> float | None:
+            if result.value is None:
+                return None
+            value = float(result.value)
+            return value if math.isfinite(value) and value >= 0.0 else None
+
+        shell_policies = self._resolver._resolve_interpreted_policies(
+            prim,
+            PrimType.SHAPE,
+            "shell_thickness",
+            None,
+            interpreter=usable_shell_thickness,
+        )
+        raw_shell_thickness = shell_policies.active.raw_value
+        inertia_margin = margin if shell_policies.active.value is None else shell_policies.active.value
+        if all(
+            result is not None
+            for result in (
+                margin_policies.legacy,
+                margin_policies.composed,
+                shell_policies.legacy,
+                shell_policies.composed,
+            )
+        ):
+            legacy_shell = (
+                margin_policies.legacy.value if shell_policies.legacy.value is None else shell_policies.legacy.value
+            )
+            composed_shell = (
+                margin_policies.composed.value
+                if shell_policies.composed.value is None
+                else shell_policies.composed.value
+            )
+            self._resolver._audit_assembled_property(
+                prim,
+                PrimType.SHAPE,
+                legacy_shell,
+                composed_shell,
+                (
+                    shell_policies.contribution(
+                        legacy_comparison=shell_policies.legacy.value,
+                        composed_comparison=shell_policies.composed.value,
+                    ),
+                ),
+            )
+        if (
+            raw_shell_thickness is not None
+            and math.isfinite(float(raw_shell_thickness))
+            and float(raw_shell_thickness) < 0.0
+        ):
+            warnings.warn(
+                f"Shape {prim_path}: negative shell thickness {raw_shell_thickness}; falling back to margin.",
+                stacklevel=5,
+            )
+        return self._ShapeMassProperties(
+            mass_model_policies.active.value,
+            raw_shell_thickness,
+            inertia_margin,
+        )
+
+    def resolve_cloth_shell_thickness(self, prim: Any) -> float | None:
+        """Resolve the optional shell thickness shared with cloth import."""
+        mass_model = self._resolver._resolve_interpreted_policies(
+            prim,
+            PrimType.SHAPE,
+            "mass_model",
+            "solid",
+            interpreter=lambda result: result.value == "shell",
+        )
+
+        def interpret_thickness(result: _ResolvedValue) -> float | None:
+            if result.value is None:
+                return None
+            value = float(result.value)
+            return value if math.isfinite(value) and value > 0.0 else None
+
+        shell_thickness = self._resolver._resolve_interpreted_policies(
+            prim,
+            PrimType.SHAPE,
+            "shell_thickness",
+            None,
+            interpreter=interpret_thickness,
+        )
+
+        def effective_thickness(policy: _PolicySelection) -> float | None:
+            model = mass_model.select(policy)
+            thickness = shell_thickness.select(policy)
+            if model is None or thickness is None or not model.value:
+                return None
+            return thickness.value
+
+        if mass_model.legacy is not None and shell_thickness.legacy is not None:
+            self._resolver._audit_assembled_property(
+                prim,
+                PrimType.SHAPE,
+                effective_thickness("legacy"),
+                effective_thickness("composed"),
+                (mass_model.contribution(), shell_thickness.contribution()),
+            )
+        return effective_thickness("active")
+
+    def resolve_max_hull_vertices(self, prim: Any, *, default: Any, override: Any) -> int:
+        """Resolve the convex-hull vertex limit for a mesh."""
+        return self._resolver.get_value(
+            prim,
+            PrimType.SHAPE,
+            "max_hull_vertices",
+            default=default,
+            override=override,
+            verbose=self._verbose,
+        )
+
+    def _audit_policy_value(
+        self,
+        prim: Any,
+        prim_type: PrimType,
+        policies: SchemaResolverManager._InterpretedPolicyValues,
+    ) -> None:
+        """Audit one interpreted value when both migration policies are available."""
+        if policies.legacy is None or policies.composed is None:
+            return
+        self._resolver._audit_assembled_property(
+            prim,
+            prim_type,
+            policies.legacy.value,
+            policies.composed.value,
+            (policies.contribution(),),
+        )
+
+    def resolve_joint_velocity_limits(
+        self,
+        prim: Any,
+        *,
+        revolute: tuple[bool, ...],
+    ) -> tuple[float, ...]:
+        """Resolve joint velocity limits in builder units for the active axes."""
+        default = _ImporterDefault(self._default_joint_velocity_limit)
+        return self._resolve_joint_dof_property(
+            prim,
+            "velocity_limit",
+            revolute=revolute,
+            default=default,
+            legacy_default=None,
+            interpreter=self._interpret_joint_velocity_limit,
+        )
+
+    def resolve_joint_passive_properties(
+        self,
+        prim: Any,
+        *,
+        default_armature: float,
+        default_friction: float,
+    ) -> tuple[float, float]:
+        """Resolve joint armature and friction in builder units."""
+        armature = self._resolver.get_value(
+            prim,
+            PrimType.JOINT,
+            "armature",
+            default=default_armature,
+            verbose=self._verbose,
+        )
+        friction = self._resolver.get_value(
+            prim,
+            PrimType.JOINT,
+            "friction",
+            default=default_friction,
+            verbose=self._verbose,
+        )
+        return armature, friction
+
+    def resolve_joint_damping(
+        self,
+        prim: Any,
+        *,
+        revolute: tuple[bool, ...],
+    ) -> tuple[float, ...]:
+        """Resolve passive joint damping in builder units for the active axes."""
+
+        read_value = self._resolver._cached_value_reader(prim, PrimType.JOINT)
+
+        def read_damping_value(resolver, key):
+            state = read_value(resolver, key)
+            if key == "damping_per_rad" and state.usable:
+                return _ResolverValue(
+                    self._JointDampingValue(state.value, "radians"),
+                    state.authored,
+                )
+            return state
+
+        def resolve_legacy(resolvers, read_value):
+            for resolver in resolvers:
+                for key in ("damping", "damping_per_rad"):
+                    mapping = resolver.mapping.get(PrimType.JOINT, {})
+                    if key not in mapping:
+                        continue
+                    state = read_value(resolver, key)
+                    if state.authored and state.usable:
+                        return _ResolvedValue(
+                            state.value,
+                            resolver,
+                            _ValueSource.AUTHORED,
+                            mapping_key=key,
+                        )
+            return _ResolvedValue(self._default_joint_damping, None, _ValueSource.IMPORTER_DEFAULT)
+
+        def audit_key(policies):
+            for policy in (policies.legacy, policies.composed):
+                if policy is not None and isinstance(policy.raw_value, self._JointDampingValue):
+                    return "damping_per_rad"
+            return "damping"
+
+        return self._resolve_joint_dof_property(
+            prim,
+            "damping",
+            revolute=revolute,
+            default=_ImporterDefault(self._default_joint_damping),
+            legacy_default=self._default_joint_damping,
+            interpreter=self._interpret_joint_damping,
+            resolve_legacy=resolve_legacy,
+            read_value=read_damping_value,
+            authored_aliases=("damping_per_rad",),
+            audit_key=audit_key,
+        )
+
+    def resolve_joint_effort_limit(self, prim: Any, *, drive_limit: float | None) -> float | None:
+        """Resolve the tighter of the joint and drive effort limits [N or N·m]."""
+
+        def interpret(resolved: _ResolvedValue) -> float | None:
+            if resolved.value is None:
+                return drive_limit
+            return resolved.value if drive_limit is None else min(drive_limit, resolved.value)
+
+        return self._resolver._get_interpreted_value(
+            prim,
+            PrimType.JOINT,
+            "effort_limit",
+            default=None,
+            interpreter=interpret,
+            verbose=self._verbose,
+        ).value
+
+    def resolve_optional_joint_state(self, prim: Any, key: str) -> float | None:
+        """Resolve optional joint state without reporting normal absence as an error."""
+        return self._resolver.get_value(
+            prim,
+            PrimType.JOINT,
+            key,
+            comparison_key=_interpret_usd_joint_state,
+        )
+
+    def resolve_joint_generic_limit_policies(
+        self,
+        prim: Any,
+        read_value,
+    ) -> tuple[
+        SchemaResolverManager._InterpretedPolicyValues,
+        SchemaResolverManager._InterpretedPolicyValues,
+    ]:
+        """Resolve the generic Newton joint-limit gain policies."""
+        return (
+            self._resolver._resolve_interpreted_policies(
+                prim,
+                PrimType.JOINT,
+                "limit_ke",
+                None,
+                read_value=read_value,
+            ),
+            self._resolver._resolve_interpreted_policies(
+                prim,
+                PrimType.JOINT,
+                "limit_kd",
+                None,
+                read_value=read_value,
+            ),
+        )
+
+    def resolve_articulation_self_collision(
+        self,
+        prim: Any,
+        *,
+        default: Any,
+        override: Any,
+    ) -> bool:
+        """Resolve whether an articulation permits self-collision."""
+        return self._resolver._get_interpreted_value(
+            prim,
+            PrimType.ARTICULATION,
+            "self_collision_enabled",
+            default=default,
+            override=override,
+            interpreter=lambda result: bool(result.value),
+            verbose=self._verbose,
+        ).value
+
+    def resolve_joint_limit_gain_policies(
+        self,
+        prim: Any,
+        key: str,
+        builder_default: float,
+        read_value,
+    ) -> SchemaResolverManager._InterpretedPolicyValues:
+        """Resolve a limit gain under both migration policies."""
+
+        def resolve_legacy(resolvers, read_value):
+            for resolver in resolvers:
+                if key not in resolver.mapping.get(PrimType.JOINT, {}):
+                    continue
+                state = read_value(resolver, key)
+                if state.authored and state.usable:
+                    return _ResolvedValue(state.value, resolver, _ValueSource.AUTHORED, mapping_key=key)
+            return _ResolvedValue(builder_default, None, _ValueSource.IMPORTER_DEFAULT)
+
+        return self._resolver._resolve_interpreted_policies(
+            prim,
+            PrimType.JOINT,
+            key,
+            builder_default,
+            resolve_legacy=resolve_legacy,
+            read_value=read_value,
+        )
+
+    def resolve_joint_limits(
+        self,
+        prim: Any,
+        defaults: Mapping[str, JointLimitDefaults],
+        *,
+        interpret_limit_mode: Callable[[str, str], int],
+    ) -> dict[str, JointLimitResult]:
+        """Resolve and audit generic and per-axis joint-limit gains."""
+        read_value = self._resolver._cached_value_reader(prim, PrimType.JOINT)
+        generic_ke, generic_kd = self.resolve_joint_generic_limit_policies(prim, read_value)
+        candidates = {"limit_ke": generic_ke, "limit_kd": generic_kd}
+        fallback_policies = {}
+
+        for key, builder_defaults in defaults.items():
+            fallback_ke = self.resolve_joint_limit_gain_policies(
+                prim,
+                f"{key}_ke",
+                builder_defaults.ke,
+                read_value,
+            )
+            fallback_kd = self.resolve_joint_limit_gain_policies(
+                prim,
+                f"{key}_kd",
+                builder_defaults.kd,
+                read_value,
+            )
+            fallback_policies[key] = (fallback_ke, fallback_kd)
+            candidates[f"{key}_ke"] = fallback_ke
+            candidates[f"{key}_kd"] = fallback_kd
+
+        def assemble(key: str, policy: _PolicySelection) -> _UsdResolutionPolicy.JointLimitResult:
+            builder_defaults = defaults[key]
+            fallback_ke, fallback_kd = fallback_policies[key]
+            return self._resolve_joint_limit_policy_result(
+                generic_ke.select(policy).resolved,
+                generic_kd.select(policy).resolved,
+                fallback_ke.select(policy).resolved,
+                fallback_kd.select(policy).resolved,
+                builder_defaults.ke,
+                builder_defaults.kd,
+            )
+
+        active = {key: assemble(key, "active") for key in defaults}
+        can_audit = generic_ke.legacy is not None and all(
+            policies.composed is not None for policies in candidates.values()
+        )
+        if not can_audit:
+            return active
+
+        changes = []
+        for key in defaults:
+            legacy = assemble(key, "legacy")
+            composed = assemble(key, "composed")
+            legacy_owners = self._joint_limit_policy_owners(
+                generic_ke.legacy.resolved,
+                generic_kd.legacy.resolved,
+                f"{key}_ke",
+                f"{key}_kd",
+            )
+            composed_owners = self._joint_limit_policy_owners(
+                generic_ke.composed.resolved,
+                generic_kd.composed.resolved,
+                f"{key}_ke",
+                f"{key}_kd",
+            )
+            changes.append(self._JointLimitAudit(legacy, composed, legacy_owners, composed_owners))
+
+        self._audit_joint_limit_changes(prim, changes, candidates, interpret_limit_mode)
+        return active
+
+    def _resolve_joint_limit_policy_result(
+        self,
+        limit_ke: _ResolvedValue,
+        limit_kd: _ResolvedValue,
+        fallback_ke: _ResolvedValue,
+        fallback_kd: _ResolvedValue,
+        builder_ke: float,
+        builder_kd: float,
+    ) -> JointLimitResult:
+        """Assemble generic and per-axis joint limit gains."""
+        fallback_ke_value, fallback_ke_source = self._interpret_joint_limit_gain(fallback_ke, builder_ke)
+        fallback_kd_value, fallback_kd_source = self._interpret_joint_limit_gain(fallback_kd, builder_kd)
+        resolved_ke, ke_source = _resolve_newton_limit_ke(
+            limit_ke.value,
+            fallback_ke_value,
+            fallback_ke_source,
+            builder_ke,
+        )
+        resolved_kd, kd_source = _resolve_newton_limit_kd(
+            limit_ke.value,
+            limit_kd.value,
+            fallback_kd_value,
+            fallback_kd_source,
+            builder_kd,
+        )
+        return self.JointLimitResult(resolved_ke, resolved_kd, ke_source, kd_source)
+
+    @staticmethod
+    def _joint_limit_policy_owners(
+        limit_ke: _ResolvedValue,
+        limit_kd: _ResolvedValue,
+        fallback_ke_key: str,
+        fallback_kd_key: str,
+    ) -> tuple[str, str]:
+        """Return the inputs that own the assembled stiffness and damping."""
+        ke_owner = fallback_ke_key if limit_ke.value is None else "limit_ke"
+        if limit_ke.value == float("inf"):
+            kd_owner = "limit_ke"
+        elif limit_kd.value is None:
+            kd_owner = fallback_kd_key
+        else:
+            kd_owner = "limit_kd"
+        return ke_owner, kd_owner
+
+    def _audit_joint_limit_changes(
+        self,
+        prim: Any,
+        changes: Sequence[_JointLimitAudit],
+        candidates: Mapping[str, SchemaResolverManager._InterpretedPolicyValues],
+        interpret_limit_mode: Callable[[str, str], int],
+    ) -> None:
+        """Audit the inputs that contribute to assembled joint-limit changes."""
+        changed = set()
+        legacy_values = []
+        composed_values = []
+        for change in changes:
+            legacy_mode = interpret_limit_mode(change.legacy.ke_source, change.legacy.kd_source)
+            composed_mode = interpret_limit_mode(change.composed.ke_source, change.composed.kd_source)
+            legacy_values.append((change.legacy.ke, change.legacy.kd, legacy_mode))
+            composed_values.append((change.composed.ke, change.composed.kd, composed_mode))
+            if not _values_equal(change.legacy.ke, change.composed.ke):
+                changed.update((change.legacy_owners[0], change.composed_owners[0]))
+            if not _values_equal(change.legacy.kd, change.composed.kd):
+                changed.update((change.legacy_owners[1], change.composed_owners[1]))
+            if legacy_mode != composed_mode:
+                changed.update((*change.legacy_owners, *change.composed_owners))
+
+        self._resolver._audit_assembled_property(
+            prim,
+            PrimType.JOINT,
+            tuple(legacy_values),
+            tuple(composed_values),
+            tuple(
+                policies.contribution(key=owner, compare_source=True)
+                for owner, policies in candidates.items()
+                if owner in changed
+            ),
+        )
+
+    @staticmethod
+    def _interpret_joint_limit_gain(
+        resolved: _ResolvedValue,
+        builder_default: float,
+    ) -> tuple[float, Literal["force", "builder_default"]]:
+        value = builder_default if resolved.value is None else resolved.value
+        if resolved.source in (_ValueSource.IMPORTER_DEFAULT, _ValueSource.UNRESOLVED):
+            return value, "builder_default"
+        return value, "force"
+
+    def _interpret_joint_velocity_limit(self, resolved: _ResolvedValue, *, is_revolute: bool) -> float:
+        value = _interpret_usd_joint_velocity_limit(resolved.value)
+        if value is None:
+            return self._default_joint_velocity_limit
+        if is_revolute and resolved.source != _ValueSource.IMPORTER_DEFAULT:
+            value *= self._degrees_to_radian
+        return value
+
+    def _interpret_joint_damping(self, resolved: _ResolvedValue, *, is_revolute: bool) -> float:
+        raw_value = resolved.value
+        legacy_angular_unit = None
+        if isinstance(raw_value, self._JointDampingValue):
+            value = raw_value.value
+            legacy_angular_unit = raw_value.angular_unit
+        else:
+            value = self._default_joint_damping if raw_value is None else raw_value
+        if is_revolute and resolved.source not in (_ValueSource.IMPORTER_DEFAULT, _ValueSource.UNRESOLVED):
+            resolver = resolved.winning_resolver
+            spec = resolver.mapping.get(PrimType.JOINT, {}).get("damping") if resolver is not None else None
+            angular_unit = legacy_angular_unit or (spec.angular_unit if spec is not None else "degrees")
+            if angular_unit == "degrees":
+                value /= self._degrees_to_radian
+        return value
+
+    def _resolve_joint_dof_property(
+        self,
+        prim: Any,
+        key: str,
+        *,
+        revolute: tuple[bool, ...],
+        default,
+        legacy_default,
+        interpreter,
+        resolve_legacy=None,
+        read_value=None,
+        authored_aliases=(),
+        audit_key=None,
+    ) -> tuple[float, ...]:
+        def interpret(resolved: _ResolvedValue) -> tuple[float, ...]:
+            return tuple(interpreter(resolved, is_revolute=value) for value in revolute)
+
+        policies = self._resolver._resolve_interpreted_policies(
+            prim,
+            PrimType.JOINT,
+            key,
+            default,
+            legacy_default=legacy_default,
+            interpreter=interpret,
+            resolve_legacy=resolve_legacy,
+            read_value=read_value,
+            authored_aliases=authored_aliases,
+        )
+
+        active = policies.active.value
+        if policies.legacy is not None and policies.composed is not None:
+            self._resolver._audit_assembled_property(
+                prim,
+                PrimType.JOINT,
+                policies.legacy.value,
+                policies.composed.value,
+                (policies.contribution(key=key if audit_key is None else audit_key(policies)),),
+            )
+        return active
