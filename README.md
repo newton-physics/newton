@@ -290,7 +290,8 @@ If you run the examples from a source checkout with uv, use
       <code>python -m newton.examples robot_asroballet</code>
     </td>
     <td align="center" width="33%">
-      <code>python -m newton.examples robot_a1</code>
+      <code>python -m newton.examples robot_a1 --demo joint_sine</code><br>
+      <code>python -m newton.examples robot_a1 --demo wave</code>
     </td>
   </tr>
   <tr>
