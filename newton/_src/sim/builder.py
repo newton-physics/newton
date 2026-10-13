@@ -2282,7 +2282,7 @@ class ModelBuilder:
             Model.AttributeFrequency.CONTACT_SOFT,
         ):
             raise ValueError(
-                "Contact frequencies are only supported by SolverObservables, not builder custom attributes."
+                "Contact frequencies are only supported by SolverBase.Observables, not builder custom attributes."
             )
         key = attribute.key
 
@@ -12041,7 +12041,7 @@ class ModelBuilder:
 
         .. deprecated:: 1.7
 
-            Request :attr:`newton.solvers.SolverObservableFlags.CONTACT_F` from
+            Request :attr:`newton.solvers.SolverBase.ObservableKind.CONTACT_F` from
             the solver instead.
 
         Args:
@@ -12052,7 +12052,7 @@ class ModelBuilder:
 
         warnings.warn(
             "ModelBuilder.request_contact_attributes() is deprecated in Newton 1.7; "
-            "request SolverObservables from the solver instead.",
+            "request SolverBase.Observables from the solver instead.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -12064,7 +12064,7 @@ class ModelBuilder:
 
         .. deprecated:: 1.7
 
-            Request :class:`newton.solvers.SolverObservables` from the solver
+            Request :class:`newton.solvers.SolverBase.Observables` from the solver
             instead.
 
         See :doc:`Solver Observables </concepts/solver_observables>` for migration details.
@@ -12077,7 +12077,7 @@ class ModelBuilder:
 
         warnings.warn(
             "ModelBuilder.request_state_attributes() is deprecated in Newton 1.7; "
-            "request SolverObservables from the solver instead.",
+            "request SolverBase.Observables from the solver instead.",
             DeprecationWarning,
             stacklevel=2,
         )

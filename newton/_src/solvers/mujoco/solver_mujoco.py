@@ -12,7 +12,7 @@ import warnings
 from collections.abc import Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass
-from enum import Enum, IntEnum
+from enum import IntEnum
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -40,7 +40,6 @@ from ...utils import topological_sort
 from ...utils.benchmark import event_scope
 from ...utils.import_utils import string_to_warp
 from ..coupled.interface import CouplingEndpointKind, CouplingInterface
-from ..observables import SolverObservableFlags, SolverObservables
 from ..solver import SolverBase
 from . import kernels
 from .collision_masks import (
@@ -468,17 +467,6 @@ _MJW_BATCHED_MODEL_FIELDS = (
 )
 
 
-class _MuJoCoObservableFlags(Enum):
-    """MuJoCo-specific solver observables.
-
-    .. experimental::
-        The solver observable API may change without prior notice.
-    """
-
-    QFRC_ACTUATOR = "qfrc_actuator"
-    """Actuator forces in Newton generalized-coordinate order."""
-
-
 class SolverMuJoCo(SolverBase, CouplingInterface):
     """
     This solver provides an interface to simulate physics using the `MuJoCo <https://github.com/google-deepmind/mujoco>`_ physics engine,
@@ -547,11 +535,22 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             solver.render_mujoco_viewer()
     """
 
-    ObservableFlags = _MuJoCoObservableFlags
-    """MuJoCo-specific observable flags."""
+    class ObservableKind(SolverBase.ObservableKind):
+        """Standard and MuJoCo-specific observable kinds.
+
+        Inherits all standard names from :class:`SolverBase.ObservableKind`.
+        Backend support is reported by :attr:`SolverMuJoCo.supported_observables`.
+
+        See :ref:`solver_observables` for solver-specific kinds and backend support.
+
+        .. experimental::
+        """
+
+        QFRC_ACTUATOR = "qfrc_actuator"
+        """Actuator forces in Newton generalized-coordinate order."""
 
     @dataclass(eq=False)
-    class Observables(SolverObservables):
+    class Observables(SolverBase.Observables):
         """Standard and MuJoCo-specific observable arrays.
 
         The native CPU backend (``use_mujoco_cpu=True``) supports only
@@ -562,48 +561,64 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         uses the pipeline's own capacity. Construct a compatible
         :class:`~newton.CollisionPipeline` before allocating contact observables.
 
+        See :ref:`solver_observables` for allocation and native collision examples.
+
         .. experimental::
             The solver observable API may change without prior notice.
         """
 
-        qfrc_actuator: wp.array[wp.float32] | None = SolverObservables.field(  # noqa: RUF009
-            flag=_MuJoCoObservableFlags.QFRC_ACTUATOR,
+        qfrc_actuator: wp.array[wp.float32] | None = SolverBase.Observables.field(  # noqa: RUF009
             dtype=wp.float32,
             frequency=AttributeFrequency.JOINT_DOF,
         )
         """Actuator forces [N or N·m], shape ``(joint_dof_count,)``."""
 
-    OBSERVABLES_TYPE = Observables
-    SUPPORTED_OBSERVABLE_FLAGS = frozenset(
+    SUPPORTED_OBSERVABLES = frozenset(
         {
-            SolverObservableFlags.BODY_QDD,
-            SolverObservableFlags.BODY_PARENT_F,
-            SolverObservableFlags.CONTACT_F,
-            ObservableFlags.QFRC_ACTUATOR,
+            SolverBase.ObservableKind.BODY_QDD,
+            SolverBase.ObservableKind.BODY_PARENT_F,
+            SolverBase.ObservableKind.CONTACT_F,
+            ObservableKind.QFRC_ACTUATOR,
         }
     )
 
     @property
-    def supported_observable_flags(self):
-        """Return observables available for the configured MuJoCo backend."""
-        flags = super().supported_observable_flags
+    def supported_observables(self):
+        """Return observables available for the configured MuJoCo backend.
+
+        See :ref:`solver_observables` for backend limitations.
+        """
+        kinds = super().supported_observables
         if self.use_mujoco_cpu:
             # Body exports currently read MuJoCo Warp's RNE buffers, which the
             # native CPU step does not update. Do not expose stale diagnostics.
-            return flags.difference(
+            return kinds.difference(
                 {
-                    SolverObservableFlags.BODY_QDD,
-                    SolverObservableFlags.BODY_PARENT_F,
-                    SolverObservableFlags.CONTACT_F,
+                    SolverBase.ObservableKind.BODY_QDD,
+                    SolverBase.ObservableKind.BODY_PARENT_F,
+                    SolverBase.ObservableKind.CONTACT_F,
                 }
             )
-        return flags
+        return kinds
 
-    def observables(self, flags: Iterable[Enum], *, requires_grad: bool | None = None) -> Observables:
-        """Allocate solver observables with a compatible native contact export budget."""
-        with self._create_observables(flags, requires_grad=requires_grad) as observables:
+    def observables(
+        self, kinds: Iterable[str], *, contacts: Contacts | None = None, requires_grad: bool | None = None
+    ) -> SolverMuJoCo.Observables:
+        """Allocate solver observables with a compatible native contact export budget.
+
+        Supply ``contacts`` when requesting contact-indexed fields; the factory
+        validates and binds that storage for subsequent steps and consumers.
+
+        See :meth:`SolverBase.observables` for the shared allocation contract and
+        errors, and :ref:`solver_observables` for usage and native collision setup.
+
+        Raises:
+            ValueError: If the native contact export capacity exceeds the
+                :class:`~newton.CollisionPipeline` rigid contact capacity.
+        """
+        with self._create_observables(kinds, contacts=contacts, requires_grad=requires_grad) as observables:
             if (
-                observables.is_requested(SolverObservableFlags.CONTACT_F)
+                observables.is_requested(SolverBase.ObservableKind.CONTACT_F)
                 and self.mjw_model.opt.run_collision_detection
                 and self.mjw_data.naconmax > self.model.rigid_contact_max
             ):
@@ -4541,7 +4556,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         contacts: Contacts,
         dt: float,
         *,
-        observables: SolverObservables | None = None,
+        observables: SolverBase.Observables | None = None,
     ) -> None:
         self.validate_observables(observables, contacts)
         if self.use_mujoco_cpu:
@@ -4565,7 +4580,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._update_newton_state(
                     self.model, state_out, self.mjw_data, state_prev=state_in, observables=observables
                 )
-                if observables is not None and observables.is_requested(SolverObservableFlags.CONTACT_F):
+                if observables is not None and observables.is_requested(SolverBase.ObservableKind.CONTACT_F):
                     observable_contacts = observables.contacts
                     if observable_contacts is None:
                         raise ValueError("Contact storage is missing from solver observables.")
@@ -4837,17 +4852,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             device=self.model.device,
         )
 
-    def _enable_rne_postconstraint(self, state_out: State, observables: SolverObservables | None = None):
+    def _enable_rne_postconstraint(self, state_out: State, observables: SolverBase.Observables | None = None):
         """Request computation of RNE forces for solver observables or legacy state fields."""
         # TODO: handle use_mujoco_cpu
         m = self.mjw_model
         if m.opt.run_rne_postconstraint:
             return
         needs_body_qdd = state_out.body_qdd is not None or (
-            observables is not None and observables.is_requested(SolverObservableFlags.BODY_QDD)
+            observables is not None and observables.is_requested(SolverBase.ObservableKind.BODY_QDD)
         )
         needs_body_parent_f = state_out.body_parent_f is not None or (
-            observables is not None and observables.is_requested(SolverObservableFlags.BODY_PARENT_F)
+            observables is not None and observables.is_requested(SolverBase.ObservableKind.BODY_PARENT_F)
         )
         if needs_body_qdd or needs_body_parent_f:
             # Required for cacc and cfrc_int. Unlike sensor_rne_postconstraint,
@@ -5602,7 +5617,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         state: State,
         mj_data: MjWarpData | MjData,
         state_prev: State,
-        observables: SolverObservables | None = None,
+        observables: SolverBase.Observables | None = None,
     ):
         """Update a Newton state from MuJoCo coordinates and kinematics.
 
@@ -5663,15 +5678,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
         # Update requested rigid-body observables. Extended state attributes remain
-        # compatibility destinations during migration to SolverObservables.
+        # compatibility destinations during migration to SolverBase.Observables.
         body_qdd = (
             observables.body_qdd
-            if observables is not None and observables.is_requested(SolverObservableFlags.BODY_QDD)
+            if observables is not None and observables.is_requested(SolverBase.ObservableKind.BODY_QDD)
             else state.body_qdd
         )
         body_parent_f = (
             observables.body_parent_f
-            if observables is not None and observables.is_requested(SolverObservableFlags.BODY_PARENT_F)
+            if observables is not None and observables.is_requested(SolverBase.ObservableKind.BODY_PARENT_F)
             else state.body_parent_f
         )
         if body_qdd is not None or body_parent_f is not None:
@@ -5706,8 +5721,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         legacy_qfrc_actuator = getattr(getattr(state, "mujoco", None), "qfrc_actuator", None)
         qfrc_actuator = (
             observables.qfrc_actuator
-            if isinstance(observables, self.Observables)
-            and observables.is_requested(self.ObservableFlags.QFRC_ACTUATOR)
+            if isinstance(observables, self.Observables) and observables.is_requested(self.ObservableKind.QFRC_ACTUATOR)
             else None
         )
         if qfrc_actuator is None:
@@ -5924,14 +5938,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         .. deprecated:: 1.7
             Exporting ``contacts.force`` is deprecated. Request
-            :attr:`~newton.solvers.SolverObservableFlags.CONTACT_F` and pass the
+            :attr:`~newton.solvers.SolverBase.ObservableKind.CONTACT_F` and pass the
             resulting container to :meth:`step` instead. Geometry-only export
             is not deprecated.
         """
         if contacts.force is not None:
             warnings.warn(
                 "SolverMuJoCo.update_contacts() force export is deprecated in Newton 1.7; request "
-                "SolverObservableFlags.CONTACT_F and pass SolverObservables to step().",
+                "SolverBase.ObservableKind.CONTACT_F and pass SolverBase.Observables to step().",
                 DeprecationWarning,
                 stacklevel=2,
             )

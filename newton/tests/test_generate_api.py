@@ -5,9 +5,12 @@ import sys
 import tempfile
 import unittest
 import warnings
+from io import StringIO
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest import mock
+
+from newton.solvers import SolverBase
 
 try:
     from docs import generate_api
@@ -21,6 +24,8 @@ except ModuleNotFoundError as exc:
     generate_api = None
 
 try:
+    from sphinx.application import Sphinx
+
     from docs._ext import autodoc_filter
 except ModuleNotFoundError as exc:
     if exc.name not in ("docs", "sphinx"):
@@ -32,29 +37,46 @@ except ModuleNotFoundError as exc:
 class TestObservableFieldDocs(unittest.TestCase):
     """Keep source-documented None defaults visible in the generated API."""
 
-    def setUp(self):
-        """Provide Sphinx's public-module class context for attribute lookup."""
-        self.app = SimpleNamespace(
-            env=SimpleNamespace(
-                current_document=SimpleNamespace(autodoc_module="newton.solvers", autodoc_class="SolverObservables")
+    def test_nested_observable_fields_render(self):
+        """Keep array fields in the API when autodoc traverses the enclosing solver."""
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(SolverBase.Observables, "undocumented", None, create=True),
+        ):
+            root = Path(tmp)
+            source = root / "source"
+            source.mkdir()
+            (source / "conf.py").write_text(
+                "extensions = ['sphinx.ext.autodoc', 'sphinx.ext.napoleon', "
+                "'docs._ext.autodoc_filter', 'docs._ext.experimental']\n"
+                "autodoc_default_options = {'members': True, 'undoc-members': True}\n",
+                encoding="utf-8",
             )
-        )
-
-    def test_documented_observable_fields_are_included(self):
-        """Retain dataclass fields with attribute docstrings and None defaults."""
-        for name in ("body_qdd", "body_parent_f", "contact_f"):
-            with self.subTest(name=name):
-                self.assertIsNone(autodoc_filter._should_skip_member(self.app, "class", name, None, False, None))
-
-    def test_undocumented_and_private_defaults_stay_hidden(self):
-        """Do not expose undocumented placeholders or private container metadata."""
-        for name in ("undocumented", "_solver"):
-            with self.subTest(name=name):
-                self.assertTrue(autodoc_filter._should_skip_member(self.app, "class", name, None, False, None))
-
-    def test_existing_skip_decision_is_preserved(self):
-        """Respect a prior autodoc decision to omit a member."""
-        self.assertTrue(autodoc_filter._should_skip_member(self.app, "class", "body_qdd", None, True, None))
+            (source / "index.rst").write_text(
+                "Solver API\n==========\n\n.. autoclass:: newton.solvers.SolverBase\n",
+                encoding="utf-8",
+            )
+            app = Sphinx(
+                str(source),
+                str(source),
+                str(root / "output"),
+                str(root / "doctrees"),
+                "dummy",
+                status=StringIO(),
+                warning=StringIO(),
+                freshenv=True,
+            )
+            app.build()
+            objects = app.env.domains["py"].objects
+            for name in ("body_qdd", "body_parent_f", "contact_f"):
+                with self.subTest(name=name):
+                    self.assertIn(f"newton.solvers.SolverBase.Observables.{name}", objects)
+            for name in ("BODY_QDD", "BODY_PARENT_F", "CONTACT_F"):
+                with self.subTest(kind=name):
+                    self.assertIn(f"newton.solvers.SolverBase.ObservableKind.{name}", objects)
+            for name in ("undocumented", "_solver"):
+                with self.subTest(hidden=name):
+                    self.assertNotIn(f"newton.solvers.SolverBase.Observables.{name}", objects)
 
 
 @unittest.skipUnless(generate_api is not None, "requires the docs/ package (source checkout only)")
