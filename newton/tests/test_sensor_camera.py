@@ -736,8 +736,8 @@ class TestSensorCamera(unittest.TestCase):
         model = builder.finalize(device="cpu")
         camera = SensorCamera(model)
         rays = self._rays(8, 8, fov=math.radians(40.0))
-        depth = camera.create_depth_image_output(1, 8, 8)
-        shape_index = camera.create_shape_index_image_output(1, 8, 8)
+        depth = wp.zeros((1, 8, 8), dtype=wp.float32, device="cpu")
+        shape_index = wp.zeros((1, 8, 8), dtype=wp.uint32, device="cpu")
         camera.update(
             model.state(),
             self._identity_transforms(1),
