@@ -163,6 +163,11 @@ They are authoritative for public exports, namespaces, naming, signatures,
 types, documentation, testing, compatibility, and repository conventions.
 
 For test changes, explicitly assess :ref:`test-organization-and-runtime`.
+Confirm that tests exercise the actual implementation and verify meaningful
+technical results. Flag tests that replace the functionality under test with
+mocks or only check fake interfaces, expected calls, or canned responses. Apply
+the ``newton/tests/test_api.py`` exception only to targeted checks of actual API
+contracts; it does not excuse mock-only tests or missing functional coverage.
 Inspect related existing coverage and check whether new assertions or scenarios
 could extend it, whether solver-specific tests are placed correctly, and
 whether related tests reuse an appropriate class, module, and fixture. Assess

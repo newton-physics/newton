@@ -290,6 +290,15 @@ Test organization and runtime
 Treat CI runtime and test setup/teardown overhead as part of the cost of every
 change. Preserve meaningful coverage while avoiding redundant test execution.
 
+- **Test real technical functionality.** Tests must exercise the actual
+  implementation and verify meaningful observable results, such as numerical
+  outputs, state changes, parsed data, or error handling. Do not replace the
+  functionality being tested with mocks or fake interfaces, or add tests that
+  only check that fake interfaces agree, expected calls occur, or canned
+  responses are returned. ``newton/tests/test_api.py`` may contain targeted
+  checks of actual API contracts, such as public signatures and argument
+  validation. This exception does not permit mock-only interface checks or
+  replace functional coverage.
 - **Inspect existing coverage first.** Before adding a test, contributors must
   search for tests that exercise the same behavior, feature, or solver. Identify
   the coverage gap and the most appropriate existing method, class, and module
