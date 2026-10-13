@@ -30,6 +30,7 @@ jobs:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
         with:
           fetch-depth: 1
+          persist-credentials: false
 
       # Load the review policy from the base revision so a pull request cannot
       # change the rules it is reviewed against.
