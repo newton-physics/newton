@@ -14941,7 +14941,7 @@ class ModelBuilder:
             pair_counts = m._shape_contact_pair_data.counts
             pair_counts.setflags(write=False)
             m._shape_contact_pair_counts[None] = pair_counts
-            m.shape_contact_pair_count = int(pair_counts.sum())
+            m._shape_contact_pair_count = int(pair_counts.sum())
 
             # enable ground plane
             m.up_axis = self.up_axis

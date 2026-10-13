@@ -1375,17 +1375,13 @@ class Model:
     def shape_contact_pairs(self) -> wp.array[wp.vec2i] | None:
         """Pairs of shape indices that may collide, shape [shape_contact_pair_count], vec2i.
 
-        Constructed from finalized collision topology and cached on first access.
-        Reading :attr:`shape_contact_pair_count` does not construct the table.
-        In-place edits to the computed pair table are unsupported; assign a replacement array instead.
-        Assigning an array replaces the table, updates the count to its length,
-        and clears cached statistics. Assigning ``None`` removes the table and
-        sets the count to zero.
-        Access this attribute before CUDA graph capture, normally by constructing
-        the explicit collision pipeline before capture.
+        Constructed on first access; access it before CUDA graph capture if needed.
 
-        Static-static pairs are omitted. Kinematic-kinematic and static-kinematic
-        pairs are retained so consumers can opt into them during contact generation.
+        Default pairs omit static-static pairs and retain static-kinematic and
+        kinematic-kinematic pairs.
+
+        Assign a replacement array to change pairs, or ``None`` to remove the
+        model's pair array and set its count to zero. In-place edits are unsupported.
         """
         pairs = self._shape_contact_pairs
         if pairs is None and self._shape_contact_pair_data is not None:
@@ -1408,14 +1404,10 @@ class Model:
 
     @property
     def shape_contact_pair_count(self) -> int:
-        """Number of eligible shape pairs, computed without constructing their table."""
+        """Number of shape pairs. Read-only; does not construct the full pair array."""
+        if self._shape_contact_pairs is not None:
+            return len(self._shape_contact_pairs)
         return self._shape_contact_pair_count
-
-    @shape_contact_pair_count.setter
-    def shape_contact_pair_count(self, count: int) -> None:
-        self._shape_contact_pair_count = count
-        if self._shape_contact_pair_data is None:
-            self._shape_contact_pair_counts.clear()
 
     def _set_shape_collision_filter_packed(self, packed: np.ndarray) -> None:
         """Install the canonical filter store: sorted unique packed pair codes."""

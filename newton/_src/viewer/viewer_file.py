@@ -729,9 +729,8 @@ def transfer_to_model(source_dict: Mapping[str, Any], target_obj, post_load_init
             pass
 
     if target_is_model:
-        # Restore after topology; the pair setter resets counts, so apply the count last.
+        # Restore pair storage and topology; the count is derived from their contents.
         pairs = source_dict.get("shape_contact_pairs", source_dict.get("_shape_contact_pairs", _MISSING))
-        pair_count = source_dict.get("shape_contact_pair_count", source_dict.get("_shape_contact_pair_count", _MISSING))
         if pairs is not _MISSING:
             target_obj.shape_contact_pairs = pairs
         data = source_dict.get("_shape_contact_pair_data")
@@ -744,8 +743,7 @@ def transfer_to_model(source_dict: Mapping[str, Any], target_obj, post_load_init
                 data["filter_pairs"],
                 data["world_count"],
             )
-        if pair_count is not _MISSING and pair_count is not None:
-            target_obj.shape_contact_pair_count = pair_count
+            target_obj._shape_contact_pair_count = int(target_obj._shape_contact_pair_data.counts.sum())  # pyright: ignore[reportPrivateUsage]
 
     if post_load_init_callback is not None:
         post_load_init_callback(target_obj, _path)

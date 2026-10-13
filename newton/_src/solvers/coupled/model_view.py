@@ -64,8 +64,8 @@ class ModelView:
     the full Model.
 
     Default shape contact pairs and their summaries use the parent Model's
-    finalized collision topology. To change the view's pairs, assign both
-    ``shape_contact_pairs`` and ``shape_contact_pair_count`` on the view.
+    finalized collision topology. To change the view's pairs, assign
+    ``shape_contact_pairs`` on the view; its read-only count follows the array length.
 
     A ``ModelView`` is intended to duck-type as a :class:`~newton.Model` for the
     purpose of constructing solvers (``SolverFoo(model=view)``).
@@ -101,6 +101,8 @@ class ModelView:
         return self._count_limited_attribute(name, getattr(parent, name))
 
     def __setattr__(self, name: str, value) -> None:
+        if name == "shape_contact_pair_count":
+            raise AttributeError("shape_contact_pair_count is read-only; replace shape_contact_pairs instead")
         parent = object.__getattribute__(self, "_parent")
         spec = parent._attribute_spec(name)
         if spec is not None and spec.alias_of is not None:
@@ -154,6 +156,15 @@ class ModelView:
     def parent(self) -> Model:
         """The underlying :class:`~newton.Model`."""
         return object.__getattribute__(self, "_parent")
+
+    @property
+    def shape_contact_pair_count(self) -> int:
+        """Read-only pair count inherited from the parent or derived from the replacement array."""
+        overrides = object.__getattribute__(self, "_overrides")
+        if "shape_contact_pairs" in overrides:
+            pairs = overrides["shape_contact_pairs"]
+            return len(pairs) if pairs is not None else 0
+        return object.__getattribute__(self, "_parent").shape_contact_pair_count
 
     @property
     def joint_target_q_start(self) -> wp.array | None:

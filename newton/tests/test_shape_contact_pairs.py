@@ -81,7 +81,52 @@ def _reference_builder_pairs(builder):
 
 
 class TestShapeContactPairs(unittest.TestCase):
-    def test_finalize_defers_pair_table(self):
+    def test_pair_count_is_read_only(self):
+        """Reject independent pair-count changes without materializing the pair array."""
+        builder = newton.ModelBuilder()
+        for _ in range(4):
+            builder.add_shape_sphere(builder.add_body())
+        for device in get_test_devices():
+            model = builder.finalize(device=device)
+            view = ModelView(model, "count")
+            with mock.patch.object(_ShapeContactPairs, "build_pairs", side_effect=AssertionError("Enumerated pairs")):
+                for candidate in (model, view, ModelView(view, "nested")):
+                    with self.subTest(device=device, model=type(candidate).__name__):
+                        self.assertEqual(candidate.shape_contact_pair_count, 6)
+                        with self.assertRaises(AttributeError):
+                            candidate.shape_contact_pair_count = 0
+                        self.assertEqual(candidate.shape_contact_pair_count, 6)
+            self.assertIsNone(model._shape_contact_pairs)
+
+    def test_replacement_pairs_drive_collision_and_capacity(self):
+        """Match explicit contacts and inherited capacities to replacement pairs."""
+        builder = newton.ModelBuilder()
+        for groups in ((1, 1, 1, 2), (1, 1, 1)):
+            builder.begin_world()
+            for group in groups:
+                builder.add_shape_sphere(builder.add_body(), cfg=builder.ShapeConfig(collision_group=group))
+            builder.end_world()
+        replacement = np.asarray(list(itertools.combinations(range(4), 2)), dtype=np.int32)
+        for device in get_test_devices():
+            model = builder.finalize(device=device)
+            view = ModelView(model, "replacement")
+            self.assertEqual(compute_required_contact_capacity(view), (6, [3, 3]))
+            for pairs in (replacement, replacement[:3]):
+                with self.subTest(device=device, pairs=len(pairs)):
+                    model.shape_contact_pairs = wp.array(pairs, dtype=wp.vec2i, device=device)
+                    self.assertEqual(view.shape_contact_pair_count, len(pairs))
+                    self.assertEqual(compute_required_contact_capacity(view), (len(pairs), [len(pairs), 0]))
+                    self.assertEqual(_estimate_rigid_contact_max_per_world(view, 100), 5 * len(pairs))
+                    pipeline = newton.CollisionPipeline(view)
+                    contacts = pipeline.contacts()
+                    pipeline.collide(model.state(), contacts)
+                    count = int(contacts.rigid_contact_count.numpy()[0])
+                    actual = np.column_stack(
+                        (contacts.rigid_contact_shape0.numpy()[:count], contacts.rigid_contact_shape1.numpy()[:count])
+                    )
+                    np.testing.assert_array_equal(_sorted_pairs(actual), _sorted_pairs(pairs))
+
+    def test_finalize_defers_pair_array(self):
         """Keep finalization compact while preserving the exact pair count."""
         builder = newton.ModelBuilder()
         for _ in range(4):
@@ -189,8 +234,8 @@ class TestShapeContactPairs(unittest.TestCase):
         expected = np.concatenate((local_pairs.reshape((-1, 2)), global_pairs))
         np.testing.assert_array_equal(_sorted_pairs(pairs), _sorted_pairs(expected))
 
-    def test_explicit_override_defers_default_table(self):
-        """Use caller-supplied explicit pairs without constructing the default table."""
+    def test_explicit_override_defers_default_array(self):
+        """Use caller-supplied explicit pairs without constructing the default array."""
         model = _make_builder().finalize(device="cpu")
         pairs = wp.array([[0, 1]], dtype=wp.vec2i, device="cpu")
         with mock.patch.object(_ShapeContactPairs, "build_pairs", side_effect=AssertionError("Enumerated pairs")):
@@ -199,7 +244,7 @@ class TestShapeContactPairs(unittest.TestCase):
         self.assertIsNone(model._shape_contact_pairs)
 
     def test_pair_cache_lifecycle(self):
-        """Cache lazy summaries, honor supplied prefixes and disable removed tables."""
+        """Cache lazy summaries, honor replacement arrays and disable removed arrays."""
         builder = newton.ModelBuilder()
         builder.add_shape_sphere(builder.add_body())
         for size in (2, 1):
@@ -220,7 +265,6 @@ class TestShapeContactPairs(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     summary[0] = 1
         self.assertIsNone(model._shape_contact_pairs)
-        model.shape_contact_pair_count = 0
         with mock.patch.object(
             _ShapeContactPairs, "build_pairs", autospec=True, side_effect=_ShapeContactPairs.build_pairs
         ) as build:
@@ -228,9 +272,7 @@ class TestShapeContactPairs(unittest.TestCase):
             self.assertIs(model.shape_contact_pairs, pairs)
             build.assert_called_once()
         self.assertEqual(len(pairs), 4)
-        self.assertEqual(model.shape_contact_pair_count, 0)
-        np.testing.assert_array_equal(_shape_contact_pair_counts(model), [0, 0, 0])
-        model.shape_contact_pair_count = len(pairs)
+        self.assertEqual(model.shape_contact_pair_count, len(pairs))
         self.assertIs(_shape_contact_pair_counts(model), counts)
         with mock.patch.object(pairs, "numpy", side_effect=AssertionError("Scanned default pairs")):
             masked_counts = _shape_contact_pair_counts(model, shape_mask=np.ones(model.shape_count, dtype=bool))
@@ -240,7 +282,8 @@ class TestShapeContactPairs(unittest.TestCase):
         self.assertIs(model.shape_contact_pairs, pairs)
         self.assertEqual(model.shape_contact_pair_count, len(pairs))
         for count, expected in ((2, [0, 1, 1]), (1, [0, 0, 1]), (2, [0, 1, 1])):
-            model.shape_contact_pair_count = count
+            model.shape_contact_pairs = pairs[:count]
+            self.assertEqual(model.shape_contact_pair_count, count)
             np.testing.assert_array_equal(_shape_contact_pair_counts(model), expected)
             self.assertEqual(int(_shape_contact_pair_counts(model, shape_mask=mask).sum()), count - 1)
         model.shape_contact_pairs = None
@@ -252,7 +295,7 @@ class TestShapeContactPairs(unittest.TestCase):
             newton.CollisionPipeline(model)
 
     def test_view_and_supplied_pair_count_sources(self):
-        """Count view-local prefixes and supplied tables without generating base pairs."""
+        """Count view-local replacement arrays without generating base pairs."""
         model = _make_builder().finalize(device="cpu")
         mask = np.zeros(model.shape_count, dtype=bool)
         mask[[1, 2]] = True
@@ -277,13 +320,12 @@ class TestShapeContactPairs(unittest.TestCase):
             for case, value in invalid:
                 with self.subTest(case=case), self.assertRaises(TypeError):
                     view.shape_contact_pairs = value
-            view.shape_contact_pairs = pairs
-            view.shape_contact_pair_count = 2
+            view.shape_contact_pairs = pairs[:2]
             self.assertEqual(_shape_contact_pair_count_for_mask(view, mask), 2)
             nested = ModelView(view, "nested")
             self.assertEqual(_shape_contact_pair_count_for_mask(nested, mask), 2)
             self.assertEqual(_shape_contact_pair_count_for_mask(model, mask, shape_pairs=pairs), 3)
-            view.shape_contact_pair_count = 1
+            view.shape_contact_pairs = pairs[:1]
             self.assertEqual(_shape_contact_pair_count_for_mask(nested, mask), 1)
             view.shape_contact_pairs = None
             self.assertEqual(int(_shape_contact_pair_counts(view).sum()), 0)
@@ -293,7 +335,6 @@ class TestShapeContactPairs(unittest.TestCase):
             world_view = ModelView(model, "worlds")
             world_view.shape_world = wp.full(model.shape_count, 1, dtype=wp.int32, device="cpu")
             world_view.shape_contact_pairs = wp.array([[1, 3]], dtype=wp.vec2i, device="cpu")
-            world_view.shape_contact_pair_count = 1
             np.testing.assert_array_equal(_shape_contact_pair_counts(world_view, shape_mask=world_mask), [0, 0, 1])
         self.assertIsNone(model._shape_contact_pairs)
 
@@ -327,29 +368,26 @@ class TestShapeContactPairs(unittest.TestCase):
             if view.shape_count == model.shape_count:
                 self.assertEqual(compute_required_contact_capacity(view, include_shape_contact_pairs=True), capacity)
 
-    def test_supplied_pair_array_updates(self):
-        """Refresh per-world and masked capacity estimates after supplied pairs change in place."""
+    def test_supplied_pair_array_replacements(self):
+        """Refresh per-world and masked capacity estimates after replacing supplied pairs."""
         builder = newton.ModelBuilder()
         for shape_count in (3, 2):
             builder.begin_world()
             for _ in range(shape_count):
                 builder.add_shape_sphere(builder.add_body())
             builder.end_world()
-        initial = [[0, 1], [3, 4], [0, 2]]
-        updated = [[0, 1], [0, 2], [3, 4]]
+        initial = [[0, 1], [3, 4]]
+        updated = [[0, 1], [0, 2]]
         mask = np.array([True, True, True, False, False])
         for device in get_test_devices():
             model = builder.finalize(device=device)
-            pairs = wp.array(initial, dtype=wp.vec2i, device=device)
-            model.shape_contact_pairs = pairs
-            model.shape_contact_pair_count = 2
             for rows, counts, masked_counts, estimate in (
                 (initial, [0, 1, 1], [0, 1, 0], 5),
                 (updated, [0, 2, 0], [0, 2, 0], 10),
                 (initial, [0, 1, 1], [0, 1, 0], 5),
             ):
                 with self.subTest(device=device, pairs=rows):
-                    pairs.assign(np.asarray(rows, dtype=np.int32))
+                    model.shape_contact_pairs = wp.array(rows, dtype=wp.vec2i, device=device)
                     np.testing.assert_array_equal(_shape_contact_pair_counts(model), counts)
                     np.testing.assert_array_equal(_shape_contact_pair_counts(model, shape_mask=mask), masked_counts)
                     self.assertEqual(_estimate_rigid_contact_max_per_world(model, 100), estimate)
@@ -357,7 +395,7 @@ class TestShapeContactPairs(unittest.TestCase):
                     self.assertEqual(model.shape_contact_pair_count, 2)
 
     def test_empty_models_and_filtered_scenes(self):
-        """Return empty tables for empty and fully excluded scenes."""
+        """Return empty arrays for empty and fully excluded scenes."""
         empty = newton.ModelBuilder().finalize(device="cpu")
         self.assertEqual(empty.shape_contact_pair_count, 0)
         self.assertEqual(empty.shape_contact_pairs.shape, (0,))
@@ -441,8 +479,8 @@ class TestShapeContactPairs(unittest.TestCase):
                 self.assertEqual(exact.geoms.model_minimum_contacts, expected)
                 self.assertEqual(exact.geoms.world_minimum_contacts, [expected])
 
-    def test_kamino_default_pair_prefix(self):
-        """Honor active prefixes of default pairs before their first materialization."""
+    def test_kamino_pair_replacements(self):
+        """Honor replacement pair arrays and contact caps on models and inherited views."""
         builder = newton.ModelBuilder()
         builder.begin_world()
         for _ in range(4):
@@ -456,19 +494,20 @@ class TestShapeContactPairs(unittest.TestCase):
         for device, scope in itertools.product(get_test_devices(), ("model", "view", "nested")):
             with self.subTest(device=device, scope=scope):
                 model = builder.finalize(device=device)
-                view = ModelView(model, "prefix")
+                view = ModelView(model, "replacement")
                 candidate = {"model": model, "view": view, "nested": ModelView(view, "nested")}[scope]
                 self.assertEqual(compute_required_contact_capacity(candidate), (13, [5, 8]))
                 np.testing.assert_array_equal(_shape_contact_pair_counts(candidate), [0, 5, 1])
                 self.assertIsNone(model._shape_contact_pairs)
-                candidate.shape_contact_pair_count = 0
+                candidate.shape_contact_pairs = None
                 with mock.patch.object(
                     _ShapeContactPairs, "build_pairs", side_effect=AssertionError("Enumerated pairs")
                 ):
                     self.assertEqual(compute_required_contact_capacity(candidate), (0, [0, 0]))
                     np.testing.assert_array_equal(_shape_contact_pair_counts(candidate), [0, 0, 0])
                 self.assertIsNone(model._shape_contact_pairs)
-                candidate.shape_contact_pair_count = 1
+                pairs = wp.array(_reference_builder_pairs(builder), dtype=wp.vec2i, device=device)
+                candidate.shape_contact_pairs = pairs[:1]
                 self.assertEqual(compute_required_contact_capacity(candidate), (1, [1, 0]))
                 np.testing.assert_array_equal(_shape_contact_pair_counts(candidate), [0, 1, 0])
                 mask = np.ones(model.shape_count, dtype=bool)
@@ -480,11 +519,11 @@ class TestShapeContactPairs(unittest.TestCase):
                     (6, 1, None, (6, [5, 1])),
                     (6, None, 3, (6, [3, 3])),
                 ):
-                    candidate.shape_contact_pair_count = pair_count
+                    candidate.shape_contact_pairs = pairs[:pair_count]
                     self.assertEqual(compute_required_contact_capacity(candidate, pair_cap, world_cap), capacity)
 
     def test_kamino_weighted_pair_counts(self):
-        """Size contacts from pair weights, preserving caps, globals and explicit prefixes."""
+        """Size contacts from pair weights, preserving caps, globals and replacement arrays."""
         builder = _make_builder()
         expected = _reference_builder_pairs(builder)
         global_builder = newton.ModelBuilder()
@@ -497,8 +536,7 @@ class TestShapeContactPairs(unittest.TestCase):
                 np.resize([newton.GeoType.SPHERE, newton.GeoType.BOX, newton.GeoType.CAPSULE], model.shape_count)
             )
             supplied = ModelView(model, "supplied")
-            supplied.shape_contact_pairs = wp.array([[1, 2], [2, 1], [1, 2], [0, 6]], dtype=wp.vec2i, device=device)
-            supplied.shape_contact_pair_count = 3
+            supplied.shape_contact_pairs = wp.array([[1, 2], [2, 1], [1, 2]], dtype=wp.vec2i, device=device)
             typed = ModelView(model, "types")
             typed.shape_type = wp.array(np.roll(model.shape_type.numpy(), 1), dtype=wp.int32, device=device)
             attached = ModelView(model, "attached")
@@ -507,14 +545,13 @@ class TestShapeContactPairs(unittest.TestCase):
             attached.shape_body = wp.array(bodies, dtype=wp.int32, device=device)
             attached_pairs = expected[bodies[expected[:, 0]] != bodies[expected[:, 1]]]
             attached.shape_contact_pairs = wp.array(attached_pairs, dtype=wp.vec2i, device=device)
-            attached.shape_contact_pair_count = len(attached_pairs)
             global_model = global_builder.finalize(device=device)
             normalized = ModelView(global_model, "single_world")
             normalized.shape_world = wp.zeros(global_model.shape_count, dtype=wp.int32, device=device)
             cases = []
             for source, candidate, pairs in (
                 ("multiworld", model, expected),
-                ("supplied_prefix", supplied, supplied.shape_contact_pairs.numpy()[:3]),
+                ("supplied", supplied, supplied.shape_contact_pairs.numpy()),
                 ("type_override", typed, expected),
                 ("body_override", attached, attached_pairs),
                 ("global_only", global_model, global_pairs),
@@ -561,7 +598,7 @@ class TestShapeContactPairs(unittest.TestCase):
                             ),
                             capacity,
                         )
-            model.shape_contact_pair_count = 0
+            model.shape_contact_pairs = None
             with mock.patch.object(
                 _ShapeContactPairs, "count_pairs", side_effect=AssertionError("Counted disabled pairs")
             ):
@@ -609,7 +646,7 @@ class TestShapeContactPairs(unittest.TestCase):
                     self.assertLess(candidates, size * 2)
 
     def test_recording_roundtrip(self):
-        """Restore pending and materialized tables through both recording formats."""
+        """Restore pending and materialized arrays through both recording formats."""
         for format_type, materialize in itertools.product(("json", "cbor2"), (False, True)):
             with self.subTest(format_type=format_type, materialize=materialize):
                 builder = _make_builder()
@@ -628,9 +665,28 @@ class TestShapeContactPairs(unittest.TestCase):
                     self.assertEqual(restored._shape_contact_pairs is not None, materialize)
                 np.testing.assert_array_equal(_sorted_pairs(restored.shape_contact_pairs.numpy()), expected)
 
+    def test_recording_derives_pair_count(self):
+        """Derive restored counts from pair storage or topology instead of legacy count overrides."""
+        for materialize in (False, True):
+            with self.subTest(materialize=materialize):
+                model = _make_builder().finalize(device="cpu")
+                expected_count = model.shape_contact_pair_count
+                if materialize:
+                    _ = model.shape_contact_pairs
+                decoded = depointer_as_key(pointer_as_key(model))
+                decoded["shape_contact_pair_count"] = 0
+                decoded["_shape_contact_pair_count"] = 0
+                restored = newton.Model()
+                with mock.patch.object(
+                    _ShapeContactPairs, "build_pairs", side_effect=AssertionError("Enumerated pairs")
+                ):
+                    transfer_to_model(decoded, restored)
+                    self.assertEqual(restored.shape_contact_pair_count, expected_count)
+                    self.assertEqual(restored._shape_contact_pairs is not None, materialize)
+
 
 def test_lazy_collision(test, device):
-    """Match explicit contacts on dynamic broadphases without constructing the table."""
+    """Match explicit contacts on dynamic broadphases without constructing the pair array."""
     builder = _make_builder()
     reference = builder.finalize(device=device)
     pipeline = newton.CollisionPipeline(reference)

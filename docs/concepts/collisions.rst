@@ -752,10 +752,10 @@ Broad Phase and Shape Compatibility
      - Uses precomputed shape pairs (default). Combines static pair efficiency with advanced contact algorithms.
 
 :meth:`ModelBuilder.finalize` computes :attr:`Model.shape_contact_pair_count`
-without enumerating pairs. The explicit pair table,
+without enumerating pairs. The explicit pair array,
 :attr:`Model.shape_contact_pairs`, is constructed and cached on first
 access, normally when creating an explicit collision pipeline. SAP and NxN do
-not request this table. Hydroelastic setup uses the pipeline's explicit pairs
+not request this array. Hydroelastic setup uses the pipeline's explicit pairs
 when supplied; otherwise, it constructs only its hydroelastic subset.
 Default pairs and counts use the collision topology captured during finalization;
 editing model arrays does not change them. Assigning ``None`` to
@@ -766,7 +766,7 @@ capture to initialize its storage.
 Explicit construction uses bounded temporary buffers and reuses equivalent
 worlds. Its final storage still scales with the number of compatible pairs,
 which can be quadratic in shapes per world. For large scenes, SAP avoids that
-table; its runtime candidate buffer is controlled separately by
+array; its runtime candidate buffer is controlled separately by
 ``CollisionPipeline(shape_pairs_max=...)``. Choose that capacity to accommodate
 the scene's overlapping candidates.
 

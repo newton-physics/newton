@@ -1110,7 +1110,7 @@ def compute_required_contact_capacity(
         max_contacts_per_world: Optional maximum number of contacts to allocate per world.
             If `None`, no per-world limit is applied, otherwise caps the computed
             per-world requirements at this value.
-        include_shape_contact_pairs: Whether geometry conversion also requires the pair table.
+        include_shape_contact_pairs: Whether geometry conversion also requires the pair array.
 
     Returns:
         (model_required_contacts, world_required_contacts):
@@ -1136,9 +1136,7 @@ def compute_required_contact_capacity(
         include_shape_contact_pairs
         or supplied_pairs
         or (isinstance(model, Model) and model._shape_contact_pairs is not None)
-        or model.shape_contact_pair_count != int(topology.counts.sum())
     ):
-        # Active prefixes need the exact pair order, which topology summaries omit.
         if topology is not None and not normalized_worlds:
             shape_world = wp.array(topology.shape_world, dtype=wp.int32, device=model.device)
         world_max_contacts_wp = wp.zeros(model.world_count, dtype=wp.int64, device=model.device)

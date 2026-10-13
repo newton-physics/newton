@@ -2341,7 +2341,6 @@ class TestContactCountEstimator(unittest.TestCase):
         """Visual meshes should not affect rigid contact capacity estimates."""
         model = newton.Model()
         model.world_count = 1
-        model.shape_contact_pair_count = 0
 
         shape_type = np.array(
             [int(GeoType.BOX)] * 4 + [int(GeoType.MESH)] * 100,
@@ -2364,7 +2363,6 @@ class TestContactCountEstimator(unittest.TestCase):
         """When pair count is huge, the heuristic provides a tighter bound."""
         model = newton.Model()
         model.world_count = 1
-        model.shape_contact_pair_count = 999999
 
         # 4 primitives (CPP=5), 3 meshes (CPP=40), 2 planes, all in world 0.
         # non-plane: (4*20*5 + 3*20*40) // 2 = (400 + 2400) // 2 = 1400
@@ -2380,14 +2378,16 @@ class TestContactCountEstimator(unittest.TestCase):
         model.shape_type = wp.array(shape_type, dtype=wp.int32)
         model.shape_world = wp.array(shape_world, dtype=wp.int32)
 
-        estimate = _estimate_rigid_contact_max(model)
+        with mock.patch.object(
+            newton.Model, "shape_contact_pair_count", new_callable=mock.PropertyMock, return_value=999999
+        ):
+            estimate = _estimate_rigid_contact_max(model)
         self.assertEqual(estimate, 1680)
 
     def test_world_aware_plane_estimate(self):
         """Per-world plane computation avoids quadratic cross-world overcount."""
         model = newton.Model()
         model.world_count = 4
-        model.shape_contact_pair_count = 0
 
         # 4 worlds, each with 10 boxes (CPP=5) and 10 planes.
         # non-plane: (40*20*5) // 2 = 2000
@@ -2410,7 +2410,6 @@ class TestContactCountEstimator(unittest.TestCase):
         """When precomputed pair count is tighter than the heuristic, it is used."""
         model = newton.Model()
         model.world_count = 4
-        model.shape_contact_pair_count = 300
 
         # 40 boxes (CPP=5) across 4 worlds, no planes.
         # heuristic: (40*20*5) // 2 = 2000
@@ -2426,7 +2425,10 @@ class TestContactCountEstimator(unittest.TestCase):
         model.shape_type = wp.array(shape_type, dtype=wp.int32)
         model.shape_world = wp.array(shape_world, dtype=wp.int32)
 
-        estimate = _estimate_rigid_contact_max(model)
+        with mock.patch.object(
+            newton.Model, "shape_contact_pair_count", new_callable=mock.PropertyMock, return_value=300
+        ):
+            estimate = _estimate_rigid_contact_max(model)
         self.assertEqual(estimate, 1500)
 
 

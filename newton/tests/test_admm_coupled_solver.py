@@ -1371,7 +1371,6 @@ class TestAdmmCollisionDetection(unittest.TestCase):
         model.shape_contact_pairs = wp.array(
             np.asarray([(shape_a, shape_b)], dtype=np.int32), dtype=wp.vec2i, device=model.device
         )
-        model.shape_contact_pair_count = 1
 
         with self.assertRaisesRegex(ValueError, "same world"):
             SolverCoupledADMM(

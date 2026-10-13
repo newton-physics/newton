@@ -2012,7 +2012,7 @@ class CollisionPipeline:
                 use_lean_gjk_mpr = not bool(lean_unsupported & set(route_shape_types.tolist()))
 
                 if max_triangle_pairs is None:
-                    # NXN/SAP count from shape masks without materializing the model's lazy pair table.
+                    # NXN/SAP count from shape masks without materializing the model's lazy pair array.
                     triangle_pair_estimate = _estimate_triangle_pair_details(
                         model,
                         explicit_pairs_host,

@@ -362,7 +362,7 @@ class _ShapeContactPairs:
 def _shape_contact_pair_counts(model, *, shape_mask: np.ndarray | None = None) -> np.ndarray:
     """Cache read-only counts for globals (slot zero) and each local world.
 
-    Default pairs use finalized topology; supplied tables use their active prefix.
+    Default pairs use finalized topology; supplied arrays use their full contents.
     A mask selects pairs whose two shapes are selected.
     """
     if shape_mask is not None:
@@ -371,21 +371,18 @@ def _shape_contact_pair_counts(model, *, shape_mask: np.ndarray | None = None) -
             raise ValueError("shape_mask must be a boolean array of length shape_count")
     key = None if shape_mask is None else np.packbits(shape_mask).tobytes()
     supplied, pairs = _shape_contact_pair_override(model)
-    use_pairs = supplied or model.shape_contact_pair_count != int(model._shape_contact_pair_data.counts.sum())
-    # Supplied arrays and active prefixes can change without invalidating summaries.
-    cache = None if use_pairs else model._shape_contact_pair_counts
+    # Supplied arrays can change without invalidating summaries.
+    cache = None if supplied else model._shape_contact_pair_counts
     if cache is not None and key in cache:
         return cache[key]
-    if use_pairs:
+    if supplied:
         counts = np.zeros(model.world_count + 1, dtype=np.int64)
-        if not supplied and model.shape_contact_pair_count:
-            pairs = model.shape_contact_pairs
         if pairs is not None:
-            pairs = pairs.numpy().reshape((-1, 2))[: model.shape_contact_pair_count]
+            pairs = pairs.numpy().reshape((-1, 2))
             if shape_mask is not None:
                 pairs = pairs[shape_mask[pairs].all(axis=1)]
             if len(pairs):
-                worlds = model.shape_world.numpy() if supplied else model._shape_contact_pair_data.shape_world
+                worlds = model.shape_world.numpy()
                 counts = np.bincount(np.max(worlds[pairs], axis=1) + 1, minlength=model.world_count + 1)
     else:
         counts = _shape_contact_pair_topology(model).count_pairs(shape_mask)
@@ -417,18 +414,11 @@ def _shape_contact_pairs_for_mask(model, shape_mask: np.ndarray, *, shape_pairs=
     """Get a subset without materializing the model's full explicit pair cache."""
     supplied, pairs = _shape_contact_pair_override(model)
     if shape_pairs is None and not supplied:
-        topology = _shape_contact_pair_topology(model)
-        if model.shape_contact_pair_count == int(topology.counts.sum()):
-            return topology.build_pairs(shape_mask)
-        if model.shape_contact_pair_count == 0:
-            return np.empty((0, 2), dtype=np.int32)
-        pairs = model.shape_contact_pairs
+        return _shape_contact_pair_topology(model).build_pairs(shape_mask)
     pairs = pairs if shape_pairs is None else shape_pairs
     if pairs is None:
         return np.empty((0, 2), dtype=np.int32)
     pairs = pairs.numpy().reshape((-1, 2))
-    if shape_pairs is None:
-        pairs = pairs[: model.shape_contact_pair_count]
     return pairs[shape_mask[pairs[:, 0]] & shape_mask[pairs[:, 1]]]
 
 
