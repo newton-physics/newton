@@ -52,6 +52,40 @@ complete iterations, then checks occur every ``check_interval`` and at the
 ``iterations`` cap. Increasing the interval reduces check overhead but can delay
 stopping. The default ``convergence=None`` uses the fixed iteration count.
 
+With positive ``gamma``, interface agreement alone is insufficient: participants
+can move together while their relative velocity and coupling-force change are
+zero. The proximal shift still depends on each participant's previous iterate.
+Early stopping therefore also checks every velocity affected by that shift,
+including contributions retained for candidate contacts with no populated rows.
+
+Writing the velocity shift as
+
+.. math::
+
+    s^k = \frac{v_n + \alpha v^k}{1 + \alpha},
+
+the additional criterion is
+
+.. math::
+
+    \max(1, \alpha)\,\lVert v^{k+1} - v^k\rVert \leq \epsilon_v.
+
+This requires both the iterate increment and its proximal contribution
+``alpha * (v_next - v_previous)`` to be small. Checking only the increment
+could accept slow progress caused by a large proximal factor. The latter
+quantity equals ``(1 + alpha) * (s_next - s_previous)`` and has velocity units;
+for a particle it is the change in proximal momentum divided by the base mass.
+
+For translation, ``alpha`` is the added proximal mass divided by the base mass.
+For body rotation it is the analogous ratio using the scalar inertia in the
+velocity shift. Generalized velocities use their dimensionless proximal
+factors. Translation and rotation use the linear and angular velocity
+tolerances, respectively; generalized velocities
+are checked per DOF with the corresponding units. Zero-factor components are
+not checked. These checks use the iterates before and after the complete
+participant solve, including all its substeps, at the same check boundaries
+as the interface criteria. They add no host readbacks or velocity snapshots.
+
 The device arrays :attr:`SolverCoupledADMM.iteration_count` and
 :attr:`SolverCoupledADMM.converged` report the last check. Convergence is global
 across all worlds. Reaching the cap returns the last iterate; the criteria do

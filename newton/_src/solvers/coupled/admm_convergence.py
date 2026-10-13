@@ -172,6 +172,106 @@ def check_convergence_kernel(
         wp.atomic_max(failed, 0, 1)
 
 
+@wp.func
+def _proximal_factor(lump: float, augmented_mass: float) -> float:
+    """Compute the ratio of added proximal mass to base mass.
+
+    The base mass is ``augmented_mass - lump``. The same ratio applies to
+    scalar inertia values. Return zero when the velocity shift is inactive
+    and infinity for invalid inputs that must fail the convergence check.
+    """
+    if not wp.isfinite(lump) or lump < 0.0:
+        return wp.inf
+    if lump == 0.0:
+        return 0.0
+    if not wp.isfinite(augmented_mass):
+        return wp.inf
+    base_mass = augmented_mass - lump
+    # The shift kernels leave v_n unchanged when the base mass is nonpositive.
+    if base_mass <= 0.0:
+        return 0.0
+    return lump / base_mass
+
+
+@wp.func
+def _proximal_passes(delta_norm: float, factor: float, tolerance: float) -> bool:
+    """Check the velocity change and its product with the proximal factor against the tolerance.
+
+    A zero factor disables the check. Otherwise, both quantities must be
+    finite and no greater than the tolerance.
+    """
+    if not wp.isfinite(factor) or factor < 0.0:
+        return False
+    if factor == 0.0:
+        return True
+    error = wp.max(1.0, factor) * delta_norm
+    return wp.isfinite(error) and error <= tolerance
+
+
+@wp.kernel(enable_backward=False)
+def check_particle_proximal_convergence_kernel(
+    previous: wp.array[wp.vec3],
+    current: wp.array[wp.vec3],
+    proximal_mass: wp.array[float],
+    augmented_mass: wp.array[float],
+    velocity_tolerance: float,
+    failed: wp.array[int],
+):
+    """Flag particle velocity changes that fail the proximal convergence check."""
+    i = wp.tid()
+    factor = _proximal_factor(proximal_mass[i], augmented_mass[i])
+    if not _proximal_passes(_norm(current[i] - previous[i]), factor, velocity_tolerance):
+        wp.atomic_max(failed, 0, 1)
+
+
+@wp.kernel(enable_backward=False)
+def check_body_proximal_convergence_kernel(
+    previous: wp.array[wp.spatial_vector],
+    current: wp.array[wp.spatial_vector],
+    proximal_mass: wp.array[float],
+    proximal_inertia: wp.array[float],
+    augmented_mass: wp.array[float],
+    augmented_inertia: wp.array[wp.mat33],
+    linear_velocity_tolerance: float,
+    angular_velocity_tolerance: float,
+    failed: wp.array[int],
+):
+    """Check body velocity changes using separate linear and angular tolerances."""
+    i = wp.tid()
+    delta = current[i] - previous[i]
+    linear_factor = _proximal_factor(proximal_mass[i], augmented_mass[i])
+    angular_factor = _proximal_factor(proximal_inertia[i], wp.trace(augmented_inertia[i]) / 3.0)
+    if not _proximal_passes(
+        _norm(wp.spatial_top(delta)), linear_factor, linear_velocity_tolerance
+    ) or not _proximal_passes(_norm(wp.spatial_bottom(delta)), angular_factor, angular_velocity_tolerance):
+        wp.atomic_max(failed, 0, 1)
+
+
+@wp.kernel(enable_backward=False)
+def check_joint_proximal_convergence_kernel(
+    previous: wp.array[float],
+    current: wp.array[float],
+    proximal_factor: wp.array[float],
+    joint_qd_start: wp.array[int],
+    joint_dof_dim: wp.array2d[int],
+    linear_velocity_tolerance: float,
+    angular_velocity_tolerance: float,
+    failed: wp.array[int],
+):
+    """Check each joint velocity change using its linear or angular tolerance."""
+    joint = wp.tid()
+    start = joint_qd_start[joint]
+    linear_count = joint_dof_dim[joint, 0]
+    count = linear_count + joint_dof_dim[joint, 1]
+    for axis in range(count):
+        dof = start + axis
+        tolerance = linear_velocity_tolerance
+        if axis >= linear_count:
+            tolerance = angular_velocity_tolerance
+        if not _proximal_passes(wp.abs(current[dof] - previous[dof]), proximal_factor[dof], tolerance):
+            wp.atomic_max(failed, 0, 1)
+
+
 @wp.kernel(enable_backward=False)
 def update_convergence_status_kernel(
     iterations: int,

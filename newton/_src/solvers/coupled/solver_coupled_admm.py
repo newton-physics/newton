@@ -23,7 +23,10 @@ from .admm_contact_stream import (
 )
 from .admm_convergence import (
     AdmmConvergenceGroup,
+    check_body_proximal_convergence_kernel,
     check_convergence_kernel,
+    check_joint_proximal_convergence_kernel,
+    check_particle_proximal_convergence_kernel,
     snapshot_forces_kernel,
     update_convergence_status_kernel,
 )
@@ -584,7 +587,7 @@ class SolverCoupledADMM(SolverCoupled):
 
     @dataclass(frozen=True, kw_only=True)
     class ConvergenceConfig:
-        """Optional per-row velocity and force fixed-point tolerances.
+        """Optional interface and participant-velocity fixed-point tolerances.
 
         Every populated row must satisfy both ``norm(u - Jv) <= linear_velocity_tolerance``
         and ``norm(f_next - f_used) <= force_tolerance + force_relative_tolerance *
@@ -594,10 +597,19 @@ class SolverCoupledADMM(SolverCoupled):
         Angular rows use the angular velocity and torque tolerances. Revolute
         attachment rows omit the free hinge axis. Speculative contacts are included.
 
-        These checks measure agreement at the coupling interface; they do not
-        bound integration error or guarantee nonlinear solver stability. Nonfinite
-        residuals fail convergence. Empty interfaces pass after ``min_iterations``
-        without certifying state finiteness.
+        With positive ``gamma``, affected participant velocities must also satisfy
+        ``max(1, alpha) * norm(v_next - v_previous) <= velocity_tolerance``.
+        Here ``alpha`` is the added proximal mass divided by the base mass,
+        the corresponding scalar inertia ratio used by the body shift, or the
+        generalized-velocity proximal factor. Linear and angular components use
+        their respective tolerances; joint velocities are checked per DOF.
+
+        These checks measure agreement at the coupling interface and velocity
+        changes between ADMM iterations. They do not bound integration error or
+        guarantee nonlinear solver stability. Nonfinite residuals fail convergence.
+        Empty interfaces pass after ``min_iterations``
+        only if any remaining proximal contributions also pass, without certifying
+        state finiteness outside the checked quantities.
         All tolerances must be finite, nonnegative single-precision values.
         """
 
@@ -2940,7 +2952,7 @@ class SolverCoupledADMM(SolverCoupled):
 
     @property
     def converged(self) -> wp.array[int] | None:
-        """Whether all interface rows passed the last check (0 or 1), shape [1].
+        """Whether all interface and proximal checks passed (0 or 1), shape [1].
 
         This device array is zero before the first step and after reset, and
         ``None`` when convergence is disabled. A zero at the iteration cap means
@@ -3005,7 +3017,7 @@ class SolverCoupledADMM(SolverCoupled):
             self._convergence_failed.zero_()
 
     def _check_convergence(self, iterations: int) -> None:
-        """Evaluate all interface rows and record the completed iteration count."""
+        """Combine interface and proximal checks and record the iteration count."""
         config = self._coupling.convergence
         count = self._convergence_force_used.shape[0]
         if count:
@@ -3033,6 +3045,61 @@ class SolverCoupledADMM(SolverCoupled):
             outputs=[self._convergence_iteration_count, self._convergence_converged, self._convergence_continuing],
             device=self.model.device,
         )
+
+    def _check_proximal_convergence(self, entry: SolverEntry, buf: _AdmmBuffers) -> None:
+        """Check participant velocity changes between consecutive ADMM iterations.
+
+        Call before updating the previous velocities stored in ``buf``.
+        """
+        config = self._coupling.convergence
+        device = self.model.device
+        if buf.body_qd_k is not None and buf.body_qd_k.shape[0] > 0:
+            wp.launch(
+                check_body_proximal_convergence_kernel,
+                dim=buf.body_qd_k.shape[0],
+                inputs=[
+                    buf.body_qd_k,
+                    entry.state_1.body_qd,
+                    buf.body_proximal_mass,
+                    buf.body_proximal_inertia,
+                    entry.view.body_mass,
+                    entry.view.body_inertia,
+                    config.linear_velocity_tolerance,
+                    config.angular_velocity_tolerance,
+                ],
+                outputs=[self._convergence_failed],
+                device=device,
+            )
+        if buf.particle_qd_k is not None and buf.particle_qd_k.shape[0] > 0:
+            wp.launch(
+                check_particle_proximal_convergence_kernel,
+                dim=buf.particle_qd_k.shape[0],
+                inputs=[
+                    buf.particle_qd_k,
+                    entry.state_1.particle_qd,
+                    buf.particle_proximal_mass,
+                    entry.view.particle_mass,
+                    config.linear_velocity_tolerance,
+                ],
+                outputs=[self._convergence_failed],
+                device=device,
+            )
+        if buf.joint_qd_k is not None and buf.joint_qd_k.shape[0] > 0:
+            wp.launch(
+                check_joint_proximal_convergence_kernel,
+                dim=entry.view.joint_count,
+                inputs=[
+                    buf.joint_qd_k,
+                    entry.state_1.joint_qd,
+                    buf.joint_qd_proximal_factor,
+                    entry.view.joint_qd_start,
+                    entry.view.joint_dof_dim,
+                    config.linear_velocity_tolerance,
+                    config.angular_velocity_tolerance,
+                ],
+                outputs=[self._convergence_failed],
+                device=device,
+            )
 
     def _step_coupled(
         self,
@@ -3139,6 +3206,8 @@ class SolverCoupledADMM(SolverCoupled):
 
         for name, entry in self._entries.items():
             buf = self._admm_buffers[name]
+            if check and self._coupling.gamma > 0.0:
+                self._check_proximal_convergence(entry, buf)
             if buf.body_qd_k is not None:
                 wp.copy(buf.body_qd_k, entry.state_1.body_qd)
             if buf.particle_qd_k is not None:

@@ -12,7 +12,10 @@ import warp as wp
 import newton
 from newton._src.solvers.coupled.admm_convergence import (
     AdmmConvergenceGroup,
+    check_body_proximal_convergence_kernel,
     check_convergence_kernel,
+    check_joint_proximal_convergence_kernel,
+    check_particle_proximal_convergence_kernel,
     snapshot_forces_kernel,
 )
 from newton.solvers import SolverSemiImplicit, SolverVBD
@@ -20,7 +23,9 @@ from newton.solvers.experimental.coupled import SolverCoupled, SolverCoupledADMM
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
-def _make_solver(device, convergence=None, *, iterations=8, substeps=1, gap=-0.099, velocity=0.0):
+def _make_solver(
+    device, convergence=None, *, iterations=8, substeps=1, gap=-0.099, velocity=0.0, gamma=0.0, baumgarte=0.2
+):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     builder.add_particle(pos=(gap, 0.0, 0.0), vel=(velocity, 0.0, 0.0), mass=1.0, radius=0.05)
     builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(-velocity, 0.0, 0.0), mass=1.0, radius=0.05)
@@ -40,7 +45,8 @@ def _make_solver(device, convergence=None, *, iterations=8, substeps=1, gap=-0.0
         coupling=SolverCoupledADMM.Config(
             iterations=iterations,
             rho=20.0,
-            baumgarte=0.2,
+            gamma=gamma,
+            baumgarte=baumgarte,
             convergence=convergence,
             contact_pairs=[SolverCoupledADMM.ContactPair("a", "b")],
         ),
@@ -164,6 +170,128 @@ def test_stopping(test, device):
     solver.reset(state_in)
     test.assertEqual(int(solver.iteration_count.numpy()[0]), 0)
     test.assertEqual(int(solver.converged.numpy()[0]), 0)
+
+
+def test_proximal_common_motion(test, device):
+    """Resolve shared acceleration even when every interface residual is zero."""
+    dt = 0.001
+    for gamma, substeps, interval, gap in ((0.1, 1, 1, -0.099), (1.0, 3, 3, -0.11)):
+        config = SolverCoupledADMM.ConvergenceConfig(check_interval=interval)
+        outputs = []
+        for convergence in (None, config):
+            model, solver = _make_solver(
+                device, convergence, iterations=256, substeps=substeps, gamma=gamma, baumgarte=0.0, gap=gap
+            )
+            state_in, state_out = model.state(), model.state()
+            state_in.particle_f.fill_(wp.vec3(0.0, 1.0, 0.0))
+            solver.step(state_in, state_out, None, None, dt)
+            outputs.append(state_out.particle_qd.numpy())
+            group = solver._admm_dynamic_pp_contact_groups[0]
+            test.assertEqual(int(group.active_count.numpy()[0]) > 0, gap > -0.1)
+            np.testing.assert_array_equal(group.u.numpy(), group.Jv.numpy())
+            if convergence is not None:
+                test.assertEqual(int(solver.converged.numpy()[0]), 1)
+                test.assertGreater(int(solver.iteration_count.numpy()[0]), 2)
+                test.assertLess(int(solver.iteration_count.numpy()[0]), 256)
+        np.testing.assert_allclose(outputs[1], outputs[0], atol=config.linear_velocity_tolerance, rtol=0.0)
+        np.testing.assert_allclose(outputs[1][:, 1], dt, atol=config.linear_velocity_tolerance, rtol=0.0)
+
+
+def test_proximal_criteria(test, device):
+    """Reject amplified increments and invalid active inputs while ignoring unshifted velocities."""
+    previous = wp.zeros(1, dtype=wp.vec3, device=device)
+    current = wp.zeros_like(previous)
+    mass = wp.array([1.0], dtype=float, device=device)
+    lump = wp.zeros(1, dtype=float, device=device)
+    failed = wp.zeros(1, dtype=int, device=device)
+    for added_mass, delta, expected in (
+        (100.0, 1e-6, 1),  # A small increment can hide a large proximal contribution.
+        (100.0, 1e-8, 0),
+        (0.1, 1e-4, 1),  # Small proximal factors still require the iterate itself to settle.
+        (0.0, float("nan"), 0),
+        (1.0, float("nan"), 1),
+        (1.0, float("inf"), 1),
+        (float("nan"), 0.0, 1),
+        (float("inf"), 0.0, 1),
+    ):
+        mass.fill_(1.0 + added_mass)
+        lump.fill_(added_mass)
+        current.fill_(wp.vec3(delta, 0.0, 0.0))
+        failed.zero_()
+        wp.launch(
+            check_particle_proximal_convergence_kernel,
+            dim=1,
+            inputs=[previous, current, lump, mass, 1e-5, failed],
+            device=device,
+        )
+        test.assertEqual(int(failed.numpy()[0]), expected)
+
+
+def test_proximal_angular_and_joint_units(test, device):
+    """Check body rotation and mixed joint layouts with separate angular tolerances."""
+    previous = wp.zeros(1, dtype=wp.spatial_vector, device=device)
+    current = wp.zeros_like(previous)
+    lump = wp.array([1.0], dtype=float, device=device)
+    mass = wp.array([2.0], dtype=float, device=device)
+    inertia = wp.array([np.eye(3) * 2.0], dtype=wp.mat33, device=device)
+    failed = wp.zeros(1, dtype=int, device=device)
+    for axis, expected in ((0, 0), (3, 1)):
+        value = np.zeros((1, 6), dtype=np.float32)
+        value[0, axis] = 1e-4
+        current.assign(value)
+        failed.zero_()
+        wp.launch(
+            check_body_proximal_convergence_kernel,
+            dim=1,
+            inputs=[previous, current, lump, lump, mass, inertia, 1e-3, 1e-5, failed],
+            device=device,
+        )
+        test.assertEqual(int(failed.numpy()[0]), expected)
+
+    # Free, revolute, and prismatic joint layouts in one participant.
+    starts = wp.array([0, 6, 7, 8], dtype=int, device=device)
+    dimensions = wp.array([[3, 3], [0, 1], [1, 0]], dtype=int, device=device)
+    factors = wp.ones(8, dtype=float, device=device)
+    previous_joint = wp.zeros(8, dtype=float, device=device)
+    current_joint = wp.zeros_like(previous_joint)
+    for dof, expected in ((0, 0), (3, 1), (6, 1), (7, 0)):
+        value = np.zeros(8, dtype=np.float32)
+        value[dof] = 1e-4
+        current_joint.assign(value)
+        failed.zero_()
+        wp.launch(
+            check_joint_proximal_convergence_kernel,
+            dim=3,
+            inputs=[previous_joint, current_joint, factors, starts, dimensions, 1e-3, 1e-5, failed],
+            device=device,
+        )
+        test.assertEqual(int(failed.numpy()[0]), expected)
+
+
+def test_proximal_graph_replay(test, device):
+    """Replay proximal stopping with changed forcing and reset convergence state."""
+    if not device.is_cuda:
+        test.skipTest("CUDA graphs require CUDA")
+    config = SolverCoupledADMM.ConvergenceConfig(check_interval=3)
+    model, solver = _make_solver(device, config, gamma=0.1, iterations=32, baumgarte=0.0, substeps=3)
+    state_in, state_out = model.state(), model.state()
+    state_in.particle_f.fill_(wp.vec3(0.0, 1.0, 0.0))
+    solver.step(state_in, state_out, None, None, 0.001)
+    solver.reset(state_in)
+    with wp.ScopedCapture(device=device) as capture:
+        solver.step(state_in, state_out, None, None, 0.001)
+    for force in (1.0, 2.0, 0.0):
+        solver.reset(state_in)
+        state_in.particle_f.fill_(wp.vec3(0.0, force, 0.0))
+        wp.capture_launch(capture.graph)
+        test.assertEqual(int(solver.converged.numpy()[0]), 1)
+        if force:
+            test.assertGreater(int(solver.iteration_count.numpy()[0]), 2)
+        else:
+            test.assertEqual(int(solver.iteration_count.numpy()[0]), 2)
+        np.testing.assert_allclose(
+            state_out.particle_qd.numpy()[:, 1], 0.001 * force, atol=config.linear_velocity_tolerance, rtol=0.0
+        )
 
 
 def test_cap_parity(test, device):
@@ -420,6 +548,10 @@ for func in (
     test_criteria,
     test_capacity,
     test_stopping,
+    test_proximal_common_motion,
+    test_proximal_criteria,
+    test_proximal_angular_and_joint_units,
+    test_proximal_graph_replay,
     test_cap_parity,
     test_graph_replay,
     test_rigid_groups,
