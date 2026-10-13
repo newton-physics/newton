@@ -87,6 +87,84 @@ class TestModelDeformableObjects(unittest.TestCase):
         for value in values.values():
             np.testing.assert_array_equal(value, [0, -1])
 
+    def test_reference_defaults_survive_composition(self):
+        """Remap default and sparse references without changing source builders or ordinary defaults."""
+        cases = (
+            ("scalar", wp.int32, 0, {}, [0, 0, 2, 2]),
+            ("implicit", wp.int32, None, {}, [0, 0, 2, 2]),
+            ("sparse", wp.int32, 1, {1: -1}, [1, -1, 3, -1]),
+            ("vector", wp.vec2i, wp.vec2i(0, -1), {}, [[0, -1], [0, -1], [2, -1], [2, -1]]),
+            ("sparse_vector", wp.vec2i, wp.vec2i(0, -1), {1: wp.vec2i(1, -2)}, [[0, -1], [1, -2], [2, -1], [3, -2]]),
+            ("negative", wp.int32, -1, {}, [-1, -1, -1, -1]),
+        )
+        prototype = newton.ModelBuilder()
+        for family, add in (("curve", _add_curve), ("surface", _add_surface), ("volume", _add_volume)):
+            add(prototype, label="first")
+            add(prototype, label="second")
+            frequency = getattr(newton.Model.AttributeFrequency, family.upper())
+            for name, dtype, default, values, _ in cases:
+                prototype.add_custom_attribute(
+                    newton.ModelBuilder.CustomAttribute(
+                        name=f"{family}_{name}",
+                        dtype=dtype,
+                        frequency=frequency,
+                        references=frequency,
+                        default=default,
+                        values=dict(values),
+                    )
+                )
+        prototype.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="temperature",
+                dtype=wp.float32,
+                frequency=newton.Model.AttributeFrequency.CURVE,
+                default=300.0,
+            )
+        )
+        prototype.add_custom_frequency(newton.ModelBuilder.CustomFrequency(name="sensor"))
+        prototype.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(name="sensor_tag", dtype=wp.int32, frequency="sensor")
+        )
+        for tag in (10, 20, 30):
+            prototype.add_custom_values(sensor_tag=tag)
+        for name, values in (("default", []), ("sparse", [None, 1])):
+            prototype.add_custom_attribute(
+                newton.ModelBuilder.CustomAttribute(
+                    name=f"sensor_curve_{name}",
+                    dtype=wp.int32,
+                    frequency="sensor",
+                    references=newton.Model.AttributeFrequency.CURVE,
+                    default=0,
+                    values=values,
+                )
+            )
+        for method in ("add_builder", "replicate", "source"):
+            builder = prototype if method == "source" else newton.ModelBuilder()
+            if method == "add_builder":
+                builder.add_builder(prototype)
+                builder.add_builder(prototype)
+            elif method == "replicate":
+                builder.replicate(prototype, 2)
+            for device in get_test_devices():
+                model = builder.finalize(device=device)
+                for family in ("curve", "surface", "volume"):
+                    for name, _, _, _, expected in cases:
+                        with self.subTest(method=method, device=device, family=family, kind=name):
+                            np.testing.assert_array_equal(
+                                getattr(model, f"{family}_{name}").numpy(),
+                                expected[:2] if method == "source" else expected,
+                            )
+                np.testing.assert_array_equal(model.temperature.numpy(), [300.0] * model.curve_count)
+                for name, expected in (("default", [0, 0, 0, 2, 2, 2]), ("sparse", [0, 1, 0, 2, 3, 2])):
+                    with self.subTest(method=method, device=device, sensor=name):
+                        np.testing.assert_array_equal(
+                            getattr(model, f"sensor_curve_{name}").numpy(),
+                            expected[:3] if method == "source" else expected,
+                        )
+        self.assertEqual(prototype.custom_attributes["curve_scalar"].values, {})
+        self.assertEqual(prototype.custom_attributes["curve_sparse"].values, {1: -1})
+        self.assertEqual(prototype.custom_attributes["sensor_curve_sparse"].values, [None, 1])
+
     def test_family_attribute_frequencies_survive_replication(self):
         """Size model and state attributes by deformable objects rather than their elements."""
         prototype = newton.ModelBuilder()
@@ -248,6 +326,14 @@ class TestModelDeformableObjects(unittest.TestCase):
             ("list_pair", wp.vec2i, [0, 1], [[-1, 0]]),
             ("tuple_pair", wp.vec2i, (0, 1), [[-1, 0]]),
         )
+        default_cases = (
+            ("scalar", wp.int32, 1, {}, [0, 0]),
+            ("implicit", wp.int32, None, {}, [-1, -1]),
+            ("sparse", wp.int32, 1, {2: 2}, [0, 1]),
+            ("vector", wp.vec2i, wp.vec2i(1, -1), {}, [[0, -1], [0, -1]]),
+            ("sparse_vector", wp.vec2i, wp.vec2i(1, 0), {2: wp.vec2i(2, -2)}, [[0, -1], [1, -2]]),
+            ("negative", wp.int32, -2, {}, [-2, -2]),
+        )
         for family in ("curve", "articulation"):
             builder.add_custom_attribute(
                 newton.ModelBuilder.CustomAttribute(
@@ -269,6 +355,27 @@ class TestModelDeformableObjects(unittest.TestCase):
                         values={0: value},
                     )
                 )
+            for name, dtype, default, values, _ in default_cases:
+                frequency = getattr(newton.Model.AttributeFrequency, family.upper())
+                builder.add_custom_attribute(
+                    newton.ModelBuilder.CustomAttribute(
+                        name=f"{family}_default_{name}",
+                        dtype=dtype,
+                        frequency=frequency,
+                        references=frequency,
+                        default=default,
+                        values=dict(values),
+                    )
+                )
+            builder.add_custom_attribute(
+                newton.ModelBuilder.CustomAttribute(
+                    name=f"{family}_default_once",
+                    dtype=wp.vec2i,
+                    frequency=newton.Model.AttributeFrequency.ONCE,
+                    references=family,
+                    default=wp.vec2i(0, 1),
+                )
+            )
 
         builder.add_custom_frequency(newton.ModelBuilder.CustomFrequency(name="curve"))
         builder.add_custom_attribute(
@@ -281,6 +388,17 @@ class TestModelDeformableObjects(unittest.TestCase):
         )
         builder.add_custom_values(custom_curve_pair=wp.vec2i(0, 1))
         builder.add_custom_values(custom_curve_pair=wp.vec2i(1, 0))
+        for name, values in (("default", []), ("sparse", [None, 2])):
+            builder.add_custom_attribute(
+                newton.ModelBuilder.CustomAttribute(
+                    name=f"custom_row_curve_{name}",
+                    dtype=wp.int32,
+                    frequency="curve",
+                    references=newton.Model.AttributeFrequency.CURVE,
+                    default=1,
+                    values=values,
+                )
+            )
         with self.assertWarnsRegex(UserWarning, "removed.*all.*segment bodies"):
             builder.collapse_fixed_joints()
         for device in get_test_devices():
@@ -293,7 +411,13 @@ class TestModelDeformableObjects(unittest.TestCase):
                         array = getattr(model, f"{family}_{name}")
                         self.assertEqual(array.dtype, dtype)
                         np.testing.assert_array_equal(array.numpy(), expected)
+                for name, _, _, _, expected in default_cases:
+                    with self.subTest(device=device, family=family, default=name):
+                        np.testing.assert_array_equal(getattr(model, f"{family}_default_{name}").numpy(), expected)
+                np.testing.assert_array_equal(getattr(model, f"{family}_default_once").numpy(), [[-1, 0]])
             np.testing.assert_array_equal(model.custom_curve_pair.numpy(), [[0, 1], [1, 0]])
+            np.testing.assert_array_equal(model.custom_row_curve_default.numpy(), [0, 0])
+            np.testing.assert_array_equal(model.custom_row_curve_sparse.numpy(), [0, 1])
             self.assertEqual(model.attribute_specs["curve_pair"].references, newton.Model.AttributeFrequency.CURVE)
             self.assertEqual(model.attribute_specs["custom_curve_pair"].references, "curve")
 

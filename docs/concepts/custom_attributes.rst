@@ -885,7 +885,6 @@ references ``BODY`` can record the attachment body for each curve:
            rod=newton.Rod([(0.0, y, 1.0), (0.1, y, 1.0), (0.2, y, 1.0)], radius=0.02),
            label=label,
        )
-   cable_id = builder.curve_label.index("cable")
    hose_id = builder.curve_label.index("hose")
    builder.add_custom_attribute(
        newton.ModelBuilder.CustomAttribute(
@@ -893,8 +892,8 @@ references ``BODY`` can record the attachment body for each curve:
            dtype=wp.int32,
            frequency=newton.Model.AttributeFrequency.CURVE,
            references=newton.Model.AttributeFrequency.BODY,
-           default=-1,  # No attachment recorded.
-           values={cable_id: gripper_body_id, hose_id: support_body_id},
+           default=gripper_body_id,
+           values={hose_id: support_body_id},
        )
    )
    scene = newton.ModelBuilder()
@@ -906,12 +905,17 @@ This attribute only records the association. It does not create the joints or
 constraints needed to hold the cable or hose. Each copy has six bodies: the
 gripper, the support, and four rod segments. The first world's curves reference
 bodies 0 and 1; the second world's curves reference bodies 6 and 7.
-During copying, row indices follow the curve count and stored body IDs follow
-the body count. Negative values in this scalar attribute remain unchanged.
+The cable uses the default gripper association; the hose overrides it with the
+support body. During copying, row indices follow the curve count and stored body
+IDs follow the body count. Default references for existing rows are copied just
+like explicit values. The source builder and its declared default stay unchanged.
 
-For explicitly supplied integer-vector values, copying offsets each nonnegative
-component and preserves negative ones. These values may be lists, tuples, NumPy
-integer arrays, or Warp integer vectors.
+For scalar and integer-vector references, copying offsets each nonnegative
+index and preserves negative ones. Vector values may be lists, tuples, NumPy
+integer arrays, or Warp integer vectors. When fixed-joint collapse changes curve
+or articulation IDs, default references for existing rows follow the same remap
+as explicit values. References to removed objects become ``-1``. These operations
+do not change the declared default for rows added later.
 
 Built-in string aliases are resolved when the attribute is registered. A custom
 frequency already named ``"curve"``, ``"surface"``, or ``"volume"`` keeps that

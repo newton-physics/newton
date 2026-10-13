@@ -1339,6 +1339,14 @@ class ModelBuilder:
                 return 0
             return len(self.values)
 
+        def _values_with_defaults(self, count: int) -> dict[int, Any] | list[Any]:
+            """Return explicit values for existing rows without changing this declaration."""
+            if self.is_custom_frequency:
+                values = list(self.values or [])
+                values.extend([None] * max(0, count - len(values)))
+                return [self.default if value is None else value for value in values]
+            return {**dict.fromkeys(range(count), self.default), **(self.values or {})}
+
         def _build_default_array(
             self, count: int, device: Devicelike | None = None, requires_grad: bool = False
         ) -> wp.array[Any] | list:
@@ -3948,7 +3956,7 @@ class ModelBuilder:
             reference_domains = (
                 entity_kinds if isinstance(attr.references, Model.AttributeFrequency) else custom_references
             )
-            if attr.values and reference_key not in (None, "world") and reference_key not in reference_domains:
+            if reference_key not in (None, "world") and reference_key not in reference_domains:
                 raise ValueError(
                     f"Unknown references value '{attr.references}'. "
                     f"Valid values are: {sorted(entity_kinds)} or custom frequencies."
@@ -5014,8 +5022,9 @@ class ModelBuilder:
                 f"Valid values are: {list(entity_offsets.keys())} or custom frequencies."
             )
 
+        source_counts = None
         for full_key, attr in builder.custom_attributes.items():
-            if not attr.values:
+            if not attr.values and attr.references in (None, Model.AttributeFrequency.WORLD):
                 if full_key not in self.custom_attributes:
                     freq_key = attr.frequency
                     mapped_values = [] if isinstance(freq_key, str) else {}
@@ -5037,6 +5046,7 @@ class ModelBuilder:
 
             use_current_world = attr.references == Model.AttributeFrequency.WORLD
             value_offset = 0 if use_current_world else get_offset(attr.references)
+            values = attr.values
             is_equality_target_attr = full_key == "mujoco:equality_constraint_target"
             is_collision_mask_domain_attr = full_key == collision_mask_domain_key and bool(collision_mask_domain_remap)
             needs_remap = (
@@ -5082,7 +5092,8 @@ class ModelBuilder:
                     if offset == 0:
                         return value
                     if self._is_integer_scalar(value):
-                        return value + offset if value >= 0 else value
+                        index = int(value)
+                        return index + offset if index >= 0 else value
                     if isinstance(value, (list, tuple)):
                         transformed = [
                             item + offset if self._is_integer_scalar(item) and item >= 0 else item for item in value
@@ -5112,20 +5123,34 @@ class ModelBuilder:
                         return collision_mask_domain_remap.get(int(value), value)
                     return transform_value(value)
 
+                if value_offset and not self._custom_attribute_defaults_match(
+                    transform_value(attr.default), attr.default
+                ):
+                    # Different copies need different reference values, not a shared shifted default.
+                    if source_counts is None:
+                        source_counts = self._builder_merge_counts(builder)
+                        source_counts.update(once=1, world=max(1, builder.world_count))
+                    count = (
+                        builder._custom_frequency_counts.get(freq_key, 0)
+                        if isinstance(freq_key, str)
+                        else source_counts.get(self._builder_frequency_key(freq_key), 0)
+                    )
+                    values = attr._values_with_defaults(count)
+
             merged = self.custom_attributes.get(full_key)
             if merged is None:
                 if isinstance(freq_key, str):
                     mapped_values = [None] * index_offset
                     if needs_remap:
-                        mapped_values.extend(transform_enum_value(idx, value) for idx, value in enumerate(attr.values))
+                        mapped_values.extend(transform_enum_value(idx, value) for idx, value in enumerate(values))
                     else:
-                        mapped_values.extend(attr.values)
+                        mapped_values.extend(values)
                 elif needs_remap:
                     mapped_values = {
-                        index_offset + idx: transform_enum_value(idx, value) for idx, value in attr.values.items()
+                        index_offset + idx: transform_enum_value(idx, value) for idx, value in values.items()
                     }
                 else:
-                    mapped_values = {index_offset + idx: value for idx, value in attr.values.items()}
+                    mapped_values = {index_offset + idx: value for idx, value in values.items()}
                 merged = replace(attr, values=mapped_values)
                 self.custom_attributes[full_key] = merged
                 self._custom_schema_epoch += 1
@@ -5145,15 +5170,15 @@ class ModelBuilder:
                 if len(merged.values) < index_offset:
                     merged.values.extend([None] * (index_offset - len(merged.values)))
                 if needs_remap:
-                    merged.values.extend(transform_enum_value(idx, value) for idx, value in enumerate(attr.values))
+                    merged.values.extend(transform_enum_value(idx, value) for idx, value in enumerate(values))
                 else:
-                    merged.values.extend(attr.values)
+                    merged.values.extend(values)
             elif needs_remap:
                 merged.values.update(
-                    {index_offset + idx: transform_enum_value(idx, value) for idx, value in attr.values.items()}
+                    {index_offset + idx: transform_enum_value(idx, value) for idx, value in values.items()}
                 )
             else:
-                merged.values.update({index_offset + idx: value for idx, value in attr.values.items()})
+                merged.values.update({index_offset + idx: value for idx, value in values.items()})
 
         if label_prefix:
             for frequency_key, frequency in builder.custom_frequencies.items():
@@ -6850,6 +6875,9 @@ class ModelBuilder:
         """
         joints_to_keep = set(joints_to_keep or ())
 
+        original_counts = self._builder_merge_counts(self)
+        original_counts.update(once=1, world=max(1, self.world_count))
+
         body_data = {}
         body_children = {-1: []}
         visited = {}
@@ -7360,6 +7388,25 @@ class ModelBuilder:
                 return value
             return remap.get(idx, -1) if idx >= 0 else value
 
+        object_remaps = {
+            Model.AttributeFrequency.ARTICULATION: articulation_remap,
+            Model.AttributeFrequency.CURVE: curve_remap,
+        }
+        for custom_attr in self.custom_attributes.values():
+            remap = object_remaps.get(custom_attr.references)
+            if remap is None or self._custom_attribute_defaults_match(
+                remap_object_reference(custom_attr.default, remap), custom_attr.default
+            ):
+                continue
+            # Fill old rows before their indices change; leave defaults for future rows alone.
+            frequency = custom_attr.frequency
+            count = (
+                self._custom_frequency_counts.get(frequency, 0)
+                if isinstance(frequency, str)
+                else original_counts.get(self._builder_frequency_key(frequency), 0)
+            )
+            custom_attr.values = custom_attr._values_with_defaults(count)
+
         # Built-in frequency attributes use dict storage by construction
         # (see CustomAttribute._create_empty_values_container).
         for frequency, remap in (
@@ -7373,10 +7420,6 @@ class ModelBuilder:
                     if old_idx in custom_attr.values
                 }
 
-        object_remaps = {
-            Model.AttributeFrequency.ARTICULATION: articulation_remap,
-            Model.AttributeFrequency.CURVE: curve_remap,
-        }
         for custom_attr in self.custom_attributes.values():
             remap = object_remaps.get(custom_attr.references)
             if remap is None or custom_attr.values is None:
