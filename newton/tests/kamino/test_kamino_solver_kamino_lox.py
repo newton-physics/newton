@@ -18,6 +18,7 @@ from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.utils.basics import (
     build_box_on_plane,
+    build_boxes_fourbar,
     build_cartpole,
 )
 
@@ -1335,6 +1336,43 @@ class TestSolverKaminoLOX(unittest.TestCase):
                     wp.capture_launch(capture.graph)
                     np.testing.assert_allclose(state_out.body_qd.numpy(), expected, rtol=0.0, atol=2.0e-4)
                     np.testing.assert_array_equal(solver.status.numpy()["failed"], [0])
+
+    def test_weight_beta_caps_geometric_mean_weights(self):
+        """Keep each body weight between its free patch complement and weight_beta times it, and below the mean."""
+        model = build_boxes_fourbar(floatingbase=True, ground=False).finalize(device=self.default_device)
+        config = self.make_config()
+        config.use_collision_detector = False
+        solver = SolverKamino(model, config=config)
+        solver.step(model.state(), model.state(), model.control(), contacts=None, dt=0.01)
+        lox = solver._solver_kamino._solver_fd
+        problem = lox._problem
+        # Weigh every body, and evaluate each cap on the same smooth matrix
+        problem.data.body_weight_enabled.fill_(1)
+
+        def weights(beta: float, sigma: float) -> np.ndarray:
+            problem.build_smooth_system(lox._model.time.dt, joint_penalty_scale=lox._data.joint_penalty_scale)
+            problem.compute_patch_schur_weights(beta, sigma)
+            return problem.system.data.weight.numpy().astype(np.float64)
+
+        def ratios(weight: np.ndarray, metric: np.ndarray) -> np.ndarray:
+            """Eigenvalues of each weight relative to each metric."""
+            inverse = np.linalg.inv(np.linalg.cholesky(metric))
+            return np.linalg.eigvalsh(inverse @ weight @ np.swapaxes(inverse, -1, -2))
+
+        mean = weights(0.0, 0.0)
+        free = weights(1.0, 0.0)
+        mean_ratios = ratios(mean, free)
+        self.assertGreater(float(mean_ratios.min()), 1.0 - 1.0e-3)
+        # A cap between one and the largest ratio of the mean binds on some bodies
+        beta = 0.5 * (1.0 + float(mean_ratios.max()))
+        self.assertGreater(beta, 1.1)
+        capped = weights(beta, 0.0)
+        capped_ratios = ratios(capped, free)
+        self.assertGreater(float(capped_ratios.min()), 1.0 - 1.0e-3)
+        self.assertAlmostEqual(float(capped_ratios.max()), beta, delta=1.0e-3 * beta)
+        self.assertLess(float(ratios(capped, mean).max()), 1.0 + 1.0e-3)
+        # A unit floor keeps the mean under any cap
+        np.testing.assert_allclose(weights(1.0, 1.0), mean, rtol=0.0, atol=1.0e-5 * np.abs(mean).max())
 
 
 if __name__ == "__main__":

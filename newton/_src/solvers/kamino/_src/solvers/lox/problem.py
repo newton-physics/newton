@@ -624,10 +624,15 @@ class LOXProblem:
         self._empty_float = wp.zeros(1, dtype=wp.float32, device=device)
         self._empty_int = wp.zeros(1, dtype=wp.int32, device=device)
 
-    def compute_patch_schur_weights(self) -> None:
+    def compute_patch_schur_weights(self, beta: float = 0.0, sigma: float = 0.0) -> None:
         """Set the body weights to the geometric means of the free and pinned patch Schur complements in ``A``.
 
         See :func:`.system_kernels.make_patch_weights_kernel`.
+
+        Args:
+            beta: Largest eigenvalue of each weight relative to the free patch Schur complement of its body,
+                or zero for no cap.
+            sigma: Smallest fraction of the geometric mean that the ``beta`` cap keeps.
         """
         system = self.system
         if system.num_bodies == 0:
@@ -687,6 +692,8 @@ class LOXProblem:
                 self._neighbor_row,
                 self._neighbor_row_side,
                 *rows,
+                beta,
+                sigma,
             ],
             outputs=[data.weight, data.inverse_weight],
             device=self.device,
