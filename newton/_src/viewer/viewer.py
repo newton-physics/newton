@@ -1087,9 +1087,7 @@ class ViewerBase(ABC):
         """
         pass
 
-    def get_frame(
-        self, target_image: wp.array3d[wp.uint8] | None = None, *, render_ui: bool = False
-    ) -> wp.array3d[wp.uint8]:
+    def get_frame(self, *, output: wp.array3d[wp.uint8] | None = None, render_ui: bool = False) -> wp.array3d[wp.uint8]:
         """Retrieve the last rendered frame as RGB image data.
 
         Call after :meth:`end_frame`. Supported by :class:`ViewerGL` and
@@ -1097,7 +1095,7 @@ class ViewerBase(ABC):
         ``.numpy()`` on the result to obtain a NumPy array.
 
         Args:
-            target_image: Optional pre-allocated Warp array on the viewer
+            output: Optional pre-allocated Warp array on the viewer
                 device with shape ``(height, width, 3)`` and dtype ``wp.uint8``.
                 If ``None``, a new array is created.
             render_ui: Whether to include UI overlays. Support depends on
@@ -1106,7 +1104,7 @@ class ViewerBase(ABC):
         Returns:
             RGB image data on the viewer device with shape
             ``(height, width, 3)``, dtype ``wp.uint8``, and a top-left origin.
-            If supplied, returns ``target_image``.
+            If supplied, returns ``output``.
 
         Raises:
             NotImplementedError: The viewer backend does not support frame
@@ -1293,7 +1291,7 @@ class ViewerBase(ABC):
         contacts: newton.Contacts,
         state: newton.State,
         *,
-        observables: newton.solvers.SolverObservables | None = None,
+        observables: newton.solvers.SolverBase.Observables | None = None,
     ):
         """Render contact visualizations.
 
@@ -1324,8 +1322,8 @@ class ViewerBase(ABC):
                 velocities at the contact points.
             observables: Optional solver observables containing ``contact_f``. If
                 omitted, the deprecated ``contacts.force`` array is used.
-                Binds compatible contact storage on first use; newly allocated forces
-                are zero until the solver updates them.
+                Must use the same contacts supplied at allocation; newly allocated forces
+                are zero until the solver updates them. See :ref:`solver_observables`.
 
                 .. experimental::
                     The solver observable API may change without prior notice.
@@ -1344,8 +1342,8 @@ class ViewerBase(ABC):
         if observables is not None:
             if observables.model is not self.model:
                 raise ValueError("Solver observables must belong to the viewer's model.")
-            if contact_f is not None:
-                observables.bind_contacts(contacts)
+            if contact_f is not None and observables.contacts is not contacts:
+                raise ValueError("Contact solver observables must use the Contacts instance supplied at allocation.")
 
         # Get contact count, clamped to buffer size (counter may exceed max on overflow)
         max_contacts = contacts.rigid_contact_max

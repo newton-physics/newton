@@ -245,7 +245,9 @@ class Example:
             self.model, rigid_contact_max=self.solver.get_max_contact_count(), soft_contact_max=0
         )
         self.contacts = self.collision_pipeline.contacts()
-        self.solver_observables = self.solver.observables(self.force_sensor.solver_observable_flags)
+        self.solver_observables = self.solver.observables(
+            contacts=self.contacts, kinds=self.force_sensor.solver_observable_kinds
+        )
 
         # The tool site's world pose, not the raw body's -- the two only
         # coincide when the site's own body-local transform is identity
@@ -437,7 +439,12 @@ class Example:
         coord_count_before = builder.joint_coord_count
         dof_count_before = builder.joint_dof_count
         body_count_before = builder.body_count
-        builder.add_urdf(urdf_path, xform=wp.transform(base_position, wp.quat_identity()), floating=False)
+        builder.add_urdf(
+            urdf_path,
+            xform=wp.transform(base_position, wp.quat_identity()),
+            floating=False,
+            joint_damping_mode="passive",
+        )
 
         # fr3_joint1..7 are the first 7 non-fixed joints after the (fixed,
         # 0-coordinate) base/mount joints this URDF starts with; the finger

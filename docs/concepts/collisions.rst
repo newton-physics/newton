@@ -443,7 +443,7 @@ Newton supports the following geometry types via :class:`~GeoType`:
    * - ``ELLIPSOID``
      - Ellipsoid
    * - ``MESH``
-     - Triangle mesh (arbitrary, including non-convex)
+     - Triangle mesh (arbitrary, including non-convex; :class:`~newton.solvers.SolverMuJoCo` collides its convex hull, see :doc:`/solvers/mujoco`)
    * - ``CONVEX_MESH``
      - Convex hull mesh
 
@@ -1026,8 +1026,9 @@ Pipeline construction publishes the resolved rigid and soft capacities as
 ``model.rigid_contact_max`` and ``model.soft_contact_max``. Before collision
 setup these are ``None``; zero is a valid empty capacity. Contact-indexed
 :ref:`solver_observables` use these capacities for eager allocation and freeze them
-once allocated. Construct the pipeline before calling ``solver.observables()`` for
-contact diagnostics; the live contact counts are not needed during allocation.
+once allocated. Construct the pipeline and create its contacts before calling
+``solver.observables(contacts=contacts, kinds=...)`` for contact diagnostics; the live
+contact counts are not needed during allocation.
 
 .. _Mesh Collisions:
 
@@ -1611,6 +1612,10 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
      - Per-contact frame-to-frame match result (int32). Only allocated when
        ``contact_matching`` is not ``"disabled"``.
        See :ref:`Contact Matching`.
+   * - ``rigid_contact_match_generation``
+     - Contact generation of this buffer that the match indices refer to, or ``-1``
+       (int32, one element). Allocated with ``rigid_contact_match_index``.
+       See :ref:`Contact Matching`.
    * - ``rigid_contact_new_indices``, ``rigid_contact_new_count``
      - Compact index list of new contacts in the current sorted buffer. Only
        allocated when ``contact_report=True``.
@@ -1651,7 +1656,7 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
 
    * - Observable
      - Description
-   * - ``SolverObservableFlags.CONTACT_F`` / ``SolverObservables.contact_f``
+   * - ``SolverBase.ObservableKind.CONTACT_F`` / ``SolverBase.Observables.contact_f``
      - Contact spatial forces (used by :class:`~sensors.SensorContact`).
        Bind the observable allocation to the contacts buffer and pass it to the
        solver step.
@@ -1660,13 +1665,13 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
 
    :class:`~solvers.SolverXPBD` with ``rigid_contact_con_weighting`` enabled
    (the default) does not conserve momentum at contacts.  The per-contact
-   forces written to ``SolverObservables.contact_f`` are
+   forces written to ``SolverBase.Observables.contact_f`` are
    approximate -- see that method's documentation for details.
 
 .. note::
 
    :class:`~solvers.SolverVBD` populates the rigid-contact rows of
-   :attr:`~solvers.SolverObservables.contact_f` when it integrates the rigid bodies, and the
+   :attr:`~solvers.SolverBase.Observables.contact_f` when it integrates the rigid bodies, and the
    soft-contact rows (row ``rigid_contact_max + i`` for soft contact ``i``) for
    rigid-soft particle, edge, and face records. With an external rigid solver, VBD's
    rigid rows are zero; consume that solver's forces from its own observables.
@@ -2272,6 +2277,15 @@ previous frame's sorted keys, then verifies candidates against a world-space
 distance threshold and a normal dot-product threshold.  The sort key encodes
 ``(shape_a, shape_b, sub_key)`` so only contacts between the same shape pair
 are compared.
+
+The previous frame is the pipeline's last collision pass, whichever
+:class:`~newton.Contacts` buffer it wrote.
+:attr:`Contacts.rigid_contact_match_generation` holds the
+:attr:`~newton.Contacts.contact_generation` of the buffer's contact set that the
+match indices refer to, or ``-1`` when the previous pass wrote another buffer
+(or none).  Code that carries per-contact state across frames can compare it
+with the generation it saved, so indices into another buffer's contacts are not
+mistaken for its own.
 
 The distance metric is the world-space **contact midpoint**
 ``0.5 * (world(point0) + world(point1))`` — symmetric in shape 0 and shape 1

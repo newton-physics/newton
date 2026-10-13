@@ -9,9 +9,7 @@ import copy
 import ctypes
 import functools
 import gc
-import inspect
 import math
-import os
 import warnings
 import weakref
 from bisect import bisect_left
@@ -24,6 +22,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 import numpy as np
 import warp as wp
 
+from ..core._warnings import _external_warning_stacklevel
 from ..core.types import (
     MAXVAL,
     Axis,
@@ -137,8 +136,6 @@ def _broadcast_triangle_opacities(value: Any, triangle_count: int) -> np.ndarray
         raise ValueError(f"Triangle opacity must contain finite values in [0, 1], got {invalid_value!r}.")
     return opacities
 
-
-_NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir)) + os.sep
 
 _DEPRECATED_ACTUATOR_DRIVE_UNSET = object()
 _ACTUATOR_CONTROLLER_CLASS_DEPRECATION_MSG = (
@@ -722,22 +719,6 @@ class ModelBuilder:
             return None
         return (float(color[0]), float(color[1]), float(color[2]))
 
-    @staticmethod
-    def _external_warning_stacklevel() -> int:
-        frame = inspect.currentframe()
-        if frame is None:
-            return 2
-
-        frame = frame.f_back
-        stacklevel = 1
-        try:
-            while frame is not None and os.path.normpath(frame.f_code.co_filename).startswith(_NEWTON_SRC_DIR):
-                frame = frame.f_back
-                stacklevel += 1
-            return stacklevel
-        finally:
-            del frame
-
     @classmethod
     def _resolve_rod_body_frame_origin(
         cls,
@@ -748,7 +729,7 @@ class ModelBuilder:
             warnings.warn(
                 cls._ROD_BODY_FRAME_ORIGIN_DEPRECATION_MESSAGE,
                 DeprecationWarning,
-                stacklevel=cls._external_warning_stacklevel(),
+                stacklevel=_external_warning_stacklevel(),
             )
             return "start"
         if body_frame_origin not in ("start", "com"):
@@ -1717,21 +1698,21 @@ class ModelBuilder:
         self._requested_state_attributes: set[str] = set()
         """Optional state attributes requested via :meth:`request_state_attributes`."""
 
-        # body-particle attachments
-        self.attachment_body_particle_body: list[int] = []
-        """Rigid body indices accumulated for :attr:`Model.attachment_body_particle_body`."""
-        self.attachment_body_particle_particle: list[int] = []
-        """Particle indices accumulated for :attr:`Model.attachment_body_particle_particle`."""
-        self.attachment_body_particle_body_point: list[Vec3] = []
-        """Body-local attachment points [m] accumulated for :attr:`Model.attachment_body_particle_body_point`."""
-        self.attachment_body_particle_stiffness: list[float] = []
-        """Attachment stiffness values [N/m] accumulated for :attr:`Model.attachment_body_particle_stiffness`."""
-        self.attachment_body_particle_damping: list[float] = []
-        """Attachment damping values [N·s/m] accumulated for :attr:`Model.attachment_body_particle_damping`."""
-        self.attachment_body_particle_enabled: list[bool] = []
-        """Attachment enabled states accumulated for :attr:`Model.attachment_body_particle_enabled`."""
-        self.attachment_body_particle_world: list[int] = []
-        """World indices accumulated for :attr:`Model.attachment_body_particle_world`."""
+        # particle-body attachments
+        self.attachment_particle_body_body: list[int] = []
+        """Rigid body indices accumulated for :attr:`Model.attachment_particle_body_body`."""
+        self.attachment_particle_body_particle: list[int] = []
+        """Particle indices accumulated for :attr:`Model.attachment_particle_body_particle`."""
+        self.attachment_particle_body_body_point: list[Vec3] = []
+        """Body-local attachment points [m] accumulated for :attr:`Model.attachment_particle_body_body_point`."""
+        self.attachment_particle_body_stiffness: list[float] = []
+        """Attachment stiffness values [N/m] accumulated for :attr:`Model.attachment_particle_body_stiffness`."""
+        self.attachment_particle_body_damping: list[float] = []
+        """Attachment damping values [N·s/m] accumulated for :attr:`Model.attachment_particle_body_damping`."""
+        self.attachment_particle_body_enabled: list[bool] = []
+        """Attachment enabled states accumulated for :attr:`Model.attachment_particle_body_enabled`."""
+        self.attachment_particle_body_world: list[int] = []
+        """World indices accumulated for :attr:`Model.attachment_particle_body_world`."""
 
         # springs
         self.spring_indices: list[int] = []
@@ -2282,7 +2263,7 @@ class ModelBuilder:
             Model.AttributeFrequency.CONTACT_SOFT,
         ):
             raise ValueError(
-                "Contact frequencies are only supported by SolverObservables, not builder custom attributes."
+                "Contact frequencies are only supported by SolverBase.Observables, not builder custom attributes."
             )
         key = attribute.key
 
@@ -3183,9 +3164,9 @@ class ModelBuilder:
         return len(self.spring_rest_length)
 
     @property
-    def attachment_body_particle_count(self) -> int:
-        """The number of body-particle attachments in the model."""
-        return len(self.attachment_body_particle_body)
+    def attachment_particle_body_count(self) -> int:
+        """The number of particle-body attachments in the model."""
+        return len(self.attachment_particle_body_body)
 
     @property
     def muscle_count(self):
@@ -4133,6 +4114,7 @@ class ModelBuilder:
         mesh_maxhullvert: int | None = None,
         force_position_velocity_actuation: bool = False,
         override_root_xform: bool = False,
+        joint_damping_mode: Literal["passive", "drive"] | None = None,
     ):
         """
         Parses a URDF file and adds the bodies and joints to the given ModelBuilder.
@@ -4231,6 +4213,19 @@ class ModelBuilder:
                 :attr:`~newton.JointTargetMode.POSITION` if stiffness > 0, :attr:`~newton.JointTargetMode.VELOCITY` if only
                 damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
                 (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
+            joint_damping_mode: How to interpret URDF ``<dynamics damping>``.
+                ``"passive"`` imports it into ``joint_damping`` and keeps drive
+                damping at ``default_joint_cfg.target_kd``. ``"drive"`` imports it
+                into ``joint_target_kd``; absent values use ``default_joint_cfg.target_kd``.
+                In drive mode, passive damping uses ``default_joint_cfg.damping``
+                for revolute, prismatic, and planar joints.
+                XPBD/VBD do not consume passive joint damping.
+
+                .. deprecated:: 1.7
+                    The implicit None default retains the drive mapping and warns
+                    when the URDF authors damping. The default will become
+                    ``"passive"`` in Newton 1.8. Pass either mode explicitly to
+                    silence the warning; both explicit modes remain supported.
         """
         from ..utils.import_urdf import parse_urdf  # noqa: PLC0415
 
@@ -4255,6 +4250,7 @@ class ModelBuilder:
             mesh_maxhullvert=mesh_maxhullvert,
             force_position_velocity_actuation=force_position_velocity_actuation,
             override_root_xform=override_root_xform,
+            joint_damping_mode=joint_damping_mode,
         )
 
     def add_usd(
@@ -4289,6 +4285,8 @@ class ModelBuilder:
         convert_mjc_equality_constraints: bool = True,
         override_root_xform: bool = False,
         legacy_margin_gap: bool = False,
+        legacy_angular_velocity_units: bool = False,
+        legacy_springref_units: bool = False,
         return_deformable_results: bool = False,
     ) -> dict[str, Any]:
         """Parses a Universal Scene Description (USD) stage and adds rigid bodies, particles, soft bodies, shapes, and joints to the given ModelBuilder.
@@ -4425,6 +4423,31 @@ class ModelBuilder:
                 where ``shape_margin`` is computed as ``mjc_margin - mjc_gap``.
                 Use for USD files authored against MuJoCo <= 3.8. Defaults to
                 False (identity translation matching MuJoCo 3.9 semantics).
+            legacy_angular_velocity_units: If True, restore Newton 1.6 joint-state angular velocity handling:
+                resolved ``state:angular:physics:velocity``
+                and D6 ``state:rot*:physics:velocity`` values are copied into
+                ``joint_qd`` without converting degrees/s to radians/s. Applies
+                to revolute, native D6, and merged joints. Rigid-body velocities,
+                linear joint velocities, positions, and drive targets retain their
+                usual unit conversion. Defaults to False.
+
+                .. deprecated:: 1.7
+                    This temporary flag will be removed in Newton 1.8. Enabling
+                    it emits a :class:`DeprecationWarning`. Migrate authored
+                    asset values to their documented units and leave it False.
+
+            legacy_springref_units: If True, restore Newton 1.6 handling of ``mjc:springref`` as an
+                already converted Newton value, ignoring
+                ``mjc:compiler:angle`` for spring references only. ``mjc:ref``
+                conversion is unchanged. Requires registered MuJoCo custom
+                attributes to load spring references. Defaults to False, which
+                interprets revolute spring references using the compiler's angle
+                units (degrees if unauthored) and converts them to radians.
+
+                .. deprecated:: 1.7
+                    This temporary flag will be removed in Newton 1.8. Enabling
+                    it emits a :class:`DeprecationWarning`. Migrate authored
+                    asset values to their documented units and leave it False.
 
             return_deformable_results: If True, include the experimental deformable entries in the
                 returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` /
@@ -4581,6 +4604,8 @@ class ModelBuilder:
             convert_mjc_equality_constraints=convert_mjc_equality_constraints,
             override_root_xform=override_root_xform,
             legacy_margin_gap=legacy_margin_gap,
+            legacy_angular_velocity_units=legacy_angular_velocity_units,
+            legacy_springref_units=legacy_springref_units,
             return_deformable_results=return_deformable_results,
         )
 
@@ -5516,7 +5541,7 @@ class ModelBuilder:
                     f"bodies. A FREE joint parallel to another joint is inconsistent. Use add_link() "
                     f"with the appropriate joint type instead of add_body().",
                     UserWarning,
-                    stacklevel=self._external_warning_stacklevel(),
+                    stacklevel=_external_warning_stacklevel(),
                 )
             else:
                 warnings.warn(
@@ -5525,7 +5550,7 @@ class ModelBuilder:
                     f"bodies. Parallel joints between the same pair of bodies have undefined semantics and may not "
                     f"behave as expected.",
                     UserWarning,
-                    stacklevel=self._external_warning_stacklevel(),
+                    stacklevel=_external_warning_stacklevel(),
                 )
 
         self.joint_type.append(joint_type)
@@ -6319,7 +6344,7 @@ class ModelBuilder:
         warnings.warn(
             "ModelBuilder.add_joint_cable() is deprecated in Newton 1.6; use add_joint_rod() instead.",
             DeprecationWarning,
-            stacklevel=self._external_warning_stacklevel(),
+            stacklevel=_external_warning_stacklevel(),
         )
         return self.add_joint_rod(
             parent=parent,
@@ -6611,7 +6636,7 @@ class ModelBuilder:
             "ModelBuilder.add_constraint_mimic() is deprecated in Newton 1.7; "
             "use set_joint_mimic() for joints with matching dimensions instead.",
             DeprecationWarning,
-            stacklevel=self._external_warning_stacklevel(),
+            stacklevel=_external_warning_stacklevel(),
         )
         joint_count = self.joint_count
         if joint0 < 0 or joint0 >= joint_count:
@@ -6908,9 +6933,9 @@ class ModelBuilder:
             if body2 >= 0:
                 bodies_in_constraints.add(body2)
 
-        # A body-particle attachment needs a surviving body to anchor to and to receive the
+        # A particle-body attachment needs a surviving body to anchor to and to receive the
         # reaction force, so its body must not be merged into the world.
-        for body in self.attachment_body_particle_body:
+        for body in self.attachment_particle_body_body:
             if body >= 0:
                 bodies_in_constraints.add(body)
 
@@ -7563,19 +7588,19 @@ class ModelBuilder:
                     target_attr.values[eq_idx] = -1
                     target_kind_attr.values[eq_idx] = 0
 
-        # Remap body-particle attachments onto the reindexed bodies. When the anchored body was
+        # Remap particle-body attachments onto the reindexed bodies. When the anchored body was
         # merged into its parent, the local anchor must be re-expressed in the surviving parent's
         # frame so the attachment keeps its world-space position.
-        for i in range(len(self.attachment_body_particle_body)):
-            old_body = self.attachment_body_particle_body[i]
+        for i in range(len(self.attachment_particle_body_body)):
+            old_body = self.attachment_particle_body_body[i]
             if old_body in body_merged_parent:
                 merge_xform = body_merged_transform[old_body]
-                self.attachment_body_particle_body_point[i] = wp.transform_point(
-                    merge_xform, self.attachment_body_particle_body_point[i]
+                self.attachment_particle_body_body_point[i] = wp.transform_point(
+                    merge_xform, self.attachment_particle_body_body_point[i]
                 )
-                self.attachment_body_particle_body[i] = body_remap[body_merged_parent[old_body]]
+                self.attachment_particle_body_body[i] = body_remap[body_merged_parent[old_body]]
             else:
-                self.attachment_body_particle_body[i] = body_remap[old_body]
+                self.attachment_particle_body_body[i] = body_remap[old_body]
 
         # Generic entity-reference remap for any custom attribute that points at bodies or joints
         # (e.g. ``mujoco:equality_constraint_body1/joint1`` and MuJoCo tendon joint references).
@@ -9266,7 +9291,7 @@ class ModelBuilder:
                     "before finalize; closed=True also adds a loop-closing joint that must remain outside any "
                     "articulation.",
                     UserWarning,
-                    stacklevel=self._external_warning_stacklevel(),
+                    stacklevel=_external_warning_stacklevel(),
                 )
 
             if link_bodies:
@@ -9507,7 +9532,7 @@ class ModelBuilder:
         warnings.warn(
             _ADD_ROD_POSITIONS_DEPRECATION_MSG,
             DeprecationWarning,
-            stacklevel=self._external_warning_stacklevel(),
+            stacklevel=_external_warning_stacklevel(),
         )
         result = self._add_rod_chain(
             positions,
@@ -9636,7 +9661,7 @@ class ModelBuilder:
         warnings.warn(
             _ADD_ROD_GRAPH_DEPRECATION_MSG,
             DeprecationWarning,
-            stacklevel=self._external_warning_stacklevel(),
+            stacklevel=_external_warning_stacklevel(),
         )
         result = self._add_rod_graph(
             node_positions,
@@ -10005,7 +10030,7 @@ class ModelBuilder:
                             "cycles are not closed. Use wrap_in_articulation=False to retain every "
                             "cycle adjacency joint.",
                             UserWarning,
-                            stacklevel=self._external_warning_stacklevel(),
+                            stacklevel=_external_warning_stacklevel(),
                         )
 
                 # Wrap the connected component into an articulation.
@@ -10180,10 +10205,10 @@ class ModelBuilder:
                 expected_frequency=Model.AttributeFrequency.PARTICLE,
             )
 
-    def add_attachment_body_particle(
+    def add_attachment_particle_body(
         self,
-        body: int,
         particle: int,
+        body: int,
         *,
         body_point: Vec3 | None = None,
         stiffness: float = 1.0e4,
@@ -10200,11 +10225,11 @@ class ModelBuilder:
         owned by different solvers of a coupled simulation, the attachment is
         coupled by
         :class:`~newton.solvers.experimental.coupled.SolverCoupledADMM` instead.
-        See :ref:`Body-particle attachments`.
+        See :ref:`Particle-body attachments`.
 
         Args:
-            body: Index of the rigid body.
             particle: Index of the attached particle.
+            body: Index of the rigid body.
             body_point: Attachment point in the body's local frame [m]. If
                 ``None``, the body origin is used.
             stiffness: Attachment stiffness [N/m].
@@ -10216,7 +10241,7 @@ class ModelBuilder:
             Index of the attachment.
 
         Raises:
-            IndexError: If ``body`` or ``particle`` is out of range.
+            IndexError: If ``particle`` or ``body`` is out of range.
             ValueError: If the endpoints belong to different worlds, a
                 coefficient is negative, or a coefficient or ``body_point``
                 is not finite.
@@ -10242,20 +10267,20 @@ class ModelBuilder:
         # An endpoint outside any world context (-1) adopts the world of the other endpoint.
         world = body_world if body_world >= 0 else particle_world
 
-        attachment = self.attachment_body_particle_count
-        self.attachment_body_particle_body.append(int(body))
-        self.attachment_body_particle_particle.append(int(particle))
-        self.attachment_body_particle_body_point.append(resolved_body_point)
-        self.attachment_body_particle_stiffness.append(float(stiffness))
-        self.attachment_body_particle_damping.append(float(damping))
-        self.attachment_body_particle_enabled.append(bool(enabled))
-        self.attachment_body_particle_world.append(world)
+        attachment = self.attachment_particle_body_count
+        self.attachment_particle_body_body.append(int(body))
+        self.attachment_particle_body_particle.append(int(particle))
+        self.attachment_particle_body_body_point.append(resolved_body_point)
+        self.attachment_particle_body_stiffness.append(float(stiffness))
+        self.attachment_particle_body_damping.append(float(damping))
+        self.attachment_particle_body_enabled.append(bool(enabled))
+        self.attachment_particle_body_world.append(world)
 
         if custom_attributes:
             self._process_custom_attributes(
                 entity_index=attachment,
                 custom_attrs=custom_attributes,
-                expected_frequency=Model.AttributeFrequency.ATTACHMENT_BODY_PARTICLE,
+                expected_frequency=Model.AttributeFrequency.ATTACHMENT_PARTICLE_BODY,
             )
         return attachment
 
@@ -12041,7 +12066,7 @@ class ModelBuilder:
 
         .. deprecated:: 1.7
 
-            Request :attr:`newton.solvers.SolverObservableFlags.CONTACT_F` from
+            Request :attr:`newton.solvers.SolverBase.ObservableKind.CONTACT_F` from
             the solver instead.
 
         Args:
@@ -12052,7 +12077,7 @@ class ModelBuilder:
 
         warnings.warn(
             "ModelBuilder.request_contact_attributes() is deprecated in Newton 1.7; "
-            "request SolverObservables from the solver instead.",
+            "request SolverBase.Observables from the solver instead.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -12064,7 +12089,7 @@ class ModelBuilder:
 
         .. deprecated:: 1.7
 
-            Request :class:`newton.solvers.SolverObservables` from the solver
+            Request :class:`newton.solvers.SolverBase.Observables` from the solver
             instead.
 
         See :doc:`Solver Observables </concepts/solver_observables>` for migration details.
@@ -12077,7 +12102,7 @@ class ModelBuilder:
 
         warnings.warn(
             "ModelBuilder.request_state_attributes() is deprecated in Newton 1.7; "
-            "request SolverObservables from the solver instead.",
+            "request SolverBase.Observables from the solver instead.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -14149,28 +14174,28 @@ class ModelBuilder:
             m.spring_control = _to_wp_array(self.spring_control, wp.float32, requires_grad=requires_grad)
 
             # ---------------------
-            # body-particle attachments
+            # particle-body attachments
 
-            m.attachment_body_particle_body = _to_wp_array(
-                self.attachment_body_particle_body, wp.int32, requires_grad=False
+            m.attachment_particle_body_body = _to_wp_array(
+                self.attachment_particle_body_body, wp.int32, requires_grad=False
             )
-            m.attachment_body_particle_particle = _to_wp_array(
-                self.attachment_body_particle_particle, wp.int32, requires_grad=False
+            m.attachment_particle_body_particle = _to_wp_array(
+                self.attachment_particle_body_particle, wp.int32, requires_grad=False
             )
-            m.attachment_body_particle_body_point = _to_wp_array(
-                self.attachment_body_particle_body_point, wp.vec3, requires_grad=requires_grad
+            m.attachment_particle_body_body_point = _to_wp_array(
+                self.attachment_particle_body_body_point, wp.vec3, requires_grad=requires_grad
             )
-            m.attachment_body_particle_stiffness = _to_wp_array(
-                self.attachment_body_particle_stiffness, wp.float32, requires_grad=requires_grad
+            m.attachment_particle_body_stiffness = _to_wp_array(
+                self.attachment_particle_body_stiffness, wp.float32, requires_grad=requires_grad
             )
-            m.attachment_body_particle_damping = _to_wp_array(
-                self.attachment_body_particle_damping, wp.float32, requires_grad=requires_grad
+            m.attachment_particle_body_damping = _to_wp_array(
+                self.attachment_particle_body_damping, wp.float32, requires_grad=requires_grad
             )
-            m.attachment_body_particle_enabled = _to_wp_array(
-                self.attachment_body_particle_enabled, wp.bool, requires_grad=False
+            m.attachment_particle_body_enabled = _to_wp_array(
+                self.attachment_particle_body_enabled, wp.bool, requires_grad=False
             )
-            m.attachment_body_particle_world = _to_wp_array(
-                self.attachment_body_particle_world, wp.int32, requires_grad=False
+            m.attachment_particle_body_world = _to_wp_array(
+                self.attachment_particle_body_world, wp.int32, requires_grad=False
             )
 
             # ---------------------
@@ -14472,7 +14497,7 @@ class ModelBuilder:
             m.tet_count = len(self.tet_poses)
             m.edge_count = len(self.edge_rest_angle)
             m.spring_count = len(self.spring_rest_length)
-            m.attachment_body_particle_count = self.attachment_body_particle_count
+            m.attachment_particle_body_count = self.attachment_particle_body_count
             m.muscle_count = len(self.muscle_start)
             m.articulation_count = len(self.articulation_start)
             m.mujoco.equality_constraint_count = self._equality_constraint_count
