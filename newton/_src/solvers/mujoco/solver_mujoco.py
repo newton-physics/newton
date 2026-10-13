@@ -9,6 +9,7 @@ import os
 import re
 import sys
 import warnings
+from array import array
 from collections.abc import Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -42,7 +43,7 @@ from ...utils.import_utils import string_to_warp
 from ..coupled.interface import CouplingEndpointKind, CouplingInterface
 from ..observables import SolverObservableFlags, SolverObservables
 from ..solver import SolverBase
-from . import kernels
+from . import kernels, speculative
 from .collision_masks import (
     MUJOCO_COLLISION_MASK_DOMAIN_UNSET,
     MUJOCO_COLLISION_MASK_UNSET,
@@ -135,6 +136,64 @@ else:
 
 AttributeAssignment = Model.AttributeAssignment
 AttributeFrequency = Model.AttributeFrequency
+
+
+def _remap_actuator_trnid(values: list[Any], context: dict[str, Any]) -> list[Any]:
+    """Remap heterogeneous MuJoCo actuator targets during builder composition.
+
+    ``actuator_trnid`` holds joint-DOF, tendon, site, or body indices depending on
+    each row's ``actuator_trntype``, so a single ``references`` offset cannot remap
+    it. Builder replication calls this once per copied builder, so rows are
+    decoded and re-encoded in bulk.
+    """
+    count = len(values)
+    trntype_attr = context["builder"].custom_attributes.get("mujoco:actuator_trntype")
+    if count == 0 or trntype_attr is None:
+        return values
+
+    entity_offsets = context["entity_offsets"]
+    dof_offsets = (entity_offsets["joint_dof"], 0)
+    shape_offsets = (entity_offsets["shape"], entity_offsets["shape"])
+    trn_type = SolverMuJoCo.TrnType
+    offsets_by_trntype = {
+        trn_type.JOINT: dof_offsets,
+        trn_type.JOINT_IN_PARENT: dof_offsets,
+        trn_type.TENDON: (context["custom_frequency_offsets"].get("mujoco:tendon", 0), 0),
+        trn_type.SITE: shape_offsets,
+        trn_type.BODY: (entity_offsets["body"], 0),
+        trn_type.SLIDERCRANK: shape_offsets,
+    }
+
+    vec2i = wp.vec2i
+    if all(type(value) is vec2i for value in values):
+        # Warp vectors are ctypes arrays; decode their bytes in bulk.
+        targets = array("i", b"".join(map(bytes, values)))
+    else:
+        targets = array("i")
+        for value in values:
+            targets.extend((-1, -1) if value is None else (int(value[0]), int(value[1])))
+
+    authored_trntypes = trntype_attr.values or []
+    is_sparse = isinstance(authored_trntypes, dict)
+    authored_count = len(authored_trntypes)
+    default_trntype = trntype_attr.default
+    for i, row in enumerate(context["row_indices"]):
+        if is_sparse:
+            trntype = authored_trntypes.get(row)
+        else:
+            trntype = authored_trntypes[row] if row < authored_count else None
+        primary_offset, secondary_offset = offsets_by_trntype.get(
+            int(default_trntype if trntype is None else trntype), (0, 0)
+        )
+        if primary_offset and targets[2 * i] >= 0:
+            targets[2 * i] += primary_offset
+        if secondary_offset and targets[2 * i + 1] >= 0:
+            targets[2 * i + 1] += secondary_offset
+
+    # Build all vectors from one buffer, as wp.array.list() does, instead of
+    # constructing each vector separately.
+    result = list((vec2i * count).from_buffer_copy(targets))
+    return [None if value is None else target for value, target in zip(values, result, strict=True)]
 
 
 def _required_specifier(package: str, requirements: Iterable[str]) -> str | None:
@@ -2363,6 +2422,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 dtype=wp.vec2i,
                 default=wp.vec2i(-1, -1),
                 namespace="mujoco",
+                reference_value_transformer=_remap_actuator_trnid,
             )
         )
 
@@ -4079,6 +4139,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         update_data_interval: int = 1,
         save_to_mjcf: str | None = None,
         use_mujoco_contacts: bool = True,
+        use_speculative_contacts: bool = False,
         include_sites: bool = True,
         skip_visual_only_geoms: bool = True,
         deterministic: wp.DeterministicMode | None = None,
@@ -4129,6 +4190,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             update_data_interval: Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf: Optional path to save the generated MJCF model file.
             use_mujoco_contacts: If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
+            use_speculative_contacts: Add frictionless normal constraints for separated Newton
+                contact candidates, bounding closing velocity by clearance divided by the physics timestep.
+                Requires ``use_mujoco_contacts=False``, the MuJoCo Warp backend, and Euler or implicitfast
+                integration. Enable velocity expansion in :class:`newton.CollisionPipeline` and pass its
+                contacts to :meth:`step`. This mitigates tunneling; it is not continuous collision detection
+                and does not make penetrating contacts rigid.
+
+                .. experimental::
+
+                    The ``use_speculative_contacts=True`` mode may change without prior notice.
             include_sites: If ``True`` (default), Newton shapes marked with ``ShapeFlags.SITE`` are exported as MuJoCo sites. Sites are non-colliding reference points used for sensor attachment, debugging, or as frames of reference. If ``False``, sites are skipped during export. Defaults to ``True``.
             skip_visual_only_geoms: If ``True`` (default), geometries used only for visualization (i.e. not involved in collision) are excluded from the exported MuJoCo spec. This avoids mismatches with models that use explicit ``<contact>`` definitions for collision geometry.
             deterministic: Deterministic mode for MuJoCo Warp solver kernels. Pass a
@@ -4136,6 +4207,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 ``wp.config.deterministic``.
         """
         super().__init__(model)
+        if use_speculative_contacts and (use_mujoco_contacts or use_mujoco_cpu):
+            raise ValueError("use_speculative_contacts=True requires Newton contacts on the MuJoCo Warp backend.")
+        self._use_speculative_contacts = use_speculative_contacts
 
         # Import and cache MuJoCo modules (only happens once per class)
         mujoco, _ = self.import_mujoco()
@@ -4501,6 +4575,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         if self.mjw_model is not None:
             self.mjw_model.opt.run_collision_detection = use_mujoco_contacts
+        if use_speculative_contacts:
+            if self.mjw_model.opt.integrator not in (
+                mujoco.mjtIntegrator.mjINT_EULER,
+                mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
+            ):
+                raise ValueError("use_speculative_contacts=True requires Euler or implicitfast integration.")
+            self._allocate_speculative_contact_buffers()
+
+    def _allocate_speculative_contact_buffers(self):
+        count = self.mjw_data.naconmax
+        self._speculative_clearance = wp.zeros(count, dtype=float, device=self.device)
+        self._speculative_dim = wp.empty(count, dtype=int, device=self.device)
+        self._speculative_solref = wp.empty(count, dtype=wp.vec2, device=self.device)
+        self._speculative_solimp = wp.empty(count, dtype=vec5, device=self.device)
 
     @contextmanager
     def _scoped_deterministic_config(self):
@@ -4529,7 +4617,54 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
     @event_scope
     def _mujoco_warp_step(self):
-        self._mujoco_warp.step(self.mjw_model, self.mjw_data)
+        if not self._use_speculative_contacts:
+            self._mujoco_warp.step(self.mjw_model, self.mjw_data)
+            return
+        model, data = self.mjw_model, self.mjw_data
+        if model.opt.integrator not in (
+            self._mujoco.mjtIntegrator.mjINT_EULER,
+            self._mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
+        ):
+            raise ValueError("use_speculative_contacts=True requires Euler or implicitfast integration.")
+        contact = data.contact
+        wp.launch(
+            speculative.prepare_contacts,
+            dim=data.naconmax,
+            inputs=[
+                data.nacon,
+                model.opt.timestep,
+                contact.worldid,
+                contact.dist,
+                contact.includemargin,
+                contact.dim,
+                contact.solref,
+                contact.solimp,
+                self._speculative_clearance,
+                self._speculative_dim,
+                self._speculative_solref,
+                self._speculative_solimp,
+            ],
+            device=self.device,
+        )
+        self._mujoco_warp.step1(model, data)
+        wp.launch(
+            speculative.set_contact_targets,
+            dim=data.naconmax,
+            inputs=[
+                data.nacon,
+                model.opt.timestep,
+                contact.worldid,
+                self._speculative_clearance,
+                contact.efc_address,
+                contact.dist,
+                contact.includemargin,
+                data.efc.vel,
+                data.efc.pos,
+                data.efc.aref,
+            ],
+            device=self.device,
+        )
+        self._mujoco_warp.step2(model, data)
 
     @event_scope
     @override
@@ -4544,6 +4679,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         observables: SolverObservables | None = None,
     ) -> None:
         self.validate_observables(observables, contacts)
+        if self._use_speculative_contacts and (not math.isfinite(dt) or dt <= 0.0):
+            raise ValueError("use_speculative_contacts=True requires a finite positive timestep.")
         if self.use_mujoco_cpu:
             self._apply_mjc_control(self.model, state_in, control, self.mj_data)
             if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
@@ -4989,6 +5126,27 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
 
     def _convert_contacts_to_mjwarp(self, model: Model, state_in: State, contacts: Contacts):
+        if self._use_speculative_contacts:
+            # The conversion fast path reuses material properties. Restore
+            # them before conversion, retaining dim=1 until contact forces
+            # from the preceding step have been consumed.
+            contact = self.mjw_data.contact
+            wp.launch(
+                speculative.restore_contact_properties,
+                dim=min(self._speculative_clearance.shape[0], self.mjw_data.naconmax),
+                inputs=[
+                    self._speculative_clearance,
+                    self._speculative_dim,
+                    self._speculative_solref,
+                    self._speculative_solimp,
+                    contact.dim,
+                    contact.solref,
+                    contact.solimp,
+                ],
+                device=self.device,
+            )
+            if self._speculative_clearance.shape[0] != self.mjw_data.naconmax:
+                self._allocate_speculative_contact_buffers()
         # The kernel only produces valid output for tid < naconmax (the full
         # path clamps count and rejects cid >= naconmax).  Launching more
         # threads than naconmax wastes GPU resources, so cap the grid size.
@@ -8445,6 +8603,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
             # so far we have only defined the first world,
             # now complete the data from the Newton model
+            if not self.use_mujoco_cpu:
+                # Restore zero-quaternion weld sentinels before set_const_0 so
+                # each world infers its own pose from its synchronized qpos0.
+                self._update_eq_properties(preserve_inferred_poses=False)
             self.notify_model_changed(ModelFlags.ALL)
             if not self.use_mujoco_cpu:
                 # Keep the host template coherent after construction. Runtime
@@ -9797,7 +9959,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     device=self.model.device,
                 )
 
-    def _update_eq_properties(self):
+    def _update_eq_properties(self, *, preserve_inferred_poses: bool = True):
         """Update equality constraint properties in the MuJoCo model.
 
         Updates:
@@ -9855,6 +10017,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.model.mujoco.equality_constraint_polycoef,
                 self.model.mujoco.equality_constraint_torquescale,
                 self.model.mujoco.equality_constraint_enabled,
+                preserve_inferred_poses,
             ],
             outputs=[
                 self.mjw_model.eq_data,

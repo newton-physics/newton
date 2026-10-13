@@ -985,6 +985,14 @@ class DelassusOperator:
         self._model_maxsize = sum(self._world_maxsize)
         self._max_of_max_total_D_size = max(self._world_maxsize) if self._world_maxsize else 0
 
+        if self._model_maxsize > np.iinfo(np.int32).max:
+            raise ValueError(
+                f"Kamino dense Delassus buffer requires {self._model_maxsize} elements across "
+                f"{self._num_worlds} worlds, exceeding the int32 indexing limit of {np.iinfo(np.int32).max}. "
+                "Reduce the number of worlds or max_contacts_per_world, or use sparse_dynamics=True "
+                "and sparse_jacobian=True with an iterative linear solver."
+            )
+
         # Use the model's device
         self._device = model.device
 
@@ -1457,18 +1465,8 @@ class BlockSparseMatrixFreeDelassusOperator(BlockSparseLinearOperators[wp.float3
                 device=self._device,
             )
 
-        self._active_rows = wp.array(
-            dtype=wp.int32,
-            shape=(self._model.size.num_worlds,),
-            ptr=self._data.info.num_total_cts.ptr,
-            copy=False,
-        )
-        self._active_cols = wp.array(
-            dtype=wp.int32,
-            shape=(self._model.size.num_worlds,),
-            ptr=self._data.info.num_total_cts.ptr,
-            copy=False,
-        )
+        self._active_rows = self._data.info.num_total_cts
+        self._active_cols = self._data.info.num_total_cts
 
         # Initialize temporary memory
         self._vec_temp_body_space = wp.empty(

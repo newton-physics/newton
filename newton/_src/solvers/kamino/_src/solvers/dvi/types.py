@@ -138,6 +138,7 @@ class DVIState:
         self.bilateral_factor_row_start: wp.array[int32] | None = None
         self.bilateral_delta: wp.array[float32] | None = None
         self._sparse_projection_allocated = False
+        self._sparse_coupling_allocated = False
         if size is not None:
             self.finalize(size)
 
@@ -186,6 +187,7 @@ class DVIState:
         unilateral_strides: list[int],
         bilateral_vector_size: int,
         use_schur_complement: bool,
+        cache_bilateral_coupling: bool = False,
     ) -> None:
         """Allocate sparse bilateral-projection workspace once.
 
@@ -195,6 +197,7 @@ class DVIState:
             unilateral_strides: Allocated unilateral row stride for each world.
             bilateral_vector_size: Flattened size of the bilateral solution vector.
             use_schur_complement: Whether to allocate the bilateral response matrices.
+            cache_bilateral_coupling: Whether direct solves reuse the unilateral coupling.
 
         Raises:
             ValueError: If the flattened response workspace exceeds int32 indexing.
@@ -211,7 +214,7 @@ class DVIState:
             self.bilateral_response_factor = wp.zeros(1, dtype=float32)
             self.bilateral_response = wp.zeros(1, dtype=float32)
             self.bilateral_delta = wp.zeros(1, dtype=float32)
-        if use_schur_complement and not self._sparse_projection_allocated:
+        if (use_schur_complement or cache_bilateral_coupling) and not self._sparse_coupling_allocated:
             response_offsets = []
             response_size = 0
             for num_joint_rows, unilateral_stride in zip(joint_rows, unilateral_strides, strict=True):
@@ -222,8 +225,10 @@ class DVIState:
             self.bilateral_response_mio = wp.array(response_offsets, dtype=int32)
             self.bilateral_response_stride = wp.array(unilateral_strides, dtype=int32)
             self.bilateral_coupling = wp.zeros(max(1, response_size), dtype=float32)
-            self.bilateral_response_factor = wp.zeros(max(1, response_size), dtype=float32)
-            self.bilateral_response = wp.zeros(max(1, response_size), dtype=float32)
+            self._sparse_coupling_allocated = True
+        if use_schur_complement and not self._sparse_projection_allocated:
+            self.bilateral_response_factor = wp.zeros(self.bilateral_coupling.size, dtype=float32)
+            self.bilateral_response = wp.zeros(self.bilateral_coupling.size, dtype=float32)
             self.bilateral_delta = wp.zeros(max(1, bilateral_vector_size), dtype=float32)
             self.bilateral_factor_row_start = wp.zeros(max(1, bilateral_vector_size), dtype=int32)
             self._sparse_projection_allocated = True
@@ -280,6 +285,7 @@ class DVIData:
         self.solution: DualSolution | None = None
         self.info: DVIInfo | None = None
         self.bilateral_operator: DenseLinearOperatorData | None = None
+        self.bilateral_dim: wp.array[int32] | None = None
         if size is not None:
             self.finalize(size=size, collect_info=collect_info, device=device)
 
