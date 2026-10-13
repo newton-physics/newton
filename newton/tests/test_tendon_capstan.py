@@ -18,6 +18,7 @@ import newton
 from newton import Axis, TendonGuideFlags, TendonGuideType
 from newton._src.solvers.tendon_kernels import tangent_point_circle, tendon_segment_length_rate
 from newton._src.solvers.xpbd.tendon_kernels import solve_tendon_slip, solve_tendon_stretch
+from newton.examples.tendon.example_tendon_capstan_friction import Example as CapstanFrictionExample
 from newton.examples.tendon.example_tendon_mujoco_switch import Example as MujocoSwitchExample
 from newton.tests.unittest_utils import sanitize_identifier
 
@@ -1632,6 +1633,39 @@ def _run_mujoco_switch_example(num_frames=220):
     for _ in range(num_frames):
         example.step()
     return example
+
+
+def test_capstan_example_collision_isolation(test, device):
+    """Isolate capstan cases while preserving local and ground collisions."""
+    with wp.ScopedDevice(device):
+        example = CapstanFrictionExample(None, None)
+        initial_q = example.state_0.body_q.numpy().copy()
+        shape_body = example.model.shape_body.numpy()
+
+        def colliding_bodies(body_q):
+            example.state_0.body_q.assign(body_q)
+            example.collision_pipeline.collide(example.state_0, example.contacts)
+            count = int(example.contacts.rigid_contact_count.numpy()[0])
+            shapes_0 = example.contacts.rigid_contact_shape0.numpy()[:count]
+            shapes_1 = example.contacts.rigid_contact_shape1.numpy()[:count]
+            return {
+                tuple(sorted((int(shape_body[a]), int(shape_body[b])))) for a, b in zip(shapes_0, shapes_1, strict=True)
+            }
+
+        test.assertEqual(colliding_bodies(initial_q), set(), "Capstan cases must start without contacts")
+        for right, left in zip(example.right_indices[:-1], example.left_indices[1:], strict=True):
+            body_q = initial_q.copy()
+            body_q[left, :3] = body_q[right, :3] + (0.1, 0.0, 0.0)
+            test.assertEqual(colliding_bodies(body_q), set(), "Separate capstan cases must not collide")
+
+        body_q = initial_q.copy()
+        pulley, left = example.pulley_indices[0], example.left_indices[0]
+        body_q[left, :3] = body_q[pulley, :3] + (0.2, 0.0, 0.0)
+        test.assertIn(tuple(sorted((pulley, left))), colliding_bodies(body_q))
+
+        body_q = initial_q.copy()
+        body_q[example.right_indices, 2] = 0.05
+        test.assertEqual(colliding_bodies(body_q), {(-1, body) for body in example.right_indices})
 
 
 def test_force_driven_dynamic_route_updates_inside_solver(test, device):
@@ -3520,6 +3554,7 @@ if wp.is_cuda_available():
     devices.append("cuda:0")
 cuda_devices = [device for device in devices if device.startswith("cuda")]
 
+add_test(TestTendonCapstan, "capstan_example_collision_isolation", devices, test_capstan_example_collision_isolation)
 add_test(TestTendonCapstan, "pinhole_slip_atwood", devices, test_pinhole_slip_atwood)
 add_test(
     TestTendonCapstan,

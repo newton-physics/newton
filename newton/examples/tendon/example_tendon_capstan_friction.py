@@ -73,11 +73,10 @@ class Example:
             0.50,
         )
         self.mus = list(DYNAMIC_CAPSTAN_MUS)
-        self.x_offsets = [-1.5, 0.0, 1.5]
+        self.x_offsets = [-1.8, 0.0, 1.8]
 
         mass_light = 1.0
         mass_heavy = 1.2
-        contact_cfg = newton.ModelBuilder.ShapeConfig(mu=0.7, margin=0.01, gap=0.02)
 
         q_cyl = wp.quat(np.sin(np.pi / 4.0), 0.0, 0.0, np.cos(np.pi / 4.0))
 
@@ -97,7 +96,9 @@ class Example:
         self._left_position_history = []
         self._right_position_history = []
 
-        for mu, x_off in zip(self.mus, self.x_offsets, strict=True):
+        for case, (mu, x_off) in enumerate(zip(self.mus, self.x_offsets, strict=True), start=1):
+            # Compare independent machines, without contacts between neighboring weights.
+            contact_cfg = newton.ModelBuilder.ShapeConfig(mu=0.7, margin=0.01, gap=0.02, collision_group=case)
             pulley_pos = wp.vec3(x_off, 0.0, self.pulley_z)
             pulley = builder.add_link(
                 xform=wp.transform(p=pulley_pos, q=wp.quat_identity()),
@@ -203,7 +204,7 @@ class Example:
                 ]
             )
 
-        builder.add_ground_plane()
+        builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(collision_group=-1))
         self.model = builder.finalize()
 
         self.solver = newton.solvers.SolverXPBD(
