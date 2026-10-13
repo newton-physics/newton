@@ -12628,7 +12628,8 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
     body_invweight0[B]`` in ``convert_newton_contacts_to_mjwarp_kernel``.
 
     Tests use ``use_mujoco_contacts=False`` explicitly so the
-    Newton-contacts kernel (where the override lives) runs. They read
+    Newton-contacts kernel (where the override lives) runs. Physical sphere
+    tests check normal penetration and damping. Parameter tests read
     ``mjw_data.contact.solref`` back directly and compare to the
     ``convert_solref`` conversion of ``(ke·factor, kd·factor)`` —
     mirroring the joint-limit suite
@@ -12708,6 +12709,154 @@ class TestMuJoCoSolverForceSpaceContactSolref(unittest.TestCase):
         rel_tol = 1.0e-4
         self.assertAlmostEqual(float(actual_solref[0]), expected_ref, delta=abs(expected_ref) * rel_tol)
         self.assertAlmostEqual(float(actual_solref[1]), expected_damp, delta=abs(expected_damp) * rel_tol)
+
+    def test_per_contact_force_gains_use_body_mass_and_impedance(self):
+        """Convert per-contact force gains and retain critical damping when damping is zero."""
+        mass, stiffness = 5.0, 1.0e4
+        for damping in (100.0, 0.0):
+            with self.subTest(damping=damping):
+                model, _ = self._build_box_on_plane(mass=mass, ke=3.0e4, kd=300.0)
+                solver = SolverMuJoCo(model, use_mujoco_contacts=False, njmax=20, nconmax=20, iterations=10)
+                pipeline = newton.CollisionPipeline(model)
+                contacts = newton.Contacts(20, 0, device=model.device, per_contact_shape_properties=True)
+                state_in, state_out = model.state(), model.state()
+                newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+                pipeline.collide(state_in, contacts)
+                self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+                contacts.rigid_contact_stiffness.fill_(stiffness)
+                contacts.rigid_contact_damping.fill_(damping)
+                solver.step(state_in, state_out, model.control(), contacts, 1.0 / 240.0)
+
+                count = int(solver.mjw_data.nacon.numpy()[0])
+                self.assertGreater(count, 0)
+                solimp = solver.mjw_data.contact.solimp.numpy()[:count]
+                solref = solver.mjw_data.contact.solref.numpy()[:count]
+                # The free box's translational inverse weight is 1 / mass; the fixed plane contributes zero.
+                for impedance, (timeconst, dampratio) in zip(solimp[:, 1], solref, strict=True):
+                    if damping > 0.0:
+                        expected_timeconst = 2.0 * mass / (damping * (1.0 - impedance))
+                        expected_dampratio = damping / 2.0 * math.sqrt((1.0 - impedance) / (mass * stiffness))
+                    else:
+                        expected_timeconst = math.sqrt(mass / (stiffness * (1.0 - impedance)))
+                        expected_dampratio = 1.0
+                    self.assertAlmostEqual(float(timeconst) / expected_timeconst, 1.0, places=5)
+                    self.assertAlmostEqual(float(dampratio) / expected_dampratio, 1.0, places=5)
+                np.testing.assert_array_equal(solimp[:, 0], solimp[:, 1])
+
+    def _simulate_sphere_contact(
+        self,
+        *,
+        cone="pyramidal",
+        mu=0.5,
+        condim=3,
+        impratio=1.0,
+        friction_scale=1.0,
+        per_contact=True,
+        damping=0.0,
+        kf=100.0,
+        sample_motion=False,
+    ):
+        """Simulate one normal contact with known mass, radius, and force-space gains."""
+        if not wp.is_cuda_available():
+            self.skipTest("Requires CUDA")
+        mass, radius, stiffness, gravity = 5.0, 0.1, 1.0e4, 9.81
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -gravity))
+        SolverMuJoCo.register_custom_attributes(builder)
+        cfg = newton.ModelBuilder.ShapeConfig(ke=stiffness, kd=damping, mu=mu, kf=kf, margin=0.0, gap=0.0, density=0.0)
+        builder.add_ground_plane(cfg=cfg)
+        height = radius - mass * gravity / stiffness + (0.001 if sample_motion else 0.0)
+        body = builder.add_body(
+            xform=wp.transform(wp.vec3(0.0, 0.0, height), wp.quat_identity()),
+            mass=mass,
+            inertia=wp.mat33(np.eye(3) * (0.4 * mass * radius**2)),
+        )
+        builder.add_shape_sphere(body, radius=radius, cfg=cfg)
+        model = builder.finalize()
+        model.mujoco.condim.fill_(condim)
+        if not per_contact:
+            self._make_force_space(model)
+        solver = SolverMuJoCo(
+            model,
+            use_mujoco_contacts=False,
+            cone=cone,
+            impratio=impratio,
+            iterations=20,
+            nconmax=8,
+            njmax=32,
+        )
+        pipeline = newton.CollisionPipeline(model)
+        contacts = newton.Contacts(8, 0, device=model.device, per_contact_shape_properties=per_contact)
+        state_in, state_out, control = model.state(), model.state(), model.control()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+        dt = 0.00025 if sample_motion else 0.001
+
+        def step_pair():
+            for source, destination in ((state_in, state_out), (state_out, state_in)):
+                source.clear_forces()
+                pipeline.collide(source, contacts)
+                if per_contact:
+                    contacts.rigid_contact_stiffness.fill_(stiffness)
+                    contacts.rigid_contact_damping.fill_(damping)
+                    contacts.rigid_contact_friction.fill_(friction_scale)
+                solver.step(source, destination, control, contacts, dt)
+
+        step_pair()
+        with wp.ScopedCapture(device=model.device) as capture:
+            step_pair()
+        samples = []
+        for step in range(2000 if sample_motion else 1000):
+            wp.capture_launch(capture.graph)
+            if sample_motion and step % 20 == 19:
+                samples.append((state_in.body_q.numpy()[body, 2], state_in.body_qd.numpy()[body, 2]))
+        self.assertEqual(int(solver.mjw_data.nacon.numpy()[0]), 1)
+        depth = radius - float(state_in.body_q.numpy()[body, 2])
+        velocity = float(state_in.body_qd.numpy()[body, 2])
+        actual_dim = int(solver.mjw_data.contact.dim.numpy()[0])
+        return depth, velocity, actual_dim, np.asarray(samples)
+
+    def test_normal_force_gains_match_settled_depth(self):
+        """Match weight/stiffness penetration across cone, friction, and dimension changes."""
+        cases = (
+            {},
+            {"mu": 1.0},
+            {"mu": 1.2},
+            {"cone": "elliptic"},
+            {"condim": 1},
+            {"condim": 4},
+            {"condim": 6},
+            {"impratio": 4.0},
+            {"friction_scale": 2.0},
+            {"cone": "elliptic", "kf": 0.0},
+            {"per_contact": False, "damping": 5000.0},
+        )
+        expected_depth = 5.0 * 9.81 / 1.0e4
+        for parameters in cases:
+            with self.subTest(**parameters):
+                depth, velocity, dimension, _ = self._simulate_sphere_contact(**parameters)
+                self.assertAlmostEqual(depth / expected_depth, 1.0, delta=0.01)
+                self.assertLess(abs(velocity), 1.0e-5)
+                expected_dim = 1 if parameters.get("kf") == 0.0 else parameters.get("condim", 3)
+                self.assertEqual(dimension, expected_dim)
+
+    def test_normal_motion_retains_force_space_damping(self):
+        """Recover the requested damping/stiffness ratio from measured normal motion."""
+        stiffness, damping = 1.0e4, 100.0
+        equilibrium_height = 0.1 - 5.0 * 9.81 / stiffness
+        for cone in ("pyramidal", "elliptic"):
+            with self.subTest(cone=cone):
+                _, _, _, samples = self._simulate_sphere_contact(cone=cone, damping=damping, sample_motion=True)
+                self.assertTrue(np.isfinite(samples).all())
+                self.assertTrue((samples[:, 0] < 0.1).all(), "The sphere must remain in contact")
+                velocity = samples[:, 1]
+                acceleration = (velocity[2:] - velocity[:-2]) / 0.02
+                displacement = samples[1:-1, 0] - equilibrium_height
+                # Normal motion obeys a = -omega_squared * displacement - beta * velocity.
+                # beta/omega_squared = damping/stiffness cancels the solver's added contact inertia.
+                omega_squared, beta = np.linalg.lstsq(
+                    np.column_stack((-displacement, -velocity[1:-1])), acceleration, rcond=None
+                )[0]
+                self.assertGreater(omega_squared, 0.0)
+                self.assertAlmostEqual(beta / omega_squared, damping / stiffness, delta=0.0005)
 
     def test_force_space_contact_solref_uses_two_body_invweight_sum(self):
         """Dynamic-vs-dynamic contact: factor uses the sum of both bodies' invweight0."""
