@@ -7,9 +7,9 @@
 # https://www.sphinx-doc.org/en/master/usage/configuration.html
 
 import datetime
-import importlib
 import inspect
 import os
+import pkgutil
 import re
 import shutil
 import sys
@@ -386,8 +386,8 @@ def linkcode_resolve(domain: str, info: dict[str, str]) -> str | None:
         return None
 
     try:
-        # Import the module and get the object
-        module = importlib.import_module(module_name)
+        # Public namespaces may be module attributes rather than importable submodules.
+        module = pkgutil.resolve_name(module_name)
 
         if "fullname" in info:
             # Get the specific object (function, class, etc.)
@@ -448,7 +448,7 @@ def linkcode_resolve(domain: str, info: dict[str, str]) -> str | None:
         github_base = "https://github.com/newton-physics/newton"
         return f"{github_base}/blob/{github_version}/{rel_path}{line_fragment}"
 
-    except (ImportError, AttributeError, TypeError):
+    except (ImportError, AttributeError, TypeError, ValueError):
         return None
 
 

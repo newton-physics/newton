@@ -1,0 +1,1 @@
+Compute `State.body_qdd` and `State.body_parent_f` in `SolverMuJoCo` on the MuJoCo Warp backend when `disable_sensors=True`, instead of raising a `ValueError` from `step()`. Code that caught this error can request these state attributes together with `disable_sensors=True` directly.

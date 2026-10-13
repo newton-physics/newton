@@ -178,6 +178,94 @@ def _sdf_capped_cone_z(bottom_radius: float, top_radius: float, half_height: flo
 
 
 @wp.func
+def _closest_point_on_segment_2d(a: wp.vec2, b: wp.vec2, q: wp.vec2) -> wp.vec2:
+    """Closest point to ``q`` on the segment ``a``-``b``."""
+    d = b - a
+    dd = wp.dot(d, d)
+    t = float(0.0)
+    if dd > 0.0:
+        t = wp.clamp(wp.dot(q - a, d) / dd, 0.0, 1.0)
+    return a + d * t
+
+
+@wp.func
+def _sdf_capped_cone_grad_z(
+    bottom_radius: float, top_radius: float, half_height: float, point_z_up: wp.vec3
+) -> wp.vec3:
+    """Exact outward gradient of :func:`_sdf_capped_cone_z`.
+
+    The closest boundary point lies in the query's meridian half-plane, on one of three
+    segments: the two cap radii and the lateral side. The gradient is the unit offset from
+    the nearest of them, flipped for interior queries.
+    """
+    if half_height < 0.0:
+        return wp.vec3(0.0, 0.0, wp.sign(point_z_up[2]))
+
+    extent = wp.abs(bottom_radius) + wp.abs(top_radius) + half_height
+    eps = 1.0e-6 * extent
+
+    rho = wp.length(wp.vec2(point_z_up[0], point_z_up[1]))
+    q = wp.vec2(rho, point_z_up[2])
+
+    bottom_inner = wp.vec2(0.0, -half_height)
+    bottom_rim = wp.vec2(bottom_radius, -half_height)
+    top_inner = wp.vec2(0.0, half_height)
+    top_rim = wp.vec2(top_radius, half_height)
+
+    m_lateral = _closest_point_on_segment_2d(bottom_rim, top_rim, q)
+    m_bottom = _closest_point_on_segment_2d(bottom_inner, bottom_rim, q)
+    m_top = _closest_point_on_segment_2d(top_inner, top_rim, q)
+
+    closest = m_lateral
+    best = wp.length_sq(q - m_lateral)
+    feature = int(0)
+    d_bottom = wp.length_sq(q - m_bottom)
+    if d_bottom < best:
+        closest = m_bottom
+        best = d_bottom
+        feature = int(1)
+    d_top = wp.length_sq(q - m_top)
+    if d_top < best:
+        closest = m_top
+        best = d_top
+        feature = int(2)
+
+    inside = False
+    if half_height > 0.0:
+        radius_at_z = bottom_radius + (top_radius - bottom_radius) * (point_z_up[2] + half_height) / (2.0 * half_height)
+        inside = wp.abs(point_z_up[2]) <= half_height and rho <= radius_at_z
+
+    offset = q - closest
+    offset_len = wp.length(offset)
+    direction = wp.vec2(0.0, 1.0)
+    if offset_len > eps:
+        direction = offset / offset_len
+        if inside:
+            direction = -direction
+    elif half_height == 0.0:
+        # A collapsed cone is a disk; its surface normal is axial.
+        direction = wp.vec2(0.0, wp.sign(point_z_up[2]))
+    elif feature == 1:
+        direction = wp.vec2(0.0, -1.0)
+    elif feature == 2:
+        direction = wp.vec2(0.0, 1.0)
+    else:
+        # lateral face normal
+        direction = wp.normalize(wp.vec2(2.0 * half_height, bottom_radius - top_radius))
+
+    radial_x = float(1.0)
+    radial_y = float(0.0)
+    if rho > eps:
+        radial_x = point_z_up[0] / rho
+        radial_y = point_z_up[1] / rho
+    grad = wp.vec3(direction[0] * radial_x, direction[0] * radial_y, direction[1])
+    grad_len = wp.length(grad)
+    if grad_len > 1.0e-8:
+        return grad / grad_len
+    return wp.vec3(0.0, 0.0, 1.0)
+
+
+@wp.func
 def sdf_sphere(point: wp.vec3, radius: float):
     """Compute signed distance to a sphere for ``Mesh.create_sphere`` geometry.
 
@@ -477,47 +565,7 @@ def sdf_cylinder_grad(
         grad_z_up = _sdf_barrel_cylinder_grad_z(point_z_up, radius, half_height, barrel_radius)
         return _sdf_vector_from_z_up(grad_z_up, up_axis)
     if top_radius >= 0.0 and wp.abs(top_radius - radius) > 1.0e-6:
-        # Use finite-difference gradient of the tapered capped-cone SDF.
-        fd_eps = 1.0e-4
-        dx = _sdf_capped_cone_z(
-            radius,
-            top_radius,
-            half_height,
-            point_z_up + wp.vec3(fd_eps, 0.0, 0.0),
-        ) - _sdf_capped_cone_z(
-            radius,
-            top_radius,
-            half_height,
-            point_z_up - wp.vec3(fd_eps, 0.0, 0.0),
-        )
-        dy = _sdf_capped_cone_z(
-            radius,
-            top_radius,
-            half_height,
-            point_z_up + wp.vec3(0.0, fd_eps, 0.0),
-        ) - _sdf_capped_cone_z(
-            radius,
-            top_radius,
-            half_height,
-            point_z_up - wp.vec3(0.0, fd_eps, 0.0),
-        )
-        dz = _sdf_capped_cone_z(
-            radius,
-            top_radius,
-            half_height,
-            point_z_up + wp.vec3(0.0, 0.0, fd_eps),
-        ) - _sdf_capped_cone_z(
-            radius,
-            top_radius,
-            half_height,
-            point_z_up - wp.vec3(0.0, 0.0, fd_eps),
-        )
-        grad_z_up = wp.vec3(dx, dy, dz)
-        grad_len = wp.length(grad_z_up)
-        if grad_len > eps:
-            grad_z_up = grad_z_up / grad_len
-        else:
-            grad_z_up = wp.vec3(0.0, 0.0, 1.0)
+        grad_z_up = _sdf_capped_cone_grad_z(radius, top_radius, half_height, point_z_up)
         return _sdf_vector_from_z_up(grad_z_up, up_axis)
 
     v = wp.vec3(point_z_up[0], point_z_up[1], 0.0)
@@ -644,21 +692,7 @@ def sdf_cone_grad(point: wp.vec3, radius: float, half_height: float, up_axis: in
         return _sdf_vector_from_z_up(wp.vec3(0.0, 0.0, wp.sign(point_z_up[2])), up_axis)
 
     # Gradient for cone with apex at +half_height and base at -half_height
-    r = wp.length(wp.vec3(point_z_up[0], point_z_up[1], 0.0))
-    dx = r - radius * (half_height - point_z_up[2]) / (2.0 * half_height)
-    dy = wp.abs(point_z_up[2]) - half_height
-    grad_z_up = wp.vec3()
-    if dx > dy:
-        # Closest to lateral surface
-        if r > 0.0:
-            radial_dir = wp.vec3(point_z_up[0], point_z_up[1], 0.0) / r
-            # Normal to cone surface
-            grad_z_up = wp.normalize(radial_dir + wp.vec3(0.0, 0.0, radius / (2.0 * half_height)))
-        else:
-            grad_z_up = wp.vec3(0.0, 0.0, 1.0)
-    else:
-        # Closest to cap
-        grad_z_up = wp.vec3(0.0, 0.0, wp.sign(point_z_up[2]))
+    grad_z_up = _sdf_capped_cone_grad_z(radius, 0.0, half_height, point_z_up)
     return _sdf_vector_from_z_up(grad_z_up, up_axis)
 
 

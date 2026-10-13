@@ -1,0 +1,1 @@
+Fix `SolverMuJoCo` heightfields with a nonzero `min_z` being placed `-min_z` too high once geom poses were synced to MuJoCo Warp, which happens on construction, and ignoring the heightfield shape's `scale`.

@@ -74,12 +74,11 @@ class State:
 
     EXTENDED_ATTRIBUTES: frozenset[str] = frozenset(EXTENDED_ATTRIBUTE_TEMPLATES)
     """
-    Names of optional extended state attributes that are not allocated by default.
+    Deprecated optional solver-produced state attributes.
 
-    These can be requested via :meth:`newton.ModelBuilder.request_state_attributes` or
-    :meth:`newton.Model.request_state_attributes` before calling :meth:`newton.Model.state`.
+    .. deprecated:: 1.7
 
-    See :ref:`extended_state_attributes` for details and usage.
+        Request :class:`newton.solvers.SolverObservables` from the solver instead.
     """
 
     @classmethod
@@ -132,7 +131,9 @@ class State:
         First three entries: linear acceleration [m/s²] relative to the body's center of mass in world frame;
         last three: angular acceleration [rad/s²] in world frame.
 
-        This is an extended state attribute; see :ref:`extended_state_attributes` for more information.
+        .. deprecated:: 1.7
+            Request :attr:`newton.solvers.SolverObservableFlags.BODY_QDD` from the solver and read
+            :attr:`newton.solvers.SolverObservables.body_qdd` instead.
         """
 
         self.body_f: wp.array | None = None
@@ -148,7 +149,9 @@ class State:
         """Parent interaction forces [N, N·m], shape (body_count,), dtype :class:`spatial_vector`.
         First three entries: linear force [N]; last three: torque [N·m].
 
-        This is an extended state attribute; see :ref:`extended_state_attributes` for more information.
+        .. deprecated:: 1.7
+            Request :attr:`newton.solvers.SolverObservableFlags.BODY_PARENT_F` from the solver and read
+            :attr:`newton.solvers.SolverObservables.body_parent_f` instead.
 
         .. note::
             :attr:`body_parent_f` represents incoming joint wrenches in world frame, referenced to the body's center of mass (COM).
@@ -159,7 +162,7 @@ class State:
 
         self.joint_qd: wp.array | None = None
         """Generalized joint velocity coordinates [m/s or rad/s, depending on joint type], shape (joint_dof_count,), dtype float.
-        For FREE and DISTANCE joints, the linear entries are child-COM velocity in the joint parent frame and the angular entries are angular velocity in that same frame."""
+        For FREE, DISTANCE, and ROD joints, the linear entries are child-COM velocity in the joint parent frame and the angular entries are angular velocity in that same frame."""
 
     def clear_forces(self) -> None:
         """

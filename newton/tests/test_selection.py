@@ -1389,7 +1389,8 @@ class TestSelection(unittest.TestCase):
     def test_get_attribute_extended_state(self):
         """Test that get_attribute works for extended state attributes."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
-        builder.request_state_attributes("body_qdd", "body_parent_f", "mujoco:qfrc_actuator")
+        with self.assertWarns(DeprecationWarning):
+            builder.request_state_attributes("body_qdd", "body_parent_f", "mujoco:qfrc_actuator")
 
         link = builder.add_link()
         builder.add_shape_box(link, hx=0.1, hy=0.1, hz=0.1)
@@ -1693,6 +1694,30 @@ class TestSelectionMuJoCoActuators(unittest.TestCase):
   </actuator>
 </mujoco>
 """
+
+    def test_partial_layout_preserves_builtin_access_with_unequal_actuator_counts(self):
+        """Keep uniform joint data available when custom row counts differ."""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(self.ACTUATOR_MJCF)
+        builder.add_mjcf(
+            self.ACTUATOR_MJCF.replace('model="actuated"', 'model="unactuated"').replace(
+                '<motor name="drive" joint="hinge"/>', ""
+            )
+        )
+        model = builder.finalize()
+        control = model.control()
+
+        with self.assertRaisesRegex(ValueError, "different row counts for custom frequency 'mujoco:actuator'"):
+            ArticulationView(model, "*actuated")
+
+        view = ArticulationView(model, "*actuated", allow_partial_layouts=True)
+        self.assertEqual(view.get_attribute("joint_type", model).shape, (1, 2, 1))
+        self.assertIsNone(view.custom_frequency_counts["mujoco:actuator"])
+        self.assertIsNone(view.custom_frequency_labels["mujoco:actuator"])
+        with self.assertRaises(AttributeError):
+            view.get_attribute("mujoco.ctrl", control)
+        with self.assertRaises(AttributeError):
+            view.set_attribute("mujoco.ctrl", control, wp.zeros((1, 2, 1)))
 
     def test_actuator_frequency_uses_declared_articulation_owner(self):
         """Expose MuJoCo actuator controls through their declared owner metadata."""

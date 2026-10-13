@@ -1,0 +1,1 @@
+Deprecate `Model.joint_twist_lower`, `Model.joint_twist_upper`, `ModelBuilder.joint_twist_lower`, and `ModelBuilder.joint_twist_upper` without replacement; they were never populated or read by any solver. Limit joint rotations with the per-DOF `Model.joint_limit_lower` and `Model.joint_limit_upper`, set through `ModelBuilder.JointDofConfig`.

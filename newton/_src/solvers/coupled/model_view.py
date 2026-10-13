@@ -71,7 +71,7 @@ class ModelView:
         view = ModelView(model, "vbd")
         view.body_inv_mass = zeroed_inv_mass  # override
         view.body_count  # delegates to model.body_count
-        solver = SolverVBD(model=view, rigid_compliant_alm=True)
+        solver = SolverVBD(model=view)
     """
 
     def __init__(self, parent: Model, name: str) -> None:
@@ -678,9 +678,11 @@ class ModelView:
         wp.launch(
             _replace_joint_type_kernel,
             dim=joint_indices.shape[0],
-            inputs=[joint_indices, joint_type, int(JointType.ROD), int(JointType.D6)],
+            inputs=[joint_indices, joint_type, int(JointType.ROD), int(JointType.FREE)],
             device=parent.device,
         )
+        if parent._has_rod_joints:  # pyright: ignore[reportPrivateUsage]
+            self._has_rod_joints = bool(np.any(self.joint_type.numpy() == int(JointType.ROD)))
 
     def zero_particle_mass(self, particle_indices: wp.array[int]) -> None:
         """Zero mass and inverse mass for the given particle indices.

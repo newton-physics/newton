@@ -1,0 +1,1 @@
+Add multisampled anti-aliasing to `SensorCamera`, including pinhole and fisheye subpixel ray generation. Camera ray helpers produce `(height, width, sample_count, 2)` bundles. Select the resolve mode with `RenderConfig.anti_aliasing`: `SensorCamera.AntiAliasing.SSAA` shades every subsample, while `MSAA` resolves per-subsample coverage and shades each covered surface.

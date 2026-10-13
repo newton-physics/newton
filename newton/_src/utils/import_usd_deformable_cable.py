@@ -21,8 +21,12 @@ from typing import TYPE_CHECKING
 import warp as wp
 
 from ..sim.rod import _CIRCULAR_SECTION_TRANSVERSE_SHEAR_CORRECTION, Rod
+from ..usd import utils as usd
+from ..usd._resolution_policy import _resolve_shape_contact
 
 if TYPE_CHECKING:
+    from pxr import Usd
+
     from ..sim.builder import ModelBuilder
 
 from .import_usd_deformable_utils import (
@@ -52,6 +56,15 @@ from .import_usd_deformable_utils import (
     _warn_subset_material_bindings,
     _warn_unsupported_rest_fields,
 )
+
+
+def _resolve_cable_contact(ctx: _DeformableImportContext, prim: Usd.Prim) -> dict[str, float]:
+    """Resolve capsule contact properties through the rigid collider material policy."""
+    material_prim = usd._find_physics_material_prim(prim)
+    material_path = str(material_prim.GetPath()) if material_prim is not None else ""
+    material = ctx.material_specs.get(material_path, ctx.material_specs[""])
+    return _resolve_shape_contact(prim, ctx.resolver, material, ctx.builder.default_shape_cfg, verbose=ctx.verbose)
+
 
 # Attributes introduced after the family-prefix rename; density is shared and intentionally omitted.
 _POST_RENAME_CURVE_MATERIAL_ATTRS = (
@@ -858,16 +871,18 @@ def _deformable_prepare_cable_topology(
                 )
 
         rep = curve_recs[comp_paths[0]]
+        contact_properties = {p: _resolve_cable_contact(ctx, curve_recs[p].prim) for p in comp_paths}
         for key in comp_paths:
             rec = curve_recs[key]
             _warn_geometry_authored_material_attrs(rec.prim, key, "PhysicsCurvesDeformableMaterialAPI", deformable_read)
             _warn_geometry_authored_newton_curve_damping_attrs(rec.prim, key)
             _warn_legacy_curve_material(key, rec.material)
-        # A welded graph necessarily flattens stiffness and damping to one representative
+        # A welded graph flattens stiffness, damping, and contact properties to one representative
         # material. Density and geometry thickness remain per segment.
         if len(comp_paths) > 1:
             sigs = {
                 (
+                    frozenset(contact_properties[p].items()),
                     curve_recs[p].material is not None,
                     frozenset(
                         (name, value) for name, value in (curve_recs[p].material or {}).items() if name != "density"
@@ -877,8 +892,8 @@ def _deformable_prepare_cable_topology(
             }
             if len(sigs) > 1:
                 warnings.warn(
-                    f"cable graph '{cid}': welded curves have differing stiffness/damping; using "
-                    f"'{comp_paths[0]}' as the representative material gains for the whole component. "
+                    f"cable graph '{cid}': welded curves have differing stiffness/damping/contact properties; using "
+                    f"'{comp_paths[0]}' as the representative material for the whole component. "
                     "Density remains local to each curve.",
                     stacklevel=2,
                 )
@@ -905,17 +920,19 @@ def _deformable_prepare_cable_topology(
             graph_weight_density = 1.0
         cfg = replace(
             builder.default_shape_cfg,
+            **contact_properties[comp_paths[0]],
             density=graph_weight_density,
             has_shape_collision=collision_enabled,
             has_particle_collision=collision_enabled,
         )
+        # Record the whole graph through the native path; source-curve lookup stays
+        # in the per-prim import maps below.
         rod = Rod(node_positions, edges=edges, radius=radius)
         body_ids, graph_joint_ids = builder.add_rod(
             rod=rod,
             cfg=cfg,
             label=cid,
             wrap_in_articulation=True,
-            body_frame_origin="com",
         )
         edge_radii = [curve_recs[key].segment_radii[segment] for key, segment in edge_owner]
         body_radii = dict(zip(body_ids, edge_radii, strict=True))
@@ -983,13 +1000,6 @@ def _deformable_prepare_cable_topology(
                 "graph_component": cid,
             }
             key_bodies = per_prim_bodies.get(key, [])
-            if key_bodies:
-                # Edges are assembled curve-by-curve, so each curve's graph bodies are contiguous.
-                # A welded curve owns no individual tree joints (they live in the shared graph
-                # articulation, found via articulation_label), so its joint range is empty.
-                builder._record_cable_group(
-                    key, (key_bodies[0], key_bodies[-1] + 1), (builder.joint_count, builder.joint_count)
-                )
             segment_count = n if rec.closed else n - 1
             run = _CableMassRun(
                 curve_index=0,
@@ -1205,11 +1215,13 @@ def _deformable_import_cable(
         _warn_collision_approximated(path, approximated_from)
         cable_cfg = replace(
             builder.default_shape_cfg,
+            **_resolve_cable_contact(ctx, prim),
             density=resolved_cable_density,
             has_shape_collision=collision_enabled,
             has_particle_collision=collision_enabled,
         )
 
+        cable_joint_start = builder.joint_count
         cable_bodies: list[int] = []
         cable_joints: list[int] = []
         # vertex index -> [(segment body, body-local point)]
@@ -1288,13 +1300,15 @@ def _deformable_import_cable(
                     radius=curve_radii[0],
                     closed=closed,
                 )
-                bodies, joints = builder.add_rod(
-                    rod=rod,
-                    cfg=cable_cfg,
-                    label=label,
-                    wrap_in_articulation=True,
-                    body_frame_origin="com",
-                )
+                # One deformable object per USD prim is recorded below; a multi-curve prim spans
+                # several add_rod calls, so per-call recording would split it.
+                with builder._suppress_curve_object_recording():
+                    bodies, joints = builder.add_rod(
+                        rod=rod,
+                        cfg=cable_cfg,
+                        label=label,
+                        wrap_in_articulation=True,
+                    )
             else:
                 articulation_root_joints: list[int] = []
 
@@ -1391,12 +1405,11 @@ def _deformable_import_cable(
                 resolved_cable_density,
             )
             path_cable_map[path] = (cable_bodies, cable_joints)
-            # Bodies/joints for a cable prim are built back-to-back, so the index lists are contiguous.
+            # Include generated roots, as native recording does. The returned rod-joint list
+            # excludes roots and can have gaps when the prim contains multiple curves.
             body_range = (cable_bodies[0], cable_bodies[-1] + 1)
-            joint_range = (
-                (cable_joints[0], cable_joints[-1] + 1) if cable_joints else (builder.joint_count, builder.joint_count)
-            )
-            builder._record_cable_group(path, body_range, joint_range)
+            joint_range = (cable_joint_start, builder.joint_count)
+            builder._record_curve_deformable_object(path, body_range, joint_range)
             path_cable_point_anchors[path] = cable_point_anchors
             path_cable_segments[path] = cable_segments
             path_cable_attrs[path] = {

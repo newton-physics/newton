@@ -1227,8 +1227,8 @@ class _PolicyController(_AsRoBalletController):
         )
 
         self.policy = load_policy_runtime(policy_path, device=self.device)
-        self.policy_input_name = self.policy.input_names[0]
-        self.policy_output_name = self.policy.output_names[0]
+        self.policy_input_name = self.policy.inputs[0].name
+        self.policy_output_name = self.policy.outputs[0].name
         validate_policy_io_shapes(
             policy_path,
             self.policy_input_name,
@@ -1238,8 +1238,8 @@ class _PolicyController(_AsRoBalletController):
             context="asRoBallet policy",
         )
         self.station_policy = load_policy_runtime(station_policy_path, device=self.device)
-        self.station_policy_input_name = self.station_policy.input_names[0]
-        self.station_policy_output_name = self.station_policy.output_names[0]
+        self.station_policy_input_name = self.station_policy.inputs[0].name
+        self.station_policy_output_name = self.station_policy.outputs[0].name
         validate_policy_io_shapes(
             station_policy_path,
             self.station_policy_input_name,

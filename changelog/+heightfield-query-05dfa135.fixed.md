@@ -1,0 +1,1 @@
+Fix heightfield collisions dropping contacts near the contact gap and contacts with planes larger than their cached bounds. Cells are now rejected only when the query lies above every corner by a padding for roundoff and the narrow-phase contact shell, and plane queries skip the height test.

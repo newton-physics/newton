@@ -1639,6 +1639,87 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         np.testing.assert_array_equal(model.test.row_id.numpy(), [10, 11])
         np.testing.assert_array_almost_equal(model.test.row_value.numpy(), [1.5, 2.5], decimal=6)
 
+    def test_custom_frequency_world_reference_inference(self):
+        """Test that custom-frequency rows infer omitted world references."""
+        builder = ModelBuilder()
+        builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="item", namespace="test"))
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_world",
+                frequency="test:item",
+                dtype=wp.int32,
+                default=99,
+                namespace="test",
+                references="world",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_value",
+                frequency="test:item",
+                dtype=wp.int32,
+                namespace="test",
+            )
+        )
+
+        global_indices = builder.add_custom_values(**{"test:item_value": 10})
+        self.assertEqual(global_indices["test:item_world"], 0)
+
+        builder.begin_world()
+        world_zero_indices = builder.add_custom_values(**{"test:item_value": 20})
+        self.assertEqual(world_zero_indices["test:item_world"], 1)
+        builder.add_custom_values(**{"test:item_value": 30, "test:item_world": -1})
+        builder.end_world()
+
+        builder.begin_world()
+        batch_indices = builder.add_custom_values_batch(
+            [
+                {"test:item_value": 40},
+                {"test:item_value": 50, "test:item_world": None},
+                {"test:item_value": 60, "test:item_world": 0},
+            ]
+        )
+        builder.end_world()
+
+        self.assertEqual([indices["test:item_world"] for indices in batch_indices], [3, 4, 5])
+
+        model = builder.finalize(device=self.device)
+        np.testing.assert_array_equal(model.test.item_world.numpy(), [-1, 0, -1, 1, 1, 0])
+        np.testing.assert_array_equal(model.test.item_value.numpy(), [10, 20, 30, 40, 50, 60])
+
+    def test_custom_frequency_inferred_world_remaps_during_merge(self):
+        """Test that inferred world references remap when builders are merged."""
+        template = ModelBuilder()
+        template.add_custom_frequency(ModelBuilder.CustomFrequency(name="item", namespace="test"))
+        template.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_world",
+                frequency="test:item",
+                dtype=wp.int32,
+                default=99,
+                namespace="test",
+                references="world",
+            )
+        )
+        template.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="item_value",
+                frequency="test:item",
+                dtype=wp.int32,
+                namespace="test",
+            )
+        )
+        template.add_custom_values(**{"test:item_value": 7})
+
+        builder = ModelBuilder()
+        builder.add_world(template)
+        builder.add_world(template)
+        builder.add_custom_values(**{"test:item_value": 8})
+
+        model = builder.finalize(device=self.device)
+        np.testing.assert_array_equal(model.test.item_world.numpy(), [0, 1, -1])
+        np.testing.assert_array_equal(model.test.item_value.numpy(), [7, 7, 8])
+
     def test_custom_frequency_registration_methods(self):
         """Test different ways to register custom frequencies."""
         builder = ModelBuilder()
@@ -1878,6 +1959,78 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         # World 0: refs point to 0, 1
         # World 1: refs should be offset by 2 (entity count from world 0), so 2, 3
         np.testing.assert_array_equal(refs, [0, 1, 2, 3])
+
+    def test_custom_frequency_reference_value_transformer(self):
+        """Remap row-dependent references with one batch transformer call per copied builder."""
+        calls = []
+
+        def remap(values, context):
+            calls.append((list(values), list(context["row_indices"]), context["world"]))
+            kinds = context["builder"].custom_attributes["test:target_kind"].values
+            offsets = {0: context["entity_offsets"]["body"], 1: context["entity_offsets"]["shape"]}
+            return [None if value is None else value + offsets[kinds[row]] for row, value in enumerate(values)]
+
+        sub_builder = ModelBuilder()
+        sub_builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="target", namespace="test"))
+        sub_builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(name="target_kind", frequency="test:target", dtype=wp.int32, namespace="test")
+        )
+        sub_builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="target_index",
+                frequency="test:target",
+                dtype=wp.int32,
+                default=-1,
+                namespace="test",
+                reference_value_transformer=remap,
+            )
+        )
+        body = sub_builder.add_body(mass=1.0)
+        shape0 = sub_builder.add_shape_sphere(body, radius=0.1)
+        shape1 = sub_builder.add_shape_sphere(body, radius=0.1)
+        sub_builder.add_custom_values(**{"test:target_kind": 1})
+        sub_builder.add_custom_values(**{"test:target_kind": 0, "test:target_index": body})
+        sub_builder.add_custom_values(**{"test:target_kind": 1, "test:target_index": shape1})
+
+        main_builder = ModelBuilder()
+        main_builder.add_world(sub_builder)
+        main_builder.add_world(sub_builder)
+        model = main_builder.finalize(device=self.device)
+
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0], ([None, body, shape1], [0, 1, 2], 0))
+        self.assertEqual(calls[1][2], 1)
+        np.testing.assert_array_equal(model.test.target_index.numpy(), [-1, body, shape1, -1, body + 1, shape1 + 2])
+        self.assertEqual((body, shape0, shape1), (0, 0, 1))
+
+    def test_custom_frequency_reference_value_transformer_length_mismatch(self):
+        """Reject a reference transformer that drops rows."""
+        sub_builder = ModelBuilder()
+        sub_builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="target", namespace="test"))
+        sub_builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="target_index",
+                frequency="test:target",
+                dtype=wp.int32,
+                namespace="test",
+                reference_value_transformer=lambda values, _context: values[:-1],
+            )
+        )
+        sub_builder.add_custom_values(**{"test:target_index": 0})
+
+        with self.assertRaisesRegex(ValueError, "returned 0 values, expected 1"):
+            ModelBuilder().add_builder(sub_builder)
+
+    def test_reference_transformer_rejects_builtin_references(self):
+        """A transformer must not silently override a declared reference type."""
+        with self.assertRaisesRegex(ValueError, "references.*reference_value_transformer"):
+            ModelBuilder.CustomAttribute(
+                name="target",
+                frequency=AttributeFrequency.BODY,
+                dtype=wp.int32,
+                references="body",
+                reference_value_transformer=lambda values, _context: values,
+            )
 
     def test_custom_frequency_unknown_references_raises_error(self):
         """Test that unknown references value raises ValueError during add_world."""

@@ -3,12 +3,37 @@
 
 """Tests for extending solver change/reset flags with custom integer bits."""
 
+from __future__ import annotations
+
 import unittest
+from dataclasses import dataclass
+from enum import Enum, IntEnum
 
 import numpy as np
 import warp as wp
 
 import newton
+
+
+class DummyObservableFlags(Enum):
+    """Solver-specific observables used to exercise extension behavior."""
+
+    BODY_TEMPERATURE = "body_temperature"
+
+
+class IntegerObservableFlags(IntEnum):
+    """Invalid value-like enum used to verify collision prevention."""
+
+    BODY_TEMPERATURE = 0
+
+
+@dataclass(eq=False)
+class DummySolverObservables(newton.solvers.SolverObservables):
+    """Extend the standard observable container with a custom body array."""
+
+    body_temperature: wp.array[wp.float32] | None = newton.solvers.SolverObservables.field(
+        flag=DummyObservableFlags.BODY_TEMPERATURE, dtype=wp.float32, frequency=newton.Model.AttributeFrequency.BODY
+    )
 
 
 class DummySolver(newton.solvers.SolverBase):
@@ -17,6 +42,13 @@ class DummySolver(newton.solvers.SolverBase):
     # These bits intentionally live outside Newton's built-in flag range.
     MODEL_ATTRIBUTE_CHANGED = 1 << 20
     STATE_ATTRIBUTE_RESET = 1 << 21
+    OBSERVABLES_TYPE = DummySolverObservables
+    SUPPORTED_OBSERVABLE_FLAGS = frozenset(
+        {
+            newton.solvers.SolverObservableFlags.BODY_QDD,
+            DummyObservableFlags.BODY_TEMPERATURE,
+        }
+    )
 
     def __init__(self, model: newton.Model):
         """Initialize bookkeeping used by the tests."""
@@ -143,6 +175,55 @@ class TestCustomSolver(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "world_count \\+ 1"):
             solver.reset(state, world_mask=wp.array((True,), dtype=wp.bool, device=model.device))
+
+    def test_observables_compose_standard_and_custom_flags(self):
+        """Allocate inherited and solver-specific observables from one set."""
+        model = self._build_model()
+        solver = DummySolver(model)
+        requested = {
+            newton.solvers.SolverObservableFlags.BODY_QDD,
+            DummyObservableFlags.BODY_TEMPERATURE,
+        }
+
+        observables = solver.observables(requested)
+
+        self.assertIsInstance(observables, DummySolverObservables)
+        self.assertEqual(observables.flags, frozenset(requested))
+        self.assertEqual(observables.body_qdd.shape, (model.body_count,))
+        self.assertEqual(observables.body_temperature.shape, (model.body_count,))
+        self.assertIsNone(observables.body_parent_f)
+
+    def test_observables_reject_unsupported_flags(self):
+        """Reject standard observables not implemented by a solver."""
+        model = self._build_model()
+        solver = DummySolver(model)
+
+        with self.assertRaisesRegex(ValueError, "BODY_PARENT_F"):
+            solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+
+    def test_observables_reject_value_like_flags(self):
+        """Reject string and integer enum keys that can collide across extensions."""
+        model = self._build_model()
+        solver = DummySolver(model)
+
+        with self.assertRaisesRegex(TypeError, "plain enum"):
+            solver.observables({"body_qdd"})
+        with self.assertRaisesRegex(TypeError, "IntEnum"):
+            solver.observables({IntegerObservableFlags.BODY_TEMPERATURE})
+
+    def test_extended_attribute_requests_are_deprecated(self):
+        """Keep legacy allocation requests while directing callers to solver observables."""
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(DeprecationWarning, "SolverObservables"):
+            builder.request_state_attributes("body_qdd")
+        with self.assertWarnsRegex(DeprecationWarning, "SolverObservables"):
+            builder.request_contact_attributes("force")
+
+        model = builder.finalize()
+        with self.assertWarnsRegex(DeprecationWarning, "SolverObservables"):
+            model.request_state_attributes("body_parent_f")
+        with self.assertWarnsRegex(DeprecationWarning, "SolverObservables"):
+            model.request_contact_attributes("force")
 
 
 if __name__ == "__main__":

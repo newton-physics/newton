@@ -270,7 +270,7 @@ the wrench to a point offset by :math:`\mathbf{r}` changes the torque as:
 This convention is used in all Newton solvers.
 
 The array of joint forces (torques) in generalized coordinates is stored in :attr:`Control.joint_f <newton.Control.joint_f>`.
-For ``FREE`` and ``DISTANCE`` joints, the corresponding 6 dimensions in this
+For ``FREE``, ``DISTANCE``, and ``ROD`` joints, the corresponding 6 dimensions in this
 array are the physical wrench in world coordinates, with the force and torque
 referenced at the child body's center of mass (COM).
 
@@ -441,9 +441,9 @@ with :func:`newton.utils.color_srgb_to_linear` and
 Base-color textures stored on Newton models follow the same convention and are
 kept display/sRGB-encoded.
 
-Packed color and albedo outputs from :class:`newton.sensors.SensorTiledCamera`
+Packed color and albedo outputs from :class:`newton.sensors.SensorCamera`
 use display/sRGB encoding by default. Set
-``SensorTiledCamera.RenderConfig(output_color_space=newton.utils.ColorSpace.LINEAR)``
+``SensorCamera.RenderConfig(output_color_space=newton.utils.ColorSpace.LINEAR)``
 when linear RGB bytes are required for downstream processing. Clear colors are
 specified as display/sRGB packed RGBA values and are converted to linear when
 linear output is requested.

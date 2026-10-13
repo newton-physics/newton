@@ -1,0 +1,1 @@
+Skip host-side cone-scale validation during CUDA graph capture and replay. Cone resizing remains unsupported; keep cone scales fixed during replay and use an eager `SHAPE_PROPERTIES` notification to validate edits outside capture.
