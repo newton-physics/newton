@@ -761,8 +761,8 @@ def build_motorized_pulley_drive(mu=0.0):
                 mu=mu,
                 offset=(0.0, 0.0, 0.0),
                 axis=(0.0, 0.0, 1.0),
-                compliance=1.0e-6,
-                damping=0.01,
+                compliance=1.0e-6 if route else 0.0,
+                damping=0.01 if route else 0.0,
                 rest_length=-1.0,
             )
         )
@@ -1036,8 +1036,8 @@ def build_dynamic_route_neighbor_matrix_case(device, left_type, right_type, orie
                 mu=0.0,
                 offset=(x, 0.0, 0.0),
                 axis=axis,
-                compliance=5.0e-6,
-                damping=5.0,
+                compliance=5.0e-6 if route else 0.0,
+                damping=5.0 if route else 0.0,
                 rest_length=-1.0,
             )
         )

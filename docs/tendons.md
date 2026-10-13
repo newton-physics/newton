@@ -28,7 +28,9 @@ Pass a complete ordered list of {class}`~newton.TendonGuide` entries to
 {meth}`~newton.ModelBuilder.add_tendon`. A guide describes the cable's interaction
 with a body; it is not an articulation link. Every guide after the first owns
 the incoming straight segment, so its `compliance`, `damping`, and `rest_length`
-describe that segment. Those three values on the first guide are ignored.
+describe that segment. The first guide has no incoming segment: non-default
+values there are rejected. For a linear span, compliance is `1 / stiffness`
+(m/N versus N/m); zero compliance requests an inextensible XPBD constraint.
 
 The builder validates the entire route before changing any tendon arrays.
 At least two guides are required, all attached to bodies in the same world.
@@ -244,6 +246,19 @@ and reject unsupported semantics rather than silently discard them.
 - The tendon path is not differentiable.
 
 ## State and runtime updates
+
+Tendons use native attribute domains `TENDON`, `TENDON_GUIDE`, and
+`TENDON_SEGMENT` (one fewer segment than guides per route). `add_tendon()` accepts
+`label` and route-level `custom_attributes`. Each `TendonGuide` accepts guide-level
+`custom_attributes` and incoming-span `segment_custom_attributes`. Declare these
+attributes with the corresponding frequency before authoring routes. Integer
+custom references may target `tendon`, `tendon_guide`, or `tendon_segment`, as well
+as existing domains such as `body`. Builder merging/replication preserves the
+domains and remaps references; label prefixes apply to tendon names too.
+
+Tendon routes currently cannot be partitioned by `SolverCoupled` or compacted
+into partial `ModelView`s. These operations reject tendon-bearing models rather
+than exposing unremapped references. Use a complete model with XPBD or VBD.
 
 Persistent tendon history belongs to {class}`~newton.State`: material rest-length
 distribution, active guides, and previous body-local attachment points. Copying

@@ -665,19 +665,6 @@ class ModelBuilder:
         "muscle_activations": Model.AttributeSpec("muscle"),
         "muscle_bodies": Model.AttributeSpec("muscle_point", references=Model.AttributeFrequency.BODY),
         "muscle_points": Model.AttributeSpec("muscle_point"),
-        # Tendon guide/span domains are copied explicitly by _merge_builder_copies().
-        "tendon_start": Model.AttributeSpec(Model.AttributeFrequency.ONCE, compaction_policy="passthrough"),
-        "tendon_guide_body": Model.AttributeSpec(Model.AttributeFrequency.ONCE, compaction_policy="passthrough"),
-        "tendon_guide_type": Model.AttributeSpec(Model.AttributeFrequency.ONCE, compaction_policy="passthrough"),
-        "tendon_guide_radius": Model.AttributeSpec(Model.AttributeFrequency.ONCE, compaction_policy="passthrough"),
-        "tendon_guide_orientation": Model.AttributeSpec(Model.AttributeFrequency.ONCE, compaction_policy="passthrough"),
-        "tendon_guide_mu": Model.AttributeSpec(Model.AttributeFrequency.ONCE, compaction_policy="passthrough"),
-        "tendon_guide_flags": Model.AttributeSpec(Model.AttributeFrequency.ONCE, compaction_policy="passthrough"),
-        "tendon_guide_offset": Model.AttributeSpec(Model.AttributeFrequency.ONCE, compaction_policy="passthrough"),
-        "tendon_guide_axis": Model.AttributeSpec(Model.AttributeFrequency.ONCE, compaction_policy="passthrough"),
-        "tendon_seg_compliance": Model.AttributeSpec(Model.AttributeFrequency.ONCE, compaction_policy="passthrough"),
-        "tendon_seg_damping": Model.AttributeSpec(Model.AttributeFrequency.ONCE, compaction_policy="passthrough"),
-        "tendon_seg_rest_length": Model.AttributeSpec(Model.AttributeFrequency.ONCE, compaction_policy="passthrough"),
         "world_gravity": Model.AttributeSpec(Model.AttributeFrequency.WORLD, compaction_policy="passthrough"),
         "_equality_constraint_world_start": Model.AttributeSpec(
             Model.AttributeFrequency.WORLD,
@@ -1195,7 +1182,8 @@ class ModelBuilder:
 
         Built-in entity types (values are offset by entity count):
             - ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``, ``"joint_coord"``, ``"articulation"``,
-              ``"constraint_mimic"``, ``"particle"``, ``"edge"``, ``"triangle"``, ``"tetrahedron"``, ``"spring"``
+              ``"constraint_mimic"``, ``"particle"``, ``"edge"``, ``"triangle"``, ``"tetrahedron"``, ``"spring"``,
+              ``"tendon"``, ``"tendon_guide"``, ``"tendon_segment"``
 
         Special handling:
             - ``"world"``: Missing custom-frequency row values are initialized from
@@ -1745,6 +1733,10 @@ class ModelBuilder:
         """Spring control activations accumulated for :attr:`Model.spring_control`."""
 
         # tendons (cable-driven mechanisms)
+        self.tendon_label: list[str] = []
+        """Names of authored tendon routes."""
+        self.tendon_world: list[int] = []
+        """Owning world of each tendon route."""
         self.tendon_start: list[int] = []
         """Start index into guide arrays for each tendon."""
         self.tendon_guide_body: list[int] = []
@@ -2193,6 +2185,21 @@ class ModelBuilder:
     def _equality_constraint_count(self) -> int:
         """Number of equality constraints added to this builder (from the ``mujoco:equality_constraint`` counter)."""
         return self._custom_frequency_counts.get("mujoco:equality_constraint", 0)
+
+    @property
+    def tendon_count(self) -> int:
+        """Number of authored tendon routes."""
+        return len(self.tendon_start)
+
+    @property
+    def tendon_guide_count(self) -> int:
+        """Number of guides across all tendon routes."""
+        return len(self.tendon_guide_body)
+
+    @property
+    def tendon_segment_count(self) -> int:
+        """Number of incoming straight spans across all tendon routes."""
+        return len(self.tendon_seg_rest_length)
 
     @property
     def shape_collision_filter_pairs(self) -> list[tuple[int, int]]:
@@ -3565,28 +3572,6 @@ class ModelBuilder:
 
         shape_starts = starts("shape")
         body_starts = starts("body")
-
-        # Tendons have two flattened domains (guides and incoming spans), not
-        # body frequency. Preserve both orders and remap only body references.
-        # Guide offsets/axes are body-local and follow the transformed bodies.
-        guide_count = len(builder.tendon_guide_body)
-        guide_start = len(self.tendon_guide_body)
-        for copy_index, body_start in enumerate(body_starts.tolist()):
-            self.tendon_start.extend(start + guide_start + copy_index * guide_count for start in builder.tendon_start)
-            self.tendon_guide_body.extend(body + body_start for body in builder.tendon_guide_body)
-        for name in (
-            "tendon_guide_type",
-            "tendon_guide_radius",
-            "tendon_guide_orientation",
-            "tendon_guide_mu",
-            "tendon_guide_flags",
-            "tendon_guide_offset",
-            "tendon_guide_axis",
-            "tendon_seg_compliance",
-            "tendon_seg_damping",
-            "tendon_seg_rest_length",
-        ):
-            getattr(self, name).extend(source_list(name) * world_count)
 
         attribute_specs.pop("shape_transform")
         shape_transform_start = array_starts.get("shape_transform", int(bases["shape"]))
@@ -6388,7 +6373,9 @@ class ModelBuilder:
             **kwargs,
         )
 
-    def add_tendon(self, route: Sequence[TendonGuide]) -> int:
+    def add_tendon(
+        self, route: Sequence[TendonGuide], *, label: str | None = None, custom_attributes: dict[str, Any] | None = None
+    ) -> int:
         """Add a complete experimental massless routed tendon atomically.
 
         Each guide after the first owns the incoming span's material parameters.
@@ -6403,6 +6390,9 @@ class ModelBuilder:
 
         Args:
             route: At least two ordered route guides.
+            label: Tendon name; defaults to ``tendon_{index}``.
+            custom_attributes: Values of declared ``TENDON``-frequency attributes.
+                Guide and incoming-span attributes are supplied on each :class:`TendonGuide`.
 
         Returns:
             Tendon index. Its flattened guide range begins at
@@ -6416,12 +6406,44 @@ class ModelBuilder:
         route = tuple(route)
         if len(route) < 2:
             raise ValueError("A tendon requires at least two route guides")
+
+        # Validate every custom-attribute batch before mutating the builder.
+        batches = [(self.tendon_count, dict(custom_attributes or {}), Model.AttributeFrequency.TENDON)]
+        for index, guide in enumerate(route):
+            if not isinstance(guide, TendonGuide):
+                raise TypeError("Each tendon route entry must be a TendonGuide")
+            batches.append(
+                (
+                    self.tendon_guide_count + index,
+                    dict(guide.custom_attributes or {}),
+                    Model.AttributeFrequency.TENDON_GUIDE,
+                )
+            )
+            if index == 0 and guide.segment_custom_attributes:
+                raise ValueError("The first tendon guide has no incoming segment for custom attributes")
+            if index:
+                batches.append(
+                    (
+                        self.tendon_segment_count + index - 1,
+                        dict(guide.segment_custom_attributes or {}),
+                        Model.AttributeFrequency.TENDON_SEGMENT,
+                    )
+                )
+        for _, attributes, frequency in batches:
+            for name in attributes:
+                attribute = self.custom_attributes.get(name)
+                if attribute is None:
+                    raise AttributeError(
+                        f"Custom attribute '{name}' is not defined; declare it with add_custom_attribute()"
+                    )
+                if attribute.frequency != frequency:
+                    raise ValueError(
+                        f"Custom attribute '{name}' has frequency {attribute.frequency}, expected {frequency}"
+                    )
         normalized = []
         tendon_world = None
         previous_dynamic = False
         for index, guide in enumerate(route):
-            if not isinstance(guide, TendonGuide):
-                raise TypeError("Each tendon route entry must be a TendonGuide")
             body = guide.body
             if not self._is_integer_scalar(body) or body < 0 or body >= self.body_count:
                 raise ValueError(f"Tendon guide body index {body} is out of range")
@@ -6454,6 +6476,12 @@ class ModelBuilder:
                 values[name] = value
             if guide_type == TendonGuideType.ROLLER and values["radius"] == 0.0:
                 raise ValueError("ROLLER tendon guides require a positive radius")
+            if index == 0 and (
+                values["compliance"] != 0.0 or values["damping"] != 0.0 or values["rest length"] != -1.0
+            ):
+                raise ValueError(
+                    "The first tendon guide has no incoming segment; leave its material parameters at defaults"
+                )
             try:
                 offset = tuple(float(value) for value in guide.offset)
                 axis = tuple(float(value) for value in guide.axis)
@@ -6492,6 +6520,8 @@ class ModelBuilder:
             )
 
         tendon_idx = len(self.tendon_start)
+        self.tendon_label.append(label or f"tendon_{tendon_idx}")
+        self.tendon_world.append(tendon_world)
         self.tendon_start.append(len(self.tendon_guide_body))
         for index, guide in enumerate(normalized):
             self.tendon_guide_body.append(guide.body)
@@ -6506,6 +6536,8 @@ class ModelBuilder:
                 self.tendon_seg_compliance.append(guide.compliance)
                 self.tendon_seg_damping.append(guide.damping)
                 self.tendon_seg_rest_length.append(guide.rest_length)
+        for index, attributes, frequency in batches:
+            self._process_custom_attributes(index, attributes, frequency)
         return tendon_idx
 
     def _set_joint_rod_material_gains(
@@ -14347,6 +14379,8 @@ class ModelBuilder:
             # tendons
 
             tendon_count = len(self.tendon_start)
+            m.tendon_label = list(self.tendon_label)
+            m.tendon_world = wp.array(self.tendon_world, dtype=int)
             guide_count = len(self.tendon_guide_body)
             seg_count = len(self.tendon_seg_rest_length)
 
@@ -14373,7 +14407,9 @@ class ModelBuilder:
                 m.tendon_seg_compliance = wp.array(
                     self.tendon_seg_compliance, dtype=wp.float32, requires_grad=requires_grad
                 )
-                m.tendon_seg_damping = wp.array(self.tendon_seg_damping, dtype=wp.float32, requires_grad=requires_grad)
+                m.tendon_seg_damping = wp.array(
+                    self.tendon_seg_damping, dtype=wp.float32, requires_grad=requires_grad
+                )
                 m.tendon_seg_rest_length = wp.array(
                     self.tendon_seg_rest_length, dtype=wp.float32, requires_grad=requires_grad
                 )

@@ -228,6 +228,13 @@ class Model:
         Experimental: currently supported for solver observables, not builder attributes.
         """
 
+        TENDON = 20
+        """Experimental massless routed tendons."""
+        TENDON_GUIDE = 21
+        """Guides in flattened tendon routes."""
+        TENDON_SEGMENT = 22
+        """Straight spans between consecutive tendon guides."""
+
     @dataclass(frozen=True)
     class AttributeSpec:
         """Semantic metadata for an indexed model attribute.
@@ -279,6 +286,26 @@ class Model:
                 raise ValueError("Attribute compaction policy 'end' requires a reference domain")
 
     _CORE_ATTRIBUTE_SPECS: ClassVar[dict[str, AttributeSpec]] = {
+        "tendon_label": AttributeSpec(AttributeFrequency.TENDON),
+        "tendon_world": AttributeSpec(AttributeFrequency.TENDON, references=AttributeFrequency.WORLD),
+        "tendon_start": AttributeSpec(
+            AttributeFrequency.TENDON, references=AttributeFrequency.TENDON_GUIDE, compaction_policy="start"
+        ),
+        "tendon_guide_body": AttributeSpec(AttributeFrequency.TENDON_GUIDE, references=AttributeFrequency.BODY),
+        "tendon_guide_type": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
+        "tendon_guide_radius": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
+        "tendon_guide_orientation": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
+        "tendon_guide_mu": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
+        "tendon_guide_flags": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
+        "tendon_guide_offset": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
+        "tendon_guide_axis": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
+        "tendon_seg_compliance": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
+        "tendon_seg_damping": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
+        "tendon_seg_rest_length": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
+        "tendon_seg_attachment_l_local": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
+        "tendon_seg_attachment_r_local": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
+        "tendon_guide_active": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
+        "_tendon_initialized": AttributeSpec(AttributeFrequency.TENDON),
         # particles
         "particle_q": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_qd": AttributeSpec(AttributeFrequency.PARTICLE),
@@ -547,6 +574,9 @@ class Model:
         AttributeFrequency.TRIANGLE: "tri_count",
         AttributeFrequency.TETRAHEDRON: "tet_count",
         AttributeFrequency.SPRING: "spring_count",
+        AttributeFrequency.TENDON: "tendon_count",
+        AttributeFrequency.TENDON_GUIDE: "tendon_guide_count",
+        AttributeFrequency.TENDON_SEGMENT: "tendon_segment_count",
         AttributeFrequency.CONSTRAINT_MIMIC: "constraint_mimic_count",
         AttributeFrequency.WORLD: "world_count",
         AttributeFrequency.ATTACHMENT_BODY_PARTICLE: "attachment_body_particle_count",
@@ -888,6 +918,10 @@ class Model:
         # tendons (cable-driven mechanisms)
         self.tendon_count: int = 0
         """Total number of tendons in the system."""
+        self.tendon_label: list[str] = []
+        """Tendon names, shape (tendon_count,)."""
+        self.tendon_world: wp.array[int] | None = None
+        """Owning world for each tendon; -1 denotes the global world."""
         self.tendon_guide_count: int = 0
         """Total number of tendon guides (waypoints) across all tendons."""
         self.tendon_segment_count: int = 0
@@ -1530,6 +1564,9 @@ class Model:
             "triangle": Model.AttributeFrequency.TRIANGLE,
             "tetrahedron": Model.AttributeFrequency.TETRAHEDRON,
             "spring": Model.AttributeFrequency.SPRING,
+            "tendon": Model.AttributeFrequency.TENDON,
+            "tendon_guide": Model.AttributeFrequency.TENDON_GUIDE,
+            "tendon_segment": Model.AttributeFrequency.TENDON_SEGMENT,
             "attachment_body_particle": Model.AttributeFrequency.ATTACHMENT_BODY_PARTICLE,
             "world": Model.AttributeFrequency.WORLD,
         }

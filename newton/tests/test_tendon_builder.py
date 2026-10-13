@@ -11,9 +11,192 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.solvers.coupled.model_view import ModelView
 
 
 class TestTendonBuilder(unittest.TestCase):
+    def test_first_guide_has_no_material(self):
+        """Reject non-default incoming-span parameters on a guide with no incoming span."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=0.0)
+        for kwargs in ({"compliance": 0.1}, {"damping": 1.0}, {"rest_length": 0.2}):
+            with self.subTest(kwargs=kwargs), self.assertRaisesRegex(ValueError, "first.*incoming"):
+                builder.add_tendon([newton.TendonGuide(body=body, **kwargs), newton.TendonGuide(body=body)])
+        self.assertEqual(builder.tendon_count, 0)
+
+    def test_tendon_attribute_domains(self):
+        """Preserve labels, domain counts, and custom references through replication."""
+        frequency = newton.Model.AttributeFrequency
+        source = newton.ModelBuilder()
+        for name, freq, ref in (
+            ("route_body", frequency.TENDON, "body"),
+            ("guide_route", frequency.TENDON_GUIDE, "tendon"),
+            ("span_guide", frequency.TENDON_SEGMENT, "tendon_guide"),
+        ):
+            source.add_custom_attribute(
+                newton.ModelBuilder.CustomAttribute(
+                    name=name,
+                    dtype=int,
+                    frequency=freq,
+                    assignment=newton.Model.AttributeAssignment.MODEL,
+                    references=ref,
+                    default=-1,
+                )
+            )
+        left = source.add_body(mass=0.0)
+        right = source.add_body(xform=wp.transform(p=(1.0, 0.0, 0.0)), mass=0.0)
+        source.add_tendon(
+            [
+                newton.TendonGuide(body=left, custom_attributes={"guide_route": 0}),
+                newton.TendonGuide(
+                    body=right, custom_attributes={"guide_route": 0}, segment_custom_attributes={"span_guide": 1}
+                ),
+            ],
+            label="pull",
+            custom_attributes={"route_body": right},
+        )
+        target = newton.ModelBuilder()
+        target.add_world(source, label_prefix="first")
+        target.add_world(source, label_prefix="second")
+        model = target.finalize(device="cpu")
+        self.assertEqual(model.tendon_label, ["first/pull", "second/pull"])
+        for name, freq in (
+            ("tendon_start", frequency.TENDON),
+            ("tendon_guide_offset", frequency.TENDON_GUIDE),
+            ("tendon_seg_compliance", frequency.TENDON_SEGMENT),
+        ):
+            self.assertEqual(model.get_attribute_frequency(name), freq)
+        self.assertEqual(model._attribute_frequency_count(frequency.TENDON_GUIDE), 4)
+        self.assertEqual(model._attribute_spec("tendon_guide_body").references, frequency.BODY)
+        np.testing.assert_array_equal(model.tendon_start.numpy(), [0, 2, 4])
+        np.testing.assert_array_equal(model.tendon_world.numpy(), [0, 1])
+        np.testing.assert_array_equal(model.route_body.numpy(), [1, 3])
+        np.testing.assert_array_equal(model.guide_route.numpy(), [0, 0, 1, 1])
+        np.testing.assert_array_equal(model.span_guide.numpy(), [1, 3])
+        batched = newton.ModelBuilder()
+        batched.replicate(source, 3)
+        replicated = batched.finalize(device="cpu")
+        np.testing.assert_array_equal(replicated.route_body.numpy(), [1, 3, 5])
+        np.testing.assert_array_equal(replicated.span_guide.numpy(), [1, 3, 5])
+
+    def test_tendon_view_rejects_partial_domains(self):
+        """Reject compact views until complete-route remapping is supported."""
+        builder = newton.ModelBuilder()
+        left, right = builder.add_body(mass=0.0), builder.add_body(mass=0.0)
+        builder.add_tendon([newton.TendonGuide(body=left), newton.TendonGuide(body=right)])
+        view = ModelView(builder.finalize(device="cpu"), "partial")
+        with self.assertRaisesRegex(ValueError, "tendon"):
+            view.body_count = 1
+
+    def test_tendon_state_and_control_attributes(self):
+        """Allocate replicated custom state/control attributes with remapped span references."""
+        source = newton.ModelBuilder()
+        frequency = newton.Model.AttributeFrequency
+        assignment = newton.Model.AttributeAssignment
+        for name, freq, target, dtype, references in (
+            ("history", frequency.TENDON, assignment.STATE, float, None),
+            ("input", frequency.TENDON_GUIDE, assignment.CONTROL, float, None),
+            ("peer", frequency.TENDON_SEGMENT, assignment.STATE, int, "tendon_segment"),
+        ):
+            source.add_custom_attribute(
+                newton.ModelBuilder.CustomAttribute(
+                    name=name,
+                    namespace="test",
+                    dtype=dtype,
+                    frequency=freq,
+                    assignment=target,
+                    references=references,
+                    default=-1,
+                )
+            )
+        body = source.add_body(mass=0.0)
+        source.add_tendon(
+            [
+                newton.TendonGuide(body=body, custom_attributes={"test:input": 2.0}),
+                newton.TendonGuide(body=body, segment_custom_attributes={"test:peer": 0}),
+            ],
+            custom_attributes={"test:history": 4.0},
+        )
+        target = newton.ModelBuilder()
+        target.replicate(source, 2)
+        model = target.finalize(device="cpu")
+        state, saved = model.state(), model.state()
+        np.testing.assert_array_equal(state.test.history.numpy(), [4.0, 4.0])
+        np.testing.assert_array_equal(state.test.peer.numpy(), [0, 1])
+        np.testing.assert_array_equal(model.control().test.input.numpy(), [2.0, -1.0, 2.0, -1.0])
+        state.test.history.fill_(7.0)
+        saved.assign(state)
+        np.testing.assert_array_equal(saved.test.history.numpy(), [7.0, 7.0])
+
+    def test_tendon_custom_attributes_are_atomic(self):
+        """An invalid custom attribute must not append a partial route or attribute row."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body(mass=0.0)
+        with self.assertRaisesRegex(AttributeError, "not defined"):
+            builder.add_tendon(
+                [newton.TendonGuide(body=body), newton.TendonGuide(body=body)], custom_attributes={"missing": 1}
+            )
+        self.assertEqual(builder.tendon_count, 0)
+        self.assertEqual(builder.tendon_guide_count, 0)
+        self.assertEqual(builder.tendon_label, [])
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="guide_value",
+                dtype=float,
+                frequency=newton.Model.AttributeFrequency.TENDON_GUIDE,
+                assignment=newton.Model.AttributeAssignment.MODEL,
+            )
+        )
+        with self.assertRaisesRegex(ValueError, "frequency"):
+            builder.add_tendon(
+                [
+                    newton.TendonGuide(body=body, custom_attributes={"guide_value": 1.0}),
+                    newton.TendonGuide(body=body, segment_custom_attributes={"guide_value": 2.0}),
+                ]
+            )
+        self.assertFalse(builder.custom_attributes["guide_value"].values)
+        self.assertEqual(builder.tendon_count, 0)
+        self.assertEqual(builder.tendon_guide_count, 0)
+        self.assertEqual(builder.tendon_segment_count, 0)
+
+    def test_tendon_custom_body_reference_survives_collapse(self):
+        """Remap custom body references at all tendon frequencies when fixed bodies collapse."""
+        builder = newton.ModelBuilder()
+        frequency = newton.Model.AttributeFrequency
+        for name, freq in (
+            ("route_body", frequency.TENDON),
+            ("guide_body", frequency.TENDON_GUIDE),
+            ("span_body", frequency.TENDON_SEGMENT),
+        ):
+            builder.add_custom_attribute(
+                newton.ModelBuilder.CustomAttribute(
+                    name=name,
+                    dtype=int,
+                    frequency=freq,
+                    assignment=newton.Model.AttributeAssignment.MODEL,
+                    references="body",
+                    default=-1,
+                )
+            )
+        root = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        other = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_joint_fixed(root, child)
+        builder.add_tendon(
+            [
+                newton.TendonGuide(body=child, custom_attributes={"guide_body": child}),
+                newton.TendonGuide(
+                    body=other, custom_attributes={"guide_body": other}, segment_custom_attributes={"span_body": child}
+                ),
+            ],
+            custom_attributes={"route_body": child},
+        )
+        builder.collapse_fixed_joints()
+        model = builder.finalize(device="cpu")
+        np.testing.assert_array_equal(model.route_body.numpy(), [0])
+        np.testing.assert_array_equal(model.guide_body.numpy(), [0, 1])
+        np.testing.assert_array_equal(model.span_body.numpy(), [0])
+
     def test_collapse_preserves_tendons_and_particle_attachments(self):
         """Retain world-fixed bodies needed by either tendon guides or particle attachments."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))

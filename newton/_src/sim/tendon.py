@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import IntEnum
+from typing import Any
 
 from ..core.types import Vec3
 
@@ -61,8 +62,8 @@ class TendonGuide:
 
     Pass a complete sequence to :meth:`newton.ModelBuilder.add_tendon`. Geometry
     is body-local; the builder copies it and normalizes the axis. Material
-    parameters describe the incoming straight span and are ignored for the
-    first guide.
+    parameters describe the incoming straight span. The first guide has no
+    incoming span and must keep the material defaults.
 
     .. experimental::
     """
@@ -84,8 +85,16 @@ class TendonGuide:
     axis: Vec3 = (0.0, 0.0, 1.0)
     """Nonzero cable-plane normal in the body's local frame [dimensionless]."""
     compliance: float = 0.0
-    """Incoming span compliance [m/N]."""
+    """Incoming span compliance [m/N], equal to ``1 / stiffness`` for positive stiffness [N/m].
+
+    Zero requests an inextensible span in XPBD; VBD approximates it with a small
+    positive compliance. Keep the default on the first guide.
+    """
     damping: float = 0.0
     """Incoming span damping coefficient [N·s/m]."""
     rest_length: float = -1.0
     """Incoming span rest length [m]; negative measures it from initial body poses."""
+    custom_attributes: dict[str, Any] | None = None
+    """Values of declared TENDON_GUIDE-frequency custom attributes."""
+    segment_custom_attributes: dict[str, Any] | None = None
+    """Values of declared TENDON_SEGMENT-frequency attributes for the incoming span; empty on the first guide."""
