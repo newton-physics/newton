@@ -766,7 +766,8 @@ class SolverBase:
           coefficients/bounds have changed.
         * ``ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES``: Joint armature has changed.
         * ``ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES``: Joint reference poses
-          or spring references have changed.
+          or spring references have changed, including Rod rest rotations in
+          ``Model.joint_target_q``.
         * ``ModelFlags.BODY_PROPERTIES``: Rigid-body pose or velocity buffers
           have changed.
         * ``ModelFlags.BODY_INERTIAL_PROPERTIES``: Rigid-body mass or inertia

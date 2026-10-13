@@ -163,7 +163,14 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                 kernel modules. Pass a :class:`warp.DeterministicMode`, or
                 ``None`` (default) to inherit the current
                 ``wp.config.deterministic`` mode.
+
+        Raises:
+            ValueError: If ``model`` contains a :attr:`~newton.JointType.ROD`
+                joint, which is not supported by this solver.
         """
+        if model._has_rod_joints and JointType.ROD in model.joint_type.numpy():  # pyright: ignore[reportPrivateUsage]
+            raise ValueError("SolverFeatherstone does not support JointType.ROD joints.")
+
         super().__init__(model)
         self._has_joint_mimics = has_supported_joint_mimics(model, "SolverFeatherstone")
         effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
