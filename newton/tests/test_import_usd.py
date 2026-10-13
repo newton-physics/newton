@@ -16,7 +16,6 @@ from unittest import mock
 from urllib.parse import urlparse
 
 import numpy as np
-import pytest
 import warp as wp
 
 import newton
@@ -13277,7 +13276,10 @@ def Xform "World"
         compose those transforms, otherwise all parts collapse onto the
         origin as overlapping local geometry.
         """
-        trimesh = pytest.importorskip("trimesh")
+        try:
+            import trimesh
+        except ImportError:
+            self.skipTest("trimesh not installed")
 
         scene = trimesh.Scene()
         part = trimesh.creation.box(extents=[2.0, 2.0, 2.0])

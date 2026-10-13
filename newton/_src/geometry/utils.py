@@ -405,7 +405,7 @@ def load_mesh(filename: str, method: str | None = None):
             if hasattr(m, "geometry"):
                 # Combine scene parts with their node transforms applied;
                 # raw vertices are in node-local space.
-                combined = m.to_geometry()
+                combined = m.to_mesh()
                 mesh_points = np.array(combined.vertices, dtype=np.float32)
                 mesh_indices = np.array(combined.faces.flatten(), dtype=np.int32)
             else:
