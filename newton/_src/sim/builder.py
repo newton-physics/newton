@@ -4231,7 +4231,7 @@ class ModelBuilder:
                 damping at ``default_joint_cfg.target_kd``. ``"drive"`` imports it
                 into ``joint_target_kd``; absent values use ``default_joint_cfg.target_kd``.
                 In drive mode, passive damping uses ``default_joint_cfg.damping``
-                for revolute/prismatic joints and zero for planar joints.
+                for revolute, prismatic, and planar joints.
                 XPBD/VBD do not consume passive joint damping.
 
                 .. deprecated:: 1.7

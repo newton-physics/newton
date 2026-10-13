@@ -189,7 +189,7 @@ def parse_urdf(
             damping at ``default_joint_cfg.target_kd``. ``"drive"`` imports it
             into ``joint_target_kd``; absent values use ``default_joint_cfg.target_kd``.
             In drive mode, passive damping uses ``default_joint_cfg.damping``
-            for revolute/prismatic joints and zero for planar joints.
+            for revolute, prismatic, and planar joints.
             XPBD/VBD do not consume passive joint damping.
 
             .. deprecated:: 1.7
@@ -889,7 +889,7 @@ def parse_urdf(
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,
                         target_kd=joint_target_kd,
-                        damping=0.0 if use_drive_damping else joint_damping,
+                        damping=joint_passive_damping,
                         friction=joint_friction,
                         actuator_mode=actuator_mode,
                     ),
@@ -898,7 +898,7 @@ def parse_urdf(
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,
                         target_kd=joint_target_kd,
-                        damping=0.0 if use_drive_damping else joint_damping,
+                        damping=joint_passive_damping,
                         friction=joint_friction,
                         actuator_mode=actuator_mode,
                     ),

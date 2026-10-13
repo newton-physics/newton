@@ -2414,7 +2414,7 @@ class TestUrdfJointFriction(unittest.TestCase):
                 np.testing.assert_allclose(model.joint_friction.numpy(), [0.25, 0.75])
 
     def test_drive_planar_joint_damping_mapping(self):
-        """Preserve the old planar defaults, including zero passive damping."""
+        """Apply configured passive damping to both planar axes in drive mode."""
         urdf = """
 <robot name="planar_damping_test">
     <link name="base_link"/>
@@ -2435,7 +2435,7 @@ class TestUrdfJointFriction(unittest.TestCase):
                 parse_urdf(source, builder, joint_damping_mode="drive")
                 model = builder.finalize(device="cpu")
                 np.testing.assert_allclose(model.joint_target_kd.numpy(), [expected, expected])
-                np.testing.assert_allclose(model.joint_damping.numpy(), [0.0, 0.0])
+                np.testing.assert_allclose(model.joint_damping.numpy(), [0.5, 0.5])
 
     def test_joint_damping_mode_is_per_import(self):
         """An opt-in import must not change defaults for the next asset."""
