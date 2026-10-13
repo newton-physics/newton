@@ -19,7 +19,7 @@ from newton.sensors import SensorIMU
 class SolverBodyQdd(newton.solvers.SolverBase):
     """Minimal solver declaring acceleration-output support for sensor tests."""
 
-    SUPPORTED_OBSERVABLE_FLAGS = frozenset({newton.solvers.SolverObservableFlags.BODY_QDD})
+    SUPPORTED_OBSERVABLES = frozenset({newton.solvers.SolverBase.ObservableKind.BODY_QDD})
 
 
 class TestSensorIMU(unittest.TestCase):
@@ -27,7 +27,7 @@ class TestSensorIMU(unittest.TestCase):
 
     @staticmethod
     def _observables(model, sensor):
-        return SolverBodyQdd(model).observables(sensor.solver_observable_flags)
+        return SolverBodyQdd(model).observables(kinds=sensor.solver_observable_kinds)
 
     def test_legacy_attribute_request_warns_at_caller(self):
         """Warn once at the caller when opting into deprecated state allocation."""
@@ -43,7 +43,9 @@ class TestSensorIMU(unittest.TestCase):
 
         self.assertEqual(len(caught), 1)
         self.assertIs(caught[0].category, DeprecationWarning)
-        self.assertRegex(str(caught[0].message), r"SensorIMU.*request_state_attributes=True.*1\.7.*SolverObservables")
+        self.assertRegex(
+            str(caught[0].message), r"SensorIMU.*request_state_attributes=True.*1\.7.*SolverBase.Observables"
+        )
         self.assertEqual(caught[0].filename, __file__)
         self.assertEqual(caught[0].lineno, caller_line)
         self.assertIsNotNone(model.state().body_qdd)
@@ -90,7 +92,7 @@ class TestSensorIMU(unittest.TestCase):
                     sensor.update(model.state(), observables=observables)
                 launch.assert_not_called()
         with self.assertRaisesRegex(ValueError, "model"):
-            sensor.update(model.state(), observables=newton.solvers.SolverObservables())
+            sensor.update(model.state(), observables=newton.solvers.SolverBase.Observables())
 
     def test_sensor_creation(self):
         """Test basic sensor creation."""
@@ -194,13 +196,13 @@ class TestSensorIMU(unittest.TestCase):
 
         sensor = SensorIMU(model, sites=[site], request_state_attributes=False)
         solver = SolverBodyQdd(model)
-        observables = solver.observables(sensor.solver_observable_flags)
+        observables = solver.observables(kinds=sensor.solver_observable_kinds)
         state = model.state()
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
         self.assertIsNone(state.body_qdd)
         observables.body_qdd.zero_()
-        sensor.update(state, observables=observables.select(sensor.solver_observable_flags))
+        sensor.update(state, observables=observables.select(sensor.solver_observable_kinds))
 
         np.testing.assert_allclose(sensor.accelerometer.numpy()[0], -model.gravity.numpy()[-1], atol=1e-5)
         np.testing.assert_allclose(sensor.gyroscope.numpy()[0], [0.0, 0.0, 0.0], atol=1e-5)
