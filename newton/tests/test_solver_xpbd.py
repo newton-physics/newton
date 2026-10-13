@@ -2600,6 +2600,15 @@ class TestSolverXPBD(unittest.TestCase):
 
         self.assertFalse(solver.enable_restitution)
 
+    def test_rejects_rod_joints(self):
+        """Raise at construction instead of silently skipping Rod joints in the constraint kernels."""
+        builder = newton.ModelBuilder()
+        builder.add_rod(
+            rod=newton.Rod([(0.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.0, 0.0, 2.0)], radius=0.1), body_frame_origin="com"
+        )
+        with self.assertRaisesRegex(ValueError, "JointType.ROD"):
+            newton.solvers.SolverXPBD(builder.finalize(device="cpu"))
+
     def test_compute_body_velocity_from_position_delta_is_deprecated(self):
         model = newton.ModelBuilder().finalize()
         solver = newton.solvers.SolverXPBD(model)
