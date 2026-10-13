@@ -606,9 +606,11 @@ def make_solve_flow_rule(has_viscosity: bool = True, has_dilatancy: bool = True)
             dilatancy = 0.0
 
         if wp.static(has_viscosity):
-            D_visc = vec6(1.0) + get_viscosity(yield_params) / strain_node_volume * D
-            D = wp.cw_div(D, D_visc)
-            b = wp.cw_div(b, D_visc)
+            # Empty strain modes have no material viscosity to apply.
+            if strain_node_volume > 0.0:
+                D_visc = vec6(1.0) + get_viscosity(yield_params) / strain_node_volume * D
+                D = wp.cw_div(D, D_visc)
+                b = wp.cw_div(b, D_visc)
 
         if wp.static(_USE_CAM_CLAY):
             return solve_flow_rule_camclay(D, b, r_guess, yield_params)

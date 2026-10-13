@@ -142,7 +142,7 @@ def get_average_face_normal(
     point: wp.vec3,
 ):
     """Computes the average face normal at a point on a mesh.
-    (average of face normals within an epsilon-distance of the point)
+    (area-weighted average of face normals within an epsilon-distance of the point)
 
     Args:
         mesh_id: The mesh to query.
@@ -168,7 +168,8 @@ def get_average_face_normal(
 
         sq_dist = _sq_dist_point_tri_at_origin(point - V0, V1 - V0, V2 - V0)
         if sq_dist < eps_sq:
-            face_normal += wp.mesh_eval_face_normal(mesh_id, face_index)
+            # Area weighting prevents sliver triangles from reversing the sign.
+            face_normal += wp.cross(V1 - V0, V2 - V0)
 
     return wp.normalize(face_normal)
 
@@ -210,6 +211,9 @@ def _query_collider_sdf(
 
         if wp.static(_SDF_SIGN_FROM_AVERAGE_NORMAL):
             face_normal = get_average_face_normal(mesh, cp)
+            if wp.length_sq(face_normal) < 1.0e-12:
+                # Edge rounding or cancellation can leave the average normal zero.
+                face_normal = wp.mesh_eval_face_normal(mesh, query.face)
             sign = wp.where(wp.dot(face_normal, x_local - cp) > 0.0, 1.0, -1.0)
         else:
             face_normal = wp.mesh_eval_face_normal(mesh, query.face)

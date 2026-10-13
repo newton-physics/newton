@@ -12,7 +12,7 @@ import warp.fem as fem
 import warp.sparse as sp
 
 import newton
-from newton._src.solvers.implicit_mpm.implicit_mpm_solver_kernels import collision_weight_field
+from newton._src.solvers.implicit_mpm.implicit_mpm_solver_kernels import collision_weight_field, compute_eigenvalues
 from newton._src.solvers.implicit_mpm.rasterized_collisions import (
     _ALL_COLLIDER_WORLDS,
     Collider,
@@ -26,6 +26,7 @@ from newton._src.solvers.implicit_mpm.rheology_solver_kernels import (
     _symmetric_part_transposed_op,
     apply_stress_gs,
     compute_delassus_diagonal,
+    make_solve_flow_rule,
     mat55,
     mat66,
     postprocess_stress_and_strain,
@@ -2207,6 +2208,294 @@ basic_devices = get_test_devices(mode="basic")
 basic_cuda_devices = get_cuda_test_devices(mode="basic")
 
 
+@wp.kernel
+def _query_collision_distance(
+    positions: wp.array[wp.vec3],
+    collider: Collider,
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_q_prev: wp.array[wp.transform],
+    distances: wp.array[float],
+):
+    i = wp.tid()
+    sdf, _normal, _velocity, _collider_id, _material_id = collision_sdf(
+        positions[i], _ALL_COLLIDER_WORLDS, collider, body_q, body_qd, body_q_prev, 0.01
+    )
+    distances[i] = sdf
+
+
+def test_collision_sdf_sign_with_sliver_faces(test, device):
+    """Keep the sign of a floor's distance where flipped sliver triangles line one of its edges.
+
+    Bevelled meshes such as the dam-break tank leave near-zero-area triangles
+    along the edges of their floor fan. Facing either way, they leave the
+    orientation of the floor at those edges unchanged.
+    """
+    model = _make_mpm_particle_builder(gravity=(0.0, 0.0, 0.0)).finalize(device=device)
+    solver = SolverImplicitMPM(model, _make_mpm_config())
+
+    # Floor at y = 0 facing up, from two triangles sharing the diagonal from vertex 0 to vertex 2
+    points = [(-1.0, 0.0, -1.0), (1.0, 0.0, -1.0), (1.0, 0.0, 1.0), (-1.0, 0.0, 1.0)]
+    indices = [0, 2, 1, 0, 3, 2]
+    # Four slivers along that diagonal facing down, outnumbering the two floor faces
+    for k in range(4):
+        points.append((1.0 + 2.5e-7 * (k + 1), 0.0, 1.0))
+        indices.extend((0, len(points) - 1, 2))
+    points = wp.array(points, dtype=wp.vec3, device=device)
+    mesh = wp.Mesh(points, wp.array(indices, dtype=int, device=device), wp.zeros_like(points))
+    solver.setup_collider(collider_meshes=[mesh])
+    collider = solver._mpm_model.collider
+    collider.query_max_dist = 1.0
+
+    # Points above and below the diagonal, and away from it
+    queries = np.array(((0.5, 0.05, 0.5), (-0.3, 0.05, -0.3), (0.5, -0.05, 0.5), (0.5, 0.05, -0.2)), dtype=np.float32)
+    distances = wp.empty(len(queries), dtype=float, device=device)
+    state = model.state()
+    wp.launch(
+        _query_collision_distance,
+        dim=len(queries),
+        inputs=[wp.array(queries, dtype=wp.vec3, device=device), collider, state.body_q, state.body_qd, None],
+        outputs=[distances],
+        device=device,
+    )
+    above_diagonal, above_elsewhere, below_diagonal, above_away = distances.numpy()
+    test.assertGreater(above_away, 0.04)
+    test.assertAlmostEqual(above_diagonal, above_away, delta=1.0e-5)
+    test.assertAlmostEqual(above_elsewhere, above_away, delta=1.0e-5)
+    test.assertLess(below_diagonal, -0.04)
+
+
+def test_collision_sdf_zero_average_normal(test, device):
+    """Use the closest face when opposing nearby surfaces cancel the average normal."""
+    model = _make_mpm_particle_builder(gravity=(0.0, 0.0, 0.0)).finalize(device=device)
+    solver = SolverImplicitMPM(model, _make_mpm_config())
+    # The two sides of a thin slab are inside the normal-query radius.
+    # Equal areas and opposite winding cancel their averaged normals.
+    points = [(x, y, z) for y in (0.0, -0.0005) for x, z in ((-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0))]
+    mesh_points = wp.array(points, dtype=wp.vec3, device=device)
+    indices = wp.array((0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7), dtype=int, device=device)
+    mesh = wp.Mesh(mesh_points, indices, wp.zeros_like(mesh_points))
+    solver.setup_collider(collider_meshes=[mesh])
+    collider = solver._mpm_model.collider
+    collider.query_max_dist = 1.0
+    collider.material_thickness.zero_()
+    queries = wp.array(((0.2, 0.01, -0.3), (0.2, -0.0105, -0.3), (0.2, -0.0001, -0.3)), dtype=wp.vec3, device=device)
+    distances = wp.empty(3, dtype=float, device=device)
+    state = model.state()
+    wp.launch(
+        _query_collision_distance,
+        dim=3,
+        inputs=[queries, collider, state.body_q, state.body_qd, None],
+        outputs=[distances],
+        device=device,
+    )
+    above, below, inside = distances.numpy()
+    test.assertAlmostEqual(float(above), 0.01, delta=1.0e-5)
+    test.assertAlmostEqual(float(below), 0.01, delta=1.0e-5)
+    test.assertLess(inside, 0.0)
+
+
+def test_strain_mode_mass_filter(test, device):
+    """Keep a positive-mass zero-mean mode while dropping a zero-mass mode."""
+    with wp.ScopedDevice(device):
+        mass = np.diag((1.0, 1.0 / 12.0, 0.0)).astype(np.float32)
+        eigenvalues = wp.empty((1, 3), dtype=float, device=device)
+        eigenvectors = wp.empty((1, 3, 3), dtype=float, device=device)
+        rotated_volume = wp.empty((1, 3), dtype=float, device=device)
+        wp.launch(
+            compute_eigenvalues,
+            dim=1,
+            inputs=[
+                wp.array((0, 1), dtype=int, device=device),
+                wp.array((0,), dtype=int, device=device),
+                wp.array(mass[None], dtype=wp.mat33, device=device),
+                wp.array(((1.0, 0.0, 0.0),), dtype=float, device=device),
+                # A heterogeneous material can have a negative moment against a zero-mean mode.
+                wp.array(((1.0,) * 6, (-1.0 / 12.0,) * 6, (0.0,) * 6), dtype=YieldParamVec, device=device),
+                eigenvalues,
+                eigenvectors,
+                rotated_volume,
+            ],
+            device=device,
+        )
+        modes = eigenvectors.numpy()[0]
+        np.testing.assert_allclose(modes.T @ modes, np.diag((1.0, 1.0, 0.0)), atol=1.0e-6)
+        np.testing.assert_allclose(modes.T @ np.diag(eigenvalues.numpy()[0]) @ modes, mass, atol=1.0e-6)
+
+
+def test_strain_modes_symmetric_cell(test, device):
+    """Retain full-rank strain modes and uniform material parameters on a symmetric cell."""
+
+    class ModeSolver(SolverImplicitMPM):
+        def _build_strain_eigenbasis(self, pic, scratch, inv_cell_volume):
+            eigenvectors, rotated_volume = super()._build_strain_eigenbasis(pic, scratch, inv_cell_volume)
+            self.element = int(pic.cell_indices.numpy().reshape(-1)[0])
+            self.mode_count = eigenvectors.shape[1]
+            self.modes = eigenvectors.numpy()[self.element].copy()
+            self.mode_mass = (
+                scratch.strain_node_particle_volume.numpy().reshape(-1, self.mode_count)[self.element].copy()
+            )
+            return eigenvectors, rotated_volume
+
+        def _solve_rheology(self, pic, scratch, rigidity_operator, last_step_data, inv_cell_volume):
+            result = super()._solve_rheology(pic, scratch, rigidity_operator, last_step_data, inv_cell_volume)
+            self.mode_yield_parameters = (
+                scratch.strain_yield_parameters_field.dof_values.numpy()
+                .reshape(-1, self.mode_count, 6)[self.element]
+                .copy()
+            )
+            return result
+
+    abscissae = (0.5 - 0.5 / np.sqrt(3.0), 0.5 + 0.5 / np.sqrt(3.0))
+    positions = np.array(np.meshgrid(abscissae, abscissae, abscissae)).reshape(3, -1).T
+    expected_yield = np.array((300.0 * np.sqrt(1.5), 150.0 * np.sqrt(1.5), 20.0, 60.0, 0.0, 1000.0))
+    with wp.ScopedDevice(device):
+        for integration_scheme in ("pic", "gimp"):
+            for strain_basis in ("P1d", "Q1d"):
+                with test.subTest(integration_scheme=integration_scheme, strain_basis=strain_basis):
+                    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+                    SolverImplicitMPM.register_custom_attributes(builder)
+                    for position in positions:
+                        builder.add_particle(
+                            pos=position,
+                            vel=(0.0, 0.0, 0.0),
+                            mass=0.125,
+                            radius=0.25,
+                            custom_attributes={
+                                "mpm:young_modulus": 1.0e4,
+                                "mpm:friction": 0.2,
+                                "mpm:yield_pressure": 300.0,
+                                "mpm:tensile_yield_ratio": 0.5,
+                                "mpm:yield_stress": 20.0,
+                                "mpm:viscosity": 10.0,
+                            },
+                        )
+                    model = builder.finalize(device=device)
+                    solver = ModeSolver(
+                        model,
+                        SolverImplicitMPM.Config(
+                            voxel_size=1.0,
+                            grid_type="fixed",
+                            integration_scheme=integration_scheme,
+                            strain_basis=strain_basis,
+                            max_iterations=0,
+                            warmstart_mode="none",
+                        ),
+                    )
+                    state = model.state()
+                    solver.step(state, state, None, None, 0.01)
+                    test.assertTrue(np.all(solver.mode_mass > 1.0e-6))
+                    np.testing.assert_allclose(solver.modes @ solver.modes.T, np.eye(solver.mode_count), atol=2.0e-5)
+                    np.testing.assert_allclose(
+                        solver.mode_yield_parameters,
+                        np.tile(expected_yield, (solver.mode_count, 1)),
+                        rtol=2.0e-4,
+                        atol=2.0e-4,
+                    )
+
+
+@wp.kernel
+def _flow_rule_viscosity_probe(
+    volumes: wp.array[float],
+    viscosities: wp.array[float],
+    actual: wp.array[YieldParamVec],
+    expected: wp.array[YieldParamVec],
+):
+    i = wp.tid()
+    diagonal = YieldParamVec(1.0)
+    rhs = YieldParamVec(0.0, 0.3, -0.2, 0.1, 0.0, 0.0)
+    parameters = YieldParamVec(100.0, 100.0, 0.0, 0.0, 0.0, viscosities[i])
+    actual[i] = wp.static(make_solve_flow_rule(True, False))(diagonal, rhs, YieldParamVec(0.0), parameters, volumes[i])
+    expected[i] = wp.static(make_solve_flow_rule(False, False))(
+        diagonal, rhs, YieldParamVec(0.0), parameters, volumes[i]
+    )
+
+
+def test_flow_rule_empty_node_viscosity(test, device):
+    """Keep empty viscous modes finite without changing positive-volume viscosity."""
+    volumes = wp.array((0.0, 0.0, 1.0), dtype=float, device=device)
+    viscosities = wp.array((0.0, 10.0, 10.0), dtype=float, device=device)
+    actual = wp.empty(3, dtype=YieldParamVec, device=device)
+    expected = wp.empty_like(actual)
+    wp.launch(
+        _flow_rule_viscosity_probe, dim=3, inputs=[volumes, viscosities], outputs=[actual, expected], device=device
+    )
+    values, reference = actual.numpy(), expected.numpy()
+    test.assertTrue(np.isfinite(values).all())
+    np.testing.assert_allclose(values[:2], reference[:2], atol=1.0e-6)
+    np.testing.assert_allclose(values[2], reference[2] / 11.0, atol=1.0e-6)
+
+
+def test_inactive_viscous_particles(test, device):
+    """Keep dormant viscous particles finite through activation alongside elastic material."""
+    builder = newton.ModelBuilder(gravity=(0.0, -9.81, 0.0))
+    SolverImplicitMPM.register_custom_attributes(builder)
+    for i in range(10):
+        syrup = i >= 4
+        position = (
+            (0.025 + 0.05 * (i % 2), 0.025 + 0.05 * ((i // 2) % 2), 0.025 + 0.05 * (i // 4))
+            if i < 8
+            else (0.035 + 0.02 * (i - 8), 0.065, 0.065)
+        )
+        builder.add_particle(
+            pos=position,
+            vel=(0.1 if syrup and i < 8 else 0.0, 0.0, 0.0),
+            mass=0.125,
+            radius=0.025,
+            flags=newton.ParticleFlags.ACTIVE if i < 8 else 0,
+            custom_attributes={
+                "mpm:young_modulus": 1.0e4,
+                "mpm:friction": 0.0,
+                "mpm:viscosity": 1000.0 if syrup else 0.0,
+                "mpm:tensile_yield_ratio": 1.0,
+                "mpm:yield_stress": 0.0 if syrup else 300.0,
+            },
+        )
+    model = builder.finalize(device=device)
+    solver = SolverImplicitMPM(
+        model,
+        SolverImplicitMPM.Config(
+            voxel_size=0.1,
+            grid_type="fixed",
+            grid_padding=1,
+            strain_basis="pic32",
+            solver="jacobi",
+            max_iterations=50,
+            tolerance=0.0,
+        ),
+    )
+    state = model.state()
+    initial = state.particle_q.numpy().copy()
+    test.assertTrue(solver._mpm_model.has_viscosity)
+    np.testing.assert_array_equal(solver._mpm_model.material_particle_volume.numpy()[-2:], 0.0)
+
+    def assert_finite():
+        for array in (
+            state.particle_q,
+            state.particle_qd,
+            state.mpm.particle_stress,
+            state.mpm.particle_qd_grad,
+            state.mpm.particle_elastic_strain,
+            state.mpm.particle_Jp,
+        ):
+            test.assertTrue(np.isfinite(array.numpy()).all())
+
+    solver.step(state, state, None, None, 1.0 / 240.0)
+    assert_finite()
+    np.testing.assert_array_equal(state.particle_q.numpy()[-2:], initial[-2:])
+    np.testing.assert_array_equal(state.particle_qd.numpy()[-2:], 0.0)
+
+    flags = model.particle_flags.numpy()
+    flags[-2] |= int(newton.ParticleFlags.ACTIVE)
+    model.particle_flags.assign(flags)
+    solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
+    test.assertGreater(solver._mpm_model.material_particle_volume.numpy()[-2], 0.0)
+    solver.step(state, state, None, None, 1.0 / 240.0)
+    assert_finite()
+    np.testing.assert_array_equal(state.particle_q.numpy()[-1], initial[-1])
+    test.assertLess(state.particle_q.numpy()[-2, 1], initial[-2, 1])
+
+
 class TestImplicitMPM(unittest.TestCase):
     pass
 
@@ -2520,6 +2809,25 @@ add_function_test(
     check_output=False,
 )
 
+
+add_function_test(
+    TestImplicitMPM,
+    "test_collision_sdf_sign_with_sliver_faces",
+    test_collision_sdf_sign_with_sliver_faces,
+    devices=devices,
+)
+add_function_test(
+    TestImplicitMPM, "test_collision_sdf_zero_average_normal", test_collision_sdf_zero_average_normal, devices=devices
+)
+add_function_test(TestImplicitMPM, "test_strain_mode_mass_filter", test_strain_mode_mass_filter, devices=devices)
+add_function_test(
+    TestImplicitMPM, "test_strain_modes_symmetric_cell", test_strain_modes_symmetric_cell, devices=devices
+)
+add_function_test(
+    TestImplicitMPM, "test_flow_rule_empty_node_viscosity", test_flow_rule_empty_node_viscosity, devices=devices
+)
+
+add_function_test(TestImplicitMPM, "test_inactive_viscous_particles", test_inactive_viscous_particles, devices=devices)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2, failfast=True)
