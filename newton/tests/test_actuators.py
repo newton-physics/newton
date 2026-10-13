@@ -5392,7 +5392,9 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
         self.assertEqual(parsed.drive_kwargs["model_path"], model_path)
 
     def test_usd_torch_checkpoint_requires_opt_in(self):
-        """Require trust before importing a relative Torch checkpoint from USD."""
+        """Require a valid model path and trust before importing a Torch checkpoint."""
+        from pxr import Sdf
+
         model_path = os.path.join(self._tmp_dir, "mlp.pt2")
         with zipfile.ZipFile(model_path, "w") as archive:
             archive.writestr("archive/archive_format", "pt2")
@@ -5409,6 +5411,19 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
         result = builder.add_usd(stage_path, allow_unsafe_torch_checkpoints=True)
         self.assertEqual(result["actuator_count"], 1)
         self.assertEqual(next(iter(builder.actuator_entries.values())).drive_shared_kwargs["model_path"], model_path)
+
+        prim = stage.GetPrimAtPath("/World/Robot/NeuralActuator")
+        prim.GetAttribute("newton:modelPath").Set(Sdf.AssetPath(""))
+        message = (
+            "Actuator prim '/World/Robot/NeuralActuator': "
+            "NewtonNeuralControlAPI requires a non-empty newton:modelPath attribute"
+        )
+        for allow_unsafe in (False, True):
+            with self.subTest(allow_unsafe_torch_checkpoints=allow_unsafe):
+                with self.assertRaisesRegex(ValueError, message):
+                    parse_actuator_prim(prim, allow_unsafe_torch_checkpoints=allow_unsafe)
+                with self.assertRaisesRegex(ValueError, message):
+                    newton.ModelBuilder().add_usd(stage, allow_unsafe_torch_checkpoints=allow_unsafe)
 
 
 # ---------------------------------------------------------------------------

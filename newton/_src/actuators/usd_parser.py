@@ -371,7 +371,7 @@ def parse_actuator_prim(prim, *, allow_unsafe_torch_checkpoints: bool = False) -
         if (
             schema_name == SchemaNames.NEURAL_CONTROL
             and not allow_unsafe_torch_checkpoints
-            and _looks_like_torch_checkpoint(kwargs.get("model_path", ""))
+            and _looks_like_torch_checkpoint(kwargs.get("model_path") or "")
         ):
             raise ValueError(
                 f"Actuator prim '{prim.GetPath()}' references a Torch checkpoint via newton:modelPath; "
