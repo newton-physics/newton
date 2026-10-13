@@ -9,13 +9,15 @@ import copy
 import ctypes
 import functools
 import gc
+import importlib.metadata
 import math
+import re
 import warnings
 import weakref
 from bisect import bisect_left
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Iterator, Sequence
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 
@@ -168,6 +170,29 @@ _MERGE_VALIDATION_CACHE: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
 Kept out of the builders themselves: this is a memoization table, not model state, and it must
 not show up in builder-state comparisons or survive past either builder's lifetime.
 """
+
+
+def _coacd_thread_limits() -> Callable[[], AbstractContextManager[Any]]:
+    """Return a context factory under which the installed CoACD decomposes repeatably for a fixed seed.
+
+    CoACD before 1.0.14 collects parallel results in thread-completion order, so it repeats only on
+    one OpenMP thread; later releases are independent of thread scheduling and run unchanged.
+    """
+    try:
+        version = re.match(r"(\d+)\.(\d+)\.(\d+)", importlib.metadata.version("coacd"))
+    except importlib.metadata.PackageNotFoundError:
+        version = None
+    if version is None or tuple(int(part) for part in version.groups()) >= (1, 0, 14):
+        return nullcontext
+    try:
+        from threadpoolctl import threadpool_limits
+    except ImportError:
+        warnings.warn(
+            "coacd<1.0.14 gives different decompositions in every run; install coacd>=1.0.14 or threadpoolctl.",
+            stacklevel=3,
+        )
+        return nullcontext
+    return functools.partial(threadpool_limits, limits=1, user_api="openmp")
 
 
 def _deduplicate_convex_collision_mesh(source: Mesh) -> Mesh:
@@ -8997,6 +9022,8 @@ class ModelBuilder:
             For ``coacd`` and ``vhacd``, each geometrically connected component
             is decomposed separately and may produce one or more convex shapes,
             each limited to the source mesh's ``maxhullvert`` vertices.
+            CoACD decompositions repeat across runs for a fixed ``seed``; releases before
+            ``coacd`` 1.0.14 need ``threadpoolctl`` for this and run on one OpenMP thread.
 
         The ``raise_on_failure`` parameter controls the behavior when the remeshing fails:
             - If `True`, an exception is raised when the remeshing fails.
@@ -9125,6 +9152,8 @@ class ModelBuilder:
                 if method == "coacd":
                     # convex decomposition using CoACD
                     import coacd
+
+                    coacd_thread_limits = _coacd_thread_limits()
                 else:
                     # convex decomposition using V-HACD
                     import trimesh
@@ -9160,12 +9189,14 @@ class ModelBuilder:
                                     "merge": False,
                                 }
                                 coacd_settings.update(remeshing_kwargs)
+                                with coacd_thread_limits():
+                                    coacd_parts = coacd.run_coacd(cmesh, **coacd_settings)
                                 # Cap with Qhull rather than CoACD's decimation, which is orders of magnitude slower.
                                 decomposition.extend(
                                     remesh_convex_hull(v, maxhullvert=mesh.maxhullvert)
                                     if 0 < mesh.maxhullvert < len(v)
                                     else (v, f)
-                                    for v, f in coacd.run_coacd(cmesh, **coacd_settings)
+                                    for v, f in coacd_parts
                                 )
                             else:
                                 tmesh = trimesh.Trimesh(component_vertices, component_faces)
