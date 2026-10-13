@@ -1247,7 +1247,7 @@ class LOXSolverConfig:
     structural reactions with it.
     """
 
-    joint_warmstart_factor: float = 0.5
+    joint_warmstart_factor: float = 0.9
     """Fraction of the previous structural reaction used to warm-start the next time step."""
 
     contact_compliance: bool = False
