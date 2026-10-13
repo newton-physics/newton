@@ -2413,7 +2413,7 @@ class ModelBuilder:
             Model.AttributeFrequency.CONTACT_SOFT,
         ):
             raise ValueError(
-                "Contact frequencies are only supported by SolverObservables, not builder custom attributes."
+                "Contact frequencies are only supported by SolverBase.Observables, not builder custom attributes."
             )
         key = attribute.key
 
@@ -12495,7 +12495,7 @@ class ModelBuilder:
 
         .. deprecated:: 1.7
 
-            Request :attr:`newton.solvers.SolverObservableFlags.CONTACT_F` from
+            Request :attr:`newton.solvers.SolverBase.ObservableKind.CONTACT_F` from
             the solver instead.
 
         Args:
@@ -12506,7 +12506,7 @@ class ModelBuilder:
 
         warnings.warn(
             "ModelBuilder.request_contact_attributes() is deprecated in Newton 1.7; "
-            "request SolverObservables from the solver instead.",
+            "request SolverBase.Observables from the solver instead.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -12518,7 +12518,7 @@ class ModelBuilder:
 
         .. deprecated:: 1.7
 
-            Request :class:`newton.solvers.SolverObservables` from the solver
+            Request :class:`newton.solvers.SolverBase.Observables` from the solver
             instead.
 
         See :doc:`Solver Observables </concepts/solver_observables>` for migration details.
@@ -12531,7 +12531,7 @@ class ModelBuilder:
 
         warnings.warn(
             "ModelBuilder.request_state_attributes() is deprecated in Newton 1.7; "
-            "request SolverObservables from the solver instead.",
+            "request SolverBase.Observables from the solver instead.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -14510,13 +14510,11 @@ class ModelBuilder:
                     and (shape_flags_list[i] & ShapeFlags.COLLIDE_SHAPES)
                 ):
                     mesh = generated_shape_sources[i]
-                    shape_scale = np.asarray(shape_scale_list[i], dtype=np.float32)
-                    scale_key = tuple(float(value) for value in shape_scale)
                     deferred_edges = deferred_collision_edges.get(i)
                     if deferred_edges is not None:
-                        mesh_key = ("deferred", id(deferred_edges), scale_key)
+                        mesh_key = ("deferred", id(deferred_edges), id(mesh))
                     else:
-                        mesh_key = (id(mesh), scale_key)
+                        mesh_key = id(mesh)
                     if mesh_key in edge_cache:
                         shape_edge_ranges.append(edge_cache[mesh_key])
                     else:
@@ -14533,7 +14531,8 @@ class ModelBuilder:
                         count = len(edges)
                         edge_chunks.append(edges)
                         if count > 0:
-                            vertices = np.asarray(mesh.vertices, dtype=np.float32) * shape_scale
+                            # Unscaled: kernels apply the live shape_scale when reading these edges.
+                            vertices = np.asarray(mesh.vertices, dtype=np.float32)
                             edge_v0 = vertices[edges[:, 0]]
                             edge_v1 = vertices[edges[:, 1]]
                             edge_halves = np.ascontiguousarray((edge_v1 - edge_v0) * 0.5, dtype=np.float32)

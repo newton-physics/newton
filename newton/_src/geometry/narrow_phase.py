@@ -444,6 +444,22 @@ def create_narrow_phase_primitive_kernel(
     _module = f"narrow_phase_primitive_{writer_func.__name__}_{speculative}_{sparse_gjk_pairs}_{hydroelastic_enabled}"
 
     @wp.func(module=_module)
+    def _check_unit_scale_sdf(
+        shape_id: int,
+        scale: wp.vec3,
+        shape_unit_scale_sdf: wp.array[wp.int32],
+        unit_scale_sdf_rescaled: wp.array[wp.int32],
+    ):
+        if shape_unit_scale_sdf.shape[0] > 0:
+            if shape_unit_scale_sdf[shape_id] != 0 and (scale[0] != 1.0 or scale[1] != 1.0 or scale[2] != 1.0):
+                if wp.atomic_max(unit_scale_sdf_rescaled, 0, 1) == 0:
+                    wp.printf(
+                        "Warning: shape_scale of shape %d changed, but its texture SDF is queried at unit scale. "
+                        "Construct CollisionPipeline with dynamic_shape_scale=True, which is slower.\n",
+                        shape_id,
+                    )
+
+    @wp.func(module=_module)
     def _admit(
         contact_data: ContactData,
         position: wp.vec3,
@@ -489,6 +505,7 @@ def create_narrow_phase_primitive_kernel(
         shape_flags: wp.array[wp.int32],
         shape_sdf_index: wp.array[wp.int32],
         shape_edge_range: wp.array[wp.vec2i],
+        shape_unit_scale_sdf: wp.array[wp.int32],
         writer_data: Any,
         total_num_threads: int,
         # Output: pairs that need GJK/MPR processing
@@ -508,6 +525,7 @@ def create_narrow_phase_primitive_kernel(
         # Output: sdf-sdf hydroelastic collision pairs
         shape_pairs_sdf_sdf: wp.array[wp.vec2i],
         shape_pairs_sdf_sdf_count: wp.array[int],
+        unit_scale_sdf_rescaled: wp.array[wp.int32],
     ):
         """
         Fast narrow phase kernel for primitive shape collisions.
@@ -593,6 +611,8 @@ def create_narrow_phase_primitive_kernel(
                     idx = wp.atomic_add(shape_pairs_mesh_mesh_count, 0, 1)
                     if idx < shape_pairs_mesh_mesh.shape[0]:
                         shape_pairs_mesh_mesh[idx] = wp.vec2i(encoded_a, encoded_b)
+                        _check_unit_scale_sdf(shape_a, scale_a, shape_unit_scale_sdf, unit_scale_sdf_rescaled)
+                        _check_unit_scale_sdf(shape_b, scale_b, shape_unit_scale_sdf, unit_scale_sdf_rescaled)
                     continue
 
                 # All other heightfield pairs: route through mesh midphase + GJK/MPR.
@@ -632,6 +652,8 @@ def create_narrow_phase_primitive_kernel(
                 idx = wp.atomic_add(shape_pairs_mesh_mesh_count, 0, 1)
                 if idx < shape_pairs_mesh_mesh.shape[0]:
                     shape_pairs_mesh_mesh[idx] = wp.vec2i(shape_a, shape_b)
+                    _check_unit_scale_sdf(shape_a, scale_a, shape_unit_scale_sdf, unit_scale_sdf_rescaled)
+                    _check_unit_scale_sdf(shape_b, scale_b, shape_unit_scale_sdf, unit_scale_sdf_rescaled)
                 continue
 
             # Mesh-plane collision (infinite plane only)
@@ -2424,7 +2446,8 @@ class NarrowPhase:
             mesh_sdf_texture_only: Whether every participating mesh SDF has a texture representation,
                 allowing BVH fallback branches to be removed from mesh/SDF kernels.
             mesh_sdf_identity_scale_only: Whether every participating texture SDF is queried with
-                identity scale, allowing scale conversion branches to be removed.
+                identity scale, allowing scale conversion branches to be removed. Shapes whose SDF
+                has no baked scale must then keep unit ``shape_scale``.
             sdf_texture_paired_samples: Whether texture SDFs store adjacent x samples together.
                 This is model-wide so mesh-SDF kernels require only two bounded static variants.
             deterministic: Make contact generation and ordering independent of
@@ -2786,6 +2809,9 @@ class NarrowPhase:
             self.empty_tangent = None
             self._empty_sort_key = wp.zeros(0, dtype=wp.int64, device=device)
             self._empty_vec3 = wp.zeros(0, dtype=wp.vec3, device=device)
+            # CollisionPipeline enables this diagnostic only for unit-scale SDF queries.
+            self._shape_unit_scale_sdf = wp.zeros(0, dtype=wp.int32, device=device)
+            self._unit_scale_sdf_rescaled = wp.zeros(0, dtype=wp.int32, device=device)
             det_capacity = contact_max if contact_max is not None else max_candidate_pairs
             if deterministic:
                 self._sort_key_array = wp.zeros(det_capacity, dtype=wp.int64, device=device)
@@ -2962,8 +2988,12 @@ class NarrowPhase:
             shape_collision_aabb_upper: Local-space AABB upper bounds for each shape (for voxel binning)
             shape_voxel_resolution: Voxel grid resolution for each shape (for voxel binning)
             mesh_edge_indices: Packed array of mesh edge vertex pairs for all shapes.
-            mesh_edge_centers: Packed precomputed mesh edge centers [m].
-            mesh_edge_halves: Packed precomputed mesh edge half-vectors [m].
+            mesh_edge_centers: Packed precomputed mesh edge centers (xyz) and radii (w) in
+                unscaled mesh coordinates [m]; the shape scale in ``shape_data`` is applied when read.
+                Layout matches :attr:`~newton.Model.mesh_edge_centers`.
+            mesh_edge_halves: Packed precomputed mesh edge half-vectors (xyz) in unscaled mesh
+                coordinates [m] and endpoint-ownership codes (w). Layout matches
+                :attr:`~newton.Model.mesh_edge_halves`.
             shape_edge_range: Per-shape (start, count) into mesh_edge_indices.
             hydroelastic_shape_sdf_data_prepared: Whether finalized hydroelastic SDF descriptors were cached upstream.
             shape_linear_velocity: Shape-origin linear velocities [m/s]. Required in speculative mode.
@@ -3033,6 +3063,7 @@ class NarrowPhase:
                 shape_flags,
                 shape_sdf_index,
                 shape_edge_range,
+                self._shape_unit_scale_sdf,
                 writer_data,
                 self.total_num_threads,
             ],
@@ -3049,6 +3080,7 @@ class NarrowPhase:
                 self.shape_pairs_mesh_mesh_count,
                 self.shape_pairs_sdf_sdf,
                 self.shape_pairs_sdf_sdf_count,
+                self._unit_scale_sdf_rescaled,
             ],
             device=device,
             block_dim=self.block_dim,
