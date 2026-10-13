@@ -533,16 +533,36 @@ _EXAMPLE_SPEC = {
     "success_criteria": (
         "Kinematic endpoints follow the prescribed bend or twist targets.",
         "After the ramp and hold, simulated overlays closely match the analytic reference for each displayed row.",
-        "Bend rows follow constant-curvature centerlines without unwanted twist; twist rows "
-        "distribute twist uniformly without visible bending.",
     ),
     "runs": (
-        {"args": (), "success_criteria": ("Both bend and twist rows are displayed.",)},
-        {"args": ("--cable-analytic-mode", "bend"), "success_criteria": ("Only bend rows are displayed.",)},
-        {"args": ("--cable-analytic-mode", "twist"), "success_criteria": ("Only twist rows are displayed.",)},
+        {
+            "args": (),
+            "success_criteria": (
+                "Both bend and twist rows are displayed.",
+                "Bend rows follow constant-curvature centerlines without unwanted twist.",
+                "Twist rows distribute twist uniformly without visible bending.",
+            ),
+        },
+        {
+            "args": ("--cable-analytic-mode", "bend"),
+            "success_criteria": (
+                "Only bend rows are displayed.",
+                "Bend rows follow constant-curvature centerlines without unwanted twist.",
+            ),
+        },
+        {
+            "args": ("--cable-analytic-mode", "twist"),
+            "success_criteria": (
+                "Only twist rows are displayed.",
+                "Twist rows distribute twist uniformly without visible bending.",
+            ),
+        },
         {
             "args": ("--cable-analytic-mode", "twist_max"),
-            "success_criteria": ("The maximum-twist reference row is displayed.",),
+            "success_criteria": (
+                "The maximum-twist reference row is displayed.",
+                "Twist rows distribute twist uniformly without visible bending.",
+            ),
         },
     ),
 }
