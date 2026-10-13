@@ -1,1 +1,1 @@
-Fix implicit MPM collider distance signs near sliver triangles and zero averaged normals, retain positive-mass strain modes with zero integrals, and avoid viscosity division by zero on empty strain modes.
+Fix implicit MPM collider distance signs near sliver triangles and zero averaged normals, and avoid viscosity division by zero on empty strain modes.
