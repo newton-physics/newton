@@ -17,6 +17,36 @@ from newton.tests.unittest_utils import get_test_devices
 
 
 class TestModelDeformableObjects(unittest.TestCase):
+    def test_explicit_deformable_reference_domains(self):
+        """Keep enum references to each deformable family through finalization and replication."""
+        prototype = newton.ModelBuilder()
+        for family, add in (("curve", _add_curve), ("surface", _add_surface), ("volume", _add_volume)):
+            add(prototype, label="asset")
+            frequency = getattr(newton.Model.AttributeFrequency, family.upper())
+            prototype.add_custom_attribute(
+                newton.ModelBuilder.CustomAttribute(
+                    name=f"{family}_reference",
+                    dtype=wp.int32,
+                    frequency=frequency,
+                    references=frequency,
+                    values={0: 0},
+                )
+            )
+        for replicate in (False, True):
+            with self.subTest(replicate=replicate):
+                builder = newton.ModelBuilder() if replicate else prototype
+                if replicate:
+                    builder.replicate(prototype, 2)
+                for device in get_test_devices():
+                    model = builder.finalize(device=device)
+                    for family in ("curve", "surface", "volume"):
+                        name = f"{family}_reference"
+                        np.testing.assert_array_equal(getattr(model, name).numpy(), [0, 1] if replicate else [0])
+                        self.assertEqual(
+                            model.attribute_specs[name].references,
+                            getattr(newton.Model.AttributeFrequency, family.upper()),
+                        )
+
     def test_family_attribute_frequencies_survive_replication(self):
         """Size model and state attributes by deformable objects rather than their elements."""
         prototype = newton.ModelBuilder()
@@ -44,6 +74,81 @@ class TestModelDeformableObjects(unittest.TestCase):
         for family in ("curve", "surface", "volume"):
             np.testing.assert_array_equal(getattr(model, f"{family}_tag").numpy(), [17, 17])
             np.testing.assert_array_equal(getattr(state, f"{family}_enabled").numpy(), [1, 1])
+
+    def test_deformable_reference_domains_survive_composition(self):
+        """Keep built-in references distinct from same-named custom frequencies in either merge direction."""
+        for family, add in (("curve", _add_curve), ("surface", _add_surface), ("volume", _add_volume)):
+            for builtin_in_source in (False, True):
+                with self.subTest(family=family, builtin_in_source=builtin_in_source):
+                    builtin = newton.ModelBuilder()
+                    add(builtin, label="builtin")
+                    builtin.add_custom_attribute(
+                        newton.ModelBuilder.CustomAttribute(
+                            name="builtin_reference",
+                            dtype=wp.int32,
+                            frequency=newton.Model.AttributeFrequency.ONCE,
+                            references=family,
+                            values={0: 0},
+                        )
+                    )
+                    custom = newton.ModelBuilder()
+                    for label in ("first", "second"):
+                        add(custom, label=label)
+                    custom.add_custom_frequency(newton.ModelBuilder.CustomFrequency(name=family))
+                    custom.add_custom_attribute(
+                        newton.ModelBuilder.CustomAttribute(name="tag", dtype=wp.int32, frequency=family)
+                    )
+                    for tag in (10, 20, 30):
+                        custom.add_custom_values(tag=tag)
+                    custom.add_custom_attribute(
+                        newton.ModelBuilder.CustomAttribute(
+                            name="custom_reference",
+                            dtype=wp.int32,
+                            frequency=newton.Model.AttributeFrequency.ONCE,
+                            references=family,
+                            values={0: 2},
+                        )
+                    )
+                    destination, source = (custom, builtin) if builtin_in_source else (builtin, custom)
+                    destination.add_builder(source)
+                    for device in get_test_devices():
+                        model = destination.finalize(device=device)
+                        np.testing.assert_array_equal(model.builtin_reference.numpy(), [2 if builtin_in_source else 0])
+                        np.testing.assert_array_equal(model.custom_reference.numpy(), [2])
+                        self.assertEqual(model.attribute_specs["custom_reference"].references, family)
+                        self.assertEqual(
+                            model.attribute_specs["builtin_reference"].references,
+                            getattr(newton.Model.AttributeFrequency, family.upper()),
+                        )
+
+    def test_conflicting_deformable_references_reject_merge(self):
+        """Reject same-name attributes with different reference meanings before modifying the destination."""
+        for family, add in (("curve", _add_curve), ("surface", _add_surface), ("volume", _add_volume)):
+            for builtin_in_source in (False, True):
+                with self.subTest(family=family, builtin_in_source=builtin_in_source):
+                    builtin, custom = newton.ModelBuilder(), newton.ModelBuilder()
+                    custom.add_custom_frequency(newton.ModelBuilder.CustomFrequency(name=family))
+                    for builder in (builtin, custom):
+                        add(builder, label="asset")
+                        builder.add_custom_attribute(
+                            newton.ModelBuilder.CustomAttribute(
+                                name="reference",
+                                dtype=wp.int32,
+                                frequency=newton.Model.AttributeFrequency.ONCE,
+                                references=family,
+                                values={0: 0},
+                            )
+                        )
+                    destination, source = (custom, builtin) if builtin_in_source else (builtin, custom)
+                    counts = (destination.body_count, destination.particle_count)
+                    frequencies = dict(destination.custom_frequencies)
+                    with self.assertRaisesRegex(ValueError, "reference.*incompatible spec"):
+                        destination.add_world(source)
+                    self.assertEqual((destination.body_count, destination.particle_count), counts)
+                    self.assertEqual(getattr(destination, f"{family}_label"), ["asset"])
+                    self.assertEqual(destination.custom_frequencies, frequencies)
+                    self.assertEqual(destination.custom_attributes["reference"].values, {0: 0})
+                    self.assertEqual((destination.world_count, destination.current_world), (0, -1))
 
     def test_curve_attributes_follow_fixed_joint_collapse(self):
         """Keep per-curve values and references when a rod loses its anchored segment."""
@@ -110,11 +215,24 @@ class TestModelDeformableObjects(unittest.TestCase):
                         name=f"{family}_{name}",
                         dtype=type(value),
                         frequency=newton.Model.AttributeFrequency.ONCE,
-                        references=family,
+                        references=family
+                        if name == "pair"
+                        else getattr(newton.Model.AttributeFrequency, family.upper()),
                         values={0: value},
                     )
                 )
 
+        builder.add_custom_frequency(newton.ModelBuilder.CustomFrequency(name="curve"))
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="custom_curve_pair",
+                dtype=wp.vec2i,
+                frequency="curve",
+                references="curve",
+            )
+        )
+        builder.add_custom_values(custom_curve_pair=wp.vec2i(0, 1))
+        builder.add_custom_values(custom_curve_pair=wp.vec2i(1, 0))
         with self.assertWarnsRegex(UserWarning, "removed.*all.*segment bodies"):
             builder.collapse_fixed_joints()
         model = builder.finalize(device="cpu")
@@ -124,6 +242,9 @@ class TestModelDeformableObjects(unittest.TestCase):
                 np.testing.assert_array_equal(getattr(model, f"{family}_tag").numpy(), [20, 30])
                 np.testing.assert_array_equal(getattr(model, f"{family}_pair").numpy(), [[0, 1]])
                 np.testing.assert_array_equal(getattr(model, f"{family}_sentinels").numpy(), [[-1, -1, 0]])
+        np.testing.assert_array_equal(model.custom_curve_pair.numpy(), [[0, 1], [1, 0]])
+        self.assertEqual(model.attribute_specs["curve_pair"].references, newton.Model.AttributeFrequency.CURVE)
+        self.assertEqual(model.attribute_specs["custom_curve_pair"].references, "curve")
 
     def test_empty_model_has_empty_public_deformable_arrays(self):
         """Inspect an empty model without placeholder objects or missing arrays."""
@@ -267,6 +388,21 @@ class TestModelDeformableObjects(unittest.TestCase):
         bodies, _ = _add_curve(builder, label="selected")
         _add_surface(builder, label="cloth")
         _add_volume(builder, label="toy")
+        builder.add_custom_frequency(newton.ModelBuilder.CustomFrequency(name="curve"))
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(name="custom_curve_tag", dtype=wp.int32, frequency="curve")
+        )
+        builder.add_custom_values(custom_curve_tag=10)
+        builder.add_custom_values(custom_curve_tag=20)
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="owning_curve",
+                dtype=wp.int32,
+                frequency=newton.Model.AttributeFrequency.BODY,
+                references=newton.Model.AttributeFrequency.CURVE,
+                values={0: 0, 1: 0, 2: 0, 3: 1, 4: 1, 5: 1},
+            )
+        )
         model = builder.finalize(device="cpu")
         # Include the articulation root, not just the rod's returned connecting joints.
         joints = list(range(int(model.curve_joint_start.numpy()[1]), int(model.curve_joint_end.numpy()[1])))
@@ -287,6 +423,7 @@ class TestModelDeformableObjects(unittest.TestCase):
         np.testing.assert_array_equal(cable.curve_body_end.numpy(), [3])
         np.testing.assert_array_equal(cable.curve_joint_start.numpy(), [0])
         np.testing.assert_array_equal(cable.curve_joint_end.numpy(), [3])
+        np.testing.assert_array_equal(cable.owning_curve.numpy(), [0, 0, 0])
         self.assertEqual((cable.surface_count, cable.volume_count), (0, 0))
         self.assertEqual(cable.surface_label, [])
         self.assertEqual(cable.volume_particle_start.shape, (0,))

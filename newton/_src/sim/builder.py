@@ -1207,14 +1207,22 @@ class ModelBuilder:
         namespace: str | None = None
         """Namespace for the attribute. If None, the attribute is added directly to the assigned object without a namespace."""
 
-        references: str | None = None
+        references: Model.AttributeFrequency | str | None = None
         """For attributes containing entity indices, specifies how values are transformed during add_builder/add_world/replicate merging.
 
-        Built-in entity types (values are offset by entity count):
+        Use :class:`Model.AttributeFrequency` for a built-in reference domain, such as
+        ``Model.AttributeFrequency.CURVE``, or a string for a custom frequency.
+        Unlike :attr:`frequency`, which indexes the attribute's rows, this field
+        identifies what its stored integer values refer to.
+
+        Built-in string names are also supported (values are offset by entity count):
             - ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``, ``"joint_coord"``, ``"articulation"``,
               ``"constraint_mimic"``, ``"particle"``, ``"edge"``, ``"triangle"``, ``"tetrahedron"``, ``"spring"``
             - Experimental deformable object types: ``"curve"``, ``"surface"``, ``"volume"``.
-              An existing custom frequency with one of these names keeps its reference meaning.
+              If a custom frequency with one of these names is already registered,
+              the string refers to that custom frequency; use the enum for the built-in family.
+              Built-in strings are resolved when :meth:`ModelBuilder.add_custom_attribute`
+              registers the attribute, so subsequent merges cannot change their meaning.
 
         Special handling:
             - ``"world"``: Missing custom-frequency row values are initialized from
@@ -2304,6 +2312,10 @@ class ModelBuilder:
             )
         key = attribute.key
 
+        # Resolve aliases in their original builder, before a merge can introduce
+        # a same-named custom frequency.
+        attribute.references = Model._normalize_attribute_reference(attribute.references, self.custom_frequencies)
+
         existing = self.custom_attributes.get(key)
         if existing:
             if not self._custom_attribute_specs_match(existing, attribute):
@@ -2333,7 +2345,7 @@ class ModelBuilder:
 
     def _index_custom_world_reference_attribute(self, attribute: CustomAttribute) -> None:
         """Index a custom-frequency world reference for row insertion."""
-        if not attribute.is_custom_frequency or attribute.references != "world":
+        if not attribute.is_custom_frequency or attribute.references != Model.AttributeFrequency.WORLD:
             return
 
         freq_key = attribute.frequency
@@ -2509,7 +2521,7 @@ class ModelBuilder:
                     )
                 if owner_attribute.assignment != Model.AttributeAssignment.MODEL:
                     raise ValueError(f"Articulation owner attribute '{owner_key}' must be assigned to Model")
-                if owner_attribute.references != "articulation":
+                if owner_attribute.references != Model.AttributeFrequency.ARTICULATION:
                     raise ValueError(
                         f"Articulation owner attribute '{owner_key}' must declare references='articulation'"
                     )
@@ -3911,7 +3923,8 @@ class ModelBuilder:
         if validated.get(builder) == cache_key:
             return
 
-        valid_references = entity_kinds | set(self._custom_frequency_counts) | set(builder._custom_frequency_counts)
+        custom_references = set(self._custom_frequency_counts) | set(builder._custom_frequency_counts)
+        valid_references = entity_kinds | custom_references
 
         for freq_key, frequency in builder.custom_frequencies.items():
             existing = self.custom_frequencies.get(freq_key)
@@ -3931,7 +3944,11 @@ class ModelBuilder:
                         f"existing={merged.default}, incoming={attr.default}"
                     )
 
-            if attr.values and attr.references not in (None, "world") and attr.references not in valid_references:
+            reference_key = None if attr.references is None else self._builder_frequency_key(attr.references)
+            reference_domains = (
+                entity_kinds if isinstance(attr.references, Model.AttributeFrequency) else custom_references
+            )
+            if attr.values and reference_key not in (None, "world") and reference_key not in reference_domains:
                 raise ValueError(
                     f"Unknown references value '{attr.references}'. "
                     f"Valid values are: {sorted(entity_kinds)} or custom frequencies."
@@ -4983,18 +5000,11 @@ class ModelBuilder:
                 if source_domain >= 0:
                     collision_mask_domain_remap.setdefault(source_domain, shape_offset + shape)
 
-        def get_offset(entity_or_key: str | None, *, reference: bool = False) -> int:
+        def get_offset(entity_or_key: Model.AttributeFrequency | str | None) -> int:
             if entity_or_key is None:
                 return 0
-            # Newly introduced built-in families must not shadow an existing custom frequency.
-            if (
-                reference
-                and entity_or_key in self._BUILDER_GROUP_REFERENCES
-                and entity_or_key in builder.custom_frequencies
-            ):
-                return custom_frequency_offsets.get(entity_or_key, 0)
-            if entity_or_key in entity_offsets:
-                return entity_offsets[entity_or_key]
+            if isinstance(entity_or_key, Model.AttributeFrequency):
+                return entity_offsets[entity_or_key.name.lower()]
             if entity_or_key in custom_frequency_offsets:
                 return custom_frequency_offsets[entity_or_key]
             if entity_or_key in builder._custom_frequency_counts:
@@ -5023,10 +5033,10 @@ class ModelBuilder:
             elif attr.frequency == Model.AttributeFrequency.WORLD:
                 index_offset = 0 if world == -1 else world
             else:
-                index_offset = get_offset(attr.frequency.name.lower())
+                index_offset = get_offset(attr.frequency)
 
-            use_current_world = attr.references == "world"
-            value_offset = 0 if use_current_world else get_offset(attr.references, reference=True)
+            use_current_world = attr.references == Model.AttributeFrequency.WORLD
+            value_offset = 0 if use_current_world else get_offset(attr.references)
             is_equality_target_attr = full_key == "mujoco:equality_constraint_target"
             is_collision_mask_domain_attr = full_key == collision_mask_domain_key and bool(collision_mask_domain_remap)
             needs_remap = (
@@ -7351,9 +7361,10 @@ class ModelBuilder:
                     if old_idx in custom_attr.values
                 }
 
-        object_remaps = {"articulation": articulation_remap}
-        if "curve" not in self.custom_frequencies:
-            object_remaps["curve"] = curve_remap
+        object_remaps = {
+            Model.AttributeFrequency.ARTICULATION: articulation_remap,
+            Model.AttributeFrequency.CURVE: curve_remap,
+        }
         for custom_attr in self.custom_attributes.values():
             remap = object_remaps.get(custom_attr.references)
             if remap is None or custom_attr.values is None:
@@ -7642,9 +7653,9 @@ class ModelBuilder:
             return joint_remap.get(idx, -1)
 
         for custom_attr in self.custom_attributes.values():
-            if custom_attr.references == "body":
+            if custom_attr.references == Model.AttributeFrequency.BODY:
                 remap_reference = _remap_body_reference
-            elif custom_attr.references == "joint":
+            elif custom_attr.references == Model.AttributeFrequency.JOINT:
                 remap_reference = _remap_joint_reference
             else:
                 continue
