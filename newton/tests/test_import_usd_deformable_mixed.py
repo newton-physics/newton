@@ -441,7 +441,6 @@ class TestUSDDeformableMixed(unittest.TestCase):
         messages = [str(w.message) for w in caught]
 
         for field, path in (
-            ("restNormals", "/World/Cable"),
             ("restBendAngles", "/World/Cloth"),
             ("restTriVertexIndices", "/World/Cloth"),
             ("restShapePoints", "/World/Soft"),

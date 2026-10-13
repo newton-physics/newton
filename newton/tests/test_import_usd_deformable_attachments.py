@@ -334,6 +334,54 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         model = builder.finalize()
         self.assertGreater(model.body_count, 0)
 
+    def test_strained_cable_attachments_use_rest_endpoints(self):
+        """Use material endpoints in rooted and separate attachments without moving the cable."""
+        from pxr import Sdf
+
+        for endpoint, expected_body, expected_z in ((0, 0, -0.05), (2, 1, 0.1)):
+            for rooted in (False, True):
+                with self.subTest(endpoint=endpoint, rooted=rooted):
+                    stage = _deformable_stage()
+                    points = [(0, 0, 0), (0, 0, 0.4), (0, 0, 0.8)]
+                    curves = _add_cable_curve(stage, "/World/Cable", points)
+                    curves.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
+                        [(0, 0, 0), (0, 0, 0.1), (0, 0, 0.3)]
+                    )
+                    _add_physics_attachment(
+                        stage,
+                        "/World/Endpoint",
+                        src0="/World/Cable",
+                        type0="point",
+                        indices0=[endpoint],
+                        coords1=[points[endpoint]],
+                    )
+                    if not rooted:
+                        # A second attachment keeps the endpoint in the separate attachment pass.
+                        _add_physics_attachment(
+                            stage,
+                            "/World/Segment",
+                            src0="/World/Cable",
+                            type0="segment",
+                            indices0=[1],
+                            coords0=[(0.25, 0.02, 0.03)],
+                            coords1=[(0, 0, 0.7)],
+                        )
+                    builder = newton.ModelBuilder()
+                    result = builder.add_usd(stage, return_deformable_results=True)
+                    bodies = result["path_cable_map"]["/World/Cable"][0]
+                    np.testing.assert_allclose(
+                        np.asarray(builder.body_q)[bodies, :3], [(0, 0, 0.2), (0, 0, 0.6)], atol=1e-6
+                    )
+                    joint = result["path_attachment_map"]["/World/Endpoint"][0]
+                    self.assertEqual(builder.joint_child[joint], bodies[expected_body])
+                    np.testing.assert_allclose(builder.joint_X_c[joint][:3], [0, 0, expected_z], atol=1e-6)
+                    self.assertEqual(builder.joint_articulation[joint] >= 0, rooted)
+                    anchor = wp.transform_point(builder.body_q[bodies[expected_body]], wp.vec3(0, 0, expected_z))
+                    self.assertAlmostEqual(float(anchor[2]), 0.15 if endpoint == 0 else 0.7, places=6)
+                    if not rooted:
+                        segment_joint = result["path_attachment_map"]["/World/Segment"][0]
+                        np.testing.assert_allclose(builder.joint_X_c[segment_joint][:3], [-0.03, 0.02, 0.05], atol=1e-6)
+
     def test_physics_attachment_joins_plug_and_cable_articulation_for_vbd(self):
         """Import a physically attached plug and cable as one articulation."""
         from pxr import UsdGeom, UsdPhysics

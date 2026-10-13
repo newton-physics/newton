@@ -228,14 +228,29 @@ The first release deliberately supports a narrow, predictable set of inputs:
   elements but ignores, with a warning, values on orphan points. It can redistribute the preserved
   mass relative to Newton's former direct point interpretation, which untyped arrays retain during
   the deprecation window with a warning.
-* Simulation points, topology, and normals are read at the USD default time. Newton builds the
-  deformable at that pose. Missing cloth bend arrays use
+* Simulation points, topology, normals, and rest arrays are read at the USD default time.
+  Cable ``physics:restShapePoints`` and ``physics:restNormals`` set a rest shape separate from
+  the initial pose. This works for individual curves, periodic curves, cables rooted in an
+  articulation, and welded cable graphs. Rest lengths set capsule sizes, mass volume weights,
+  and the lengths used to convert material stiffness and damping to joint gains.
+  Initial points set segment centers, and initial normals set segment orientations.
+  Missing rest points use the initial points. Missing rest normals use the initial normal
+  values, interpreted against the rest tangents. Normals are read from ``primvars:normals``
+  first, including indexed values, then from ``normals``. Both initial and rest normals use
+  the prim's linear transform as material directions.
+
+  Invalid rest arrays warn and use these fallbacks. A wrong array size or shape rejects that
+  field for the whole prim. Non-finite points or zero-length rest segments reject only that
+  curve's rest points. Invalid rest normals fall back independently, so valid rest lengths
+  still apply. If neither normal source is usable for the rest shape, Newton transports
+  the initial frames to the rest tangents. Invalid initial normals get a generated frame
+  per segment; valid initial normals on other segments still apply.
+
+  Missing cloth bend arrays use
   ``physics:restBendAnglesDefault = "flat"``; ``"restShape"`` retains the imported dihedral.
   If the token is unauthored and the imported cloth is non-planar, Newton warns that the proposal's
   flat fallback changes the previous rest state and points to ``"restShape"`` as the preservation
   choice. Explicit ``"flat"`` authoring and planar cloth do not emit this migration warning.
-  A cable's ``restShapePoints`` may affect material-gain discretization but never establishes an
-  initial strain state.
 * Point attachments only where the authored constraint can be represented without moving any
   geometry: hard cable-to-xform attachments, and hard, coincident cable-to-cable junctions.
 * ``PhysicsElementCollisionFilter`` prims filter collisions between the paired element groups
@@ -266,17 +281,17 @@ Limitations
 
 Known gaps of the experimental importer, tracked as follow-ups:
 
-* **Rest state** -- authored rest geometry is not imported as the deformable's simulated rest
-  configuration (`issue #3383 <https://github.com/newton-physics/newton/issues/3383>`_).
+* **Cloth and volume rest state** -- authored rest geometry is not imported as their simulated
+  rest configuration (`issue #3383 <https://github.com/newton-physics/newton/issues/3383>`_).
   Cloth and volume rest point/topology arrays and explicit cloth bend arrays are ignored with a
   warning. The supported cloth bend default uses the simulation geometry at the default time:
-  ``flat`` sets zero rest dihedrals and ``restShape`` uses its imported dihedrals. For a cable,
-  including one in a welded graph, valid ``restShapePoints`` supplies only the segment lengths
-  used to discretize structural stiffness and damping into per-joint gains; invalid values warn
-  and fall back to default-time ``points`` lengths. ``restNormals`` is not applied. The rod itself
-  is still built relaxed at the default-time ``points`` pose, and mass distribution also uses
-  that geometry. A body saved in a deformed pose therefore resumes relaxed at that pose instead
-  of springing back.
+  ``flat`` sets zero rest dihedrals and ``restShape`` uses its imported dihedrals.
+* **Stretched cable attachments** -- cable capsules have rest lengths and initial segment
+  centers. If initial and rest lengths differ, capsule endpoints can differ from the USD
+  initial points. Attachments use the capsule's material endpoints and rest-length segment
+  coordinates, like native rod joints. Newton keeps the initial body poses; an attachment
+  can start with separated anchors that the solver must bring together. This approximates
+  the proposal's attachment positions on the initial curve.
 * **Springy attachments** -- attachments with a finite stiffness are not simulated. They are
   preserved in ``path_attachment_attrs`` with their authored stiffness and damping (silently
   hardening them would change the authored physics); only hard attachments (unauthored or
@@ -305,6 +320,9 @@ Known gaps of the experimental importer, tracked as follow-ups:
   it is not simulated, but its collision geometry persists as static colliders (TetMesh
   and BasisCurves simulation geometry has no static representation and stays out).
 * **Cable frames** -- if per-point normals are missing, segment orientation is synthesized.
+  Newton projects normals perpendicular to each segment and aligns the frame with its
+  tangent. It imports rest bend and twist but cannot preserve an independently tilted
+  material frame for shear. Multi-turn twist is not represented.
 * **Thin cable inertia** -- at the default 1 mm cable diameter, the smallest principal moment
   of short segments at typical densities may fall below
   :class:`~newton.ModelBuilder`'s inertia-validation floor, causing their inertia to be corrected
@@ -320,13 +338,13 @@ simulation geometry win. Next comes the ``PhysicsDeformableBodyAPI`` ``mass`` to
 density, family-material density, and base ``UsdPhysicsMaterialAPI`` density. If none is authored,
 proposal-marked deformables use the final 1000 kg/m³ fallback rather than
 ``ModelBuilder.default_shape_cfg.density`` or ``ModelBuilder.default_tet_density``; only a bare
-TetMesh keeps ``ModelBuilder.default_tet_density`` for compatibility. Element volumes combine
-default-time segment lengths, triangle areas, or tet volumes with geometry thickness, then element
-masses are lowered to Newton's particles or rigid cable segments. The proposal evaluates these
-volumes on the rest shape; Newton uses the simulation geometry until full rest-state import is
-implemented (see the limitation above and `issue #3383
-<https://github.com/newton-physics/newton/issues/3383>`_), so a saved deformed default pose shifts
-mass with it.
+TetMesh keeps ``ModelBuilder.default_tet_density`` for compatibility. Cable element volumes use
+resolved rest lengths and physical thickness: ``V = L_rest * pi * diameter**2 / 4``.
+Density-derived masses and total-mass weights use these rest volumes, as the proposal requires.
+Explicit segment masses still apply directly. Newton retains its capsule inertia approximation,
+scaled to each resolved segment mass. Cloth and volume masses still use default-time triangle
+areas and tet volumes until their rest-shape import is implemented (see `issue #3383
+<https://github.com/newton-physics/newton/issues/3383>`_).
 
 Every imported deformable can be looked up by its prim path in the mapping
 :meth:`~newton.ModelBuilder.add_usd` returns when called with ``return_deformable_results=True``:
