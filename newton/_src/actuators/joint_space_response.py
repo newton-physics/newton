@@ -155,9 +155,7 @@ class JointSpaceResponse:
             end = int(joint_qd_start[int(articulation_end[a])])
             starts.append(base)
             counts.append(end - base)
-        self._art_dof_starts_host = starts
         self._art_dof_counts_host = counts
-        self._art_dof_start = wp.array(starts, dtype=wp.int32, device=device)
         self._art_dof_count = wp.array(counts, dtype=wp.int32, device=device)
 
         # Reverse lookup used to scatter a solver's mass matrix into the blocks.
