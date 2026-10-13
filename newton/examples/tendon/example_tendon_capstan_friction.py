@@ -35,7 +35,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton import Axis, TendonGuideType
-from newton.examples.cable.cable import (
+from newton.examples.tendon.utils import (
     assert_tendon_total_length,
     get_tendon_attachment_worlds,
     get_tendon_cable_lines,
@@ -280,8 +280,8 @@ class Example:
         if self._left_attachment_history:
             self._assert_light_attachments_stay_below_pulleys(self._left_attachment_history[-1], body_q)
         if self.sim_time < self.frame_dt * 1.5:
-            att_r = self.solver.tendon_seg_attachment_r.numpy()
-            att_l = self.solver.tendon_seg_attachment_l.numpy()
+            att_r = self.solver.tendon_segment_attachment_r.numpy()
+            att_l = self.solver.tendon_segment_attachment_l.numpy()
             for i, p_idx in enumerate(self.pulley_indices):
                 pulley_z = body_q[p_idx][2]
                 seg = i * 2

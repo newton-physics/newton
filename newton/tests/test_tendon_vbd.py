@@ -412,7 +412,7 @@ def test_vbd_tendon_zero_compliance_uses_floor(test, device):
         results = []
         for compliance in (0.0, 1.0e-8):
             model, body_idx = build_single_span_tendon()
-            model.tendon_seg_compliance.fill_(compliance)
+            model.tendon_segment_compliance.fill_(compliance)
             solver = _make_tendon_vbd_solver(model)
             state_0 = model.state()
             state_1 = model.state()
@@ -420,7 +420,7 @@ def test_vbd_tendon_zero_compliance_uses_floor(test, device):
             results.append(
                 (
                     state_1.body_q.numpy()[body_idx].copy(),
-                    float(solver.tendon_seg_active_compliance.numpy()[0]),
+                    float(solver.tendon_segment_active_compliance.numpy()[0]),
                 )
             )
 
@@ -439,7 +439,7 @@ def test_vbd_rolling_chain_tension_matches_accepted_pose(test, device):
         state_0 = model.state()
         state_1 = model.state()
 
-        direction = solver.tendon_seg_attachment_r.numpy()[-1] - solver.tendon_seg_attachment_l.numpy()[-1]
+        direction = solver.tendon_segment_attachment_r.numpy()[-1] - solver.tendon_segment_attachment_l.numpy()[-1]
         direction /= np.linalg.norm(direction)
         body_f = np.zeros((model.body_count, 6), dtype=np.float32)
         body_f[slider, :3] = 10.0 * direction
@@ -447,10 +447,10 @@ def test_vbd_rolling_chain_tension_matches_accepted_pose(test, device):
         solver.step(state_0, state_1, model.control(), None, 1.0 / 60.0)
 
         lengths = np.linalg.norm(
-            solver.tendon_seg_attachment_r.numpy() - solver.tendon_seg_attachment_l.numpy(), axis=1
+            solver.tendon_segment_attachment_r.numpy() - solver.tendon_segment_attachment_l.numpy(), axis=1
         )
-        tension = np.maximum(lengths - solver.tendon_seg_rest_length.numpy(), 0.0) / np.maximum(
-            solver.tendon_seg_active_compliance.numpy(), 1.0e-30
+        tension = np.maximum(lengths - solver.tendon_segment_rest_length.numpy(), 0.0) / np.maximum(
+            solver.tendon_segment_active_compliance.numpy(), 1.0e-30
         )
         test.assertGreater(np.min(tension), 1.0, f"Every rolling-chain span should carry load: {tension}")
         test.assertLess(np.ptp(tension), 5.0e-3, f"Frictionless rolling-chain tensions did not converge: {tension}")
@@ -470,10 +470,10 @@ def test_vbd_dynamic_tendon_route_switches_inside_solver(test, device):
         state_1 = model.state()
         control = model.control()
 
-        rest_length = solver.tendon_seg_rest_length.numpy().copy()
+        rest_length = solver.tendon_segment_rest_length.numpy().copy()
         rest_length[0] -= 0.02
         solver.reset(state_0)
-        state_0.tendon_seg_rest_length.assign(rest_length)
+        state_0.tendon_segment_rest_length.assign(rest_length)
 
         body_colors = np.full(model.body_count, -1, dtype=np.int32)
         for color, group in enumerate(model.body_color_groups):
@@ -490,8 +490,8 @@ def test_vbd_dynamic_tendon_route_switches_inside_solver(test, device):
             state_0.body_q.assign(body_q)
             solver.step(state_0, state_1, control, None, 1.0 / 120.0)
             active_history.append(bool(solver.tendon_guide_active.numpy()[candidate_guide]))
-            segment_history.append(solver.tendon_seg_active.numpy().tolist())
-            material_tension_history.append(solver.tendon_seg_material_tension.numpy().tolist())
+            segment_history.append(solver.tendon_segment_active.numpy().tolist())
+            material_tension_history.append(solver.tendon_segment_material_tension.numpy().tolist())
             if first_upper_z is None:
                 first_upper_z = float(state_1.body_q.numpy()[upper][2])
             state_0, state_1 = state_1, state_0
@@ -566,7 +566,7 @@ def test_vbd_tendon_compliance_uses_physical_tension(test, device):
         results = []
         for dt in (1.0 / 60.0, 1.0 / 120.0):
             model, body_idx, mass, compliance, initial_z = build_simple_cable_gravity()
-            model.tendon_seg_damping.fill_(100.0)
+            model.tendon_segment_damping.fill_(100.0)
             _set_serial_body_coloring(model)
             solver = _make_tendon_vbd_solver(model)
             state_0 = model.state()
@@ -582,9 +582,9 @@ def test_vbd_tendon_compliance_uses_physical_tension(test, device):
                 solver.step(state_0, state_1, control, contacts, dt)
                 state_0, state_1 = state_1, state_0
 
-            attachment_l = solver.tendon_seg_attachment_l.numpy()[0]
-            attachment_r = solver.tendon_seg_attachment_r.numpy()[0]
-            rest_length = float(solver.tendon_seg_rest_length.numpy()[0])
+            attachment_l = solver.tendon_segment_attachment_l.numpy()[0]
+            attachment_r = solver.tendon_segment_attachment_r.numpy()[0]
+            rest_length = float(solver.tendon_segment_rest_length.numpy()[0])
             stretch = float(np.linalg.norm(attachment_r - attachment_l)) - rest_length
             material_tension = stretch / compliance
             final_z = float(state_0.body_q.numpy()[body_idx][2])
@@ -651,8 +651,8 @@ def test_vbd_slack_damped_tendon_opposes_extension(test, device):
         solver.step(state_0, state_1, model.control(), None, dt)
 
         final_vx = float(state_1.body_qd.numpy()[body][0])
-        material_tension = float(solver.tendon_seg_material_tension.numpy()[0])
-        reported_lambda = float(solver.tendon_seg_lambda.numpy()[0])
+        material_tension = float(solver.tendon_segment_material_tension.numpy()[0])
+        reported_lambda = float(solver.tendon_segment_lambda.numpy()[0])
         test.assertLess(final_vx, 25.0)
         test.assertEqual(material_tension, 0.0)
         test.assertEqual(reported_lambda, 0.0, "VBD must not report a synthetic XPBD multiplier")
@@ -664,21 +664,21 @@ def test_vbd_reset_restores_tendon_state(test, device):
         model, _ = build_kinematic_rolling_transport(mu=10.0)
         _set_serial_body_coloring(model)
         solver = _make_tendon_vbd_solver(model)
-        initial_rest = solver.tendon_seg_rest_length.numpy().copy()
-        initial_local_l = solver.tendon_seg_attachment_l_local.numpy().copy()
+        initial_rest = solver.tendon_segment_rest_length.numpy().copy()
+        initial_local_l = solver.tendon_segment_attachment_l_local.numpy().copy()
         initial_active = solver.tendon_guide_active.numpy().copy()
         initial_total = solver.tendon_total_cable.numpy().copy()
 
-        solver.tendon_seg_rest_length.fill_(0.123)
-        solver.tendon_seg_attachment_l_local.zero_()
+        solver.tendon_segment_rest_length.fill_(0.123)
+        solver.tendon_segment_attachment_l_local.zero_()
         solver.tendon_guide_active.zero_()
         solver.tendon_total_cable.zero_()
 
         world_mask = wp.array([False] * model.world_count + [True], dtype=wp.bool, device=device)
         solver.reset(model.state(), world_mask=world_mask, flags=0)
 
-        np.testing.assert_allclose(solver.tendon_seg_rest_length.numpy(), initial_rest, atol=1.0e-7)
-        np.testing.assert_allclose(solver.tendon_seg_attachment_l_local.numpy(), initial_local_l, atol=1.0e-7)
+        np.testing.assert_allclose(solver.tendon_segment_rest_length.numpy(), initial_rest, atol=1.0e-7)
+        np.testing.assert_allclose(solver.tendon_segment_attachment_l_local.numpy(), initial_local_l, atol=1.0e-7)
         np.testing.assert_array_equal(solver.tendon_guide_active.numpy(), initial_active)
         np.testing.assert_allclose(solver.tendon_total_cable.numpy(), initial_total, atol=1.0e-7)
 
@@ -691,7 +691,7 @@ def test_vbd_reset_rebaselines_tendon_at_custom_pose(test, device):
         solver = _make_tendon_vbd_solver(model)
         state_0 = model.state()
         state_1 = model.state()
-        initial_rest = solver.tendon_seg_rest_length.numpy().copy()
+        initial_rest = solver.tendon_segment_rest_length.numpy().copy()
 
         body_q = state_0.body_q.numpy()
         angle = 0.4
@@ -700,7 +700,7 @@ def test_vbd_reset_rebaselines_tendon_at_custom_pose(test, device):
         solver.reset(state_0, flags=0)
         solver.step(state_0, state_1, model.control(), None, 1.0 / 60.0)
 
-        np.testing.assert_allclose(solver.tendon_seg_rest_length.numpy(), initial_rest, atol=1.0e-7)
+        np.testing.assert_allclose(solver.tendon_segment_rest_length.numpy(), initial_rest, atol=1.0e-7)
 
 
 def test_vbd_tendon_diagnostics_match_final_pose(test, device):
@@ -750,15 +750,15 @@ def test_vbd_tendon_diagnostics_match_final_pose(test, device):
 
         body_q = state_1.body_q.numpy()
         final_length = float(np.linalg.norm(body_q[body_r][:3] - body_q[body_l][:3]))
-        attachment_l = solver.tendon_seg_attachment_l.numpy()[0]
-        attachment_r = solver.tendon_seg_attachment_r.numpy()[0]
+        attachment_l = solver.tendon_segment_attachment_l.numpy()[0]
+        attachment_r = solver.tendon_segment_attachment_r.numpy()[0]
         attachment_length = float(np.linalg.norm(attachment_r - attachment_l))
         length_rate = (final_length - initial_length) / dt
         material_tension = max((final_length - rest_length) / compliance, 0.0)
         total_tension = max(material_tension + damping * length_rate, 0.0)
-        reported_material_tension = float(solver.tendon_seg_material_tension.numpy()[0])
-        reported_lambda = float(solver.tendon_seg_lambda.numpy()[0])
-        routing_damping_tension = float(solver.tendon_seg_damping_tension.numpy()[0])
+        reported_material_tension = float(solver.tendon_segment_material_tension.numpy()[0])
+        reported_lambda = float(solver.tendon_segment_lambda.numpy()[0])
+        routing_damping_tension = float(solver.tendon_segment_damping_tension.numpy()[0])
         test.assertLess(final_length, 0.75, "The solve must move the endpoints enough to expose stale diagnostics")
         test.assertGreater(total_tension, 0.0, "The regression must exercise a loaded tendon")
         test.assertAlmostEqual(attachment_length, final_length, delta=1.0e-6)
@@ -822,7 +822,7 @@ def test_vbd_nonrolling_rotation_uses_discrete_length_rate(test, device):
         final_length = 2.0
         expected_damping_tension = damping * (final_length - initial_length) / dt
         test.assertAlmostEqual(
-            float(solver.tendon_seg_damping_tension.numpy()[0]),
+            float(solver.tendon_segment_damping_tension.numpy()[0]),
             expected_damping_tension,
             delta=1.0e-3,
         )
@@ -832,12 +832,12 @@ def test_vbd_rolling_spin_does_not_add_damping_tension(test, device):
     """Pure roller-axis spin should transport material without stretching the free spans."""
     with wp.ScopedDevice(device):
         model, pulley = build_kinematic_rolling_transport(mu=10.0)
-        model.tendon_seg_damping.fill_(100.0)
+        model.tendon_segment_damping.fill_(100.0)
         _set_serial_body_coloring(model)
         solver = _make_tendon_vbd_solver(model)
         state_0 = model.state()
         state_1 = model.state()
-        initial_rest = solver.tendon_seg_rest_length.numpy().copy()
+        initial_rest = solver.tendon_segment_rest_length.numpy().copy()
 
         body_q = state_0.body_q.numpy()
         angle = 0.4
@@ -846,8 +846,8 @@ def test_vbd_rolling_spin_does_not_add_damping_tension(test, device):
 
         solver.step(state_0, state_1, model.control(), None, 1.0 / 60.0)
 
-        rest_delta = solver.tendon_seg_rest_length.numpy() - initial_rest
-        damping_tension = solver.tendon_seg_damping_tension.numpy()
+        rest_delta = solver.tendon_segment_rest_length.numpy() - initial_rest
+        damping_tension = solver.tendon_segment_damping_tension.numpy()
         test.assertGreater(
             float(np.max(np.abs(rest_delta))),
             1.0e-4,
@@ -916,7 +916,7 @@ def test_vbd_frictionless_off_center_roller_retains_body_torque(test, device):
         state_1 = model.state()
         solver.step(state_0, state_1, model.control(), None, 1.0 / 120.0)
 
-        tension = solver.tendon_seg_material_tension.numpy()
+        tension = solver.tendon_segment_material_tension.numpy()
         angle = _hinge_z_angle(state_1.body_q.numpy(), roller)
         np.testing.assert_allclose(tension[0], tension[1], rtol=1.0e-4, atol=1.0e-4)
         test.assertGreater(
@@ -975,21 +975,21 @@ def test_vbd_same_body_rolling_span_applies_net_torque(test, device):
         solver_kwargs.update(iterations=1, tendon_max_sweeps=1)
         solver = _make_tendon_vbd_solver(model, **solver_kwargs)
         span_lengths = np.linalg.norm(
-            solver.tendon_seg_attachment_r.numpy() - solver.tendon_seg_attachment_l.numpy(), axis=1
+            solver.tendon_segment_attachment_r.numpy() - solver.tendon_segment_attachment_l.numpy(), axis=1
         )
         rest_lengths = span_lengths.copy()
         rest_lengths[0] += 1.0
         rest_lengths[1] -= 0.01
         state_0, state_1 = model.state(), model.state()
         solver.reset(state_0)
-        state_0.tendon_seg_rest_length.assign(rest_lengths)
+        state_0.tendon_segment_rest_length.assign(rest_lengths)
         initial_pose = state_0.body_q.numpy()[body].copy()
         solver.step(state_0, state_1, model.control(), None, 1.0 / 120.0)
 
         final_pose = state_1.body_q.numpy()[body]
         np.testing.assert_allclose(final_pose[:3], initial_pose[:3], rtol=0.0, atol=1.0e-7)
         test.assertGreater(_hinge_z_angle(state_1.body_q.numpy(), body), initial_angle + 1.0e-5)
-        test.assertGreater(float(solver.tendon_seg_material_tension.numpy()[1]), 1.0)
+        test.assertGreater(float(solver.tendon_segment_material_tension.numpy()[1]), 1.0)
 
 
 def test_vbd_tendon_cuda_graph_capture(test, device):
@@ -1002,7 +1002,7 @@ def test_vbd_tendon_cuda_graph_capture(test, device):
 
     with wp.ScopedDevice(device):
         model, body_idx, _, _, initial_z = build_simple_cable_gravity()
-        model.tendon_seg_damping.fill_(100.0)
+        model.tendon_segment_damping.fill_(100.0)
         _set_serial_body_coloring(model)
         solver = _make_tendon_vbd_solver(model)
         state_0 = model.state()
@@ -1084,9 +1084,9 @@ def test_vbd_slack_pinhole_does_not_redistribute(test, device):
         collision_pipeline = newton.CollisionPipeline(model)
         contacts = collision_pipeline.contacts()
 
-        initial = solver.tendon_seg_rest_length.numpy().copy()
+        initial = solver.tendon_segment_rest_length.numpy().copy()
         solver.step(state_0, state_1, control, contacts, 1.0 / 60.0)
-        final = solver.tendon_seg_rest_length.numpy()
+        final = solver.tendon_segment_rest_length.numpy()
 
         np.testing.assert_allclose(
             final,
@@ -1291,7 +1291,7 @@ def test_vbd_motorized_pulley_updates_rest_in_first_step(test, device):
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
         q_start = int(model.joint_q_start.numpy()[drive_joint])
-        initial_rest = solver.tendon_seg_rest_length.numpy().copy()
+        initial_rest = solver.tendon_segment_rest_length.numpy().copy()
         control.joint_target_q[q_start : q_start + 1].fill_(1.0)
 
         state_0.clear_forces()
@@ -1300,7 +1300,7 @@ def test_vbd_motorized_pulley_updates_rest_in_first_step(test, device):
 
         body_q = state_1.body_q.numpy()
         theta = abs(_hinge_z_angle(body_q, pulley_idx))
-        rest_delta = solver.tendon_seg_rest_length.numpy() - initial_rest
+        rest_delta = solver.tendon_segment_rest_length.numpy() - initial_rest
 
         test.assertGreater(theta, 1.0e-3, f"VBD drive pulley should rotate in the first step: theta={theta:.6f}")
         test.assertGreater(
@@ -1354,8 +1354,8 @@ def test_vbd_equal_weight_atwood(test, device):
         solver.step(state_0, state_1, control, contacts, dt)
         state_0, state_1 = state_1, state_0
 
-        att_r = solver.tendon_seg_attachment_r.numpy()
-        att_l = solver.tendon_seg_attachment_l.numpy()
+        att_r = solver.tendon_segment_attachment_r.numpy()
+        att_l = solver.tendon_segment_attachment_l.numpy()
         pulley_z = float(state_0.body_q.numpy()[pulley_idx][2])
         test.assertGreater(
             att_r[0][2],

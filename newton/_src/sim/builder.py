@@ -1755,11 +1755,11 @@ class ModelBuilder:
         """Local-frame offset of the cable plane center on each body [m]."""
         self.tendon_guide_axis: list[tuple[float, float, float]] = []
         """Local-frame normal of the cable plane on each body."""
-        self.tendon_seg_compliance: list[float] = []
+        self.tendon_segment_compliance: list[float] = []
         """Compliance [m/N] for each tendon segment."""
-        self.tendon_seg_damping: list[float] = []
+        self.tendon_segment_damping: list[float] = []
         """Damping coefficient [N·s/m] for each tendon segment."""
-        self.tendon_seg_rest_length: list[float] = []
+        self.tendon_segment_rest_length: list[float] = []
         """Initial rest length [m] for each tendon segment."""
 
         # triangles
@@ -2199,7 +2199,7 @@ class ModelBuilder:
     @property
     def tendon_segment_count(self) -> int:
         """Number of incoming straight spans across all tendon routes."""
-        return len(self.tendon_seg_rest_length)
+        return len(self.tendon_segment_rest_length)
 
     @property
     def shape_collision_filter_pairs(self) -> list[tuple[int, int]]:
@@ -6533,9 +6533,9 @@ class ModelBuilder:
             self.tendon_guide_offset.append(guide.offset)
             self.tendon_guide_axis.append(guide.axis)
             if index > 0:
-                self.tendon_seg_compliance.append(guide.compliance)
-                self.tendon_seg_damping.append(guide.damping)
-                self.tendon_seg_rest_length.append(guide.rest_length)
+                self.tendon_segment_compliance.append(guide.compliance)
+                self.tendon_segment_damping.append(guide.damping)
+                self.tendon_segment_rest_length.append(guide.rest_length)
         for index, attributes, frequency in batches:
             self._process_custom_attributes(index, attributes, frequency)
         return tendon_idx
@@ -14382,7 +14382,7 @@ class ModelBuilder:
             m.tendon_label = list(self.tendon_label)
             m.tendon_world = wp.array(self.tendon_world, dtype=int)
             guide_count = len(self.tendon_guide_body)
-            seg_count = len(self.tendon_seg_rest_length)
+            seg_count = len(self.tendon_segment_rest_length)
 
             if tendon_count > 0:
                 tendon_end = [*self.tendon_start[1:], guide_count]
@@ -14404,14 +14404,14 @@ class ModelBuilder:
                 m.tendon_guide_flags = wp.array(self.tendon_guide_flags, dtype=wp.int32)
                 m.tendon_guide_offset = wp.array(self.tendon_guide_offset, dtype=wp.vec3)
                 m.tendon_guide_axis = wp.array(self.tendon_guide_axis, dtype=wp.vec3)
-                m.tendon_seg_compliance = wp.array(
-                    self.tendon_seg_compliance, dtype=wp.float32, requires_grad=requires_grad
+                m.tendon_segment_compliance = wp.array(
+                    self.tendon_segment_compliance, dtype=wp.float32, requires_grad=requires_grad
                 )
-                m.tendon_seg_damping = wp.array(
-                    self.tendon_seg_damping, dtype=wp.float32, requires_grad=requires_grad
+                m.tendon_segment_damping = wp.array(
+                    self.tendon_segment_damping, dtype=wp.float32, requires_grad=requires_grad
                 )
-                m.tendon_seg_rest_length = wp.array(
-                    self.tendon_seg_rest_length, dtype=wp.float32, requires_grad=requires_grad
+                m.tendon_segment_rest_length = wp.array(
+                    self.tendon_segment_rest_length, dtype=wp.float32, requires_grad=requires_grad
                 )
 
             m.tendon_count = tendon_count

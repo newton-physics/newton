@@ -136,17 +136,17 @@ adjustment for strongly coupled routes.
 
 ### Reading tension (experimental diagnostics)
 
-The solver-owned arrays `tendon_seg_material_tension` and
-`tendon_seg_damping_tension` report the constitutive and signed damping
+The solver-owned arrays `tendon_segment_material_tension` and
+`tendon_segment_damping_tension` report the constitutive and signed damping
 components after a step. The instantaneous unilateral axial tension is
 `max(material_tension + damping_tension, 0)`. VBD does not solve XPBD multipliers, so
-`tendon_seg_lambda` is zero on the VBD path.
+`tendon_segment_lambda` is zero on the VBD path.
 
 These arrays are debugging/analysis outputs, **not a stable solver-neutral
 observation API** on {class}`~newton.State` or {class}`~newton.Model`. Read them
 after `step`; they are not prescribed forces or actuator inputs. For a dynamic
-route, use `solver.tendon_seg_active` to filter bypassed segment slots and
-`solver.tendon_seg_active_guide_l/r` to identify the current span endpoints.
+route, use `solver.tendon_segment_active` to filter bypassed segment slots and
+`solver.tendon_segment_active_guide_l/r` to identify the current span endpoints.
 Calling `.numpy()` synchronizes the device and belongs outside captured steps.
 
 ## Choosing rods or tendons
@@ -276,7 +276,7 @@ call `state.assign(checkpoint)` to restore the checkpoint, including tendon hist
 
 After editing segment compliance/damping or guide friction in place, call
 `solver.notify_model_changed(ModelFlags.TENDON_PROPERTIES)`. These edits preserve
-existing material history. Changing `Model.tendon_seg_rest_length` instead updates
+existing material history. Changing `Model.tendon_segment_rest_length` instead updates
 the authored reset baseline: notify the solver, then reset a trajectory to apply
 the new lengths. Initialized states keep their existing material distribution
 until reset. This is not a tendon actuation interface. Negative

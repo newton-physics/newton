@@ -24,7 +24,7 @@ import warp as wp
 
 import newton
 import newton.examples
-from newton.examples.cable.cable import get_tendon_cable_lines
+from newton.examples.tendon.utils import get_tendon_cable_lines
 
 
 class Example:
@@ -259,7 +259,7 @@ class Example:
 
     def _record_metrics(self):
         guide_active = self.solver.tendon_guide_active.numpy()
-        seg_active = self.solver.tendon_seg_active.numpy()
+        seg_active = self.solver.tendon_segment_active.numpy()
         middle_active = bool(guide_active[self.middle_guide])
         self._active_history.append(middle_active)
         if middle_active != self._last_middle_active:
@@ -279,8 +279,8 @@ class Example:
             self._saw_middle_segment_enabled = (
                 self._saw_middle_segment_enabled or seg_active[self.middle_right_seg] != 0
             )
-            att_l = self.solver.tendon_seg_attachment_l.numpy()
-            att_r = self.solver.tendon_seg_attachment_r.numpy()
+            att_l = self.solver.tendon_segment_attachment_l.numpy()
+            att_r = self.solver.tendon_segment_attachment_r.numpy()
             radii = [
                 float(np.linalg.norm((att_r[self.middle_left_seg] - middle)[[0, 2]])),
                 float(np.linalg.norm((att_l[self.middle_right_seg] - middle)[[0, 2]])),

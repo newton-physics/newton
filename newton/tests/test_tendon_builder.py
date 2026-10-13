@@ -63,7 +63,7 @@ class TestTendonBuilder(unittest.TestCase):
         for name, freq in (
             ("tendon_start", frequency.TENDON),
             ("tendon_guide_offset", frequency.TENDON_GUIDE),
-            ("tendon_seg_compliance", frequency.TENDON_SEGMENT),
+            ("tendon_segment_compliance", frequency.TENDON_SEGMENT),
         ):
             self.assertEqual(model.get_attribute_frequency(name), freq)
         self.assertEqual(model._attribute_frequency_count(frequency.TENDON_GUIDE), 4)
@@ -301,7 +301,7 @@ class TestTendonBuilder(unittest.TestCase):
                         solver = solver_type(model, iterations=2, **options)
                     state_0, state_1 = model.state(), model.state()
                     control = model.control()
-                    initial_rest = solver.tendon_seg_rest_length.numpy().copy()
+                    initial_rest = solver.tendon_segment_rest_length.numpy().copy()
                     np.testing.assert_array_equal(solver.tendon_guide_active.numpy()[[1, 4, 7]], [False, False, False])
                     for x, active in ((0.05, True), (0.25, False)):
                         poses = state_0.body_q.numpy()
@@ -313,20 +313,20 @@ class TestTendonBuilder(unittest.TestCase):
                             solver.tendon_guide_active.numpy()[[1, 4, 7]], [False, active, False]
                         )
                         np.testing.assert_array_equal(
-                            solver.tendon_seg_rest_length.numpy()[[0, 1, 4, 5]], initial_rest[[0, 1, 4, 5]]
+                            solver.tendon_segment_rest_length.numpy()[[0, 1, 4, 5]], initial_rest[[0, 1, 4, 5]]
                         )
-                    changed = state_0.tendon_seg_rest_length.numpy().copy()
+                    changed = state_0.tendon_segment_rest_length.numpy().copy()
                     # The second slot of each bypassed route is an inactive
                     # placeholder, not another physical free span.
                     changed[::2] += np.float32(0.01)
-                    state_0.tendon_seg_rest_length.assign(changed)
+                    state_0.tendon_segment_rest_length.assign(changed)
                     mask = wp.array([False, True, False, False], dtype=wp.bool, device=device)
                     solver.reset(state_0, world_mask=mask, flags=0)
                     expected = changed.copy()
                     expected[2:4] = initial_rest[2:4]
-                    np.testing.assert_array_equal(state_0.tendon_seg_rest_length.numpy(), expected)
+                    np.testing.assert_array_equal(state_0.tendon_segment_rest_length.numpy(), expected)
                     solver.step(state_0, state_1, control, None, 1.0 / 60.0)
-                    np.testing.assert_array_equal(state_1.tendon_seg_rest_length.numpy(), expected)
+                    np.testing.assert_array_equal(state_1.tendon_segment_rest_length.numpy(), expected)
 
     def test_xpbd_reports_wraps_only_at_accepted_pose(self):
         """Suppress unsupported-wrap warnings during unconverged iterations."""
@@ -376,7 +376,7 @@ class TestTendonBuilder(unittest.TestCase):
         self.assertEqual(destination.tendon_guide_body, [0, 0, 1, 2, 2, 1, 3, 4, 4, 3])
         self.assertEqual(destination.tendon_guide_offset[2:6], source.tendon_guide_offset)
         self.assertEqual(destination.tendon_guide_axis[2:6], source.tendon_guide_axis)
-        self.assertEqual(destination.tendon_seg_compliance, [0.0, 1.0e-5, 2.0e-5, 1.0e-5, 2.0e-5])
+        self.assertEqual(destination.tendon_segment_compliance, [0.0, 1.0e-5, 2.0e-5, 1.0e-5, 2.0e-5])
         np.testing.assert_allclose(destination.body_q[2], wp.transform_multiply(xform, source.body_q[b]), atol=1e-6)
         model = destination.finalize(device="cpu")
         self.assertEqual(model.tendon_count, 5)
@@ -413,7 +413,7 @@ class TestTendonBuilder(unittest.TestCase):
                         solver = solver_type(model, iterations=1, **options)
                     state_0, state_1 = model.state(), model.state()
                     solver.step(state_0, state_1, model.control(), None, 1.0 / 60.0)
-                    np.testing.assert_allclose(solver.tendon_seg_rest_length.numpy(), [1.0, 1.0, 1.0])
+                    np.testing.assert_allclose(solver.tendon_segment_rest_length.numpy(), [1.0, 1.0, 1.0])
 
 
 if __name__ == "__main__":

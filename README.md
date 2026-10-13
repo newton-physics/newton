@@ -377,17 +377,17 @@ If you run the examples from a source checkout with uv, use
   </tr>
   <tr>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_tendon_pulley.py">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/tendon/example_tendon_pulley.py">
         <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_tendon_pulley.jpg" alt="Tendon Pulley">
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_tendon_pinhole.py">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/tendon/example_tendon_pinhole.py">
         <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_tendon_pinhole.jpg" alt="Tendon Pinhole">
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_tendon_capstan_friction.py">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/tendon/example_tendon_capstan_friction.py">
         <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_tendon_capstan_friction.jpg" alt="Tendon Capstan Friction">
       </a>
     </td>
@@ -405,12 +405,12 @@ If you run the examples from a source checkout with uv, use
   </tr>
   <tr>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_tendon_mujoco_switch.py">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/tendon/example_tendon_mujoco_switch.py">
         <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_tendon_mujoco_switch.jpg" alt="Tendon Dynamic Routing">
       </a>
     </td>
     <td align="center" width="33%">
-      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_tendon_3d_routing.py">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/tendon/example_tendon_3d_routing.py">
         <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_tendon_3d_routing.jpg" alt="Tendon 3D Routing">
       </a>
     </td>

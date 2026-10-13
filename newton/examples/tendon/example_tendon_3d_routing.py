@@ -21,7 +21,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton import Axis, TendonGuideType
-from newton.examples.cable.cable import (
+from newton.examples.tendon.utils import (
     assert_tendon_total_length,
     get_tendon_attachment_worlds,
     get_tendon_cable_lines,

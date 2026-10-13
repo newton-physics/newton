@@ -31,28 +31,28 @@ from .tendon_kernels import (
 )
 
 _TENDON_SEGMENT_STATE_FIELDS = (
-    "tendon_seg_rest_length",
-    "tendon_seg_rest_length_step",
-    "tendon_seg_route_rest_length",
-    "tendon_seg_stretch",
-    "tendon_seg_material_tension",
-    "tendon_seg_damping_tension",
-    "tendon_seg_attachment_l",
-    "tendon_seg_attachment_r",
-    "tendon_seg_length",
-    "tendon_seg_attachment_l_local",
-    "tendon_seg_attachment_r_local",
-    "tendon_seg_attachment_l_local_step",
-    "tendon_seg_attachment_r_local_step",
-    "tendon_seg_lambda",
-    "tendon_seg_delta_lambda",
-    "tendon_seg_rolling_delta_l",
-    "tendon_seg_rolling_delta_r",
-    "tendon_seg_active",
-    "tendon_seg_active_guide_l",
-    "tendon_seg_active_guide_r",
-    "tendon_seg_active_compliance",
-    "tendon_seg_active_damping",
+    "tendon_segment_rest_length",
+    "tendon_segment_rest_length_step",
+    "tendon_segment_route_rest_length",
+    "tendon_segment_stretch",
+    "tendon_segment_material_tension",
+    "tendon_segment_damping_tension",
+    "tendon_segment_attachment_l",
+    "tendon_segment_attachment_r",
+    "tendon_segment_length",
+    "tendon_segment_attachment_l_local",
+    "tendon_segment_attachment_r_local",
+    "tendon_segment_attachment_l_local_step",
+    "tendon_segment_attachment_r_local_step",
+    "tendon_segment_lambda",
+    "tendon_segment_delta_lambda",
+    "tendon_segment_rolling_delta_l",
+    "tendon_segment_rolling_delta_r",
+    "tendon_segment_active",
+    "tendon_segment_active_guide_l",
+    "tendon_segment_active_guide_r",
+    "tendon_segment_active_compliance",
+    "tendon_segment_active_damping",
 )
 _TENDON_GUIDE_STATE_FIELDS = (
     "tendon_guide_active",
@@ -147,9 +147,9 @@ def _segment_attachment_points_np(
 
 
 _TENDON_HISTORY_FIELDS = (
-    "tendon_seg_rest_length",
-    "tendon_seg_attachment_l_local",
-    "tendon_seg_attachment_r_local",
+    "tendon_segment_rest_length",
+    "tendon_segment_attachment_l_local",
+    "tendon_segment_attachment_r_local",
     "tendon_guide_active",
 )
 
@@ -219,18 +219,18 @@ class TendonStateMixin:
             if not np.array_equal(getattr(model, name).numpy(), original):
                 raise ValueError(f"Changing {name} requires reconstructing the tendon model and solver")
         for name in (
-            "tendon_seg_compliance",
-            "tendon_seg_damping",
+            "tendon_segment_compliance",
+            "tendon_segment_damping",
             "tendon_guide_mu",
-            "tendon_seg_rest_length",
+            "tendon_segment_rest_length",
         ):
             value = getattr(model, name).numpy()
             count = model.tendon_guide_count if name == "tendon_guide_mu" else model.tendon_segment_count
             if value.shape != (count,) or not np.isfinite(value).all():
                 raise ValueError(f"{name} must contain {count} finite values")
-            if name != "tendon_seg_rest_length" and (value < 0).any():
+            if name != "tendon_segment_rest_length" and (value < 0).any():
                 raise ValueError(f"{name} must be non-negative")
-        rest = model.tendon_seg_rest_length.numpy()
+        rest = model.tendon_segment_rest_length.numpy()
         if np.array_equal(rest, self._tendon_authored_rest_length):
             return
 
@@ -277,30 +277,30 @@ class TendonStateMixin:
                 f"got {self.tendon_activation_tol}"
             )
         if model.tendon_segment_count == 0:
-            self.tendon_seg_rest_length = None
-            self.tendon_seg_rest_length_step = None
-            self.tendon_seg_route_rest_length = None
-            self.tendon_seg_stretch = None
-            self.tendon_seg_material_tension = None
-            self.tendon_seg_damping_tension = None
-            self.tendon_seg_attachment_l = None
-            self.tendon_seg_attachment_r = None
-            self.tendon_seg_length = None
-            self.tendon_seg_attachment_l_local = None
-            self.tendon_seg_attachment_r_local = None
-            self.tendon_seg_attachment_l_local_step = None
-            self.tendon_seg_attachment_r_local_step = None
-            self.tendon_seg_lambda = None
-            self.tendon_seg_delta_lambda = None
-            self.tendon_seg_rolling_delta_l = None
-            self.tendon_seg_rolling_delta_r = None
+            self.tendon_segment_rest_length = None
+            self.tendon_segment_rest_length_step = None
+            self.tendon_segment_route_rest_length = None
+            self.tendon_segment_stretch = None
+            self.tendon_segment_material_tension = None
+            self.tendon_segment_damping_tension = None
+            self.tendon_segment_attachment_l = None
+            self.tendon_segment_attachment_r = None
+            self.tendon_segment_length = None
+            self.tendon_segment_attachment_l_local = None
+            self.tendon_segment_attachment_r_local = None
+            self.tendon_segment_attachment_l_local_step = None
+            self.tendon_segment_attachment_r_local_step = None
+            self.tendon_segment_lambda = None
+            self.tendon_segment_delta_lambda = None
+            self.tendon_segment_rolling_delta_l = None
+            self.tendon_segment_rolling_delta_r = None
             self.tendon_cone_sweep_count = None
-            self.tendon_seg_guide_l = None
-            self.tendon_seg_active = None
-            self.tendon_seg_active_guide_l = None
-            self.tendon_seg_active_guide_r = None
-            self.tendon_seg_active_compliance = None
-            self.tendon_seg_active_damping = None
+            self.tendon_segment_guide_l = None
+            self.tendon_segment_active = None
+            self.tendon_segment_active_guide_l = None
+            self.tendon_segment_active_guide_r = None
+            self.tendon_segment_active_compliance = None
+            self.tendon_segment_active_damping = None
             self.tendon_guide_active = None
             self.tendon_guide_active_step = None
             self.tendon_guide_route_rest_length = None
@@ -313,30 +313,30 @@ class TendonStateMixin:
             return
 
         with wp.ScopedDevice(model.device):
-            self.tendon_seg_attachment_l = wp.zeros(model.tendon_segment_count, dtype=wp.vec3)
-            self.tendon_seg_attachment_r = wp.zeros(model.tendon_segment_count, dtype=wp.vec3)
-            self.tendon_seg_length = wp.zeros(model.tendon_segment_count, dtype=float)
-            self.tendon_seg_attachment_l_local = wp.zeros(model.tendon_segment_count, dtype=wp.vec3)
-            self.tendon_seg_attachment_r_local = wp.zeros(model.tendon_segment_count, dtype=wp.vec3)
-            self.tendon_seg_attachment_l_local_step = wp.zeros(model.tendon_segment_count, dtype=wp.vec3)
-            self.tendon_seg_attachment_r_local_step = wp.zeros(model.tendon_segment_count, dtype=wp.vec3)
+            self.tendon_segment_attachment_l = wp.zeros(model.tendon_segment_count, dtype=wp.vec3)
+            self.tendon_segment_attachment_r = wp.zeros(model.tendon_segment_count, dtype=wp.vec3)
+            self.tendon_segment_length = wp.zeros(model.tendon_segment_count, dtype=float)
+            self.tendon_segment_attachment_l_local = wp.zeros(model.tendon_segment_count, dtype=wp.vec3)
+            self.tendon_segment_attachment_r_local = wp.zeros(model.tendon_segment_count, dtype=wp.vec3)
+            self.tendon_segment_attachment_l_local_step = wp.zeros(model.tendon_segment_count, dtype=wp.vec3)
+            self.tendon_segment_attachment_r_local_step = wp.zeros(model.tendon_segment_count, dtype=wp.vec3)
             # Unilateral constitutive tension; the signed damping term is reported separately.
-            self.tendon_seg_material_tension = wp.zeros(model.tendon_segment_count, dtype=float)
-            self.tendon_seg_lambda = wp.zeros(model.tendon_segment_count, dtype=float)
-            self.tendon_seg_delta_lambda = wp.zeros(model.tendon_segment_count, dtype=float)
-            self.tendon_seg_rolling_delta_l = wp.zeros(model.tendon_segment_count, dtype=float)
-            self.tendon_seg_rolling_delta_r = wp.zeros(model.tendon_segment_count, dtype=float)
+            self.tendon_segment_material_tension = wp.zeros(model.tendon_segment_count, dtype=float)
+            self.tendon_segment_lambda = wp.zeros(model.tendon_segment_count, dtype=float)
+            self.tendon_segment_delta_lambda = wp.zeros(model.tendon_segment_count, dtype=float)
+            self.tendon_segment_rolling_delta_l = wp.zeros(model.tendon_segment_count, dtype=float)
+            self.tendon_segment_rolling_delta_r = wp.zeros(model.tendon_segment_count, dtype=float)
             # Cached instantaneous damping term used by routing and slip projections.
-            self.tendon_seg_damping_tension = wp.zeros(model.tendon_segment_count, dtype=float)
+            self.tendon_segment_damping_tension = wp.zeros(model.tendon_segment_count, dtype=float)
             self.tendon_cone_sweep_count = wp.zeros(model.tendon_count, dtype=wp.int32)
-            self.tendon_seg_active = wp.ones(model.tendon_segment_count, dtype=wp.int32)
-            self.tendon_seg_active_guide_l = wp.zeros(model.tendon_segment_count, dtype=wp.int32)
-            self.tendon_seg_active_guide_r = wp.zeros(model.tendon_segment_count, dtype=wp.int32)
-            self.tendon_seg_active_compliance = wp.array(
-                model.tendon_seg_compliance.numpy().copy(), dtype=float, device=model.device
+            self.tendon_segment_active = wp.ones(model.tendon_segment_count, dtype=wp.int32)
+            self.tendon_segment_active_guide_l = wp.zeros(model.tendon_segment_count, dtype=wp.int32)
+            self.tendon_segment_active_guide_r = wp.zeros(model.tendon_segment_count, dtype=wp.int32)
+            self.tendon_segment_active_compliance = wp.array(
+                model.tendon_segment_compliance.numpy().copy(), dtype=float, device=model.device
             )
-            self.tendon_seg_active_damping = wp.array(
-                model.tendon_seg_damping.numpy().copy(), dtype=float, device=model.device
+            self.tendon_segment_active_damping = wp.array(
+                model.tendon_segment_damping.numpy().copy(), dtype=float, device=model.device
             )
             self.tendon_guide_active = wp.ones(model.tendon_guide_count, dtype=bool)
             self.tendon_guide_active_step = wp.ones(model.tendon_guide_count, dtype=bool)
@@ -361,23 +361,23 @@ class TendonStateMixin:
                         guide_seg_left[guide_idx + 1] = seg
                     seg += 1
 
-            self.tendon_seg_guide_l = wp.array(seg_guide_l, dtype=wp.int32, device=model.device)
-            self.tendon_seg_active_guide_l = wp.array(seg_guide_l, dtype=wp.int32, device=model.device)
-            self.tendon_seg_active_guide_r = wp.array(
+            self.tendon_segment_guide_l = wp.array(seg_guide_l, dtype=wp.int32, device=model.device)
+            self.tendon_segment_active_guide_l = wp.array(seg_guide_l, dtype=wp.int32, device=model.device)
+            self.tendon_segment_active_guide_r = wp.array(
                 np.asarray(seg_guide_l, dtype=np.int32) + 1, dtype=wp.int32, device=model.device
             )
             self.tendon_guide_seg_left = wp.array(guide_seg_left, dtype=wp.int32, device=model.device)
             self.tendon_guide_tendon = wp.array(guide_tendon, dtype=wp.int32, device=model.device)
 
-            rest_np = model.tendon_seg_rest_length.numpy().copy()
+            rest_np = model.tendon_segment_rest_length.numpy().copy()
             auto_mask = rest_np < 0.0
             rest_np[auto_mask] = 0.0
-            self.tendon_seg_rest_length = wp.array(rest_np, dtype=float, device=model.device)
-            self.tendon_seg_rest_length_step = wp.array(rest_np.copy(), dtype=float, device=model.device)
-            self.tendon_seg_route_rest_length = wp.array(rest_np.copy(), dtype=float, device=model.device)
+            self.tendon_segment_rest_length = wp.array(rest_np, dtype=float, device=model.device)
+            self.tendon_segment_rest_length_step = wp.array(rest_np.copy(), dtype=float, device=model.device)
+            self.tendon_segment_route_rest_length = wp.array(rest_np.copy(), dtype=float, device=model.device)
             # scratch: per-segment stretch d = len - rest, snapshot+telescoped inside the capstan
             # transport (kept at its own scale so stiff-cable friction transfers survive float32)
-            self.tendon_seg_stretch = wp.zeros_like(self.tendon_seg_rest_length)
+            self.tendon_segment_stretch = wp.zeros_like(self.tendon_segment_rest_length)
 
             guide_type_np = model.tendon_guide_type.numpy()
             guide_flags_np = model.tendon_guide_flags.numpy()
@@ -400,12 +400,12 @@ class TendonStateMixin:
 
     def _snapshot_tendon_step_state(self) -> None:
         """Snapshot mutable tendon material state at the start of a time step."""
-        if self.tendon_seg_rest_length is None:
+        if self.tendon_segment_rest_length is None:
             return
 
-        wp.copy(self.tendon_seg_rest_length_step, self.tendon_seg_rest_length)
-        wp.copy(self.tendon_seg_attachment_l_local_step, self.tendon_seg_attachment_l_local)
-        wp.copy(self.tendon_seg_attachment_r_local_step, self.tendon_seg_attachment_r_local)
+        wp.copy(self.tendon_segment_rest_length_step, self.tendon_segment_rest_length)
+        wp.copy(self.tendon_segment_attachment_l_local_step, self.tendon_segment_attachment_l_local)
+        wp.copy(self.tendon_segment_attachment_r_local_step, self.tendon_segment_attachment_r_local)
         if self._has_dynamic_tendon_guides:
             wp.launch(
                 kernel=snapshot_tendon_guide_active,
@@ -461,32 +461,32 @@ class TendonStateMixin:
                 model.tendon_guide_radius,
                 model.tendon_guide_offset,
                 model.tendon_guide_axis,
-                model.tendon_seg_rest_length,
-                self.tendon_seg_rest_length_step,
-                model.tendon_seg_compliance,
-                model.tendon_seg_damping,
+                model.tendon_segment_rest_length,
+                self.tendon_segment_rest_length_step,
+                model.tendon_segment_compliance,
+                model.tendon_segment_damping,
                 self.tendon_guide_active,
                 self.tendon_guide_active_step,
                 self.tendon_guide_route_rest_length,
-                self.tendon_seg_attachment_l_local_step,
-                self.tendon_seg_attachment_r_local_step,
+                self.tendon_segment_attachment_l_local_step,
+                self.tendon_segment_attachment_r_local_step,
                 int(initialize),
                 compliance_floor,
             ],
             outputs=[
-                self.tendon_seg_route_rest_length,
-                self.tendon_seg_active,
-                self.tendon_seg_active_guide_l,
-                self.tendon_seg_active_guide_r,
-                self.tendon_seg_active_compliance,
-                self.tendon_seg_active_damping,
+                self.tendon_segment_route_rest_length,
+                self.tendon_segment_active,
+                self.tendon_segment_active_guide_l,
+                self.tendon_segment_active_guide_r,
+                self.tendon_segment_active_compliance,
+                self.tendon_segment_active_damping,
             ],
             device=model.device,
         )
 
     def _rebaseline_tendon_geometry(self, body_q: wp.array[wp.transform]) -> None:
         """Rebaseline reset-selected tangent history from the accepted pose."""
-        if self.tendon_seg_rest_length is None:
+        if self.tendon_segment_rest_length is None:
             return
 
         wp.launch(
@@ -500,23 +500,23 @@ class TendonStateMixin:
                 self.model.tendon_guide_orientation,
                 self.model.tendon_guide_offset,
                 self.model.tendon_guide_axis,
-                self.tendon_seg_active,
-                self.tendon_seg_active_guide_l,
-                self.tendon_seg_active_guide_r,
+                self.tendon_segment_active,
+                self.tendon_segment_active_guide_l,
+                self.tendon_segment_active_guide_r,
                 self._tendon_segment_world,
                 self._tendon_pose_rebaseline_mask,
                 self.model.world_count,
             ],
             outputs=[
-                self.tendon_seg_attachment_l_local,
-                self.tendon_seg_attachment_r_local,
-                self.tendon_seg_attachment_l_local_step,
-                self.tendon_seg_attachment_r_local_step,
-                self.tendon_seg_attachment_l,
-                self.tendon_seg_attachment_r,
-                self.tendon_seg_rolling_delta_l,
-                self.tendon_seg_rolling_delta_r,
-                self.tendon_seg_length,
+                self.tendon_segment_attachment_l_local,
+                self.tendon_segment_attachment_r_local,
+                self.tendon_segment_attachment_l_local_step,
+                self.tendon_segment_attachment_r_local_step,
+                self.tendon_segment_attachment_l,
+                self.tendon_segment_attachment_r,
+                self.tendon_segment_rolling_delta_l,
+                self.tendon_segment_rolling_delta_r,
+                self.tendon_segment_length,
             ],
             device=self.model.device,
         )
@@ -545,12 +545,12 @@ class TendonStateMixin:
                 model.tendon_guide_offset,
                 model.tendon_guide_axis,
                 self.tendon_guide_active,
-                self.tendon_seg_active,
-                self.tendon_seg_active_guide_l,
-                self.tendon_seg_active_guide_r,
-                self.tendon_seg_attachment_l,
-                self.tendon_seg_attachment_r,
-                self.tendon_seg_length,
+                self.tendon_segment_active,
+                self.tendon_segment_active_guide_l,
+                self.tendon_segment_active_guide_r,
+                self.tendon_segment_attachment_l,
+                self.tendon_segment_attachment_r,
+                self.tendon_segment_length,
                 int(report_unsupported_wrap),
             ],
             outputs=[
@@ -655,10 +655,10 @@ class TendonStateMixin:
                 seg += 1
 
         with wp.ScopedDevice(model.device):
-            self.tendon_seg_attachment_l = wp.array(att_l, dtype=wp.vec3, device=model.device)
-            self.tendon_seg_attachment_r = wp.array(att_r, dtype=wp.vec3, device=model.device)
-            self.tendon_seg_attachment_l_local = wp.array(att_l_local, dtype=wp.vec3, device=model.device)
-            self.tendon_seg_attachment_r_local = wp.array(att_r_local, dtype=wp.vec3, device=model.device)
+            self.tendon_segment_attachment_l = wp.array(att_l, dtype=wp.vec3, device=model.device)
+            self.tendon_segment_attachment_r = wp.array(att_r, dtype=wp.vec3, device=model.device)
+            self.tendon_segment_attachment_l_local = wp.array(att_l_local, dtype=wp.vec3, device=model.device)
+            self.tendon_segment_attachment_r_local = wp.array(att_r_local, dtype=wp.vec3, device=model.device)
 
         self._prepare_tendon_route(model, body_q, initialize=True)
 
@@ -676,23 +676,23 @@ class TendonStateMixin:
                 model.tendon_guide_orientation,
                 model.tendon_guide_offset,
                 model.tendon_guide_axis,
-                self.tendon_seg_active,
-                self.tendon_seg_active_guide_l,
-                self.tendon_seg_active_guide_r,
+                self.tendon_segment_active,
+                self.tendon_segment_active_guide_l,
+                self.tendon_segment_active_guide_r,
                 self.tendon_guide_active,
                 self.tendon_guide_active_step,
-                self.tendon_seg_attachment_l_local_step,
-                self.tendon_seg_attachment_r_local_step,
+                self.tendon_segment_attachment_l_local_step,
+                self.tendon_segment_attachment_r_local_step,
                 0,
             ],
             outputs=[
-                self.tendon_seg_attachment_l,
-                self.tendon_seg_attachment_r,
-                self.tendon_seg_attachment_l_local,
-                self.tendon_seg_attachment_r_local,
-                self.tendon_seg_rolling_delta_l,
-                self.tendon_seg_rolling_delta_r,
-                self.tendon_seg_length,
+                self.tendon_segment_attachment_l,
+                self.tendon_segment_attachment_r,
+                self.tendon_segment_attachment_l_local,
+                self.tendon_segment_attachment_r_local,
+                self.tendon_segment_rolling_delta_l,
+                self.tendon_segment_rolling_delta_r,
+                self.tendon_segment_length,
             ],
             device=model.device,
         )
@@ -711,26 +711,26 @@ class TendonStateMixin:
                 model.tendon_guide_radius,
                 model.tendon_guide_offset,
                 model.tendon_guide_axis,
-                self.tendon_seg_rest_length,
-                self.tendon_seg_rest_length_step,
-                self.tendon_seg_route_rest_length,
-                self.tendon_seg_stretch,
-                self.tendon_seg_damping_tension,
-                self.tendon_seg_active,
-                self.tendon_seg_active_guide_l,
-                self.tendon_seg_active_guide_r,
-                self.tendon_seg_active_compliance,
-                self.tendon_seg_active_damping,
+                self.tendon_segment_rest_length,
+                self.tendon_segment_rest_length_step,
+                self.tendon_segment_route_rest_length,
+                self.tendon_segment_stretch,
+                self.tendon_segment_damping_tension,
+                self.tendon_segment_active,
+                self.tendon_segment_active_guide_l,
+                self.tendon_segment_active_guide_r,
+                self.tendon_segment_active_compliance,
+                self.tendon_segment_active_damping,
                 self.tendon_guide_active,
                 self.tendon_guide_active_step,
                 self.tendon_guide_route_rest_length,
-                self.tendon_seg_attachment_l,
-                self.tendon_seg_attachment_r,
-                self.tendon_seg_length,
-                self.tendon_seg_attachment_l_local,
-                self.tendon_seg_attachment_r_local,
-                self.tendon_seg_rolling_delta_l,
-                self.tendon_seg_rolling_delta_r,
+                self.tendon_segment_attachment_l,
+                self.tendon_segment_attachment_r,
+                self.tendon_segment_length,
+                self.tendon_segment_attachment_l_local,
+                self.tendon_segment_attachment_r_local,
+                self.tendon_segment_rolling_delta_l,
+                self.tendon_segment_rolling_delta_r,
                 self.tendon_guide_cone_seg_l,
                 self.tendon_guide_cone_seg_r,
                 self.tendon_guide_cap_ratio,
@@ -746,13 +746,13 @@ class TendonStateMixin:
             device=model.device,
         )
 
-        att_l_np = self.tendon_seg_attachment_l.numpy()
-        att_r_np = self.tendon_seg_attachment_r.numpy()
-        rest_np = self.tendon_seg_rest_length.numpy()
+        att_l_np = self.tendon_segment_attachment_l.numpy()
+        att_r_np = self.tendon_segment_attachment_r.numpy()
+        rest_np = self.tendon_segment_rest_length.numpy()
         for i in range(model.tendon_segment_count):
             if auto_mask[i] and not route_seg_mask[i]:
                 rest_np[i] = np.linalg.norm(att_r_np[i] - att_l_np[i])
-        self.tendon_seg_rest_length = wp.array(rest_np, dtype=float, device=model.device)
+        self.tendon_segment_rest_length = wp.array(rest_np, dtype=float, device=model.device)
         self._snapshot_tendon_step_state()
 
         guide_type_np = model.tendon_guide_type.numpy()
@@ -760,9 +760,9 @@ class TendonStateMixin:
         guide_offset_np = model.tendon_guide_offset.numpy()
         guide_axis_np = model.tendon_guide_axis.numpy()
         guide_active_np = self.tendon_guide_active.numpy()
-        seg_active_np = self.tendon_seg_active.numpy()
-        seg_active_guide_l_np = self.tendon_seg_active_guide_l.numpy()
-        seg_active_guide_r_np = self.tendon_seg_active_guide_r.numpy()
+        seg_active_np = self.tendon_segment_active.numpy()
+        seg_active_guide_l_np = self.tendon_segment_active_guide_l.numpy()
+        seg_active_guide_r_np = self.tendon_segment_active_guide_r.numpy()
 
         total_cable = np.zeros(model.tendon_count, dtype=np.float32)
         seg = 0
@@ -813,11 +813,11 @@ class TendonStateMixin:
         self._tendon_fixed_model_values = {
             name: getattr(model, name).numpy().copy() for name in _TENDON_FIXED_MODEL_FIELDS
         }
-        self._tendon_authored_rest_length = model.tendon_seg_rest_length.numpy().copy()
+        self._tendon_authored_rest_length = model.tendon_segment_rest_length.numpy().copy()
         guide_body = model.tendon_guide_body.numpy()
         body_world = model.body_world.numpy()
         guide_world = body_world[guide_body]
-        segment_left_guide = self.tendon_seg_guide_l.numpy()
+        segment_left_guide = self.tendon_segment_guide_l.numpy()
         tendon_start = model.tendon_start.numpy()
 
         self._tendon_segment_world = wp.array(guide_world[segment_left_guide], dtype=wp.int32, device=model.device)
@@ -830,7 +830,7 @@ class TendonStateMixin:
 
     def _reset_tendon_state(self, state: State, world_mask: wp.array[wp.bool] | None) -> None:
         """Restore initialized tendon material and routing state for selected worlds."""
-        if self.tendon_seg_rest_length is None:
+        if self.tendon_segment_rest_length is None:
             return
 
         groups = (

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Shared utilities for tendon/cable examples."""
+"""Shared utilities for massless tendon examples."""
 
 import numpy as np
 import warp as wp
@@ -11,17 +11,17 @@ import newton
 
 def get_tendon_attachment_worlds(solver, model, state):
     """Return current world-space tendon segment attachment points."""
-    att_l = solver.tendon_seg_attachment_l.numpy()
-    att_r = solver.tendon_seg_attachment_r.numpy()
-    if not hasattr(solver, "tendon_seg_attachment_l_local") or solver.tendon_seg_attachment_l_local is None:
+    att_l = solver.tendon_segment_attachment_l.numpy()
+    att_r = solver.tendon_segment_attachment_r.numpy()
+    if not hasattr(solver, "tendon_segment_attachment_l_local") or solver.tendon_segment_attachment_l_local is None:
         return att_l, att_r
 
-    local_l = solver.tendon_seg_attachment_l_local.numpy()
-    local_r = solver.tendon_seg_attachment_r_local.numpy()
-    seg_guide_l = getattr(solver, "tendon_seg_active_guide_l", solver.tendon_seg_guide_l).numpy()
-    seg_guide_r = getattr(solver, "tendon_seg_active_guide_r", None)
+    local_l = solver.tendon_segment_attachment_l_local.numpy()
+    local_r = solver.tendon_segment_attachment_r_local.numpy()
+    seg_guide_l = getattr(solver, "tendon_segment_active_guide_l", solver.tendon_segment_guide_l).numpy()
+    seg_guide_r = getattr(solver, "tendon_segment_active_guide_r", None)
     seg_guide_r = seg_guide_r.numpy() if seg_guide_r is not None else seg_guide_l + 1
-    seg_active = getattr(solver, "tendon_seg_active", None)
+    seg_active = getattr(solver, "tendon_segment_active", None)
     seg_active = seg_active.numpy() if seg_active is not None else np.ones(len(seg_guide_l), dtype=np.int32)
     guide_body = model.tendon_guide_body.numpy()
     body_q = state.body_q.numpy()
@@ -45,7 +45,7 @@ def get_tendon_cable_lines(solver, model, state):
 
     starts_list = []
     ends_list = []
-    seg_active = getattr(solver, "tendon_seg_active", None)
+    seg_active = getattr(solver, "tendon_segment_active", None)
     seg_active = seg_active.numpy() if seg_active is not None else np.ones(model.tendon_segment_count, dtype=np.int32)
     for i in range(model.tendon_segment_count):
         if seg_active[i] == 0:
@@ -62,8 +62,8 @@ def get_tendon_cable_lines(solver, model, state):
     guide_active = (
         guide_active.numpy() if guide_active is not None else np.ones(model.tendon_guide_count, dtype=np.int32)
     )
-    seg_guide_l = getattr(solver, "tendon_seg_active_guide_l", solver.tendon_seg_guide_l).numpy()
-    seg_guide_r = getattr(solver, "tendon_seg_active_guide_r", None)
+    seg_guide_l = getattr(solver, "tendon_segment_active_guide_l", solver.tendon_segment_guide_l).numpy()
+    seg_guide_r = getattr(solver, "tendon_segment_active_guide_r", None)
     seg_guide_r = seg_guide_r.numpy() if seg_guide_r is not None else seg_guide_l + 1
     body_q = state.body_q.numpy()
 
@@ -162,10 +162,10 @@ def get_tendon_total_lengths(solver, model, state):
     guide_active = (
         guide_active.numpy() if guide_active is not None else np.ones(model.tendon_guide_count, dtype=np.int32)
     )
-    seg_active = getattr(solver, "tendon_seg_active", None)
+    seg_active = getattr(solver, "tendon_segment_active", None)
     seg_active = seg_active.numpy() if seg_active is not None else np.ones(model.tendon_segment_count, dtype=np.int32)
-    seg_guide_l = getattr(solver, "tendon_seg_active_guide_l", solver.tendon_seg_guide_l).numpy()
-    seg_guide_r = getattr(solver, "tendon_seg_active_guide_r", None)
+    seg_guide_l = getattr(solver, "tendon_segment_active_guide_l", solver.tendon_segment_guide_l).numpy()
+    seg_guide_r = getattr(solver, "tendon_segment_active_guide_r", None)
     seg_guide_r = seg_guide_r.numpy() if seg_guide_r is not None else seg_guide_l + 1
     body_q = state.body_q.numpy()
 

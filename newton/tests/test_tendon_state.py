@@ -49,7 +49,7 @@ class TestTendonState(unittest.TestCase):
                             b.tendon_guide_active.numpy(), expected.tendon_guide_active.numpy()
                         )
                         np.testing.assert_allclose(
-                            b.tendon_seg_rest_length.numpy(), expected.tendon_seg_rest_length.numpy(), atol=1e-7
+                            b.tendon_segment_rest_length.numpy(), expected.tendon_segment_rest_length.numpy(), atol=1e-7
                         )
 
     def test_captured_reset_uses_updated_baseline(self):
@@ -76,20 +76,20 @@ class TestTendonState(unittest.TestCase):
                         solver.step(state, output, control, None, 0.01)
                         solver.step(output, state, control, None, 0.01)
                     wp.capture_launch(capture.graph)
-                    np.testing.assert_allclose(state.tendon_seg_rest_length.numpy(), [0.9], atol=1e-7)
+                    np.testing.assert_allclose(state.tendon_segment_rest_length.numpy(), [0.9], atol=1e-7)
                     saved.assign(state)
-                    model.tendon_seg_rest_length.fill_(0.5)
-                    model.tendon_seg_compliance.fill_(0.02)
+                    model.tendon_segment_rest_length.fill_(0.5)
+                    model.tendon_segment_compliance.fill_(0.02)
                     solver.notify_model_changed(newton.ModelFlags.TENDON_PROPERTIES)
                     solver.reset(state)
                     wp.capture_launch(capture.graph)
-                    np.testing.assert_allclose(state.tendon_seg_rest_length.numpy(), [0.5], atol=1e-7)
-                    np.testing.assert_allclose(solver.tendon_seg_material_tension.numpy(), [25.0], atol=1e-5)
+                    np.testing.assert_allclose(state.tendon_segment_rest_length.numpy(), [0.5], atol=1e-7)
+                    np.testing.assert_allclose(solver.tendon_segment_material_tension.numpy(), [25.0], atol=1e-5)
                     solver.reset(state, flags=0)
                     state.assign(saved)
                     wp.capture_launch(capture.graph)
-                    np.testing.assert_allclose(state.tendon_seg_rest_length.numpy(), [0.9], atol=1e-7)
-                    np.testing.assert_allclose(solver.tendon_seg_material_tension.numpy(), [5.0], atol=1e-5)
+                    np.testing.assert_allclose(state.tendon_segment_rest_length.numpy(), [0.9], atol=1e-7)
+                    np.testing.assert_allclose(solver.tendon_segment_material_tension.numpy(), [5.0], atol=1e-5)
 
     def test_damped_dynamic_body_replay(self):
         """Replay body motion and damped material transfer from one saved trajectory."""
@@ -136,7 +136,7 @@ class TestTendonState(unittest.TestCase):
                         replay_solver.reset(a, flags=0)
                         a.assign(saved)
                         replay_solver.step(a, b, control, None, 0.01)
-                        for name in ("body_q", "body_qd", "tendon_seg_rest_length", "tendon_guide_active"):
+                        for name in ("body_q", "body_qd", "tendon_segment_rest_length", "tendon_guide_active"):
                             np.testing.assert_allclose(
                                 getattr(b, name).numpy(), getattr(expected, name).numpy(), atol=1e-6
                             )
@@ -158,26 +158,26 @@ class TestTendonState(unittest.TestCase):
                     state, output = model.state(), model.state()
                     solver.step(state, output, model.control(), None, 0.01)
                     state.assign(output)
-                    state.tendon_seg_rest_length.fill_(0.8)
-                    model.tendon_seg_compliance.fill_(0.02)
-                    model.tendon_seg_damping.fill_(0.1)
+                    state.tendon_segment_rest_length.fill_(0.8)
+                    model.tendon_segment_compliance.fill_(0.02)
+                    model.tendon_segment_damping.fill_(0.1)
                     solver.notify_model_changed(newton.ModelFlags.TENDON_PROPERTIES)
                     solver.step(state, output, model.control(), None, 0.01)
-                    np.testing.assert_allclose(output.tendon_seg_rest_length.numpy(), [0.8], atol=1e-7)
-                    np.testing.assert_allclose(solver.tendon_seg_material_tension.numpy(), [10.0], atol=1e-5)
-                    model.tendon_seg_rest_length.fill_(0.5)
+                    np.testing.assert_allclose(output.tendon_segment_rest_length.numpy(), [0.8], atol=1e-7)
+                    np.testing.assert_allclose(solver.tendon_segment_material_tension.numpy(), [10.0], atol=1e-5)
+                    model.tendon_segment_rest_length.fill_(0.5)
                     solver.notify_model_changed(newton.ModelFlags.TENDON_PROPERTIES)
                     solver.step(state, output, model.control(), None, 0.01)
-                    np.testing.assert_allclose(output.tendon_seg_rest_length.numpy(), [0.8], atol=1e-7)
+                    np.testing.assert_allclose(output.tendon_segment_rest_length.numpy(), [0.8], atol=1e-7)
                     solver.reset(state)
-                    np.testing.assert_allclose(state.tendon_seg_rest_length.numpy(), [0.5], atol=1e-7)
+                    np.testing.assert_allclose(state.tendon_segment_rest_length.numpy(), [0.5], atol=1e-7)
                     solver.step(state, output, model.control(), None, 0.01)
-                    np.testing.assert_allclose(output.tendon_seg_rest_length.numpy(), [0.5], atol=1e-7)
+                    np.testing.assert_allclose(output.tendon_segment_rest_length.numpy(), [0.5], atol=1e-7)
 
-                    model.tendon_seg_damping.fill_(-1.0)
+                    model.tendon_segment_damping.fill_(-1.0)
                     with self.assertRaisesRegex(ValueError, "non-negative"):
                         solver.notify_model_changed(newton.ModelFlags.TENDON_PROPERTIES)
-                    model.tendon_seg_damping.fill_(0.1)
+                    model.tendon_segment_damping.fill_(0.1)
                     model.tendon_guide_radius.fill_(0.1)
                     with self.assertRaisesRegex(ValueError, "reconstructing"):
                         solver.notify_model_changed(newton.ModelFlags.TENDON_PROPERTIES)
@@ -192,7 +192,7 @@ class TestTendonState(unittest.TestCase):
                     solver = solver_type(model, iterations=4)
                     control = model.control()
                     a, b, saved, expected = (model.state() for _ in range(4))
-                    initial_rest = solver.tendon_seg_rest_length.numpy().copy()
+                    initial_rest = solver.tendon_segment_rest_length.numpy().copy()
                     for step in range(3):
                         pose = a.body_q.numpy()
                         angle = (step + 1) * 0.05
@@ -200,7 +200,7 @@ class TestTendonState(unittest.TestCase):
                         a.body_q.assign(pose)
                         solver.step(a, b, control, None, 1.0 / 60.0)
                         a, b = b, a
-                    self.assertGreater(np.max(np.abs(a.tendon_seg_rest_length.numpy() - initial_rest)), 1e-5)
+                    self.assertGreater(np.max(np.abs(a.tendon_segment_rest_length.numpy() - initial_rest)), 1e-5)
                     saved.assign(a)
                     solver.step(a, b, control, None, 1.0 / 60.0)
                     expected.assign(b)
@@ -215,17 +215,17 @@ class TestTendonState(unittest.TestCase):
                     solver.step(a, b, control, None, 1.0 / 60.0)
                     for name in (
                         "body_q",
-                        "tendon_seg_rest_length",
+                        "tendon_segment_rest_length",
                         "tendon_guide_active",
-                        "tendon_seg_attachment_l_local",
-                        "tendon_seg_attachment_r_local",
+                        "tendon_segment_attachment_l_local",
+                        "tendon_segment_attachment_r_local",
                     ):
                         np.testing.assert_allclose(getattr(b, name).numpy(), getattr(expected, name).numpy(), atol=1e-7)
                     fresh_solver = solver_type(model, iterations=4)
                     a.assign(saved)
                     fresh_solver.step(a, b, control, None, 1.0 / 60.0)
                     np.testing.assert_allclose(
-                        b.tendon_seg_rest_length.numpy(), expected.tendon_seg_rest_length.numpy(), atol=1e-7
+                        b.tendon_segment_rest_length.numpy(), expected.tendon_segment_rest_length.numpy(), atol=1e-7
                     )
 
 

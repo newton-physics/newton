@@ -299,11 +299,11 @@ class Model:
         "tendon_guide_flags": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
         "tendon_guide_offset": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
         "tendon_guide_axis": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
-        "tendon_seg_compliance": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
-        "tendon_seg_damping": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
-        "tendon_seg_rest_length": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
-        "tendon_seg_attachment_l_local": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
-        "tendon_seg_attachment_r_local": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
+        "tendon_segment_compliance": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
+        "tendon_segment_damping": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
+        "tendon_segment_rest_length": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
+        "tendon_segment_attachment_l_local": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
+        "tendon_segment_attachment_r_local": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
         "tendon_guide_active": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
         "_tendon_initialized": AttributeSpec(AttributeFrequency.TENDON),
         # particles
@@ -944,11 +944,11 @@ class Model:
         """Local-frame offset of the cable plane center on each body [m], shape [tendon_guide_count], vec3."""
         self.tendon_guide_axis: wp.array[wp.vec3] | None = None
         """Local-frame normal of the cable plane on each body [dimensionless], shape [tendon_guide_count], vec3."""
-        self.tendon_seg_compliance: wp.array[wp.float32] | None = None
+        self.tendon_segment_compliance: wp.array[wp.float32] | None = None
         """Compliance [m/N] for each tendon segment, shape [tendon_segment_count], float."""
-        self.tendon_seg_damping: wp.array[wp.float32] | None = None
+        self.tendon_segment_damping: wp.array[wp.float32] | None = None
         """Damping [N·s/m] for each tendon segment, shape [tendon_segment_count], float."""
-        self.tendon_seg_rest_length: wp.array[wp.float32] | None = None
+        self.tendon_segment_rest_length: wp.array[wp.float32] | None = None
         """Initial rest length [m] for each tendon segment, shape [tendon_segment_count], float."""
 
         self.attachment_body_particle_body: wp.array[wp.int32] | None = None
@@ -1846,9 +1846,9 @@ class Model:
             s.joint_qd = wp.clone(self.joint_qd, requires_grad=requires_grad)
 
         if self.tendon_count:
-            s.tendon_seg_rest_length = wp.clone(self.tendon_seg_rest_length)
-            s.tendon_seg_attachment_l_local = wp.zeros(self.tendon_segment_count, dtype=wp.vec3, device=self.device)
-            s.tendon_seg_attachment_r_local = wp.zeros(self.tendon_segment_count, dtype=wp.vec3, device=self.device)
+            s.tendon_segment_rest_length = wp.clone(self.tendon_segment_rest_length)
+            s.tendon_segment_attachment_l_local = wp.zeros(self.tendon_segment_count, dtype=wp.vec3, device=self.device)
+            s.tendon_segment_attachment_r_local = wp.zeros(self.tendon_segment_count, dtype=wp.vec3, device=self.device)
             s.tendon_guide_active = wp.ones(self.tendon_guide_count, dtype=wp.bool, device=self.device)
             s._tendon_initialized = wp.zeros(self.tendon_count, dtype=wp.bool, device=self.device)
             s._tendon_rebaseline = wp.zeros(self.world_count + 1, dtype=wp.bool, device=self.device)

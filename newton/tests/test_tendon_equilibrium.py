@@ -129,8 +129,8 @@ def add_test(cls, name, devices):
             solver.step(s0, s1, control, contacts, dt)
             s0, s1 = s1, s0
 
-            att_r = solver.tendon_seg_attachment_r.numpy()
-            att_l = solver.tendon_seg_attachment_l.numpy()
+            att_r = solver.tendon_segment_attachment_r.numpy()
+            att_l = solver.tendon_segment_attachment_l.numpy()
             pulley_z = float(s0.body_q.numpy()[pulley_idx][2])
             test.assertGreater(
                 att_r[0][2],
