@@ -44,17 +44,29 @@ published citation when available and retain an accessible preprint link.
 
 ### 2026
 
+- **Same Action, Different Outcome: Variability in Dynamic Cloth Manipulation**. *M. Dadgostar, G. Alenyà, J. Borràs*. October 2026. [arXiv:2610.10801](https://arxiv.org/abs/2610.10801)
+
 - **Backpropagating Through Simulation: Analytic Policy Gradients for Sample and Learning Efficient Differentiable Continuous Control**. *Y. Deng*. June 2026. [arXiv:2606.21525](https://arxiv.org/abs/2606.21525)
 
 - **RigPI: Dynamic Parameter Identification of Rigid Body via VLM-Seeded Differentiable Simulation**. *X. He, R. Zhang, W. Jiang, W. Xu*. June 2026. [arXiv:2606.25212](https://arxiv.org/abs/2606.25212)
 
 - **GM-Loco: Terrain-Adaptive Humanoid Locomotion on Granular Media**. *J. Kamohara, F. Wu, A. N. Zong, D. I. Goldman, Y. Nakka, S. Hutchinson, Y. Zhao*. September 2026. [arXiv:2609.10286](https://arxiv.org/abs/2609.10286)
 
+- **LUMO: Designing Luminous Contact Morphology for Repeatable Whole-Finger Contact Observation**. *D. H. Kang, Y. Ko, L. Sentis*. September 2026. [arXiv:2609.18165](https://arxiv.org/abs/2609.18165)
+
 - **ROBOGATE: Adaptive Failure Discovery for Safe Robot Policy Deployment via Two-Stage Boundary-Focused Sampling**. *A. Kim*. April 2026. [arXiv:2603.22126](https://arxiv.org/abs/2603.22126)
+
+- **Ostrich: Taking Large Strides Through Stiff Contact in Differentiable Dynamics**. *A. Kučera, K. Zimmermann*. September 2026. [arXiv:2609.08800](https://arxiv.org/abs/2609.08800)
+
+- **PileBelief: Persistent Physical State for Interaction-Driven World Modeling**. *H. Lin, S. Zhang, H. Liu, Y. Liu, J. Zhao, X. Qu*. September 2026. [arXiv:2609.22858](https://arxiv.org/abs/2609.22858)
 
 - **OrchardBench: A Physically-Grounded, GPU-Parallel Apple-Orchard Simulation Benchmark for Agricultural Robotics**. *H. Munn*. July 2026. [arXiv:2607.06337](https://arxiv.org/abs/2607.06337)
 
+- **DetAug: Obstacle-Blind Trajectory Augmentation for Zero-shot Obstacle Avoidance**. *R. O'Mahoney, M. Zoellner, I. Havoutis*. September 2026. [arXiv:2609.18395](https://arxiv.org/abs/2609.18395)
+
 - **PersistGS: Differentiable Physics for Object Permanence in 4D Gaussian Splatting**. *A. Ramlal, J. S. Zelek*. CVPR Workshops, 2026. [arXiv:2606.03479](https://arxiv.org/abs/2606.03479)
+
+- **Informationally Decoupled Trajectory Design for Sim-to-Real System Identification**. *S. Shin, A. Anilkumar, R. Gao, J. P. Hanna*. October 2026. [arXiv:2610.10905](https://arxiv.org/abs/2610.10905)
 
 - **A Splitting Architecture for Exact Reduced Coulomb Friction**. *H. Song, Y. Fan, U. M. Ascher, D. K. Pai*. Computer Graphics Forum 45(8), 2026. [DOI:10.1111/cgf.70576](https://doi.org/10.1111/cgf.70576), [arXiv:2607.19599](https://arxiv.org/abs/2607.19599)
 
@@ -66,8 +78,16 @@ published citation when available and retain an accessible preprint link.
 
 - **Learning Sim-Grounded Policies for Bimanual Rope Manipulation from Human Teleoperation Data**. *G. Wigginghaus, T. Missal, B. Guler, S. Manschitz, J. Peters*. May 2026. [arXiv:2605.16043](https://arxiv.org/abs/2605.16043)
 
+- **RopeFormer: Cross-Trial Adaptation from Interaction History for Dynamic Rope Manipulation**. *M. Wu, K. Yao, S. Luan, M. Tomizuka, Y. Chen*. September 2026. [arXiv:2609.23432](https://arxiv.org/abs/2609.23432)
+
+- **PointCast: One World Model for Rigid, Articulated, and Deformable Object Manipulation**. *H. Ye, R. Worobel, Z. Xie, M. Li, H. Yu, Y. Hong, C. Choi*. September 2026. [arXiv:2609.28393](https://arxiv.org/abs/2609.28393)
+
 - **SIM1: Physics-Aligned Simulator as Zero-Shot Data Scaler in Deformable Worlds**. *Y. Zhou, H. Liu, X. Jiang, X. Shen, Y. Zhou, H. Wang, B. Fang, Y. Tian, M. Yu, Q. Yu, L. Ma, H. Li, H. Wang, J. Zeng, J. Pang*. April 2026. [arXiv:2604.08544](https://arxiv.org/abs/2604.08544)
+
+- **SceneFactory-3D: Lifting 2D Traffic Scenes into 3D Physical Counterfactuals for Scalable Physically Grounded Safety Evaluation**. *Y. Zhu, L. Tian, T. Zhao, Y. Chen, F. Zuo, T. Li, Z. Bian*. October 2026. [arXiv:2610.02874](https://arxiv.org/abs/2610.02874)
 
 ## Newton used solely as a comparison baseline
 
-No entries yet. Use the same format and sorting rules.
+### 2026
+
+- **PhysLDM: Latent Diffusion for High-Fidelity Deformable Simulation**. *Y. Zhang, X. Xu, X. Pan*. October 2026. [arXiv:2610.07609](https://arxiv.org/abs/2610.07609)
