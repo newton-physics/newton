@@ -6,7 +6,7 @@ import math
 import warp as wp
 
 from ...core.types import override
-from ...sim import Contacts, Control, Model, State
+from ...sim import Contacts, Control, JointType, Model, State
 from ...sim.joint_mimic import has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
 from ..observables import SolverObservables
@@ -105,7 +105,13 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
                 kernel modules. Pass a :class:`warp.DeterministicMode`, or
                 ``None`` (default) to inherit the current
                 ``wp.config.deterministic`` mode.
+
+        Raises:
+            ValueError: If ``model`` contains a :attr:`~newton.JointType.ROD` joint.
         """
+        if model._has_rod_joints and JointType.ROD in model.joint_type.numpy():  # pyright: ignore[reportPrivateUsage]
+            raise ValueError("SolverSemiImplicit does not support JointType.ROD joints.")
+
         super().__init__(model=model)
         effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
         deterministic_modules = []

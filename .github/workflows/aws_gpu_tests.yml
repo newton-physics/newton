@@ -145,6 +145,9 @@ jobs:
       HOME: /actions-runner
       PYTHONFAULTHANDLER: "1" # Dump tracebacks on fatal signals (SIGSEGV, SIGABRT, etc.)
       OVRTX_SHADER_CACHE: /actions-runner/.cache/ovrtx-nv-shadercache
+      # Enable crash uploads for CI investigations.
+      OMNI_CRASH_REPORTER_DEV_INTERNAL: "1"
+      OMNI_CRASHREPORTER_URL: "https://services.nvidia.com/submit"
     steps:
       - name: Checkout repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
