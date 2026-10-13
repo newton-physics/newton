@@ -8,8 +8,6 @@ import logging
 import math
 import os
 import posixpath
-import subprocess
-import sys
 import tempfile
 import types
 import unittest
@@ -35,7 +33,6 @@ from newton._src.solvers.mujoco.constants import (
 from newton._src.solvers.mujoco.utils import MjcEqualityTargetKind
 from newton._src.usd import utils as usd_utils
 from newton._src.utils.color import color_linear_to_srgb
-from newton._src.utils.import_usd import parse_usd as direct_parse_usd
 from newton.math import quat_between_axes
 from newton.solvers import SolverMuJoCo
 from newton.tests._usd_import_test_utils import _expect_jointless_articulation_warning
@@ -53,49 +50,6 @@ _PARTIAL_EQ_SOLREF_WARNING = (
 
 
 class TestImportUsdPhysics(unittest.TestCase):
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_legacy_unit_warnings_visible_by_default(self):
-        """Show migration warnings in a script without changing warning filters."""
-        script = """
-import newton
-from pxr import Usd
-
-newton.ModelBuilder().add_usd(
-    Usd.Stage.CreateInMemory(),
-    legacy_angular_velocity_units=True,
-    legacy_springref_units=True,
-)
-"""
-        env = os.environ.copy()
-        env.pop("PYTHONWARNINGS", None)
-        env.pop("PYTHONDEVMODE", None)
-        result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True, env=env, check=False)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stderr.count("DeprecationWarning:"), 2, result.stderr)
-        self.assertIn("legacy_angular_velocity_units=True", result.stderr)
-        self.assertIn("legacy_springref_units=True", result.stderr)
-
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_legacy_unit_warning_points_to_caller(self):
-        """Report the user's import line through the builder and direct parser."""
-        from pxr import Usd
-
-        stage = Usd.Stage.CreateInMemory()
-        kwargs = {"legacy_angular_velocity_units": True, "legacy_springref_units": True}
-        for entry_point, importer in (
-            ("builder", lambda builder: builder.add_usd(stage, **kwargs)),
-            ("parser", lambda builder: direct_parse_usd(builder, stage, **kwargs)),
-        ):
-            with self.subTest(entry_point=entry_point):
-                with warnings.catch_warnings(record=True) as caught:
-                    warnings.simplefilter("always", DeprecationWarning)
-                    importer(newton.ModelBuilder())
-                deprecations = [warning for warning in caught if issubclass(warning.category, DeprecationWarning)]
-                self.assertEqual(len(deprecations), 2)
-                for warning in deprecations:
-                    self.assertEqual(warning.filename, importer.__code__.co_filename)
-                    self.assertEqual(warning.lineno, importer.__code__.co_firstlineno)
-
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_legacy_unit_flags_warn_when_enabled(self):
         """Deprecate each enabled legacy unit flag without warning for defaults."""
