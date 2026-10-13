@@ -46,8 +46,10 @@ jobs:
               conventions, including the public API review checklist and, when
               present, the test organization and runtime section.
             - `.agents/skills/code-review-newton/SKILL.md`: the review procedure.
-              Adapt it to this environment: use `gh pr view` and `gh pr diff`
-              instead of local git history, which is a shallow checkout.
+              Adapt it to this environment: use `gh pr view ${{ github.event.pull_request.number }}` and
+              `gh pr diff ${{ github.event.pull_request.number }}` instead of local git history, which is a
+              shallow checkout of a detached merge commit. Always pass the PR
+              number to `gh pr` commands; there is no current PR branch.
 
             ## Scope
 
@@ -90,7 +92,7 @@ jobs:
             - Distinguish demonstrated defects from questions and evidence
               requests. Do not prescribe a specific fix unless it is obvious.
             - Before posting, read the existing PR conversation and review
-              comments with `gh pr view --comments` and
+              comments with `gh pr view ${{ github.event.pull_request.number }} --comments` and
               `gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments`.
               Do not repeat a concern that has already been raised, including by
               an earlier run of this review. On a new push, only comment on
@@ -100,7 +102,7 @@ jobs:
 
             Use `mcp__github_inline_comment__create_inline_comment` (with
             `confirmed: true`) for each concern tied to specific lines. Then post
-            exactly one short top-level comment with `gh pr comment` containing
+            exactly one short top-level comment with `gh pr comment ${{ github.event.pull_request.number }}` containing
             the Fit verdict when applicable and a brief list of the concerns by
             priority. If there are no P0 or P1 concerns, say so in one or two
             sentences. Only post GitHub comments - don't submit review text as
