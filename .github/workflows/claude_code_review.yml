@@ -25,7 +25,6 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-      id-token: write
     steps:
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
         with:
@@ -52,8 +51,13 @@ jobs:
           # Anthropic Messages API and authenticates with a bearer token.
           ANTHROPIC_BASE_URL: ${{ secrets.ANTHROPIC_BASE_URL }}
           ANTHROPIC_CUSTOM_HEADERS: "Authorization: Bearer ${{ secrets.ANTHROPIC_API_KEY }}"
+          # Strip secrets from the environment of commands the reviewer runs.
+          CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Use the job token, which is limited to the permissions above and
+          # expires with the job, instead of the broader GitHub App token.
+          github_token: ${{ github.token }}
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ github.event.pull_request.number }}
@@ -129,7 +133,7 @@ jobs:
 
             Use `mcp__github_inline_comment__create_inline_comment` (with
             `confirmed: true`) for each concern tied to specific lines. Then post
-            exactly one short top-level comment with `gh pr comment ${{ github.event.pull_request.number }}` containing
+            exactly one short top-level comment with `gh pr comment ${{ github.event.pull_request.number }} --body "..."` containing
             the Fit verdict when applicable and a brief list of the concerns by
             priority. If there are no P0 or P1 concerns, say so in one or two
             sentences. Only post GitHub comments - don't submit review text as
@@ -138,4 +142,4 @@ jobs:
           claude_args: |
             --model azure/anthropic/claude-opus-5-5
             --max-turns 60
-            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments:*)"
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment ${{ github.event.pull_request.number }} --body:*),Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments:*)"
