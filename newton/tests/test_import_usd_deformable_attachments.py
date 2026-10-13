@@ -336,12 +336,16 @@ class TestUSDDeformableAttachments(unittest.TestCase):
 
     def test_strained_cable_attachments_use_rest_endpoints(self):
         """Use material endpoints in rooted and separate attachments without moving the cable."""
-        from pxr import Sdf
+        from pxr import Sdf, UsdGeom, UsdPhysics
 
         for endpoint, expected_body, expected_z in ((0, 0, -0.05), (2, 1, 0.1)):
             for rooted in (False, True):
                 with self.subTest(endpoint=endpoint, rooted=rooted):
                     stage = _deformable_stage()
+                    plug = UsdGeom.Cube.Define(stage, "/World/Plug")
+                    plug.CreateSizeAttr(0.1)
+                    UsdPhysics.RigidBodyAPI.Apply(plug.GetPrim())
+                    UsdPhysics.CollisionAPI.Apply(plug.GetPrim())
                     points = [(0, 0, 0), (0, 0, 0.4), (0, 0, 0.8)]
                     curves = _add_cable_curve(stage, "/World/Cable", points)
                     curves.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
@@ -351,6 +355,7 @@ class TestUSDDeformableAttachments(unittest.TestCase):
                         stage,
                         "/World/Endpoint",
                         src0="/World/Cable",
+                        src1="/World/Plug",
                         type0="point",
                         indices0=[endpoint],
                         coords1=[points[endpoint]],
@@ -373,6 +378,7 @@ class TestUSDDeformableAttachments(unittest.TestCase):
                         np.asarray(builder.body_q)[bodies, :3], [(0, 0, 0.2), (0, 0, 0.6)], atol=1e-6
                     )
                     joint = result["path_attachment_map"]["/World/Endpoint"][0]
+                    self.assertEqual(builder.joint_parent[joint], result["path_body_map"]["/World/Plug"])
                     self.assertEqual(builder.joint_child[joint], bodies[expected_body])
                     np.testing.assert_allclose(builder.joint_X_c[joint][:3], [0, 0, expected_z], atol=1e-6)
                     self.assertEqual(builder.joint_articulation[joint] >= 0, rooted)
