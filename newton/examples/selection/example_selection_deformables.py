@@ -117,7 +117,7 @@ class Example:
         self.control = self.model.control()
         self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.contacts = self.collision_pipeline.contacts()
-        self.solver = newton.solvers.SolverXPBD(self.model, iterations=5)
+        self.solver = newton.solvers.SolverVBD(self.model, iterations=5)
 
         self.curve = DeformableCurveView(self.model, "hanging_cable")
         self.surface = DeformableSurfaceView(self.model, "surface_primary")
