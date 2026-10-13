@@ -1905,7 +1905,7 @@ class ArticulationView:
         return eval_jacobian(self.model, state, J, joint_S_s=joint_S_s, mask=articulation_mask)
 
     def eval_mass_matrix(
-        self, state: State, H=None, J=None, body_I_s=None, joint_S_s=None, mask=None, include_armature=False
+        self, state: State, H=None, J=None, body_I_s=None, joint_S_s=None, mask=None, *, include_armature=False
     ):
         """Evaluate generalized mass matrix for articulations in this view.
 

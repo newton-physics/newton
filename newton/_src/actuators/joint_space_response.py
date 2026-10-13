@@ -210,10 +210,11 @@ class JointSpaceResponse:
         """
         return self._inv_block
 
-    def refresh(self, state: State) -> None:
+    def refresh(self, state: State, *, include_armature: bool = True) -> None:
         """Recompute :attr:`inverse_blocks` for *state*.
 
-        Reads *state* without modifying it. Includes ``joint_armature``. Joint
+        Reads *state* without modifying it. Includes ``joint_armature`` unless
+        *include_armature* is False. Joint
         damping, joint limits, friction, contacts, constraint regularization and
         kinematic loop closures are absent, so the response comes out larger than
         anticipated and the solve yields a smaller effort than it otherwise would.
@@ -223,6 +224,10 @@ class JointSpaceResponse:
 
         Args:
             state: Simulation state providing ``joint_q`` / ``joint_qd``.
+            include_armature: If True, add :attr:`~newton.Model.joint_armature` to
+                the joint-space inertia before inverting it. Pass False for a
+                solver that does not support armature, so the response is
+                that of the rigid-body inertia.
         """
         model = self.model
         # eval_fk overwrites body_q/body_qd, so keep it off the caller's state. It
@@ -233,7 +238,9 @@ class JointSpaceResponse:
         fk_state.joint_qd = state.joint_qd
         eval_fk(model, state.joint_q, state.joint_qd, fk_state)
         eval_jacobian(model, fk_state, J=self._J, joint_S_s=self._joint_S_s)
-        eval_mass_matrix(model, fk_state, H=self._H, J=self._J, body_I_s=self._body_I_s, include_armature=True)
+        eval_mass_matrix(
+            model, fk_state, H=self._H, J=self._J, body_I_s=self._body_I_s, include_armature=include_armature
+        )
         self._invert_blocks()
 
     def refresh_from_solve(

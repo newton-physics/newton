@@ -1690,6 +1690,7 @@ def eval_mass_matrix(
     body_I_s: wp.array | None = None,
     joint_S_s: wp.array | None = None,
     mask: wp.array[bool] | None = None,
+    *,
     include_armature: bool = False,
 ) -> wp.array | None:
     """Evaluate generalized mass matrix for articulations.
