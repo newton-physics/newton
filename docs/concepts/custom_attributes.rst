@@ -48,6 +48,8 @@ Custom attributes must be declared before use via the :meth:`newton.ModelBuilder
 * **default** (optional): Default value for unspecified entities. When omitted, a sensible zero-value is derived from the dtype (``0`` for scalars, identity for quaternions, ``False`` for booleans, ``""`` for strings)
 * **namespace** (optional): Hierarchical organization for grouping related attributes
 * **references** (optional): For multi-world merging, specifies how values are transformed (e.g., ``"body"``, ``"shape"``, ``"world"``, or a custom frequency key)
+* **reference_value_transformer** (optional): Batch callback for sibling-dependent references or source-local IDs during builder composition; mutually exclusive with ``references``
+* **preserve_referenced_bodies** (optional): Keep scalar body references from becoming world sentinels during fixed-joint collapse; requires ``references="body"``
 * **values** (optional): Pre-populated values — ``dict[int, Any]`` for enum frequencies or ``list[Any]`` for custom string frequencies
 
 When **no namespace** is specified, attributes are added directly to their assignment object (e.g., ``model.temperature``). When a **namespace** is provided, Newton creates a namespace container (e.g., ``model.mujoco.damping``).
@@ -705,6 +707,46 @@ Owner indices are remapped automatically by :meth:`~newton.ModelBuilder.add_buil
 Frequencies that do not declare articulation ownership remain unavailable through
 ``ArticulationView``. This is appropriate for global rows or relationships that can
 span multiple articulations, such as contact pairs.
+
+World Ownership and Builder Lifecycle
+-------------------------------------
+
+Set :attr:`~newton.ModelBuilder.CustomFrequency.world_attribute` to the full key
+``<frequency>_world`` to declare world ownership. The attribute must have a scalar
+integer dtype, use the same frequency, be assigned to the model, and declare
+``references="world"``. Its rows participate in the builder's world-ordering
+validation. Finalization publishes ``<frequency>_count`` and
+``<frequency>_world_start`` in the frequency's namespace, including when no rows
+are present. The starts follow the built-in convention: ``world_count + 2``
+entries account for global rows before and after the local worlds.
+
+Provider-specific behavior can stay with the frequency's registration:
+
+* :attr:`~newton.ModelBuilder.CustomFrequency.builder_validator` validates
+  authored rows during structural validation. It receives the builder and raises
+  ``ValueError`` for invalid rows. ``skip_validation_structure`` and
+  ``skip_all_validations`` skip this callback.
+* :attr:`~newton.ModelBuilder.CustomFrequency.collapse_transformer` updates
+  custom rows after bodies and joints are rebuilt by ``collapse_fixed_joints``.
+  It runs before generic body/joint references are remapped, so it can use the
+  original indices and the supplied merge transforms to update local frames.
+  Attributes with ``preserve_referenced_bodies=True`` retain a physical body
+  even when it is fixed to the world; ordinary body references may become ``-1``.
+
+For composition, use
+:attr:`~newton.ModelBuilder.CustomAttribute.reference_value_transformer` when
+``references`` cannot describe a value. It receives one batch of authored values
+per copied builder plus source row indices, entity/custom-frequency offsets,
+destination world, and label prefix. Read companion attributes from the source
+builder and return replacement values without modifying it. Preserve ``None``
+rows and application-specific sentinels. Sparse enum-frequency attributes pass
+their dictionary keys as row indices; dense custom-frequency attributes pass
+consecutive indices. ``CustomFrequency.label_attribute`` already provides label
+prefixing, so label callbacks should not prefix the same values again.
+
+These declarations participate in schema compatibility checks during
+registration and merging. Define callbacks once and reuse the same callable
+when registering equivalent schemas on multiple builders.
 
 USD Parsing Support
 -------------------

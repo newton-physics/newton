@@ -48,6 +48,7 @@ from .collision_masks import (
     MUJOCO_COLLISION_MASK_DOMAIN_UNSET,
     MUJOCO_COLLISION_MASK_UNSET,
     NEWTON_COLLISION_MASK_MAX_SHAPE_COUNT,
+    _remap_collision_mask_domains,
     compile_newton_collision_graph,
     mujoco_mask_to_signed,
 )
@@ -62,7 +63,12 @@ from .constants import (
 )
 from .enums import EqType as _EqType
 from .enums import _ActuatorBiasType, _ActuatorDynamicsType, _ActuatorGainType
-from .equality import MJC_OBJ_BODY, MjcEqualityTargetKind, _register_equality_constraint_attributes
+from .equality import (
+    MJC_OBJ_BODY,
+    MjcEqualityTargetKind,
+    _get_equality_constraint_count,
+    _register_equality_constraint_attributes,
+)
 from .kernels import (
     _snapshot_nacon_count,
     apply_mjc_body_f_kernel,
@@ -1378,6 +1384,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # region geom attributes
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                name="site_size",
+                frequency=AttributeFrequency.SHAPE,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.vec3,
+                default=wp.vec3(-1.0),
+                namespace="mujoco",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
                 name="site_size_is_display",
                 frequency=AttributeFrequency.SHAPE,
                 assignment=AttributeAssignment.MODEL,
@@ -1416,6 +1432,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="collision_mask_domain",
+                reference_value_transformer=_remap_collision_mask_domains,
                 frequency=AttributeFrequency.SHAPE,
                 assignment=AttributeAssignment.MODEL,
                 dtype=wp.int64,
@@ -6519,6 +6536,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         shape_mjc_contype = get_custom_attribute("contype")
         shape_mjc_conaffinity = get_custom_attribute("conaffinity")
         shape_mjc_collision_mask_domain = get_custom_attribute("collision_mask_domain")
+        shape_mjc_site_size = get_custom_attribute("site_size")
         shape_condim = get_custom_attribute("condim")
         shape_geom_group = get_custom_attribute("geom_group")
         shape_priority = get_custom_attribute("geom_priority")
@@ -6661,7 +6679,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             selected_shapes = np.arange(model.shape_count, dtype=np.int32)
             selected_bodies = np.arange(model.body_count, dtype=np.int32)
             selected_joints = np.arange(model.joint_count, dtype=np.int32)
-            selected_constraints = np.arange(model.mujoco.equality_constraint_count, dtype=np.int32)
+            selected_constraints = np.arange(_get_equality_constraint_count(model), dtype=np.int32)
             selected_mimic_constraints = np.arange(model.constraint_mimic_count, dtype=np.int32)
 
         legacy_mimic_followers = {int(mimic_joint0[i]) for i in selected_mimic_constraints}
@@ -6971,7 +6989,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         "quat": quat_to_mjc(tf.q),
                     }
 
-                    size = shape_size[shape]
+                    size = shape_size[shape].copy()
+                    if shape_mjc_site_size is not None and shape_mjc_site_size[shape][2] >= 0.0:
+                        size[2] = shape_mjc_site_size[shape][2]
                     # Ensure size is valid for the site type
                     if np.any(size > 0.0):
                         nonzero = size[size > 0.0][0]
@@ -8420,7 +8440,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             # Create mjc_eq_to_newton_eq: MuJoCo[world, eq] -> Newton equality constraint
             # selected_constraints[idx] is the Newton template constraint index
             neq = self.mj_model.neq
-            eq_constraints_per_world = model.mujoco.equality_constraint_count // model.world_count
+            eq_constraints_per_world = _get_equality_constraint_count(model) // model.world_count
             world_offsets = np.arange(nworld, dtype=np.int32)
             mjc_eq_to_newton_eq_np = np.full((nworld, neq), -1, dtype=np.int32)
             mjc_eq_to_newton_jnt_np = np.full((nworld, neq), -1, dtype=np.int32)
@@ -8747,7 +8767,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._notify_ref_body_qd = wp.zeros(self.model.body_count, dtype=wp.spatial_vector, device=device)
 
         if self.has_connect_constraints:
-            neq = self.model.mujoco.equality_constraint_count
+            neq = _get_equality_constraint_count(self.model)
             self.connect_constraint_q_rel = wp.zeros(neq, dtype=wp.quat, device=device)
             self.connect_constraint_t_rel = wp.zeros(neq, dtype=wp.vec3, device=device)
 
@@ -9257,7 +9277,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             ``wp.array[wp.vec3]`` [m], each of
             shape ``[equality_constraint_count]``.
         """
-        neq = model.mujoco.equality_constraint_count
+        neq = _get_equality_constraint_count(model)
 
         if q_rel is None:
             q_rel = wp.zeros(neq, dtype=wp.quat, device=model.device)
@@ -9620,6 +9640,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             inputs=[
                 self.model.shape_transform,
                 self.model.shape_scale,
+                getattr(getattr(self.model, "mujoco", None), "site_size", None),
                 self._mjc_site_shape_index,
                 self._mjc_site_is_global,
                 self._shapes_per_world,
@@ -9975,7 +9996,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             that were projected to loop joints or mimic constraints during import.
             Generic loop closures synthesized directly from loop joints are updated
             by the joint-connect path."""
-        if self.model.mujoco.equality_constraint_count == 0:
+        if _get_equality_constraint_count(self.model) == 0:
             return
 
         neq = self.mj_model.neq
@@ -10248,7 +10269,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # so models assembled without the standard pipeline still work.
         eq_constraint_world = (
             model.mujoco.equality_constraint_world.numpy()
-            if model.mujoco.equality_constraint_count > 0
+            if _get_equality_constraint_count(model) > 0
             else np.empty(0, dtype=np.int32)
         )
 
@@ -10377,7 +10398,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     f"but other worlds have types {types[1:].tolist()}."
                 )
 
-        constraints_per_world = (model.mujoco.equality_constraint_count // world_count) if world_count > 0 else 0
+        constraints_per_world = (_get_equality_constraint_count(model) // world_count) if world_count > 0 else 0
         if constraints_per_world > 0:
             eq_constraint_type = model.mujoco.equality_constraint_type.numpy()
             constraint_types_2d = eq_constraint_type.reshape(world_count, constraints_per_world)

@@ -24,6 +24,65 @@ def _add_revolute(builder: newton.ModelBuilder, label: str) -> tuple[int, int]:
     return body, joint
 
 
+class TestMuJoCoAttributeMerging(unittest.TestCase):
+    def test_sparse_collision_domains_preserve_equivalence_and_sentinels(self):
+        """Allocate disjoint domains per copy while preserving sparse rows and sentinels."""
+        source = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(source)
+        for _ in range(7):
+            source.add_shape_sphere(-1, radius=0.1)
+        values = {4: 17, 1: 17, 6: 91, 2: -7, 0: None}
+        source.custom_attributes["mujoco:collision_mask_domain"].values = values.copy()
+
+        for operation in ("add_builder", "add_world", "replicate"):
+            with self.subTest(operation=operation):
+                destination = newton.ModelBuilder()
+                destination.add_shape_sphere(-1, radius=0.1)
+                if operation == "replicate":
+                    destination.replicate(source, 2)
+                else:
+                    for _ in range(2):
+                        getattr(destination, operation)(source)
+                actual = destination.custom_attributes["mujoco:collision_mask_domain"].values
+                self.assertEqual(
+                    actual,
+                    {5: 5, 2: 5, 7: 7, 3: -7, 1: None, 12: 12, 9: 12, 14: 14, 10: -7, 8: None},
+                )
+                self.assertEqual(source.custom_attributes["mujoco:collision_mask_domain"].values, values)
+
+    def test_equality_targets_and_labels_follow_each_copy(self):
+        """Remap mixed equality targets once and prefix only nonempty labels."""
+        source = newton.ModelBuilder()
+        body, joint = _add_revolute(source, "hinge")
+        mujoco.add_equality_connect(source, body, label="connect")
+        mujoco.add_equality_connect(source, body, label="")
+        mujoco.add_equality_connect(source, body, label="pure")
+        mujoco.add_equality_connect(source, body, label="unset")
+        source.custom_attributes["mujoco:equality_constraint_target_kind"].values = [1, 2, 0, None]
+        source.custom_attributes["mujoco:equality_constraint_target"].values = [joint, 0, -1, None]
+        # The legacy mimic table supplies a separate reference domain.
+        with self.assertWarns(DeprecationWarning):
+            source.add_constraint_mimic(joint, joint, label="mimic")
+
+        for operation in ("add_builder", "add_world", "replicate"):
+            with self.subTest(operation=operation):
+                destination = newton.ModelBuilder()
+                if operation == "replicate":
+                    destination.replicate(source, 2, label_prefixes=["left", "right"])
+                else:
+                    for prefix in ("left", "right"):
+                        getattr(destination, operation)(source, label_prefix=prefix)
+                self.assertEqual(
+                    destination.custom_attributes["mujoco:equality_constraint_target"].values,
+                    [0, 0, -1, None, 1, 1, -1, None],
+                )
+                self.assertEqual(
+                    destination.custom_attributes["mujoco:equality_constraint_label"].values,
+                    ["left/connect", "", "left/pure", "left/unset", "right/connect", "", "right/pure", "right/unset"],
+                )
+        self.assertEqual(source.custom_attributes["mujoco:equality_constraint_target"].values, [0, 0, -1, None])
+
+
 class TestMuJoCoActuatorAuthoring(unittest.TestCase):
     """Tests for public MuJoCo actuator authoring helpers."""
 

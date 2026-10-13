@@ -475,17 +475,21 @@ then read or update finalized fields via
 
    mujoco.add_equality_connect(builder, body1, body2, anchor=(0.0, 0.0, 0.0))
 
-The helpers write rows in the MuJoCo
+The helpers register and write rows in the MuJoCo
 :ref:`custom-attribute namespace <mujoco-custom-attributes>`. The equivalent
 lower-level form uses :meth:`~newton.ModelBuilder.add_custom_values` with the
 ``mujoco:equality_constraint_*`` keys; fields that do not apply to connect
-constraints retain their registered defaults.
+constraints retain their registered defaults. Register the MuJoCo attributes
+before writing raw rows. MJCF/USD importers and the typed equality helpers do
+this automatically; a plain ``ModelBuilder`` does not create a MuJoCo namespace.
+Explicit registration also keeps the equality arrays available at zero rows.
 
 .. code-block:: python
 
    import newton
    import warp as wp
 
+   newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
    builder.add_custom_values(
        **{
            "mujoco:equality_constraint_type": int(

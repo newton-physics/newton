@@ -16,6 +16,25 @@ from newton.solvers import SolverMuJoCo
 class TestMuJoCoSiteExport(unittest.TestCase):
     """Test exporting sites to MuJoCo models."""
 
+    def test_imported_cylinder_site_keeps_display_size_out_of_geometry(self):
+        """Preserve MJCF site display sizes while storing valid Newton cylinders."""
+        for display_size_z in (0.005, -0.005):
+            with self.subTest(display_size_z=display_size_z):
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(
+                    '<mujoco><worldbody><body><inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>'
+                    f'<freejoint/><site type="cylinder" size="0.02 0.1 {display_size_z}"/></body></worldbody></mujoco>'
+                )
+                self.assertEqual(builder.shape_count, 1)
+                np.testing.assert_allclose(builder.shape_scale[0], [0.02, 0.1, 0.0])
+                model = builder.finalize()
+                np.testing.assert_allclose(model.shape_collision_aabb_upper.numpy()[0], [0.02, 0.02, 0.1])
+                solver = SolverMuJoCo(model, include_sites=True)
+                np.testing.assert_allclose(solver.mj_model.site_size[0], [0.02, 0.1, 0.005])
+                model.shape_scale.assign([[0.04, 0.2, 0.0]])
+                solver.notify_model_changed(newton.ModelFlags.SHAPE_PROPERTIES)
+                np.testing.assert_allclose(solver.mjw_model.site_size.numpy()[0], [0.04, 0.2, 0.005])
+
     def test_worldbody_site_poses_across_worlds(self):
         """Keep batched worldbody site poses synchronized with Newton."""
         world = newton.ModelBuilder()

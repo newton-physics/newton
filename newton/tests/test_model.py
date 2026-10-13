@@ -3060,7 +3060,6 @@ class TestModelJoints(unittest.TestCase):
         self.assertEqual(builder.shape_count, 0)
         self.assertEqual(builder.joint_count, 5)
         self.assertEqual(builder.articulation_count, 3)
-        self.assertEqual(builder._equality_constraint_count, 0)
         self.assertEqual(builder.joint_dof_count, 10)
         self.assertEqual(builder.joint_coord_count, 11)
         self.assertEqual(builder.joint_constraint_count, 20)

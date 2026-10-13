@@ -2500,10 +2500,6 @@ class ViewerBase(ABC):
         shape_geo_is_solid = self.model.shape_is_solid.numpy()
         shape_transform = self.model.shape_transform.numpy()
         shape_flags = self.model.shape_flags.numpy()
-        mujoco_attributes = getattr(self.model, "mujoco", None)
-        site_size_is_display = getattr(mujoco_attributes, "site_size_is_display", None)
-        if site_size_is_display is not None:
-            site_size_is_display = site_size_is_display.numpy()
         shape_world = self.model.shape_world.numpy()
         shape_display_color = self.model.shape_color.numpy() if self.model.shape_color is not None else None
         shape_display_opacity = self.model.shape_opacity.numpy() if self.model.shape_opacity is not None else None
@@ -2522,9 +2518,6 @@ class ViewerBase(ABC):
             geo_thickness = float(shape_geo_thickness[s])
             geo_is_solid = bool(shape_geo_is_solid[s])
             geo_src = shape_geo_src[s]
-
-            if geo_type == newton.GeoType.CYLINDER and site_size_is_display is not None and site_size_is_display[s]:
-                geo_scale[2] = 0.0
 
             # Mesh-class shapes can carry signed scale. When det(scale) < 0 the GPU
             # mirrors the geometry, which reverses screen-space triangle winding;
