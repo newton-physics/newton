@@ -238,6 +238,7 @@ class TestDeformableObjects(unittest.TestCase):
                     else:
                         self.assertEqual((model.body_count, model.joint_count), (1, 1))
                         self.assertEqual(_ranges(builder, "curve", "body"), [(0, 1)])
+                        self.assertEqual(builder.joint_type, [newton.JointType.ROD])
 
     def test_curve_removal_warning_leaves_collapse_complete(self):
         """Finish collapse even when a removed-curve warning is treated as an exception."""

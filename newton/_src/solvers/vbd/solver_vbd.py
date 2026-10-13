@@ -34,7 +34,6 @@ from ...sim.joint_mimic import has_supported_joint_mimics
 from ...utils import is_graph_capture_allocation_enabled
 from ...utils.mesh import build_vertex_adjacency_with_warp
 from ..coupled.interface import CouplingInterface
-from ..observables import SolverObservableFlags, SolverObservables
 from ..solver import SolverBase
 from ..xpbd import kernels as xpbd_kernels
 from ..xpbd.kernels import apply_joint_forces, project_joint_mimics
@@ -206,8 +205,9 @@ class SolverVBD(SolverBase, CouplingInterface):
           :meth:`notify_model_changed` with
           :attr:`~newton.ModelFlags.JOINT_PROPERTIES` to refresh derived contact
           conditioning. Structural-slot material (``rigid_joint_linear_ke``/
-          ``rigid_joint_angular_ke``), constraint layout, and rest-angle offsets are
-          captured at construction; rebuild ``SolverVBD`` after changing them.
+          ``rigid_joint_angular_ke``), constraint layout, and non-ROD drive/limit
+          rest-angle offsets are captured at construction; rebuild ``SolverVBD``
+          after changing them.
         - :attr:`~newton.Model.joint_target_ke`/:attr:`~newton.Model.joint_target_kd` are supported
           for REVOLUTE, PRISMATIC, D6 (as drives), and ROD (as stretch, shear,
           bend, and twist stiffness and damping).
@@ -225,7 +225,8 @@ class SolverVBD(SolverBase, CouplingInterface):
           exactly one angular DOF. Tracking requires less than ``pi`` radians
           of relative rotation per solver step, including prediction and
           solver corrections.
-        - :attr:`~newton.Control.joint_f` (feedforward forces) is supported.
+        - :attr:`~newton.Control.joint_f` (feedforward forces) is supported,
+          including six-component world-frame wrenches for ROD joints.
         - Not supported: :attr:`~newton.Model.joint_armature`, :attr:`~newton.Model.joint_friction`,
           :attr:`~newton.Model.joint_effort_limit`, :attr:`~newton.Model.joint_velocity_limit`,
           :attr:`~newton.Model.joint_target_mode`, equality constraints, and the deprecated sparse mimic constraints.
@@ -261,11 +262,11 @@ class SolverVBD(SolverBase, CouplingInterface):
         one uncaptured solver step before capture.
 
     Contact force observables:
-        Request :attr:`~newton.solvers.SolverObservableFlags.CONTACT_F` with :meth:`observables`
+        Request :attr:`~newton.solvers.SolverBase.ObservableKind.CONTACT_F` with :meth:`observables`
         and pass the container to :meth:`step` to evaluate one wrench per body-body contact
         (when this solver integrates the rigid bodies) and per rigid-soft contact record --
         particle, edge, and face -- at the final configuration. The step writes directly into
-        :attr:`~newton.solvers.SolverObservables.contact_f` without changing the simulation result.
+        :attr:`~newton.solvers.SolverBase.Observables.contact_f` without changing the simulation result.
         Unused rows, including rigid rows owned by an external rigid solver, are zero.
         Soft self-contact forces are not reported. See :ref:`vbd_contact_forces` for the wrench
         convention and a usage guide.
@@ -284,10 +285,17 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         Call :meth:`newton.ModelBuilder.color` to automatically color both particles and rigid bodies.
 
-        VBD uses ``model.body_q`` as the structural rest pose and reads
-        ``model.joint_q`` for drive/limit rest-angle offsets. The body
-        transforms must match the joint angles at solver creation time
-        (see example below).
+        For non-ROD rigid joints, VBD uses ``model.body_q`` as the structural
+        rest pose and reads ``model.joint_q`` for drive/limit rest-angle
+        offsets. The body transforms must match the joint angles at solver
+        creation time (see example below).
+
+        For ROD joints, SolverVBD captures structural-rest bend and twist from
+        ``model.joint_target_q`` when constructed. After changing these Model-owned
+        angular rest targets, call :meth:`notify_model_changed` with
+        :attr:`~newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES`; the broader
+        :attr:`~newton.ModelFlags.JOINT_PROPERTIES` and
+        :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES` also refresh it.
 
         For CUDA graph capture, the recommended construction order is
         ``CollisionPipeline`` -> ``Contacts`` -> ``SolverVBD``, all before capture.
@@ -321,7 +329,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
     supports_collision_pipeline = True
 
-    SUPPORTED_OBSERVABLE_FLAGS = frozenset({SolverObservableFlags.CONTACT_F})
+    SUPPORTED_OBSERVABLES = frozenset({SolverBase.ObservableKind.CONTACT_F})
 
     class JointSlot:
         """Named constraint slot indices for :meth:`set_joint_constraint_mode`.
@@ -331,8 +339,8 @@ class SolverVBD(SolverBase, CouplingInterface):
           - BALL: LINEAR=0 only
           - FIXED/REVOLUTE/PRISMATIC/D6: LINEAR=0, ANGULAR=1
 
-        STRETCH/SHEAR/BEND/TWIST name the four-slot layout emitted by the builder
-        rod APIs and apply only to :attr:`~newton.JointType.ROD`. Only structural
+        STRETCH/SHEAR/BEND/TWIST name SolverVBD's four-slot constraint layout
+        and apply only to :attr:`~newton.JointType.ROD`. Only structural
         slots are named here; per-DOF drive/limit slots (slot 2+ on non-rod
         joints) are not.
         """
@@ -1440,6 +1448,7 @@ class SolverVBD(SolverBase, CouplingInterface):
             and self._integrates_rigid_bodies
             and self.model.joint_count > 0
         ):
+            self._validate_rod_material_axes()
             if self.rigid_compliant_alm:
                 self._validate_compliant_joint_dof_materials()
             # Must run before _refresh_structural_k() below: that summary reads
@@ -1448,7 +1457,9 @@ class SolverVBD(SolverBase, CouplingInterface):
             self._refresh_joint_material_params()
         if refresh_structural_k:
             self._refresh_structural_k()
-        if flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.BODY_PROPERTIES):
+        if flags & (
+            ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES
+        ):
             self._refresh_rod_rest_bend_twist_cache()
 
     @override
@@ -1777,6 +1788,39 @@ class SolverVBD(SolverBase, CouplingInterface):
             values = self._to_numpy(getattr(self.model, attribute), dtype=float)
             _validate_compliant_alm_material_coefficient(values, f"model.{attribute}")
 
+    def _validate_rod_material_axes(self) -> None:
+        """Require the duplicated transverse ROD material axes to remain isotropic."""
+        if not self.model._has_rod_joints:  # pyright: ignore[reportPrivateUsage]
+            return
+        joint_type = self._to_numpy(self.model.joint_type, dtype=int)
+        if not np.any(joint_type == JointType.ROD):
+            return
+
+        joint_qd_start = self._to_numpy(self.model.joint_qd_start, dtype=int)
+        joint_dof_dim = self._to_numpy(self.model.joint_dof_dim, dtype=int)
+        joint_target_ke = self._to_numpy(self.model.joint_target_ke, dtype=float)
+        joint_target_kd = self._to_numpy(self.model.joint_target_kd, dtype=float)
+        for joint in np.flatnonzero(joint_type == JointType.ROD):
+            dof_start = int(joint_qd_start[joint])
+            linear_count = int(joint_dof_dim[joint, 0])
+            angular_count = int(joint_dof_dim[joint, 1])
+            angular_dof = dof_start + linear_count
+            if linear_count != 3 or angular_count != 3:
+                raise RuntimeError(
+                    "SolverVBD requires JointType.ROD to have three linear and three angular DOFs; "
+                    f"joint {joint} has dimensions {(linear_count, angular_count)}."
+                )
+            if (
+                joint_target_ke[dof_start] != joint_target_ke[dof_start + 1]
+                or joint_target_kd[dof_start] != joint_target_kd[dof_start + 1]
+                or joint_target_ke[angular_dof] != joint_target_ke[angular_dof + 1]
+                or joint_target_kd[angular_dof] != joint_target_kd[angular_dof + 1]
+            ):
+                raise ValueError(
+                    "SolverVBD requires isotropic ROD shear and bend coefficients about the local +Z "
+                    f"material tangent; X and Y stiffness/damping entries differ for joint {joint}."
+                )
+
     def _init_body_particle_contact_state(self, soft_contact_max: int) -> None:
         """Allocate body-particle material arrays sized to the given soft contact capacity."""
         self.body_particle_contact_penalty_k = wp.zeros(soft_contact_max, dtype=float, device=self.device)
@@ -1822,16 +1866,14 @@ class SolverVBD(SolverBase, CouplingInterface):
             )
 
     def _refresh_rod_rest_bend_twist_cache(self) -> None:
-        """(Re)compute rod rest bend/twist invariants from the current rest pose.
-
-        Called once at init and again from ``notify_model_changed`` whenever joint
-        frames or the rest pose change.
-        """
+        """Recompute Rod bend/twist rest invariants from Model targets."""
         # The cache is only allocated when SolverVBD integrates the rigid system
         # (see _init_rigid_system); skip when bodies are handled externally.
         if not self._integrates_rigid_bodies or self.model.joint_count == 0:
             return
 
+        if not self.model._has_rod_joints:  # pyright: ignore[reportPrivateUsage]
+            return
         joint_type_np = self._to_numpy(self.model.joint_type, dtype=np.int32)
         if not np.any(joint_type_np == int(JointType.ROD)):
             return
@@ -1841,11 +1883,9 @@ class SolverVBD(SolverBase, CouplingInterface):
             dim=self.model.joint_count,
             inputs=[
                 self.model.joint_type,
-                self.model.joint_parent,
-                self.model.joint_child,
-                self.model.joint_X_p,
-                self.model.joint_X_c,
-                self.model.body_q,
+                self.model.joint_target_q_start,
+                self.model.joint_target_q,
+                self.model.use_coord_layout_targets,
             ],
             outputs=[
                 self.joint_rod_rest_kb_local,
@@ -1888,10 +1928,10 @@ class SolverVBD(SolverBase, CouplingInterface):
                 if jt[j] == JointType.ROD:
                     lin_count = int(jdof_dim[j, 0])
                     ang_count = int(jdof_dim[j, 1])
-                    if lin_count != 2 or ang_count != 2:
+                    if lin_count != 3 or ang_count != 3:
                         raise RuntimeError(
-                            "SolverVBD rigid joints: JointType.ROD requires the split "
-                            "stretch/shear/bend/twist layout emitted by the rod builder APIs "
+                            "SolverVBD rigid joints: JointType.ROD requires three linear and three angular "
+                            "DOF entries emitted by the rod builder APIs "
                             f"(got linear={lin_count}, angular={ang_count}) "
                             f"for joint {j}."
                         )
@@ -2010,23 +2050,45 @@ class SolverVBD(SolverBase, CouplingInterface):
                 if jt[j] == JointType.ROD:
                     c0 = int(jc_start[j])
                     dof0 = int(jdofs[j])
-                    if dof0 < 0 or (dof0 + 3) >= len(jtarget_ke) or (dof0 + 3) >= len(jtarget_kd):
+                    linear_count = int(jdof_dim[j, 0])
+                    angular_count = int(jdof_dim[j, 1])
+                    angular_dof = dof0 + linear_count
+                    dof_end = angular_dof + angular_count
+                    if (
+                        dof0 < 0
+                        or linear_count != 3
+                        or angular_count != 3
+                        or dof_end > len(jtarget_ke)
+                        or dof_end > len(jtarget_kd)
+                    ):
                         raise RuntimeError(
-                            "SolverVBD _init_joint_penalty_k: JointType.ROD requires "
-                            "four material-slot entries in "
-                            "model.joint_target_ke/kd starting at joint_qd_start[j]. "
+                            "SolverVBD _init_joint_penalty_k: JointType.ROD requires three linear and three "
+                            "angular DOF entries in model.joint_target_ke/kd. "
                             f"Got joint_index={j}, joint_qd_start={dof0}, "
                             f"len(joint_target_ke)={len(jtarget_ke)}, len(joint_target_kd)={len(jtarget_kd)}."
+                        )
+                    if (
+                        jtarget_ke[dof0] != jtarget_ke[dof0 + 1]
+                        or jtarget_kd[dof0] != jtarget_kd[dof0 + 1]
+                        or jtarget_ke[angular_dof] != jtarget_ke[angular_dof + 1]
+                        or jtarget_kd[angular_dof] != jtarget_kd[angular_dof + 1]
+                    ):
+                        raise ValueError(
+                            "SolverVBD requires isotropic ROD shear and bend coefficients about the local +Z "
+                            f"material tangent; X and Y stiffness/damping entries differ for joint {j}."
                         )
                     stretch_slot = c0
                     shear_slot = c0 + 1
                     bend_slot = c0 + 2
                     twist_slot = c0 + 3
 
-                    stretch_dof = dof0
-                    shear_dof = dof0 + 1
-                    bend_dof = dof0 + 2
-                    twist_dof = dof0 + 3
+                    # Rod anchors use local +Z as the material tangent, so Z carries
+                    # stretch/twist. Shear and bend are isotropic about that tangent,
+                    # so the validated X entry represents both transverse axes.
+                    shear_dof = dof0
+                    stretch_dof = dof0 + 2
+                    bend_dof = angular_dof
+                    twist_dof = angular_dof + 2
 
                     ke_stretch = jtarget_ke[stretch_dof]
                     ke_shear = jtarget_ke[shear_dof]
@@ -2539,7 +2601,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         contacts: Contacts | None,
         dt: float,
         *,
-        observables: SolverObservables | None = None,
+        observables: SolverBase.Observables | None = None,
     ) -> None:
         """Execute one simulation timestep using VBD (particles) and AVBD (rigid bodies).
 
@@ -2621,7 +2683,7 @@ class SolverVBD(SolverBase, CouplingInterface):
 
         # Opt-in contact force export: evaluate at the final iterate while the pose history the
         # iterations used is still intact (finalization advances it below).
-        if observables is not None and observables.is_requested(SolverObservableFlags.CONTACT_F):
+        if observables is not None and observables.is_requested(SolverBase.ObservableKind.CONTACT_F):
             self._export_contact_forces(state_in, state_out, contacts, dt, observables.contact_f)
 
         # Snapshot solved rigid contact state for next-frame warm-start.

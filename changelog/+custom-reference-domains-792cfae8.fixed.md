@@ -1,0 +1,1 @@
+Remap custom-attribute reference defaults for existing rows during builder composition and for curve and articulation references during fixed-joint collapse. Preserve negative integer-vector entries during copying and handle NumPy reference vectors during collapse.

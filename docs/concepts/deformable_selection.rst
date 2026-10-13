@@ -32,14 +32,14 @@ as in :class:`~newton.selection.ArticulationView`. A broad pattern selects only
 the class's family. A pattern with no matches in that family raises ``KeyError``.
 
 Currently, curves expose rod body transforms and velocities. Surfaces and volumes
-expose particle positions and velocities. A family does not prescribe a solver or
-storage layout. Particle-based curves and solver-owned MPM data are not supported
-yet.
+expose particle positions, velocities, inverse masses, and flags. A family does
+not prescribe a solver or storage layout. Particle-based curves and solver-owned
+MPM data are not supported yet.
 
 Read and reset state
 --------------------
 
-Getters read either a :class:`~newton.State` or the initial values stored in a
+State getters read either a :class:`~newton.State` or the initial values stored in a
 :class:`~newton.Model`:
 
 .. code-block:: python
@@ -65,6 +65,27 @@ Save independent reset buffers during setup, then use them to reset the state:
     # Later, reset positions and velocities for all selected cloths.
     surfaces.set_particle_positions(state, positions_default)
     surfaces.set_particle_velocities(state, velocities_default)
+
+Read particle properties
+------------------------
+
+Surface and volume views also read :attr:`~newton.Model.particle_inv_mass` and
+:attr:`~newton.Model.particle_flags`. Pass a Model, not a State. Both results have
+shape ``(count, particles_per_deformable_object)``, with the same rows and particle
+order as the position getter. Inverse masses use ``wp.float32`` in [1/kg]; flags
+use ``wp.int32`` bitmasks from :class:`~newton.ParticleFlags`.
+
+An application can save these properties before applying kinematic targets:
+
+.. code-block:: python
+
+    inverse_masses_default = wp.clone(surfaces.get_particle_inv_masses(model))
+    flags_default = wp.clone(surfaces.get_particle_flags(model))
+
+Clone the results to keep independent snapshots. Do not edit the getter results:
+they may share Model storage or use a reusable buffer. These methods only read
+existing Model data. Applying kinematic targets and restoring the saved properties
+remain application responsibilities; the views do not provide property setters.
 
 Update selected deformable objects
 ----------------------------------
@@ -299,8 +320,8 @@ The method style is similar, but the layouts serve different needs:
   have one entry per selected object, including when worlds have different
   object counts. A small reset still requires a full-view value buffer.
 * :meth:`~newton.selection.ArticulationView.get_attribute` is a generic entry
-  point. The deformable views start with state getters, setters, and element
-  ranges. Generic attribute access remains a follow-up.
+  point. Deformable views provide state getters and setters, particle inverse-mass
+  and flag getters, and element ranges. Generic attribute access remains a follow-up.
 
 For example, these calls reset velocities in world 1 of a three-world model.
 ``robot_velocities`` has the full shape returned by ``get_dof_velocities()``.
@@ -351,14 +372,14 @@ model arrays. Consider three cloths with four particles each:
 * Particle starts ``[0, 8, 20]`` are unevenly spaced. The getter copies the
   selected values into a reusable buffer. All three cloths still have four particles.
 
-A later state change or another read can change the returned values. Use
+A change to the source array or another read can change the returned values. Use
 ``wp.clone()`` when a result must stay unchanged, as in the reset buffers above.
 If a solver replaces a source array, call the getter again. Previously returned
 results still refer to the old storage.
 
-Each state has its own cached results. The cache does not keep discarded states
-alive. Getter results still held by your code remain valid. The view keeps its
-model alive, as :class:`~newton.selection.ArticulationView` does.
+Each source Model or State has its own cached results. The cache does not keep
+discarded states alive. Getter results still held by your code remain valid.
+The view keeps its model alive, as :class:`~newton.selection.ArticulationView` does.
 
 State write requirements
 ------------------------
@@ -399,8 +420,8 @@ inference replays without rebuilding the graph.
 indices and a mask. Host indices raise ``RuntimeError`` during capture.
 
 A captured graph keeps using the data and gradient arrays from capture. Keep
-the source states and getter results alive while replaying it. If those arrays
-are replaced, warm up the getters and capture a new graph.
+the source models or states and getter results alive while replaying it. If those
+arrays are replaced, warm up the getters and capture a new graph.
 
 Gradients
 ---------
@@ -408,6 +429,8 @@ Gradients
 Getters and setters support ``wp.Tape``. Create the state with
 ``model.state(requires_grad=True)`` when gradients are needed. Reads propagate
 gradients to the source state. Masked writes propagate gradients to the input values.
+Inverse-mass reads also propagate gradients when the source Model has gradients
+enabled. Integer flags do not have gradients.
 
 Keep values, masks, and source arrays unchanged until ``tape.backward()`` finishes.
 Use separate state buffers for successive steps and separate masks for different

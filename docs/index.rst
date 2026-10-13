@@ -31,6 +31,7 @@ Newton Physics
    Worlds <concepts/worlds>
    Articulations <concepts/articulations>
    Deformable Objects <concepts/deformable_objects>
+   Selection API <concepts/selection>
    Deformable Selection <concepts/deformable_selection>
    Mass and Inertia <concepts/mass_inertia>
    Sites <concepts/sites>
@@ -74,3 +75,4 @@ Newton Physics
    :caption: Project Links
 
     GitHub <https://github.com/newton-physics/newton>
+    Publications <https://github.com/newton-physics/newton/blob/main/PUBLICATIONS.md>

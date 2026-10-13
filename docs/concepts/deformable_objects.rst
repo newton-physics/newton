@@ -7,34 +7,12 @@ Deformable Objects
 ==================
 
 Each deformable object has a label, a world index, and ranges identifying its
-simulation elements. A rod-backed curve contains bodies and joints. A triangle
-surface contains particles, triangles, and bending edges. A tetrahedral volume
-contains particles and tetrahedra.
+simulation elements. The families describe geometry: curves, surfaces, and
+volumes. Native construction and supported USD imports record these objects
+on the builder. Finalization exposes their labels, worlds, and ranges on the model.
 
-The family names describe the simulation geometry. The builder methods and
-supported USD deformable imports populate these lists:
-
-.. list-table::
-   :header-rows: 1
-   :widths: 30 45 25
-
-   * - Builder lists
-     - Native construction
-     - USD deformable import
-   * - ``curve_label`` / ``curve_world``
-     - :meth:`~newton.ModelBuilder.add_rod`, :meth:`~newton.ModelBuilder.add_rod_graph` (legacy)
-     - Cable ``BasisCurves``
-   * - ``surface_label`` / ``surface_world``
-     - :meth:`~newton.ModelBuilder.add_cloth_mesh`, :meth:`~newton.ModelBuilder.add_cloth_grid`
-     - Cloth ``Mesh``
-   * - ``volume_label`` / ``volume_world``
-     - :meth:`~newton.ModelBuilder.add_soft_mesh`, :meth:`~newton.ModelBuilder.add_soft_grid`
-     - Volume ``TetMesh``
-
-Each native call records one deformable object.
-USD imports record each simulation prim once, including cable prims with several
-disconnected curves. Curves welded into a graph instead share one record for the
-complete graph; see :ref:`deformable-objects-welded-usd-graphs`.
+The sections below explain what each family records. See :ref:`usd_parsing`
+for supported USD schemas, materials, attachments, and import limitations.
 
 .. _deformable-objects-builder-identities:
 
@@ -50,10 +28,78 @@ Builder labels and worlds
 Each pair contains one label and world index per deformable object. Native
 construction records explicit labels or generates names such as ``curve_0``,
 ``surface_0``, and ``volume_0``. USD imports use the simulation prim's path, or
-the graph identifier for welded curves.
-Labels may repeat. An index in these lists is not a body or particle index.
+the graph identifier for welded curves. Labels may repeat. An index in these
+lists identifies a deformable object, not a body or particle.
 
-Use the lists to identify assets while composing or cloning a builder:
+Labels are editable. The label and world lists must remain aligned with the
+recorded deformable objects, so entries must not be appended, removed, or
+reordered manually.
+
+The builder assigns world indices during construction and cloning.
+World ``-1`` identifies global deformable objects.
+Use :meth:`~newton.ModelBuilder.begin_world` / :meth:`~newton.ModelBuilder.end_world`,
+:meth:`~newton.ModelBuilder.add_world`, or :meth:`~newton.ModelBuilder.replicate`
+to assign worlds when creating or cloning deformable objects. Do not edit the
+world lists: changing an entry does not move its simulation elements.
+
+Combining builders
+~~~~~~~~~~~~~~~~~~
+
+:meth:`~newton.ModelBuilder.add_builder`, :meth:`~newton.ModelBuilder.add_world`,
+and :meth:`~newton.ModelBuilder.replicate` preserve the records and offset their
+element ranges. Label prefixes also apply to deformable labels. The builder's
+range lists remain private; use the public model arrays to inspect finalized ranges.
+
+Model labels and ranges
+-----------------------
+
+.. experimental::
+
+   The model's ``curve_*``, ``surface_*``, and ``volume_*`` label, world,
+   count, and range attributes may change without the normal deprecation period.
+
+:meth:`~newton.ModelBuilder.finalize` copies the labels, worlds, and simulation
+ranges to public :class:`~newton.Model` attributes. Each family retains its
+builder order. Later builder edits do not change an existing model. Treat
+model labels, worlds, and ranges as read-only.
+
+Labels are Python lists. Worlds and range endpoints are one-dimensional
+``int32`` Warp arrays on the model device. Each list or array has one entry per
+deformable object in that family. Empty families have empty lists and arrays.
+World ``-1`` still means global.
+
+Each range has an inclusive start and an exclusive end. The notation
+``start/end`` below denotes two attributes, such as ``surface_particle_start``
+and ``surface_particle_end``. Unlike :attr:`~newton.Model.articulation_start`,
+the start arrays have no extra final entry. Separate ends allow gaps between
+deformable objects and empty ranges.
+
+This follows the label/world pattern of :attr:`~newton.Model.articulation_label`
+and :attr:`~newton.Model.articulation_world`. Model attributes describe every
+recorded deformable object. The :ref:`deformable selection views <deformable-selection>`
+select matching deformable objects and read or update their state.
+
+Coupled solver models
+~~~~~~~~~~~~~~~~~~~~~
+
+Compact coupled-solver models retain only deformable objects whose recorded
+elements are all present. Their ranges refer to the compact model's arrays,
+not the parent model's arrays. Particle-based deformables follow the coupled
+solver's existing particle layout. For rods reduced during builder collapse,
+see :ref:`deformable-objects-collapse`.
+
+Curves
+------
+
+Curves currently use rods: rigid segment bodies connected by joints.
+Each :meth:`~newton.ModelBuilder.add_rod` call records one deformable object.
+The builder stores its label and world in ``curve_label`` and ``curve_world``.
+
+The model exposes ``curve_label``, ``curve_world``, and ``curve_count``.
+Its ``curve_body_start/end`` and ``curve_joint_start/end`` arrays identify
+each curve's bodies and joints.
+
+For example, rename a prototype cable and clone it into two worlds:
 
 .. testcode::
 
@@ -78,33 +124,7 @@ Use the lists to identify assets while composing or cloning a builder:
    ['env_0/gripper_cable', 'env_1/gripper_cable']
    [0, 1]
 
-Labels are editable. The label and world lists must remain aligned with the
-recorded deformable objects, so entries must not be appended, removed, or
-reordered manually.
-
-The builder assigns world indices during construction and cloning.
-World ``-1`` identifies global deformable objects.
-Use :meth:`~newton.ModelBuilder.begin_world` / :meth:`~newton.ModelBuilder.end_world`,
-:meth:`~newton.ModelBuilder.add_world`, or :meth:`~newton.ModelBuilder.replicate`
-to assign worlds when creating or cloning deformable objects. Do not edit the
-world lists: changing an entry does not move its simulation elements.
-
-Model labels and ranges
------------------------
-
-.. experimental::
-
-   The model's ``curve_*``, ``surface_*``, and ``volume_*`` label, world,
-   count, and range attributes may change without the normal deprecation period.
-
-:meth:`~newton.ModelBuilder.finalize` copies the labels, worlds, and simulation
-ranges to public :class:`~newton.Model` attributes. Each family retains its
-builder order. Later builder edits do not change an existing model. Treat
-model labels, worlds, and ranges as read-only.
-
-Continue with ``scene`` from :ref:`deformable-objects-builder-identities`.
-It contains two cables, named ``env_0/gripper_cable`` and
-``env_1/gripper_cable``. Inspect their model data without constructing a view:
+Finalize the scene and inspect the cables without constructing a view:
 
 .. testcode::
 
@@ -124,10 +144,10 @@ It contains two cables, named ``env_0/gripper_cable`` and
 The example uses ``device="cpu"`` so it also runs without a GPU. The same
 model attributes are available with ``device="cuda:0"``.
 
-Every list or array has one entry per curve. Index ``1`` identifies the second
-cable, ``env_1/gripper_cable``. Entry ``1`` of ``curve_world`` is ``1``, so this
-cable belongs to world 1. Its body range starts at ``2`` and ends at ``4``.
-The end is excluded, so the range contains body indices ``2`` and ``3``:
+Curve index ``1`` identifies the second cable, ``env_1/gripper_cable``.
+Entry ``1`` of ``curve_world`` is ``1``, so this cable belongs to world 1.
+Its body range starts at ``2`` and ends at ``4``. The end is excluded, so the
+range contains body indices ``2`` and ``3``:
 
 .. testcode::
 
@@ -144,35 +164,12 @@ The end is excluded, so the range contains body indices ``2`` and ``3``:
 
 Curve indices identify deformable objects. Body indices identify the rigid
 segments in the model's body arrays. Do not use one in place of the other.
-Each deformable object has a start and an end. Unlike
-:attr:`~newton.Model.articulation_start`, the start arrays have no extra final
-entry. Separate ends allow gaps between deformable objects and empty ranges.
 
-.. list-table::
-   :header-rows: 1
-
-   * - Family
-     - Labels, worlds, and counts
-     - Range pairs
-   * - Curve
-     - ``curve_label``, ``curve_world``, ``curve_count``
-     - ``curve_body_start/end``, ``curve_joint_start/end``
-   * - Surface
-     - ``surface_label``, ``surface_world``, ``surface_count``
-     - ``surface_particle_start/end``, ``surface_tri_start/end``, ``surface_edge_start/end``
-   * - Volume
-     - ``volume_label``, ``volume_world``, ``volume_count``
-     - ``volume_particle_start/end``, ``volume_tet_start/end``
-
-``start/end`` denotes two attributes, such as ``surface_particle_start`` and
-``surface_particle_end``. Labels are Python lists. Worlds and range endpoints
-are one-dimensional ``int32`` Warp arrays on the model device. Empty families
-have empty lists and arrays. World ``-1`` still means global.
-
-This follows the label/world pattern of :attr:`~newton.Model.articulation_label`
-and :attr:`~newton.Model.articulation_world`. Model attributes describe every
-recorded deformable object. The :ref:`deformable selection views <deformable-selection>`
-select matching deformable objects and read or update their state.
+USD cable imports record one object per simulation ``BasisCurves`` prim,
+including a prim containing several disconnected curves. Curves welded into
+a graph share one record instead; see :ref:`deformable-objects-welded-usd-graphs`.
+Native and USD-created curves use the same model attributes and
+:class:`~newton.selection.DeformableCurveView`.
 
 .. _deformable-objects-curve-joints:
 
@@ -186,19 +183,10 @@ attachments added later are outside the range. These complete ranges differ
 from the rod-joint lists returned by :meth:`~newton.ModelBuilder.add_rod` and
 USD's ``path_cable_map``, which exclude roots.
 
-Combining builders
-------------------
-
-:meth:`~newton.ModelBuilder.add_builder`, :meth:`~newton.ModelBuilder.add_world`,
-and :meth:`~newton.ModelBuilder.replicate` preserve the records and offset their
-element ranges. Label prefixes also apply to deformable labels. Finalization
-copies the resulting labels, worlds, and ranges to the model. The builder's range
-lists remain private; use the public model arrays to inspect finalized ranges.
-
 .. _deformable-objects-collapse:
 
 Fixed-joint collapse
---------------------
+~~~~~~~~~~~~~~~~~~~~
 
 Labels do not affect :meth:`~newton.ModelBuilder.collapse_fixed_joints`. Curve
 records retain their labels and describe the surviving segment bodies and joints.
@@ -207,25 +195,25 @@ Newton warns and omits a curve only when none of its segment bodies survive.
 Use ``joints_to_keep`` to preserve the original segment layout. Particle,
 triangle, and tetrahedron ranges are not affected by fixed-joint collapse.
 
-Coupled solver models
----------------------
-
-Compact coupled-solver models retain only deformable objects whose recorded
-elements are all present. Their ranges refer to the compact model's arrays,
-not the parent model's arrays. If a solver partition excludes part of a curve's
-current recorded ranges, that curve is omitted from the compact model. This is
-separate from reducing the ranges during builder collapse. Particle-based
-deformables follow the coupled solver's existing particle layout.
+A compact coupled-solver model must include every element in a curve's current
+ranges to retain that curve. Omitting part of a range from a solver partition
+is different from reducing the range during builder collapse.
 
 .. _deformable-objects-welded-usd-graphs:
+.. _welded-usd-graphs:
 
-Welded USD graphs
------------------
+Rod graphs
+~~~~~~~~~~
 
-A welded USD graph is recorded by one :meth:`~newton.ModelBuilder.add_rod` call,
-just like a native graph. Its record includes all created segment bodies and
-joints, including the generated root. The source curves are not recorded as
-separate deformable objects.
+A :class:`~newton.Rod` with explicit edges can describe a graph with shared
+junctions. Pass it to :meth:`~newton.ModelBuilder.add_rod` with ``rod=...``.
+One call records the complete graph, not separate objects for its branches.
+The deprecated :meth:`~newton.ModelBuilder.add_rod_graph` also records one
+object per call; use ``add_rod(rod=...)`` for new code.
+
+A welded USD graph uses the same construction path. Its record includes all
+created segment bodies and joints, including generated roots. The source
+curves are not recorded as separate deformable objects.
 
 The graph's label is the existing ``graph_component`` identifier in
 ``path_cable_attrs``. This identifier reuses one source prim's path but labels
@@ -246,3 +234,37 @@ joints, remains follow-up work. This does not limit the whole graph's record.
    graph_world = builder.curve_world[graph_index]  # The complete welded graph.
    branch_bodies, branch_joints = result["path_cable_map"][branch_path]
    # branch_bodies contains only the branch's segments; branch_joints is [].
+
+Surfaces
+--------
+
+A triangle surface contains particles, triangles, and bending edges.
+:meth:`~newton.ModelBuilder.add_cloth_mesh` and
+:meth:`~newton.ModelBuilder.add_cloth_grid` each record one surface object.
+The builder stores its label and world in ``surface_label`` and ``surface_world``.
+
+The model exposes ``surface_label``, ``surface_world``, and ``surface_count``.
+Its ranges are ``surface_particle_start/end``, ``surface_tri_start/end``,
+and ``surface_edge_start/end``. A surface index identifies the complete cloth,
+not an individual particle or triangle.
+
+Supported USD cloth imports record each simulation ``Mesh`` prim once,
+using its prim path as the label. Native and USD-created cloths use the same
+model attributes and :class:`~newton.selection.DeformableSurfaceView`.
+
+Volumes
+-------
+
+A tetrahedral volume contains particles and tetrahedra.
+:meth:`~newton.ModelBuilder.add_soft_mesh` and
+:meth:`~newton.ModelBuilder.add_soft_grid` each record one volume object.
+The builder stores its label and world in ``volume_label`` and ``volume_world``.
+
+The model exposes ``volume_label``, ``volume_world``, and ``volume_count``.
+Its ranges are ``volume_particle_start/end`` and ``volume_tet_start/end``.
+A volume index identifies the complete soft body, not an individual particle
+or tetrahedron.
+
+Supported USD volume imports record each simulation ``TetMesh`` prim once,
+using its prim path as the label. Native and USD-created volumes use the same
+model attributes and :class:`~newton.selection.DeformableVolumeView`.
