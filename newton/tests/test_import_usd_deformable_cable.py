@@ -55,6 +55,103 @@ class TestUSDDeformableCable(unittest.TestCase):
         )
         return stage
 
+    def test_cable_contact_material_matches_rigid_collider(self):
+        """Apply the same resolved contact parameters to cables and rigid colliders."""
+        from pxr import Sdf, UsdGeom, UsdPhysics, UsdShade
+
+        expected_authored = {
+            "mu": 0.35,
+            "restitution": 0.2,
+            "mu_torsional": 0.15,
+            "mu_rolling": 0.08,
+            "ke": 5000.0,
+            "kd": 200.0,
+            "kf": 800.0,
+            "ka": 0.01,
+        }
+        defaults = {
+            "mu": 0.73,
+            "restitution": 0.41,
+            "mu_torsional": 0.12,
+            "mu_rolling": 0.04,
+            "ke": 1234.0,
+            "kd": 56.0,
+            "kf": 789.0,
+            "ka": 0.03,
+        }
+        for welded in (False, True):
+            for mode in ("authored", "unauthored", "unbound"):
+                with self.subTest(welded=welded, mode=mode):
+                    if welded:
+                        stage = self._author_attached_cable_pair(gap=0.0)
+                        paths = ("/World/CableA", "/World/CableB")
+                    else:
+                        stage = _deformable_stage()
+                        _add_cable_curve(stage, "/World/Cable", [(0, 0, 1), (0.1, 0, 1), (0.2, 0, 1)])
+                        paths = ("/World/Cable",)
+                    collider = UsdGeom.Cube.Define(stage, "/World/Collider").GetPrim()
+                    UsdPhysics.CollisionAPI.Apply(collider)
+                    if mode != "unbound":
+                        attrs = (
+                            {"dynamicFriction": 0.35, "staticFriction": 0.6, "restitution": 0.2}
+                            if mode == "authored"
+                            else {}
+                        )
+                        material = _bind_deformable_material(
+                            stage, stage.GetPrimAtPath(paths[0]), "/World/Material", **attrs
+                        )
+                        for path in paths[1:]:
+                            UsdShade.MaterialBindingAPI.Apply(stage.GetPrimAtPath(path)).Bind(
+                                material, materialPurpose="physics"
+                            )
+                        UsdShade.MaterialBindingAPI.Apply(collider).Bind(material, materialPurpose="physics")
+                        if mode == "authored":
+                            material.GetPrim().ApplyAPI("NewtonMaterialAPI")
+                            for name, value in {
+                                "torsionalFriction": 0.15,
+                                "rollingFriction": 0.08,
+                                "contactStiffness": 5000.0,
+                                "contactDamping": 200.0,
+                                "contactFrictionGain": 800.0,
+                                "contactAdhesion": 0.01,
+                            }.items():
+                                material.GetPrim().CreateAttribute(f"newton:{name}", Sdf.ValueTypeNames.Float).Set(
+                                    value
+                                )
+                    builder = newton.ModelBuilder()
+                    for name, value in defaults.items():
+                        setattr(builder.default_shape_cfg, name, value)
+                    result = builder.add_usd(stage)
+                    rigid_shape = result["path_shape_map"]["/World/Collider"]
+                    cable_shapes = [i for i in range(builder.shape_count) if i != rigid_shape]
+                    self.assertEqual(len(cable_shapes), 6 if welded else 2)
+                    for name, expected in expected_authored.items():
+                        values = getattr(builder, f"shape_material_{name}")
+                        if mode == "authored":
+                            self.assertAlmostEqual(values[rigid_shape], expected)
+                        elif mode == "unbound" or name not in ("mu", "restitution"):
+                            self.assertAlmostEqual(values[rigid_shape], defaults[name])
+                        for shape in cable_shapes:
+                            self.assertAlmostEqual(values[shape], values[rigid_shape])
+
+    def test_welded_cable_contact_material_difference_warns(self):
+        """Warn and use one representative contact material for welded capsules."""
+        from pxr import Sdf
+
+        stage = self._author_attached_cable_pair(gap=0.0)
+        for suffix, friction in (("A", 0.15), ("B", 0.35)):
+            material = _bind_deformable_material(
+                stage, stage.GetPrimAtPath(f"/World/Cable{suffix}"), f"/World/Material{suffix}"
+            )
+            material.GetPrim().ApplyAPI("NewtonMaterialAPI")
+            material.GetPrim().CreateAttribute("newton:rollingFriction", Sdf.ValueTypeNames.Float).Set(friction)
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "differing .*contact properties"):
+            builder.add_usd(stage)
+        self.assertEqual(builder.shape_count, 6)
+        for value in builder.shape_material_mu_rolling:
+            self.assertAlmostEqual(value, 0.15)
+
     def test_attachment_weld_policy_rejects_compliant_or_apart(self):
         """A curve-to-curve attachment welds only when hard AND coincident: a compliant
         (zero or finite stiffness) or spatially-apart junction leaves two independent

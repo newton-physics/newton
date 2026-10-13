@@ -25,7 +25,7 @@ from newton._src.geometry.sdf_hydroelastic import (
     unpack_hydro_voxel_coords,
     vec8f,
 )
-from newton._src.geometry.sdf_mc import get_triangle_fraction
+from newton._src.geometry.sdf_mc import _get_marching_cubes_class, get_triangle_fraction
 from newton._src.geometry.utils import _scan_scratch_size, scan_with_total
 from newton.geometry import HydroelasticSDF
 from newton.tests.unittest_utils import (
@@ -202,7 +202,7 @@ def test_mc_corner_offsets_match_canonical(test, device):
     """Verify canonical marching-cubes corner offsets."""
     offsets = wp.empty(8, dtype=wp.vec3i, device=device)
     wp.launch(_test_mc_corner_offsets, dim=8, inputs=[offsets], device=device)
-    expected = np.asarray(wp.MarchingCubes.CUBE_CORNER_OFFSETS, dtype=np.int32)
+    expected = np.asarray(_get_marching_cubes_class().CUBE_CORNER_OFFSETS, dtype=np.int32)
     np.testing.assert_array_equal(offsets.numpy(), expected)
 
 
@@ -1397,12 +1397,14 @@ def test_mujoco_warp_hydroelastic_speculative_activation(test, device):
     tid_to_cid = solver._contact_tid_to_cid.numpy()[:contact_count]
     solref = solver.mjw_data.contact.solref.numpy().reshape(-1, 2)
     solimp = solver.mjw_data.contact.solimp.numpy().reshape(-1, 5)
+    inverse_mass = float(np.sum(model.body_inv_mass.numpy()))  # Both fixture bodies have free joints.
     for tid, cid in enumerate(tid_to_cid):
         if cid < 0:
             continue
-        contact_ke = stiffness[tid] * (1.0 - solimp[cid, 1])
+        factor = inverse_mass * (1.0 - solimp[cid, 1])
+        contact_ke = stiffness[tid] * factor
         if damping[tid] > 0.0:
-            expected_timeconst = 2.0 / damping[tid]
+            expected_timeconst = 2.0 / (damping[tid] * factor)
             expected_dampratio = np.sqrt(1.0 / (expected_timeconst**2 * contact_ke))
         else:
             expected_timeconst = np.sqrt(1.0 / contact_ke)
@@ -2370,7 +2372,6 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
 
     # Calculate expected and measured penetration for each case
     total_force = gravity * mass_upper + external_force
-    effective_mass = (mass_lower * mass_upper) / (mass_lower + mass_upper)
 
     for i in range(len(test_cases)):
         lower_shape = lower_shape_indices[i]
@@ -2378,10 +2379,9 @@ def test_mujoco_hydroelastic_penetration_depth(test, device):
         kh_val = kh_values[i]
         area = areas[i]
 
-        # Expected: depth = F / (k_eff * A_eff) / mujoco_scaling
+        # Force-space stiffness gives depth = F / (k_eff * A_eff), independent of body mass.
         effective_area = area
         expected = total_force / (kh_val * effective_area)
-        expected /= effective_mass
 
         # Filter depths for this shape pair
         mask = ((shape_pairs[:, 0] == lower_shape) & (shape_pairs[:, 1] == upper_shape)) | (

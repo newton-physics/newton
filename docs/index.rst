@@ -37,7 +37,7 @@ Newton Physics
    Conventions <concepts/conventions>
    USD Parsing <concepts/usd_parsing>
    Custom Attributes <concepts/custom_attributes>
-   Extended Attributes <concepts/extended_attributes>
+   Solver Observables <concepts/solver_observables>
    Collisions and Contacts <concepts/collisions>
    Simulation Tuning <concepts/simulation_tuning>
    Coupled Solvers <concepts/coupling>
@@ -73,3 +73,4 @@ Newton Physics
    :caption: Project Links
 
     GitHub <https://github.com/newton-physics/newton>
+    Publications <https://github.com/newton-physics/newton/blob/main/PUBLICATIONS.md>

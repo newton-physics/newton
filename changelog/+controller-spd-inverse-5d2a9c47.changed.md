@@ -1,0 +1,1 @@
+Speed up the operational-space controllers' mass matrix inversions with thread-local Cholesky factors and parallel column solves on CUDA. Factor each matrix once on CPU and for larger CUDA matrices to avoid redundant work and mixed-fleet slowdowns. No migration is required.

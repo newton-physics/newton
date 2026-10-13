@@ -1,0 +1,1 @@
+Fix the `SolverImplicitMPM` Gauss-Seidel rheology solvers (`gs`, `gs-soa`, `gs-batched`) reporting NaN residuals and running to `max_iterations` on sparse grids with a positive `max_active_cell_count`. Stale memory for inactive strain nodes prevented convergence detection.
