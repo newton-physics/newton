@@ -25,7 +25,7 @@ class TestActuatorDriveAPI(unittest.TestCase):
         )
         self.assertEqual(
             typing.get_type_hints(actuators.JointSpaceResponse.refresh),
-            {"state": newton.State, "return": type(None)},
+            {"state": newton.State, "include_armature": bool, "return": type(None)},
         )
 
     def test_public_base_names_and_deprecated_aliases(self):
