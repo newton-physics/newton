@@ -47,6 +47,7 @@ from .implicit_mpm_solver_kernels import (
     advect_particles,
     allocate_by_voxels,
     average_elastic_parameters,
+    average_element_yield_parameters,
     build_active_particle_mask,
     collision_weight_field,
     compliance_form,
@@ -81,6 +82,7 @@ from .implicit_mpm_solver_kernels import (
     mat31,
     mat66,
     node_color,
+    normalize_strain_yield_parameters,
     record_volume_rebuild_status,
     reset_mpm_collider_history,
     reset_mpm_grid_warmstart,
@@ -1486,6 +1488,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         self._grid_status = None
         self._grid_accumulated_status = None
         self._grid_point_mask = None
+        self._element_yield_parameters = None
         self.solver = _resolve_solver_spec(config.solver, self.velocity_basis)
         self.coloring = any("gauss-seidel" in solver or "gs" in solver for solver in self.solver)
         self.apic = config.transfer_scheme == "apic"
@@ -3341,6 +3344,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         scratch: ImplicitMPMScratchpad,
         inv_cell_volume: float,
     ):
+        self._element_yield_parameters = None
         if self.strain_basis in ("Q1", "S2"):
             scratch.strain_node_particle_volume += EPSILON
             return None, None
@@ -3373,6 +3377,19 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         M_ev = wp.empty(shape=(M_elt_wise.nrow, *M_elt_wise.block_shape), dtype=M_elt_wise.scalar_type)
         M_diag = scratch.strain_node_particle_volume.reshape((-1, nodes_per_elt))
         rotated_volume = wp.empty_like(M_diag)
+
+        if nodes_per_elt > 1:
+            self._element_yield_parameters = wp.empty(M_elt_wise.nrow, dtype=YieldParamVec)
+            wp.launch(
+                average_element_yield_parameters,
+                dim=M_elt_wise.nrow,
+                inputs=[
+                    nodes_per_elt,
+                    scratch.strain_node_particle_volume,
+                    scratch.strain_yield_parameters_field.dof_values,
+                    self._element_yield_parameters,
+                ],
+            )
 
         wp.launch(
             compute_eigenvalues,
@@ -3447,14 +3464,26 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 inputs=[M_diag, scratch.stress_field.dof_values],
             )
 
-        # Yield parameters are integrated, scale with inverse rotated volume
-        # to correctly recover uniform parameters after eigenbasis rotation
+        # A zero-mean mode has positive mass but no integral to normalize by.
+        # Use its element's average material parameters instead.
         yield_volume = rotated_volume if rotated_volume is not None else M_diag
-        wp.launch(
-            inverse_scale_vector,
-            dim=node_count,
-            inputs=[yield_volume, scratch.strain_yield_parameters_field.dof_values],
-        )
+        if self._element_yield_parameters is not None:
+            wp.launch(
+                normalize_strain_yield_parameters,
+                dim=node_count,
+                inputs=[
+                    M_ev.shape[1],
+                    yield_volume,
+                    self._element_yield_parameters,
+                    scratch.strain_yield_parameters_field.dof_values,
+                ],
+            )
+        else:
+            wp.launch(
+                inverse_scale_vector,
+                dim=node_count,
+                inputs=[yield_volume, scratch.strain_yield_parameters_field.dof_values],
+            )
 
     def _unapply_strain_eigenbasis(
         self,
