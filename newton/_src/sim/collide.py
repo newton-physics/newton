@@ -345,14 +345,11 @@ def compute_shape_aabbs(
     contact_generation: wp.array[wp.int32],
     broad_phase_pair_count: wp.array[wp.int32],
     num_contact_counters: int,
-    # Per-shape nonzero when its texture SDF is queried at unit scale; empty when no shape is.
-    shape_unit_scale_sdf: wp.array[wp.int32],
     # outputs
     aabb_lower: wp.array[wp.vec3],
     aabb_upper: wp.array[wp.vec3],
     geom_data: wp.array[wp.vec4],
     geom_xform: wp.array[wp.transform],
-    unit_scale_sdf_rescaled: wp.array[wp.int32],
 ):
     """Compute AABBs, narrow-phase geometry data, and zero collision counters.
 
@@ -394,14 +391,6 @@ def compute_shape_aabbs(
 
     # Check if this is an infinite plane or a shape with a pre-computed local AABB
     scale = shape_scale[shape_id]
-    if shape_unit_scale_sdf.shape[0] > 0:
-        if shape_unit_scale_sdf[shape_id] != 0 and (scale[0] != 1.0 or scale[1] != 1.0 or scale[2] != 1.0):
-            if wp.atomic_max(unit_scale_sdf_rescaled, 0, 1) == 0:
-                wp.printf(
-                    "Warning: shape_scale of shape %d changed, but its texture SDF is queried at unit scale. "
-                    "Construct CollisionPipeline with dynamic_shape_scale=True, which is slower.\n",
-                    shape_id,
-                )
     is_infinite_plane = (geo_type == GeoType.PLANE) and (scale[0] == 0.0 and scale[1] == 0.0)
     has_local_aabb = geo_type == GeoType.MESH or geo_type == GeoType.HFIELD or geo_type == GeoType.CONVEX_MESH
 
@@ -1439,8 +1428,9 @@ class CollisionPipeline:
                 :attr:`Model.shape_scale <newton.Model.shape_scale>` on every call, which is slower.
                 Enable this when such a shape's scale changes after construction. When ``False`` and
                 every such shape has unit scale at construction, these queries are compiled for unit
-                scale; rescaling one of these shapes afterwards makes the device print a warning once
-                and a later :meth:`collide` call outside graph capture raise :class:`RuntimeError`.
+                scale; routing a rescaled shape through mesh-SDF collision makes the device print a
+                warning once and a later :meth:`collide` call outside graph capture raise
+                :class:`RuntimeError`. Mesh-plane and mesh-convex contacts are unaffected.
                 Ignored when ``narrow_phase`` is provided. Defaults to ``False``.
 
         .. experimental::
@@ -1847,6 +1837,8 @@ class CollisionPipeline:
         self._unit_scale_sdf_rescaled = wp.zeros(min(len(shape_unit_scale_sdf), 1), dtype=wp.int32, device=device)
         self._unit_scale_sdf_rescaled_host = None
         if unit_scale_sdf_shapes is not None:
+            self.narrow_phase._shape_unit_scale_sdf = self._shape_unit_scale_sdf
+            self.narrow_phase._unit_scale_sdf_rescaled = self._unit_scale_sdf_rescaled
             self._unit_scale_sdf_rescaled_host = wp.zeros(
                 1, dtype=wp.int32, device="cpu", pinned=wp.get_device(device).is_cuda
             )
@@ -2426,20 +2418,16 @@ class CollisionPipeline:
                 contacts.contact_generation,
                 self.broad_phase_pair_count,
                 contacts.contact_counters.shape[0],
-                self._shape_unit_scale_sdf,
             ],
             outputs=[
                 self.narrow_phase.shape_aabb_lower,
                 self.narrow_phase.shape_aabb_upper,
                 self.geom_data,
                 self.geom_transform,
-                self._unit_scale_sdf_rescaled,
             ],
             device=self.device,
             record_tape=False,
         )
-        if check_unit_scale_sdf:
-            wp.copy(self._unit_scale_sdf_rescaled_host, self._unit_scale_sdf_rescaled)
 
         if speculative_active:
             wp.launch(
@@ -2611,6 +2599,8 @@ class CollisionPipeline:
             device=self.device,
             **narrow_phase_extension_kwargs,
         )
+        if check_unit_scale_sdf:
+            wp.copy(self._unit_scale_sdf_rescaled_host, self._unit_scale_sdf_rescaled)
 
         # The reducer's counters are reused by the next pass, so latch losses on this contact stream.
         reducer = self.narrow_phase.global_contact_reducer

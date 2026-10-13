@@ -4124,6 +4124,60 @@ def test_unit_scale_sdf_rescale_raises(test, device):
                 pipeline.collide(state, contacts)
 
 
+def test_unit_scale_sdf_rescale_on_plane_matches_rebuild(test, device):
+    """Allow rescaled SDF meshes on planes through eager calls and captured graphs."""
+    cube = newton.Mesh.create_box(0.05, 0.05, 0.05, compute_inertia=False)
+    cube.build_sdf(max_resolution=32, device=device)
+
+    def build(scale, with_terrain):
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        body = builder.add_body(xform=wp.transform((0.0, 0.0, 0.06), wp.quat_identity()))
+        builder.add_shape_mesh(body=body, mesh=cube, scale=scale)
+        if with_terrain:
+            # Keep another SDF route active, away from the rescaled mesh.
+            builder.add_shape_heightfield(
+                heightfield=newton.Heightfield(data=np.zeros((3, 3), dtype=np.float32), nrow=3, ncol=3, hx=1.0, hy=1.0),
+                xform=wp.transform((5.0, 0.0, 0.0), wp.quat_identity()),
+            )
+            other_body = builder.add_body(xform=wp.transform((5.0, 0.0, 0.04), wp.quat_identity()))
+            builder.add_shape_mesh(body=other_body, mesh=cube)
+        return builder.finalize(device=device)
+
+    for broad_phase in ("nxn", "sap", "explicit"):
+        for with_terrain in (False, True):
+            for use_graph in (False, True):
+                with test.subTest(broad_phase=broad_phase, with_terrain=with_terrain, use_graph=use_graph):
+                    model = build((1.0, 1.0, 1.0), with_terrain)
+                    rebuilt = build((2.0, 2.0, 2.0), with_terrain)
+                    pipeline = newton.CollisionPipeline(model, broad_phase=broad_phase, deterministic=True)
+                    contacts = pipeline.contacts()
+                    state = model.state()
+                    pipeline.collide(state, contacts)
+                    if use_graph:
+                        with wp.ScopedCapture(device=device) as capture:
+                            pipeline.collide(state, contacts)
+                    _assign_rebuilt_shape_scale(model, rebuilt)
+                    if use_graph:
+                        wp.capture_launch(capture.graph)
+                    else:
+                        pipeline.collide(state, contacts)
+                    points = _sorted_contact_points(contacts)
+                    expected_pipeline = newton.CollisionPipeline(rebuilt, broad_phase=broad_phase, deterministic=True)
+                    if with_terrain:
+                        test.assertGreater(int(pipeline.narrow_phase.shape_pairs_mesh_mesh_count.numpy()[0]), 0)
+                    expected = expected_pipeline.contacts()
+                    expected_pipeline.collide(rebuilt.state(), expected)
+                    expected_points = _sorted_contact_points(expected)
+                    test.assertGreater(len(expected_points), 0)
+                    test.assertEqual(len(points), len(expected_points))
+                    np.testing.assert_allclose(points, expected_points, atol=1.0e-5)
+                    test.assertEqual(int(pipeline._unit_scale_sdf_rescaled.numpy()[0]), 0)
+                    pipeline.collide(state, contacts)
+                    test.assertEqual(int(pipeline._unit_scale_sdf_rescaled.numpy()[0]), 0)
+                    pipeline.collide(state, contacts)
+
+
 def test_dynamic_shape_scale_graph_replay_matches_rebuild(test, device):
     """Replay a graph captured before a texture-SDF rescale and match a rebuilt model's contacts."""
     cube = newton.Mesh.create_box(0.05, 0.05, 0.05, compute_inertia=False)
@@ -4237,6 +4291,13 @@ add_function_test(
     TestDeterministicPipeline,
     "test_unit_scale_sdf_rescale_raises",
     test_unit_scale_sdf_rescale_raises,
+    devices=get_cuda_test_devices(),
+    check_output=False,
+)
+add_function_test(
+    TestDeterministicPipeline,
+    "test_unit_scale_sdf_rescale_on_plane_matches_rebuild",
+    test_unit_scale_sdf_rescale_on_plane_matches_rebuild,
     devices=get_cuda_test_devices(),
     check_output=False,
 )
