@@ -217,7 +217,16 @@ def check_particle_proximal_convergence_kernel(
     velocity_tolerance: float,
     failed: wp.array[int],
 ):
-    """Flag particle velocity changes that fail the proximal convergence check."""
+    """Flag particle velocity changes that fail the proximal convergence check.
+
+    Args:
+        previous: Velocities from the previous ADMM iteration [m/s], shape [particle_count].
+        current: Velocities after the participant solve [m/s], shape [particle_count].
+        proximal_mass: Added proximal masses [kg], shape [particle_count].
+        augmented_mass: Base masses plus proximal masses [kg], shape [particle_count].
+        velocity_tolerance: Absolute linear velocity tolerance [m/s].
+        failed: Shared failure flag, shape [1], set to one when a check fails.
+    """
     i = wp.tid()
     factor = _proximal_factor(proximal_mass[i], augmented_mass[i])
     if not _proximal_passes(_norm(current[i] - previous[i]), factor, velocity_tolerance):
@@ -236,7 +245,22 @@ def check_body_proximal_convergence_kernel(
     angular_velocity_tolerance: float,
     failed: wp.array[int],
 ):
-    """Check body velocity changes using separate linear and angular tolerances."""
+    """Check body velocity changes using separate linear and angular tolerances.
+
+    Args:
+        previous: Velocities from the previous ADMM iteration, linear [m/s] then
+            angular [rad/s], shape [body_count].
+        current: Velocities after the participant solve, linear [m/s] then
+            angular [rad/s], shape [body_count].
+        proximal_mass: Added proximal masses [kg], shape [body_count].
+        proximal_inertia: Added scalar proximal inertias [kg*m^2], shape [body_count].
+        augmented_mass: Base masses plus proximal masses [kg], shape [body_count].
+        augmented_inertia: Base inertia tensors plus the proximal diagonal
+            contribution [kg*m^2], shape [body_count].
+        linear_velocity_tolerance: Absolute linear velocity tolerance [m/s].
+        angular_velocity_tolerance: Absolute angular velocity tolerance [rad/s].
+        failed: Shared failure flag, shape [1], set to one when a check fails.
+    """
     i = wp.tid()
     delta = current[i] - previous[i]
     linear_factor = _proximal_factor(proximal_mass[i], augmented_mass[i])
@@ -258,7 +282,21 @@ def check_joint_proximal_convergence_kernel(
     angular_velocity_tolerance: float,
     failed: wp.array[int],
 ):
-    """Check each joint velocity change using its linear or angular tolerance."""
+    """Check each joint velocity change using its linear or angular tolerance.
+
+    Args:
+        previous: Velocities from the previous ADMM iteration [m/s or rad/s],
+            shape [joint_dof_count].
+        current: Velocities after the participant solve [m/s or rad/s],
+            shape [joint_dof_count].
+        proximal_factor: Dimensionless proximal factors, shape [joint_dof_count].
+        joint_qd_start: First velocity index for each joint, followed by the total
+            velocity count, shape [joint_count + 1].
+        joint_dof_dim: Linear and angular velocity counts per joint, shape [joint_count, 2].
+        linear_velocity_tolerance: Absolute linear velocity tolerance [m/s].
+        angular_velocity_tolerance: Absolute angular velocity tolerance [rad/s].
+        failed: Shared failure flag, shape [1], set to one when a check fails.
+    """
     joint = wp.tid()
     start = joint_qd_start[joint]
     linear_count = joint_dof_dim[joint, 0]

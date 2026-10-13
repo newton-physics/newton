@@ -605,11 +605,9 @@ class SolverCoupledADMM(SolverCoupled):
         their respective tolerances; joint velocities are checked per DOF.
 
         These checks measure agreement at the coupling interface and velocity
-        changes between ADMM iterations. They do not bound integration error or
-        guarantee nonlinear solver stability. Nonfinite residuals fail convergence.
-        Empty interfaces pass after ``min_iterations``
-        only if any remaining proximal contributions also pass, without certifying
-        state finiteness outside the checked quantities.
+        changes between ADMM iterations. Nonfinite residuals fail convergence.
+        With empty interfaces, convergence requires ``min_iterations`` and
+        passing all applicable proximal checks.
         All tolerances must be finite, nonnegative single-precision values.
         """
 
