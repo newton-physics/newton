@@ -190,10 +190,13 @@ def parse_urdf(
             into ``joint_target_kd``; absent values use ``default_joint_cfg.target_kd``.
             In drive mode, passive damping uses ``default_joint_cfg.damping``
             for revolute/prismatic joints and zero for planar joints.
-            Deprecated default: None retains the drive mapping in Newton 1.7
-            and warns when the URDF authors damping. The default will become
-            ``"passive"`` in Newton 1.8. Pass either mode explicitly to silence
-            the warning. XPBD/VBD do not consume passive joint damping.
+            XPBD/VBD do not consume passive joint damping.
+
+            .. deprecated:: 1.7
+                The implicit None default retains the drive mapping and warns
+                when the URDF authors damping. The default will become
+                ``"passive"`` in Newton 1.8. Pass either mode explicitly to
+                silence the warning; both explicit modes remain supported.
     """
     if joint_damping_mode not in (None, "passive", "drive"):
         raise ValueError("joint_damping_mode must be 'passive', 'drive', or None")

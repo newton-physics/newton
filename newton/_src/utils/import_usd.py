@@ -299,26 +299,31 @@ def parse_usd(
             where ``shape_margin`` is computed as ``mjc_margin - mjc_gap``.
             Use for USD files authored against MuJoCo <= 3.8. Defaults to
             False (identity translation matching MuJoCo 3.9 semantics).
-        legacy_angular_velocity_units: Deprecated in Newton 1.7 and scheduled
-            for removal in Newton 1.8;
-            enabling this option emits a :class:`DeprecationWarning`.
-            If True, restore Newton 1.6 joint-state angular velocity handling:
+        legacy_angular_velocity_units: If True, restore Newton 1.6 joint-state angular velocity handling:
             resolved ``state:angular:physics:velocity``
             and D6 ``state:rot*:physics:velocity`` values are copied into
             ``joint_qd`` without converting degrees/s to radians/s. Applies
             to revolute, native D6, and merged joints. Rigid-body velocities,
             linear joint velocities, positions, and drive targets retain their
             usual unit conversion. Defaults to False.
-        legacy_springref_units: Deprecated in Newton 1.7 and scheduled
-            for removal in Newton 1.8;
-            enabling this option emits a :class:`DeprecationWarning`.
-            If True, restore Newton 1.6 handling of ``mjc:springref`` as an
+
+            .. deprecated:: 1.7
+                This temporary flag will be removed in Newton 1.8. Enabling
+                it emits a :class:`DeprecationWarning`. Migrate authored
+                asset values to their documented units and leave it False.
+
+        legacy_springref_units: If True, restore Newton 1.6 handling of ``mjc:springref`` as an
             already converted Newton value, ignoring
             ``mjc:compiler:angle`` for spring references only. ``mjc:ref``
             conversion is unchanged. Requires registered MuJoCo custom
             attributes to load spring references. Defaults to False, which
             interprets revolute spring references using the compiler's angle
             units (degrees if unauthored) and converts them to radians.
+
+            .. deprecated:: 1.7
+                This temporary flag will be removed in Newton 1.8. Enabling
+                it emits a :class:`DeprecationWarning`. Migrate authored
+                asset values to their documented units and leave it False.
 
         return_deformable_results: If True, include the experimental deformable entries in the
             returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` /
