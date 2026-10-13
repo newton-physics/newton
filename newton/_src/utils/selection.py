@@ -2226,6 +2226,26 @@ def _gather_object_vec3_kernel(
     out[object_index, i] = src[starts[object_index] + i]
 
 
+@wp.kernel
+def _gather_object_float_kernel(
+    src: wp.array[wp.float32],
+    starts: wp.array[wp.int32],
+    out: wp.array2d[wp.float32],
+):
+    object_index, i = wp.tid()
+    out[object_index, i] = src[starts[object_index] + i]
+
+
+@wp.kernel(enable_backward=False)
+def _gather_object_int_kernel(
+    src: wp.array[wp.int32],
+    starts: wp.array[wp.int32],
+    out: wp.array2d[wp.int32],
+):
+    object_index, i = wp.tid()
+    out[object_index, i] = src[starts[object_index] + i]
+
+
 @wp.kernel(enable_backward=False)
 def _mark_object_membership_kernel(indices: wp.array[wp.int32], membership: wp.array[wp.int32]):
     i = indices[wp.tid()]
@@ -2743,12 +2763,52 @@ class _DeformableViewBase:
 
 
 class _DeformableParticleView(_DeformableViewBase):
-    """Share particle state access without prescribing a geometric family."""
+    """Share particle state and property access without prescribing a geometric family."""
 
     @property
     def particles_per_deformable_object(self) -> int:
         """Common particle count in each selected deformable object."""
         return self._element_count("particle")
+
+    def get_particle_inv_masses(self, source: Model) -> wp.array2d[wp.float32]:
+        """Return particle inverse masses [1/kg] for the selected deformable objects.
+
+        The result shares Model storage or uses a reusable read buffer. Use
+        ``wp.clone()`` to save an independent snapshot; do not edit the result.
+
+        Args:
+            source: Model whose particle numbering matches this view.
+                This property is not stored on State.
+
+        Returns:
+            Inverse masses with shape ``(count, particles_per_deformable_object)``.
+
+        Raises:
+            AttributeError: If the source does not provide particle inverse masses.
+            ValueError: If particle counts differ or the source array's rank,
+                dtype, device, or length is incompatible with the selection.
+        """
+        return self._gather("particle", "particle_inv_mass", source, _gather_object_float_kernel, wp.float32)
+
+    def get_particle_flags(self, source: Model) -> wp.array2d[wp.int32]:
+        """Return :class:`~newton.ParticleFlags` bitmasks for the selected deformable objects.
+
+        The result shares Model storage or uses a reusable read buffer. Use
+        ``wp.clone()`` to save an independent snapshot; do not edit the result.
+
+        Args:
+            source: Model whose particle numbering matches this view.
+                This property is not stored on State.
+
+        Returns:
+            Integer bitmasks with shape ``(count, particles_per_deformable_object)``.
+
+        Raises:
+            AttributeError: If the source does not provide particle flags.
+            ValueError: If particle counts differ or the source array's rank,
+                dtype, device, or length is incompatible with the selection.
+        """
+        return self._gather("particle", "particle_flags", source, _gather_object_int_kernel, wp.int32)
 
     def get_particle_positions(
         self,
@@ -3010,6 +3070,7 @@ class DeformableSurfaceView(_DeformableParticleView):
        This API may change while deformable selection is developed.
 
     Currently supports triangle surfaces with particle, triangle, and edge ranges.
+    Particle getters also read inverse masses and flags from the Model.
     The family describes geometry, not a solver. Matching curves and volumes are
     excluded from the selection.
 
@@ -3041,6 +3102,7 @@ class DeformableVolumeView(_DeformableParticleView):
        This API may change while deformable selection is developed.
 
     Currently supports tetrahedral volumes with particle and tetrahedron ranges.
+    Particle getters also read inverse masses and flags from the Model.
     The family describes geometry, not a solver: solver-owned MPM data is not
     supported. Matching curves and surfaces are excluded from the selection.
 

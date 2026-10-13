@@ -85,6 +85,19 @@ use a reusable read buffer. Use the setter to write the changes. Values retain
 the full view shape, even when the mask selects only one row. Getters can also
 read a model's initial state arrays, for example to save reset values.
 
+Surface and volume views can also snapshot inverse masses and flags from the
+Model. These scalar properties have the same object and particle layout:
+
+.. testcode:: selection-overview
+
+    inverse_masses_default = wp.clone(cloths.get_particle_inv_masses(model))
+    flags_default = wp.clone(cloths.get_particle_flags(model))
+    print(inverse_masses_default.shape, flags_default.shape)
+
+.. testoutput:: selection-overview
+
+    (3, 4) (3, 4)
+
 Array and mask shapes
 ---------------------
 

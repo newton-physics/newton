@@ -109,6 +109,27 @@ def _add_test_soft_body(builder, label="soft"):
     )
 
 
+def _particle_property_model(device, *, irregular=False, requires_grad=False):
+    """Create three worlds with distinct cloth and volume particle properties."""
+    builder = newton.ModelBuilder()
+    for world in range(3):
+        builder.begin_world()
+        for _ in range(world if irregular else 0):
+            builder.add_particle(wp.vec3(0.0), wp.vec3(0.0), 100.0)
+        _add_test_cloth(builder)
+        _add_test_soft_body(builder)
+        builder.particle_mass[-8:] = [mass * 2**world for mass in (0, 1, 2, 4, 8, 16, 32, 64)]
+        builder.particle_flags[-8:] = [0, 1, 0, 1, 1, 0, 1, 0]
+        builder.end_world()
+    return builder.finalize(device=device, requires_grad=requires_grad)
+
+
+@wp.kernel
+def _sum_particle_properties(values: wp.array2d[wp.float32], loss: wp.array[float]):
+    row, particle = wp.tid()
+    wp.atomic_add(loss, 0, values[row, particle])
+
+
 @wp.kernel
 def _sum_first_component(values: wp.array2d[Any], loss: wp.array[float]):
     row, element = wp.tid()
@@ -313,6 +334,10 @@ class TestDeformableSelection(unittest.TestCase):
             view.elements_per_deformable_object("particle")
         with self.assertRaisesRegex(ValueError, "Varying particle counts.*ranges"):
             view.get_particle_positions(model.state())
+        for getter in (view.get_particle_inv_masses, view.get_particle_flags):
+            with self.subTest(getter=getter.__name__):
+                with self.assertRaisesRegex(ValueError, "Varying particle counts.*ranges"):
+                    getter(model)
         with self.assertRaisesRegex(ValueError, "Varying particle counts.*ranges"):
             view.set_particle_positions(model.state(), wp.zeros((2, 4), dtype=wp.vec3))
         view = DeformableSurfaceView(model, "/World/ClothA")
@@ -783,7 +808,90 @@ class TestDeformableAndArticulationViews(unittest.TestCase):
 
 
 class TestDeformableStateReads(unittest.TestCase):
-    """Read regular and irregular state layouts, including captured gathers."""
+    """Read regular and irregular state and property layouts, including captured gathers."""
+
+    def test_particle_property_snapshots(self):
+        """Read selected Model properties without changing saved snapshots."""
+        for device in get_test_devices():
+            for irregular in (False, True):
+                model = _particle_property_model(device, irregular=irregular)
+                for view_type, label, row, flags in (
+                    (DeformableSurfaceView, "cloth", [0.0, 1.0, 0.5, 0.25], [0, 1, 0, 1]),
+                    (DeformableVolumeView, "soft", [0.125, 0.0625, 0.03125, 0.015625], [1, 0, 1, 0]),
+                ):
+                    with self.subTest(device=device, irregular=irregular, family=label):
+                        view = view_type(model, label)
+                        inverse_masses = np.array(row, dtype=np.float32)[None, :] / np.array([1, 2, 4])[:, None]
+                        for getter, source, expected in (
+                            (view.get_particle_inv_masses, model.particle_inv_mass, inverse_masses),
+                            (view.get_particle_flags, model.particle_flags, np.tile(flags, (3, 1))),
+                        ):
+                            with self.subTest(getter=getter.__name__):
+                                original = wp.clone(source)
+                                values = getter(model)
+                                self.assertEqual(values.shape, view.get_particle_positions(model).shape)
+                                self.assertEqual(values.shape, (3, 4))
+                                self.assertIs(values.dtype, source.dtype)
+                                np.testing.assert_array_equal(values.numpy(), expected)
+                                saved = wp.clone(values)
+                                source.zero_()
+                                self.assertIs(getter(model), values)
+                                np.testing.assert_array_equal(values.numpy(), np.zeros((3, 4)))
+                                np.testing.assert_array_equal(saved.numpy(), expected)
+                                wp.copy(source, original)
+                                with self.assertRaises(AttributeError):
+                                    getter(model.state())
+
+    def test_particle_property_gradients(self):
+        """Propagate inverse-mass gradients only to the selected family's particles."""
+        for device in get_test_devices():
+            for irregular in (False, True):
+                model = _particle_property_model(device, irregular=irregular, requires_grad=True)
+                for view_type, label, offset in (
+                    (DeformableSurfaceView, "cloth", 0),
+                    (DeformableVolumeView, "soft", 4),
+                ):
+                    with self.subTest(device=device, irregular=irregular, family=label):
+                        view = view_type(model, label)
+                        loss = wp.zeros(1, device=device, requires_grad=True)
+                        with wp.Tape() as tape:
+                            values = view.get_particle_inv_masses(model)
+                            wp.launch(_sum_particle_properties, dim=values.shape, inputs=[values, loss], device=device)
+                        tape.backward(loss)
+                        expected = np.zeros(model.particle_count)
+                        for start in (0, 9, 19) if irregular else (0, 8, 16):
+                            expected[start + offset : start + offset + 4] = 1.0
+                        np.testing.assert_array_equal(model.particle_inv_mass.grad.numpy(), expected)
+                        self.assertFalse(view.get_particle_flags(model).requires_grad)
+                        tape.zero()
+
+    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA graph capture")
+    def test_particle_property_capture(self):
+        """Capture warmed Model reads and observe property changes on replay without allocations."""
+        device = wp.get_device("cuda:0")
+        for irregular in (False, True):
+            model = _particle_property_model(device, irregular=irregular)
+            for view_type, label in ((DeformableSurfaceView, "cloth"), (DeformableVolumeView, "soft")):
+                view = view_type(model, label)
+                for getter, source in (
+                    (view.get_particle_inv_masses, model.particle_inv_mass),
+                    (view.get_particle_flags, model.particle_flags),
+                ):
+                    with self.subTest(irregular=irregular, family=label, getter=getter.__name__):
+                        original = wp.clone(source)
+                        result = getter(model)
+                        output = wp.clone(result)
+                        expected = output.numpy().copy()
+                        with wp.ScopedMempool(device, enable=False):
+                            with wp.ScopedCapture(device) as capture:
+                                wp.copy(output, getter(model))
+                        wp.capture_launch(capture.graph)
+                        np.testing.assert_array_equal(output.numpy(), expected)
+                        source.zero_()
+                        wp.capture_launch(capture.graph)
+                        np.testing.assert_array_equal(output.numpy(), np.zeros((3, 4)))
+                        self.assertIs(getter(model), result)
+                        wp.copy(source, original)
 
     def test_getters_release_discarded_states(self):
         """Release discarded state arrays and getter buffers while keeping the view usable."""
