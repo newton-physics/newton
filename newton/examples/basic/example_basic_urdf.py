@@ -129,7 +129,9 @@ class Example:
         self.contact_state.body_q = wp.clone(self.state_0.body_q)
         self.contact_state.body_qd = wp.clone(self.state_0.body_qd)
         if self.solver_type == "kamino":
-            self.solver_observables = self.solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+            self.solver_observables = self.solver.observables(
+                contacts=self.contacts, kinds={self.solver.ObservableKind.CONTACT_F}
+            )
 
         self.viewer.set_model(self.model)
 
