@@ -1373,6 +1373,7 @@ def test_articulation_contact_drift(test, device):
         floating=True,
         enable_self_collisions=False,
         ignore_inertial_definitions=True,
+        joint_damping_mode="passive",
     )
     armature_inertia = wp.mat33(np.eye(3, dtype=np.float32)) * 0.01
     for i in range(builder.body_count):

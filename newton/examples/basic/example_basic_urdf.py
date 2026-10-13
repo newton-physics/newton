@@ -61,13 +61,8 @@ class Example:
             floating=True,
             enable_self_collisions=False,
             ignore_inertial_definitions=True,  # Use geometry-based inertia for stability
+            joint_damping_mode="drive",
         )
-
-        # Preserve the drive damping used before URDF damping became passive damping.
-        for joint_idx, label in enumerate(quadruped.joint_label):
-            if label.endswith(("_HFE", "_KFE")):
-                dof = quadruped.joint_qd_start[joint_idx]
-                quadruped.joint_target_kd[dof] = 0.0
 
         # apply additional inertia to the bodies for better stability
         body_armature = 0.01
