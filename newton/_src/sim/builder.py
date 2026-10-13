@@ -173,10 +173,10 @@ not show up in builder-state comparisons or survive past either builder's lifeti
 
 
 def _coacd_thread_limits() -> Callable[[], AbstractContextManager[Any]]:
-    """Return a context factory under which the installed CoACD decomposes repeatably for a fixed seed.
+    """Return a context factory under which the installed CoACD decomposes repeatably where Newton can enforce it.
 
-    CoACD before 1.0.14 collects parallel results in thread-completion order, so it repeats only on
-    one OpenMP thread; later releases are independent of thread scheduling and run unchanged.
+    CoACD before 1.0.14 collects parallel results in thread-completion order; OpenMP-backed builds repeat on
+    one OpenMP thread, and C++-threaded builds (macOS wheels 1.0.12-1.0.13) stay unrepeatable.
     """
     try:
         version = re.match(r"(\d+)\.(\d+)\.(\d+)", importlib.metadata.version("coacd"))
@@ -9022,8 +9022,10 @@ class ModelBuilder:
             For ``coacd`` and ``vhacd``, each geometrically connected component
             is decomposed separately and may produce one or more convex shapes,
             each limited to the source mesh's ``maxhullvert`` vertices.
-            CoACD decompositions repeat across runs for a fixed ``seed``; releases before
-            ``coacd`` 1.0.14 need ``threadpoolctl`` for this and run on one OpenMP thread.
+            CoACD decompositions repeat across runs for a fixed ``seed`` with ``coacd`` 1.0.14 or later.
+            OpenMP-backed builds of earlier releases repeat when ``threadpoolctl`` is installed, by running on
+            one OpenMP thread. The macOS wheels of ``coacd`` 1.0.12-1.0.13 use C++ threads that this cannot
+            limit; use ``coacd>=1.0.14`` there.
 
         The ``raise_on_failure`` parameter controls the behavior when the remeshing fails:
             - If `True`, an exception is raised when the remeshing fails.
