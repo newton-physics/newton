@@ -4,11 +4,9 @@
 from __future__ import annotations
 
 import copy
-import inspect
 import itertools
 import logging
 import math
-import os
 import re
 import warnings
 from dataclasses import dataclass
@@ -27,6 +25,7 @@ import numpy as np
 import warp as wp
 
 from ..core import quat_between_axes
+from ..core._warnings import _external_warning_stacklevel
 from ..core.types import Axis, Transform
 from ..geometry import Mesh, ShapeFlags, compute_inertia_sphere
 from ..sim.builder import ModelBuilder
@@ -74,7 +73,6 @@ logger = logging.getLogger("newton")
 
 AttributeFrequency = Model.AttributeFrequency
 
-_NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir)) + os.sep
 
 # `UsdPreviewSurface`'s schema default for `diffuseColor`. A visual shape whose prim binds no
 # material is given this rather than left for ModelBuilder's per-shape debug palette, which
@@ -115,24 +113,8 @@ def _warn_mirrored_body_transform(usd_prim, key: str, xform_cache) -> None:
             "spurious rotation. Bake the reflection into the mesh geometry "
             "(negate vertices, flip triangle winding) and re-author the body "
             "with a proper transform before import.",
-            stacklevel=_external_stacklevel(),
+            stacklevel=_external_warning_stacklevel(),
         )
-
-
-def _external_stacklevel() -> int:
-    """Return a ``stacklevel`` that points past all ``newton._src`` frames."""
-    frame = inspect.currentframe()
-    if frame is None:
-        return 2
-    frame = frame.f_back
-    stacklevel = 1
-    try:
-        while frame is not None and os.path.normpath(frame.f_code.co_filename).startswith(_NEWTON_SRC_DIR):
-            frame = frame.f_back
-            stacklevel += 1
-        return stacklevel
-    finally:
-        del frame
 
 
 @dataclass(frozen=True, slots=True)
@@ -469,7 +451,7 @@ def parse_usd(
                 f"{name}=True is deprecated and will be removed in Newton 1.8. "
                 "Migrate authored asset values to their documented units and leave this option False.",
                 DeprecationWarning,
-                stacklevel=2,
+                stacklevel=_external_warning_stacklevel(),
             )
 
     # Early validation of base joint parameters
@@ -598,27 +580,27 @@ def parse_usd(
             "different conversion paths: particles are converted to SI, while the legacy rigid/collider importer "
             "still expects unit stage metadata. Author mixed stages with both units set to 1.0 until rigid import "
             "gains complete unit conversion.",
-            stacklevel=_external_stacklevel(),
+            stacklevel=_external_warning_stacklevel(),
         )
     elif particle_prims and has_other_import_candidates and (has_nonunit_linear_units or has_nonunit_mass_units):
         warnings.warn(
             "Mixed particles and other imported USD content with non-unit metersPerUnit or kilogramsPerUnit may "
             "use different conversion paths: particles are converted to SI, while other import paths may still "
             "expect unit stage metadata. Author mixed stages with both units set to 1.0.",
-            stacklevel=_external_stacklevel(),
+            stacklevel=_external_warning_stacklevel(),
         )
     elif not particle_prims:
         if has_nonunit_mass_units:
             warnings.warn(
                 "USD stages with non-unit mass units are not supported. "
                 f"Set kilogramsPerUnit to 1.0 before import. Found kilogramsPerUnit={mass_unit}.",
-                stacklevel=_external_stacklevel(),
+                stacklevel=_external_warning_stacklevel(),
             )
         if has_nonunit_linear_units:
             warnings.warn(
                 "USD stages with non-unit linear units are not supported. "
                 f"Set metersPerUnit to 1.0 before import. Found metersPerUnit={linear_unit}.",
-                stacklevel=_external_stacklevel(),
+                stacklevel=_external_warning_stacklevel(),
             )
 
     # Initialize schema resolver according to precedence

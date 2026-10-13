@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import inspect
 import os
 import tempfile
 import warnings
@@ -16,6 +15,7 @@ import numpy as np
 import warp as wp
 
 from ..core import Axis, AxisType, quat_between_axes
+from ..core._warnings import _external_warning_stacklevel
 from ..core.types import Transform
 from ..geometry import Mesh, ShapeFlags
 from ..sim import ModelBuilder
@@ -241,22 +241,13 @@ def parse_urdf(
         urdf_root = ET.fromstring(xml_content)
 
     if joint_damping_mode is None and urdf_root.find("joint/dynamics[@damping]") is not None:
-        # Point to user code through either the builder or the direct parser.
-        warning_frame = inspect.currentframe()
-        warning_stacklevel = 1
-        try:
-            while warning_frame is not None and warning_frame.f_globals.get("__name__", "").startswith("newton._src."):
-                warning_stacklevel += 1
-                warning_frame = warning_frame.f_back
-        finally:
-            del warning_frame
         warnings.warn(
             "The default joint_damping_mode currently maps URDF damping to drive damping. "
             "The default will switch to 'passive' in Newton 1.8. "
             "Pass joint_damping_mode='drive' to retain the current mapping or "
             "joint_damping_mode='passive' to use passive damping explicitly.",
             DeprecationWarning,
-            stacklevel=max(2, warning_stacklevel),
+            stacklevel=_external_warning_stacklevel(),
         )
 
     # load joint defaults

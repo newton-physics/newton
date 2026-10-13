@@ -9,9 +9,7 @@ import copy
 import ctypes
 import functools
 import gc
-import inspect
 import math
-import os
 import warnings
 import weakref
 from bisect import bisect_left
@@ -24,6 +22,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 import numpy as np
 import warp as wp
 
+from ..core._warnings import _external_warning_stacklevel
 from ..core.types import (
     MAXVAL,
     Axis,
@@ -138,8 +137,6 @@ def _broadcast_triangle_opacities(value: Any, triangle_count: int) -> np.ndarray
         raise ValueError(f"Triangle opacity must contain finite values in [0, 1], got {invalid_value!r}.")
     return opacities
 
-
-_NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir)) + os.sep
 
 _DEPRECATED_ACTUATOR_DRIVE_UNSET = object()
 _ACTUATOR_CONTROLLER_CLASS_DEPRECATION_MSG = (
@@ -742,22 +739,6 @@ class ModelBuilder:
         if color is None:
             return None
         return (float(color[0]), float(color[1]), float(color[2]))
-
-    @staticmethod
-    def _external_warning_stacklevel() -> int:
-        frame = inspect.currentframe()
-        if frame is None:
-            return 2
-
-        frame = frame.f_back
-        stacklevel = 1
-        try:
-            while frame is not None and os.path.normpath(frame.f_code.co_filename).startswith(_NEWTON_SRC_DIR):
-                frame = frame.f_back
-                stacklevel += 1
-            return stacklevel
-        finally:
-            del frame
 
     @staticmethod
     def _resolve_rod_body_frame_origin(
@@ -5565,7 +5546,7 @@ class ModelBuilder:
                     f"bodies. A FREE joint parallel to another joint is inconsistent. Use add_link() "
                     f"with the appropriate joint type instead of add_body().",
                     UserWarning,
-                    stacklevel=self._external_warning_stacklevel(),
+                    stacklevel=_external_warning_stacklevel(),
                 )
             else:
                 warnings.warn(
@@ -5574,7 +5555,7 @@ class ModelBuilder:
                     f"bodies. Parallel joints between the same pair of bodies have undefined semantics and may not "
                     f"behave as expected.",
                     UserWarning,
-                    stacklevel=self._external_warning_stacklevel(),
+                    stacklevel=_external_warning_stacklevel(),
                 )
 
         self.joint_type.append(joint_type)
@@ -6368,7 +6349,7 @@ class ModelBuilder:
         warnings.warn(
             "ModelBuilder.add_joint_cable() is deprecated in Newton 1.6; use add_joint_rod() instead.",
             DeprecationWarning,
-            stacklevel=self._external_warning_stacklevel(),
+            stacklevel=_external_warning_stacklevel(),
         )
         return self.add_joint_rod(
             parent=parent,
@@ -6660,7 +6641,7 @@ class ModelBuilder:
             "ModelBuilder.add_constraint_mimic() is deprecated in Newton 1.7; "
             "use set_joint_mimic() for joints with matching dimensions instead.",
             DeprecationWarning,
-            stacklevel=self._external_warning_stacklevel(),
+            stacklevel=_external_warning_stacklevel(),
         )
         joint_count = self.joint_count
         if joint0 < 0 or joint0 >= joint_count:
@@ -9315,7 +9296,7 @@ class ModelBuilder:
                     "before finalize; closed=True also adds a loop-closing joint that must remain outside any "
                     "articulation.",
                     UserWarning,
-                    stacklevel=self._external_warning_stacklevel(),
+                    stacklevel=_external_warning_stacklevel(),
                 )
 
             if link_bodies:
@@ -9555,7 +9536,7 @@ class ModelBuilder:
         warnings.warn(
             _ADD_ROD_POSITIONS_DEPRECATION_MSG,
             DeprecationWarning,
-            stacklevel=self._external_warning_stacklevel(),
+            stacklevel=_external_warning_stacklevel(),
         )
         result = self._add_rod_chain(
             positions,
@@ -9683,7 +9664,7 @@ class ModelBuilder:
         warnings.warn(
             _ADD_ROD_GRAPH_DEPRECATION_MSG,
             DeprecationWarning,
-            stacklevel=self._external_warning_stacklevel(),
+            stacklevel=_external_warning_stacklevel(),
         )
         result = self._add_rod_graph(
             node_positions,
@@ -10052,7 +10033,7 @@ class ModelBuilder:
                             "cycles are not closed. Use wrap_in_articulation=False to retain every "
                             "cycle adjacency joint.",
                             UserWarning,
-                            stacklevel=self._external_warning_stacklevel(),
+                            stacklevel=_external_warning_stacklevel(),
                         )
 
                 # Wrap the connected component into an articulation.
