@@ -2308,7 +2308,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
             main.add_builder(sub)
 
     def test_transform_value_list_and_sentinel_shape_refs(self):
-        """Test that transform_value handles lists with negative sentinel values correctly."""
+        """Preserve negative shape references across supported integer-vector inputs."""
         main = ModelBuilder()
 
         # Register custom frequency before adding attributes
@@ -2340,8 +2340,8 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         )
         body = sub.add_body(mass=1.0)
         sub.add_shape_sphere(body, radius=0.1)  # shape 0
-        # Add pair with value [0, -1] where -1 is sentinel for "no geom"
-        sub.add_custom_values(**{"test:pair_geoms": [0, -1]})
+        for value in ([0, -1], (0, -1), wp.vec2i(0, -1), np.array([0, -1], dtype=np.int32)):
+            sub.add_custom_values(**{"test:pair_geoms": value})
 
         # Add main's own shape first
         main_body = main.add_body(mass=1.0)
@@ -2353,11 +2353,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         model = main.finalize(device=self.device)
         arr = model.test.pair_geoms.numpy()
 
-        # Should have 1 pair entry
-        self.assertEqual(len(arr), 1)
-        # First element should be offset by 1 (shape_offset), second (-1) preserved
-        self.assertEqual(arr[0][0], 1)  # 0 + 1 = 1
-        self.assertEqual(arr[0][1], -1)  # sentinel preserved
+        np.testing.assert_array_equal(arr, [[1, -1], [1, -1], [1, -1], [1, -1]])
 
     def test_merge_custom_attribute_default_only_no_crash(self):
         """Test add_builder does not crash when sub-builder has default-only attribute (no overrides)."""

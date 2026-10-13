@@ -47,6 +47,46 @@ class TestModelDeformableObjects(unittest.TestCase):
                             getattr(newton.Model.AttributeFrequency, family.upper()),
                         )
 
+    def test_vector_reference_sentinels_survive_composition(self):
+        """Offset valid vector references without changing negative entries or source values."""
+        prototype = newton.ModelBuilder()
+        values = {
+            "warp": wp.vec2i(0, -1),
+            "numpy": np.array([0, -1], dtype=np.int32),
+            "list": [0, -1],
+            "tuple": (0, -1),
+        }
+        for family, add in (("curve", _add_curve), ("surface", _add_surface), ("volume", _add_volume)):
+            add(prototype, label="asset")
+            frequency = getattr(newton.Model.AttributeFrequency, family.upper())
+            for kind, value in values.items():
+                prototype.add_custom_attribute(
+                    newton.ModelBuilder.CustomAttribute(
+                        name=f"{family}_{kind}",
+                        dtype=wp.vec2i,
+                        frequency=frequency,
+                        references=frequency,
+                        values={0: value},
+                    )
+                )
+        for method in ("add_builder", "replicate"):
+            builder = newton.ModelBuilder()
+            if method == "add_builder":
+                builder.add_builder(prototype)
+                builder.add_builder(prototype)
+            else:
+                builder.replicate(prototype, 2)
+            for device in get_test_devices():
+                model = builder.finalize(device=device)
+                for family in ("curve", "surface", "volume"):
+                    for kind in values:
+                        with self.subTest(method=method, device=device, family=family, kind=kind):
+                            array = getattr(model, f"{family}_{kind}")
+                            self.assertEqual(array.dtype, wp.vec2i)
+                            np.testing.assert_array_equal(array.numpy(), [[0, -1], [1, -1]])
+        for value in values.values():
+            np.testing.assert_array_equal(value, [0, -1])
+
     def test_family_attribute_frequencies_survive_replication(self):
         """Size model and state attributes by deformable objects rather than their elements."""
         prototype = newton.ModelBuilder()
@@ -200,6 +240,14 @@ class TestModelDeformableObjects(unittest.TestCase):
             )
             builder.add_articulation([*joints, root], label=label)
 
+        vector_cases = (
+            ("pair", wp.vec2i, wp.vec2i(1, 2), [[0, 1]]),
+            ("sentinels", wp.vec3i, wp.vec3i(0, -1, 1), [[-1, -1, 0]]),
+            ("numpy_pair", wp.vec2i, np.array([0, 1], dtype=np.int32), [[-1, 0]]),
+            ("numpy_sentinels", wp.vec3i, np.array([0, -2, 1], dtype=np.int32), [[-1, -2, 0]]),
+            ("list_pair", wp.vec2i, [0, 1], [[-1, 0]]),
+            ("tuple_pair", wp.vec2i, (0, 1), [[-1, 0]]),
+        )
         for family in ("curve", "articulation"):
             builder.add_custom_attribute(
                 newton.ModelBuilder.CustomAttribute(
@@ -209,11 +257,11 @@ class TestModelDeformableObjects(unittest.TestCase):
                     values={0: 10, 1: 20, 2: 30},
                 )
             )
-            for name, value in (("pair", wp.vec2i(1, 2)), ("sentinels", wp.vec3i(0, -1, 1))):
+            for name, dtype, value, _ in vector_cases:
                 builder.add_custom_attribute(
                     newton.ModelBuilder.CustomAttribute(
                         name=f"{family}_{name}",
-                        dtype=type(value),
+                        dtype=dtype,
                         frequency=newton.Model.AttributeFrequency.ONCE,
                         references=family
                         if name == "pair"
@@ -235,16 +283,19 @@ class TestModelDeformableObjects(unittest.TestCase):
         builder.add_custom_values(custom_curve_pair=wp.vec2i(1, 0))
         with self.assertWarnsRegex(UserWarning, "removed.*all.*segment bodies"):
             builder.collapse_fixed_joints()
-        model = builder.finalize(device="cpu")
-        for family in ("curve", "articulation"):
-            with self.subTest(family=family):
+        for device in get_test_devices():
+            model = builder.finalize(device=device)
+            for family in ("curve", "articulation"):
                 self.assertEqual(getattr(model, f"{family}_label"), ["reduced", "unaffected"])
                 np.testing.assert_array_equal(getattr(model, f"{family}_tag").numpy(), [20, 30])
-                np.testing.assert_array_equal(getattr(model, f"{family}_pair").numpy(), [[0, 1]])
-                np.testing.assert_array_equal(getattr(model, f"{family}_sentinels").numpy(), [[-1, -1, 0]])
-        np.testing.assert_array_equal(model.custom_curve_pair.numpy(), [[0, 1], [1, 0]])
-        self.assertEqual(model.attribute_specs["curve_pair"].references, newton.Model.AttributeFrequency.CURVE)
-        self.assertEqual(model.attribute_specs["custom_curve_pair"].references, "curve")
+                for name, dtype, _, expected in vector_cases:
+                    with self.subTest(device=device, family=family, kind=name):
+                        array = getattr(model, f"{family}_{name}")
+                        self.assertEqual(array.dtype, dtype)
+                        np.testing.assert_array_equal(array.numpy(), expected)
+            np.testing.assert_array_equal(model.custom_curve_pair.numpy(), [[0, 1], [1, 0]])
+            self.assertEqual(model.attribute_specs["curve_pair"].references, newton.Model.AttributeFrequency.CURVE)
+            self.assertEqual(model.attribute_specs["custom_curve_pair"].references, "curve")
 
     def test_empty_model_has_empty_public_deformable_arrays(self):
         """Inspect an empty model without placeholder objects or missing arrays."""

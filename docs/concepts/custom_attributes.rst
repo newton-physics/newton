@@ -909,6 +909,10 @@ bodies 0 and 1; the second world's curves reference bodies 6 and 7.
 During copying, row indices follow the curve count and stored body IDs follow
 the body count. Negative values in this scalar attribute remain unchanged.
 
+For explicitly supplied integer-vector values, copying offsets each nonnegative
+component and preserves negative ones. These values may be lists, tuples, NumPy
+integer arrays, or Warp integer vectors.
+
 Built-in string aliases are resolved when the attribute is registered. A custom
 frequency already named ``"curve"``, ``"surface"``, or ``"volume"`` keeps that
 string's meaning. Use the enum to refer to the built-in family unambiguously.

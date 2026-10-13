@@ -5088,6 +5088,13 @@ class ModelBuilder:
                             item + offset if self._is_integer_scalar(item) and item >= 0 else item for item in value
                         ]
                         return type(value)(transformed)
+                    value_type = type(value)
+                    if wp.types.type_is_vector(value_type) and wp.types.type_is_int(value_type._wp_scalar_type_):
+                        return value_type(*(item + offset if item >= 0 else item for item in value))
+                    if isinstance(value, np.ndarray) and np.issubdtype(value.dtype, np.integer):
+                        transformed = value.copy()
+                        transformed[value >= 0] += offset
+                        return transformed
                     try:
                         return value + offset
                     except TypeError:
@@ -7337,6 +7344,11 @@ class ModelBuilder:
                 return [remap_object_reference(v, remap) for v in value]
             if isinstance(value, tuple):
                 return tuple(remap_object_reference(v, remap) for v in value)
+            if isinstance(value, np.ndarray) and np.issubdtype(value.dtype, np.integer):
+                transformed = value.copy()
+                for index in np.ndindex(value.shape):
+                    transformed[index] = remap_object_reference(value[index], remap)
+                return transformed
             value_type = type(value)
             if wp.types.type_is_vector(value_type) and wp.types.type_is_int(value_type._wp_scalar_type_):
                 return value_type(*(remap_object_reference(v, remap) for v in value))
