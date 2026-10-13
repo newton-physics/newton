@@ -987,6 +987,8 @@ class SolverVBD(SolverBase, CouplingInterface):
         self._has_joint_mimics = self._integrates_rigid_bodies and has_supported_joint_mimics(model, "SolverVBD")
         self._mimic_body_deltas = None
         if self._has_joint_mimics:
+            for kernel in (xpbd_kernels.solve_joint_mimics, xpbd_kernels.apply_joint_mimic_deltas):
+                self._set_module_options(options, module=kernel.module)
             self._mimic_body_deltas = wp.zeros_like(model.body_qd)
 
         # Initialize rigid penetration-free (DAT) truncation state

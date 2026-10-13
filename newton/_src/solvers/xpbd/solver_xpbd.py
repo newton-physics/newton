@@ -211,6 +211,8 @@ class SolverXPBD(SolverBase, CouplingInterface):
         self._compute_body_velocity_from_position_delta = False
 
         self._has_joint_mimics = has_supported_joint_mimics(model, "SolverXPBD")
+        if self._has_joint_mimics:
+            self._set_module_options(module_options, module=solve_joint_mimics.module)
 
         self._init_kinematic_state()
 
