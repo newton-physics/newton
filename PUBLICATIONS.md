@@ -44,7 +44,27 @@ published citation when available and retain an accessible preprint link.
 
 ### 2026
 
+- **Backpropagating Through Simulation: Analytic Policy Gradients for Sample and Learning Efficient Differentiable Continuous Control**. *Y. Deng*. June 2026. [arXiv:2606.21525](https://arxiv.org/abs/2606.21525)
+
+- **RigPI: Dynamic Parameter Identification of Rigid Body via VLM-Seeded Differentiable Simulation**. *X. He, R. Zhang, W. Jiang, W. Xu*. June 2026. [arXiv:2606.25212](https://arxiv.org/abs/2606.25212)
+
+- **GM-Loco: Terrain-Adaptive Humanoid Locomotion on Granular Media**. *J. Kamohara, F. Wu, A. N. Zong, D. I. Goldman, Y. Nakka, S. Hutchinson, Y. Zhao*. September 2026. [arXiv:2609.10286](https://arxiv.org/abs/2609.10286)
+
+- **ROBOGATE: Adaptive Failure Discovery for Safe Robot Policy Deployment via Two-Stage Boundary-Focused Sampling**. *A. Kim*. April 2026. [arXiv:2603.22126](https://arxiv.org/abs/2603.22126)
+
+- **OrchardBench: A Physically-Grounded, GPU-Parallel Apple-Orchard Simulation Benchmark for Agricultural Robotics**. *H. Munn*. July 2026. [arXiv:2607.06337](https://arxiv.org/abs/2607.06337)
+
+- **PersistGS: Differentiable Physics for Object Permanence in 4D Gaussian Splatting**. *A. Ramlal, J. S. Zelek*. CVPR Workshops, 2026. [arXiv:2606.03479](https://arxiv.org/abs/2606.03479)
+
+- **A Splitting Architecture for Exact Reduced Coulomb Friction**. *H. Song, Y. Fan, U. M. Ascher, D. K. Pai*. Computer Graphics Forum 45(8), 2026. [DOI:10.1111/cgf.70576](https://doi.org/10.1111/cgf.70576), [arXiv:2607.19599](https://arxiv.org/abs/2607.19599)
+
 - **Kamino: GPU-based Massively Parallel Simulation of Multi-Body Systems with Challenging Topologies**. *V. Tsounis, G. Maloisel, C. Schumacher, R. Grandia, A. Serifi, D. Müller, C. Amevor, T. Widmer, M. Bächer*. March 2026. [arXiv:2603.16536](https://arxiv.org/abs/2603.16536)
+
+- **GAUGE: A Measurement-Grounded Benchmark for Physical Fidelity in Simulation Engines and Video World Models**. *S. Wang, Y. Feng, X. Jiang, S. Tian, N. Yan, X. Shen, C. Lyu, H. Wang, Y. Zhou, H. Wang, J. Pang, Y. Xiang, X. Gao, C. Shen, W. Zhang*. August 2026. [arXiv:2608.05948](https://arxiv.org/abs/2608.05948)
+
+- **RoboFin3D: A Sim-to-Real Platform for Robotic Surface Finishing**. *H. Wen, S. Li, V. Sanjay, P. Huang, J. Li, C. Liu*. September 2026. [arXiv:2609.37560](https://arxiv.org/abs/2609.37560)
+
+- **Learning Sim-Grounded Policies for Bimanual Rope Manipulation from Human Teleoperation Data**. *G. Wigginghaus, T. Missal, B. Guler, S. Manschitz, J. Peters*. May 2026. [arXiv:2605.16043](https://arxiv.org/abs/2605.16043)
 
 - **SIM1: Physics-Aligned Simulator as Zero-Shot Data Scaler in Deformable Worlds**. *Y. Zhou, H. Liu, X. Jiang, X. Shen, Y. Zhou, H. Wang, B. Fang, Y. Tian, M. Yu, Q. Yu, L. Ma, H. Li, H. Wang, J. Zeng, J. Pang*. April 2026. [arXiv:2604.08544](https://arxiv.org/abs/2604.08544)
 
