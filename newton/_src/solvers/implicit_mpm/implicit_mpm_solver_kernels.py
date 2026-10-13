@@ -51,9 +51,6 @@ _NAN_THRESHOLD = wp.constant(1.0e16)
 _EIGENVALUE_FLOOR = wp.constant(1.0e-6)
 """Eigenvalues at or below this value are treated as zero (mode is dropped)"""
 
-_ZERO_MEAN_TOLERANCE = wp.constant(1.0e-4)
-"""Relative integral tolerance for positive-mass, zero-mean strain modes."""
-
 vec6 = wp.types.vector(length=6, dtype=wp.float32)
 mat66 = wp.types.matrix(shape=(6, 6), dtype=wp.float32)
 mat63 = wp.types.matrix(shape=(6, 3), dtype=wp.float32)
@@ -638,43 +635,6 @@ def mass_form(
     return p(s) * q(s) * inv_cell_volume
 
 
-@wp.kernel
-def average_element_yield_parameters(
-    nodes_per_element: int,
-    node_volume: wp.array[float],
-    node_yield_parameters: wp.array[YieldParamVec],
-    element_yield_parameters: wp.array[YieldParamVec],
-):
-    """Volume-average integrated strain-node yield parameters over each element."""
-    element = wp.tid()
-    volume = float(0.0)
-    yield_parameters = YieldParamVec(0.0)
-    for j in range(nodes_per_element):
-        node = element * nodes_per_element + j
-        volume += node_volume[node]
-        yield_parameters += node_yield_parameters[node]
-    if volume > 0.0:
-        element_yield_parameters[element] = wp.max(YieldParamVec(0.0), yield_parameters / volume)
-    else:
-        element_yield_parameters[element] = YieldParamVec(0.0)
-
-
-@wp.kernel
-def normalize_strain_yield_parameters(
-    nodes_per_element: int,
-    rotated_volume: wp.array[float],
-    element_yield_parameters: wp.array[YieldParamVec],
-    node_yield_parameters: wp.array[YieldParamVec],
-):
-    """Normalize material moments and use element averages for zero-mean strain modes."""
-    node = wp.tid()
-    volume = rotated_volume[node]
-    if volume == 0.0:
-        node_yield_parameters[node] = element_yield_parameters[node // nodes_per_element]
-    else:
-        node_yield_parameters[node] = node_yield_parameters[node] / volume
-
-
 @wp.kernel(module="unique")
 def compute_eigenvalues(
     offsets: wp.array[int],
@@ -686,14 +646,6 @@ def compute_eigenvalues(
     eigenvectors: wp.array3d[float],
     rotated_volume: wp.array2d[float],
 ):
-    """Diagonalize element mass blocks and orient modes by their integrals.
-
-    Positive-mass modes whose integral cancels within ``_ZERO_MEAN_TOLERANCE``
-    are kept with a zero rotated volume. Their material parameters use element
-    averages. Modes still follow the sign of their actual integral, so unilateral
-    modal constraints preserve nonnegative volume-averaged divergence. Exactly
-    zero-mean modes have no preferred orientation and do not affect that average.
-    """
     row = wp.tid()
 
     diag_index = wps.bsr_block_index(row, row, offsets, columns)
@@ -722,22 +674,17 @@ def compute_eigenvalues(
                 ev_s = 0.0
             else:
                 ys = float(0.0)
-                abs_s = float(0.0)
 
                 for j in range(scales.length):
                     node_index = row * nodes_per_elt + j
                     s += ev[k, j] * ones[row, j]
-                    abs_s += wp.abs(ev[k, j] * ones[row, j])
                     ys += ev[k, j] * yield_parameters[node_index][0]
 
-                ev_s = wp.where(s < 0.0, -1.0, 1.0)
-                if wp.abs(s) <= _ZERO_MEAN_TOLERANCE * abs_s:
-                    rv[k] = 0.0
-                else:
-                    rv[k] = ev_s * s
+                ev_s = wp.sign(s)
+                rv[k] = ev_s * s
 
-                    if ys * ev_s < 0.0:
-                        ev_s = 0.0
+                if ys * ev_s < 0.0:
+                    ev_s = 0.0
 
             for j in range(scales.length):
                 ev[k, j] *= ev_s
