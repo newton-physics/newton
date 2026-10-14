@@ -368,12 +368,8 @@ def test_featherstone_free_descendant_joint_f_does_not_require_prefk(test: TestC
 devices = get_test_devices()
 solvers = {
     "featherstone": lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0),
-    "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(
-        model, use_mujoco_cpu=True, update_data_interval=0, disable_contacts=True
-    ),
-    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(
-        model, use_mujoco_cpu=False, update_data_interval=0, disable_contacts=True
-    ),
+    "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True),
+    "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True),
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, angular_damping=0.0),
     "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
     "kamino": newton.solvers.SolverKamino,
@@ -399,14 +395,7 @@ for device in devices:
             solver_fn=solver_fn,
         )
 
-    # The D6 tests start from a posed state, which MuJoCo only reads with update_data_interval > 0.
-    d6_solvers = {
-        **solvers,
-        "mujoco_cpu": lambda model: newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True),
-        "mujoco_warp": lambda model: newton.solvers.SolverMuJoCo(model, disable_contacts=True),
-        "vbd": newton.solvers.SolverVBD,
-    }
-    for solver_name, solver_fn in d6_solvers.items():
+    for solver_name, solver_fn in {**solvers, "vbd": newton.solvers.SolverVBD}.items():
         if device.is_cuda and solver_name == "mujoco_cpu":
             continue
         add_function_test(
