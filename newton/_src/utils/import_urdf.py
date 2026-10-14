@@ -295,7 +295,7 @@ def parse_urdf(
                     filename = resolve_robotics_uri(filename, package_dirs=package_dirs)
                 except FileNotFoundError:
                     warnings.warn(
-                        f'Warning: could not resolve URI "{filename}". '
+                        f'Could not resolve URI "{filename}". '
                         f"Check that the package is installed and that relevant environment variables "
                         f"(ROS_PACKAGE_PATH, AMENT_PREFIX_PATH, GZ_SIM_RESOURCE_PATH, etc.) are set correctly. "
                         f"See https://github.com/ami-iit/resolve-robotics-uri-py for details.",
@@ -306,7 +306,7 @@ def parse_urdf(
             else:
                 if not os.path.isfile(source):
                     warnings.warn(
-                        f'Warning: cannot resolve URI "{filename}" when URDF is loaded from XML string. '
+                        f'Cannot resolve URI "{filename}" when URDF is loaded from XML string. '
                         f"Load URDF from a file path, or install resolve-robotics-uri-py: "
                         f"pip install resolve-robotics-uri-py",
                         NewtonWarning,
@@ -327,7 +327,7 @@ def parse_urdf(
                         filename = os.path.join(os.fspath(package_root), fn)
                     else:
                         warnings.warn(
-                            f'Warning: could not resolve package "{package_name}" in URI "{filename}". '
+                            f'Could not resolve package "{package_name}" in URI "{filename}". '
                             f"For robust URI resolution, install resolve-robotics-uri-py: "
                             f"pip install resolve-robotics-uri-py",
                             NewtonWarning,
@@ -336,7 +336,7 @@ def parse_urdf(
                         return None, None
                 else:
                     warnings.warn(
-                        f'Warning: cannot resolve model:// URI "{filename}" without resolve-robotics-uri-py. '
+                        f'Cannot resolve model:// URI "{filename}" without resolve-robotics-uri-py. '
                         f"Install it with: pip install resolve-robotics-uri-py",
                         NewtonWarning,
                         stacklevel=2,
@@ -349,7 +349,7 @@ def parse_urdf(
             if not os.path.isabs(filename):
                 if not os.path.isfile(source):
                     warnings.warn(
-                        f'Warning: cannot resolve relative URI "{filename}" when URDF is loaded from XML string. '
+                        f'Cannot resolve relative URI "{filename}" when URDF is loaded from XML string. '
                         f"Load URDF from a file path.",
                         NewtonWarning,
                         stacklevel=2,
@@ -358,7 +358,7 @@ def parse_urdf(
                 filename = os.path.join(os.path.dirname(source), filename)
 
         if not os.path.exists(filename):
-            warnings.warn(f"Warning: asset file {filename} does not exist", NewtonWarning, stacklevel=2)
+            warnings.warn(f"Asset file {filename} does not exist", NewtonWarning, stacklevel=2)
             return None, None
 
         return filename, file_tmp
@@ -566,7 +566,7 @@ def parse_urdf(
                 for m_mesh in m_meshes:
                     if m_mesh.texture is not None and m_mesh.uvs is None:
                         warnings.warn(
-                            f"Warning: mesh {resolved} has a texture but no UVs; texture will be ignored.",
+                            f"Mesh {resolved} has a texture but no UVs; texture will be ignored.",
                             NewtonWarning,
                             stacklevel=2,
                         )

@@ -1506,7 +1506,7 @@ def parse_usd(
     def warn_invalid_desc(path, descriptor) -> bool:
         if not descriptor.isValid:
             warnings.warn(
-                f'Warning: Invalid {type(descriptor).__name__} descriptor for prim at path "{path}".',
+                f'Invalid {type(descriptor).__name__} descriptor for prim at path "{path}".',
                 NewtonWarning,
                 stacklevel=2,
             )
@@ -2602,7 +2602,7 @@ def parse_usd(
                 if convert_mjc_equality_constraints:
                     if mjc_polycoef_has_higher_order(polycoef):
                         warnings.warn(
-                            f"Warning: Joint equality '{joint_path}' uses higher-order polycoef terms. "
+                            f"Joint equality '{joint_path}' uses higher-order polycoef terms. "
                             "They are preserved for SolverMuJoCo, but generic Newton mimic constraints use "
                             "only coef0/coef1.",
                             NewtonWarning,

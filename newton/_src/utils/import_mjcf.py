@@ -2762,7 +2762,7 @@ def parse_mjcf(
                 if convert_mjc_equality_constraints:
                     if mjc_polycoef_has_higher_order(polycoef_values):
                         warnings.warn(
-                            f"Warning: Joint equality '{common['name']}' uses higher-order polycoef terms. "
+                            f"Joint equality '{common['name']}' uses higher-order polycoef terms. "
                             "They are preserved for SolverMuJoCo, but generic Newton mimic constraints use "
                             "only coef0/coef1.",
                             NewtonWarning,
