@@ -37,6 +37,7 @@ class Example:
         franka.add_urdf(
             newton.utils.download_asset("franka_emika_panda") / "urdf/fr3_franka_hand.urdf",
             floating=False,
+            joint_damping_mode="passive",
         )
         franka.add_ground_plane()
 
