@@ -35,13 +35,13 @@ SETTLE_MODES = ("dynamic",)
 
 @wp.kernel
 def _shape_index_to_mask(
-    shape_indices: wp.array4d[wp.uint32],
+    shape_indices: wp.array3d[wp.uint32],
     selected_shapes: wp.array[wp.int32],
     masks: wp.array3d[wp.uint8],
 ):
     """Mark pixels whose nearest visible shape belongs to the cable."""
     world, y, x = wp.tid()
-    shape = shape_indices[world, 0, y, x]
+    shape = shape_indices[world, y, x]
     value = wp.uint8(0)
     # Misses and non-shape geometry use sentinel IDs outside the shape table.
     if shape < wp.uint32(selected_shapes.shape[0]):
@@ -541,7 +541,8 @@ class CableSimulation:
         self.kinematic_bodies = wp.array(kinematic_idx_list, dtype=wp.int32)
 
         # Views render one at a time, so views of equal size share one color buffer.
-        self.sensor = sensors.SensorTiledCamera(self.model)
+        # A camera renders all worlds at once, as one sensor view per world: view i shows world i.
+        self.sensor = sensors.SensorCamera(self.model)
         self.cameras = []
         color_images = {}
         for cam in cameras:
@@ -566,17 +567,21 @@ class CableSimulation:
                 # project_cable_kernel and the masks put the centre of pixel i at
                 # coordinate i. The sensor puts it at i + 0.5, so shift the principal
                 # point by half a pixel to render the same rays.
-                rays = self.sensor.utils.compute_camera_rays_pinhole_opencv(width, height, fx, fy, cx + 0.5, cy + 0.5)
+                rays = sensors.SensorCamera.compute_camera_rays_pinhole_opencv(
+                    width, height, fx, fy, cx + 0.5, cy + 0.5, device=self.model.device
+                )
             else:
-                rays = self.sensor.utils.compute_camera_rays_pinhole(width, height, camera_fovs=math.radians(fov_deg))
+                rays = sensors.SensorCamera.compute_camera_rays_pinhole(
+                    width, height, camera_fov=math.radians(fov_deg), device=self.model.device
+                )
             if (width, height) not in color_images:
-                color_images[(width, height)] = self.sensor.utils.create_color_image_output(width, height)
+                color_images[(width, height)] = self.sensor.allocate_image_color(self.n, width, height)
             self.cameras.append(
                 {
                     "rays": rays,
                     "color_image": color_images[(width, height)],
-                    # Shape (camera_count=1, world_count).
-                    "transforms": wp.array([[pose] * self.n], dtype=wp.transformf, device=self.model.device),
+                    # One render view per world, all with the same camera pose.
+                    "transforms": wp.array([pose] * self.n, dtype=wp.transformf, device=self.model.device),
                     # project_cable projects through the pose and intrinsics, not
                     # through the ray array.
                     "sensor_pos": cam_pos,
@@ -811,7 +816,7 @@ class CableSimulation:
 
         Returns:
             Tuple ``(color_rgba, frames, mask, masks)``. ``color_rgba`` is the
-            device render, shape ``(world_count * camera_count, height, width, 4)``.
+            device render, shape ``(world_count, height, width, 4)``.
             ``frames`` is one host RGBA copy per world, or ``None`` without
             readback. ``mask`` is the device mask, shape
             ``(world_count, height, width)``, or ``None`` without ``with_mask``.
@@ -824,11 +829,11 @@ class CableSimulation:
         view = self.cameras[cam]
         shape_image = mask = None
         if with_mask:
-            _, _, height, width = view["color_image"].shape
+            _, height, width = view["color_image"].shape
             size = (width, height)
             if size not in self._mask_buffers:
                 self._mask_buffers[size] = (
-                    self.sensor.utils.create_shape_index_image_output(width, height),
+                    self.sensor.allocate_image_shape_index(self.n, width, height),
                     wp.empty((self.n, height, width), dtype=wp.uint8, device=self.model.device),
                 )
             shape_image, mask = self._mask_buffers[size]
@@ -838,7 +843,7 @@ class CableSimulation:
             view["rays"],
             color_image=view["color_image"],
             shape_index_image=shape_image,
-            clear_data=sensors.SensorTiledCamera.ClearData(clear_color=0xFF000000, clear_albedo=0xFF000000),
+            clear_data=sensors.SensorCamera.ClearData(clear_color=0xFF000000, clear_albedo=0xFF000000),
         )
         if with_mask:
             wp.launch(
@@ -848,10 +853,10 @@ class CableSimulation:
                 outputs=[mask],
                 device=self.model.device,
             )
-        color_rgba = self.sensor.utils.to_rgba_from_color(view["color_image"])
+        color_rgba = sensors.SensorCamera.Utils.to_rgba_from_color(view["color_image"])
         if not readback:
             return color_rgba, None, mask, None
-        arr = color_rgba.numpy()  # (world_count * camera_count, H, W, 4)
+        arr = color_rgba.numpy()  # (world_count, H, W, 4)
         # On CPU, .numpy() can alias the render buffer, which the next frame or view
         # overwrites. Copy so that each frame owns its pixels.
         frames = [np.array(arr[i], copy=True, order="C") for i in range(self.n)]
