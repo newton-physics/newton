@@ -373,8 +373,7 @@ class Example:
         # widget can't suggest a motion the controller would ignore.
         self.gizmo_axes = [_gizmo_axes_from_weight(weight) for weight in axis_weight_rows]
 
-        # Set such that Franka at y=0, UR10 at y=1.8, planar arm at y=3.6,
-        # the 5-DOF arm at y=5.4, and the dual arm at y=7.2 are all in view together.
+        # Keep all five robots visible so their responses can be compared.
         self.viewer.set_camera(pos=wp.vec3(6.0, -4.0, 4.2), pitch=-22.6114, yaw=125.2176)
         if hasattr(self.viewer, "camera"):
             self.viewer.camera.look_at(wp.vec3(0.4, 3.6, 0.4))
