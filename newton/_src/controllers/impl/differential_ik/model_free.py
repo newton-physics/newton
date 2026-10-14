@@ -73,14 +73,18 @@ from ._common import (
     DifferentialIKMethod,
     _adaptive_damping_kernel,
     _gather_and_weight_jacobian_kernel,
+    _gather_and_weight_jacobian_single_frame_kernel,
     _gather_jacobian_by_axis_kernel,
     _gather_task_error_kernel,
+    _gather_task_error_single_frame_kernel,
     _integrate_position_kernel,
     _joint_limit_avoidance_bias_kernel,
+    _null_space_projector_single_frame_kernel,
     _pinv_singular_value_damped_kernel,
     _posture_bias_kernel,
     _qd_from_singular_basis_kernel,
     _qd_from_y_kernel,
+    _qd_from_y_single_frame_kernel,
     _qd_in_singular_basis_damped_kernel,
     _qd_in_singular_basis_truncated_kernel,
     _svd_reconstruct_scaled_kernel,
@@ -430,6 +434,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                     "frames_per_robot must be positive — a robot with no tool frame has nothing to solve for; "
                     f"got {frames_per_robot_np.tolist()}."
                 )
+        single_frame = bool(np.all(frames_per_robot_np == 1))
         total_frame_count = int(frames_per_robot_np.sum())
         frame_robot_idx_np = np.repeat(np.arange(controlled_robot_count, dtype=np.int32), frames_per_robot_np)
         frame_start_np = np.zeros(controlled_robot_count, dtype=np.int32)
@@ -480,16 +485,18 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         # slot k is the k'th active axis across that robot's frames, in
         # frame then canonical-axis order; entries at or beyond that robot's
         # own task_dim are never read.
-        max_task_dim = int(task_dim_np.max())
+        # Preserve main's fixed-size storage for the single-frame case.
+        max_task_dim = 6 if single_frame else int(task_dim_np.max())
         active_frame_of_slot_np = np.zeros((controlled_robot_count, max_task_dim), dtype=np.int32)
         active_axis_of_slot_np = np.zeros((controlled_robot_count, max_task_dim), dtype=np.int32)
         for robot in range(controlled_robot_count):
             slot = 0
             for frame in range(frame_start_np[robot], frame_start_np[robot] + frames_per_robot_np[robot]):
-                for axis in np.flatnonzero(axis_active_np[frame]):
-                    active_frame_of_slot_np[robot, slot] = frame
-                    active_axis_of_slot_np[robot, slot] = axis
-                    slot += 1
+                active = np.flatnonzero(axis_active_np[frame])
+                end = slot + active.size
+                active_frame_of_slot_np[robot, slot:end] = frame
+                active_axis_of_slot_np[robot, slot:end] = active
+                slot = end
 
         if not (isinstance(bandwidth, (int, float)) and not isinstance(bandwidth, bool)):
             _validate_array(
@@ -662,7 +669,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             # axis_weight -- see step()'s null-space section for where each
             # is used. At least width 1 so the SVD matrix types below stay
             # constructible even when every robot is entirely unprotected.
-            max_null_space_task_dim = max(1, int(null_space_task_dim_np.max()))
+            max_null_space_task_dim = 6 if single_frame else max(1, int(null_space_task_dim_np.max()))
             null_space_active_frame_of_slot_np = np.zeros(
                 (controlled_robot_count, max_null_space_task_dim), dtype=np.int32
             )
@@ -672,10 +679,11 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             for robot in range(controlled_robot_count):
                 slot = 0
                 for frame in range(frame_start_np[robot], frame_start_np[robot] + frames_per_robot_np[robot]):
-                    for axis in np.flatnonzero(null_space_axis_active_np[frame]):
-                        null_space_active_frame_of_slot_np[robot, slot] = frame
-                        null_space_active_axis_of_slot_np[robot, slot] = axis
-                        slot += 1
+                    active = np.flatnonzero(null_space_axis_active_np[frame])
+                    end = slot + active.size
+                    null_space_active_frame_of_slot_np[robot, slot:end] = frame
+                    null_space_active_axis_of_slot_np[robot, slot:end] = active
+                    slot = end
         elif null_space_axes is not None:
             raise ValueError(
                 "null_space_axes was given but neither use_joint_limit_avoidance nor "
@@ -683,6 +691,17 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             )
         # ------------------------------------------------------------------
 
+        self._gather_task_error_kernel = (
+            _gather_task_error_single_frame_kernel if single_frame else _gather_task_error_kernel
+        )
+        self._gather_task_error_dim = controlled_robot_count if single_frame else (controlled_robot_count, max_task_dim)
+        self._gather_jacobian_kernel = (
+            _gather_and_weight_jacobian_single_frame_kernel if single_frame else _gather_and_weight_jacobian_kernel
+        )
+        self._qd_from_y_kernel = _qd_from_y_single_frame_kernel if single_frame else _qd_from_y_kernel
+        self._null_space_projector_kernel = (
+            _null_space_projector_single_frame_kernel if single_frame else _null_space_projector_kernel
+        )
         self._ik_method = ik_method
         self._use_joint_limit_avoidance = bool(use_joint_limit_avoidance)
         self._use_null_space_posture_control = bool(use_null_space_posture_control)
@@ -875,6 +894,13 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         )
         self._pose_error_active_buf = wp.zeros(
             (controlled_robot_count, max_task_dim), dtype=wp.float32, device=self._device, requires_grad=requires_grad
+        )
+
+        # The original single-frame kernels use a spatial-vector view of the same storage.
+        self._pose_error_active = (
+            self._pose_error_active_buf.view(wp.spatial_vector).reshape((controlled_robot_count,))
+            if single_frame
+            else self._pose_error_active_buf
         )
 
         # Matrix/vector types for .view()-ing the plain wp.array3d[float]/
@@ -1292,8 +1318,8 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             device=self._device,
         )
         wp.launch(
-            _gather_task_error_kernel,
-            dim=(controlled_robot_count, self._max_task_dim),
+            self._gather_task_error_kernel,
+            dim=self._gather_task_error_dim,
             inputs=[
                 self._pose_error_buf,
                 self._task_dim,
@@ -1301,7 +1327,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                 self._active_axis_of_slot,
                 self._axis_weight,
             ],
-            outputs=[self._pose_error_active_buf],
+            outputs=[self._pose_error_active],
             device=self._device,
         )
         if self._ik_method == DifferentialIKMethod.TRANSPOSE:
@@ -1309,11 +1335,11 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             # active-axes-only) pose error itself stands in for y in the
             # shared finishing kernel.
             wp.launch(
-                _qd_from_y_kernel,
+                self._qd_from_y_kernel,
                 dim=total_controlled_dofs,
                 inputs=[
                     jacobian,
-                    self._pose_error_active_buf,
+                    self._pose_error_active,
                     bandwidth,
                     self._robot_of_dof,
                     self._slot_of_dof,
@@ -1331,7 +1357,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             # -- differing only in the per-singular-direction pseudo-inverse
             # singular value each applies to it below.
             wp.launch(
-                _gather_and_weight_jacobian_kernel,
+                self._gather_jacobian_kernel,
                 dim=(controlled_robot_count, self._max_task_dim, self._max_controlled_dofs),
                 inputs=[
                     jacobian,
@@ -1483,7 +1509,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                 device=self._device,
             )
             wp.launch(
-                _null_space_projector_kernel,
+                self._null_space_projector_kernel,
                 dim=(controlled_robot_count, self._max_controlled_dofs, self._max_controlled_dofs),
                 inputs=[
                     self._jacobian_active_buf,

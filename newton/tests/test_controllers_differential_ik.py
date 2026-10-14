@@ -2603,6 +2603,49 @@ def _dls_multiframe_oracle(jacobians_np, errors_np, damping_val, bandwidth_np):
 
 
 class TestControllerDifferentialIKModelFreeMultiFrame(unittest.TestCase):
+    def test_transpose_weighted_frame_batches_match_numpy(self):
+        """Match weighted transpose control for single-frame and mixed-frame batches."""
+        for device in devices:
+            for frame_counts in ([1, 1], [1, 2]):
+                with self.subTest(device=device, frame_counts=frame_counts):
+                    frame_count = sum(frame_counts)
+                    rng = np.random.default_rng(47)
+                    jacobian = rng.normal(size=(frame_count, 6, 4)).astype(np.float32)
+                    positions = rng.normal(size=(frame_count, 3)).astype(np.float32)
+                    weights = np.tile([0.5, 0.0, 2.0, 0.0, 0.0, 0.0], (frame_count, 1)).astype(np.float32)
+                    ctrl = ControllerDifferentialIKModelFree(
+                        controlled_dofs_per_robot=_dofs_arr([4, 3], device),
+                        frames_per_robot=_dofs_arr(frame_counts, device),
+                        axis_weight=_axis_weight_arr(weights, device),
+                        bandwidth=1.0,
+                        damping=None,
+                        ik_method=DifferentialIKMethod.TRANSPOSE,
+                        device=device,
+                    )
+                    inputs = ctrl.input()
+                    outputs = ctrl.output()
+                    inputs.tool_pose_world = _identity_transform(frame_count, device)
+                    inputs.desired_tool_pose_world = wp.array(
+                        [wp.transform(wp.vec3(*row), wp.quat_identity()) for row in positions],
+                        dtype=wp.transform,
+                        device=device,
+                    )
+                    inputs.jacobian_tool_world = wp.array(jacobian, dtype=wp.float32, device=device)
+                    expected = []
+                    start = 0
+                    for count, dofs in zip(frame_counts, [4, 3], strict=True):
+                        stop = start + count
+                        weighted_error = positions[start:stop] * weights[start:stop, :3] ** 2
+                        expected.extend(np.einsum("frd,fr->d", jacobian[start:stop, :3, :dofs], weighted_error))
+                        start = stop
+                    ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+                    np.testing.assert_allclose(outputs.joint_qd_target.numpy(), expected, atol=2e-6)
+                    if device.is_cuda:
+                        with wp.ScopedCapture(device=device) as capture:
+                            ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+                        wp.capture_launch(capture.graph)
+                        np.testing.assert_allclose(outputs.joint_qd_target.numpy(), expected, atol=2e-6)
+
     def test_full_pose_frames_with_position_null_space_matches_numpy(self):
         """Solve a twelve-row primary task and six-row protected task independently."""
         rng = np.random.default_rng(43)

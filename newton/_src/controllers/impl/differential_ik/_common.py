@@ -134,6 +134,32 @@ def _gather_task_error_kernel(
     pose_error_active[robot_idx, slot] = axis_weight[frame][axis] * pose_error[frame][axis]
 
 
+@wp.kernel
+def _gather_task_error_single_frame_kernel(
+    pose_error: wp.array[wp.spatial_vector],  # (robot_count,) full 6D error, canonical axis order
+    task_dim: wp.array[wp.int32],  # (robot_count,) number of active axes
+    active_frame_of_slot: wp.array2d[wp.int32],  # unused; shared with the multi-frame launch
+    active_axis_of_slot: wp.array2d[wp.int32],  # (robot_count, 6) compact slot -> canonical axis, slot < task_dim
+    axis_weight: wp.array[wp.spatial_vector],  # (robot_count,) per-canonical-axis weight, > 0 where active
+    # outputs
+    pose_error_active: wp.array[
+        wp.spatial_vector
+    ],  # (robot_count,) compact, weighted: slot < task_dim real, rest exactly zero
+):
+    """Gather a single-frame task using the established six-axis representation."""
+    robot_idx = wp.tid()
+    dim = task_dim[robot_idx]
+    error = pose_error[robot_idx]
+    result = wp.spatial_vector()
+    for slot in range(6):
+        if slot < dim:
+            axis = active_axis_of_slot[robot_idx, slot]
+            result[slot] = axis_weight[robot_idx][axis] * error[axis]
+        else:
+            result[slot] = 0.0
+    pose_error_active[robot_idx] = result
+
+
 # ---------------------------------------------------------------------------
 # Damped least squares: q̇ = bandwidth · Jᵀ(JJᵀ + λ²I)⁻¹e, the minimum-norm
 # solution. Built in three steps — normal-equations matrix, invert-and-apply,
@@ -189,6 +215,29 @@ def _gather_and_weight_jacobian_kernel(
     frame = active_frame_of_slot[robot_idx, row]
     axis = active_axis_of_slot[robot_idx, row]
     jacobian_weighted[robot_idx, row, col] = axis_weight[frame][axis] * jacobian_tool_world[frame, axis, col]
+
+
+@wp.kernel
+def _gather_and_weight_jacobian_single_frame_kernel(
+    jacobian_tool_world: wp.array3d[
+        float
+    ],  # (robot_count, 6, max_dofs) columns are twists about the tool point, world coords, canonical axis order
+    task_dim: wp.array[wp.int32],  # (robot_count,) number of active axes
+    active_frame_of_slot: wp.array2d[wp.int32],  # unused; shared with the multi-frame launch
+    active_axis_of_slot: wp.array2d[wp.int32],  # (robot_count, 6) compact slot -> canonical axis, slot < task_dim
+    axis_weight: wp.array[wp.spatial_vector],  # (robot_count,) per-canonical-axis weight, > 0 where active
+    # outputs
+    jacobian_weighted: wp.array3d[
+        float
+    ],  # (robot_count, 6, max_dofs) = diag(w) @ J, gathered to compact slot rows; rows >= task_dim exactly zero
+):
+    """Gather a single-frame Jacobian using the established six-axis layout."""
+    robot_idx, row, col = wp.tid()
+    if row >= task_dim[robot_idx]:
+        jacobian_weighted[robot_idx, row, col] = 0.0
+        return
+    axis = active_axis_of_slot[robot_idx, row]
+    jacobian_weighted[robot_idx, row, col] = axis_weight[robot_idx][axis] * jacobian_tool_world[robot_idx, axis, col]
 
 
 @wp.func
@@ -432,6 +481,39 @@ def _qd_from_y_kernel(
     joint_qd_target[dof] = bandwidth[dof] * total
 
 
+@wp.kernel
+def _qd_from_y_single_frame_kernel(
+    jacobian_tool_world: wp.array3d[
+        float
+    ],  # (robot_count, 6, max_dofs) columns are twists about the tool point, world coords, canonical axis order
+    y: wp.array[wp.spatial_vector],  # (robot_count,) compact slot space, solves (J_w J_wᵀ + λ²I) y = pose_error_active
+    bandwidth: wp.array[wp.float32],  # (total_controlled_dofs,) output scale gain
+    robot_of_dof: wp.array[wp.int32],  # (total_controlled_dofs,) -> owning robot
+    slot_of_dof: wp.array[wp.int32],  # (total_controlled_dofs,) -> column within that robot's Jacobian
+    task_dim: wp.array[wp.int32],  # (robot_count,) number of active axes
+    active_frame_of_slot: wp.array2d[wp.int32],  # unused; shared with the multi-frame launch
+    active_axis_of_slot: wp.array2d[wp.int32],  # (robot_count, 6) compact slot -> canonical axis, slot < task_dim
+    axis_weight: wp.array[wp.spatial_vector],  # (robot_count,) per-canonical-axis weight, > 0 where active
+    # outputs
+    joint_qd_target: wp.array[wp.float32],  # (total_controlled_dofs,) compact = bandwidth * J_wᵀ @ y
+):
+    """Apply the established single-frame Jacobian-transpose solve."""
+    dof = wp.tid()
+    robot = robot_of_dof[dof]
+    slot = slot_of_dof[dof]
+    dim = task_dim[robot]
+
+    jacobian_column = wp.spatial_vector()
+    for task_slot in range(6):
+        if task_slot < dim:
+            axis = active_axis_of_slot[robot, task_slot]
+            jacobian_column[task_slot] = axis_weight[robot][axis] * jacobian_tool_world[robot, axis, slot]
+        else:
+            jacobian_column[task_slot] = 0.0
+
+    joint_qd_target[dof] = bandwidth[dof] * wp.dot(jacobian_column, y[robot])
+
+
 # ---------------------------------------------------------------------------
 # Adaptive damping (DifferentialIKMethod.ADAPTIVE_DAMPING): λ is computed each step from
 # J_w's own smallest singular value, read directly from the same SVD every
@@ -517,6 +599,37 @@ def _adaptive_damping_kernel(
 # projector so it never disturbs the primary task; joint-limit avoidance and
 # posture control may be combined (added) before projecting.
 # ---------------------------------------------------------------------------
+
+
+@wp.kernel
+def _null_space_projector_single_frame_kernel(
+    jacobian_tool: wp.array3d[
+        float
+    ],  # (robot_count, 6, max_dofs) columns are per-DOF twists about the tool point, in the caller's task frame
+    jacobian_pinv_transpose: wp.array3d[
+        float
+    ],  # (robot_count, 6, max_dofs) either pseudo-inverse-transpose variant; zero beyond dof_count
+    task_dim: wp.array[wp.int32],  # unused; single-frame inputs are padded to six rows
+    dof_count: wp.array[wp.int32],  # (robot_count,) number of controlled DOFs for each robot
+    # outputs
+    null_space_projector: wp.array3d[
+        float
+    ],  # (robot_count, max_dofs, max_dofs) = I - J^T @ jacobian_pinv_transpose; untouched beyond dof_count
+):
+    """Build the single-frame projector using main's fixed six-row contraction."""
+    robot_idx, row, col = wp.tid()
+    robot_dof_count = dof_count[robot_idx]
+    if row >= robot_dof_count or col >= robot_dof_count:
+        return
+
+    identity_entry = float(0.0)
+    if row == col:
+        identity_entry = 1.0
+
+    total = float(0.0)
+    for k in range(6):
+        total += jacobian_tool[robot_idx, k, row] * jacobian_pinv_transpose[robot_idx, k, col]
+    null_space_projector[robot_idx, row, col] = identity_entry - total
 
 
 @wp.kernel
