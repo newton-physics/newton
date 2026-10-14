@@ -299,20 +299,16 @@ change. Preserve meaningful coverage while avoiding redundant test execution.
   checks of actual API contracts, such as public signatures and argument
   validation. This exception does not permit mock-only interface checks or
   replace functional coverage.
-- **Inspect existing coverage first.** Before adding a test, contributors must
-  search for tests that exercise the same behavior, feature, or solver. Identify
-  the coverage gap and the most appropriate existing method, class, and module
-  to extend.
-- **Prefer updating over adding.** Extend an existing test when new checks
-  exercise the same scenario and can reuse its setup or simulation results.
-  Use additional assertions or clearly labeled ``subTest`` cases where
-  appropriate. Add a separate test method only when the behavior needs a
-  distinct scenario or independent execution. Keep failures easy to diagnose
-  and retain existing coverage; do not combine unrelated checks merely to
-  reduce the test count.
-- **Group tests by responsibility.** Solver-specific tests must live under
-  ``newton/tests/<solver>/``. Group other tests by the feature or subsystem they
-  exercise. Logically related tests with compatible fixtures should share a
+- **Reuse existing coverage first.** Before adding a test, contributors must
+  identify the coverage gap and inspect related tests. Extend an existing method
+  when its setup or simulation results can expose the defect. Each new test
+  method needs a distinct scenario or independent execution; each additional
+  simulation needs an explanation of why existing scenarios are insufficient.
+  Keep failures easy to diagnose and preserve existing coverage.
+- **Group tests by responsibility.** New solver-specific test modules must live
+  under ``newton/tests/<solver>/``. Extend existing flat solver modules in place;
+  defer moves to a planned migration. Group other tests by the feature or
+  subsystem they exercise. Related tests with compatible fixtures should share a
   test class and module rather than being scattered across small files or
   assigned a new class for each regression. Create a new class or module only
   when a distinct responsibility or fixture lifecycle warrants it. Keep shared
@@ -323,12 +319,13 @@ change. Preserve meaningful coverage while avoiding redundant test execution.
   class scope where safe to reduce repeated setup and teardown. Grouping tests
   alone does not eliminate per-test setup costs. Reset mutable state as needed
   so tests remain independent and do not depend on execution order.
-- **Keep each scenario economical.** Use the smallest model, fewest simulation
-  steps, and narrowest set of parameter combinations that reliably verify the
-  behavior. Avoid repeating equivalent coverage through multiple expensive
-  simulations. When substantial runtime is added, contributors must measure it
-  and explain why the additional coverage justifies the cost in the pull
-  request.
+  Each class runs serially on one worker by default; keep independent expensive
+  scenarios in separate classes when they do not share setup.
+- **Bound execution cost.** Use the smallest reliable models, step counts, and
+  parameter combinations. Avoid repeated simulations and fixture builds that
+  add equivalent coverage. For new or expanded expensive scenarios, report
+  before/after runtime, including setup and teardown, and justify the added cost
+  in the PR. Assess cumulative cost rather than test count alone.
 
 Public API review checklist
 ---------------------------
