@@ -165,7 +165,7 @@ Standard observables
        :class:`~newton.solvers.SolverFeatherstone`, and
        :class:`~newton.solvers.SolverXPBD`
    * - ``CONTACT_F`` / ``observables.contact_f``
-     - Contact spatial forces aligned with the bound contacts
+     - Contact spatial forces in the row layout of the step's contacts
      - :class:`~newton.solvers.SolverMuJoCo` with MuJoCo Warp,
        :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverVBD`, and
        :class:`~newton.solvers.SolverKamino`

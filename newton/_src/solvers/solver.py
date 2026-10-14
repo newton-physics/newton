@@ -446,7 +446,8 @@ class SolverBase:
 
             Create selections before graph capture and reuse them across substeps.
             Only Python containers are created; no array allocation or copying is
-            performed. Selections share the source's contact-storage binding.
+            performed. Selections share the source's record of the contacts
+            each contact-indexed array was produced with.
 
             Derived containers with nested observable containers should override
             this method, call super(), and select their children in the result.

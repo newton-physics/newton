@@ -189,9 +189,10 @@ requires ``SolverBase.ObservableKind.CONTACT_F``. ``SensorContact`` uses only th
 linear part of each ``CONTACT_F`` wrench (force [N]); the torque part is ignored.
 Each sensor's ``solver_observable_kinds`` property provides its requirements
 without mutating the model. Union the sets when both sensors are present.
-Construct the collision pipeline before requesting contact-indexed observables,
-then pass its contacts buffer to the factory to bind the observable container.
-Reuse that same buffer for the solver step and sensor:
+Create the contacts buffer before requesting contact-indexed observables and
+pass it to the factory, which sizes the contact arrays from it. Pass the buffer
+used by each solver step to the sensor as well; see :ref:`solver_observables`
+for alternating between several buffers:
 
 .. code-block:: python
 
