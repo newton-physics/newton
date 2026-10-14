@@ -248,7 +248,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
             viewer.close()
 
     def test_large_quad_is_stable_under_parallel_camera_translation(self):
-        """Keep a large uniform quad stable while translating the camera parallel to it."""
+        """Keep large-quad shading stable and centimeter-scale contact shadows attached."""
         viewer = _make_headless_viewer_gl_or_skip(self, width=400, height=300)
 
         try:
@@ -349,8 +349,83 @@ class TestViewerGLGetFrame(unittest.TestCase):
             )
             edge_changed_fraction = np.mean(np.any(edge_delta > 2, axis=-1))
             self.assertGreater(edge_changed_fraction, 0.001, "the target boxes have no visible edge overlay")
+            self._check_small_box_contact_shadows(viewer)
         finally:
             viewer.close()
+
+    def _check_small_box_contact_shadows(self, viewer):
+        """Keep small shadows attached and bare receivers lit using the existing GL context."""
+        viewer.clear_model()
+        viewer.renderer.draw_edges = False
+        width = viewer.renderer._screen_width
+        height = viewer.renderer._screen_height
+        for slope in (20.0, 45.0):
+            with self.subTest(slope=slope):
+                rotation = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), float(np.deg2rad(slope)))
+
+                def rotate(point, rotation=rotation):
+                    return wp.quat_rotate(rotation, wp.vec3(point))
+
+                builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+                builder.add_shape_box(
+                    -1,
+                    xform=wp.transform(rotate((0.0, 0.0, -0.005)), rotation),
+                    hx=50.0,
+                    hy=0.6,
+                    hz=0.005,
+                    color=(0.2, 0.5, 0.8),
+                )
+                # A 0.5 mm gap places the shadow immediately beside the small box.
+                builder.add_shape_box(
+                    -1,
+                    xform=wp.transform(rotate((0.0, 0.0, 0.0155)), rotation),
+                    hx=0.02,
+                    hy=0.02,
+                    hz=0.015,
+                    color=(0.9, 0.2, 0.1),
+                )
+                model = builder.finalize(device=viewer.device)
+                viewer.set_model(model)
+                viewer.renderer._sun_direction = np.array(rotate((0.0, -1.0, 1.0))) / np.sqrt(2.0)
+                viewer.set_camera(pos=rotate((0.0, 0.16, 0.35)), pitch=0.0, yaw=0.0)
+                viewer.camera.near = 0.005
+                viewer.camera.look_at((0.0, 0.0, 0.0))
+                frames = []
+                for shadows in (False, True):
+                    viewer.renderer.draw_shadows = shadows
+                    viewer.begin_frame(0.0)
+                    viewer.log_state(model.state())
+                    viewer.end_frame()
+                    frames.append(viewer.get_frame().numpy().astype(np.float32))
+
+                def sample_patch(frame, xmin, xmax, ymin, ymax):
+                    points = np.array(
+                        [
+                            (*rotate((x, y, 0.0)), 1.0)
+                            for x in np.linspace(xmin, xmax, 9)
+                            for y in np.linspace(ymin, ymax, 9)
+                        ]
+                    )
+                    view = viewer.camera.get_view_matrix().reshape(4, 4).T
+                    projection = viewer.camera.get_projection_matrix().reshape(4, 4).T
+                    clip = points @ (projection @ view).T
+                    ndc = clip[:, :2] / clip[:, 3:4]
+                    pixels = np.floor((ndc * (0.5, -0.5) + 0.5) * (width, height)).astype(int)
+                    return frame[pixels[:, 1], pixels[:, 0]]
+
+                near_contact = [sample_patch(frame, -0.005, 0.005, 0.024, 0.032) for frame in frames]
+                self.assertTrue(np.all(near_contact[0][:, 2] > near_contact[0][:, 0]), "patch misses the ramp")
+                self.assertGreater(
+                    float(np.mean(near_contact[0] - near_contact[1])),
+                    20.0,
+                    "the small box's shadow is detached from its contact with the ramp",
+                )
+                unoccluded = [sample_patch(frame, 0.07, 0.10, 0.04, 0.08) for frame in frames]
+                self.assertLess(
+                    float(np.mean(np.abs(unoccluded[0] - unoccluded[1]))),
+                    2.0,
+                    "the unobstructed receiver incorrectly shadows itself",
+                )
 
     def test_headless_capture_main_image_frame(self):
         """Verify get_frame captures a main image rendered headlessly."""
