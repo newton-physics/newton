@@ -9949,13 +9949,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             attr is not None
             for attr in [pair_solref, pair_solreffriction, pair_solimp, pair_margin, pair_gap, pair_friction]
         ):
-            # Compute pairs_per_world from Newton custom attributes
+            # Rows that exactly fill the template describe one world's pairs and apply
+            # to every world, so no world advances. Rows replicated per world give each
+            # world its own block, which the stride skips into. This matches how
+            # _convert_to_mjc reads ``pair_world``: template-world rows are shared.
             pair_world_attr = getattr(mujoco_attrs, "pair_world", None)
             if pair_world_attr is not None:
                 total_pairs = len(pair_world_attr)
-                pairs_per_world = total_pairs // self.model.world_count
+                world_pair_stride = 0 if total_pairs == npair else total_pairs // self.model.world_count
             else:
-                pairs_per_world = npair
+                world_pair_stride = npair
 
             world_count = self.mjw_data.nworld
 
@@ -9963,7 +9966,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 update_pair_properties_kernel,
                 dim=(world_count, npair),
                 inputs=[
-                    pairs_per_world,
+                    world_pair_stride,
                     pair_solref,
                     pair_solreffriction,
                     pair_solimp,

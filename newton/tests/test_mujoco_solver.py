@@ -8919,6 +8919,56 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
             np.zeros_like(mujoco_contacts_solver.mjw_model.pair_margin.numpy()),
         )
 
+    def test_pair_properties_shared_rows_reach_every_world(self):
+        """Rows authored once for the template apply to every world.
+
+        Regression test: the kernel advanced by ``total_rows // world_count``, so a
+        shared row block gave world 1 world 2's settings and read past the end of
+        the arrays for its last pair. That misfires when the shared rows are at
+        least as numerous as the worlds, which is why this uses two worlds for two
+        pairs.
+        """
+        world_count = 2
+        pairs_per_world = 2
+
+        template_builder = newton.ModelBuilder()
+        body_idx = template_builder.add_body()
+        shape1_idx = template_builder.add_shape_box(body=body_idx, hx=0.1, hy=0.1, hz=0.1)
+        shape2_idx = template_builder.add_shape_sphere(body=body_idx, radius=0.1)
+
+        builder = newton.ModelBuilder()
+        builder.add_shape_plane()
+        SolverMuJoCo.register_custom_attributes(builder)
+        for i in range(world_count):
+            builder.add_world(template_builder, xform=wp.transform((i * 2.0, 0.0, 0.0), wp.quat_identity()))
+
+        # Only the template world's rows, so every world shares one block.
+        for pair in range(pairs_per_world):
+            builder.add_custom_values(
+                **{
+                    "mujoco:pair_world": 0,
+                    "mujoco:pair_geom1": shape1_idx,
+                    "mujoco:pair_geom2": shape2_idx,
+                    "mujoco:pair_condim": 3,
+                    "mujoco:pair_gap": 0.002 + pair * 0.001,
+                    "mujoco:pair_margin": 0.01 + pair * 0.005,
+                }
+            )
+        model = builder.finalize()
+        self.assertEqual(model.custom_frequency_counts.get("mujoco:pair", 0), pairs_per_world)
+        solver = SolverMuJoCo(model, iterations=1, disable_sensors=True)
+        solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
+        wp.synchronize()
+
+        expected_gap = model.mujoco.pair_gap.numpy().astype(np.float32).reshape(1, pairs_per_world)
+        np.testing.assert_allclose(
+            solver.mjw_model.pair_gap.numpy(), np.broadcast_to(expected_gap, (world_count, pairs_per_world))
+        )
+        # margin is suppressed under NATIVECCD/MULTICCD (#2106), as elsewhere.
+        np.testing.assert_array_equal(
+            solver.mjw_model.pair_margin.numpy(), np.zeros_like(solver.mjw_model.pair_margin.numpy())
+        )
+
     def test_global_pair_exported_to_spec(self):
         """Pairs with pair_world=-1 (global) should be included in the MuJoCo spec.
 
