@@ -22,7 +22,7 @@ from typing import Any
 import numpy as np
 import warp as wp
 
-from ...exceptions import NewtonWarning
+from ..exceptions import NewtonWarning
 
 _ACCEPTED_C = (1, 3, 4)
 _TILE_SPACING_PX: float = 2.0

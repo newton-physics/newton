@@ -1113,7 +1113,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
     @staticmethod
     def _warn_compaction_fallback(cfg: SolverCoupled.Entry, reason: str) -> None:
         logger.debug(
-            f"SolverCoupled entry {cfg.name!r} could not be compacted because {reason}; using the full model layout.",
+            "SolverCoupled entry %r could not be compacted because %s; using the full model layout.",
+            cfg.name,
+            reason,
         )
 
     def _entry_visible_shapes(self, cfg: SolverCoupled.Entry, visible_bodies: set[int]) -> set[int]:
