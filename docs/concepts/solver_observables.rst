@@ -83,15 +83,16 @@ follow the layout of the buffer used by the step: the soft segment of
 ``contact_f`` begins at that buffer's ``rigid_contact_max``, and rows beyond its
 capacity are zero.
 
-``observables.contacts`` reports the buffer the contact-indexed arrays were last
-produced with, or the allocation buffer before any step. Selections share this
-record, and a step updates it only for the arrays it requested, so a skipped field
-keeps its own buffer. Reading ``contacts`` on a container whose subsets were
-produced with different buffers raises :class:`ValueError`.
+``observables.contacts_for_kind(kind)`` reports the buffer a contact-indexed
+array was last produced with, or the allocation buffer before any step. Selections
+share this record, and a step updates it only for the arrays it requested, so a
+skipped field keeps its own buffer. ``observables.contacts`` is the record for
+``contact_f``, and ``None`` when ``contact_f`` is not requested.
 :class:`~newton.sensors.SensorContact` and the viewer reject a buffer other than
 the one that produced ``contact_f``, so forces are never paired with another
 buffer's geometry. Custom consumers should check ``observables.model is model``
-and ``observables.contacts is contacts`` before reading contact fields:
+and ``observables.contacts_for_kind(kind) is contacts`` before reading a contact
+field:
 
 .. code-block:: python
 

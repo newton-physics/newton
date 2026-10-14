@@ -1343,10 +1343,7 @@ class ViewerBase(ABC):
         if observables is not None:
             if observables.model is not self.model:
                 raise ValueError("Solver observables must belong to the viewer's model.")
-            if (
-                contact_f is not None
-                and observables._contacts_for(newton.solvers.SolverBase.ObservableKind.CONTACT_F) is not contacts
-            ):
+            if contact_f is not None and observables.contacts is not contacts:
                 raise ValueError(
                     "Contact solver observables were produced with a different Contacts instance; "
                     "pass the Contacts used by the step that produced them."

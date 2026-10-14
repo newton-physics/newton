@@ -493,8 +493,33 @@ class SolverBase:
             """Identify containers that request contact-indexed arrays."""
             return bool(self._contact_fields())
 
-        def _contacts_for(self, kind: str) -> Contacts | None:
-            """Return the contacts whose layout the array of ``kind`` follows."""
+        def contacts_for_kind(self, kind: str) -> Contacts | None:
+            """Return the contact storage whose layout the array of ``kind`` follows.
+
+            This is the storage supplied at allocation until a step validates
+            the container with other compatible contacts; see
+            :meth:`SolverBase.validate_observables`. Selections share this
+            record, and a step updates it only for the kinds it requests.
+            Consumers of a contact-indexed field should check that this is
+            the storage whose geometry they read.
+
+            .. note::
+                This API is experimental and may change without a deprecation cycle.
+
+            Args:
+                kind: A standard or solver-specific observable name.
+
+            Returns:
+                The contact storage for a requested contact-indexed kind, or
+                ``None`` for a kind that is not requested by this container or
+                is not contact-indexed.
+
+            Raises:
+                KeyError: If the container type declares no observable for ``kind``.
+                TypeError: If the container does not use an identity-based dataclass.
+            """
+            if kind not in self._observable_fields():
+                raise KeyError(f"No observable declared for kind {kind!r}.")
             return self._contact_layouts.get(kind) if kind in self.kinds else None
 
         def get_attribute_frequency(self, name: str) -> Model.AttributeFrequency | str:
@@ -519,24 +544,13 @@ class SolverBase:
 
         @property
         def contacts(self) -> Contacts | None:
-            """Contact storage whose layout the requested contact-indexed arrays follow.
+            """Contact storage whose layout :attr:`contact_f` follows.
 
-            This is the storage supplied at allocation until a step validates
-            the container with other compatible contacts; see
-            :meth:`SolverBase.validate_observables`. It is ``None`` without
-            contact-indexed requests.
-
-            Raises:
-                ValueError: If subsets of this container were last produced with
-                    different contact storage.
+            Equivalent to ``contacts_for_kind(SolverBase.ObservableKind.CONTACT_F)``;
+            it is ``None`` unless the container requests ``contact_f``. Use
+            :meth:`contacts_for_kind` for other contact-indexed fields.
             """
-            bound = {id(self._contact_layouts[kind]): self._contact_layouts[kind] for kind in self._contact_fields()}
-            if len(bound) > 1:
-                raise ValueError(
-                    "Contact-indexed observables in this container were produced with different Contacts; "
-                    "select the arrays produced by one step before reading their contact storage."
-                )
-            return next(iter(bound.values()), None)
+            return self.contacts_for_kind(SolverBase.ObservableKind.CONTACT_F)
 
     class CollisionSlot(IntEnum):
         """Collision-detection categories scheduled by a solver."""

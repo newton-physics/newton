@@ -648,7 +648,7 @@ class SensorContact:
                 "SolverBase.ObservableKind.CONTACT_F and pass the SolverBase.Observables to update()."
             )
         if observables is not None:
-            if observables._contacts_for(SolverBase.ObservableKind.CONTACT_F) is not contacts:
+            if observables.contacts is not contacts:
                 raise ValueError(
                     "Contact solver observables were produced with a different Contacts instance; "
                     "pass the Contacts used by the step that produced them."

@@ -157,9 +157,16 @@ class TestSolverObservables(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Contacts"):
             solver.validate_observables(pressure)
         solver.validate_observables(pressure, contacts)
-        for selection in (observables, pressure, force, force.select(force.kinds)):
+        for selection in (observables, force, force.select(force.kinds)):
             self.assertIs(selection.contacts, contacts)
+        for selection in (observables, pressure):
+            self.assertIs(selection.contacts_for_kind(CustomContactKind.PRESSURE), contacts)
+        self.assertIsNone(pressure.contacts)
         self.assertIsNone(body.contacts)
+        self.assertIsNone(body.contacts_for_kind(CustomContactKind.PRESSURE))
+        self.assertIsNone(observables.contacts_for_kind(kinds.BODY_QDD))
+        with self.assertRaisesRegex(KeyError, "No observable declared"):
+            observables.contacts_for_kind("pressur")
 
     def test_selection_rebinds_only_written_arrays(self):
         """Track the contacts of each array so a subset step cannot relabel skipped arrays."""
@@ -171,13 +178,15 @@ class TestSolverObservables(unittest.TestCase):
         force = observables.select({kinds.CONTACT_F})
         pressure = observables.select({CustomContactKind.PRESSURE})
         solver.validate_observables(force, contacts_b)
-        self.assertIs(force.contacts, contacts_b)
-        self.assertIs(pressure.contacts, contacts_a)
-        with self.assertRaisesRegex(ValueError, "different Contacts"):
-            _ = observables.contacts
-        solver.validate_observables(observables, contacts_b)
-        for selection in (observables, force, pressure):
+        for selection in (observables, force):
             self.assertIs(selection.contacts, contacts_b)
+        for selection in (observables, pressure):
+            self.assertIs(selection.contacts_for_kind(CustomContactKind.PRESSURE), contacts_a)
+        solver.validate_observables(observables, contacts_b)
+        for selection in (observables, force):
+            self.assertIs(selection.contacts, contacts_b)
+        for selection in (observables, pressure):
+            self.assertIs(selection.contacts_for_kind(CustomContactKind.PRESSURE), contacts_b)
 
     def test_select_zero_capacity_remains_requested(self):
         """Treat selected zero-length contact buffers as requested."""
