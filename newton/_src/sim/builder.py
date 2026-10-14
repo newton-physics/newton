@@ -188,7 +188,7 @@ def _coacd_thread_limits() -> Callable[[], AbstractContextManager[Any]]:
         from threadpoolctl import threadpool_limits
     except ImportError:
         warnings.warn(
-            "coacd<1.0.14 gives different decompositions in every run; install coacd>=1.0.14 or threadpoolctl.",
+            "coacd<1.0.14 can give different decompositions across runs; install coacd>=1.0.14, or threadpoolctl for OpenMP builds.",
             stacklevel=3,
         )
         return nullcontext
