@@ -3822,6 +3822,38 @@ class TestModelJoints(unittest.TestCase):
         self.assertEqual(builder.joint_mimic_joint[joint1], -1)
         self.assertEqual(builder.joint_mimic_coeffs[joint1], (0.0, 1.0))
 
+    def test_joint_mimic_rejects_quaternion_joints(self):
+        """Reject quaternion joints as mimic followers and references without changing metadata."""
+        for joint_type in (
+            newton.JointType.BALL,
+            newton.JointType.FREE,
+            newton.JointType.DISTANCE,
+            newton.JointType.ROD,
+        ):
+            for role in ("follower", "reference", "both"):
+                with self.subTest(joint_type=joint_type, role=role):
+                    builder = newton.ModelBuilder()
+                    bodies = [builder.add_link() for _ in range(2)]
+                    reference_type = joint_type if role in ("reference", "both") else newton.JointType.REVOLUTE
+                    follower_type = joint_type if role in ("follower", "both") else newton.JointType.REVOLUTE
+                    constructors = {
+                        newton.JointType.BALL: builder.add_joint_ball,
+                        newton.JointType.FREE: builder.add_joint_free,
+                        newton.JointType.DISTANCE: builder.add_joint_distance,
+                        newton.JointType.ROD: builder.add_joint_rod,
+                        newton.JointType.REVOLUTE: builder.add_joint_revolute,
+                    }
+                    reference = constructors[reference_type](parent=-1, child=bodies[0])
+                    follower = constructors[follower_type](parent=bodies[0], child=bodies[1])
+
+                    with self.assertRaisesRegex(ValueError, "non-quaternion"):
+                        builder.set_joint_mimic(follower, reference, coeffs=(0.0, 2.0))
+
+                    self.assertEqual(builder.joint_mimic_joint, [-1, -1])
+                    self.assertEqual(builder.joint_mimic_coeffs, [(0.0, 1.0), (0.0, 1.0)])
+                    builder.set_joint_mimic(follower, None)
+                    self.assertEqual(builder.joint_mimic_joint[follower], -1)
+
     def test_joint_mimic_validates_dimensions(self):
         """Verify mimic relationships accept joint types only when their dimensions match."""
         builder = newton.ModelBuilder()

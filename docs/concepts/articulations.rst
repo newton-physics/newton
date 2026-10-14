@@ -202,6 +202,9 @@ applied componentwise when the joints have more than one coordinate.
 The joint types do not need to match; only their position and velocity
 dimensions must match. For example, a one-axis D6 joint can mimic another
 one-dimensional joint.
+Both joints must use non-quaternion coordinates: BALL, FREE, DISTANCE, and
+ROD joints are not supported because componentwise scaling and offsets do
+not preserve unit quaternions.
 
 :func:`newton.eval_mimic` updates the follower coordinates in a state. For each
 follower, it reads all position and velocity coordinates of the reference joint

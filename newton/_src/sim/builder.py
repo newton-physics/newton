@@ -7009,13 +7009,17 @@ class ModelBuilder:
         *,
         coeffs: Vec2 = (0.0, 1.0),
     ) -> None:
-        """Configure a joint to mimic another joint with matching dimensions.
+        """Configure a non-quaternion joint to mimic another with matching dimensions.
 
         The relationship is applied componentwise to every position and
         velocity coordinate. The follower coordinates are defined by
         ``q[joint] = coeffs[0] + coeffs[1] * q[reference_joint]`` and
         ``qd[joint] = coeffs[1] * qd[reference_joint]``. Passing ``None`` as
         ``reference_joint`` clears the relationship.
+
+        Quaternion joints (BALL, FREE, DISTANCE, and ROD) cannot be followers
+        or references because the componentwise relationship does not preserve
+        unit quaternions.
 
         Mimic chains are not supported: the reference joint must be independent,
         and a joint referenced by another mimic joint cannot become a follower.
@@ -7028,7 +7032,8 @@ class ModelBuilder:
                 coordinates [m or rad, dimensionless].
 
         Raises:
-            ValueError: If an index is invalid, the joint dimensions differ, the
+            ValueError: If an index is invalid, either joint uses quaternion
+                coordinates, the joint dimensions differ, the
                 joints belong to different worlds or articulations, the
                 coefficients are not finite, or the relationship creates a mimic
                 chain.
@@ -7046,6 +7051,13 @@ class ModelBuilder:
             raise ValueError(f"Invalid reference joint index {reference_joint}; expected 0..{joint_count - 1}")
         if joint == reference_joint:
             raise ValueError(f"Joint {joint} cannot mimic itself")
+
+        quaternion_joint_types = (JointType.BALL, JointType.FREE, JointType.DISTANCE, JointType.ROD)
+        if (
+            self.joint_type[joint] in quaternion_joint_types
+            or self.joint_type[reference_joint] in quaternion_joint_types
+        ):
+            raise ValueError("Mimic followers and references must be non-quaternion joints")
 
         follower_dimensions = self.joint_type[joint].dof_count(sum(self.joint_dof_dim[joint]))
         reference_dimensions = self.joint_type[reference_joint].dof_count(sum(self.joint_dof_dim[reference_joint]))
