@@ -232,7 +232,7 @@ class TestMuJoCoPerWorldMeshes(unittest.TestCase):
         self.assertTrue(np.isfinite(state.body_q.numpy()).all())
         self.assertFalse(np.any(solver.mjw_data.overflow.numpy()))
         if native:
-            observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+            observables = solver.observables({SolverMuJoCo.ObservableKind.CONTACT_F}, contacts=contacts)
             solver.step(state, state_next, control, contacts, 0.002, observables=observables)
             state, state_next = state_next, state
             count = int(contacts.rigid_contact_count.numpy()[0])
