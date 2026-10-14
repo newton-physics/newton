@@ -726,6 +726,13 @@ add_example_test(
 )
 add_example_test(
     TestCableExamples,
+    name="cable.example_cable_initial_rest_pose",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 120},
+)
+add_example_test(
+    TestCableExamples,
     name="cable.example_cable_pile",
     devices=test_devices,
     use_viewer=True,
@@ -737,6 +744,47 @@ add_example_test(
     devices=cuda_test_devices,
     use_viewer=True,
     test_options={"num-frames": 20},
+)
+
+
+class TestTendonExamples(unittest.TestCase):
+    """Exercise the experimental massless tendon examples."""
+
+
+add_example_test(
+    TestTendonExamples,
+    name="tendon.example_tendon_pulley",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 30},
+)
+add_example_test(
+    TestTendonExamples,
+    name="tendon.example_tendon_pinhole",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 30},
+)
+add_example_test(
+    TestTendonExamples,
+    name="tendon.example_tendon_capstan_friction",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 45},
+)
+add_example_test(
+    TestTendonExamples,
+    name="tendon.example_tendon_mujoco_switch",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 210},
+)
+add_example_test(
+    TestTendonExamples,
+    name="tendon.example_tendon_3d_routing",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 60},
 )
 
 
@@ -1403,14 +1451,17 @@ def test_pyramid_kamino_impact(test, device):
                 broad_phase="sap",
             ),
         )
-        for frame in range(451):
+        # Allow the refined-step trajectory to finish crossing the pyramid,
+        # checking ground clearance throughout the full five-second impact.
+        num_frames = 500
+        for frame in range(num_frames + 1):
             poses = example.state_0.body_q.numpy()[: example.box_count]
             bottom = min(
                 pose[2] - CUBE_HALF * np.abs(np.asarray(wp.quat_to_matrix(wp.quat(*pose[3:7]))).reshape(3, 3)[2]).sum()
                 for pose in poses
             )
             test.assertGreater(bottom, -0.1, f"Frame {frame}: a cube penetrated the ground by {-bottom:.3f} m")
-            if frame < 450:
+            if frame < num_frames:
                 example.step()
         ball_y = example.state_0.body_q.numpy()[example.box_count, 1]
         test.assertLess(ball_y, Y_STACK - 5.0, "The wrecking ball did not pass through the pyramid")

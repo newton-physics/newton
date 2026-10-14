@@ -20,7 +20,6 @@ from ..geometry.types import Heightfield
 from ..geometry.utils import compute_aabb, compute_inertia_box_mesh, remesh_convex_hull
 from ..sim import JointTargetMode, JointType, ModelBuilder
 from ..sim.model import Model
-from ..solvers.mujoco import SolverMuJoCo
 from ..solvers.mujoco.collision_masks import MUJOCO_COLLISION_MASK_DOMAIN_UNSET, compile_collision_masks
 from ..solvers.mujoco.constants import (
     DEFAULT_LIMIT_SOLREF,
@@ -30,6 +29,7 @@ from ..solvers.mujoco.constants import (
 )
 from ..solvers.mujoco.enums import EqType
 from ..solvers.mujoco.equality import _add_equality_constraint
+from ..solvers.mujoco.solver_mujoco import SolverMuJoCo
 from ..solvers.mujoco.utils import (
     mjc_add_equality_loop_joint,
     mjc_add_equality_mimic,
@@ -356,6 +356,7 @@ def parse_mjcf(
         collider_classes: A list of regular expressions. Collision geometries with a class matching one of the regular expressions will be parsed.
         no_class_as_colliders: If True, geometries without a class are parsed as collision geometries. If False, geometries without a class are parsed as visual geometries.
         force_show_colliders: If True, the collision shapes are always shown, even if there are visual shapes.
+            Collider planes in MJCF groups 0-2 remain visible even when this is False.
         enable_self_collisions: If True, self-collisions are enabled.
         ignore_inertial_definitions: If True, the inertial parameters defined in the MJCF are ignored and the inertia is calculated from the shape geometry.
         collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged.
@@ -726,11 +727,15 @@ def parse_mjcf(
             # Parse attributes
             nrow = int(hfield.attrib.get("nrow", "100"))
             ncol = int(hfield.attrib.get("ncol", "100"))
-            size_str = hfield.attrib.get("size", "1 1 1 0")
+            # MJCF requires all four sizes; do not turn an invalid base into
+            # the solver's sentinel for native fields without MJCF metadata.
+            size_str = hfield.attrib.get("size", "")
             size_arr = np.array(size_str.split(), dtype=np.float32)
-            if size_arr.size < 4:
-                size_arr = np.pad(size_arr, (0, 4 - size_arr.size), constant_values=0.0)
-            size = tuple(size_arr[:4])
+            if size_arr.size != 4:
+                raise ValueError(f"MJCF heightfield {hfield_name!r} size must contain exactly four values")
+            if not np.all(np.isfinite(size_arr)) or np.any(size_arr <= 0.0):
+                raise ValueError(f"MJCF heightfield {hfield_name!r} size values must be finite and positive")
+            size = tuple(size_arr)
             # Parse optional file path
             file_attr = hfield.attrib.get("file")
             file_path = None
@@ -1078,7 +1083,8 @@ def parse_mjcf(
                 geom_mass_explicit = None
 
             shape_cfg = builder.default_shape_cfg.copy()
-            shape_cfg.is_visible = visible
+            # Keep floor colliders in MuJoCo's default visible groups.
+            shape_cfg.is_visible = visible or (not just_visual and geom_type == "plane" and 0 <= geom_group <= 2)
             shape_cfg.has_shape_collision = not just_visual
             shape_cfg.has_particle_collision = not just_visual
             shape_cfg.density = geom_density
@@ -1456,8 +1462,10 @@ def parse_mjcf(
 
                 # Convert MuJoCo size (size_x, size_y, size_z, size_base) to Newton format.
                 # In MuJoCo, the heightfield's lowest point (data=0) is at the geom origin,
-                # so min_z=0 and max_z=size_z. size_base (depth below origin) is ignored.
-                mj_size_x, mj_size_y, mj_size_z, _mj_size_base = hfield_asset["size"]
+                # so min_z=0 and max_z=size_z. Preserve the base separately for MuJoCo.
+                mj_size_x, mj_size_y, mj_size_z, mj_size_base = hfield_asset["size"]
+                if shape_builder is builder:
+                    custom_attributes["mujoco:hfield_base"] = mj_size_base * scale
                 heightfield = Heightfield(
                     data=elevation,
                     nrow=nrow,

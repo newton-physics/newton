@@ -9,7 +9,7 @@ from unittest import mock
 import numpy as np
 import warp as wp
 
-from newton import Mesh, Model, ModelBuilder
+from newton import Mesh, Model, ModelBuilder, Rod
 from newton._src.sim.builder import _ARRAY_BACKED_ATTRIBUTE_DTYPES, _materialize_array_backed_list
 from newton.actuators import DrivePD
 from newton.tests.unittest_utils import add_function_test, get_test_devices
@@ -829,6 +829,26 @@ class TestModelBuilderReplicate(unittest.TestCase):
                                 self.assertIsInstance(actual_array, wp.array)
                                 self.assertIs(expected_array.dtype, actual_array.dtype)
                                 np.testing.assert_array_equal(expected_array.numpy(), actual_array.numpy())
+
+    def test_array_backed_finalize_projects_rod_target_q_to_legacy_dof_layout(self):
+        """Project replicated Rod targets from coordinate to legacy DOF layout."""
+        with mock.patch("newton.use_coord_layout_targets", False):
+            source = ModelBuilder()
+            source.add_rod(
+                rod=Rod([(0.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.0, 0.0, 2.0)], radius=0.1),
+                body_frame_origin="com",
+            )
+
+            array_backed = ModelBuilder()
+            array_backed.replicate(source, 2)
+            self.assertIn("joint_target_q", array_backed._array_backed_attributes)
+
+            with self.assertWarnsRegex(DeprecationWarning, "legacy DOF-shaped joint_target_q layout"):
+                actual = array_backed.finalize(device="cpu")
+
+            # Quaternion-to-Euler conversion may leave float32 roundoff at identity.
+            self.assertEqual(actual.joint_target_q.shape, (actual.joint_dof_count,))
+            np.testing.assert_allclose(actual.joint_target_q.numpy(), 0.0, atol=1.0e-6)
 
     def test_array_backed_joint_validation_returns_early_when_all_joints_are_articulated(self):
         """Skip orphan-joint validation and keep topology array-backed when every joint is articulated."""

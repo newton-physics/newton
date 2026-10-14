@@ -78,7 +78,7 @@ class State:
 
     .. deprecated:: 1.7
 
-        Request :class:`newton.solvers.SolverObservables` from the solver instead.
+        Request :class:`newton.solvers.SolverBase.Observables` from the solver instead.
     """
 
     @classmethod
@@ -117,6 +117,18 @@ class State:
         self.particle_f: wp.array | None = None
         """3D forces on particles [N], shape (particle_count,), dtype :class:`vec3`."""
 
+        self.tendon_segment_rest_length: wp.array[float] | None = None
+        """Material rest lengths [m], shape (tendon_segment_count,). Initialized on the first solver step."""
+        self.tendon_segment_attachment_l_local: wp.array[wp.vec3] | None = None
+        """Previous left tangent points in body-local coordinates [m], shape (tendon_segment_count,)."""
+        self.tendon_segment_attachment_r_local: wp.array[wp.vec3] | None = None
+        """Previous right tangent points in body-local coordinates [m], shape (tendon_segment_count,)."""
+        self.tendon_guide_active: wp.array[wp.bool] | None = None
+        """Accepted routing activity, shape (tendon_guide_count,). Initialized on the first solver step."""
+        # Initialization/reset bookkeeping is copied by assign() along with physical history.
+        self._tendon_initialized: wp.array[wp.bool] | None = None
+        self._tendon_rebaseline: wp.array[wp.bool] | None = None
+
         self.body_q: wp.array | None = None
         """Rigid body transforms (7-DOF) [m, unitless quaternion], shape (body_count,), dtype :class:`transform`."""
 
@@ -132,8 +144,8 @@ class State:
         last three: angular acceleration [rad/s²] in world frame.
 
         .. deprecated:: 1.7
-            Request :attr:`newton.solvers.SolverObservableFlags.BODY_QDD` from the solver and read
-            :attr:`newton.solvers.SolverObservables.body_qdd` instead.
+            Request :attr:`newton.solvers.SolverBase.ObservableKind.BODY_QDD` from the solver and read
+            :attr:`newton.solvers.SolverBase.Observables.body_qdd` instead.
         """
 
         self.body_f: wp.array | None = None
@@ -150,8 +162,8 @@ class State:
         First three entries: linear force [N]; last three: torque [N·m].
 
         .. deprecated:: 1.7
-            Request :attr:`newton.solvers.SolverObservableFlags.BODY_PARENT_F` from the solver and read
-            :attr:`newton.solvers.SolverObservables.body_parent_f` instead.
+            Request :attr:`newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F` from the solver and read
+            :attr:`newton.solvers.SolverBase.Observables.body_parent_f` instead.
 
         .. note::
             :attr:`body_parent_f` represents incoming joint wrenches in world frame, referenced to the body's center of mass (COM).
@@ -162,7 +174,7 @@ class State:
 
         self.joint_qd: wp.array | None = None
         """Generalized joint velocity coordinates [m/s or rad/s, depending on joint type], shape (joint_dof_count,), dtype float.
-        For FREE and DISTANCE joints, the linear entries are child-COM velocity in the joint parent frame and the angular entries are angular velocity in that same frame."""
+        For FREE, DISTANCE, and ROD joints, the linear entries are child-COM velocity in the joint parent frame and the angular entries are angular velocity in that same frame."""
 
     def clear_forces(self) -> None:
         """
