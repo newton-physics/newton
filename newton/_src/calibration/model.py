@@ -3,7 +3,7 @@
 
 """The simulated cable a calibration run scores against.
 
-:class:`CableWorld` builds a rod from candidate parameters, settles it, drives it
+:class:`CableSimulation` builds a rod from candidate parameters, settles it, drives it
 along a recorded trajectory, and renders it through each camera that observed the
 recording. One instance holds a whole *population* of candidates, one per world:
 the parameter arguments are lists with one entry per world.
@@ -30,7 +30,7 @@ import newton.sensors as sensors
 from ..geometry.inertia import compute_inertia_capsule
 
 SETTLE_MODES = ("dynamic",)
-"""Ways :meth:`CableWorld.settle` can bring the cable to its initial equilibrium."""
+"""Ways :meth:`CableSimulation.settle` can bring the cable to its initial equilibrium."""
 
 
 @wp.kernel
@@ -66,7 +66,7 @@ def _drive_clamp_kernel(
 
     The pose is the TCP sample ``frame * sim_substeps + substep`` of
     ``transform_buffer``, or its last sample, composed with the TCP-to-anchor
-    transform ``(anchor_pos, anchor_rot)``. :class:`CableWorld` builds the rod
+    transform ``(anchor_pos, anchor_rot)``. :class:`CableSimulation` builds the rod
     with the same composition, so the driven pose at frame 0 equals the built
     pose. The kernel writes the pose into both states.
 
@@ -261,7 +261,7 @@ def _require_twist_args(twist_stiffness: float | None, twist_damping: float | No
         )
 
 
-class CableWorld:
+class CableSimulation:
     """Newton simulation of a population of candidate cables, one per world.
 
     :meth:`run_sequence` scores all worlds in one solver and render pass.
@@ -980,7 +980,7 @@ class CableWorld:
             times = list(goal_times) if goal_times is not None else [None] * self.n_cameras
             if not (len(reprs) == len(crops) == len(times) == self.n_cameras):
                 raise ValueError(
-                    f"CableWorld has {self.n_cameras} cameras; run_sequence needs that many "
+                    f"CableSimulation has {self.n_cameras} cameras; run_sequence needs that many "
                     f"goal_reprs / crop / goal_times entries, got "
                     f"{len(reprs)} / {len(crops)} / {len(times)}."
                 )

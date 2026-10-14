@@ -22,7 +22,7 @@ import newton
 from newton._src.calibration.data_source import CableDataSource
 from newton._src.calibration.evidence import CableEvidenceBundle, CableRecording
 from newton._src.calibration.goal import CableGoal, group_goals
-from newton._src.calibration.model import ANGLE_PARAM_EXP, CableWorld
+from newton._src.calibration.model import ANGLE_PARAM_EXP, CableSimulation
 from newton._src.calibration.rehydrate import bundle_to_goals
 from newton._src.calibration.result import STATUS_OK, CableCalibrationResult
 from newton._src.calibration.schema import SCHEMA_VERSION
@@ -622,7 +622,7 @@ def fixed_drive(tcp_quat=IDENTITY, num_frames=2):
 
 
 def make_camera(**overrides):
-    """A calibrated camera descriptor for CableWorld, for tests that do not look at the image."""
+    """A calibrated camera descriptor for CableSimulation, for tests that do not look at the image."""
     values = {
         "sensor_pos": (1.0, 0.0, 0.5),
         "sensor_quat": IDENTITY,
@@ -635,7 +635,7 @@ def make_camera(**overrides):
 
 
 def make_world(population=1, num_elements=3, **overrides):
-    """A CableWorld of ``population`` straight, undriven cables of ``num_elements`` capsules each."""
+    """A CableSimulation of ``population`` straight, undriven cables of ``num_elements`` capsules each."""
     values = {
         "cable_start": ORIGIN,
         "angles_list": [[(0.0, 0.0)] * num_elements] * population,
@@ -658,7 +658,7 @@ def make_world(population=1, num_elements=3, **overrides):
         "attachment_transform": (ORIGIN, IDENTITY),
     }
     values.update(overrides)
-    return CableWorld(**values)
+    return CableSimulation(**values)
 
 
 def body_pose(world, body):
@@ -673,7 +673,7 @@ def capsule_axis(world, capsule):
 
 
 class TestCalibrationAttachmentTransform(unittest.TestCase):
-    """CableWorld composing attachment_transform into the build and the drive."""
+    """CableSimulation composing attachment_transform into the build and the drive."""
 
     def anchor_pose(self, world):
         """Pose of the clamp capsule of world 0."""
@@ -710,7 +710,7 @@ class TestCalibrationAttachmentTransform(unittest.TestCase):
 
 
 class TestCalibrationClampPosition(unittest.TestCase):
-    """CableWorld clamping the cable at a point along its length."""
+    """CableSimulation clamping the cable at a point along its length."""
 
     def build(self, clamp_position):
         """A six-capsule, 0.3 m cable clamped at ``clamp_position`` [m] and held at ``TCP_POS``."""
@@ -798,7 +798,7 @@ class TestCalibrationClampPosition(unittest.TestCase):
 
 
 class TestCalibrationCableAxis(unittest.TestCase):
-    """CableWorld orienting the clamp from a direction in the TCP frame."""
+    """CableSimulation orienting the clamp from a direction in the TCP frame."""
 
     def clamp_axis(self, cable_axis, tcp_quat=IDENTITY):
         world = make_world(transform_buffer=fixed_drive(tcp_quat), cable_axis=cable_axis)
@@ -847,7 +847,7 @@ def viewing_dir_to_camera_quat(viewing_dir):
 
 
 def scene_camera(viewing_dir=(0.0, 1.0, 0.0), distance=0.5):
-    """A camera descriptor for CableWorld, ``distance`` [m] from the cable middle and looking along ``viewing_dir``."""
+    """A camera descriptor for CableSimulation, ``distance`` [m] from the cable middle and looking along ``viewing_dir``."""
     pos = tuple(m - distance * d for m, d in zip(CABLE_MIDDLE, viewing_dir, strict=True))
     return {
         "sensor_pos": pos,
@@ -857,7 +857,7 @@ def scene_camera(viewing_dir=(0.0, 1.0, 0.0), distance=0.5):
 
 
 def make_scene(population=1, cameras=None, **overrides):
-    """A CableWorld of the hanging scene, seen by the scene camera unless ``cameras`` is given."""
+    """A CableSimulation of the hanging scene, seen by the scene camera unless ``cameras`` is given."""
     return make_world(
         population,
         cable_start=HANG_START,
@@ -953,8 +953,8 @@ class LossNodeDistance:
         return float(np.linalg.norm(geom - goal, axis=1).mean())
 
 
-class TestCalibrationCableWorld(unittest.TestCase):
-    """Building, stepping and rendering a CableWorld."""
+class TestCalibrationCableSimulation(unittest.TestCase):
+    """Building, stepping and rendering a CableSimulation."""
 
     def test_mask_lies_where_the_cable_projects(self):
         """Verify the rendered cable mask lies where project_cable puts the cable.
@@ -1164,7 +1164,7 @@ class TestCalibrationCableMasks(unittest.TestCase):
 
 
 class TestCalibrationRunSequence(unittest.TestCase):
-    """Scoring a rollout with CableWorld.run_sequence."""
+    """Scoring a rollout with CableSimulation.run_sequence."""
 
     def test_pixel_loss_receives_the_binary_mask(self):
         """Verify run_sequence gives a pixel loss each world's mask of the current state, with or without recording.
