@@ -114,6 +114,41 @@ def test_nodal_rank_deficient_transform(test, device):
         test.assertTrue(np.all(mean >= 0.0))
 
 
+def test_nodal_singular_completion(test, device):
+    """Keep nodal completion directions independent of the supported mass eigenvectors."""
+    for n in (4, 8):
+        null_direction = np.arange(1, n + 1, dtype=float)
+        null_direction /= np.linalg.norm(null_direction)
+        completion, _ = np.linalg.qr(null_direction[:, None], mode="complete")
+        frame = completion[:, 1:].T
+        for angle in (0.0, 0.37):
+            with test.subTest(n=n, angle=angle):
+                rotation = np.eye(n - 1)
+                rotation[:2, :2] = ((np.cos(angle), -np.sin(angle)), (np.sin(angle), np.cos(angle)))
+                spectrum = np.linspace(0.25, 0.9, n - 1) / n
+                mass = (frame.T @ rotation @ np.diag(spectrum) @ rotation.T @ frame).astype(np.float32)
+                r, t, diagonal, _mean = _diagonalize(mass, device)
+                active = np.linalg.norm(r, axis=1) > 0.0
+                eigenvalues, eigenvectors = np.linalg.eigh(mass.astype(float))
+                supported = eigenvalues > 1.0e-6
+                inverse_root = (eigenvectors[:, supported] / np.sqrt(n * eigenvalues[supported])) @ eigenvectors[
+                    :, supported
+                ].T
+                actual_frame = t[active] @ inverse_root
+                test.assertEqual(len(actual_frame), n - 1)
+                for actual, expected in zip(actual_frame, frame, strict=True):
+                    # The final pressure orientation may flip a row, but not rotate it.
+                    np.testing.assert_allclose(np.outer(actual, actual), np.outer(expected, expected), atol=3.0e-6)
+                np.testing.assert_allclose(r @ mass @ r.T, np.diag(active.astype(float)) / n, atol=2.0e-6)
+                np.testing.assert_allclose(t @ r.T, np.diag(active.astype(float)), atol=3.0e-6)
+                np.testing.assert_allclose(r @ mass, np.diag(diagonal) @ t, atol=2.0e-6)
+
+        r, t, diagonal, _mean = _diagonalize(np.zeros((n, n), dtype=np.float32), device)
+        np.testing.assert_array_equal(r, np.zeros((n, n)))
+        np.testing.assert_array_equal(t, np.zeros((n, n)))
+        np.testing.assert_array_equal(diagonal, np.ones(n))
+
+
 def test_nodal_material_averaging(test, device):
     """Respect pressure orientation, symmetric shear, quadratic viscosity, and inactive particles."""
     coords = np.array(((0.1, 0.3, 0.2), (0.4, 0.2, 0.4), (0.65, 0.4, 0.7), (0.9, 0.7, 0.5), (0.8, 0.3, 0.2)))
@@ -209,6 +244,7 @@ def test_nodal_material_averaging(test, device):
                     (weights * encoded[None]).sum(axis=1), total, out=np.zeros((n, 6)), where=total > 0.0
                 )
                 actual = parameters.numpy()
+                test.assertTrue(np.all(actual[:, 0] >= 0.0))
                 np.testing.assert_allclose(actual, expected, rtol=3.0e-5, atol=1.0e-4)
                 np.testing.assert_allclose(actual[0], actual[1], rtol=3.0e-5, atol=1.0e-4)
                 np.testing.assert_allclose(actual[0, (2, 5)], actual[2, (2, 5)], rtol=3.0e-5)
@@ -332,6 +368,7 @@ class TestImplicitMPMNodalDiagonalization(unittest.TestCase):
 for name, func in (
     ("test_nodal_full_rank_transform", test_nodal_full_rank_transform),
     ("test_nodal_rank_deficient_transform", test_nodal_rank_deficient_transform),
+    ("test_nodal_singular_completion", test_nodal_singular_completion),
     ("test_nodal_mean_orientation", test_nodal_mean_orientation),
     ("test_nodal_material_averaging", test_nodal_material_averaging),
     ("test_nodal_full_cell_solver", test_nodal_full_cell_solver),
