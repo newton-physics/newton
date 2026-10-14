@@ -4859,6 +4859,76 @@ def Xform "World"
                 self.assertEqual(value[0], expected_int)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_option_integrator_token_parsing(self):
+        """Test that every MjcPhysics integrator token parses from a USD PhysicsScene."""
+        from pxr import Usd
+
+        test_cases = [
+            ("euler", 0),
+            ("rk4", 1),
+            ("implicit", 2),
+            ("implicitfast", 3),
+            ("discrete", 4),
+        ]
+
+        for token, expected_int in test_cases:
+            with self.subTest(integrator=token):
+                usd_content = f"""#usda 1.0
+(
+    defaultPrim = "World"
+    metersPerUnit = 1.0
+    upAxis = "Z"
+)
+
+def Xform "World"
+{{
+    def PhysicsScene "PhysicsScene" (
+        prepend apiSchemas = ["MjcSceneAPI"]
+    )
+    {{
+        uniform token mjc:option:integrator = "{token}"
+    }}
+
+    def Xform "Articulation" (
+        prepend apiSchemas = ["PhysicsArticulationRootAPI"]
+    )
+    {{
+        def Xform "Body1" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+        )
+        {{
+            double3 xformOp:translate = (0, 0, 1)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+
+            def Sphere "Collision" (
+                prepend apiSchemas = ["PhysicsCollisionAPI"]
+            )
+            {{
+                double radius = 0.1
+            }}
+        }}
+
+        def PhysicsRevoluteJoint "Joint"
+        {{
+            rel physics:body0 = </World/Articulation/Body1>
+            point3f physics:localPos0 = (0, 0, 0)
+            quatf physics:localRot0 = (1, 0, 0, 0)
+            token physics:axis = "Z"
+        }}
+    }}
+}}
+"""
+                stage = Usd.Stage.CreateInMemory()
+                stage.GetRootLayer().ImportFromString(usd_content)
+
+                builder = newton.ModelBuilder()
+                SolverMuJoCo.register_custom_attributes(builder)
+                builder.add_usd(stage)
+                model = builder.finalize()
+
+                self.assertEqual(model.mujoco.integrator.numpy()[0], expected_int)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_parse_mujoco_options_disabled(self):
         """Test that MuJoCo options from PhysicsScene are not parsed when parse_mujoco_options=False."""
         from pxr import Usd
