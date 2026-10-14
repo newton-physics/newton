@@ -1,1 +1,1 @@
-Add a OneRobotics A1 robot example with left-arm, right-arm, and bimanual models, including pose-hold, joint-sine, and coordinated wave demos.
+Add OneRobotics A1 arm examples and an X1 mobile-manipulator example that coordinates the wheeled base, lift, and dual arms in a staged pre-grasp task. The current X1 asset does not include grippers.
