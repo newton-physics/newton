@@ -68,8 +68,6 @@ published citation when available and retain an accessible preprint link.
 
 - **DetAug: Obstacle-Blind Trajectory Augmentation for Zero-shot Obstacle Avoidance**. *R. O'Mahoney, M. Zoellner, I. Havoutis*. September 2026. [arXiv:2609.18395](https://arxiv.org/abs/2609.18395)
 
-- **Architecting the Next Generation of Asynchronous, Distributed GPUs for the AI Era**. *J. Pan, W. An, C. Avalos Baddouh, C. D. Bose, N. Kang, A. Barnes, A. Alawneh, F. Shen, Y. Liu, A. Nallathambi, A. Chandrashekar, T. G. Rogers*. August 2026. [arXiv:2608.22602](https://arxiv.org/abs/2608.22602)
-
 - **PersistGS: Differentiable Physics for Object Permanence in 4D Gaussian Splatting**. *A. Ramlal, J. S. Zelek*. CVPR Workshops, 2026. [arXiv:2606.03479](https://arxiv.org/abs/2606.03479)
 
 - **Informationally Decoupled Trajectory Design for Sim-to-Real System Identification**. *S. Shin, A. Anilkumar, R. Gao, J. P. Hanna*. October 2026. [arXiv:2610.10905](https://arxiv.org/abs/2610.10905)
