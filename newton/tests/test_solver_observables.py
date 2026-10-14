@@ -779,6 +779,49 @@ def test_oversized_observables_fill_legacy_force(test, device):
     np.testing.assert_array_equal(rows[16:], 0.0)
 
 
+def test_owned_and_external_pipelines(test, device):
+    """Size each container from its own buffer when a solver-owned pipeline shares the model."""
+    kinds = {newton.solvers.SolverBase.ObservableKind.CONTACT_F}
+    for owned_first in (True, False):
+        with test.subTest(owned_first=owned_first):
+            builder = newton.ModelBuilder()
+            builder.add_ground_plane()
+            builder.add_particle(pos=wp.vec3(0.0, 0.0, 0.046), vel=wp.vec3(0.0), mass=1.0, radius=0.05)
+            builder.color()
+            model = builder.finalize(device=device)
+
+            def make_owned(model=model):
+                owned = newton.solvers.SolverVBD(
+                    model,
+                    iterations=2,
+                    collision_pipeline=newton.CollisionPipeline(model, rigid_contact_max=8, soft_contact_max=8),
+                )
+                return owned, owned.observables(kinds)
+
+            if owned_first:
+                owned, owned_observables = make_owned()
+            pipeline = newton.CollisionPipeline(model, rigid_contact_max=1000, soft_contact_max=64)
+            contacts = pipeline.contacts()
+            external = newton.solvers.SolverVBD(model, iterations=2)
+            external_observables = external.observables(kinds, contacts=contacts)
+            if not owned_first:
+                owned, owned_observables = make_owned()
+
+            test.assertEqual(owned_observables.contact_f.shape, (16,))
+            test.assertEqual(external_observables.contact_f.shape, (1064,))
+            owned.step(model.state(), model.state(), None, None, 1.0 / 60.0, observables=owned_observables)
+            state_in = model.state()
+            pipeline.collide(state_in, contacts)
+            external.step(state_in, model.state(), None, contacts, 1.0 / 60.0, observables=external_observables)
+            test.assertIs(owned_observables.contacts, owned.contacts)
+            test.assertIs(external_observables.contacts, contacts)
+            for observables, soft_start in ((owned_observables, 8), (external_observables, 1000)):
+                rows = observables.contact_f.numpy()
+                test.assertLess(rows[soft_start, 2], 0.0)
+                np.testing.assert_array_equal(rows[:soft_start], 0.0)
+                np.testing.assert_array_equal(rows[soft_start + 1 :], 0.0)
+
+
 class TestContactObservableOwnership(unittest.TestCase):
     """Verify contact observables are owned by their Contacts, not by model-wide capacity."""
 
@@ -788,6 +831,7 @@ for _name, _func in (
     ("test_external_and_private_admm_pipelines", test_external_and_private_admm_pipelines),
     ("test_alternating_contacts_production_and_consumption", test_alternating_contacts_production_and_consumption),
     ("test_oversized_observables_fill_legacy_force", test_oversized_observables_fill_legacy_force),
+    ("test_owned_and_external_pipelines", test_owned_and_external_pipelines),
 ):
     add_function_test(TestContactObservableOwnership, _name, _func, devices=devices)
 
