@@ -61,7 +61,8 @@ them to the initial points and normals, to start relaxed. Separately, welded cab
 honor authored initial normals even without rest fields; earlier versions ignored those normals.
 Rest lengths now determine capsule size and mass volume weights. Explicit segment masses keep
 their authored values. Attachments follow native rod material endpoints, which can differ from
-the initial USD points on a stretched cable; see :ref:`usd_parsing` for the supported subset.
+the initial USD points when initial and rest segment lengths differ; see :ref:`usd_parsing`
+for the supported subset.
 These changes affect the experimental deformable importer, so they do not require a deprecation
 period under Newton's :doc:`compatibility policy <guide/compatibility>`.
 

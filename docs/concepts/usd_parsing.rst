@@ -239,6 +239,11 @@ The first release deliberately supports a narrow, predictable set of inputs:
   articulation, and welded cable graphs. Rest lengths set capsule sizes, mass volume weights,
   and the lengths used to convert material stiffness and damping to joint gains.
   Initial points set segment centers, and initial normals set segment orientations.
+
+  When a segment is longer in the initial pose than in the rest shape, its capsule still
+  uses the rest length. This can leave gaps between capsules and affect contact, as with
+  native :ref:`rod joints <Rod joints>`.
+
   Missing rest points use the initial points. Missing rest normals use the initial normal
   values, interpreted against the rest tangents. Normals are read from ``primvars:normals``
   first, including indexed values, then from ``normals``. Both initial and rest normals use
@@ -257,8 +262,8 @@ The first release deliberately supports a narrow, predictable set of inputs:
   For the initial pose, invalid normals get a generated frame per segment;
   valid initial normals on other segments still apply.
 * Hard cable-to-xform point attachments, and hard cable-to-cable junctions whose initial
-  points coincide. Stretched cables can have separated material anchors; see the
-  stretched cable attachment limitation below.
+  points coincide. See cable attachment positions below for cases where initial and rest
+  segment lengths differ.
 * ``PhysicsElementCollisionFilter`` prims filter collisions between the paired element groups
   of their two sources (imported cables, rigid bodies, or collider prims; a count of ``0`` or
   an empty counts array selects all elements). Cloth and volume element sources warn and are
@@ -292,17 +297,14 @@ Known gaps of the experimental importer, tracked as follow-ups:
   Cloth and volume rest point/topology arrays and explicit cloth bend arrays are ignored with a
   warning. The supported cloth bend default uses the simulation geometry at the default time:
   ``flat`` sets zero rest dihedrals and ``restShape`` uses its imported dihedrals.
-* **Stretched cable attachments** -- cable capsules have rest lengths and initial segment
-  centers. If initial and rest lengths differ, capsule endpoints can differ from the USD
-  initial points. Attachments use the capsule's material endpoints and rest-length segment
-  coordinates, like native rod joints. Import preserves the initial poses in ``Model.body_q``
-  and a newly created state. An attachment can start with separated anchors that the solver
-  must bring together. A gripper positioned around the initial curve may also miss the
-  shorter capsules. The importer does not reposition the cable to restore that contact.
+* **Cable attachment positions** -- attachments use native rod material endpoints and
+  rest-length segment coordinates. When initial and rest segment lengths differ, these
+  positions can differ from the proposal's positions on the initial curve. Import preserves
+  the initial poses in ``Model.body_q`` and a newly created state. An attachment can start
+  with separated anchors that the solver must bring together.
   Import does not call :func:`~newton.eval_fk`. If the application calls it, FK enforces
   the articulation's root attachment and can translate a cable rooted at an endpoint.
   Attachments outside articulations remain for the solver to enforce.
-  This approximates the proposal's attachment positions on the initial curve.
 * **Springy attachments** -- attachments with a finite stiffness are not simulated. They are
   preserved in ``path_attachment_attrs`` with their authored stiffness and damping (silently
   hardening them would change the authored physics); only hard attachments (unauthored or
