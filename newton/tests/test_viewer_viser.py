@@ -7,6 +7,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import re
 import tempfile
 import threading
 import time
@@ -667,11 +668,22 @@ class TestViewerViserTextures(unittest.TestCase):
 class TestViewerViserBindHost(unittest.TestCase):
     """``host`` controls the bind address and has to be reflected in the browser URL."""
 
+    # Newton prints its own URL after viser has spoken, so anything asserted
+    # against the whole buffer can match Newton's line instead of viser's.
+    _NEWTON_URL_LINE = re.compile(r"^Viser server running at:.*$", re.MULTILINE)
+
     def _viewer(self, **kwargs):
         kwargs.setdefault("verbose", False)
         viewer = ViewerViser(port=0, **kwargs)
         self.addCleanup(viewer.close)
         return viewer
+
+    def _viser_startup_output(self, host):
+        """Return the viewer and the startup output viser itself produced."""
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            viewer = self._viewer(host=host, verbose=True)
+        return viewer, self._NEWTON_URL_LINE.split(buffer.getvalue(), maxsplit=1)[0]
 
     def test_default_host_url_uses_localhost(self):
         """Report localhost for the default wildcard bind."""
@@ -695,21 +707,17 @@ class TestViewerViserBindHost(unittest.TestCase):
 
     def test_verbose_line_uses_the_bound_host(self):
         """Print the bound host in the verbose startup line."""
-        buffer = io.StringIO()
-        with contextlib.redirect_stdout(buffer):
-            viewer = self._viewer(host="127.0.0.1", verbose=True)
-        self.assertIn(f"http://127.0.0.1:{viewer._server.get_port()}", buffer.getvalue())
+        viewer, viser_output = self._viser_startup_output("127.0.0.1")
+        self.assertIn(f"http://127.0.0.1:{viewer._server.get_port()}", viser_output)
 
     def test_url_matches_the_url_viser_prints(self):
         """Report the same host viser's own startup message does, for both bind styles."""
         for host, expected_host in (("0.0.0.0", "localhost"), ("127.0.0.1", "127.0.0.1")):
             with self.subTest(host=host):
-                buffer = io.StringIO()
-                with contextlib.redirect_stdout(buffer):
-                    viewer = self._viewer(host=host, verbose=True)
+                viewer, viser_output = self._viser_startup_output(host)
                 url = f"http://{expected_host}:{viewer._server.get_port()}"
                 self.assertEqual(viewer.url, url)
-                self.assertIn(url, buffer.getvalue())
+                self.assertIn(url, viser_output)
 
     def test_notebook_fallback_uses_the_bound_host(self):
         """Use the bound host when a notebook has no Jupyter proxy route to offer."""
