@@ -2014,7 +2014,7 @@ class TestFeatherPGSFrictionAnchorSelection(unittest.TestCase):
         contacts.rigid_contact_point1.assign(points)
         # The x force and z torque correspond to an off-centre tangential load.
         s1.body_f.assign([[1, 0, 0, 0, 0, 0.05]])
-        observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+        observables = solver.observables({newton.solvers.SolverBase.ObservableKind.CONTACT_F}, contacts=contacts)
         solver.step(s1, s0, model.control(), contacts, dt, observables=observables)
         self.assertGreater(np.count_nonzero(solver._friction_patches.current.source.numpy() >= 0), 0)
         count = int(solver._mf_constraint_count.numpy()[0])
@@ -2032,7 +2032,7 @@ class TestFeatherPGSFrictionAnchorSelection(unittest.TestCase):
         device = _DEVICE
         with wp.ScopedDevice(device):
             model, solver, contacts, step = _ground_box(device)
-            observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+            observables = solver.observables({newton.solvers.SolverBase.ObservableKind.CONTACT_F}, contacts=contacts)
             for _ in range(100):
                 step(observables)
             count = int(contacts.rigid_contact_count.numpy()[0])

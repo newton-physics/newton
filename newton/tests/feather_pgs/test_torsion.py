@@ -32,7 +32,7 @@ from newton._src.solvers.feather_pgs.kernels import (
     PGS_CONSTRAINT_TYPE_JOINT_TARGET,
     PGS_CONSTRAINT_TYPE_TORSION,
 )
-from newton.solvers import SolverFeatherPGS, SolverObservableFlags
+from newton.solvers import SolverBase, SolverFeatherPGS
 from newton.tests.feather_pgs._fixtures import (
     PATCH_OPTIONS,
     _assert_budget,
@@ -1947,7 +1947,7 @@ def _solve_initial_states(states, *, device, radius=0.0075, closing=0.1, dt=0.00
     }
     solver = SolverFeatherPGS(model, solve_mode="matrix_free", **options)
     solver._rigid_body_angular_damping.zero_()
-    observables = solver.observables({SolverObservableFlags.CONTACT_F})
+    observables = solver.observables({SolverBase.ObservableKind.CONTACT_F}, contacts=contacts)
     solver.step(a, z, model.control(), contacts, dt, observables=observables)
     test_arrays = {name: getattr(solver, f"_{name}").numpy() for name in ("impulses", "row_type", "row_w", "Y_world")}
     count = solver._constraint_count.numpy()
@@ -2159,7 +2159,7 @@ def test_internal_timestep_export_uses_final_linear_impulse(test, device):
             result, solver, model, initial, contacts = fixture(
                 0.01, device=device, spin=100.0, center_only=True, dt=dt, velocity_iterations=4, **PATCH_OPTIONS
             )
-            observables = solver.observables({SolverObservableFlags.CONTACT_F})
+            observables = solver.observables({SolverBase.ObservableKind.CONTACT_F}, contacts=contacts)
             for _ in range(4):
                 output = model.state()
                 solver.step(initial, output, model.control(), contacts, dt, observables=observables)

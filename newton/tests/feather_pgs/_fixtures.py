@@ -17,7 +17,7 @@ from newton._src.solvers.feather_pgs.friction_patches import (
 from newton._src.solvers.feather_pgs.kernels import (
     PGS_CONSTRAINT_TYPE_FRICTION,
 )
-from newton.solvers import SolverFeatherPGS, SolverObservableFlags
+from newton.solvers import SolverBase, SolverFeatherPGS
 
 CONTACT_MAX = 8192
 
@@ -379,7 +379,7 @@ def fixture(
         set_torsion_radius(model, 0.0)
     if not step:
         return None, solver, model, a, contacts
-    observables = solver.observables({SolverObservableFlags.CONTACT_F})
+    observables = solver.observables({SolverBase.ObservableKind.CONTACT_F}, contacts=contacts)
     solver.step(a, z, model.control(), contacts, dt, observables=observables)
     result = {name: getattr(z, name).numpy() for name in ("body_q", "body_qd", "joint_q", "joint_qd")}
     result["contact_f"] = observables.contact_f.numpy()

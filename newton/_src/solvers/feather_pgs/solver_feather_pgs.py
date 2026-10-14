@@ -19,7 +19,6 @@ from ...core.types import override
 from ...geometry.flags import ShapeFlags
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelBuilder, ModelFlags, State, StateFlags
 from ...sim.articulation import eval_fk
-from ..observables import SolverObservableFlags, SolverObservables
 from ..solver import SolverBase
 from . import contact_compliance as _contact_compliance
 from ._testing import current_kernel_overrides
@@ -1296,8 +1295,8 @@ class SolverFeatherPGS(SolverBase):
     scenery shared by all worlds, or add the body to every world.
 
     Solver observables:
-        :attr:`~newton.solvers.SolverObservables.body_parent_f` is populated when
-        :attr:`~newton.solvers.SolverObservableFlags.BODY_PARENT_F` is requested from
+        :attr:`~newton.solvers.SolverBase.Observables.body_parent_f` is populated when
+        :attr:`~newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F` is requested from
         :meth:`~newton.solvers.SolverBase.observables`. As in
         :class:`~newton.solvers.SolverFeatherstone`, it is the per-body net spatial wrench
         of the inverse-dynamics backward pass at the start of the step, translated to the
@@ -1306,8 +1305,8 @@ class SolverFeatherPGS(SolverBase):
         solver computes the wrench every step into its own history, so a sleeping body reports
         its last awake wrench in whichever output the caller passes.
 
-        :attr:`~newton.solvers.SolverObservables.contact_f` is populated when
-        :attr:`~newton.solvers.SolverObservableFlags.CONTACT_F` is requested. Each live rigid
+        :attr:`~newton.solvers.SolverBase.Observables.contact_f` is populated when
+        :attr:`~newton.solvers.SolverBase.ObservableKind.CONTACT_F` is requested. Each live rigid
         contact row holds the force [N] on shape 0's body, in world frame, from the solved
         normal and friction impulses of the step divided by ``dt``; the torque part is zero
         (torsional friction is not reported). Contacts whose rows were dropped for capacity,
@@ -1333,7 +1332,7 @@ class SolverFeatherPGS(SolverBase):
                 state_in, state_out = state_out, state_in
     """
 
-    SUPPORTED_OBSERVABLE_FLAGS = frozenset({SolverObservableFlags.BODY_PARENT_F, SolverObservableFlags.CONTACT_F})
+    SUPPORTED_OBSERVABLES = frozenset({SolverBase.ObservableKind.BODY_PARENT_F, SolverBase.ObservableKind.CONTACT_F})
 
     # Constructor options. Most are fixed at construction; the _StepOption ones are read at every step.
     solve_mode = _ConstructionOption()
@@ -5711,7 +5710,7 @@ class SolverFeatherPGS(SolverBase):
         contacts: Contacts | None,
         dt: float,
         *,
-        observables: SolverObservables | None = None,
+        observables: SolverBase.Observables | None = None,
     ) -> State:
         """Advance the simulation by one time step.
 
@@ -5746,7 +5745,7 @@ class SolverFeatherPGS(SolverBase):
                 'with contact matching; create the CollisionPipeline with contact_matching="latest".'
             )
         body_parent_f = state_out.body_parent_f
-        if observables is not None and observables.is_requested(SolverObservableFlags.BODY_PARENT_F):
+        if observables is not None and observables.is_requested(SolverBase.ObservableKind.BODY_PARENT_F):
             body_parent_f = observables.body_parent_f
         try:
             self._advance(state_in, state_out, control, contacts, dt, body_parent_f)
@@ -5760,7 +5759,7 @@ class SolverFeatherPGS(SolverBase):
             raise
         finally:
             self._profile_stage(None)
-        if observables is not None and observables.is_requested(SolverObservableFlags.CONTACT_F):
+        if observables is not None and observables.is_requested(SolverBase.ObservableKind.CONTACT_F):
             # Rows are built only for articulated models; without joints every contact reports zero.
             inv_dt = 1.0 / dt if self.model.joint_count else 0.0
             wp.launch(

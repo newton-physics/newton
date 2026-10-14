@@ -855,8 +855,8 @@ def test_regularization_indeterminate_split(test: unittest.TestCase, device):
         contact_regularization=0.02,
         contact_warmstart=True,
     )
-    observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
     contacts = pipeline.contacts()
+    observables = solver.observables({newton.solvers.SolverBase.ObservableKind.CONTACT_F}, contacts=contacts)
     s0, s1 = model.state(), model.state()
     control = model.control()
     newton.eval_fk(model, model.joint_q, model.joint_qd, s0)

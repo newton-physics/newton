@@ -201,8 +201,8 @@ def test_sleeping_body_keeps_its_parent_wrench(test, device):
         model, solve_mode="matrix_free", enable_sleeping=True, sleep_quiet_time=0.05, friction_anchor_beta=0.0
     )
     reference = SolverFeatherPGS(model, solve_mode="matrix_free", friction_anchor_beta=0.0)
-    flags = {newton.solvers.SolverObservableFlags.BODY_PARENT_F}
-    observables, reference_observables = solver.observables(flags), reference.observables(flags)
+    kinds = {newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F}
+    observables, reference_observables = solver.observables(kinds), reference.observables(kinds)
     states, reference_states = [model.state(), model.state()], [model.state(), model.state()]
     control = model.control()
     _advance_boxes(pipeline, solver, states, control, 120, observables=observables)
@@ -243,8 +243,8 @@ def _sleeping_wrench_solvers(model):
 
 
 def _resting_wrench(model, pipeline, reference, control):
-    flags = {newton.solvers.SolverObservableFlags.BODY_PARENT_F}
-    observables = reference.observables(flags)
+    kinds = {newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F}
+    observables = reference.observables(kinds)
     _advance_boxes(pipeline, reference, [model.state(), model.state()], control, 130, observables=observables)
     return observables.body_parent_f.numpy()
 
@@ -253,8 +253,8 @@ def test_sleeping_parent_wrench_is_independent_of_the_output(test, device):
     """Report the frozen wrench in a newly allocated or cleared output, in eager and captured steps."""
     model, pipeline = _parent_wrench_scene(device)
     solver, reference = _sleeping_wrench_solvers(model)
-    flags = {newton.solvers.SolverObservableFlags.BODY_PARENT_F}
-    first = solver.observables(flags)
+    kinds = {newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F}
+    first = solver.observables(kinds)
     states, control = [model.state(), model.state()], model.control()
     _advance_boxes(pipeline, solver, states, control, 120, observables=first)
     np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
@@ -262,7 +262,7 @@ def test_sleeping_parent_wrench_is_independent_of_the_output(test, device):
     np.testing.assert_allclose(asleep, _resting_wrench(model, pipeline, reference, control), rtol=0.0, atol=1.0e-3)
     test.assertGreater(np.abs(asleep[:, 2]).min(), 1.0)
 
-    second = solver.observables(flags)
+    second = solver.observables(kinds)
     _advance_boxes(pipeline, solver, states, control, 1, observables=second)
     np.testing.assert_array_equal(second.body_parent_f.numpy(), asleep)
     first.body_parent_f.fill_(wp.spatial_vector(-1.0))
@@ -279,7 +279,7 @@ def test_sleeping_parent_wrench_is_independent_of_the_output(test, device):
         solver.step(states[1], states[0], control, contacts, DT, observables=observables)
 
     step(second)
-    third = solver.observables(flags)
+    third = solver.observables(kinds)
     with wp.ScopedCapture(device) as capture:
         step(third)
     for _ in range(3):
@@ -295,7 +295,7 @@ def test_parent_wrench_first_requested_after_sleep(test, device):
     states, control = [model.state(), model.state()], model.control()
     _advance_boxes(pipeline, solver, states, control, 120)
     np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
-    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+    observables = solver.observables({newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
     _advance_boxes(pipeline, solver, states, control, 1, observables=observables)
     np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
     resting = _resting_wrench(model, pipeline, reference, control)
@@ -316,7 +316,7 @@ def test_sleeping_parent_wrench_from_legacy_to_observable(test, device):
     _advance_boxes(pipeline, solver, states, control, 120)
     np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
     legacy = states[0].body_parent_f.numpy().copy()
-    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+    observables = solver.observables({newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
     _advance_boxes(pipeline, solver, states, control, 1, observables=observables)
     np.testing.assert_array_equal(observables.body_parent_f.numpy(), legacy)
     np.testing.assert_array_equal(states[0].body_parent_f.numpy(), legacy)
