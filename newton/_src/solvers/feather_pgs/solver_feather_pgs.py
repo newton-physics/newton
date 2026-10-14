@@ -2647,7 +2647,7 @@ class SolverFeatherPGS(SolverBase):
         ):
             self._clear_warmstart_history(None)
 
-    def _clear_warmstart_history(self, world_mask: wp.array[wp.bool] | None) -> None:
+    def _clear_warmstart_history(self, world_mask: "wp.array[wp.bool] | None") -> None:
         """Discard the carried contact impulses of the selected worlds (all worlds for ``None``)."""
         if not self._contact_warmstart or self._world_count == 0:
             return
@@ -2681,7 +2681,7 @@ class SolverFeatherPGS(SolverBase):
     def reset(
         self,
         state: State,
-        world_mask: wp.array[wp.bool] | None = None,
+        world_mask: "wp.array[wp.bool] | None" = None,
         flags: StateFlags | int | None = None,
     ) -> None:
         """Clear solver-owned state of the selected worlds.
