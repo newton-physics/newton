@@ -9,7 +9,7 @@ does not need to know about rods, solvers, cameras or losses, so it can come
 from outside Newton, together with its own dependencies.
 
 The evaluator scores all candidates of a population together. One
-:class:`~.model.CableWorld` holds every candidate as a separate world, so each
+:class:`~.model.CableSimulation` holds every candidate as a separate world, so each
 goal group needs one build, one settle and one rollout per population, not one
 per candidate. The population size is therefore the main cost of a search step.
 
@@ -32,12 +32,12 @@ from typing import Any
 import numpy as np
 
 from .goal import CableGoal, CableGoalGroup, group_goals
-from .model import CableWorld
+from .model import CableSimulation
 
 
 @dataclass
-class CableCandidate:
-    """One candidate parameter set."""
+class CableParameters:
+    """Physical parameters of a simulated cable, for example one candidate of a search."""
 
     angles: list[tuple[float, float]]
     """Rest configuration as ``[(alpha, beta), ...]`` [rad], one pair per capsule."""
@@ -91,7 +91,7 @@ class CableTraceView:
 def _goal_index_for_sim_frame(f: int, frame_times: Sequence[float], fps: float) -> int:
     """Return the reference frame captured nearest to simulation frame ``f``.
 
-    This is the reverse of the pairing :meth:`~.model.CableWorld.run_sequence`
+    This is the reverse of the pairing :meth:`~.model.CableSimulation.run_sequence`
     uses.
 
     Args:
@@ -127,12 +127,12 @@ class CableEvaluator:
         cable_mass: Total cable mass [kg].
         angle_parametrization: How a rest-angle pair becomes a joint rotation.
             Only ``"exp_map"`` is supported.
-        fps: Simulation frame rate [Hz]; see :class:`~.model.CableWorld`.
-        sim_substeps: Solver substeps per frame; see :class:`~.model.CableWorld`.
+        fps: Simulation frame rate [Hz]; see :class:`~.model.CableSimulation`.
+        sim_substeps: Solver substeps per frame; see :class:`~.model.CableSimulation`.
         settle_check_every: Number of frames between two settle convergence
-            checks; see :class:`~.model.CableWorld`.
+            checks; see :class:`~.model.CableSimulation`.
         settle_move_tol: Settle convergence tolerance [m]; see
-            :class:`~.model.CableWorld`.
+            :class:`~.model.CableSimulation`.
 
     Raises:
         ValueError: If ``goals`` is empty, a goal fails
@@ -188,18 +188,18 @@ class CableEvaluator:
             [[loss.prepare(m) for m in v.masks] for v in g.views] for g in self.groups
         ]
 
-    def evaluate(self, candidates: Sequence[CableCandidate]) -> list[float]:
+    def evaluate(self, candidates: Sequence[CableParameters]) -> list[float]:
         """Return the objective value of each candidate.
 
         Args:
-            candidates: The :class:`CableCandidate` population to score.
+            candidates: The :class:`CableParameters` population to score.
 
         Returns:
             One objective value per candidate, in the order given. An empty
             population gives an empty list.
 
         Raises:
-            ValueError: If :class:`~.model.CableWorld` rejects the
+            ValueError: If :class:`~.model.CableSimulation` rejects the
                 configuration, for example an unsupported
                 ``angle_parametrization`` or a ``clamp_position`` outside the cable.
         """
@@ -209,7 +209,7 @@ class CableEvaluator:
         totals = [0.0] * n
 
         for gi, group in enumerate(self.groups):
-            world = self._build_world(group, candidates)
+            world = self._build_simulation(group, candidates)
             world.settle(self.settle_frames)
             reprs, crops, times = group.run_args(self.goal_reprs[gi])
             losses, _, _ = world.run_sequence(group.num_frames, reprs, crops, self.loss, goal_times=times)
@@ -218,7 +218,7 @@ class CableEvaluator:
                     totals[i] += weight * value
         return totals
 
-    def record(self, candidate: CableCandidate, *, record_fps: float = math.inf) -> list[CableTraceView]:
+    def record(self, candidate: CableParameters, *, record_fps: float = math.inf) -> list[CableTraceView]:
         """Roll out one candidate and keep its frames and per-frame losses.
 
         Runs a full rollout per goal group and renders every recorded frame,
@@ -226,7 +226,7 @@ class CableEvaluator:
         candidate, not to score a population.
 
         Args:
-            candidate: The :class:`CableCandidate` to run.
+            candidate: The :class:`CableParameters` to run.
             record_fps: Recorded frames per second [Hz]. A rate of ``fps``
                 or more, such as the default ``math.inf``, records every
                 simulated frame.
@@ -235,14 +235,14 @@ class CableEvaluator:
             One :class:`CableTraceView` per view, in group then view order.
 
         Raises:
-            ValueError: If :class:`~.model.CableWorld` rejects the
+            ValueError: If :class:`~.model.CableSimulation` rejects the
                 configuration, for example an unsupported
                 ``angle_parametrization`` or a ``clamp_position`` outside the
                 cable, or if ``record_fps`` is not positive.
         """
         views = []
         for gi, group in enumerate(self.groups):
-            world = self._build_world(group, [candidate])
+            world = self._build_simulation(group, [candidate])
             world.settle(self.settle_frames)
             reprs, crops, times = group.run_args(self.goal_reprs[gi])
             losses, recorded, recorded_masks = world.run_sequence(
@@ -278,9 +278,9 @@ class CableEvaluator:
                 )
         return views
 
-    def _build_world(self, group: CableGoalGroup, candidates: Sequence[CableCandidate]) -> CableWorld:
-        """Build one :class:`~.model.CableWorld` that holds the whole population."""
-        return CableWorld(
+    def _build_simulation(self, group: CableGoalGroup, candidates: Sequence[CableParameters]) -> CableSimulation:
+        """Build one :class:`~.model.CableSimulation` that holds the whole population."""
+        return CableSimulation(
             group.cable_start,
             [c.angles for c in candidates],
             [c.bend_stiffness for c in candidates],

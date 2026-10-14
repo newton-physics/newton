@@ -21,7 +21,7 @@ import warp as wp
 import newton
 from newton._src.calibration import evaluate as evaluate_module
 from newton._src.calibration.data_source import CableDataSource
-from newton._src.calibration.evaluate import CableCandidate, CableEvaluator, _goal_index_for_sim_frame
+from newton._src.calibration.evaluate import CableEvaluator, CableParameters, _goal_index_for_sim_frame
 from newton._src.calibration.evidence import CableEvidenceBundle, CableRecording
 from newton._src.calibration.goal import CableGoal, group_goals
 from newton._src.calibration.model import ANGLE_PARAM_EXP, CableSimulation
@@ -1318,7 +1318,7 @@ class TestCalibrationRunSequence(unittest.TestCase):
 
 def make_candidate(angles=(0.0, 0.0)):
     """A candidate whose three joints all have rest angles ``angles`` [rad]."""
-    return CableCandidate(
+    return CableParameters(
         angles=[angles] * 3, bend_stiffness=1.0, twist_stiffness=1.0, bend_damping=0.01, twist_damping=0.01
     )
 
@@ -1353,7 +1353,7 @@ class TestCalibrationEvaluation(unittest.TestCase):
         """
         built, settled = [], []
 
-        class CableWorldRecorded(CableWorld):
+        class CableSimulationRecorded(CableSimulation):
             def __init__(self, *args, **kwargs):
                 super().__init__(*args, **kwargs)
                 built.append((args, kwargs))
@@ -1386,10 +1386,10 @@ class TestCalibrationEvaluation(unittest.TestCase):
         evaluator = make_evaluator([goal], LossNodeDistance(), settle_frames=3, **settings)
         self.assertEqual(evaluator.groups[0].num_frames, 3)
         angles = [(0.1, 0.0), (0.0, 0.2), (0.3, 0.0)]
-        candidate = CableCandidate(
+        candidate = CableParameters(
             angles=angles, bend_stiffness=1.5, twist_stiffness=2.5, bend_damping=0.03, twist_damping=0.04
         )
-        with patch.object(evaluate_module, "CableWorld", CableWorldRecorded):
+        with patch.object(evaluate_module, "CableSimulation", CableSimulationRecorded):
             evaluator.evaluate([candidate])
             evaluator.record(candidate)
 
@@ -1408,7 +1408,7 @@ class TestCalibrationEvaluation(unittest.TestCase):
             self.assertEqual(kwargs["twist_damping_list"], [0.04])
 
     def test_population_is_scored_in_one_pass(self):
-        """Verify a population is scored in one CableWorld and each candidate gets its own value.
+        """Verify a population is scored in one CableSimulation and each candidate gets its own value.
 
         Candidates that differ only in rest angles get different values, equal
         candidates get equal values, and a candidate scores the same alone as in
@@ -1422,12 +1422,12 @@ class TestCalibrationEvaluation(unittest.TestCase):
         candidates = [make_candidate(), make_candidate((0.3, 0.0)), make_candidate((0.0, 0.3)), make_candidate()]
         built = []
 
-        class CableWorldCounted(CableWorld):
+        class CableSimulationCounted(CableSimulation):
             def __init__(self, *args, **kwargs):
                 super().__init__(*args, **kwargs)
                 built.append(self.n)
 
-        with patch.object(evaluate_module, "CableWorld", CableWorldCounted):
+        with patch.object(evaluate_module, "CableSimulation", CableSimulationCounted):
             values = evaluator.evaluate(candidates)
         self.assertEqual(built, [4])
         self.assertEqual(len(values), 4)
