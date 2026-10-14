@@ -1,15 +1,19 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""DC-motor import and construction-time validation, without eager backend imports."""
+"""DC-motor authoring, import, and validation, without eager backend imports."""
 
 from __future__ import annotations
 
 import xml.etree.ElementTree as ET
+from collections.abc import Sequence
 from copy import deepcopy
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
+
+from ...sim import ModelBuilder
+from .actuators import ActuatorTarget, _add_actuator
 
 if TYPE_CHECKING:
     from mujoco import MjsActuator
@@ -53,17 +57,129 @@ def parse_input(value: str | int) -> int:
     return signature
 
 
+def _import_mujoco():
+    """Load the native shortcut resolver only when a DC motor is authored/imported."""
+    try:
+        import mujoco
+    except ImportError as exc:
+        raise ImportError(
+            "Authoring or importing <dcmotor> actuators requires MuJoCo. Install it with `uv pip install 'newton[sim]'`."
+        ) from exc
+    return mujoco
+
+
+def add_actuator_dcmotor(
+    builder: ModelBuilder,
+    target: ActuatorTarget,
+    *,
+    motorconst: Sequence[float] = (0.0,),
+    resistance: float = 0.0,
+    nominal: Sequence[float] = (0.0,),
+    saturation: Sequence[float] = (0.0,),
+    inductance: Sequence[float] = (0.0,),
+    cogging: Sequence[float] = (0.0,),
+    controller: Sequence[float] = (0.0,),
+    thermal: Sequence[float] = (0.0,),
+    lugre: Sequence[float] = (0.0,),
+    input: str = "voltage",
+    gear: Sequence[float] = (1.0,),
+    damping: Sequence[float] = (0.0,),
+    armature: float = 0.0,
+    ctrlrange: Sequence[float] | None = None,
+    ctrllimited: bool | int | str = "auto",
+    cranklength: float | None = None,
+    ctrl: float = 0.0,
+    custom_attributes: dict[str, Any] | None = None,
+) -> int:
+    """Add a native DC motor controlled through ``control.mujoco.ctrl``.
+
+    Requires the optional ``mujoco`` package (included in ``newton[sim]``),
+    but not MuJoCo-Warp. Native MuJoCo resolves the electrical and controller
+    parameters; these are construction-time properties, not runtime-editable
+    general-actuator gains. No model is compiled by this helper.
+
+    Args:
+        builder: Model builder receiving the actuator.
+        target: Typed actuator transmission target.
+        motorconst: Torque and back-EMF constants, up to two values.
+        resistance: Winding resistance [ohm]. Supply sufficient nonzero
+            ``motorconst``, ``resistance``, or ``nominal`` values for native inference.
+        nominal: Rated voltage, no-load current, and speed, up to three values.
+        saturation: Native current/torque saturation parameters, up to three values.
+        inductance: Native inductance parameters, up to two values.
+        cogging: Cogging amplitude, frequency, and phase, up to three values.
+        controller: Native cascaded controller parameters, up to six values.
+        thermal: Native winding thermal parameters, up to six values.
+        lugre: Native LuGre friction parameters, up to five values.
+        input: Single control input: ``voltage``, ``pos``, or ``vel``.
+            ``position`` and ``velocity`` are also accepted. Other signatures
+            raise :class:`NotImplementedError`.
+        gear: Native transmission gear, padded to six values. Ball/free joints
+            require explicit native gear as described in :class:`ActuatorTarget`.
+        damping: One to three passive damping coefficients.
+        armature: Passive rotor inertia. Currently supported only by native MuJoCo.
+        ctrlrange: Optional two-value control range, in the input's native units.
+        ctrllimited: Control-limit tri-state (false, true, or auto).
+        cranklength: Slider-crank length [m]. Required for slider-crank targets.
+        ctrl: Initial MuJoCo control value.
+        custom_attributes: Additional registered ``mujoco:actuator`` attributes.
+
+    Returns:
+        The ``mujoco:actuator`` row index. Parameter vectors are zero-padded
+        before native default inference, just as for an MJCF shortcut.
+    """
+    from .solver_mujoco import SolverMuJoCo  # noqa: PLC0415
+
+    signature = parse_input(input)
+    parameters = {}
+    for name, values, size in (
+        ("motorconst", motorconst, 2),
+        ("nominal", nominal, 3),
+        ("saturation", saturation, 3),
+        ("inductance", inductance, 2),
+        ("cogging", cogging, 3),
+        ("controller", controller, 6),
+        ("thermal", thermal, 6),
+        ("lugre", lugre, 5),
+    ):
+        if not 1 <= len(values) <= size:
+            raise ValueError(f"{name} requires one to {size} values, got {len(values)}.")
+        parameters[name] = [float(value) for value in values] + [0.0] * (size - len(values))
+    spec = _import_mujoco().MjSpec()
+    actuator = spec.add_actuator()
+    actuator.set_to_dcmotor(resistance=resistance, ctrlspec=signature, **parameters)
+    return _add_actuator(
+        builder,
+        target,
+        ctrl_type=int(SolverMuJoCo.CtrlType.DCMOTOR),
+        dyntype=int(actuator.dyntype),
+        gaintype=int(actuator.gaintype),
+        biastype=int(actuator.biastype),
+        dynprm=actuator.dynprm,
+        gainprm=actuator.gainprm,
+        biasprm=actuator.biasprm,
+        actdim=actuator.actdim,
+        actearly=actuator.actearly,
+        forcerange=actuator.forcerange,
+        forcelimited=int(actuator.forcelimited),
+        ctrlspec=signature,
+        gear=gear,
+        damping=damping,
+        armature=armature,
+        ctrlrange=ctrlrange,
+        ctrllimited=ctrllimited,
+        cranklength=cranklength,
+        ctrl=ctrl,
+        custom_attributes=custom_attributes,
+    )
+
+
 def resolve_mjcf_parameters(root: ET.Element) -> dict[ET.Element, dict[str, str]]:
     """Resolve shortcuts and inherited defaults into attributes for the MJCF importer."""
     motors = root.findall("actuator/dcmotor")
     if not motors:
         return {}
-    try:
-        import mujoco
-    except ImportError as exc:
-        raise ImportError(
-            "Importing MJCF <dcmotor> actuators requires MuJoCo. Install it with `uv pip install 'newton[sim]'`."
-        ) from exc
+    mujoco = _import_mujoco()
 
     # Resolve native shortcuts without compiling a model or loading geometry/assets.
     spec = mujoco.MjSpec.from_string(_actuator_only_xml(root, motors))
@@ -171,3 +287,6 @@ def _require_matching_worlds(values: np.ndarray, description: str) -> None:
             f"SolverMuJoCo with separate_worlds=True requires {description}; "
             f"world {mismatches[0] + 1} differs from world 0."
         )
+
+
+__all__ = ["add_actuator_dcmotor"]

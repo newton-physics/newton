@@ -97,7 +97,7 @@ class TestPairKeyOps(unittest.TestCase):
         """Test build_pair_key2 function for various index pairs."""
 
         # Define a Warp kernel to test build_pair_key2
-        @wp.kernel
+        @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
         def _test_kernel_build_pair_key2(
             index_A: wp.array[wp.uint32], index_B: wp.array[wp.uint32], key: wp.array[wp.uint64]
         ):
@@ -154,7 +154,7 @@ class TestPairKeyOps(unittest.TestCase):
             build_pair_key3 = make_build_pair_key3_func(main_key_bits, aux_key_bits)
 
             # Generate the test kernel for the specified build_pair_key3 function
-            @wp.kernel
+            @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
             def _test_kernel_build_pair_key3(
                 index_A: wp.array[wp.uint32],
                 index_B: wp.array[wp.uint32],
@@ -256,7 +256,7 @@ class TestBinarySearchOps(unittest.TestCase):
         """Test binary_search_find_pair function."""
 
         # Define a Warp kernel to test binary_search_find_pair
-        @wp.kernel
+        @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
         def _test_kernel_binary_search_find_pair(
             # Inputs:
             num_active_pairs: wp.array[wp.int32],
@@ -307,7 +307,7 @@ class TestBinarySearchOps(unittest.TestCase):
         """Test binary_search_find_range_start function."""
 
         # Define a Warp kernel to test binary_search_find_range_start
-        @wp.kernel
+        @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
         def _test_kernel_binary_search_find_range_start(
             # Inputs:
             num_active_keys: wp.array[wp.int32],
