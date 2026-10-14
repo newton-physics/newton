@@ -118,7 +118,7 @@ class TestHeightfield(unittest.TestCase):
           <compiler autolimits="true"/>
           <asset>
             <hfield name="terrain" nrow="10" ncol="10"
-                    size="5 5 1 0"/>
+                    size="5 5 1 0.1"/>
           </asset>
           <worldbody>
             <geom type="hfield" hfield="terrain"/>
@@ -140,7 +140,7 @@ class TestHeightfield(unittest.TestCase):
         self.assertIsInstance(hfield, Heightfield)
         self.assertEqual(hfield.nrow, 10)
         self.assertEqual(hfield.ncol, 10)
-        # MuJoCo size (5, 5, 1, 0) → hx=5, hy=5, min_z=0, max_z=1
+        # MuJoCo size (5, 5, 1, 0.1) → hx=5, hy=5, min_z=0, max_z=1
         self.assertAlmostEqual(hfield.hx, 5.0)
         self.assertAlmostEqual(hfield.hy, 5.0)
         self.assertAlmostEqual(hfield.min_z, 0.0)
@@ -167,7 +167,7 @@ class TestHeightfield(unittest.TestCase):
         <mujoco>
           <asset>
             <hfield name="terrain" nrow="4" ncol="6"
-                    size="3 2 1 0" file="terrain.bin"/>
+                    size="3 2 1 0.1" file="terrain.bin"/>
           </asset>
           <worldbody>
             <geom type="hfield" hfield="terrain"/>
@@ -199,7 +199,7 @@ class TestHeightfield(unittest.TestCase):
         <mujoco>
           <asset>
             <hfield name="terrain" nrow="3" ncol="3"
-                    size="2 2 1 0"
+                    size="2 2 1 0.1"
                     elevation="0.1 0.2 0.3 0.4 0.5 0.6 0.7 0.8 0.9"/>
           </asset>
           <worldbody>
@@ -220,7 +220,7 @@ class TestHeightfield(unittest.TestCase):
         # Data is normalized from [0.1, 0.9] to [0, 1]
         self.assertAlmostEqual(float(hfield.data.min()), 0.0, places=5)
         self.assertAlmostEqual(float(hfield.data.max()), 1.0, places=5)
-        self.assertAlmostEqual(hfield.min_z, -0.0)  # size_base=0 → min_z=0
+        self.assertAlmostEqual(hfield.min_z, 0.0)  # The base does not shift the surface.
         self.assertAlmostEqual(hfield.max_z, 1.0)  # size_z=1 → max_z=1
 
     def test_solver_mujoco_hfield(self):
