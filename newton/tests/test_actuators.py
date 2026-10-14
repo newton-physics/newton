@@ -3783,7 +3783,8 @@ class TestActuatorImplicit(unittest.TestCase):
         exact and the iteration count never matters. It starts to matter when
         the solution lies on a different branch of the envelope than the initial
         guess. Starting from zero impulse on a coupled two-link chain does that:
-        one step lands far away, two steps converge, and the result agrees with
+        one step lands far away, three steps converge (the line search shortens
+        the step that would jump to the opposite limit), and the result agrees with
         a damped Picard iteration -- a genuinely different algorithm -- so both
         ``max_iters`` and the convergence tolerances stay covered.
         """
@@ -3839,10 +3840,10 @@ class TestActuatorImplicit(unittest.TestCase):
             p += 0.02 * (h * f - p)
         np.testing.assert_allclose(converged, p / h, rtol=2e-3, atol=1e-3)
 
-        # One step lands on the wrong branch; two are enough and further ones change nothing.
+        # One step lands on the wrong branch; three are enough and further ones change nothing.
         single, _ = run(1)
         self.assertGreater(np.max(np.abs(single - converged)), 0.5 * np.max(np.abs(converged)))
-        np.testing.assert_allclose(run(2)[0], converged, rtol=1e-6, atol=1e-6)
+        np.testing.assert_allclose(run(3)[0], converged, rtol=1e-6, atol=1e-6)
 
     def test_warm_start_zero_reaches_the_same_solution(self):
         """``warm_start="zero"`` converges to the same effort as the explicit start.

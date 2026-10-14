@@ -214,6 +214,7 @@ class DrivePID(DriveBase):
         return True
 
     evaluate_force = _pid_evaluate_force
+    _implicit_dissipative = True
 
     def bind_params(self) -> wp.array2d[float]:
         # Same pack every time; a new one would also strand prepare_implicit().

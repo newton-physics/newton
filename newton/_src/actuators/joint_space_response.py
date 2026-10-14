@@ -30,21 +30,15 @@ __all__ = ["JointSpaceResponse"]
 _FLOAT32_EPS = wp.constant(wp.float32(np.finfo(np.float32).eps))
 
 
-@wp.kernel(enable_backward=False)
-def _inverse_block_from_mass_matrix_kernel(
+@wp.func
+def _floored_cholesky_inverse(
+    a: int,
+    n: int,
     H: wp.array3d[float],
-    art_dof_count: wp.array[wp.int32],
     L: wp.array3d[float],
     inv_block: wp.array3d[float],
 ):
-    """Write the full inverse block ``inv_block[a] = H_a^{-1}`` per articulation.
-
-    Cholesky ``H = L L^T``, then for each column c solve ``H x = e_c`` (forward
-    then backward substitution) and store x as column c of the inverse.
-    """
-    a = wp.tid()
-    n = art_dof_count[a]
-
+    """``inv_block[a] = H_a^{-1}`` by Cholesky ``H = L L^T`` with floored pivots, one column at a time."""
     for j in range(n):
         s = H[a, j, j]
         for k in range(j):
@@ -78,6 +72,46 @@ def _inverse_block_from_mass_matrix_kernel(
 
 
 @wp.kernel(enable_backward=False)
+def _inverse_block_from_mass_matrix_kernel(
+    H: wp.array3d[float],
+    art_dof_count: wp.array[wp.int32],
+    L: wp.array3d[float],
+    inv_block: wp.array3d[float],
+):
+    """Write the full inverse block ``inv_block[a] = H_a^{-1}`` per articulation.
+
+    Cholesky ``H = L L^T``, then for each column c solve ``H x = e_c`` (forward
+    then backward substitution) and store x as column c of the inverse.
+    """
+    a = wp.tid()
+    _floored_cholesky_inverse(a, art_dof_count[a], H, L, inv_block)
+
+
+@wp.kernel(enable_backward=False)
+def _repair_tile_inverse_kernel(
+    H: wp.array3d[float],
+    art_dof_count: wp.array[wp.int32],
+    L: wp.array3d[float],
+    inv_block: wp.array3d[float],
+):
+    """Redo an articulation's inverse with floored pivots when the tile Cholesky hit a tiny or invalid pivot.
+
+    ``tile_cholesky`` has no pivot floor, so a singular block (zero inertia and
+    zero armature) would yield non-finite or unbounded entries. Only flagged
+    articulations pay for the per-thread path.
+    """
+    a = wp.tid()
+    n = art_dof_count[a]
+    bad = int(0)
+    for j in range(n):
+        d = L[a, j, j]
+        if not wp.isfinite(d) or d * d < _FLOAT32_EPS * wp.max(wp.abs(H[a, j, j]), 1.0):
+            bad = 1
+    if bad != 0:
+        _floored_cholesky_inverse(a, n, H, L, inv_block)
+
+
+@wp.kernel(enable_backward=False)
 def _add_armature_kernel(
     armature: wp.array[float],
     art_dof_start: wp.array[wp.int32],
@@ -94,6 +128,61 @@ def _add_armature_kernel(
     a, j = wp.tid()
     if j < art_dof_count[a]:
         H[a, j, j] = H[a, j, j] + armature[art_dof_start[a] + j]
+
+
+@wp.kernel(enable_backward=False)
+def _pad_mass_matrix_kernel(art_dof_count: wp.array[wp.int32], H: wp.array3d[float], H_pad: wp.array3d[float]):
+    """Copy ``H`` into a tile-sized block with identity padding so the tile stays SPD."""
+    a, i, j = wp.tid()
+    n = art_dof_count[a]
+    v = float(0.0)
+    if i < n and j < n:
+        v = H[a, i, j]
+    elif i == j:
+        v = 1.0
+    H_pad[a, i, j] = v
+
+
+@wp.kernel(enable_backward=False)
+def _copy_inverse_kernel(art_dof_count: wp.array[wp.int32], inv_pad: wp.array3d[float], inv_block: wp.array3d[float]):
+    """Copy the tile inverse into the blocks, zero beyond each articulation's DOF count."""
+    a, i, j = wp.tid()
+    n = art_dof_count[a]
+    v = float(0.0)
+    if i < n and j < n:
+        v = inv_pad[a, i, j]
+    inv_block[a, i, j] = v
+
+
+_tile_inverse_cache: dict[int, wp.Kernel] = {}
+
+_TILE_MAX_DOFS = 64
+"""Largest padded articulation DOF count for the tile path; larger ones keep the per-thread kernel."""
+
+
+def _build_tile_inverse_kernel(tile: int, block_dim: int) -> wp.Kernel:
+    """One thread block per articulation: ``H^-1`` of the padded block by tile Cholesky."""
+    cached = _tile_inverse_cache.get(tile)
+    if cached is not None:
+        return cached
+
+    @wp.kernel(enable_backward=False, module="unique", module_options={"block_dim": block_dim})
+    def tile_inverse(
+        H_pad: wp.array3d[float],
+        eye: wp.array2d[float],
+        L_out: wp.array3d[float],
+        inv_block: wp.array3d[float],
+    ):
+        a = wp.tid()
+        L = wp.tile_load(H_pad[a], shape=(tile, tile))
+        wp.tile_cholesky_inplace(L)
+        wp.tile_store(L_out[a], L)
+        X = wp.tile_load(eye, shape=(tile, tile))
+        wp.tile_cholesky_solve_inplace(L, X)
+        wp.tile_store(inv_block[a], X)
+
+    _tile_inverse_cache[tile] = tile_inverse
+    return tile_inverse
 
 
 @wp.kernel(enable_backward=False)
@@ -195,6 +284,17 @@ class JointSpaceResponse:
         self._joint_S_s = wp.zeros(model.joint_dof_count, dtype=wp.spatial_vector, device=device)
         self._L = wp.zeros_like(self._H)
         self._inv_block = wp.zeros_like(self._H)
+
+        # Tile path: one thread block per articulation inverts its block.
+        self._tile = None
+        tile = ((max_dofs + 15) // 16) * 16
+        if wp.get_device(device).is_cuda and tile <= _TILE_MAX_DOFS:
+            self._tile = tile
+            self._eye = wp.array(np.eye(tile, dtype=np.float32), dtype=float, device=device)
+            self._H_pad = wp.zeros((art_count, tile, tile), dtype=float, device=device)
+            self._L_pad = wp.zeros_like(self._H_pad)
+            self._inv_pad = wp.zeros_like(self._H_pad)
+            self._tile_kernel = _build_tile_inverse_kernel(tile, block_dim=128)
 
         # Scratch so refresh() never writes to the caller's state.
         self._fk_state = model.state()
@@ -345,11 +445,44 @@ class JointSpaceResponse:
 
     def _invert_blocks(self) -> None:
         """Invert the per-articulation blocks of ``self._H`` into :attr:`inverse_blocks`."""
-        self._inv_block.zero_()
+        model = self.model
+        if self._tile is None:
+            self._inv_block.zero_()
+            wp.launch(
+                _inverse_block_from_mass_matrix_kernel,
+                dim=model.articulation_count,
+                inputs=[self._H, self._art_dof_count],
+                outputs=[self._L, self._inv_block],
+                device=model.device,
+            )
+            return
+
         wp.launch(
-            _inverse_block_from_mass_matrix_kernel,
-            dim=self.model.articulation_count,
-            inputs=[self._H, self._art_dof_count],
-            outputs=[self._L, self._inv_block],
-            device=self.model.device,
+            _pad_mass_matrix_kernel,
+            dim=self._H_pad.shape,
+            inputs=[self._art_dof_count, self._H],
+            outputs=[self._H_pad],
+            device=model.device,
+        )
+        wp.launch_tiled(
+            self._tile_kernel,
+            dim=[model.articulation_count],
+            inputs=[self._H_pad, self._eye],
+            outputs=[self._L_pad, self._inv_pad],
+            block_dim=128,
+            device=model.device,
+        )
+        wp.launch(
+            _repair_tile_inverse_kernel,
+            dim=model.articulation_count,
+            inputs=[self._H_pad, self._art_dof_count],
+            outputs=[self._L_pad, self._inv_pad],
+            device=model.device,
+        )
+        wp.launch(
+            _copy_inverse_kernel,
+            dim=self._inv_block.shape,
+            inputs=[self._art_dof_count, self._inv_pad],
+            outputs=[self._inv_block],
+            device=model.device,
         )
