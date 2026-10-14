@@ -380,8 +380,9 @@ def test_unsupported_model_features_raise(test, device):
     leader = mimic.add_joint_ball(links[0], links[1])
     follower = mimic.add_joint_ball(links[1], links[2])
     mimic.add_articulation([root, leader, follower])
-    # Quaternion-coordinate mimics have no componentwise row.
-    mimic.set_joint_mimic(follower, leader)
+    # Quaternion-coordinate mimics have no componentwise row. Bypass the authoring guard to
+    # exercise defensive solver handling of unsupported metadata supplied directly by callers.
+    mimic.joint_mimic_joint[follower] = leader
     with test.assertRaisesRegex(NotImplementedError, "mimic"):
         SolverFeatherPGS(mimic.finalize(device=device))
 
