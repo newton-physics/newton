@@ -1,1 +1,1 @@
-Reject mimic relationships between different articulations during model finalization, including relationships configured before articulation assignment.
+Reject mimic relationships between different articulations during model finalization, including relationships configured before articulation assignment. Reject unsafe mimic articulation membership when constructing `SolverFeatherstone`.

@@ -3850,7 +3850,7 @@ class TestModelJoints(unittest.TestCase):
                 self.assertEqual(model.joint_mimic_joint.numpy()[follower], reference)
 
     def test_joint_mimic_preserves_unassigned_articulations(self):
-        """Accept mimic pairs when one or both joints remain outside articulations."""
+        """Finalize standalone or mixed mimic pairs without imposing Featherstone's restriction."""
         for membership in ("neither", "reference", "follower"):
             with self.subTest(membership=membership):
                 builder = newton.ModelBuilder()
