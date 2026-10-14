@@ -5169,15 +5169,26 @@ class ModelBuilder:
 
         source_counts = None
         for full_key, attr in builder.custom_attributes.items():
-            if not attr.values and attr.references in (None, Model.AttributeFrequency.WORLD):
-                if full_key not in self.custom_attributes:
-                    freq_key = attr.frequency
-                    mapped_values = [] if isinstance(freq_key, str) else {}
-                    merged = replace(attr, values=mapped_values)
-                    self.custom_attributes[full_key] = merged
-                    self._custom_schema_epoch += 1
-                    self._index_custom_world_reference_attribute(merged)
-                continue
+            # Empty source frequencies need declarations but no reference remapping.
+            # Frequencies with rows must still materialize and remap reference defaults.
+            if not attr.values:
+                can_skip_remapping = attr.references is None
+                if not can_skip_remapping:
+                    has_empty_custom_frequency = (
+                        isinstance(attr.frequency, str) and builder._custom_frequency_counts.get(attr.frequency, 0) == 0
+                    )
+                    can_skip_remapping = (
+                        has_empty_custom_frequency and attr.reference_value_transformer is None
+                    ) or attr.references == Model.AttributeFrequency.WORLD
+                if can_skip_remapping:
+                    if full_key not in self.custom_attributes:
+                        freq_key = attr.frequency
+                        mapped_values = [] if isinstance(freq_key, str) else {}
+                        merged = replace(attr, values=mapped_values)
+                        self.custom_attributes[full_key] = merged
+                        self._custom_schema_epoch += 1
+                        self._index_custom_world_reference_attribute(merged)
+                    continue
 
             freq_key = attr.frequency
             if isinstance(freq_key, str):
