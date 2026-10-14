@@ -14,6 +14,7 @@ from newton._src.viewer.plot_logger import PlotLogger
 from newton._src.viewer.viewer_gui import ViewerGui
 from newton._src.viewer.viewer_rtx import ViewerRTX
 from newton._src.viewer.viewer_usd import UsdGeom
+from newton.tests.unittest_utils import patch_sys_module
 
 
 class _ViewerPlottingTests:
@@ -179,7 +180,7 @@ class _ViewerPlottingTests:
 class TestViewerRTXPlotting(_ViewerPlottingTests, unittest.TestCase):
     def _make_viewer(self):
         # OVRTX is not instantiated until the first rendered frame.
-        with mock.patch.dict("sys.modules", {"ovrtx": SimpleNamespace(__version__="0.3.0")}):
+        with patch_sys_module("ovrtx", SimpleNamespace(__version__="0.3.0")):
             return ViewerRTX(headless=True, plot_history_size=3)
 
 
@@ -222,7 +223,7 @@ class TestPlotLogger(unittest.TestCase):
         gl = mock.MagicMock(GLuint=ctypes.c_uint)
         logger = PlotLogger(3, get_window=lambda: window)
         logger._array_textures["observations"] = {"texture_id": 42}
-        with mock.patch.dict("sys.modules", {"pyglet": SimpleNamespace(gl=gl)}):
+        with patch_sys_module("pyglet", SimpleNamespace(gl=gl)):
             logger.clear()
         window.switch_to.assert_called_once()
         self.assertEqual(gl.glDeleteTextures.call_args.args[1][0], 42)
@@ -239,7 +240,7 @@ class TestPlotLogger(unittest.TestCase):
                 for index, name in enumerate(("observations", "actions"), start=42):
                     logger.log_array(name, np.ones((2, 2)))
                     logger._array_textures[name] = {"texture_id": index}
-                with mock.patch.dict("sys.modules", {"pyglet": SimpleNamespace(gl=gl)}):
+                with patch_sys_module("pyglet", SimpleNamespace(gl=gl)):
                     logger.clear()
                     logger.clear()
                 self.assertFalse(logger._scalar_buffers)

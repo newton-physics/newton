@@ -64,6 +64,7 @@ Newton Physics
    :caption: Further Reading
 
    FAQ <faq>
+   Massless Routed Tendons <tendons>
    Migration Guide <migration>
    Isaac Lab <lab/isaac-lab>
 
@@ -73,3 +74,4 @@ Newton Physics
    :caption: Project Links
 
     GitHub <https://github.com/newton-physics/newton>
+    Publications <https://github.com/newton-physics/newton/blob/main/PUBLICATIONS.md>

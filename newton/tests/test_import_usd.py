@@ -12,6 +12,7 @@ import tempfile
 import types
 import unittest
 import warnings
+from contextlib import nullcontext
 from unittest import mock
 from urllib.parse import urlparse
 
@@ -49,6 +50,30 @@ _PARTIAL_EQ_SOLREF_WARNING = (
 
 
 class TestImportUsdPhysics(unittest.TestCase):
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_legacy_unit_flags_warn_when_enabled(self):
+        """Deprecate each enabled legacy unit flag without warning for defaults."""
+        from pxr import Usd
+
+        for kwargs, expected_flags in (
+            ({}, ()),
+            ({"legacy_angular_velocity_units": False, "legacy_springref_units": False}, ()),
+            ({"legacy_angular_velocity_units": True}, ("legacy_angular_velocity_units",)),
+            ({"legacy_springref_units": True}, ("legacy_springref_units",)),
+            (
+                {"legacy_angular_velocity_units": True, "legacy_springref_units": True},
+                ("legacy_angular_velocity_units", "legacy_springref_units"),
+            ),
+        ):
+            with self.subTest(kwargs=kwargs):
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always", DeprecationWarning)
+                    newton.ModelBuilder().add_usd(Usd.Stage.CreateInMemory(), **kwargs)
+                deprecations = [warning for warning in caught if issubclass(warning.category, DeprecationWarning)]
+                self.assertEqual(len(deprecations), len(expected_flags))
+                for warning, flag in zip(deprecations, expected_flags, strict=True):
+                    self.assertRegex(str(warning.message), rf"{flag}.*deprecated.*1\.8")
+
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_material_binding_outside_import_root(self):
         """Import shared physics materials without importing unrelated bodies."""
@@ -120,6 +145,19 @@ class TestImportUsdPhysics(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_rigid_body_velocity(self):
+        """Import rigid-body velocities correctly with either body ordering."""
+        for bodies_follow_joint_ordering in (False, True):
+            with self.subTest(bodies_follow_joint_ordering=bodies_follow_joint_ordering):
+                self._check_rigid_body_velocity(bodies_follow_joint_ordering=bodies_follow_joint_ordering)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_legacy_rigid_body_velocity_units(self):
+        """Keep rigid-body velocity conversion unchanged by the deprecated flag."""
+        with self.assertWarnsRegex(DeprecationWarning, r"legacy_angular_velocity_units.*1\.8"):
+            self._check_rigid_body_velocity(legacy_angular_velocity_units=True)
+
+    def _check_rigid_body_velocity(self, **import_kwargs):
+        """Import a rotated body and check its body and joint velocities."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -141,24 +179,18 @@ class TestImportUsdPhysics(unittest.TestCase):
             (10.0, 20.0, 30.0),
             wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5 * wp.pi),
         )
-        for bodies_follow_joint_ordering in (False, True):
-            with self.subTest(bodies_follow_joint_ordering=bodies_follow_joint_ordering):
-                builder = newton.ModelBuilder()
-                result = builder.add_usd(
-                    stage,
-                    xform=scene_xform,
-                    bodies_follow_joint_ordering=bodies_follow_joint_ordering,
-                )
-                body_id = result["path_body_map"]["/World/Body"]
-                model = builder.finalize()
-                expected = np.asarray((-2.0, 3.0, -1.0, 0.0, 0.0, -0.5 * np.pi))
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, xform=scene_xform, **import_kwargs)
+        body_id = result["path_body_map"]["/World/Body"]
+        model = builder.finalize()
+        expected = np.asarray((-2.0, 3.0, -1.0, 0.0, 0.0, -0.5 * np.pi))
 
-                assert_np_equal(model.body_qd.numpy()[body_id], expected, tol=1.0e-5)
-                assert_np_equal(model.joint_qd.numpy(), expected, tol=1.0e-5)
+        assert_np_equal(model.body_qd.numpy()[body_id], expected, tol=1.0e-5)
+        assert_np_equal(model.joint_qd.numpy(), expected, tol=1.0e-5)
 
-                state = model.state()
-                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-                assert_np_equal(state.body_qd.numpy()[body_id], expected, tol=1.0e-5)
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        assert_np_equal(state.body_qd.numpy()[body_id], expected, tol=1.0e-5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_physx_joint_state_velocity_units(self):
@@ -190,7 +222,7 @@ class TestImportUsdPhysics(unittest.TestCase):
         set_state(connect(prismatic, "Slider"), "linear", 0.25, 0.5)
 
         d6 = connect(UsdPhysics.Joint.Define(stage, "/World/D6"), "Gimbal")
-        # Newton creates D6 DOFs only for axes with a limit; rotX is the single rotational DOF.
+        # Newton creates D6 DOFs only for axes with a limit; rotX is the rotational DOF.
         limit = UsdPhysics.LimitAPI.Apply(d6, "rotX")
         limit.CreateLowAttr().Set(-180.0)
         limit.CreateHighAttr().Set(180.0)
@@ -205,23 +237,36 @@ class TestImportUsdPhysics(unittest.TestCase):
         merged_hinge.CreateBody1Rel().SetTargets(["/World/Merged"])
         set_state(merged_hinge.GetPrim(), "angular", 90.0, 180.0)
 
+        # Reuse the stage and builder to catch options leaking across imports.
         builder = newton.ModelBuilder()
-        result = builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverPhysx()])
-        joint_q, joint_qd = np.asarray(builder.joint_q), np.asarray(builder.joint_qd)
-        for path, position, velocity in (
-            ("/World/Revolute", 0.5 * np.pi, np.pi),
-            ("/World/Prismatic", 0.25, 0.5),
-            ("/World/D6", 0.5 * np.pi, np.pi),
+        for kwargs, angular_velocity in (
+            ({"legacy_angular_velocity_units": True}, 180.0),
+            ({}, np.pi),
+            ({"legacy_angular_velocity_units": False}, np.pi),
         ):
-            with self.subTest(joint=path):
-                joint = result["path_joint_map"][path]
-                self.assertAlmostEqual(joint_q[builder.joint_q_start[joint]], position, places=5)
-                self.assertAlmostEqual(joint_qd[builder.joint_qd_start[joint]], velocity, places=5)
+            with self.subTest(kwargs=kwargs):
+                warning = (
+                    self.assertWarnsRegex(DeprecationWarning, r"legacy_angular_velocity_units.*1\.8")
+                    if kwargs.get("legacy_angular_velocity_units")
+                    else nullcontext()
+                )
+                with warning:
+                    result = builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverPhysx()], **kwargs)
+                joint_q, joint_qd = np.asarray(builder.joint_q), np.asarray(builder.joint_qd)
+                for path, offset, position, velocity in (
+                    ("/World/Revolute", 0, 0.5 * np.pi, angular_velocity),
+                    ("/World/Prismatic", 0, 0.25, 0.5),
+                    ("/World/D6", 0, 0.5 * np.pi, angular_velocity),
+                ):
+                    with self.subTest(joint=path):
+                        joint = result["path_joint_map"][path]
+                        self.assertAlmostEqual(joint_q[builder.joint_q_start[joint] + offset], position, places=5)
+                        self.assertAlmostEqual(joint_qd[builder.joint_qd_start[joint] + offset], velocity, places=5)
 
-        merged = result["path_joint_map"]["/World/MergedHinge"]
-        self.assertEqual(result["path_joint_map"]["/World/MergedSlide"], merged)
-        qd_start = builder.joint_qd_start[merged]
-        np.testing.assert_allclose(joint_qd[qd_start : qd_start + 2], [0.5, np.pi], atol=1e-5)
+                merged = result["path_joint_map"]["/World/MergedHinge"]
+                self.assertEqual(result["path_joint_map"]["/World/MergedSlide"], merged)
+                qd_start = builder.joint_qd_start[merged]
+                np.testing.assert_allclose(joint_qd[qd_start : qd_start + 2], [0.5, angular_velocity], atol=1e-5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_rigid_body_velocity_with_collapsed_fixed_joint(self):
@@ -4975,6 +5020,73 @@ def Xform "Articulation" (
         joint_idx = model.joint_label.index("/Articulation/joint")
         target_idx = model.joint_target_q_start.numpy()[joint_idx]
         self.assertAlmostEqual(model.joint_target_q.numpy()[target_idx], np.deg2rad(20.0), places=5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_legacy_springref_units(self):
+        """Restore raw springrefs without changing refs, lengths, or later imports."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        for angle_units in (None, "degree", "radian", "no_scene"):
+            stage = Usd.Stage.CreateInMemory()
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            if angle_units != "no_scene":
+                scene = UsdPhysics.Scene.Define(stage, "/physicsScene")
+                if angle_units is not None:
+                    scene.GetPrim().CreateAttribute("mjc:compiler:angle", Sdf.ValueTypeNames.Token).Set(angle_units)
+
+            for path in ("Hinge", "Slider", "Merged"):
+                body = UsdGeom.Xform.Define(stage, f"/World/{path}")
+                UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                mass = UsdPhysics.MassAPI.Apply(body.GetPrim())
+                mass.CreateMassAttr(1.0)
+                mass.CreateDiagonalInertiaAttr(Gf.Vec3f(0.1))
+
+            for path, body, angular in (
+                ("Revolute", "Hinge", True),
+                ("Prismatic", "Slider", False),
+                ("MergedHinge", "Merged", True),
+                ("MergedSlide", "Merged", False),
+            ):
+                joint_schema = UsdPhysics.RevoluteJoint if angular else UsdPhysics.PrismaticJoint
+                joint = joint_schema.Define(stage, f"/World/{path}")
+                joint.CreateBody1Rel().SetTargets([f"/World/{body}"])
+                prim = joint.GetPrim()
+                prim.CreateAttribute("mjc:ref", Sdf.ValueTypeNames.Float).Set(15.0 if angular else 0.1)
+                prim.CreateAttribute("mjc:springref", Sdf.ValueTypeNames.Float).Set(30.0 if angular else 0.25)
+
+            builder = newton.ModelBuilder()
+            SolverMuJoCo.register_custom_attributes(builder)
+            for kwargs, legacy in (
+                ({"legacy_springref_units": True}, True),
+                ({}, False),
+                ({"legacy_springref_units": False}, False),
+            ):
+                with self.subTest(angle_units=angle_units, kwargs=kwargs):
+                    warning = (
+                        self.assertWarnsRegex(DeprecationWarning, r"legacy_springref_units.*1\.8")
+                        if legacy
+                        else nullcontext()
+                    )
+                    with warning:
+                        result = builder.add_usd(stage, **kwargs)
+                    model = builder.finalize(device="cpu")
+                    springref = model.mujoco.dof_springref.numpy()
+                    reference = model.mujoco.dof_ref.numpy()
+                    angular_factor = 1.0 if angle_units == "radian" else np.pi / 180.0
+                    expected_springref = 30.0 if legacy else 30.0 * angular_factor
+
+                    for path, offset, expected_spring, expected_ref in (
+                        ("Revolute", 0, expected_springref, 15.0 * angular_factor),
+                        ("Prismatic", 0, 0.25, 0.1),
+                        ("MergedHinge", 1, expected_springref, 15.0 * angular_factor),
+                        ("MergedSlide", 0, 0.25, 0.1),
+                    ):
+                        joint = result["path_joint_map"][f"/World/{path}"]
+                        dof = builder.joint_qd_start[joint] + offset
+                        self.assertAlmostEqual(springref[dof], expected_spring, places=5)
+                        self.assertAlmostEqual(reference[dof], expected_ref, places=5)
+
+                    self.assertEqual(stage.GetPrimAtPath("/World/Revolute").GetAttribute("mjc:springref").Get(), 30.0)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_springref_attribute_parsing(self):
@@ -13268,6 +13380,51 @@ def Xform "World"
         finally:
             os.unlink(path)
 
+    def test_mesh_create_from_file_glb_scene_transforms(self):
+        """Test Mesh.create_from_file applies glTF scene-graph node transforms.
+
+        A multi-node glb stores each part's vertices in node-local space;
+        the authored placement lives in the scene graph. The loader must
+        compose those transforms, otherwise all parts collapse onto the
+        origin as overlapping local geometry.
+        """
+        try:
+            import trimesh
+        except ImportError:
+            self.skipTest("trimesh not installed")
+
+        scene = trimesh.Scene()
+        part = trimesh.creation.box(extents=[2.0, 2.0, 2.0])
+        scene.add_geometry(
+            part,
+            node_name="part_right",
+            geom_name="part_right",
+            transform=trimesh.transformations.translation_matrix([10.0, 0.0, 0.0]),
+        )
+        scene.add_geometry(
+            part,
+            node_name="part_left",
+            geom_name="part_left",
+            transform=trimesh.transformations.translation_matrix([-10.0, 0.0, 0.0]),
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=".glb", delete=False) as f:
+            scene.export(f.name)
+            path = f.name
+
+        try:
+            mesh = newton.Mesh.create_from_file(path)
+            vertices = np.asarray(mesh.vertices)
+
+            # Both parts must land at their authored offsets: the merged
+            # bounding box spans the ~22-unit separation. Without transform
+            # composition the two parts overlap at the origin and no axis
+            # exceeds 2 units.
+            span = vertices.max(axis=0) - vertices.min(axis=0)
+            self.assertGreater(float(span.max()), 20.0)
+        finally:
+            os.unlink(path)
+
     def test_mesh_create_from_file_not_found(self):
         """Test Mesh.create_from_file raises on missing file."""
         with self.assertRaises(FileNotFoundError):
@@ -13523,10 +13680,9 @@ class TestResolveUsdFromUrl(unittest.TestCase):
         from newton._src.utils.import_usd import resolve_usd_from_url  # noqa: PLC0415
 
         with (
-            mock.patch.dict(
-                "sys.modules",
-                {"requests": mock_requests, "pxr": mock_pxr, "pxr.Usd": mock_usd},
-            ),
+            patch_sys_module("requests", mock_requests),
+            patch_sys_module("pxr", mock_pxr),
+            patch_sys_module("pxr.Usd", mock_usd),
             mock.patch("builtins.open", tracking_open),
         ):
             result = resolve_usd_from_url(base_url, target_folder_name=tmpdir)
