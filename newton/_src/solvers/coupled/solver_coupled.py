@@ -435,6 +435,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
     ) -> None:
         super().__init__(model)
 
+        if model.tendon_count:
+            raise ValueError("SolverCoupled does not yet support partitioning tendon routes; use XPBD or VBD directly")
+
         self._attribute_projections = self._build_attribute_projections()
         self._joint_constraint_starts = self._build_joint_constraint_starts()
         self._reset_state_attributes = self._build_reset_state_attributes()
