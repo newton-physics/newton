@@ -18,7 +18,7 @@ import warp as wp
 import newton
 
 from .artifacts import CableRunWriter
-from .evaluate import CableCandidate, CableEvaluator, CableTraceView
+from .evaluate import CableEvaluator, CableParameters, CableTraceView
 from .evidence import CableEvidenceBundle
 from .loss_chamfer import CHAMFER
 from .optimizer import SearchOutcome
@@ -103,7 +103,7 @@ class CableCalibrationProblem:
         candidates = [self.search_space.decode(x) for x in vectors]
         return self._prepare_evaluator().evaluate(candidates)
 
-    def candidate(self, vector: Sequence[float]) -> CableCandidate:
+    def candidate(self, vector: Sequence[float]) -> CableParameters:
         """Return the cable parameters that a decision vector describes."""
         return self.search_space.decode(vector)
 
