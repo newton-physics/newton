@@ -18,6 +18,7 @@ from .metrics import DualSolution
 from .problem import LOXProblem
 from .projection import ProjectionSchedule
 from .projection_kernels import _compute_box_residuals, _compute_contact_residuals, _compute_spatial_contact_residuals
+from .seed import estimate_joint_penalty_scale
 from .solver_kernels import (
     _blend_accepted_twist,
     _finalize_residual_iteration,
@@ -301,9 +302,9 @@ class LOXSolver:
         conditioning. The smooth operator excludes the body splitting weights.
 
         This operation prepares the LOX problem from the initial rigid state and
-        performs a one-time dense structural assembly and host eigensolve, so
-        it is intended for initialization, outside the captured simulation
-        loop.
+        runs a one-time Lanczos estimate on the device that synchronizes with
+        the host, so it is intended for initialization, outside the captured
+        simulation loop.
 
         Args:
             time_step: Uniform simulation time step [s].
@@ -327,10 +328,12 @@ class LOXSolver:
                 try:
                     problem.build_smooth_system(model_time.dt, joint_penalty_scale=None)
                     # Converge every structural mode within a conditioning bound
-                    scales = problem.estimate_joint_penalty_scale(
-                        self._data.joint_penalty_scale.numpy(), self._config.joint_penalty_condition
+                    estimate_joint_penalty_scale(
+                        problem.system,
+                        problem.data.structural_rows,
+                        self._data.joint_penalty_scale,
+                        self._config.joint_penalty_condition,
                     )
-                    self._data.joint_penalty_scale.assign(scales)
                 finally:
                     self.reset()
         finally:
