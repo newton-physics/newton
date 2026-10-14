@@ -72,6 +72,7 @@ from .graph_coloring import (
     combine_independent_coloring_plan,
     construct_particle_graph,
 )
+from .joint_mimic import _SUPPORTED_JOINT_TYPES
 from .model import Model, _pack_shape_pair_codes
 from .rod import Rod
 from .tendon import TendonGuide, TendonGuideFlags, TendonGuideType
@@ -7053,12 +7054,16 @@ class ModelBuilder:
         if joint == reference_joint:
             raise ValueError(f"Joint {joint} cannot mimic itself")
 
-        supported_joint_types = (JointType.PRISMATIC, JointType.REVOLUTE, JointType.D6)
         if (
-            self.joint_type[joint] not in supported_joint_types
-            or self.joint_type[reference_joint] not in supported_joint_types
+            self.joint_type[joint] not in _SUPPORTED_JOINT_TYPES
+            or self.joint_type[reference_joint] not in _SUPPORTED_JOINT_TYPES
         ):
-            raise ValueError("Mimic followers and references only support PRISMATIC, REVOLUTE, and D6 joints")
+            supported_types = ", ".join(JointType(joint_type).name for joint_type in sorted(_SUPPORTED_JOINT_TYPES))
+            raise ValueError(
+                f"Mimic followers and references only support {supported_types} joints. "
+                f"Follower joint {joint} has type {self.joint_type[joint].name}; "
+                f"reference joint {reference_joint} has type {self.joint_type[reference_joint].name}."
+            )
 
         follower_dimensions = self.joint_type[joint].dof_count(sum(self.joint_dof_dim[joint]))
         reference_dimensions = self.joint_type[reference_joint].dof_count(sum(self.joint_dof_dim[reference_joint]))

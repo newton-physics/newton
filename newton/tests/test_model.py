@@ -3861,8 +3861,14 @@ class TestModelJoints(unittest.TestCase):
                 with self.subTest(joint_type=builder.joint_type[joint0], follower=follower, reference=leader):
                     mimic_joints = list(builder.joint_mimic_joint)
                     mimic_coeffs = list(builder.joint_mimic_coeffs)
-                    with self.assertRaisesRegex(ValueError, "only support PRISMATIC, REVOLUTE, and D6"):
+                    with self.assertRaisesRegex(ValueError, "only support") as caught:
                         builder.set_joint_mimic(follower, leader, coeffs=(0.0, 2.0))
+                    self.assertIn(
+                        f"Follower joint {follower} has type {builder.joint_type[follower].name}", str(caught.exception)
+                    )
+                    self.assertIn(
+                        f"reference joint {leader} has type {builder.joint_type[leader].name}", str(caught.exception)
+                    )
                     self.assertEqual(builder.joint_mimic_joint, mimic_joints)
                     self.assertEqual(builder.joint_mimic_coeffs, mimic_coeffs)
             builder.set_joint_mimic(joint0, None)
