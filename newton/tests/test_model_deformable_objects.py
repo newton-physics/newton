@@ -146,7 +146,13 @@ class TestModelDeformableObjects(unittest.TestCase):
             elif method == "replicate":
                 builder.replicate(prototype, 2)
             for device in get_test_devices():
-                model = builder.finalize(device=device)
+                if method == "source":
+                    with self.assertWarnsRegex(
+                        UserWarning, r"Custom attribute 'sensor_curve_sparse' has 2 values.*expects 3"
+                    ):
+                        model = builder.finalize(device=device)
+                else:
+                    model = builder.finalize(device=device)
                 for family in ("curve", "surface", "volume"):
                     for name, _, _, _, expected in cases:
                         with self.subTest(method=method, device=device, family=family, kind=name):
