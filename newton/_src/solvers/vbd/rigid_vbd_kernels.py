@@ -34,8 +34,8 @@ from newton._src.core.types import MAXVAL
 from newton._src.geometry.kernels import triangle_closest_point
 from newton._src.math import orthonormal_basis, quat_velocity
 from newton._src.sim import JointType
+from newton._src.sim.articulation import eval_angular_coordinates
 from newton._src.sim.contacts import contact_surface_point, contact_surface_separation
-from newton._src.sim.joint_mimic import eval_angular_coordinates
 from newton._src.solvers.solver import integrate_rigid_body
 from newton._src.solvers.vbd.interval_arithmetic import (
     rigid_point_plane_signed_distance_derivative_interval,
@@ -1493,7 +1493,7 @@ def _update_joint_structural_dual(
 
 
 @wp.func
-def _evaluate_angular_constraint_from_kappa(
+def evaluate_angular_constraint_force_hessian(
     q_wp: wp.quat,
     q_wc: wp.quat,
     kappa_now_vec: wp.vec3,
@@ -1530,9 +1530,7 @@ def _evaluate_angular_constraint_from_kappa(
     stiffness in legacy mode. ``material_k`` supplies the finite material stiffness
     used by compliant ALM.
     Returns:
-        (tau_world, H_aa, kappa, J_world) -- constraint torque and Hessian in world
-        frame, plus the rotation vector and world-frame Jacobian for reuse by the
-        drive/limit block.
+        (tau_world, H_aa) -- constraint torque and Hessian in world frame.
     """
     inv_dt = 1.0 / dt
 
@@ -1564,48 +1562,7 @@ def _evaluate_angular_constraint_from_kappa(
     if not is_parent:
         tau_world = -tau_world
 
-    return tau_world, H_aa, kappa_now_vec, J_world
-
-
-@wp.func
-def evaluate_angular_constraint_force_hessian(
-    q_wp: wp.quat,
-    q_wc: wp.quat,
-    q_wp_rest: wp.quat,
-    q_wc_rest: wp.quat,
-    q_wp_prev: wp.quat,
-    q_wc_prev: wp.quat,
-    is_parent: bool,
-    solve_weight: float,
-    material_k: float,
-    P: wp.mat33,
-    lambda_ang: wp.vec3,
-    C0_ang: wp.vec3,
-    alpha: float,
-    damping: float,
-    use_compliant_alm: int,
-    dt: float,
-):
-    """:func:`_evaluate_angular_constraint_from_kappa` with the rotation-vector error from the rest pose."""
-    kappa, J_world = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
-    return _evaluate_angular_constraint_from_kappa(
-        q_wp,
-        q_wc,
-        kappa,
-        J_world,
-        q_wp_prev,
-        q_wc_prev,
-        is_parent,
-        solve_weight,
-        material_k,
-        P,
-        lambda_ang,
-        C0_ang,
-        alpha,
-        damping,
-        use_compliant_alm,
-        dt,
-    )
+    return tau_world, H_aa
 
 
 @wp.func
@@ -3333,11 +3290,12 @@ def evaluate_joint_force_hessian(
         solve_weight_ang = _load_solve_weight(joint_penalty_k, joint_rho, c_start + 1, joint_compliant_alm)
         kd_ang = joint_penalty_kd[c_start + 1]
         if solve_weight_ang > 0.0:
-            t_ang, Haa_ang, _ang_kappa, _ang_J = evaluate_angular_constraint_force_hessian(
+            kappa, J_world = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
+            t_ang, Haa_ang = evaluate_angular_constraint_force_hessian(
                 q_wp,
                 q_wc,
-                q_wp_rest,
-                q_wc_rest,
+                kappa,
+                J_world,
                 q_wp_prev,
                 q_wc_prev,
                 is_parent_body,
@@ -3395,16 +3353,14 @@ def evaluate_joint_force_hessian(
         solve_weight_ang = _load_solve_weight(joint_penalty_k, joint_rho, c_start + 1, joint_compliant_alm)
         kd_ang = joint_penalty_kd[c_start + 1]
 
-        kappa_cached = wp.vec3(0.0)
-        J_world_cached = wp.mat33(0.0)
-        has_cached = False
+        kappa, J_world = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
 
         if solve_weight_ang > 0.0:
-            t_ang, Haa_ang, kappa_cached, J_world_cached = evaluate_angular_constraint_force_hessian(
+            t_ang, Haa_ang = evaluate_angular_constraint_force_hessian(
                 q_wp,
                 q_wc,
-                q_wp_rest,
-                q_wc_rest,
+                kappa,
+                J_world,
                 q_wp_prev,
                 q_wc_prev,
                 is_parent_body,
@@ -3418,7 +3374,6 @@ def evaluate_joint_force_hessian(
                 joint_compliant_alm,
                 dt,
             )
-            has_cached = True
         else:
             t_ang = wp.vec3(0.0)
             Haa_ang = wp.mat33(0.0)
@@ -3445,12 +3400,6 @@ def evaluate_joint_force_hessian(
 
         if has_drive or has_limits:
             inv_dt = 1.0 / dt
-
-            if has_cached:
-                kappa = kappa_cached
-                J_world = J_world_cached
-            else:
-                kappa, J_world = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
 
             theta = wp.dot(kappa, a)
             theta_abs = _unwrap_hinge_angle(theta + joint_rest_angle[dof_idx], joint_angle_prev[dof_idx])
@@ -3516,11 +3465,12 @@ def evaluate_joint_force_hessian(
         solve_weight_ang = _load_solve_weight(joint_penalty_k, joint_rho, c_start + 1, joint_compliant_alm)
         kd_ang = joint_penalty_kd[c_start + 1]
         if solve_weight_ang > 0.0:
-            t_ang, Haa_ang, _ang_kappa, _ang_J = evaluate_angular_constraint_force_hessian(
+            kappa, J_world = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
+            t_ang, Haa_ang = evaluate_angular_constraint_force_hessian(
                 q_wp,
                 q_wc,
-                q_wp_rest,
-                q_wc_rest,
+                kappa,
+                J_world,
                 q_wp_prev,
                 q_wc_prev,
                 is_parent_body,
@@ -3665,7 +3615,7 @@ def evaluate_joint_force_hessian(
         )
 
         if ang_count < 3 and solve_weight_ang > 0.0:
-            t_ang, Haa_ang, _kappa, _J_world = _evaluate_angular_constraint_from_kappa(
+            t_ang, Haa_ang = evaluate_angular_constraint_force_hessian(
                 q_wp,
                 q_wc,
                 kappa,

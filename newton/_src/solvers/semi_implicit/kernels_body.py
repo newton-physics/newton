@@ -11,7 +11,8 @@ from ...sim import (
     Model,
     State,
 )
-from ...sim.joint_mimic import eval_angular_coordinates, eval_joint_mimic_coordinate, eval_joint_mimic_velocity
+from ...sim.articulation import eval_angular_coordinates
+from ...sim.joint_mimic import eval_joint_mimic_coordinate, eval_joint_mimic_velocity
 
 
 @wp.func

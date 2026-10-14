@@ -13,8 +13,9 @@ from ...math import (
     velocity_at_point,
 )
 from ...sim import BodyFlags, JointType, Model
+from ...sim.articulation import eval_angular_coordinates
 from ...sim.contacts import contact_surface_point, contact_surface_separation
-from ...sim.joint_mimic import eval_angular_coordinates, eval_joint_mimic_coordinate
+from ...sim.joint_mimic import eval_joint_mimic_coordinate
 
 
 @wp.kernel
