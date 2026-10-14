@@ -65,29 +65,6 @@ def _compute_row_velocity(
     return v
 
 
-@wp.func
-def _contact_velocity_aug(
-    ncts: int32,
-    mio: int32,
-    vio: int32,
-    ccgo: int32,
-    cio: int32,
-    cid: int32,
-    D: wp.array[float32],
-    v_f: wp.array[float32],
-    lambdas: wp.array[float32],
-    mu: wp.array[float32],
-) -> vec3f:
-    # Contact rows are [t0, t1, n]. De Saxce augments the normal velocity by
-    # mu * ||v_t|| before enforcing Coulomb-cone complementarity.
-    ccio = ccgo + 3 * cid
-    v_t0 = _compute_row_velocity(ncts, mio, vio, ccio + 0, D, v_f, lambdas)
-    v_t1 = _compute_row_velocity(ncts, mio, vio, ccio + 1, D, v_f, lambdas)
-    v_n = _compute_row_velocity(ncts, mio, vio, ccio + 2, D, v_f, lambdas)
-    vt_norm = wp.sqrt(v_t0 * v_t0 + v_t1 * v_t1)
-    return vec3f(v_t0, v_t1, v_n + mu[cio + cid] * vt_norm)
-
-
 @wp.kernel
 def _reset_dvi_solver_data(
     # Inputs:
@@ -640,22 +617,25 @@ def _solve_bilateral_unilateral_response_compact(
     factor_row_start: wp.array[int32],
 ):
     """Whiten permuted response columns independently for large compact batches."""
-    wid, unilateral = wp.tid()
+    wid, lane = wp.tid()
     njc = problem_njc[wid]
     nu = problem_dim[wid] - njc
-    if unilateral >= nu or not _compact_schur_fits(njc, nu, response_stride[wid]):
+    if not _compact_schur_fits(njc, nu, response_stride[wid]):
         return
     offset = response_mio[wid]
-    for row in range(njc):
-        original_row = bilateral_permutation[bilateral_vio[wid] + row]
-        value = bilateral_P[bilateral_vio[wid] + original_row] * coupling[offset + original_row * nu + unilateral]
-        for k in range(factor_row_start[bilateral_vio[wid] + row], row):
-            value -= (
-                bilateral_L[bilateral_mio[wid] + bilateral_ld[wid] * row + k] * response[offset + k * nu + unilateral]
+    # One block per world avoids scheduling workers for unused contact capacity.
+    for unilateral in range(lane, nu, 128):
+        for row in range(njc):
+            original_row = bilateral_permutation[bilateral_vio[wid] + row]
+            value = bilateral_P[bilateral_vio[wid] + original_row] * coupling[offset + original_row * nu + unilateral]
+            for k in range(factor_row_start[bilateral_vio[wid] + row], row):
+                value -= (
+                    bilateral_L[bilateral_mio[wid] + bilateral_ld[wid] * row + k]
+                    * response[offset + k * nu + unilateral]
+                )
+            response[offset + row * nu + unilateral] = (
+                value / bilateral_L[bilateral_mio[wid] + bilateral_ld[wid] * row + row]
             )
-        response[offset + row * nu + unilateral] = (
-            value / bilateral_L[bilateral_mio[wid] + bilateral_ld[wid] * row + row]
-        )
 
 
 @wp.kernel

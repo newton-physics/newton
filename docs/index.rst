@@ -65,6 +65,7 @@ Newton Physics
    :caption: Further Reading
 
    FAQ <faq>
+   Massless Routed Tendons <tendons>
    Migration Guide <migration>
    Isaac Lab <lab/isaac-lab>
 

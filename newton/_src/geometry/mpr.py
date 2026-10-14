@@ -35,6 +35,8 @@ from typing import Any
 
 import warp as wp
 
+from .penetration import _box_face_depth, create_solve_box_penetration
+from .penetration import box_polyhedron_pair as solve_mpr_needs_certificate
 from .support_function import (
     _has_verified_hull,
     create_shape_center_function,
@@ -195,9 +197,6 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
     solve_gjk = create_solve_closest_distance(
         support_func, _support_funcs=(_support_map_b, _minkowski_support, geometric_center)
     ).core
-
-    from .penetration import box_polyhedron_pair as solve_mpr_needs_certificate  # noqa: PLC0415
-    from .penetration import create_solve_box_penetration  # noqa: PLC0415
 
     @wp.func
     def certificate_support(
@@ -616,6 +615,8 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
         retry = wp.length_sq(seed) > 0.0
         minimum_depth = float(-1.0)
         minimum_verified = False
+        bound_normal = normal
+        bound_depth = float(1.0e30)
         if solve_mpr_needs_certificate(geom_a, geom_b):
             minimum_normal, minimum_depth, minimum_verified = solve_sat(
                 geom_a, geom_b, orientation_b, position_b, data_provider, normal
@@ -628,6 +629,18 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
                     bound = wp.max(bound, minimum_depth + extend + COLLIDE_EPSILON)
                     valid = False
                     retry = True
+        else:
+            if wp.min(geom_a.bounds_half) > 0.0 and wp.min(geom_b.bounds_half) > 0.0:
+                offset = position_b + wp.quat_rotate(orientation_b, geom_b.center) - geom_a.center
+                bound_normal, bound_depth = _box_face_depth(
+                    geom_a.bounds_half, geom_b.bounds_half, orientation_b, offset
+                )
+                # Separating enclosing boxes separates the shapes. A deeper portal
+                # landed on a distant face; refine along the shallower bound instead.
+                if penetration > bound_depth + extend + COLLIDE_EPSILON:
+                    normal = bound_normal
+                    valid = False
+                    retry = False
         for _attempt in range(3):
             if valid or not retry:
                 break
@@ -640,6 +653,10 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
                 and minimum_depth > COLLIDE_EPSILON
                 and wp.abs(penetration - extend - minimum_depth) > COLLIDE_EPSILON
             )
+            if hit and penetration > bound_depth + extend + COLLIDE_EPSILON:
+                normal = bound_normal
+                valid = False
+                break
             if not hit or penetration > bound or wrong_depth:
                 normal = last_normal
                 valid = False
@@ -666,7 +683,11 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
         collision, point_a, point_b, normal, penetration, seed, valid = solve_mpr_portal(
             geom_a, geom_b, orientation_b, position_b, extend, data_provider, wp.vec3(0.0), MAX_ITER, COLLIDE_EPSILON
         )
-        if collision and (not valid or solve_mpr_needs_certificate(geom_a, geom_b)):
+        if collision and (
+            not valid
+            or solve_mpr_needs_certificate(geom_a, geom_b)
+            or (wp.min(geom_a.bounds_half) > 0.0 and wp.min(geom_b.bounds_half) > 0.0)
+        ):
             point_a, point_b, normal, penetration, collision = solve_mpr_refine(
                 geom_a,
                 geom_b,
