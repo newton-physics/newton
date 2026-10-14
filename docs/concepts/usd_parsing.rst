@@ -251,8 +251,9 @@ The first release deliberately supports a narrow, predictable set of inputs:
   If the token is unauthored and the imported cloth is non-planar, Newton warns that the proposal's
   flat fallback changes the previous rest state and points to ``"restShape"`` as the preservation
   choice. Explicit ``"flat"`` authoring and planar cloth do not emit this migration warning.
-* Point attachments only where the authored constraint can be represented without moving any
-  geometry: hard cable-to-xform attachments, and hard, coincident cable-to-cable junctions.
+* Hard cable-to-xform point attachments, and hard cable-to-cable junctions whose initial
+  points coincide. Stretched cables can have separated material anchors; see the
+  stretched cable attachment limitation below.
 * ``PhysicsElementCollisionFilter`` prims filter collisions between the paired element groups
   of their two sources (imported cables, rigid bodies, or collider prims; a count of ``0`` or
   an empty counts array selects all elements). Cloth and volume element sources warn and are
@@ -289,9 +290,11 @@ Known gaps of the experimental importer, tracked as follow-ups:
 * **Stretched cable attachments** -- cable capsules have rest lengths and initial segment
   centers. If initial and rest lengths differ, capsule endpoints can differ from the USD
   initial points. Attachments use the capsule's material endpoints and rest-length segment
-  coordinates, like native rod joints. Newton keeps the initial body poses; an attachment
-  can start with separated anchors that the solver must bring together. This approximates
-  the proposal's attachment positions on the initial curve.
+  coordinates, like native rod joints. Import preserves the initial poses in ``Model.body_q``
+  and a newly created state. An attachment can start with separated anchors that the solver
+  must bring together. Calling :func:`~newton.eval_fk` instead enforces the root joint's
+  attachment position and can translate a stretched cable rooted at an endpoint.
+  This approximates the proposal's attachment positions on the initial curve.
 * **Springy attachments** -- attachments with a finite stiffness are not simulated. They are
   preserved in ``path_attachment_attrs`` with their authored stiffness and damping (silently
   hardening them would change the authored physics); only hard attachments (unauthored or

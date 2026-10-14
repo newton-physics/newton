@@ -321,8 +321,8 @@ def _cable_frames_from_normals(positions, normals, world_mat, path: str, name: s
         ):
             if reject_curve:
                 warnings.warn(
-                    f"{path}: {name} has a non-finite, zero, or tangent-parallel normal at segment {i}; "
-                    f"ignoring {name} for this curve and using fallback frames.",
+                    f"{path}: {name} cannot define a rest frame at segment {i} "
+                    "(non-finite, zero, or tangent-parallel normal); using fallback frames for this curve.",
                     stacklevel=2,
                 )
                 return None
@@ -332,8 +332,8 @@ def _cable_frames_from_normals(positions, normals, world_mat, path: str, name: s
 
 
 def _cable_rest_geometry(positions, rest_points, normals, rest_normals, world_mat, path: str, *, closed: bool):
-    """Resolve rest positions, frames, and lengths for one validated initial curve."""
-    rest_positions = positions
+    """Resolve optional rest data; None reuses the initial geometry or native frame transport."""
+    rest_positions = rest_lengths = None
     if rest_points is not None:
         candidate = _bake_world_points(rest_points, world_mat)
         if closed:
@@ -347,12 +347,15 @@ def _cable_rest_geometry(positions, rest_points, normals, rest_normals, world_ma
             )
         else:
             rest_positions = candidate
-    rest_frames = _cable_frames_from_normals(rest_positions, rest_normals, world_mat, path, "restNormals")
+            rest_lengths = lengths
+    if rest_positions is None and rest_normals is None:
+        return None, None, None
+    frame_positions = positions if rest_positions is None else rest_positions
+    rest_frames = _cable_frames_from_normals(frame_positions, rest_normals, world_mat, path, "restNormals")
     if rest_frames is None:
         # USD falls back to the initial normal values, interpreted against the rest tangents.
-        rest_frames = _cable_frames_from_normals(rest_positions, normals, world_mat, path, "normals for rest shape")
-    lengths = [float(wp.length(b - a)) for a, b in pairwise(rest_positions)]
-    return rest_positions, rest_frames, lengths
+        rest_frames = _cable_frames_from_normals(frame_positions, normals, world_mat, path, "normals")
+    return rest_positions, rest_frames, rest_lengths
 
 
 def _join_cable_rest_points(
@@ -923,6 +926,8 @@ def _deformable_prepare_cable_topology(
 
         frames_by_curve = {}
         rest_vectors = []
+        material_edge_lengths = []
+        has_rest_points = False
         for key in comp_paths:
             rec = curve_recs[key]
             count = len(rec.positions)
@@ -934,14 +939,22 @@ def _deformable_prepare_cable_topology(
             initial_frames = _cable_frames_from_normals(
                 merged_positions, normals, wmat, key, "normals", reject_curve=False
             )
-            rest_positions, rest_frames, _ = _cable_rest_geometry(
+            rest_positions, rest_frames, rest_lengths = _cable_rest_geometry(
                 merged_positions, rest_points, normals, rest_normals, wmat, key, closed=False
             )
             frames_by_curve[key] = (initial_frames, rest_frames)
+            edge_start = len(material_edge_lengths)
+            material_edge_lengths.extend(
+                edge_lengths[edge_start : edge_start + count - 1] if rest_lengths is None else rest_lengths
+            )
+            has_rest_points |= rest_positions is not None
+            if rest_positions is None:
+                rest_positions = merged_positions
             rest_vectors.extend(b - a for a, b in pairwise(rest_positions))
 
-        rest_node_positions = _join_cable_rest_points(len(node_positions), edges, rest_vectors)
-        material_edge_lengths = [float(wp.length(vector)) for vector in rest_vectors]
+        rest_node_positions = (
+            _join_cable_rest_points(len(node_positions), edges, rest_vectors) if has_rest_points else None
+        )
 
         rep = curve_recs[comp_paths[0]]
         contact_properties = {p: _resolve_cable_contact(ctx, curve_recs[p].prim) for p in comp_paths}
@@ -1001,11 +1014,13 @@ def _deformable_prepare_cable_topology(
         # Record the whole graph through the native path; source-curve lookup stays
         # in the per-prim import maps below.
         rod = Rod(node_positions, edges=edges, radius=radius, rest_points=rest_node_positions)
-        rest_quaternions = []
+        rest_quaternions = [] if any(rest_frames is not None for _, rest_frames in frames_by_curve.values()) else None
         for edge_index, ((u, v), (key, segment)) in enumerate(zip(edges, edge_owner, strict=True)):
             frames, rest_frames = frames_by_curve[key]
             if frames is not None:
                 rod.quaternions[edge_index] = list(frames[segment])
+            if rest_quaternions is None:
+                continue
             if rest_frames is not None:
                 rest_quaternions.append(rest_frames[segment])
             else:
@@ -1328,6 +1343,8 @@ def _deformable_import_cable(
                 curve_path,
                 closed=closed,
             )
+            if material_seg_lengths is None:
+                material_seg_lengths = seg_lengths
             label = path if len(vertex_counts) == 1 else f"{path}_curve{ci}"
             curve_radii = segment_radii[flat_segment_index : flat_segment_index + num_seg]
             curve_point_radii = point_radii[start : start + n]

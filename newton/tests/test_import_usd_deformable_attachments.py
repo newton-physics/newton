@@ -336,7 +336,7 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         self.assertGreater(model.body_count, 0)
 
     def test_strained_cable_attachments_use_rest_endpoints(self):
-        """Use material endpoints in rooted and separate attachments without moving the cable."""
+        """Keep imported poses until FK closes a stretched cable's root attachment."""
         from pxr import UsdGeom, UsdPhysics
 
         for endpoint, expected_body, expected_z in ((0, 0, -0.05), (2, 1, 0.1)):
@@ -386,6 +386,14 @@ class TestUSDDeformableAttachments(unittest.TestCase):
                     if not rooted:
                         segment_joint = result["path_attachment_map"]["/World/Segment"][0]
                         np.testing.assert_allclose(builder.joint_X_c[segment_joint][:3], [-0.03, 0.02, 0.05], atol=1e-6)
+                    model = builder.finalize(device="cpu")
+                    state = model.state()
+                    np.testing.assert_allclose(state.body_q.numpy()[bodies], np.asarray(builder.body_q)[bodies])
+                    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+                    expected_positions = np.array([[0, 0, 0.2], [0, 0, 0.6]])
+                    if rooted:
+                        expected_positions[:, 2] += -0.15 if endpoint == 0 else 0.1
+                    np.testing.assert_allclose(state.body_q.numpy()[bodies, :3], expected_positions, atol=1e-6)
 
     def test_physics_attachment_joins_plug_and_cable_articulation_for_vbd(self):
         """Import a physically attached plug and cable as one articulation."""

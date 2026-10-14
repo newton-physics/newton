@@ -807,20 +807,61 @@ class TestUSDDeformableCable(unittest.TestCase):
         self.assertNotIn("/World/CableB", result["path_cable_map"])
 
     def test_cable_bad_initial_normal_keeps_other_authored_frames(self):
-        """Preserve valid initial normals when another segment needs a generated frame."""
+        """Keep per-segment normal fallbacks silent on cables without rest attributes."""
         from pxr import UsdGeom
 
-        stage = _deformable_stage()
-        curves = _add_cable_curve(stage, "/World/Cable", [(0, 0, 0), (0, 0, 0.1), (0, 0, 0.2)])
-        curves.CreateNormalsAttr([(1, 0, 0), (0, 0, 0), (0, 1, 0)])
-        curves.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
-        builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(UserWarning, "normal"):
-            result = builder.add_usd(stage, return_deformable_results=True)
-        bodies = result["path_cable_map"]["/World/Cable"][0]
-        for body, expected in zip(bodies, ([1, 0, 0], [0, 1, 0]), strict=True):
-            rotation = wp.transform_get_rotation(builder.body_q[body])
-            np.testing.assert_allclose(wp.quat_rotate(rotation, wp.vec3(0, 1, 0)), expected, atol=1e-6)
+        for mode in ("single", "periodic", "rooted", "welded", "mixed_rest"):
+            for bad_normal in ((0, 0, 0), (0, 0, 1)):
+                with self.subTest(mode=mode, normal=bad_normal):
+                    stage = _deformable_stage()
+                    curves = _add_cable_curve(
+                        stage, "/World/Cable", [(0, 0, 0), (0, 0, 0.1), (0, 0, 0.2)], periodic=mode == "periodic"
+                    )
+                    curves.CreateNormalsAttr([(1, 0, 0), bad_normal, (0, 1, 0)])
+                    curves.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+                    if mode == "rooted":
+                        _add_physics_attachment(
+                            stage,
+                            "/World/Anchor",
+                            src0="/World/Cable",
+                            type0="point",
+                            indices0=[0],
+                            coords1=[(0, 0, 0)],
+                        )
+                    elif mode in ("welded", "mixed_rest"):
+                        other = _add_cable_curve(stage, "/World/Other", [(0, 0, 0), (0.1, 0, 0), (0.2, 0, 0)])
+                        if mode == "mixed_rest":
+                            _author_cable_rest_shape(other, points=[(0, 0, 0), (0.05, 0, 0), (0.1, 0, 0)])
+                        _add_physics_attachment(
+                            stage,
+                            "/World/Weld",
+                            src0="/World/Cable",
+                            type0="point",
+                            indices0=[0],
+                            src1="/World/Other",
+                            type1="point",
+                            indices1=[0],
+                        )
+                    builder = newton.ModelBuilder()
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("error", UserWarning)
+                        result = builder.add_usd(stage, return_deformable_results=True)
+                    if mode in ("welded", "mixed_rest"):
+                        self.assertIn("graph_component", result["path_cable_attrs"]["/World/Cable"])
+                        other_bodies = result["path_cable_map"]["/World/Other"][0]
+                        shapes = [builder.body_shapes[body][0] for body in other_bodies]
+                        np.testing.assert_allclose(
+                            np.asarray(builder.shape_scale)[shapes, 1],
+                            0.025 if mode == "mixed_rest" else 0.05,
+                            atol=1e-6,
+                        )
+                    elif mode == "rooted":
+                        joint = result["path_attachment_map"]["/World/Anchor"][0]
+                        self.assertGreaterEqual(builder.joint_articulation[joint], 0)
+                    bodies = result["path_cable_map"]["/World/Cable"][0]
+                    for body, expected in zip(bodies[:2], ([1, 0, 0], [0, 1, 0]), strict=True):
+                        rotation = wp.transform_get_rotation(builder.body_q[body])
+                        np.testing.assert_allclose(wp.quat_rotate(rotation, wp.vec3(0, 1, 0)), expected, atol=1e-6)
 
     def test_cable_rest_volume_mass_precedence(self):
         """Use rest volumes for mass weights while preserving explicit segment masses."""
@@ -933,11 +974,24 @@ class TestUSDDeformableCable(unittest.TestCase):
         """Match baked rest geometry under scale, shear, reflection, and an import transform."""
         from pxr import Gf, Sdf, UsdGeom
 
+        self.addCleanup(setattr, newton, "use_coord_layout_targets", newton.use_coord_layout_targets)
+        newton.use_coord_layout_targets = True
         transform = Gf.Matrix4d(2, 0, 0.3, 0, 0, -3, 0, 0, 0, 0.5, 4, 0, 1, 2, 3, 1)
         initial = [(0, 0, 0), (0, 0, 0.2), (0, 0, 0.4)]
         rest = [(0, 0, 0), (0.1, 0, 0), (0.1, 0.2, 0)]
+        transformed_rest = np.array([transform.Transform(Gf.Vec3d(*p)) for p in rest])
+        # Non-unit stage metadata warns; it does not scale imported points.
+        expected_lengths = np.linalg.norm(np.diff(transformed_rest, axis=0), axis=1)
         for explicit_rest_normals in (False, True):
             with self.subTest(explicit_rest_normals=explicit_rest_normals):
+                director = np.array(transform.TransformDir(Gf.Vec3d(0, 0, 1) if explicit_rest_normals else Gf.Vec3d(1)))
+                frames = []
+                for segment in np.diff(transformed_rest, axis=0):
+                    tangent = segment / np.linalg.norm(segment)
+                    x_axis = np.cross(director, tangent)
+                    x_axis /= np.linalg.norm(x_axis)
+                    frames.append(np.column_stack((x_axis, np.cross(tangent, x_axis), tangent)))
+                expected_rotation = frames[0].T @ frames[1]
                 builders = []
                 for baked in (False, True):
                     stage = _deformable_stage(up_axis="y")
@@ -960,19 +1014,27 @@ class TestUSDDeformableCable(unittest.TestCase):
                     )
                     builder = newton.ModelBuilder()
                     with self.assertWarnsRegex(UserWarning, "non-unit linear units"):
-                        builder.add_usd(
+                        result = builder.add_usd(
                             stage,
                             xform=wp.transform(wp.vec3(0.2, -0.3, 0.4), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), 0.3)),
+                            return_deformable_results=True,
                         )
                     builders.append(builder)
+                    np.testing.assert_allclose(
+                        2 * np.asarray(builder.shape_scale)[:, 1], expected_lengths, rtol=2e-5, atol=1e-8
+                    )
+                    joint = result["path_cable_map"]["/World/Cable"][1][0]
+                    q = builder.joint_q_start[joint]
+                    rotation = wp.quat_to_matrix(wp.quat(*builder.joint_target_q[q + 3 : q + 7]))
+                    np.testing.assert_allclose(np.asarray(rotation).reshape(3, 3), expected_rotation, atol=2e-5)
                 for attribute in ("body_q", "shape_scale", "body_mass", "joint_target_q", "joint_X_p", "joint_X_c"):
                     np.testing.assert_allclose(
                         getattr(builders[0], attribute), getattr(builders[1], attribute), atol=2e-5, err_msg=attribute
                     )
 
     def test_cable_rest_shape_recovers_in_vbd(self):
-        """Relax imported stretch, bend, and twist while leaving a rest-state control still."""
-        from pxr import UsdGeom, UsdPhysics
+        """Relax individual and welded cables while leaving a rest-state control still."""
+        from pxr import UsdGeom, UsdPhysics, UsdShade
 
         bend, twist = 0.25, 0.2
         rest = [(0, 0, 0), (0, 0, 0.1), (0.1 * math.sin(bend), 0, 0.1 + 0.1 * math.cos(bend))]
@@ -981,8 +1043,8 @@ class TestUSDDeformableCable(unittest.TestCase):
         )
         rest_normals = [(0, 1, 0), tuple(wp.quat_rotate(rest_rotation, wp.vec3(0, 1, 0))), (0, 1, 0)]
         for device in get_test_devices():
-            for relaxed in (False, True):
-                with self.subTest(device=device, relaxed=relaxed):
+            for relaxed, welded in ((False, False), (True, False), (False, True)):
+                with self.subTest(device=device, relaxed=relaxed, welded=welded):
                     stage = _deformable_stage()
                     UsdPhysics.Scene.Get(stage, "/PhysicsScene").CreateGravityMagnitudeAttr(0.0)
                     initial = rest if relaxed else [(0, 0, 0), (0, 0, 0.12), (0, 0, 0.24)]
@@ -1007,9 +1069,34 @@ class TestUSDDeformableCable(unittest.TestCase):
                         curvesBendDamping=0.001,
                         curvesTwistDamping=0.001,
                     )
+                    if welded:
+                        branch = _add_cable_curve(
+                            stage, "/World/Branch", [(x, -z, y) for x, y, z in initial], collision=False
+                        )
+                        branch.CreateNormalsAttr([(0, 0, 1)] * 3)
+                        branch.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+                        _author_cable_rest_shape(
+                            branch,
+                            points=[(x, -z, y) for x, y, z in rest],
+                            normals=[(x, -z, y) for x, y, z in rest_normals],
+                        )
+                        UsdShade.MaterialBindingAPI.Apply(branch.GetPrim()).Bind(material, materialPurpose="physics")
+                        _add_physics_attachment(
+                            stage,
+                            "/World/Weld",
+                            src0="/World/Cable",
+                            type0="point",
+                            indices0=[0],
+                            src1="/World/Branch",
+                            type1="point",
+                            indices1=[0],
+                        )
                     builder = newton.ModelBuilder()
                     result = builder.add_usd(stage, return_deformable_results=True)
-                    bodies, joints = result["path_cable_map"]["/World/Cable"]
+                    bodies = result["path_cable_map"]["/World/Cable"][0]
+                    if welded:
+                        self.assertIn("graph_component", result["path_cable_attrs"]["/World/Cable"])
+                    joints = [j for j, kind in enumerate(builder.joint_type) if kind == newton.JointType.ROD]
                     builder.color()
                     model = builder.finalize(device=device)
                     state, next_state = model.state(), model.state()
@@ -1025,10 +1112,14 @@ class TestUSDDeformableCable(unittest.TestCase):
                     if relaxed:
                         np.testing.assert_allclose(poses, initial_body_q, atol=2e-5)
                     else:
-                        parent = wp.transform(*poses[bodies[0]]) * builder.joint_X_p[joints[0]]
-                        child = wp.transform(*poses[bodies[1]]) * builder.joint_X_c[joints[0]]
-                        gap = wp.length(wp.transform_get_translation(child) - wp.transform_get_translation(parent))
-                        self.assertLess(float(gap), 0.005)
+                        for joint in joints:
+                            parent = wp.transform(*poses[builder.joint_parent[joint]]) * builder.joint_X_p[joint]
+                            child = wp.transform(*poses[builder.joint_child[joint]]) * builder.joint_X_c[joint]
+                            gap = wp.length(wp.transform_get_translation(child) - wp.transform_get_translation(parent))
+                            self.assertLess(float(gap), 0.005)
+                        joint = next(j for j in joints if builder.joint_child[j] == bodies[1])
+                        parent = wp.transform(*poses[bodies[0]]) * builder.joint_X_p[joint]
+                        child = wp.transform(*poses[bodies[1]]) * builder.joint_X_c[joint]
                         relative = wp.quat_inverse(wp.transform_get_rotation(parent)) * wp.transform_get_rotation(child)
                         error = wp.quat_inverse(rest_rotation) * relative
                         self.assertLess(float(wp.length(wp.vec3(error[0], error[1], error[2]))), 0.04)
