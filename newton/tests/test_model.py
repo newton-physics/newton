@@ -3822,6 +3822,55 @@ class TestModelJoints(unittest.TestCase):
         self.assertEqual(builder.joint_mimic_joint[joint1], -1)
         self.assertEqual(builder.joint_mimic_coeffs[joint1], (0.0, 1.0))
 
+    def test_joint_mimic_validates_final_articulations(self):
+        """Reject mimic joints assigned to different articulations after configuration."""
+        for assigned_before_mimic in (None, "reference", "follower"):
+            with self.subTest(assigned_before_mimic=assigned_before_mimic):
+                builder = newton.ModelBuilder()
+                bodies = [builder.add_link() for _ in range(2)]
+                reference = builder.add_joint_revolute(parent=-1, child=bodies[0])
+                follower = builder.add_joint_revolute(parent=-1, child=bodies[1])
+                if assigned_before_mimic == "follower":
+                    reference, follower = follower, reference
+                if assigned_before_mimic == "reference":
+                    builder.add_articulation([reference])
+                elif assigned_before_mimic == "follower":
+                    builder.add_articulation([follower])
+                builder.set_joint_mimic(follower, reference)
+                if assigned_before_mimic != "reference":
+                    builder.add_articulation([reference])
+                if assigned_before_mimic != "follower":
+                    builder.add_articulation([follower])
+                with self.assertRaisesRegex(ValueError, "Mimic joints must belong to the same articulation"):
+                    builder.finalize(device="cpu")
+
+    def test_joint_mimic_preserves_final_articulation_validation_options(self):
+        """Preserve supported memberships and explicit joint-validation opt-outs."""
+        for membership in ("same", "neither", "reference", "follower", "different"):
+            with self.subTest(membership=membership):
+                builder = newton.ModelBuilder()
+                bodies = [builder.add_link() for _ in range(2)]
+                reference = builder.add_joint_revolute(parent=-1, child=bodies[0])
+                follower = builder.add_joint_revolute(parent=-1, child=bodies[1])
+                builder.set_joint_mimic(follower, reference)
+                if membership == "same":
+                    builder.add_articulation([reference, follower])
+                if membership in ("reference", "different"):
+                    builder.add_articulation([reference])
+                if membership in ("follower", "different"):
+                    builder.add_articulation([follower])
+                options = (
+                    ({},)
+                    if membership != "different"
+                    else (
+                        {"skip_validation_joints": True},
+                        {"skip_all_validations": True},
+                    )
+                )
+                for kwargs in options:
+                    model = builder.finalize(device="cpu", **kwargs)
+                    np.testing.assert_array_equal(model.joint_mimic_joint.numpy(), [-1, reference])
+
     def test_joint_mimic_validates_dimensions(self):
         """Verify mimic relationships accept joint types only when their dimensions match."""
         builder = newton.ModelBuilder()
