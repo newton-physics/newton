@@ -1,0 +1,1 @@
+Validate that `ModelBuilder.set_joint_mimic()` followers and references are PRISMATIC, REVOLUTE, or D6 joints to prevent invalid quaternion coordinates and reject FIXED joints without mimic coordinates.
