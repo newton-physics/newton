@@ -43,17 +43,17 @@ from .implicit_mpm_solver_kernels import (
     EPSILON,
     INFINITY,
     YIELD_PARAM_LENGTH,
+    YieldMomentVec,
     _rebuild_capacity,
+    _TransformedStrainBasis,
     advect_particles,
     allocate_by_voxels,
     average_elastic_parameters,
-    average_element_yield_parameters,
     build_active_particle_mask,
     collision_weight_field,
     compliance_form,
     compute_bounds,
     compute_color_offsets,
-    compute_eigenvalues,
     compute_nodal_diagonalization,
     compute_unilateral_strain_offset,
     fill_uniform_color_block_indices,
@@ -78,12 +78,10 @@ from .implicit_mpm_solver_kernels import (
     mark_active_cells,
     mark_active_cells_by_environment,
     mass_form,
-    mat11,
     mat13,
     mat31,
     mat66,
     node_color,
-    normalize_strain_yield_parameters,
     record_volume_rebuild_status,
     reset_mpm_collider_history,
     reset_mpm_grid_warmstart,
@@ -277,6 +275,7 @@ class ImplicitMPMScratchpad:
         self.elastic_strain_delta_field = None
         self.strain_yield_parameters_field = None
         self.strain_yield_parameters_test = None
+        self.strain_basis_transform_field = None
 
         self.strain_matrix = wps.bsr_zeros(0, 0, mat13)
         self.transposed_strain_matrix = wps.bsr_zeros(0, 0, mat31)
@@ -301,6 +300,8 @@ class ImplicitMPMScratchpad:
         self.transposed_collider_matrix = wps.bsr_zeros(0, 0, block_type=float)
 
         self.strain_node_particle_volume = None
+        self.strain_basis_transform = None
+        self.strain_stress_transform = None
         self.strain_node_volume = None
         self.strain_node_collider_volume = None
 
@@ -545,7 +546,7 @@ class ImplicitMPMScratchpad:
         self.collider_position_field = collision_space.make_field(space_partition=collision_space_partition)
         self.collider_ids = wp.empty(collision_space_partition.node_count(), dtype=int)
 
-    def require_strain_space_fields(self):
+    def require_strain_space_fields(self, transform_basis: bool):
         """Ensure strain-space fields exist and match current spaces."""
         strain_basis = self._strain_basis
         sym_strain_space = self._sym_strain_space
@@ -561,12 +562,23 @@ class ImplicitMPMScratchpad:
 
         divergence_space = fem.make_collocated_function_space(strain_basis, dtype=float)
         strain_yield_parameters_space = fem.make_collocated_function_space(strain_basis, dtype=YieldParamVec)
+        material_basis = strain_basis
+        if transform_basis:
+            mode_space = fem.make_collocated_function_space(
+                strain_basis, dtype=wp.types.vector(length=self.strain_nodes_per_element, dtype=wp.float32)
+            )
+            if self.strain_basis_transform_field is None:
+                self.strain_basis_transform_field = mode_space.make_field(space_partition=strain_space_partition)
+            else:
+                self.strain_basis_transform_field.rebind(mode_space, strain_space_partition)
+            material_basis = _TransformedStrainBasis(self.strain_basis_transform_field)
+        strain_yield_parameters_test_space = fem.make_collocated_function_space(material_basis, dtype=YieldMomentVec)
 
         if self.sym_strain_test is None:
             self.sym_strain_test = fem.make_test(sym_strain_space, space_restriction=strain_space_restriction)
             self.divergence_test = fem.make_test(divergence_space, space_restriction=strain_space_restriction)
             self.strain_yield_parameters_test = fem.make_test(
-                strain_yield_parameters_space, space_restriction=strain_space_restriction
+                strain_yield_parameters_test_space, space_restriction=strain_space_restriction
             )
             self.sym_strain_trial = fem.make_trial(
                 sym_strain_space, domain=domain, space_partition=strain_space_partition
@@ -585,7 +597,7 @@ class ImplicitMPMScratchpad:
         else:
             self.sym_strain_test.rebind(sym_strain_space, strain_space_restriction)
             self.divergence_test.rebind(divergence_space, strain_space_restriction)
-            self.strain_yield_parameters_test.rebind(strain_yield_parameters_space, strain_space_restriction)
+            self.strain_yield_parameters_test.rebind(strain_yield_parameters_test_space, strain_space_restriction)
 
             self.sym_strain_trial.rebind(sym_strain_space, strain_space_partition, domain)
             self.divergence_trial.rebind(divergence_space, strain_space_partition, domain)
@@ -936,10 +948,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         ``"Q1"``, ``"Q1d"``, or particle-based ``"pic"``, ``"pic8"``,
         ``"pic27"``. Any ``"picN"`` form with integer ``N`` is accepted.
 
-        P1d/Q1d use experimental nodal mass orthogonalization, preserving
-        the full-cell reference basis. Rank-deficient cells drop null modes
-        and orthogonalize the supported subspace. Q1d uses Gauss--Legendre
-        reference nodes. This prototype behavior may change without prior notice.
+        Discontinuous polynomial bases use experimental nodal mass orthogonalization.
+        P1d/Q1d recover the full-cell reference basis; Q1d uses Gauss--Legendre
+        reference nodes. Rank-deficient cells drop null modes and orthogonalize
+        the supported subspace. Pressure-related parameters use positive basis
+        weights, shear strength uses absolute weights, and viscosity uses squared
+        weights. This prototype behavior may change without prior notice.
         """
         velocity_basis: _MPMVelocityBasisName = "Q1"
         """Velocity basis function. Common values are ``"Q1"``, ``"B2"``,
@@ -1496,9 +1510,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         self._grid_status = None
         self._grid_accumulated_status = None
         self._grid_point_mask = None
-        self._element_yield_parameters = None
-        self._strain_stress_transform = None
-        self._strain_diagonalization = "nodal" if self.strain_basis in ("P1d", "Q1d") else "eigen"
         self.solver = _resolve_solver_spec(config.solver, self.velocity_basis)
         self.coloring = any("gauss-seidel" in solver or "gs" in solver for solver in self.solver)
         self.apic = config.transfer_scheme == "apic"
@@ -2949,7 +2960,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         # Solve implicit system
         # Keep _solve_graph alive until end of function as destruction may cause sync point
-        _solve_graph = self._solve_rheology(pic, scratch, rigidity_operator, last_step_data, inv_cell_volume)
+        _solve_graph = self._solve_rheology(scratch, rigidity_operator)
 
         self._save_for_next_warmstart(scratch, pic, last_step_data)
 
@@ -3245,24 +3256,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
     ):
         mpm_model = self._mpm_model
 
-        with self._timer("Interpolated yield parameters"):
-            fem.integrate(
-                integrate_yield_parameters,
-                quadrature=pic,
-                fields={
-                    "u": scratch.strain_yield_parameters_test,
-                },
-                values={
-                    "particle_Jp": state_in.mpm.particle_Jp,
-                    "material_parameters": mpm_model.material_parameters,
-                    "particle_flags": mpm_model.material_particle_flags,
-                    "inv_cell_volume": inv_cell_volume,
-                    "dt": dt,
-                },
-                output=scratch.strain_yield_parameters_field.dof_values,
-                temporary_store=self.temporary_store,
-            )
-
+        with self._timer("Strain-node particle volumes"):
             fem.integrate(
                 integrate_active_fraction,
                 quadrature=pic,
@@ -3348,24 +3342,51 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 bsr_options={"prune_numerical_zeros": self._velocity_nodes_per_strain_sample < 0},
             )
 
-    def _build_strain_eigenbasis(
+        scratch.strain_basis_transform, scratch.strain_stress_transform = self._build_strain_basis_transform(
+            pic, scratch, inv_cell_volume
+        )
+        with self._timer("Interpolated yield parameters"):
+            moments = fem.integrate(
+                integrate_yield_parameters,
+                quadrature=pic,
+                fields={"u": scratch.strain_yield_parameters_test},
+                values={
+                    "particle_Jp": state_in.mpm.particle_Jp,
+                    "material_parameters": mpm_model.material_parameters,
+                    "particle_flags": mpm_model.material_particle_flags,
+                    "inv_cell_volume": inv_cell_volume,
+                    "dt": dt,
+                    "transformed_basis": scratch.strain_basis_transform is not None,
+                },
+                output_dtype=YieldMomentVec,
+                assembly="generic",
+                kernel_options={"max_unroll": 4, "enable_backward": False},
+                temporary_store=self.temporary_store,
+            )
+            values = moments.view(dtype=float)
+            parameters = values[:, :YIELD_PARAM_LENGTH]
+            wp.launch(
+                inverse_scale_vector,
+                dim=(scratch.strain_node_count, YIELD_PARAM_LENGTH),
+                inputs=[values[:, YIELD_PARAM_LENGTH:], parameters],
+            )
+            scratch.strain_yield_parameters_field.dof_values = parameters.view(YieldParamVec)
+
+    def _build_strain_basis_transform(
         self,
         pic: fem.PicQuadrature,
         scratch: ImplicitMPMScratchpad,
         inv_cell_volume: float,
     ):
-        self._element_yield_parameters = None
-        self._strain_stress_transform = None
-        if self.strain_basis in ("Q1", "S2"):
+        if self.strain_basis[:3] == "pic":
+            scratch.strain_node_particle_volume.assign(self._mpm_model.material_particle_volume * inv_cell_volume)
+            return None, None
+        nodes_per_element = scratch.divergence_test.space.topology.MAX_NODES_PER_ELEMENT
+        if scratch.strain_basis_transform_field is None:
             scratch.strain_node_particle_volume += EPSILON
             return None, None
-        elif self.strain_basis[:3] == "pic":
-            M_diag = scratch.strain_node_particle_volume
-            M_diag.assign(self._mpm_model.material_particle_volume * inv_cell_volume)
-            return None, None
 
-        # build mass matrix of PIC integration
-        M = fem.integrate(
+        mass = fem.integrate(
             mass_form,
             quadrature=pic,
             fields={"p": scratch.divergence_test, "q": scratch.divergence_trial},
@@ -3375,78 +3396,56 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             },
             output_dtype=float,
         )
-
-        # extract diagonal blocks
-        nodes_per_elt = scratch.divergence_test.space.topology.MAX_NODES_PER_ELEMENT
-        M_elt_wise = wps.bsr_copy(M, block_shape=(nodes_per_elt, nodes_per_elt))
-
-        if M_elt_wise.block_shape == (1, 1):
-            M_values = M_elt_wise.values.view(dtype=mat11)
-        else:
-            M_values = M_elt_wise.values
-
-        M_ev = wp.empty(shape=(M_elt_wise.nrow, *M_elt_wise.block_shape), dtype=M_elt_wise.scalar_type)
-        M_diag = scratch.strain_node_particle_volume.reshape((-1, nodes_per_elt))
-        rotated_volume = wp.empty_like(M_diag)
-
-        if nodes_per_elt > 1:
-            self._element_yield_parameters = wp.empty(M_elt_wise.nrow, dtype=YieldParamVec)
-            wp.launch(
-                average_element_yield_parameters,
-                dim=M_elt_wise.nrow,
-                inputs=[
-                    nodes_per_elt,
-                    scratch.strain_node_particle_volume,
-                    scratch.strain_yield_parameters_field.dof_values,
-                    self._element_yield_parameters,
-                ],
-            )
-
-        diagonalization = compute_eigenvalues
-        outputs = [M_diag, M_ev, rotated_volume]
-        if self._strain_diagonalization == "nodal":
-            diagonalization = compute_nodal_diagonalization
-            self._strain_stress_transform = wp.empty_like(M_ev)
-            outputs.append(self._strain_stress_transform)
-
+        mass_blocks = wps.bsr_copy(mass, block_shape=(nodes_per_element, nodes_per_element))
+        transform = wp.empty((mass_blocks.nrow, nodes_per_element, nodes_per_element), dtype=float)
+        stress_transform = wp.empty_like(transform)
+        diagonal_mass = scratch.strain_node_particle_volume.reshape((-1, nodes_per_element))
         wp.launch(
-            diagonalization,
-            dim=M_elt_wise.nrow,
-            inputs=[
-                M_elt_wise.offsets,
-                M_elt_wise.columns,
-                M_values,
-                M_diag,
-            ],
-            outputs=outputs,
+            compute_nodal_diagonalization,
+            dim=mass_blocks.nrow,
+            inputs=[mass_blocks.offsets, mass_blocks.columns, mass_blocks.values, diagonal_mass],
+            outputs=[diagonal_mass, transform, stress_transform],
         )
+        modes = scratch.strain_basis_transform_field
+        modes.dof_values = (
+            transform.transpose((0, 2, 1)).contiguous().reshape((-1, nodes_per_element)).view(modes.dof_dtype)
+        )
+        # The retained test field caches an argument containing the coefficient array.
+        scratch.strain_yield_parameters_test.eval_arg_value.invalidate(scratch.strain_yield_parameters_test)
+        return transform, stress_transform
 
-        return M_ev, rotated_volume.reshape((-1,))
-
-    def _apply_strain_eigenbasis(
+    def _apply_strain_basis_transform(
         self,
         scratch: ImplicitMPMScratchpad,
-        M_ev: wp.array3d[float],
-        rotated_volume=None,
+        basis_transform: wp.array3d[float] | None,
+        stress_transform: wp.array3d[float] | None,
     ):
         node_count = scratch.strain_node_count
 
-        if M_ev is not None and M_ev.shape[1] > 1:
-            # Rotate matrix and vectors according to eigenbasis
+        if basis_transform is not None:
+            # Transform the assembled operators and their dual vectors.
 
-            nodes_per_elt = M_ev.shape[1]
-            elt_count = M_ev.shape[0]
+            nodes_per_elt = basis_transform.shape[1]
+            elt_count = basis_transform.shape[0]
 
             B = scratch.strain_matrix
             strain_mat_tmp = wp.empty_like(B.values)
-            wp.launch(rotate_matrix_rows, dim=B.nnz, inputs=[M_ev, B.offsets, B.columns, B.values, strain_mat_tmp])
+            wp.launch(
+                rotate_matrix_rows, dim=B.nnz, inputs=[basis_transform, B.offsets, B.columns, B.values, strain_mat_tmp]
+            )
             B.values = strain_mat_tmp
 
             C = scratch.compliance_matrix
             compliance_mat_tmp = wp.empty_like(C.values)
-            wp.launch(rotate_matrix_rows, dim=C.nnz, inputs=[M_ev, C.offsets, C.columns, C.values, compliance_mat_tmp])
             wp.launch(
-                rotate_matrix_columns, dim=C.nnz, inputs=[M_ev, C.offsets, C.columns, compliance_mat_tmp, C.values]
+                rotate_matrix_rows,
+                dim=C.nnz,
+                inputs=[basis_transform, C.offsets, C.columns, C.values, compliance_mat_tmp],
+            )
+            wp.launch(
+                rotate_matrix_columns,
+                dim=C.nnz,
+                inputs=[basis_transform, C.offsets, C.columns, compliance_mat_tmp, C.values],
             )
 
             rotate_vectors = make_rotate_vectors(nodes_per_elt)
@@ -3455,17 +3454,10 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 dim=elt_count,
                 block_dim=32,
                 inputs=[
-                    M_ev,
-                    self._strain_stress_transform
-                    if self._strain_stress_transform is not None and self._stress_warmstart != "particles"
-                    else M_ev,
+                    basis_transform,
+                    stress_transform if self._stress_warmstart != "particles" else basis_transform,
                     _as_2d_array(scratch.elastic_strain_delta_field.dof_values, shape=(node_count, 6), dtype=float),
                     _as_2d_array(scratch.stress_field.dof_values, shape=(node_count, 6), dtype=float),
-                    _as_2d_array(
-                        scratch.strain_yield_parameters_field.dof_values,
-                        shape=(node_count, YIELD_PARAM_LENGTH),
-                        dtype=float,
-                    ),
                     _as_2d_array(scratch.unilateral_strain_offset, shape=(node_count, 1), dtype=float),
                 ],
             )
@@ -3480,31 +3472,10 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 inputs=[M_diag, scratch.stress_field.dof_values],
             )
 
-        # Signed moments can have zero means or yield inadmissible material
-        # ratios. Use element averages without discarding their strain modes.
-        yield_volume = rotated_volume if rotated_volume is not None else M_diag
-        if self._element_yield_parameters is not None:
-            wp.launch(
-                normalize_strain_yield_parameters,
-                dim=node_count,
-                inputs=[
-                    M_ev.shape[1],
-                    yield_volume,
-                    self._element_yield_parameters,
-                    scratch.strain_yield_parameters_field.dof_values,
-                ],
-            )
-        else:
-            wp.launch(
-                inverse_scale_vector,
-                dim=node_count,
-                inputs=[yield_volume, scratch.strain_yield_parameters_field.dof_values],
-            )
-
-    def _unapply_strain_eigenbasis(
+    def _unapply_strain_basis_transform(
         self,
         scratch: ImplicitMPMScratchpad,
-        M_ev: wp.array3d[float],
+        basis_transform: wp.array3d[float] | None,
     ):
         node_count = scratch.strain_node_count
 
@@ -3523,11 +3494,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 inputs=[M_diag, scratch.plastic_strain_delta_field.dof_values],
             )
 
-        if M_ev is not None and M_ev.shape[1] > 1:
-            # Un-rotate vectors according to eigenbasis
+        if basis_transform is not None:
+            # Reconstruct fields in the original nodal basis.
 
-            elt_count = M_ev.shape[0]
-            nodes_per_elt = M_ev.shape[1]
+            elt_count = basis_transform.shape[0]
+            nodes_per_elt = basis_transform.shape[1]
 
             inverse_rotate_vectors = make_inverse_rotate_vectors(nodes_per_elt)
             wp.launch_tiled(
@@ -3535,7 +3506,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 dim=elt_count,
                 block_dim=32,
                 inputs=[
-                    M_ev,
+                    basis_transform,
                     _as_2d_array(scratch.stress_field.dof_values, shape=(node_count, 6), dtype=float),
                     _as_2d_array(scratch.elastic_strain_delta_field.dof_values, shape=(node_count, 6), dtype=float),
                     _as_2d_array(scratch.plastic_strain_delta_field.dof_values, shape=(node_count, 6), dtype=float),
@@ -3544,15 +3515,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
     def _solve_rheology(
         self,
-        pic: fem.PicQuadrature,
         scratch: ImplicitMPMScratchpad,
         rigidity_operator: tuple[wps.BsrMatrix, wps.BsrMatrix, wps.BsrMatrix] | None,
-        last_step_data: LastStepData,
-        inv_cell_volume: float,
     ):
-        M_ev, rotated_volume = self._build_strain_eigenbasis(pic, scratch, inv_cell_volume)
-
-        self._apply_strain_eigenbasis(scratch, M_ev, rotated_volume)
+        basis_transform = scratch.strain_basis_transform
+        self._apply_strain_basis_transform(scratch, basis_transform, scratch.strain_stress_transform)
 
         with self._timer("Strain solve"):
             momentum_data = MomentumData(
@@ -3601,7 +3568,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 verbose=self.verbose,
             )
 
-        self._unapply_strain_eigenbasis(scratch, M_ev)
+        self._unapply_strain_basis_transform(scratch, basis_transform)
 
         return solve_graph
 
@@ -3734,7 +3701,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
     def _require_strain_space_fields(self, scratch: ImplicitMPMScratchpad, last_step_data: LastStepData):
         """Ensure strain-space fields exist and match current spaces."""
-        scratch.require_strain_space_fields()
+        scratch.require_strain_space_fields(
+            transform_basis=self.strain_basis[:3] != "pic"
+            and self.strain_basis not in ("Q1", "S2")
+            and scratch.strain_nodes_per_element > 1
+        )
         last_step_data.require_strain_space_fields(scratch, smoothed=self._stress_warmstart == "smoothed")
 
     def _load_warmstart(

@@ -12,7 +12,7 @@ import warp.fem as fem
 import warp.sparse as sp
 
 import newton
-from newton._src.solvers.implicit_mpm.implicit_mpm_solver_kernels import collision_weight_field, compute_eigenvalues
+from newton._src.solvers.implicit_mpm.implicit_mpm_solver_kernels import collision_weight_field
 from newton._src.solvers.implicit_mpm.rasterized_collisions import (
     _ALL_COLLIDER_WORLDS,
     Collider,
@@ -205,8 +205,9 @@ def test_assembled_elastic_stiffness(test, device):
             solver._build_elasticity_system(state, dt, pic, scratch, 1 / volume)
             solver._build_plasticity_system(state, dt, pic, scratch, 1 / volume)
             scratch.stress_field.dof_values.zero_()
-            eigenvectors, rotated_volume = solver._build_strain_eigenbasis(pic, scratch, 1 / volume)
-            solver._apply_strain_eigenbasis(scratch, eigenvectors, rotated_volume)
+            solver._apply_strain_basis_transform(
+                scratch, scratch.strain_basis_transform, scratch.strain_stress_transform
+            )
             test.assertEqual(scratch.domain.element_count(), 1)
             test.assertEqual(scratch.strain_node_count, 1)
             test.assertEqual(scratch.velocity_node_count, 8)
@@ -338,8 +339,9 @@ def _coupled_rheology(device, grid_type="dense", max_active_cell_count=-1):
             solver._require_strain_space_fields(scratch, solver._last_step_data)
             solver._build_elasticity_system(state, 0.01, pic, scratch, 1000.0)
             solver._build_plasticity_system(state, 0.01, pic, scratch, 1000.0)
-            eigenvectors, volumes = solver._build_strain_eigenbasis(pic, scratch, 1000.0)
-            solver._apply_strain_eigenbasis(scratch, eigenvectors, volumes)
+            solver._apply_strain_basis_transform(
+                scratch, scratch.strain_basis_transform, scratch.strain_stress_transform
+            )
             scratch.stress_field.dof_values.zero_()
             rheology = RheologyData(
                 strain_mat=scratch.strain_matrix,
@@ -2407,84 +2409,22 @@ def test_collision_sdf_zero_average_normal(test, device):
     test.assertLess(inside, 0.0)
 
 
-def test_strain_mode_mass_filter(test, device):
-    """Keep a positive-mass zero-mean mode while dropping a zero-mass mode."""
-    with wp.ScopedDevice(device):
-        mass = np.diag((1.0, 1.0 / 12.0, 0.0)).astype(np.float32)
-        eigenvalues = wp.empty((1, 3), dtype=float, device=device)
-        eigenvectors = wp.empty((1, 3, 3), dtype=float, device=device)
-        rotated_volume = wp.empty((1, 3), dtype=float, device=device)
-        wp.launch(
-            compute_eigenvalues,
-            dim=1,
-            inputs=[
-                wp.array((0, 1), dtype=int, device=device),
-                wp.array((0,), dtype=int, device=device),
-                wp.array(mass[None], dtype=wp.mat33, device=device),
-                wp.array(((1.0, 0.0, 0.0),), dtype=float, device=device),
-                eigenvalues,
-                eigenvectors,
-                rotated_volume,
-            ],
-            device=device,
-        )
-        modes = eigenvectors.numpy()[0]
-        np.testing.assert_allclose(modes.T @ modes, np.diag((1.0, 1.0, 0.0)), atol=1.0e-6)
-        np.testing.assert_allclose(modes.T @ np.diag(eigenvalues.numpy()[0]) @ modes, mass, atol=1.0e-6)
-
-
-def test_strain_mode_near_zero_mean_orientation(test, device):
-    """Preserve nonnegative averaged divergence for modes with nearly cancelled integrals."""
-    with wp.ScopedDevice(device):
-        mass = np.array(((2.0, 1.0), (1.0, 2.0)), dtype=np.float32)
-        for perturbation in (-1.0e-5, 1.0e-5):
-            with test.subTest(perturbation=perturbation):
-                volume = np.array((1.0, 1.0 + perturbation), dtype=np.float32)
-                eigenvalues = wp.empty((1, 2), dtype=float, device=device)
-                eigenvectors = wp.empty((1, 2, 2), dtype=float, device=device)
-                rotated_volume = wp.empty((1, 2), dtype=float, device=device)
-                wp.launch(
-                    compute_eigenvalues,
-                    dim=1,
-                    inputs=[
-                        wp.array((0, 1), dtype=int, device=device),
-                        wp.array((0,), dtype=int, device=device),
-                        wp.array(mass[None], dtype=wp.mat22, device=device),
-                        wp.array(volume[None], dtype=float, device=device),
-                        eigenvalues,
-                        eigenvectors,
-                        rotated_volume,
-                    ],
-                    device=device,
-                )
-                modes = eigenvectors.numpy()[0]
-                np.testing.assert_allclose(modes.T @ modes, np.eye(2), atol=1.0e-6)
-                np.testing.assert_allclose(modes.T @ np.diag(eigenvalues.numpy()[0]) @ modes, mass, atol=1.0e-6)
-
-                # Each nonnegative modal divergence must contribute a nonnegative integral,
-                # even when material normalization treats its small mean as zero.
-                averaged_divergence = modes @ volume
-                test.assertGreaterEqual(float(averaged_divergence.min()), 0.0)
-                near_zero_mode = int(np.argmin(np.abs(averaged_divergence)))
-                test.assertEqual(float(rotated_volume.numpy()[0, near_zero_mode]), 0.0)
-
-
 def test_strain_modes_symmetric_cell(test, device):
     """Retain full-rank strain modes and uniform material parameters on a symmetric cell."""
 
     class ModeSolver(SolverImplicitMPM):
-        def _build_strain_eigenbasis(self, pic, scratch, inv_cell_volume):
-            eigenvectors, rotated_volume = super()._build_strain_eigenbasis(pic, scratch, inv_cell_volume)
+        def _build_strain_basis_transform(self, pic, scratch, inv_cell_volume):
+            transform, coefficient_transform = super()._build_strain_basis_transform(pic, scratch, inv_cell_volume)
             self.element = int(pic.cell_indices.numpy().reshape(-1)[0])
-            self.mode_count = eigenvectors.shape[1]
-            self.modes = eigenvectors.numpy()[self.element].copy()
+            self.mode_count = transform.shape[1]
+            self.modes = transform.numpy()[self.element].copy()
             self.mode_mass = (
                 scratch.strain_node_particle_volume.numpy().reshape(-1, self.mode_count)[self.element].copy()
             )
-            return eigenvectors, rotated_volume
+            return transform, coefficient_transform
 
-        def _solve_rheology(self, pic, scratch, rigidity_operator, last_step_data, inv_cell_volume):
-            result = super()._solve_rheology(pic, scratch, rigidity_operator, last_step_data, inv_cell_volume)
+        def _solve_rheology(self, scratch, rigidity_operator):
+            result = super()._solve_rheology(scratch, rigidity_operator)
             self.mode_yield_parameters = (
                 scratch.strain_yield_parameters_field.dof_values.numpy()
                 .reshape(-1, self.mode_count, 6)[self.element]
@@ -2531,7 +2471,7 @@ def test_strain_modes_symmetric_cell(test, device):
                     state = model.state()
                     solver.step(state, state, None, None, 0.01)
                     test.assertTrue(np.all(solver.mode_mass > 1.0e-6))
-                    np.testing.assert_allclose(solver.modes @ solver.modes.T, np.eye(solver.mode_count), atol=2.0e-5)
+                    test.assertEqual(np.linalg.matrix_rank(solver.modes), solver.mode_count)
                     np.testing.assert_allclose(
                         solver.mode_yield_parameters,
                         np.tile(expected_yield, (solver.mode_count, 1)),
@@ -2976,13 +2916,6 @@ add_function_test(
 )
 add_function_test(
     TestImplicitMPM, "test_collision_sdf_zero_average_normal", test_collision_sdf_zero_average_normal, devices=devices
-)
-add_function_test(TestImplicitMPM, "test_strain_mode_mass_filter", test_strain_mode_mass_filter, devices=devices)
-add_function_test(
-    TestImplicitMPM,
-    "test_strain_mode_near_zero_mean_orientation",
-    test_strain_mode_near_zero_mean_orientation,
-    devices=devices,
 )
 add_function_test(
     TestImplicitMPM, "test_strain_modes_symmetric_cell", test_strain_modes_symmetric_cell, devices=devices
