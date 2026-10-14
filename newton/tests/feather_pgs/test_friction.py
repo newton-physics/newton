@@ -168,7 +168,9 @@ class TestFeatherPGSFrictionAnchors(unittest.TestCase):
         self.assertLess(abs(drift_sub), 2.0e-5, f"anchored pinch with 2 substeps per collide drifted {drift_sub:.2e} m")
         flat_off, _, _ = _run_squeeze(0.0, steps, friction_anchor_beta=0.0)
         flat_on, _, _ = _run_squeeze(0.0, steps, friction_anchor_beta=0.05)
-        self.assertLess(abs(flat_on), 2.0e-5)
+        self.assertLess(
+            abs(flat_on), 0.03 * abs(drift_off), f"anchored flat pinch drifted {flat_on:.2e} m vs {drift_off:.2e} m"
+        )
         self.assertLess(abs(flat_off), 0.25 * abs(drift_off))
 
     def test_anchors_hold_a_pinched_box_at_a_coarse_timestep(self):

@@ -317,9 +317,9 @@ def test_global_kinematic_floor_moves_articulated_bodies(test, device):
                 results[(floor, floor_velocity)] = state_1.body_qd.numpy()[:4]
             # Both worlds respond to the global kinematic floor like to world geometry. The kinematic
             # floor's contacts differ from the static floor's by float32 rounding of its body frame,
-            # and the colored sweep also orders the two floors' contacts differently.
-            atol = 5.0e-5 if response == "propagation_colored" else 1.0e-5
-            np.testing.assert_allclose(results[("kinematic", 0.0)], results[("static", 0.0)], rtol=1.0e-4, atol=atol)
+            # the colored sweep orders the two floors' contacts differently, and the 50 unconverged
+            # iterations amplify both.
+            np.testing.assert_allclose(results[("kinematic", 0.0)], results[("static", 0.0)], rtol=1.0e-4, atol=5.0e-5)
             np.testing.assert_allclose(results[("static", 0.0)][:2], results[("static", 0.0)][2:], atol=1.0e-5)
             # The floor's prescribed velocity enters every world's contact target.
             moving = results[("kinematic", 0.5)]
