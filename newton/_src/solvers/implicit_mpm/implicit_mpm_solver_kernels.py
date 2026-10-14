@@ -51,6 +51,9 @@ _NAN_THRESHOLD = wp.constant(1.0e16)
 _EIGENVALUE_FLOOR = wp.constant(1.0e-6)
 """Eigenvalues at or below this value are treated as zero (mode is dropped)"""
 
+_ZERO_MEAN_TOLERANCE = wp.constant(1.0e-4)
+"""Relative integral tolerance for positive-mass, zero-mean strain modes."""
+
 vec6 = wp.types.vector(length=6, dtype=wp.float32)
 mat66 = wp.types.matrix(shape=(6, 6), dtype=wp.float32)
 mat63 = wp.types.matrix(shape=(6, 3), dtype=wp.float32)
@@ -635,17 +638,69 @@ def mass_form(
     return p(s) * q(s) * inv_cell_volume
 
 
+@wp.kernel
+def average_element_yield_parameters(
+    nodes_per_element: int,
+    node_volume: wp.array[float],
+    node_yield_parameters: wp.array[YieldParamVec],
+    element_yield_parameters: wp.array[YieldParamVec],
+):
+    """Volume-average integrated strain-node yield parameters over each element."""
+    element = wp.tid()
+    volume = float(0.0)
+    yield_parameters = YieldParamVec(0.0)
+    for j in range(nodes_per_element):
+        node = element * nodes_per_element + j
+        volume += node_volume[node]
+        yield_parameters += node_yield_parameters[node]
+    if volume > 0.0:
+        element_yield_parameters[element] = wp.max(YieldParamVec(0.0), yield_parameters / volume)
+    else:
+        element_yield_parameters[element] = YieldParamVec(0.0)
+
+
+@wp.kernel
+def normalize_strain_yield_parameters(
+    nodes_per_element: int,
+    rotated_volume: wp.array[float],
+    element_yield_parameters: wp.array[YieldParamVec],
+    node_yield_parameters: wp.array[YieldParamVec],
+):
+    """Normalize material moments, falling back for zero means or inadmissible ratios."""
+    node = wp.tid()
+    volume = rotated_volume[node]
+    if volume == 0.0:
+        node_yield_parameters[node] = element_yield_parameters[node // nodes_per_element]
+    else:
+        parameters = node_yield_parameters[node] / volume
+        admissible = True
+        for j in range(YIELD_PARAM_LENGTH):
+            if not parameters[j] >= 0.0:
+                admissible = False
+        if admissible:
+            node_yield_parameters[node] = parameters
+        else:
+            node_yield_parameters[node] = element_yield_parameters[node // nodes_per_element]
+
+
 @wp.kernel(module="unique")
 def compute_eigenvalues(
     offsets: wp.array[int],
     columns: wp.array[int],
     values: wp.array[Any],
     ones: wp.array2d[float],
-    yield_parameters: wp.array[YieldParamVec],
     eigenvalues: wp.array2d[float],
     eigenvectors: wp.array3d[float],
     rotated_volume: wp.array2d[float],
 ):
+    """Diagonalize element mass blocks and orient modes by their integrals.
+
+    Positive-mass modes whose integral cancels within ``_ZERO_MEAN_TOLERANCE``
+    are kept with a zero rotated volume. Their material parameters use element
+    averages. Modes still follow the sign of their actual integral, so unilateral
+    modal constraints preserve nonnegative volume-averaged divergence. Exactly
+    zero-mean modes have no preferred orientation and do not affect that average.
+    """
     row = wp.tid()
 
     diag_index = wps.bsr_block_index(row, row, offsets, columns)
@@ -665,7 +720,6 @@ def compute_eigenvalues(
             ev = wp.identity(n=scales.length, dtype=float)
 
         rv = type(scales)(0.0)
-        nodes_per_elt = eigenvectors.shape[1]
         for k in range(scales.length):
             s = float(0.0)
             if scales[k] <= _EIGENVALUE_FLOOR:
@@ -673,18 +727,17 @@ def compute_eigenvalues(
                 rv[k] = 1.0
                 ev_s = 0.0
             else:
-                ys = float(0.0)
+                abs_s = float(0.0)
 
                 for j in range(scales.length):
-                    node_index = row * nodes_per_elt + j
                     s += ev[k, j] * ones[row, j]
-                    ys += ev[k, j] * yield_parameters[node_index][0]
+                    abs_s += wp.abs(ev[k, j] * ones[row, j])
 
-                ev_s = wp.sign(s)
-                rv[k] = ev_s * s
-
-                if ys * ev_s < 0.0:
-                    ev_s = 0.0
+                ev_s = wp.where(s < 0.0, -1.0, 1.0)
+                if wp.abs(s) <= _ZERO_MEAN_TOLERANCE * abs_s:
+                    rv[k] = 0.0
+                else:
+                    rv[k] = ev_s * s
 
             for j in range(scales.length):
                 ev[k, j] *= ev_s
@@ -695,6 +748,97 @@ def compute_eigenvalues(
         rotated_volume[row, k] = rv[k]
         for j in range(scales.length):
             eigenvectors[row, k, j] = ev[k, j]
+
+
+@wp.kernel(module="unique", module_options={"max_unroll": 4, "enable_backward": False})
+def compute_nodal_diagonalization(
+    offsets: wp.array[int],
+    columns: wp.array[int],
+    values: wp.array[Any],
+    ones: wp.array2d[float],
+    eigenvalues: wp.array2d[float],
+    eigenvectors: wp.array3d[float],
+    rotated_volume: wp.array2d[float],
+    stress_transform: wp.array3d[float],
+):
+    """Orthogonalize nodal mass blocks, preserving the full-cell reference basis.
+
+    Outputs the test transform R, its dual coefficient transform on the
+    supported subspace, and diagonal mass. Singular blocks drop null modes
+    and equally normalize the remaining eigenmodes to the reference mass.
+    """
+    row = wp.tid()
+    diag_index = wps.bsr_block_index(row, row, offsets, columns)
+    transform = values.dtype(0.0)
+    coefficient_transform = values.dtype(0.0)
+    scales = type(transform[0])(1.0)
+    rv = type(transform[0])(1.0)
+
+    if diag_index != -1:
+        mass = values[diag_index]
+        # A uniform spectral shift avoids singular QR pivots without changing
+        # eigenvectors or regularizing the mass used by the solve.
+        shift = _EIGENVALUE_FLOOR
+        shifted_mass = mass + wp.identity(n=scales.length, dtype=float) * shift
+        scales, modes = fem.linalg.symmetric_eigenvalues_qr(shifted_mass, _QR_TOLERANCE)
+        scales -= type(scales)(shift)
+        if not (wp.ddot(modes, modes) < _NAN_THRESHOLD and wp.length_sq(scales) < _NAN_THRESHOLD):
+            scales = wp.get_diag(mass)
+            modes = wp.identity(n=scales.length, dtype=float)
+
+        full_rank = bool(True)
+        for k in range(scales.length):
+            if scales[k] <= _EIGENVALUE_FLOOR:
+                full_rank = False
+
+        reference_mass = 1.0 / float(scales.length)
+        if full_rank:
+            for i in range(scales.length):
+                for j in range(scales.length):
+                    for k in range(scales.length):
+                        product = modes[k, i] * modes[k, j]
+                        transform[i, j] += product * wp.sqrt(reference_mass / scales[k])
+                        coefficient_transform[i, j] += product * wp.sqrt(scales[k] / reference_mass)
+        else:
+            for i in range(scales.length):
+                if scales[i] > _EIGENVALUE_FLOOR:
+                    test_scale = wp.sqrt(reference_mass / scales[i])
+                    coefficient_scale = wp.sqrt(scales[i] / reference_mass)
+                    for j in range(scales.length):
+                        transform[i, j] = modes[i, j] * test_scale
+                        coefficient_transform[i, j] = modes[i, j] * coefficient_scale
+
+        for k in range(scales.length):
+            orientation = float(0.0)
+            if not full_rank and scales[k] <= _EIGENVALUE_FLOOR:
+                scales[k] = 1.0
+                rv[k] = 1.0
+            else:
+                scales[k] = reference_mass
+                mean = float(0.0)
+                absolute_mean = float(0.0)
+                for j in range(scales.length):
+                    mean += transform[k, j] * ones[row, j]
+                    absolute_mean += wp.abs(transform[k, j] * ones[row, j])
+                orientation = wp.where(mean < 0.0, -1.0, 1.0)
+                if wp.abs(mean) <= _ZERO_MEAN_TOLERANCE * absolute_mean:
+                    rv[k] = 0.0
+                else:
+                    rv[k] = orientation * mean
+                for j in range(scales.length):
+                    transform[k, j] *= orientation
+                    coefficient_transform[k, j] *= orientation
+            if orientation == 0.0:
+                for j in range(scales.length):
+                    transform[k, j] = 0.0
+                    coefficient_transform[k, j] = 0.0
+
+    for k in range(scales.length):
+        eigenvalues[row, k] = scales[k]
+        rotated_volume[row, k] = rv[k]
+        for j in range(scales.length):
+            eigenvectors[row, k, j] = transform[k, j]
+            stress_transform[row, k, j] = coefficient_transform[k, j]
 
 
 @wp.kernel(module="unique")
@@ -734,6 +878,7 @@ def make_rotate_vectors(nodes_per_element: int):
     @fem.cache.dynamic_kernel(suffix=nodes_per_element, kernel_options={"enable_mathdx_gemm": False})
     def rotate_vectors(
         eigenvectors: wp.array3d[float],
+        stress_transform: wp.array3d[float],
         strain_rhs: wp.array2d[float],
         stress: wp.array2d[float],
         yield_parameters: wp.array2d[float],
@@ -747,7 +892,8 @@ def make_rotate_vectors(nodes_per_element: int):
         wp.tile_store(strain_rhs, rotated_strain_rhs, offset=(elem * nodes_per_element, 0))
 
         stress_tile = wp.tile_load(stress, shape=(nodes_per_element, 6), offset=(elem * nodes_per_element, 0))
-        rotated_stress = wp.tile_matmul(ev, stress_tile)
+        stress_basis = wp.tile_load(stress_transform[elem], shape=(nodes_per_element, nodes_per_element))
+        rotated_stress = wp.tile_matmul(stress_basis, stress_tile)
         wp.tile_store(stress, rotated_stress, offset=(elem * nodes_per_element, 0))
 
         yield_tile = wp.tile_load(

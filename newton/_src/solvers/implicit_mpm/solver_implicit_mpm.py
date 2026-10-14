@@ -47,12 +47,14 @@ from .implicit_mpm_solver_kernels import (
     advect_particles,
     allocate_by_voxels,
     average_elastic_parameters,
+    average_element_yield_parameters,
     build_active_particle_mask,
     collision_weight_field,
     compliance_form,
     compute_bounds,
     compute_color_offsets,
     compute_eigenvalues,
+    compute_nodal_diagonalization,
     compute_unilateral_strain_offset,
     fill_uniform_color_block_indices,
     free_velocity,
@@ -81,6 +83,7 @@ from .implicit_mpm_solver_kernels import (
     mat31,
     mat66,
     node_color,
+    normalize_strain_yield_parameters,
     record_volume_rebuild_status,
     reset_mpm_collider_history,
     reset_mpm_grid_warmstart,
@@ -335,7 +338,8 @@ class ImplicitMPMScratchpad:
             self._velocity_basis = _make_grid_basis_space(self.grid, velocity_basis_str)
 
             if not use_pic_strain_basis:
-                self._strain_basis = _make_grid_basis_space(self.grid, strain_basis_str)
+                family = fem.Polynomial.GAUSS_LEGENDRE if strain_basis_str == "Q1d" else None
+                self._strain_basis = _make_grid_basis_space(self.grid, strain_basis_str, family=family)
 
             if not use_pic_collider_basis:
                 self._collision_basis = _make_grid_basis_space(
@@ -930,7 +934,13 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         strain_basis: _MPMStrainBasisName = "P0"
         """Strain basis function. Common values are ``"P0"``, ``"P1d"``,
         ``"Q1"``, ``"Q1d"``, or particle-based ``"pic"``, ``"pic8"``,
-        ``"pic27"``. Any ``"picN"`` form with integer ``N`` is accepted."""
+        ``"pic27"``. Any ``"picN"`` form with integer ``N`` is accepted.
+
+        P1d/Q1d use experimental nodal mass orthogonalization, preserving
+        the full-cell reference basis. Rank-deficient cells drop null modes
+        and orthogonalize the supported subspace. Q1d uses Gauss--Legendre
+        reference nodes. This prototype behavior may change without prior notice.
+        """
         velocity_basis: _MPMVelocityBasisName = "Q1"
         """Velocity basis function. Common values are ``"Q1"``, ``"B2"``,
         or ``"B3"``."""
@@ -1486,6 +1496,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         self._grid_status = None
         self._grid_accumulated_status = None
         self._grid_point_mask = None
+        self._element_yield_parameters = None
+        self._strain_stress_transform = None
+        self._strain_diagonalization = "nodal" if self.strain_basis in ("P1d", "Q1d") else "eigen"
         self.solver = _resolve_solver_spec(config.solver, self.velocity_basis)
         self.coloring = any("gauss-seidel" in solver or "gs" in solver for solver in self.solver)
         self.apic = config.transfer_scheme == "apic"
@@ -3341,6 +3354,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         scratch: ImplicitMPMScratchpad,
         inv_cell_volume: float,
     ):
+        self._element_yield_parameters = None
+        self._strain_stress_transform = None
         if self.strain_basis in ("Q1", "S2"):
             scratch.strain_node_particle_volume += EPSILON
             return None, None
@@ -3374,21 +3389,36 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         M_diag = scratch.strain_node_particle_volume.reshape((-1, nodes_per_elt))
         rotated_volume = wp.empty_like(M_diag)
 
+        if nodes_per_elt > 1:
+            self._element_yield_parameters = wp.empty(M_elt_wise.nrow, dtype=YieldParamVec)
+            wp.launch(
+                average_element_yield_parameters,
+                dim=M_elt_wise.nrow,
+                inputs=[
+                    nodes_per_elt,
+                    scratch.strain_node_particle_volume,
+                    scratch.strain_yield_parameters_field.dof_values,
+                    self._element_yield_parameters,
+                ],
+            )
+
+        diagonalization = compute_eigenvalues
+        outputs = [M_diag, M_ev, rotated_volume]
+        if self._strain_diagonalization == "nodal":
+            diagonalization = compute_nodal_diagonalization
+            self._strain_stress_transform = wp.empty_like(M_ev)
+            outputs.append(self._strain_stress_transform)
+
         wp.launch(
-            compute_eigenvalues,
+            diagonalization,
             dim=M_elt_wise.nrow,
             inputs=[
                 M_elt_wise.offsets,
                 M_elt_wise.columns,
                 M_values,
                 M_diag,
-                scratch.strain_yield_parameters_field.dof_values,
             ],
-            outputs=[
-                M_diag,
-                M_ev,
-                rotated_volume,
-            ],
+            outputs=outputs,
         )
 
         return M_ev, rotated_volume.reshape((-1,))
@@ -3426,6 +3456,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 block_dim=32,
                 inputs=[
                     M_ev,
+                    self._strain_stress_transform
+                    if self._strain_stress_transform is not None and self._stress_warmstart != "particles"
+                    else M_ev,
                     _as_2d_array(scratch.elastic_strain_delta_field.dof_values, shape=(node_count, 6), dtype=float),
                     _as_2d_array(scratch.stress_field.dof_values, shape=(node_count, 6), dtype=float),
                     _as_2d_array(
@@ -3447,14 +3480,26 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 inputs=[M_diag, scratch.stress_field.dof_values],
             )
 
-        # Yield parameters are integrated, scale with inverse rotated volume
-        # to correctly recover uniform parameters after eigenbasis rotation
+        # Signed moments can have zero means or yield inadmissible material
+        # ratios. Use element averages without discarding their strain modes.
         yield_volume = rotated_volume if rotated_volume is not None else M_diag
-        wp.launch(
-            inverse_scale_vector,
-            dim=node_count,
-            inputs=[yield_volume, scratch.strain_yield_parameters_field.dof_values],
-        )
+        if self._element_yield_parameters is not None:
+            wp.launch(
+                normalize_strain_yield_parameters,
+                dim=node_count,
+                inputs=[
+                    M_ev.shape[1],
+                    yield_volume,
+                    self._element_yield_parameters,
+                    scratch.strain_yield_parameters_field.dof_values,
+                ],
+            )
+        else:
+            wp.launch(
+                inverse_scale_vector,
+                dim=node_count,
+                inputs=[yield_volume, scratch.strain_yield_parameters_field.dof_values],
+            )
 
     def _unapply_strain_eigenbasis(
         self,
