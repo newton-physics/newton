@@ -1052,7 +1052,11 @@ class TestDeformableStateReads(unittest.TestCase):
                     else:
                         changed[..., 0] += np.arange(1, 4)[:, None]
                     np.testing.assert_array_equal(target.numpy(), before)
-                    setter(state, wp.array(changed, dtype=target.dtype, device=device))
+                    dtype = target.dtype
+                    if attribute == "particle_q":
+                        # Equivalent vec3 inputs must pass Newton's dtype validation.
+                        dtype = wp.types.vector(length=3, dtype=wp.float32)
+                    setter(state, wp.array(changed, dtype=dtype, device=device))
                     np.testing.assert_allclose(getter(state).numpy(), changed, atol=1e-6)
 
     def test_regular_getter_returns_a_live_state_view(self):

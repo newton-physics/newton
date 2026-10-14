@@ -2538,7 +2538,7 @@ class _DeformableViewBase:
     def _validate_state_array(self, kind: str, array: wp.array[Any], dtype: Any) -> None:
         if not isinstance(array, wp.array) or array.ndim != 1:
             raise ValueError("Expected a one-dimensional Warp state array")
-        if array.dtype is not dtype:
+        if not wp.types.types_equal(array.dtype, dtype):
             raise ValueError(f"Expected state array dtype {dtype.__name__}, got {array.dtype.__name__}")
         if array.device != self.device:
             raise ValueError(f"Expected state array on device {self.device}, got {array.device}")
@@ -2734,7 +2734,7 @@ class _DeformableViewBase:
             values = wp.array(values, dtype=dtype, shape=expected_shape, device=self.device)
         if values.shape != expected_shape:
             raise ValueError(f"Expected values shape {expected_shape}, got {values.shape}")
-        if values.dtype is not dtype:
+        if not wp.types.types_equal(values.dtype, dtype):
             raise ValueError(f"Expected values dtype {dtype.__name__}, got {values.dtype.__name__}")
         if values.device != self.device:
             raise ValueError(f"Expected values on device {self.device}, got {values.device}")
