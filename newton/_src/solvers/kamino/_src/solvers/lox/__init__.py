@@ -10,6 +10,8 @@ unilateral sweeps over joint limits, joint friction and contacts as Jacobi or
 colored Gauss--Seidel sweeps (colored by ``coloring``), optionally accelerated
 by ``apgd`` or ``anderson``; ``contact`` holds the local contact laws and
 ``spatial_warmstart`` carries torsional and rolling impulses across steps.
+``seed`` estimates the joint penalty scale of each joint-connected component
+from its structural spectrum.
 ``types`` holds the data containers, and each ``*_kernels`` module holds the
 kernels of its namesake; ``world_projection_kernels`` holds the projection
 kernel that runs every sweep of a world inside one thread block. ``metrics`` reconstructs a dual solution from the LOX
