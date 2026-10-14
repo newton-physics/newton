@@ -21,7 +21,8 @@ Controls the shape of :attr:`~newton.Model.joint_target_q` and
   :attr:`~newton.State.joint_q`.
 - ``False``: legacy shape ``(joint_dof_count,)``, which is misaligned with
   :attr:`~newton.State.joint_q` whenever an articulation contains a free,
-  ball, or distance joint upstream of a position-controlled DOF.
+  ball, or distance joint upstream of a position-controlled DOF, or contains
+  a rod joint.
 
 :attr:`joint_target_qd` is shaped ``(joint_dof_count,)`` in both layouts,
 matching :attr:`~newton.State.joint_qd`.
@@ -77,6 +78,7 @@ __all__ += [
 from ._src.sim import (  # noqa: E402
     BodyFlags,
     CollisionPipeline,
+    CollisionSubstepScheduler,
     Contacts,
     Control,
     JointTargetMode,
@@ -87,6 +89,9 @@ from ._src.sim import (  # noqa: E402
     Rod,
     State,
     StateFlags,
+    TendonGuide,
+    TendonGuideFlags,
+    TendonGuideType,
     eval_fk,
     eval_ik,
     eval_inverse_dynamics_force,
@@ -100,6 +105,7 @@ from ._src.sim import (  # noqa: E402
 __all__ += [
     "BodyFlags",
     "CollisionPipeline",
+    "CollisionSubstepScheduler",
     "Contacts",
     "Control",
     "JointTargetMode",
@@ -110,6 +116,9 @@ __all__ += [
     "Rod",
     "State",
     "StateFlags",
+    "TendonGuide",
+    "TendonGuideFlags",
+    "TendonGuideType",
     "eval_fk",
     "eval_ik",
     "eval_inverse_dynamics_force",

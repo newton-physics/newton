@@ -108,6 +108,7 @@ class Example:
             enable_self_collisions=False,
             collapse_fixed_joints=True,
             ignore_inertial_definitions=False,
+            joint_damping_mode="passive",
         )
 
         builder.add_ground_plane()

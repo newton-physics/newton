@@ -209,8 +209,8 @@ class Model:
         """Attribute frequency follows the number of mimic constraints (see :attr:`~newton.Model.constraint_mimic_count`)."""
         WORLD = 15
         """Attribute frequency follows the number of worlds (see :attr:`~newton.Model.world_count`)."""
-        ATTACHMENT_BODY_PARTICLE = 16
-        """Attribute frequency follows the number of body-particle attachments."""
+        ATTACHMENT_PARTICLE_BODY = 16
+        """Attribute frequency follows the number of particle-body attachments."""
         CONTACT = 17
         """Packed rigid and soft-rigid contact slots, sized by the sum of their capacities.
 
@@ -227,6 +227,13 @@ class Model:
 
         Experimental: currently supported for solver observables, not builder attributes.
         """
+
+        TENDON = 20
+        """Experimental massless routed tendons."""
+        TENDON_GUIDE = 21
+        """Guides in flattened tendon routes."""
+        TENDON_SEGMENT = 22
+        """Straight spans between consecutive tendon guides."""
 
     @dataclass(frozen=True)
     class AttributeSpec:
@@ -279,6 +286,26 @@ class Model:
                 raise ValueError("Attribute compaction policy 'end' requires a reference domain")
 
     _CORE_ATTRIBUTE_SPECS: ClassVar[dict[str, AttributeSpec]] = {
+        "tendon_label": AttributeSpec(AttributeFrequency.TENDON),
+        "tendon_world": AttributeSpec(AttributeFrequency.TENDON, references=AttributeFrequency.WORLD),
+        "tendon_start": AttributeSpec(
+            AttributeFrequency.TENDON, references=AttributeFrequency.TENDON_GUIDE, compaction_policy="start"
+        ),
+        "tendon_guide_body": AttributeSpec(AttributeFrequency.TENDON_GUIDE, references=AttributeFrequency.BODY),
+        "tendon_guide_type": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
+        "tendon_guide_radius": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
+        "tendon_guide_orientation": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
+        "tendon_guide_mu": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
+        "tendon_guide_flags": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
+        "tendon_guide_offset": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
+        "tendon_guide_axis": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
+        "tendon_segment_compliance": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
+        "tendon_segment_damping": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
+        "tendon_segment_rest_length": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
+        "tendon_segment_attachment_l_local": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
+        "tendon_segment_attachment_r_local": AttributeSpec(AttributeFrequency.TENDON_SEGMENT),
+        "tendon_guide_active": AttributeSpec(AttributeFrequency.TENDON_GUIDE),
+        "_tendon_initialized": AttributeSpec(AttributeFrequency.TENDON),
         # particles
         "particle_q": AttributeSpec(AttributeFrequency.PARTICLE),
         "particle_qd": AttributeSpec(AttributeFrequency.PARTICLE),
@@ -385,21 +412,21 @@ class Model:
         "spring_damping": AttributeSpec(AttributeFrequency.SPRING),
         "spring_control": AttributeSpec(AttributeFrequency.SPRING),
         "spring_constraint_lambdas": AttributeSpec(AttributeFrequency.SPRING),
-        # body-particle attachments
-        "attachment_body_particle_body": AttributeSpec(
-            AttributeFrequency.ATTACHMENT_BODY_PARTICLE,
+        # particle-body attachments
+        "attachment_particle_body_body": AttributeSpec(
+            AttributeFrequency.ATTACHMENT_PARTICLE_BODY,
             references=AttributeFrequency.BODY,
         ),
-        "attachment_body_particle_particle": AttributeSpec(
-            AttributeFrequency.ATTACHMENT_BODY_PARTICLE,
+        "attachment_particle_body_particle": AttributeSpec(
+            AttributeFrequency.ATTACHMENT_PARTICLE_BODY,
             references=AttributeFrequency.PARTICLE,
         ),
-        "attachment_body_particle_body_point": AttributeSpec(AttributeFrequency.ATTACHMENT_BODY_PARTICLE),
-        "attachment_body_particle_stiffness": AttributeSpec(AttributeFrequency.ATTACHMENT_BODY_PARTICLE),
-        "attachment_body_particle_damping": AttributeSpec(AttributeFrequency.ATTACHMENT_BODY_PARTICLE),
-        "attachment_body_particle_enabled": AttributeSpec(AttributeFrequency.ATTACHMENT_BODY_PARTICLE),
-        "attachment_body_particle_world": AttributeSpec(
-            AttributeFrequency.ATTACHMENT_BODY_PARTICLE,
+        "attachment_particle_body_body_point": AttributeSpec(AttributeFrequency.ATTACHMENT_PARTICLE_BODY),
+        "attachment_particle_body_stiffness": AttributeSpec(AttributeFrequency.ATTACHMENT_PARTICLE_BODY),
+        "attachment_particle_body_damping": AttributeSpec(AttributeFrequency.ATTACHMENT_PARTICLE_BODY),
+        "attachment_particle_body_enabled": AttributeSpec(AttributeFrequency.ATTACHMENT_PARTICLE_BODY),
+        "attachment_particle_body_world": AttributeSpec(
+            AttributeFrequency.ATTACHMENT_PARTICLE_BODY,
             references=AttributeFrequency.WORLD,
         ),
         "tri_indices": AttributeSpec(
@@ -547,9 +574,12 @@ class Model:
         AttributeFrequency.TRIANGLE: "tri_count",
         AttributeFrequency.TETRAHEDRON: "tet_count",
         AttributeFrequency.SPRING: "spring_count",
+        AttributeFrequency.TENDON: "tendon_count",
+        AttributeFrequency.TENDON_GUIDE: "tendon_guide_count",
+        AttributeFrequency.TENDON_SEGMENT: "tendon_segment_count",
         AttributeFrequency.CONSTRAINT_MIMIC: "constraint_mimic_count",
         AttributeFrequency.WORLD: "world_count",
-        AttributeFrequency.ATTACHMENT_BODY_PARTICLE: "attachment_body_particle_count",
+        AttributeFrequency.ATTACHMENT_PARTICLE_BODY: "attachment_particle_body_count",
         AttributeFrequency.CONTACT: "contact_max",
         AttributeFrequency.CONTACT_RIGID: "rigid_contact_max",
         AttributeFrequency.CONTACT_SOFT: "soft_contact_max",
@@ -731,7 +761,11 @@ class Model:
         """Geometry source pointers to be used inside the Warp kernels which are generated by finalizing the geometry objects, see for example :meth:`newton.Mesh.finalize`, shape [shape_count], uint64."""
 
         self._shape_support_data: wp.array[wp.vec4i] | None = None
-        """Per-shape compact convex support metadata: LUT, offset, neighbor starts, and resolution."""
+        """Per-shape LUT, offset, neighbor starts, and resolution.
+
+        The final entry packs the LUT resolution in its low 16 bits and the
+        strict hull-validity flag in bit 16. Zero resolution disables acceleration.
+        """
         self._convex_support_lut: wp.array[wp.int32] | None = None
         """Packed octahedral directional seed tables shared by convex geometries."""
         self._convex_support_vertex_offsets: wp.array[wp.int32] | None = None
@@ -824,11 +858,16 @@ class Model:
         self.mesh_edge_indices: wp.array[wp.vec2i] | None = None
         """Packed unique edge vertex pairs for all mesh shapes, shape [total_edge_count]."""
         self.mesh_edge_centers: wp.array[wp.vec4] | None = None
-        """Packed shape-scaled collision-edge centers and radii, shape [total_edge_count, 4] [m]."""
+        """Packed collision-edge centers and radii, shape [total_edge_count, 4] [m].
+
+        Components ``xyz`` are edge centers and ``w`` is the edge half-length, both in
+        unscaled mesh coordinates; collision applies :attr:`shape_scale` when reading them.
+        """
         self.mesh_edge_halves: wp.array[wp.vec4] | None = None
         """Packed collision-edge half-vectors and corner ownership, shape [total_edge_count, 4].
 
-        Components ``xyz`` are shape-scaled half-vectors [m]. Component ``w``
+        Components ``xyz`` are half-vectors in unscaled mesh coordinates [m];
+        collision applies :attr:`shape_scale` when reading them. Component ``w``
         is a unitless internal endpoint-ownership code.
         """
         self.shape_edge_range: wp.array[wp.vec2i] | None = None
@@ -885,20 +924,56 @@ class Model:
         self.spring_constraint_lambdas: wp.array[wp.float32] | None = None
         """Lagrange multipliers for spring constraints (internal use)."""
 
-        self.attachment_body_particle_body: wp.array[wp.int32] | None = None
-        """Rigid body indices, shape [attachment_body_particle_count], int."""
-        self.attachment_body_particle_particle: wp.array[wp.int32] | None = None
-        """Particle indices, shape [attachment_body_particle_count], int."""
-        self.attachment_body_particle_body_point: wp.array[wp.vec3] | None = None
-        """Attachment points in body-local coordinates [m], shape [attachment_body_particle_count, 3]."""
-        self.attachment_body_particle_stiffness: wp.array[wp.float32] | None = None
-        """Attachment stiffness [N/m], shape [attachment_body_particle_count]."""
-        self.attachment_body_particle_damping: wp.array[wp.float32] | None = None
-        """Attachment damping [N·s/m], shape [attachment_body_particle_count]."""
-        self.attachment_body_particle_enabled: wp.array[wp.bool] | None = None
-        """Whether each attachment is active, shape [attachment_body_particle_count]."""
-        self.attachment_body_particle_world: wp.array[wp.int32] | None = None
-        """World index for each attachment, shape [attachment_body_particle_count], int."""
+        # tendons (cable-driven mechanisms)
+        self.tendon_count: int = 0
+        """Total number of tendons in the system."""
+        self.tendon_label: list[str] = []
+        """Tendon names, shape (tendon_count,)."""
+        self.tendon_world: wp.array[int] | None = None
+        """Owning world for each tendon; -1 denotes the global world."""
+        self.tendon_guide_count: int = 0
+        """Total number of tendon guides (waypoints) across all tendons."""
+        self.tendon_segment_count: int = 0
+        """Total number of tendon segments (= tendon_guide_count - tendon_count)."""
+        self.tendon_start: wp.array[wp.int32] | None = None
+        """Start index into guide arrays for each tendon, shape [tendon_count + 1], int."""
+        self.tendon_guide_body: wp.array[wp.int32] | None = None
+        """Body index for each tendon guide, shape [tendon_guide_count], int."""
+        self.tendon_guide_type: wp.array[wp.int32] | None = None
+        """Guide type for each tendon guide (TendonGuideType enum), shape [tendon_guide_count], int."""
+        self.tendon_guide_radius: wp.array[wp.float32] | None = None
+        """Contact radius [m] for each tendon guide, shape [tendon_guide_count], float."""
+        self.tendon_guide_orientation: wp.array[wp.int32] | None = None
+        """Winding direction (+1 or -1) for each tendon guide, shape [tendon_guide_count], int."""
+        self.tendon_guide_mu: wp.array[wp.float32] | None = None
+        """Friction coefficient [dimensionless] at each tendon guide, shape [tendon_guide_count], float."""
+        self.tendon_guide_flags: wp.array[wp.int32] | None = None
+        """Routing flags for each tendon guide, shape [tendon_guide_count], int."""
+        self.tendon_guide_offset: wp.array[wp.vec3] | None = None
+        """Local-frame offset of the cable plane center on each body [m], shape [tendon_guide_count], vec3."""
+        self.tendon_guide_axis: wp.array[wp.vec3] | None = None
+        """Local-frame normal of the cable plane on each body [dimensionless], shape [tendon_guide_count], vec3."""
+        self.tendon_segment_compliance: wp.array[wp.float32] | None = None
+        """Compliance [m/N] for each tendon segment, shape [tendon_segment_count], float."""
+        self.tendon_segment_damping: wp.array[wp.float32] | None = None
+        """Damping [N·s/m] for each tendon segment, shape [tendon_segment_count], float."""
+        self.tendon_segment_rest_length: wp.array[wp.float32] | None = None
+        """Initial rest length [m] for each tendon segment, shape [tendon_segment_count], float."""
+
+        self.attachment_particle_body_body: wp.array[wp.int32] | None = None
+        """Rigid body indices, shape [attachment_particle_body_count], int."""
+        self.attachment_particle_body_particle: wp.array[wp.int32] | None = None
+        """Particle indices, shape [attachment_particle_body_count], int."""
+        self.attachment_particle_body_body_point: wp.array[wp.vec3] | None = None
+        """Attachment points in body-local coordinates [m], shape [attachment_particle_body_count, 3]."""
+        self.attachment_particle_body_stiffness: wp.array[wp.float32] | None = None
+        """Attachment stiffness [N/m], shape [attachment_particle_body_count]."""
+        self.attachment_particle_body_damping: wp.array[wp.float32] | None = None
+        """Attachment damping [N·s/m], shape [attachment_particle_body_count]."""
+        self.attachment_particle_body_enabled: wp.array[wp.bool] | None = None
+        """Whether each attachment is active, shape [attachment_particle_body_count]."""
+        self.attachment_particle_body_world: wp.array[wp.int32] | None = None
+        """World index for each attachment, shape [attachment_particle_body_count], int."""
 
         self.tri_indices: wp.array[wp.int32] | None = None
         """Triangle element indices, shape [tri_count*3], int."""
@@ -1001,10 +1076,10 @@ class Model:
         """Generalized joint positions [m or rad, depending on joint type] for state initialization, shape [joint_coord_count], float."""
         self.joint_qd: wp.array[wp.float32] | None = None
         """Generalized joint velocities [m/s or rad/s, depending on joint type] for state initialization, shape [joint_dof_count], float.
-        For FREE and DISTANCE joints, the linear entries are child-COM velocity in the joint parent frame and the angular entries are angular velocity in that same frame."""
+        For FREE, DISTANCE, and ROD joints, the linear entries are child-COM velocity in the joint parent frame and the angular entries are angular velocity in that same frame."""
         self.joint_f: wp.array[wp.float32] | None = None
         """Default generalized joint forces [N or N·m, depending on joint type] used to initialize :attr:`newton.Control.joint_f`, shape [joint_dof_count], float.
-        For FREE and DISTANCE joints, the linear entries are world-frame force at the child COM and the angular entries are world-frame torque about the child COM."""
+        For FREE, DISTANCE, and ROD joints, the linear entries are world-frame force at the child COM and the angular entries are world-frame torque about the child COM."""
         self.joint_target_q: wp.array[wp.float32] | None = None
         """Generalized joint position targets [m or rad, depending on joint type] used to initialize :attr:`newton.Control.joint_target_q`, shape ``[joint_coord_count]`` or ``[joint_dof_count]``, float.
 
@@ -1013,6 +1088,9 @@ class Model:
         is shaped ``(joint_dof_count,)`` (legacy layout). Index via
         :attr:`joint_target_q_start`, which aliases :attr:`joint_q_start` or
         :attr:`joint_qd_start` to match the active layout.
+
+        For ROD joints, this Model-owned array defines structural rest;
+        see :ref:`Rod joints`.
         """
         self.joint_target_qd: wp.array[wp.float32] | None = None
         """Generalized joint velocity targets [m/s or rad/s, depending on joint type] used to initialize :attr:`newton.Control.joint_target_qd`, shape [joint_dof_count], float.
@@ -1280,7 +1358,7 @@ class Model:
         """Total number of edges in the system."""
         self.spring_count: int = 0
         """Total number of springs in the system."""
-        self.attachment_body_particle_count: int = 0
+        self.attachment_particle_body_count: int = 0
         """Total number of rigid-body-to-particle attachments in the system."""
         self.muscle_count: int = 0
         """Total number of muscles in the system."""
@@ -1498,7 +1576,10 @@ class Model:
             "triangle": Model.AttributeFrequency.TRIANGLE,
             "tetrahedron": Model.AttributeFrequency.TETRAHEDRON,
             "spring": Model.AttributeFrequency.SPRING,
-            "attachment_body_particle": Model.AttributeFrequency.ATTACHMENT_BODY_PARTICLE,
+            "tendon": Model.AttributeFrequency.TENDON,
+            "tendon_guide": Model.AttributeFrequency.TENDON_GUIDE,
+            "tendon_segment": Model.AttributeFrequency.TENDON_SEGMENT,
+            "attachment_particle_body": Model.AttributeFrequency.ATTACHMENT_PARTICLE_BODY,
             "world": Model.AttributeFrequency.WORLD,
         }
         frequency = built_in.get(references)
@@ -1616,6 +1697,7 @@ class Model:
                 self.shape_type,
                 self.shape_flags,
                 int(shape_flags),
+                self.shape_opacity if self.shape_opacity is not None else wp.empty(0, dtype=wp.float32, device=device),
                 self.bvh_shape_enabled,
                 num_enabled,
             ],
@@ -1775,6 +1857,14 @@ class Model:
         if self.joint_count:
             s.joint_q = wp.clone(self.joint_q, requires_grad=requires_grad)
             s.joint_qd = wp.clone(self.joint_qd, requires_grad=requires_grad)
+
+        if self.tendon_count:
+            s.tendon_segment_rest_length = wp.clone(self.tendon_segment_rest_length)
+            s.tendon_segment_attachment_l_local = wp.zeros(self.tendon_segment_count, dtype=wp.vec3, device=self.device)
+            s.tendon_segment_attachment_r_local = wp.zeros(self.tendon_segment_count, dtype=wp.vec3, device=self.device)
+            s.tendon_guide_active = wp.ones(self.tendon_guide_count, dtype=wp.bool, device=self.device)
+            s._tendon_initialized = wp.zeros(self.tendon_count, dtype=wp.bool, device=self.device)
+            s._tendon_rebaseline = wp.zeros(self.world_count + 1, dtype=wp.bool, device=self.device)
 
         self._add_requested_state_attributes(s, requested, requires_grad=requires_grad)
 
@@ -2100,7 +2190,7 @@ class Model:
 
         .. deprecated:: 1.7
 
-            Request :class:`newton.solvers.SolverObservables` from the solver
+            Request :class:`newton.solvers.SolverBase.Observables` from the solver
             instead.
 
         See :doc:`Solver Observables </concepts/solver_observables>` for migration details.
@@ -2110,7 +2200,7 @@ class Model:
         """
         warnings.warn(
             "Model.request_state_attributes() is deprecated in Newton 1.7; "
-            "request SolverObservables from the solver instead.",
+            "request SolverBase.Observables from the solver instead.",
             DeprecationWarning,
             stacklevel=2,
         )
@@ -2126,7 +2216,7 @@ class Model:
 
         .. deprecated:: 1.7
 
-            Request :attr:`newton.solvers.SolverObservableFlags.CONTACT_F` from
+            Request :attr:`newton.solvers.SolverBase.ObservableKind.CONTACT_F` from
             the solver instead.
 
         Args:
@@ -2134,7 +2224,7 @@ class Model:
         """
         warnings.warn(
             "Model.request_contact_attributes() is deprecated in Newton 1.7; "
-            "request SolverObservables from the solver instead.",
+            "request SolverBase.Observables from the solver instead.",
             DeprecationWarning,
             stacklevel=2,
         )

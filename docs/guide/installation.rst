@@ -65,6 +65,12 @@ See :ref:`cuda-compatibility` for version-specific notes.
 Platform-Specific Requirements
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+**Linux**
+
+On Linux, the ``importers`` and ``remesh`` extras (and extras that include them,
+such as ``examples`` and ``dev``) require GLIBC 2.35 or newer, e.g. Ubuntu
+22.04+. RHEL 9 and Amazon Linux 2023 can install only the base package.
+
 **Linux aarch64 (ARM64)**
 
 The standard Warp 1.17 wheel omits ``sm_52``, ``sm_60``, ``sm_61``, and
@@ -72,13 +78,6 @@ The standard Warp 1.17 wheel omits ``sm_52``, ``sm_60``, ``sm_61``, and
 enable these GPUs. They need a Warp wheel built with an earlier CUDA 12
 toolkit; see `Warp's CUDA 12.9 ARM64 limitation
 <https://nvidia.github.io/warp/v1.17/user_guide/installation.html#cuda-12-9-limitation-on-linux-arm-platforms>`__.
-
-On ARM64 Linux, the ``importers`` extra requires GLIBC 2.35 or newer because
-`usd-exchange <https://pypi.org/project/usd-exchange/>`__ publishes its Linux
-ARM64 wheels for ``manylinux_2_35``. This also applies to extras that include
-``importers``, such as ``examples`` and ``dev``. Distributions with an older
-GLIBC, including RHEL 9 with GLIBC 2.34, can install the base Newton package but
-cannot install these extras from the published wheels.
 
 Installing the ``examples`` extra on ARM64 Linux systems such as NVIDIA Jetson
 Thor and DGX Spark also requires X11 development libraries to build
