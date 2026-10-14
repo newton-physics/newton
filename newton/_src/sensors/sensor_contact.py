@@ -629,8 +629,7 @@ class SensorContact:
             contacts: The contact data to evaluate.
             observables: Solver observable arrays containing :attr:`~newton.solvers.SolverBase.Observables.contact_f`.
                 If omitted, the deprecated ``contacts.force`` array is used when available.
-                ``contacts`` must be the buffer the most recent step producing ``contact_f`` used,
-                or the allocation buffer before any step.
+                ``contacts`` must be the buffer that produced ``contact_f`` (``observables.contacts``).
                 Before the first solver step, newly allocated observables report zero contact forces.
                 See :ref:`solver_observables` for allocation and usage examples.
 

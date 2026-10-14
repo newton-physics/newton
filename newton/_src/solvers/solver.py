@@ -495,14 +495,10 @@ class SolverBase:
             return bool(self._contact_fields())
 
         def contacts_for_kind(self, kind: str) -> Contacts | None:
-            """Return the contact storage whose layout the array of ``kind`` follows.
+            """Return the contacts the array of ``kind`` was last produced with.
 
-            This is the storage supplied at allocation until a step validates
-            the container with other compatible contacts; see
-            :meth:`SolverBase.validate_observables`. Selections share this
-            record, and a step updates it only for the kinds it requests.
-            Consumers of a contact-indexed field should check that this is
-            the storage whose geometry they read.
+            Before any step, this is the allocation storage. Selections share
+            this record, and a step updates it only for the kinds it requests.
 
             .. note::
                 This API is experimental and may change without a deprecation cycle.
@@ -545,12 +541,7 @@ class SolverBase:
 
         @property
         def contacts(self) -> Contacts | None:
-            """Contact storage whose layout :attr:`contact_f` follows.
-
-            Equivalent to ``contacts_for_kind(SolverBase.ObservableKind.CONTACT_F)``;
-            it is ``None`` unless the container requests ``contact_f``. Use
-            :meth:`contacts_for_kind` for other contact-indexed fields.
-            """
+            """``contacts_for_kind(CONTACT_F)``, or ``None`` when ``contact_f`` is not requested."""
             return self.contacts_for_kind(SolverBase.ObservableKind.CONTACT_F)
 
     class CollisionSlot(IntEnum):
@@ -793,8 +784,7 @@ class SolverBase:
         All requested arrays are allocated before this method returns; unrequested
         fields remain ``None``. Contact arrays use the rigid and soft capacities
         of ``contacts``, not the live contact count. Allocate before graph
-        capture. :meth:`step` accepts these contacts or any other buffer on the
-        same device whose capacities fit the allocated arrays.
+        capture; see :meth:`validate_observables` for the contacts steps accept.
 
         Args:
             kinds: Required set or other iterable of observable names. Entries from
@@ -837,7 +827,7 @@ class SolverBase:
         contacts: Contacts | None = None,
         requires_grad: bool | None = None,
     ) -> Iterator[SolverBase.Observables]:
-        """Share built-in factory allocation with overrides that finish setup in the managed block."""
+        """Share built-in factory allocation."""
         requested = _normalize_observable_kinds(kinds)
         unsupported = requested.difference(self.supported_observables)
         if unsupported:
@@ -892,14 +882,11 @@ class SolverBase:
         """Validate ownership and contact storage before a custom solver step.
 
         Call this at the start of :meth:`step`, before launching work or writing
-        observable arrays. Passing ``None`` is a no-op. For contact-indexed
-        observables, ``contacts`` may be the allocation storage or any other
-        buffer on the solver device whose capacities fit the allocated arrays;
-        larger arrays are accepted. The requested contact-indexed arrays then
-        follow the layout of ``contacts``, which consumers such as
-        :class:`~newton.sensors.SensorContact` check before pairing rows with
-        contact geometry. This performs no device work and is safe during graph
-        capture.
+        observable arrays. Passing ``None`` is a no-op. ``contacts`` may be any
+        buffer on the solver device whose capacities fit the allocated contact
+        arrays; it is recorded as the layout of the requested contact fields
+        (see :meth:`Observables.contacts_for_kind`). This performs no device
+        work and is safe during graph capture.
 
         See :ref:`solver_observables` for custom solver integration.
 

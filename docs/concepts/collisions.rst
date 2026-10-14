@@ -1023,15 +1023,11 @@ memory budget and silence the warning. Optional collision features and solvers m
 allocate additional per-contact memory.
 
 Pipeline construction publishes the resolved rigid and soft capacities as
-``model.rigid_contact_max`` and ``model.soft_contact_max``, the default
-capacities for other contact consumers. Before collision setup these are
-``None``; zero is a valid empty capacity. Pass ``publish_capacity=False`` to a
-private pipeline, such as one used inside a solver, to leave these defaults
-unchanged. Contact-indexed :ref:`solver_observables` are sized from the
-:class:`~newton.Contacts` passed to ``solver.observables(contacts=contacts, kinds=...)``,
-so independent pipelines on the same model may use different capacities. Create
-the contacts before allocating contact diagnostics; the live contact counts are
-not needed during allocation.
+``model.rigid_contact_max`` and ``model.soft_contact_max``, which later pipelines
+reuse as defaults; ``publish_capacity=False`` keeps a private pipeline's capacities
+to itself. Before collision setup these are ``None``; zero is a valid empty
+capacity. Contact-indexed :ref:`solver_observables` are sized from the
+:class:`~newton.Contacts` passed to ``solver.observables()`` instead.
 
 .. _Mesh Collisions:
 
@@ -1751,8 +1747,8 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
      - Description
    * - ``SolverBase.ObservableKind.CONTACT_F`` / ``SolverBase.Observables.contact_f``
      - Contact spatial forces (used by :class:`~sensors.SensorContact`).
-       Allocate the observables with the contacts buffer and pass the buffer
-       used by each step to ``solver.step()``.
+       Allocate the observables with a contacts buffer and pass each step's buffer
+       to the solver step.
 
 .. note::
 

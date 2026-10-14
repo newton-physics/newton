@@ -1322,9 +1322,9 @@ class ViewerBase(ABC):
                 velocities at the contact points.
             observables: Optional solver observables containing ``contact_f``. If
                 omitted, the deprecated ``contacts.force`` array is used.
-                ``contacts`` must be the buffer the step producing ``contact_f`` used, or
-                the allocation buffer before any step; newly allocated forces are zero
-                until the solver updates them. See :ref:`solver_observables`.
+                ``contacts`` must be the buffer that produced ``contact_f``
+                (``observables.contacts``); newly allocated forces are zero until the
+                solver updates them. See :ref:`solver_observables`.
 
                 .. experimental::
                     The solver observable API may change without prior notice.

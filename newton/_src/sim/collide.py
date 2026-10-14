@@ -1701,13 +1701,10 @@ class CollisionPipeline:
                 warning once and a later :meth:`collide` call outside graph capture raise
                 :class:`RuntimeError`. Mesh-plane and mesh-convex contacts are unaffected.
                 Ignored when ``narrow_phase`` is provided. Defaults to ``False``.
-            publish_capacity: Whether to publish the resolved rigid and soft contact
-                capacities to :attr:`Model.rigid_contact_max <newton.Model.rigid_contact_max>`
-                and :attr:`Model.soft_contact_max <newton.Model.soft_contact_max>`, where later
-                pipelines constructed without explicit capacities reuse them. Pass ``False``
-                for a pipeline private to one component, such as a solver's internal contact
-                detection, so it leaves the defaults of other pipelines unchanged.
-                Defaults to ``True``.
+            publish_capacity: Whether to publish the resolved capacities as the model's
+                default :attr:`~newton.Model.rigid_contact_max` and
+                :attr:`~newton.Model.soft_contact_max`. Pass ``False`` for a private
+                pipeline, such as a solver's internal one. Defaults to ``True``.
 
         .. experimental::
 
@@ -2286,8 +2283,7 @@ class CollisionPipeline:
         # _get_soft_self_contact_detector).
         self._soft_self_contact_detector: TriMeshCollisionDetector | None = None
 
-        # Publish only after all construction succeeds. Private pipelines keep their
-        # capacities to themselves so they cannot resize other pipelines' defaults.
+        # Publish only after all construction succeeds.
         if publish_capacity:
             model.rigid_contact_max = rigid_contact_max
             model.soft_contact_max = soft_contact_max

@@ -189,10 +189,8 @@ requires ``SolverBase.ObservableKind.CONTACT_F``. ``SensorContact`` uses only th
 linear part of each ``CONTACT_F`` wrench (force [N]); the torque part is ignored.
 Each sensor's ``solver_observable_kinds`` property provides its requirements
 without mutating the model. Union the sets when both sensors are present.
-Create the contacts buffer before requesting contact-indexed observables and
-pass it to the factory, which sizes the contact arrays from it. Pass the buffer
-used by each solver step to the sensor as well; see :ref:`solver_observables`
-for alternating between several buffers:
+Pass a contacts buffer to the factory when requesting contact-indexed
+observables, and pass each solver step's buffer to the sensor:
 
 .. code-block:: python
 
@@ -203,8 +201,8 @@ for alternating between several buffers:
    imu.update(state_out, observables=observables)
    contact_sensor.update(state_out, contacts, observables=observables)
 
-Contact observables are allocated from the rigid and soft capacities of the
-supplied contacts, not the current number of contacts. See :ref:`solver_observables` for
+Contact observables are sized from the supplied contacts' capacities, not the
+current number of contacts. See :ref:`solver_observables` for
 pipeline setup with native collision backends and graph capture.
 
 Both :class:`~newton.solvers.SolverKamino` and

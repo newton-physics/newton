@@ -61,8 +61,6 @@ the factory, typically created by a :class:`~newton.CollisionPipeline`:
 All requested arrays are allocated when ``observables()`` returns. An unrequested
 field is ``None``; a requested field with zero capacity is an empty array.
 Contact-indexed requests require contacts even when their capacity is zero.
-``Model.rigid_contact_max`` and ``Model.soft_contact_max`` hold the defaults
-published by user-constructed pipelines; they do not size observables.
 Body- and joint-only observables need neither a pipeline nor contacts; if contacts
 are supplied for such requests or an empty request, they are ignored and
 ``observables.contacts`` is ``None``.
@@ -70,52 +68,23 @@ are supplied for such requests or an empty request, they are ignored and
 The live contact counts do not determine allocation sizes. ``contact_f`` has
 ``contacts.rigid_contact_max + contacts.soft_contact_max`` entries, with rigid slots
 followed by soft slots. Kernels use the contact counts to process valid entries.
-Other pipelines on the same model, including private pipelines owned by coupled
-solvers, may use different capacities without affecting allocated observables.
+If the solver owns a collision pipeline, ``contacts`` defaults to ``solver.contacts``.
 
-Using several contact buffers
------------------------------
-
-A step may pass the allocation buffer or any other :class:`~newton.Contacts` on the
-solver device whose capacities fit the allocated arrays; larger arrays are
-accepted. Allocate from the largest buffer the container will be used with. Rows
-follow the layout of the buffer used by the step: the soft segment of
-``contact_f`` begins at that buffer's ``rigid_contact_max``, and rows beyond its
-capacity are zero.
-
-``observables.contacts_for_kind(kind)`` reports the buffer a contact-indexed
-array was last produced with, or the allocation buffer before any step. Selections
-share this record, and a step updates it only for the arrays it requested, so a
-skipped field keeps its own buffer. ``observables.contacts`` is the record for
-``contact_f``, and ``None`` when ``contact_f`` is not requested.
-:class:`~newton.sensors.SensorContact` and the viewer reject a buffer other than
-the one that produced ``contact_f``, so forces are never paired with another
-buffer's geometry. Custom consumers should check ``observables.model is model``
-and ``observables.contacts_for_kind(kind) is contacts`` before reading a contact
-field:
-
-.. code-block:: python
-
-   contacts_a, contacts_b = pipeline.contacts(), pipeline.contacts()
-   observables = solver.observables(kinds={solver.ObservableKind.CONTACT_F}, contacts=contacts_a)
-
-   for contacts in (contacts_a, contacts_b):
-       pipeline.collide(state_in, contacts)
-       solver.step(state_in, state_out, control, contacts, dt, observables=observables)
-       contact_sensor.update(state_in, contacts, observables=observables)
-
+A step may use any buffer accepted by
+:meth:`~newton.solvers.SolverBase.validate_observables`, so allocate from the
+largest buffer the container will be used with. Rows follow the step's buffer:
+its contact counts give the valid rows, and the soft segment begins at its
+``rigid_contact_max``. ``observables.contacts_for_kind(kind)`` reports the buffer
+each contact-indexed array was last produced with (``observables.contacts`` for
+``contact_f``).
+:class:`~newton.sensors.SensorContact` and the viewer require that buffer, and
+custom consumers should check it together with ``observables.model is model``.
 Newly allocated forces are zero and can be read by a sensor or viewer before the
 first step. Allocate observables and contacts before graph capture; neither
 ordinary nor conditional graph execution needs deferred observable allocation.
-Other solver scratch buffers may still need their usual warmup. The produced
-buffer is recorded on the host when a step is called, so replaying a captured
-graph does not update it. When replaying graphs captured with different buffers,
-call :meth:`~newton.solvers.SolverBase.validate_observables` with the replayed
+Other solver scratch buffers may still need their usual warmup. Graph replays do
+not update the buffer record; call ``validate_observables()`` with a replayed
 graph's buffer before consuming its outputs.
-
-If the solver owns a collision pipeline, ``solver.observables(kinds=...)`` sizes
-contact fields from that pipeline's ``solver.contacts``. The solver resolves that
-storage internally when ``step()`` receives ``contacts=None``.
 
 Native collision backends
 -------------------------
@@ -135,15 +104,13 @@ the pipeline for the backend's export capacity:
 
 There is no ``pipeline.collide()`` call in this mode: the solver fills contact
 geometry and forces. Native Kamino similarly seeds the model's rigid capacity
-when constructed before the pipeline. Both backends reject contacts whose rigid
-capacity is smaller than their native export capacity during contact-observable
-allocation instead of resizing arrays inside a step.
+when constructed before the pipeline. Both backends reject insufficient contact
+capacity before allocating or stepping instead of resizing arrays inside a step.
 
 A solver advertises available entries through
 :attr:`~newton.solvers.SolverBase.supported_observables` and rejects an
 unsupported request during allocation. Passing an observable container to a
-different solver, or using contact observables with contact storage that exceeds
-their capacity, is also rejected.
+different solver, or contacts that exceed its contact arrays, is also rejected.
 
 Standard observables
 --------------------
@@ -306,7 +273,7 @@ Selecting a field absent from the source raises :class:`ValueError`; selecting
 an existing subset can only narrow it. Select from the original container to
 create a different combination. Do not temporarily replace fields with ``None``.
 
-Contact-indexed subsets share their record of contact storage with their source
+Contact-indexed subsets share their contact-buffer record with their source
 and siblings. A body-only or empty subset has ``contacts=None`` even when the
 original container includes contact fields.
 
@@ -538,17 +505,15 @@ fields and may redeclare a field's dtype or frequency without changing their
 parents or siblings. Missing declarations, duplicate kinds, and missing
 dataclass decorators are rejected before allocation.
 
-Contact dependencies follow the field's frequency. The base solver requires a
-``contacts=`` argument on the solver device, or a solver-owned pipeline, for any
-requested contact frequency, including custom fields requested without
-``CONTACT_F``, and sizes each field from that storage. Body- and joint-indexed
-fields do not require a collision pipeline or contact storage.
+Contact dependencies follow the field's frequency. Any requested contact frequency,
+including custom fields requested without ``CONTACT_F``, is sized from
+``contacts=`` or the solver-owned pipeline. Body- and joint-indexed fields do not
+require a collision pipeline or contact storage.
 
 In ``step()``, call :meth:`~newton.solvers.SolverBase.validate_observables` before
-launching work or modifying outputs. This checks the container type and solver
-owner, checks that the step's contacts fit each requested contact field, and
-records them as the layout of those fields. Compute diagnostics only when
-requested:
+launching work or modifying outputs. It checks the container and the step's
+contacts and records those contacts for the requested fields. Compute diagnostics
+only when requested:
 
 .. code-block:: python
 

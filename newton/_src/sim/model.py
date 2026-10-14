@@ -1947,9 +1947,7 @@ class Model:
         """Rigid contact buffer capacity, or ``None`` before collision setup.
 
         :class:`CollisionPipeline` publishes its resolved capacity, which later
-        pipelines constructed without an explicit capacity reuse. Zero is a
-        valid capacity. Solver observables are sized from the
-        :class:`Contacts` they are allocated with, not from this value.
+        pipelines reuse as their default. Zero is a valid capacity.
         """
         return self._rigid_contact_max
 
