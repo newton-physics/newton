@@ -726,6 +726,30 @@ class TestSensorCamera(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "camera_rays must be on the model device"):
             camera.update(state, cuda_transforms, cpu_rays)
 
+    def test_fully_transparent_shape_does_not_occlude(self) -> None:
+        """A shape with opacity 0 is skipped, so the shape behind it stays visible."""
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        ball_body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -3.0), q=wp.quat_identity()))
+        ball = builder.add_shape_sphere(ball_body, radius=0.5, color=(1.0, 0.0, 0.0))
+        helper_body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -1.5), q=wp.quat_identity()))
+        helper = builder.add_shape_box(helper_body, hx=1.0, hy=1.0, hz=0.05, opacity=0.0)
+        model = builder.finalize(device="cpu")
+        camera = SensorCamera(model)
+        rays = self._rays(8, 8, fov=math.radians(40.0))
+        depth = wp.zeros((1, 8, 8), dtype=wp.float32, device="cpu")
+        shape_index = wp.zeros((1, 8, 8), dtype=wp.uint32, device="cpu")
+        camera.update(
+            model.state(),
+            self._identity_transforms(1),
+            rays,
+            depth_image=depth,
+            shape_index_image=shape_index,
+        )
+
+        self.assertEqual(int(shape_index.numpy()[0, 4, 4]), ball)
+        self.assertNotIn(helper, np.unique(shape_index.numpy()))
+        self.assertAlmostEqual(float(depth.numpy()[0, 4, 4]), 2.5, delta=0.05)
+
     def test_update_renders_from_camera_transforms(self) -> None:
         """Verify SensorCamera renders from the camera transforms passed to update."""
         width, height = 16, 12
@@ -1403,6 +1427,59 @@ class TestSensorCamera(unittest.TestCase):
         self.assertLessEqual(fwd, ray + 1.0e-4)
 
     # --- Utils to_rgba / flatten helpers (ported; new 3-D Utils) ---
+
+    def test_forward_depth_uses_camera_origin(self) -> None:
+        """Measure custom-ray hits from the camera plane with a rotated camera."""
+        pose = wp.transform(wp.vec3(3.0, -2.0, 1.0), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.7))
+        for device in get_test_devices():
+            with self.subTest(device=device):
+                builder = newton.ModelBuilder()
+                builder.add_shape_box(
+                    -1,
+                    xform=pose * wp.transform(wp.vec3(0.0, 0.0, -5.0), wp.quat_identity()),
+                    hx=2.0,
+                    hy=2.0,
+                    hz=1.0,
+                )
+                model = builder.finalize(device=device)
+                camera = SensorCamera(model)
+                transforms = wp.array([pose], dtype=wp.transformf, device=device)
+                rays_np = np.zeros((1, 3, 1, 2, 3), dtype=np.float32)
+                # Pixel 0 uses a zero origin. Pixel 1 has lateral and forward
+                # offsets but still hits the camera-relative plane at 4 m.
+                rays_np[..., 1, 2] = -1.0
+                rays_np[0, 1, 0, 0] = (0.25, 0.1, -1.0)
+                rays_np[0, 2, 0, 0] = (0.0, 0.0, -1.0)
+                rays_np[0, 2, 0, 1, 2] = 1.0
+                rays = wp.array(rays_np, dtype=wp.vec3f, device=device)
+                depth = camera.allocate_image_depth(1, 3, 1)
+                forward = camera.allocate_image_depth(1, 3, 1)
+                camera.update(
+                    model.state(),
+                    transforms,
+                    rays,
+                    depth_image=depth,
+                    forward_depth_image=forward,
+                    clear_data=SensorCamera.ClearData(clear_depth=-7.0),
+                )
+                np.testing.assert_allclose(forward.numpy(), [[[4.0, 4.0, -7.0]]], atol=1.0e-5)
+                np.testing.assert_allclose(depth.numpy(), [[[4.0, 3.0, -7.0]]], atol=1.0e-5)
+                converted = SensorCamera.Utils.convert_ray_depth_to_forward_depth(depth, transforms, rays)
+                np.testing.assert_allclose(converted.numpy(), forward.numpy(), atol=1.0e-5)
+
+    def test_forward_depth_conversion_preserves_invalid_depth(self) -> None:
+        """Preserve zero and negative depth sentinels with custom ray origins."""
+        for device in get_test_devices():
+            with self.subTest(device=device):
+                rays_np = np.zeros((1, 3, 1, 2, 3), dtype=np.float32)
+                rays_np[..., 0, 2] = -1.0
+                rays_np[..., 1, 2] = -1.0
+                rays = wp.array(rays_np, dtype=wp.vec3f, device=device)
+                depth = wp.array([[[3.0, 0.0, -7.0]]], dtype=wp.float32, device=device)
+                forward = SensorCamera.Utils.convert_ray_depth_to_forward_depth(
+                    depth, self._identity_transforms(1, device=device), rays
+                )
+                np.testing.assert_allclose(forward.numpy(), [[[4.0, 0.0, -7.0]]], atol=1.0e-5)
 
     def test_utils_to_rgba_helpers_produce_canonical_outputs(self) -> None:
         """Verify the Utils to_rgba helpers return ``(view, H, W, 4)`` uint8 arrays."""

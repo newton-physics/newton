@@ -3966,12 +3966,12 @@ class TestJointSpaceResponse(unittest.TestCase):
         with_armature = alpha_for(0.5)
         self.assertTrue(np.all(with_armature < bare))
 
-        # alpha must match a dense inverse of (H + diag(armature)).
+        # alpha must match a dense inverse of H, which already includes the armature.
         m = _two_link_builder(armature=0.5).finalize(device=device)
         st = m.state()
         st.joint_q.assign(q0)
         newton.eval_fk(m, st.joint_q, st.joint_qd, st)
-        H = newton.eval_mass_matrix(m, st).numpy()[0, :2, :2] + np.diag([0.5, 0.5])
+        H = newton.eval_mass_matrix(m, st).numpy()[0, :2, :2]
         np.testing.assert_allclose(with_armature, np.diag(np.linalg.inv(H)), rtol=1e-4)
 
     def test_refresh_does_not_mutate_state(self):

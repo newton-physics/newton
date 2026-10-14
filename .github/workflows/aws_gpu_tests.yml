@@ -216,7 +216,7 @@ jobs:
           PYTHONFAULTHANDLER: "1"
           # sys.monitoring coverage core: avoids settrace overhead in unmeasured code
           COVERAGE_CORE: "sysmon"
-        run: uv run --extra dev --extra torch-cu13 --extra rtx -m newton.tests --strict-warnings --no-cache-clear --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
+        run: uv run --extra dev --extra torch-cu13 --extra rtx -m newton.tests --strict-warnings --parallel-timeout 4500 --no-cache-clear --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
 
       - name: Save OVRTX shader cache
         if: github.event_name != 'merge_group' && steps.restore-ovrtx-shader-cache.outputs.cache-hit != 'true'

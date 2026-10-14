@@ -914,8 +914,9 @@ class SensorCamera:
                 ``render_config.anti_aliasing`` to be :attr:`AntiAliasing.SSAA`
                 or :attr:`AntiAliasing.MSAA`.
             color_image: Output RGBA color buffer (packed ``uint32``).
-            depth_image: Output depth buffer [m].
-            forward_depth_image: Output forward-depth buffer [m].
+            depth_image: Output ray-distance depth from each ray origin [m].
+            forward_depth_image: Output depth measured from the camera origin
+                along its forward axis [m], including per-ray origin offsets.
             shape_index_image: Output shape-index buffer.
             normal_image: Output world-space surface normals.
             albedo_image: Output albedo buffer (packed ``uint32``).
