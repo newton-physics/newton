@@ -699,8 +699,8 @@ def compute_nodal_diagonalization(
     """Orthogonalize supported nodal mass blocks without changing reference P1d/Q1d cells.
 
     Outputs the test transform R, its dual coefficient transform on the
-    supported subspace, and diagonal mass. Singular blocks drop null modes
-    and equally normalize the remaining eigenmodes to the reference mass.
+    supported subspace, and diagonal mass. Singular blocks use an orthogonal
+    completion of the nullspace to select nodal directions with equal mass.
     """
     row = wp.tid()
     diag_index = wps.bsr_block_index(row, row, offsets, columns)
@@ -720,30 +720,35 @@ def compute_nodal_diagonalization(
             scales = wp.get_diag(mass)
             modes = wp.identity(n=scales.length, dtype=float)
 
-        full_rank = bool(True)
-        for k in range(scales.length):
-            if scales[k] <= _EIGENVALUE_FLOOR:
-                full_rank = False
+        full_rank = wp.min(scales) > _EIGENVALUE_FLOOR
 
         reference_mass = 1.0 / float(scales.length)
-        if full_rank:
-            for i in range(scales.length):
-                for j in range(scales.length):
-                    for k in range(scales.length):
-                        product = modes[k, i] * modes[k, j]
-                        transform[i, j] += product * wp.sqrt(reference_mass / scales[k])
-                        coefficient_transform[i, j] += product * wp.sqrt(scales[k] / reference_mass)
-        else:
-            for i in range(scales.length):
-                if scales[i] > _EIGENVALUE_FLOOR:
-                    test_scale = wp.sqrt(reference_mass / scales[i])
-                    coefficient_scale = wp.sqrt(scales[i] / reference_mass)
-                    for j in range(scales.length):
-                        transform[i, j] = modes[i, j] * test_scale
-                        coefficient_transform[i, j] = modes[i, j] * coefficient_scale
+        active_count = int(scales.length)
+        test_scales = type(scales)(0.0)
+        coefficient_scales = type(scales)(0.0)
+        nullspace = values.dtype(0.0)
+        null_count = int(0)
+        for k in range(scales.length):
+            if scales[k] > _EIGENVALUE_FLOOR:
+                test_scales[k] = wp.sqrt(reference_mass / scales[k])
+                coefficient_scales[k] = 1.0 / test_scales[k]
+            else:
+                nullspace[:, null_count] = modes[k]
+                null_count += 1
+        active_count -= null_count
+        completion = values.dtype(0.0)
+        if not full_rank and active_count > 0:
+            # QR completes the nullspace with directions anchored to the nodal axes.
+            completion, _triangular = fem.linalg.householder_qr_decomposition(nullspace)
+        for i in range(active_count):
+            coordinates = modes[:, i]
+            if not full_rank:
+                coordinates = modes * completion[:, null_count + i]
+            transform[i] = wp.cw_mul(coordinates, test_scales) * modes
+            coefficient_transform[i] = wp.cw_mul(coordinates, coefficient_scales) * modes
 
         for k in range(scales.length):
-            if not full_rank and scales[k] <= _EIGENVALUE_FLOOR:
+            if k >= active_count:
                 scales[k] = 1.0
             else:
                 scales[k] = reference_mass
