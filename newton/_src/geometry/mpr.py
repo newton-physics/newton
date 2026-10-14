@@ -216,6 +216,28 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
     solve_sat = create_solve_box_penetration(certificate_support)
 
     @wp.func
+    def portal_retry_seed(v0: Any, v1: Vert, v2: Vert, v3: Vert, normal: wp.vec3, seed: wp.vec3) -> wp.vec3:
+        """Return an interior retry seed while preserving the first overlap ball."""
+        # Shrinking the radius on retries can make the portal degenerate.
+        radius = 2.0 * wp.length(seed)
+        if radius == 0.0:
+            radius = wp.abs(wp.dot(normal, v1.BtoA))
+            for edge in range(3):
+                edge_a = v1.BtoA
+                edge_b = v2.BtoA
+                if edge == 1:
+                    edge_a = v2.BtoA
+                    edge_b = v3.BtoA
+                elif edge == 2:
+                    edge_a = v3.BtoA
+                    edge_b = v1.BtoA
+                face = wp.cross(edge_a - v0.BtoA, edge_b - v0.BtoA)
+                face_length = wp.length(face)
+                if face_length > 0.0:
+                    radius = wp.min(radius, wp.abs(wp.dot(face, v0.BtoA)) / face_length)
+        return -normal * (0.5 * radius)
+
+    @wp.func
     def solve_mpr_portal(
         geom_a: Any,
         geom_b: Any,
@@ -226,6 +248,7 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
         seed: wp.vec3,
         MAX_ITER: int = 30,
         COLLIDE_EPSILON: float = 1e-5,
+        retry_depth: float = 1.0e30,
     ) -> tuple[bool, wp.vec3, wp.vec3, wp.vec3, float, wp.vec3, bool]:
         """
         Core MPR algorithm implementation.
@@ -426,29 +449,19 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
                         # The normal projection can lie outside an MPR portal.
                         # Restart along its normal from inside the enclosing tetrahedron.
                         # Reuse the first tetrahedron's inscribed ball on later retries.
-                        radius = 2.0 * wp.length(seed)
-                        if radius == 0.0:
-                            radius = wp.abs(wp.dot(normal, v1.BtoA))
-                            for edge in range(3):
-                                edge_a = v1.BtoA
-                                edge_b = v2.BtoA
-                                if edge == 1:
-                                    edge_a = v2.BtoA
-                                    edge_b = v3.BtoA
-                                elif edge == 2:
-                                    edge_a = v3.BtoA
-                                    edge_b = v1.BtoA
-                                face = wp.cross(edge_a - v0.BtoA, edge_b - v0.BtoA)
-                                face_length = wp.length(face)
-                                if face_length > 0.0:
-                                    radius = wp.min(radius, wp.abs(wp.dot(face, v0.BtoA)) / face_length)
-                        next_seed = -normal * (0.5 * radius)
+                        next_seed = portal_retry_seed(v0, v1, v2, v3, normal, seed)
                         return hit, point_a, point_b, normal, penetration, next_seed, False
 
                     # Positive barycentric weights alone do not certify a
                     # boundary face when refinement runs out of iterations.
                     if delta * delta > COLLIDE_EPSILON * COLLIDE_EPSILON * normal_sq:
                         return hit, point_a, point_b, normal, penetration, next_seed, False
+
+                    if penetration > retry_depth + COLLIDE_EPSILON:
+                        # A valid portal can still land on a deeper face than
+                        # the caller's bound. Reuse its interior ball to retry
+                        # along the bounded direction without losing witnesses.
+                        next_seed = portal_retry_seed(v0, v1, v2, v3, normal, seed)
 
                 return hit, point_a, point_b, normal, penetration, next_seed, valid
 
@@ -607,13 +620,30 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
             # contact witnesses. Accept a physical portal only when it also
             # supplies a valid pair; never emit the fallback support corners.
             physical_hit, pa, pb, physical_normal, physical_depth, physical_seed, physical_valid = solve_mpr_portal(
-                geom_a, geom_b, orientation_b, position_b, 0.0, data_provider, wp.vec3(0.0)
+                geom_a,
+                geom_b,
+                orientation_b,
+                position_b,
+                0.0,
+                data_provider,
+                wp.vec3(0.0),
+                retry_depth=penetration - extend,
             )
             for _physical_retry in range(8):
-                if not physical_hit or physical_valid or wp.length_sq(physical_seed) == 0.0:
+                within_bound = physical_depth <= penetration - extend + COLLIDE_EPSILON * tolerance
+                if not physical_hit or (physical_valid and within_bound) or wp.length_sq(physical_seed) == 0.0:
                     break
+                if physical_valid:
+                    physical_seed = -normal * wp.length(physical_seed)
                 physical_hit, pa, pb, physical_normal, physical_depth, physical_seed, physical_valid = solve_mpr_portal(
-                    geom_a, geom_b, orientation_b, position_b, 0.0, data_provider, physical_seed
+                    geom_a,
+                    geom_b,
+                    orientation_b,
+                    position_b,
+                    0.0,
+                    data_provider,
+                    physical_seed,
+                    retry_depth=penetration - extend,
                 )
             if physical_hit and physical_valid and physical_depth <= penetration - extend + COLLIDE_EPSILON * tolerance:
                 normal = physical_normal
