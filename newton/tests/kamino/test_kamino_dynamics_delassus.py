@@ -1564,6 +1564,29 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         # Check that the Delassus operator represents the actual Delassus matrix
         self._check_delassus_matrix_vector_product(model, data, delassus, jacobians)
 
+    def test_13_raw_transpose_vector_products(self):
+        """Preserve dense-reference products while bypassing poisoned transpose copies."""
+        builder = make_basics_heterogeneous_builder(dynamic_joints=self.dynamic_joints, implicit_pd=self.dynamic_joints)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
+        model, data, state, limits, detector, jacobians = make_containers(
+            model=model, max_world_contacts=12, sparse=True
+        )
+        update_containers(model=model, data=data, state=state, limits=limits, detector=detector, jacobians=jacobians)
+        delassus = BlockSparseMatrixFreeDelassusOperator(
+            model=model, data=data, limits=limits, contacts=detector.contacts, jacobians=jacobians
+        )
+        delassus._set_raw_transpose_enabled(True)
+        values = delassus._transpose_op_matrix.nzb_values
+        values.assign(np.full_like(values.numpy(), np.nan))
+        # Exercise nullable P, regularization, masks, matvec and gemv against
+        # the existing independent dense Jacobian/mass reference.
+        self._check_delassus_matrix_vector_product(model, data, delassus, jacobians)
+        self.assertTrue(np.isnan(values.numpy()).all())
+        # Empty joint groups retain their initially zero padding on updates.
+        values.zero_()
+        delassus._set_raw_transpose_enabled(False)
+        self._check_delassus_matrix_vector_product(model, data, delassus, jacobians)
+
 
 ###
 # Test execution

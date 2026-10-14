@@ -438,13 +438,14 @@ def color_rigid_bodies(
     balance_colors: bool = True,
     target_max_min_color_ratio: float = 1.1,
     algorithm: ColoringAlgorithm = ColoringAlgorithm.MCS,
+    additional_edges: list[tuple[int, int]] | None = None,
 ):
     """
-    Generate a graph coloring for rigid bodies from joint connectivity.
+    Generate a graph coloring for rigid bodies from force-element connectivity.
 
-    Bodies connected by a joint are treated as adjacent in the graph and cannot share
-    the same color. The result can be used to schedule per-color parallel processing
-    (e.g. in the VBD solver) without conflicts.
+    Bodies connected by a joint or an additional force-element edge are treated as
+    adjacent in the graph and cannot share the same color. The result can be used to
+    schedule per-color parallel processing (e.g. in the VBD solver) without conflicts.
 
     Returns a list of ``np.ndarray`` with ``dtype=int``. The list length is the number
     of colors, and each array contains the body indices of that color. This mirrors the
@@ -457,6 +458,7 @@ def color_rigid_bodies(
         balance_colors: Whether to balance color group sizes.
         target_max_min_color_ratio: Stop balancing when max/min group size ratio reaches this value.
         algorithm: Coloring algorithm to use.
+        additional_edges: Additional pairs of connected body indices.
     """
     if num_bodies == 0:
         return []
@@ -472,6 +474,11 @@ def color_rigid_bodies(
     for parent, child in zip(joint_parent, joint_child, strict=True):
         if parent != -1 and child != -1 and parent != child:
             edge_list.append([parent, child])
+
+    if additional_edges is not None:
+        for body_0, body_1 in additional_edges:
+            if body_0 != -1 and body_1 != -1 and body_0 != body_1:
+                edge_list.append([body_0, body_1])
 
     if not edge_list:
         # No joints between bodies, all can have same color
