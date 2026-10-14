@@ -211,8 +211,6 @@ jobs:
           restore-keys: |
             ovrtx-nv-shadercache-${{ steps.gpu-arch.outputs.sm }}-${{ steps.gpu-arch.outputs.driver }}-
 
-      # Cold-cache runs on the fallback instance type exceed the default 3600 s.
-      # Keep the whole job under the runner watchdog's 90-minute instance age.
       - name: Run Tests
         env:
           PYTHONFAULTHANDLER: "1"
