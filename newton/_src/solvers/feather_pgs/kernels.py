@@ -5,7 +5,6 @@ from functools import cache
 
 import warp as wp
 
-from ...math.spatial import transform_twist
 from ...sim import BodyFlags, JointType
 from ...sim.articulation import (
     compute_2d_rotational_dofs,
@@ -13,6 +12,7 @@ from ...sim.articulation import (
     eval_single_articulation_fk,
 )
 from ...sim.contacts import GENERATION_SENTINEL
+from ..featherstone.kernels import jcalc_motion
 from .friction import contact_tangent_basis, friction_pair_candidate
 from .friction_patches import FrictionPatches, warmstart_dt_scale
 
@@ -393,110 +393,6 @@ def jcalc_transform(
     return wp.transform_identity()
 
 
-# compute motion subspace and velocity for a joint
-@wp.func
-def jcalc_motion(
-    type: int,
-    joint_axis: wp.array[wp.vec3],
-    lin_axis_count: int,
-    ang_axis_count: int,
-    X_sc: wp.transform,
-    joint_qd: wp.array[float],
-    qd_start: int,
-    # outputs
-    joint_S_s: wp.array[wp.spatial_vector],
-):
-    if type == JointType.PRISMATIC:
-        axis = joint_axis[qd_start]
-        S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
-        v_j_s = S_s * joint_qd[qd_start]
-        joint_S_s[qd_start] = S_s
-        return v_j_s
-
-    if type == JointType.REVOLUTE:
-        axis = joint_axis[qd_start]
-        S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
-        v_j_s = S_s * joint_qd[qd_start]
-        joint_S_s[qd_start] = S_s
-        return v_j_s
-
-    if type == JointType.D6:
-        v_j_s = wp.spatial_vector()
-        if lin_axis_count > 0:
-            axis = joint_axis[qd_start + 0]
-            S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
-            v_j_s += S_s * joint_qd[qd_start + 0]
-            joint_S_s[qd_start + 0] = S_s
-        if lin_axis_count > 1:
-            axis = joint_axis[qd_start + 1]
-            S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
-            v_j_s += S_s * joint_qd[qd_start + 1]
-            joint_S_s[qd_start + 1] = S_s
-        if lin_axis_count > 2:
-            axis = joint_axis[qd_start + 2]
-            S_s = transform_twist(X_sc, wp.spatial_vector(axis, wp.vec3()))
-            v_j_s += S_s * joint_qd[qd_start + 2]
-            joint_S_s[qd_start + 2] = S_s
-        if ang_axis_count > 0:
-            axis = joint_axis[qd_start + lin_axis_count + 0]
-            S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
-            v_j_s += S_s * joint_qd[qd_start + lin_axis_count + 0]
-            joint_S_s[qd_start + lin_axis_count + 0] = S_s
-        if ang_axis_count > 1:
-            axis = joint_axis[qd_start + lin_axis_count + 1]
-            S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
-            v_j_s += S_s * joint_qd[qd_start + lin_axis_count + 1]
-            joint_S_s[qd_start + lin_axis_count + 1] = S_s
-        if ang_axis_count > 2:
-            axis = joint_axis[qd_start + lin_axis_count + 2]
-            S_s = transform_twist(X_sc, wp.spatial_vector(wp.vec3(), axis))
-            v_j_s += S_s * joint_qd[qd_start + lin_axis_count + 2]
-            joint_S_s[qd_start + lin_axis_count + 2] = S_s
-
-        return v_j_s
-
-    if type == JointType.BALL:
-        S_0 = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 1.0, 0.0, 0.0))
-        S_1 = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 1.0, 0.0))
-        S_2 = transform_twist(X_sc, wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 1.0))
-
-        joint_S_s[qd_start + 0] = S_0
-        joint_S_s[qd_start + 1] = S_1
-        joint_S_s[qd_start + 2] = S_2
-
-        return S_0 * joint_qd[qd_start + 0] + S_1 * joint_qd[qd_start + 1] + S_2 * joint_qd[qd_start + 2]
-
-    if type == JointType.FIXED:
-        return wp.spatial_vector()
-
-    if type == JointType.FREE or type == JointType.DISTANCE:
-        # For FREE/DISTANCE joints we treat linear/angular velocity components as
-        # referenced at the root COM world point to avoid world-origin conditioning.
-        q_sc = wp.transform_get_rotation(X_sc)
-
-        v_local = wp.vec3(joint_qd[qd_start + 0], joint_qd[qd_start + 1], joint_qd[qd_start + 2])
-        w_local = wp.vec3(joint_qd[qd_start + 3], joint_qd[qd_start + 4], joint_qd[qd_start + 5])
-        v_j_s = wp.spatial_vector(wp.quat_rotate(q_sc, v_local), wp.quat_rotate(q_sc, w_local))
-
-        ex = wp.quat_rotate(q_sc, wp.vec3(1.0, 0.0, 0.0))
-        ey = wp.quat_rotate(q_sc, wp.vec3(0.0, 1.0, 0.0))
-        ez = wp.quat_rotate(q_sc, wp.vec3(0.0, 0.0, 1.0))
-
-        joint_S_s[qd_start + 0] = wp.spatial_vector(ex, wp.vec3())
-        joint_S_s[qd_start + 1] = wp.spatial_vector(ey, wp.vec3())
-        joint_S_s[qd_start + 2] = wp.spatial_vector(ez, wp.vec3())
-        joint_S_s[qd_start + 3] = wp.spatial_vector(wp.vec3(), ex)
-        joint_S_s[qd_start + 4] = wp.spatial_vector(wp.vec3(), ey)
-        joint_S_s[qd_start + 5] = wp.spatial_vector(wp.vec3(), ez)
-
-        return v_j_s
-
-    wp.printf("jcalc_motion not implemented for joint type %d\n", type)
-
-    # default case
-    return wp.spatial_vector()
-
-
 # computes joint space forces/torques in tau
 @wp.func
 def jcalc_tau(
@@ -814,7 +710,9 @@ def compute_link_kinematics(
     parent_a_s: wp.spatial_vector,
     origin: wp.vec3,
     joint_type: wp.array[int],
+    joint_q_start: wp.array[int],
     joint_qd_start: wp.array[int],
+    joint_q: wp.array[float],
     joint_qd: wp.array[float],
     joint_axis: wp.array[wp.vec3],
     joint_dof_dim: wp.array2d[int],
@@ -826,6 +724,7 @@ def compute_link_kinematics(
     body_a_s: wp.array[wp.spatial_vector],
 ):
     type = joint_type[i]
+    q_start = joint_q_start[i]
     qd_start = joint_qd_start[i]
 
     X_pj = joint_X_p[i]
@@ -844,20 +743,26 @@ def compute_link_kinematics(
     # compute motion subspace and velocity across the joint (also stores S_s to global memory)
     lin_axis_count = joint_dof_dim[i, 0]
     ang_axis_count = joint_dof_dim[i, 1]
-    v_j_s = jcalc_motion(
+    # FREE/DISTANCE twists are referenced at the root COM, so their motion subspace takes only the rotation.
+    X_sc = X_wpj_local
+    if type == JointType.FREE or type == JointType.DISTANCE:
+        X_sc = wp.transform(wp.vec3(), wp.transform_get_rotation(X_wpj_local))
+    v_j_s, c_app_s = jcalc_motion(
         type,
         joint_axis,
+        joint_q,
         lin_axis_count,
         ang_axis_count,
-        X_wpj_local,
+        X_sc,
         joint_qd,
+        q_start,
         qd_start,
         joint_S_s,
     )
 
     # body velocity, acceleration
     v_s = parent_v_s + v_j_s
-    a_s = parent_a_s + spatial_cross(v_s, v_j_s)
+    a_s = parent_a_s + spatial_cross(v_s, v_j_s) + c_app_s
 
     body_v_s[child] = v_s
     body_a_s[child] = a_s
@@ -874,7 +779,9 @@ def compute_link_velocity(
     origin: wp.vec3,
     gravity: wp.vec3,
     joint_type: wp.array[int],
+    joint_q_start: wp.array[int],
     joint_qd_start: wp.array[int],
+    joint_q: wp.array[float],
     joint_qd: wp.array[float],
     joint_axis: wp.array[wp.vec3],
     joint_dof_dim: wp.array2d[int],
@@ -901,7 +808,9 @@ def compute_link_velocity(
         parent_a_s,
         origin,
         joint_type,
+        joint_q_start,
         joint_qd_start,
+        joint_q,
         joint_qd,
         joint_axis,
         joint_dof_dim,
@@ -1044,7 +953,9 @@ def eval_rigid_fk_id(
             origin,
             gravity_s,
             joint_type,
+            joint_q_start,
             joint_qd_start,
+            joint_q,
             joint_qd,
             joint_axis,
             joint_dof_dim,
@@ -1299,7 +1210,9 @@ def _get_tree_fk_kernel(lanes: int, mode: str):
                             origin,
                             gravity_s,
                             joint_type,
+                            joint_q_start,
                             joint_qd_start,
+                            joint_q,
                             joint_qd,
                             joint_axis,
                             joint_dof_dim,

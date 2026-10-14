@@ -2867,6 +2867,126 @@ for _name, _func in (
     )
 
 
+def _build_branched_d6(device):
+    """Revolute root with a three-angular and a two-angular D6 child, all with off-origin COMs."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    axis = newton.ModelBuilder.JointDofConfig.create_unlimited
+    inertia = wp.mat33(0.02, 0.0, 0.0, 0.0, 0.03, 0.0, 0.0, 0.0, 0.04)
+    root = builder.add_link(mass=1.0, com=wp.vec3(*COM_LOCAL), inertia=inertia)
+    ball_like = builder.add_link(mass=0.7, com=wp.vec3(0.1, 0.04, -0.05), inertia=inertia)
+    universal = builder.add_link(mass=0.5, com=wp.vec3(-0.02, 0.08, 0.03), inertia=inertia)
+    joints = [
+        builder.add_joint_revolute(
+            -1, root, axis=newton.Axis.Z, parent_xform=wp.transform((0.3, 0.1, 0.5), wp.quat_identity())
+        ),
+        builder.add_joint_d6(
+            root,
+            ball_like,
+            angular_axes=[axis(axis=newton.Axis.X), axis(axis=newton.Axis.Y), axis(axis=newton.Axis.Z)],
+            parent_xform=wp.transform((0.2, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.4)),
+        ),
+        builder.add_joint_d6(
+            root,
+            universal,
+            angular_axes=[axis(axis=newton.Axis.Y), axis(axis=newton.Axis.Z)],
+            parent_xform=wp.transform((-0.2, 0.1, 0.0), wp.quat_identity()),
+        ),
+    ]
+    builder.add_articulation(joints)
+    return builder.finalize(device=device)
+
+
+def _fk_state(model, joint_q, joint_qd):
+    state = model.state()
+    state.joint_q.assign(np.asarray(joint_q, dtype=np.float32))
+    state.joint_qd.assign(np.asarray(joint_qd, dtype=np.float32))
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+    return state
+
+
+def _spatial_velocity_at(model, state, point):
+    """Body twists from eval_fk, referenced at the world point ``point``."""
+    body_q = state.body_q.numpy().astype(np.float64)
+    body_qd = state.body_qd.numpy().astype(np.float64)
+    twists = []
+    for pose, twist, com in zip(body_q, body_qd, model.body_com.numpy(), strict=True):
+        com_world = np.array(wp.transform_point(wp.transform(*pose[:3], *pose[3:]), wp.vec3(*com)))
+        twists.append(np.concatenate([twist[:3] + np.cross(twist[3:], point - com_world), twist[3:]]))
+    return np.array(twists)
+
+
+def _stage1_motion(solver, model, state):
+    """Run the stage-1 forward pass; return the solve origin and each body's spatial velocity and bias."""
+    solver._prepare_augmented_state(state)
+    solver._stage1_fk_id(state, solver, model.state())
+    origin = solver._articulation_origin.numpy()[0].astype(np.float64)
+    return origin, solver._body_v_s.numpy(), solver._body_a_s.numpy(), solver._joint_S_s.numpy()
+
+
+def test_multi_angular_d6_motion_matches_fk(test, device, **solver_kwargs):
+    """Match eval_fk's body velocity and its time derivative through multi-angular D6 joints."""
+    model = _build_branched_d6(device)
+    q = np.array((0.25, 0.4, -0.5, 0.6, 0.7, -0.35))
+    qd = np.array((0.9, 1.1, -0.9, 1.3, 1.4, -1.2))
+    solver = SolverFeatherPGS(model, **solver_kwargs)
+    test.assertEqual(solver._tree_plan is not None, solver_kwargs.get("parallel_tree", False))
+    origin, v_s, a_s, _ = _stage1_motion(solver, model, _fk_state(model, q, qd))
+    np.testing.assert_allclose(v_s, _spatial_velocity_at(model, _fk_state(model, q, qd), origin), rtol=0.0, atol=1e-5)
+    # With zero joint accelerations the bias is the derivative of the twist along q + t qd.
+    h = 1e-3
+    forward = _spatial_velocity_at(model, _fk_state(model, q + h * qd, qd), origin)
+    backward = _spatial_velocity_at(model, _fk_state(model, q - h * qd, qd), origin)
+    np.testing.assert_allclose(a_s, (forward - backward) / (2.0 * h), rtol=0.0, atol=2e-3)
+
+
+def test_free_and_distance_roots_use_com_twists(test, device, **solver_kwargs):
+    """Reference FREE and DISTANCE root twists at the root COM, with an off-origin COM far from the world origin."""
+    for kind in ("free", "distance"):
+        with test.subTest(kind=kind):
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            body = builder.add_link(
+                xform=wp.transform(wp.vec3(*ORIGINS[-1]), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.7)),
+                mass=1.0,
+                com=wp.vec3(*COM_LOCAL),
+                inertia=wp.mat33(0.02, 0.0, 0.0, 0.0, 0.03, 0.0, 0.0, 0.0, 0.04),
+            )
+            builder.add_articulation([getattr(builder, f"add_joint_{kind}")(parent=-1, child=body)])
+            model = builder.finalize(device=device)
+            joint_qd = np.array((*V_COM, 0.4, -0.6, 1.1))
+            state = _fk_state(model, model.joint_q.numpy(), joint_qd)
+            origin, v_s, a_s, motion = _stage1_motion(SolverFeatherPGS(model, **solver_kwargs), model, state)
+
+            com_world = wp.transform_point(wp.transform(*state.body_q.numpy()[0]), wp.vec3(*COM_LOCAL))
+            np.testing.assert_allclose(origin, com_world, rtol=0.0, atol=1e-5)
+            np.testing.assert_allclose(motion, np.eye(6), rtol=0.0, atol=0.0)
+            np.testing.assert_allclose(v_s[0], joint_qd, rtol=0.0, atol=1e-6)
+            np.testing.assert_allclose(a_s[0], 0.0, rtol=0.0, atol=0.0)
+
+
+class TestFeatherPGSJointMotion(unittest.TestCase):
+    pass
+
+
+for _name, _func in (
+    ("test_multi_angular_d6_motion_matches_fk", test_multi_angular_d6_motion_matches_fk),
+    ("test_free_and_distance_roots_use_com_twists", test_free_and_distance_roots_use_com_twists),
+):
+    add_function_test(
+        TestFeatherPGSJointMotion, f"{_name}_split", _func, devices=get_test_devices(), solve_mode="split"
+    )
+    add_function_test(
+        TestFeatherPGSJointMotion, _name, _func, devices=get_cuda_test_devices(), solve_mode="matrix_free"
+    )
+add_function_test(
+    TestFeatherPGSJointMotion,
+    "test_multi_angular_d6_motion_matches_fk_parallel_tree",
+    test_multi_angular_d6_motion_matches_fk,
+    devices=get_cuda_test_devices(),
+    solve_mode="matrix_free",
+    parallel_tree=True,
+)
+
+
 def _build_two_worlds_with_global_body(device):
     """Two worlds with one driven slider each, plus one global (world -1) free body."""
     template = newton.ModelBuilder(gravity=wp.vec3(0.0))

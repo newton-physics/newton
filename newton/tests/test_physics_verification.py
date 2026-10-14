@@ -1675,9 +1675,8 @@ for device in devices:
 
         # Torque-free precession exercises the articulated rigid-body dynamics
         # exactly (rigid joints, no soft constraints), so restrict it to the
-        # exact generalized-coordinate solvers. FeatherPGS lacks the multi-angular
-        # D6 motion-subspace derivative, so it is a known gap there.
-        if solver_name in ("featherstone", "mujoco_cpu", "mujoco_warp"):
+        # exact generalized-coordinate solvers.
+        if solver_name in ("featherstone", "feather_pgs", "mujoco_cpu", "mujoco_warp"):
             add_function_test(
                 TestPhysicsVerification,
                 f"test_torque_free_precession_{solver_name}",
