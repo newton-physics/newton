@@ -186,14 +186,18 @@ def scale_sdf_result_to_world(
 
 @wp.func
 def _mesh_edge_is_boundary(mesh_id: wp.uint64, a: wp.vec3, b: wp.vec3) -> bool:
-    """Identify an unshared edge, including meshes with duplicated vertex indices."""
-    midpoint = 0.5 * (a + b)
+    """Identify uncovered edge intervals, including split seams and duplicate indices."""
     padding = 1.0e-6 * wp.max(wp.max(wp.length(a), wp.length(b)), wp.length(b - a))
-    query = wp.mesh_query_aabb(mesh_id, midpoint - wp.vec3(padding), midpoint + wp.vec3(padding))
     mesh = wp.mesh_get(mesh_id)
+    # Keep ordinary shared edges and isolated boundaries on the local-query
+    # path. A fully covered split seam must also have neighbors at its midpoint.
+    midpoint = 0.5 * (a + b)
+    query = wp.mesh_query_aabb(mesh_id, midpoint - wp.vec3(padding), midpoint + wp.vec3(padding))
+    candidates = int(0)
+    matching = int(0)
     face = int(0)
-    count = int(0)
     while wp.mesh_query_aabb_next(query, face):
+        candidates += 1
         has_a = False
         has_b = False
         for corner in range(3):
@@ -201,10 +205,55 @@ def _mesh_edge_is_boundary(mesh_id: wp.uint64, a: wp.vec3, b: wp.vec3) -> bool:
             has_a = has_a or wp.length_sq(vertex - a) == 0.0
             has_b = has_b or wp.length_sq(vertex - b) == 0.0
         if has_a and has_b:
-            count += 1
-            if count > 1:
+            matching += 1
+            if matching > 1:
                 return False
-    return count == 1
+    if candidates <= 1:
+        return True
+
+    lower = wp.min(a, b) - wp.vec3(padding)
+    upper = wp.max(a, b) + wp.vec3(padding)
+    origin = wp.vec3d(a)
+    direction = wp.vec3d(b) - origin
+    length_sq = wp.length_sq(direction)
+    if length_sq == wp.float64(0.0):
+        return True
+
+    # Sweep interval endpoints without allocating a variable-sized edge list.
+    # Require two incident faces everywhere, so overlapping partial edges
+    # cannot conceal an uncovered gap. Padding only broadens the BVH query.
+    position = wp.float64(0.0)
+    while position < wp.float64(1.0):
+        next_position = wp.float64(1.0)
+        count = int(0)
+        query = wp.mesh_query_aabb(mesh_id, lower, upper)
+        face = int(0)
+        while wp.mesh_query_aabb_next(query, face):
+            covers_position = False
+            for corner in range(3):
+                p = wp.vec3d(mesh.points[mesh.indices[3 * face + corner]]) - origin
+                q = wp.vec3d(mesh.points[mesh.indices[3 * face + (corner + 1) % 3]]) - origin
+                # Exact collinearity in double precision avoids float32 cross
+                # product roundoff without welding distinct nearby vertices.
+                if wp.length_sq(wp.cross(p, direction)) == wp.float64(0.0) and wp.length_sq(
+                    wp.cross(q, direction)
+                ) == wp.float64(0.0):
+                    t_p = wp.dot(p, direction) / length_sq
+                    t_q = wp.dot(q, direction) / length_sq
+                    start = wp.max(wp.float64(0.0), wp.min(t_p, t_q))
+                    end = wp.min(wp.float64(1.0), wp.max(t_p, t_q))
+                    if end > start:
+                        covers_position = covers_position or (start <= position and end > position)
+                        if start > position:
+                            next_position = wp.min(next_position, start)
+                        if end > position:
+                            next_position = wp.min(next_position, end)
+            if covers_position:
+                count += 1
+        if count < 2:
+            return True
+        position = next_position
+    return False
 
 
 @wp.func

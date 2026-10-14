@@ -1264,6 +1264,45 @@ def test_bounded_mesh_sdf_sign(test, device):
             MeshSignMethod.NORMAL,
         ),
         (
+            # One face spans A-B while its neighbors split the seam at M.
+            # The seam remains a shared concave feature, including at M.
+            (
+                np.array([[0, -1, 0], [0, 1, 0], [1, 0, 0], [0, 0, 0], [0, 0, 1]], dtype=np.float32),
+                np.array([[0, 2, 1], [0, 3, 4], [3, 1, 4]]),
+            ),
+            [[-0.1, -0.25, -0.1], [-0.1, 0.25, -0.1], [-0.1, 0.0, -0.1]],
+            [-np.sqrt(0.02)] * 3,
+            [[1 / np.sqrt(2), 0, 1 / np.sqrt(2)]] * 3,
+            MeshSignMethod.NORMAL,
+        ),
+        (
+            # Overlapping partial seams must not hide the uncovered upper
+            # interval, even though their total lengths exceed the full edge.
+            (
+                np.array([[0, -1, 0], [0, 1, 0], [1, 0, 0], [0, 0.2, 0], [0, 0.4, 0], [0, -1, 1]], dtype=np.float32),
+                np.array([[0, 2, 1], [0, 3, 5], [0, 4, 5]]),
+            ),
+            [[-0.1, 0.7, -0.1]],
+            [np.sqrt(0.02)],
+            [[-1 / np.sqrt(2), 0, -1 / np.sqrt(2)]],
+            MeshSignMethod.NORMAL,
+        ),
+        (
+            # These split edges are within BVH padding of A-B, but belong to
+            # distinct geometry. Candidate padding must not weld the seam.
+            (
+                np.array(
+                    [[0, -1, 0], [0, 1, 0], [1, 0, 0], [1.0e-7, -1, 0], [1.0e-7, 0, 0], [1.0e-7, 1, 0], [1.0e-7, 0, 1]],
+                    dtype=np.float32,
+                ),
+                np.array([[0, 2, 1], [3, 4, 6], [4, 5, 6]]),
+            ),
+            [[-0.1, -0.25, -0.1], [-0.1, 0.25, -0.1]],
+            [np.sqrt(0.02)] * 2,
+            [[-1 / np.sqrt(2), 0, -1 / np.sqrt(2)]] * 2,
+            MeshSignMethod.NORMAL,
+        ),
+        (
             _make_watertight_box((0, 0, 0), (0.5, 0.5, 0.5)),
             [[0.4, 0.0, 0.0], [0.6, 0.0, 0.0]],
             [-0.1, 0.1],
