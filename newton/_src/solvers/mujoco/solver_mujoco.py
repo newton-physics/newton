@@ -8428,15 +8428,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         f"nvmax={nvmax} is too small: the initial state has {minimum_nvmax} awake degrees of freedom."
                     )
 
-            self.mjw_data = mujoco_warp.put_data(
-                self.mj_model,
-                self.mj_data,
-                nworld=nworld,
-                nconmax=nconmax,
-                njmax=njmax,
-                njmax_nnz=njmax_nnz,
-                nvmax=nvmax,
-            )
+            # MuJoCo's bindings expose unallocated efm_* arrays as uninitialized memory,
+            # whose float32 conversion can spuriously warn about overflow.
+            with np.errstate(over="ignore"):
+                self.mjw_data = mujoco_warp.put_data(
+                    self.mj_model,
+                    self.mj_data,
+                    nworld=nworld,
+                    nconmax=nconmax,
+                    njmax=njmax,
+                    njmax_nnz=njmax_nnz,
+                    nvmax=nvmax,
+                )
             self.nvmax = self.mjw_data.nvmax
             if self.enable_sleeping:
                 self._capture_initial_sleeping_state()
