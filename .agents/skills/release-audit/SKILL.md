@@ -388,6 +388,38 @@ Tag every matched entry internally as `experimental=True`. Do not alter the CHAN
 
 **Never drop the entry from the detailed audit.** Experimental status changes the stability interpretation, not the underlying API diff. A removed or signature-changed experimental symbol still appears in Breaking Changes and Changes to Existing API, but it is not presented as a release-manager warning.
 
+### 4h — Schema and importer completeness
+
+Reconcile new or substantially changed user-authorable simulation features
+across the audited range with the schema and importer policy in
+`CODING_GUIDELINES.rst` and `REVIEW_GUIDELINES.rst`. Include capability additions
+to existing APIs and relevant commits without a changelog entry, not only new
+Python symbols. Runtime-only or non-authorable features may be marked not
+applicable with a concrete reason.
+
+For each feature, inspect the applicable schema definition or proposal
+revision, importer path, companion schema-package changes and compatible
+dependency versions where needed, and tests demonstrating equivalent
+USD-authored and builder-created behavior. Existing schema representation alone
+does not establish importer or runtime support. Check that the normal path
+works with OpenUSD without requiring Omniverse or vendor-specific packages.
+
+Render a **Schema & Importer Support** table with columns
+`Feature | Disposition | Evidence / remaining work`. Use these dispositions:
+
+- **Supported**: schema representation, parsing, and behavioral coverage are
+  present at the audited ref; cite the evidence.
+- **Explicitly deferred**: cite review acceptance, reason, tracking issue,
+  owner, and target milestone. Surface the remaining limitation for release
+  review; a follow-up issue by itself is not acceptance.
+- **Not applicable**: explain why the feature is runtime-only or non-authorable.
+- **Gap / decision required**: support or evidence is missing, or a deferral
+  lacks explicit acceptance or required tracking. Identify the missing pieces
+  for a keep/defer decision; do not silently classify the feature as complete.
+
+In retrospective mode, pin evidence to the target tag and distinguish gaps
+under the current policy from violations of requirements in force at that tag.
+
 ## Phase 5 — Review CHANGELOG language and bake
 
 ### 5a — Language review
@@ -548,7 +580,7 @@ Open the summary with a 2-3 sentence intro paragraph that names the shape of the
 
 ### 7b — Fill template
 
-Read `references/report-template.md`. Fill in every `{{PLACEHOLDER}}` marker, including `{{DOCUMENT_VERSION_CONTROL}}`, the `{{HEADLINE_SUMMARY}}` produced in 7a, and `{{DEPENDENCY_LICENSE_AUDIT}}` from Phase 5c. In retrospective mode, also fill the `{{CALIBRATION_NOTES}}` placeholder using the narrative composed in Phase 6c; leave it empty (and the template will elide the section) in pre-release / RC mode.
+Read `references/report-template.md`. Fill in every `{{PLACEHOLDER}}` marker, including `{{DOCUMENT_VERSION_CONTROL}}`, the `{{HEADLINE_SUMMARY}}` produced in 7a, `{{SCHEMA_IMPORTER_SUPPORT}}` from Phase 4h, and `{{DEPENDENCY_LICENSE_AUDIT}}` from Phase 5c. In retrospective mode, also fill the `{{CALIBRATION_NOTES}}` placeholder using the narrative composed in Phase 6c; leave it empty (and the template will elide the section) in pre-release / RC mode.
 
 For either gist destination, compose and validate the report as a normal markdown file at `/tmp/<gist-filename>`; do not stream the full report through chat or repeated command output. When revising an existing gist, first materialize its current file as the editable baseline:
 

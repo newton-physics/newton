@@ -104,6 +104,11 @@ Pre-release planning
          :ref:`developer guidance <experimental-features>`.
        - Confirm new public API has complete docstrings and is included in
          Sphinx docs (run ``uv run docs/generate_api.py``).
+       - Reconcile new or substantially changed user-authorable simulation
+         features with USD schema and importer support, including companion
+         schema-package versions and behavioral validation. Record accepted
+         deferrals with their reason, issue, owner, and target milestone;
+         surface unacknowledged gaps for an explicit release decision.
 
        Run the ``release-audit`` skill
        (``.agents/skills/release-audit``) in **pre-release mode** to automate

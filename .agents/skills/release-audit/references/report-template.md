@@ -141,6 +141,7 @@ real symbols / topics present in this specific report):
 - [Behavioral & Support Changes](#behavioral--support-changes)
   - per-topic heading as sub-bullet
 - [Dependency & License Audit](#dependency--license-audit)
+- [Schema & Importer Support](#schema--importer-support)
 - [Fixed](#fixed)
 - [Calibration Notes](#calibration-notes) (retrospective mode only)
   - per-flag-class sub-bullet
@@ -513,6 +514,19 @@ access), deprecates the old names, and adjusts default Gaussian sorting modes.
      inconclusive. Keep the helper's Existing Resolved Package Version-Set
      Changes table inside its closed `<details>` block so the long table is
      collapsed by default. -->
+
+---
+
+## Schema & Importer Support
+
+{{SCHEMA_IMPORTER_SUPPORT}}
+
+<!-- Render the Phase 4h table:
+     Feature | Disposition | Evidence / remaining work.
+     Include supported features, explicitly accepted deferrals with reason,
+     issue, owner, and target milestone, justified not-applicable cases, and
+     gaps requiring a release decision. If there are no relevant features in
+     the audited range, state that explicitly rather than inventing rows. -->
 
 ---
 
