@@ -1559,7 +1559,19 @@ def parse_usd(
         }:
             paths, joint_specs = value
             for path, joint_spec in zip(paths, joint_specs, strict=False):
-                joint_descriptions[str(path)] = joint_spec
+                joint_path = str(path)
+                body0_path = str(joint_spec.body0)
+                # USD has already resolved descendant targets to their rigid bodies.
+                if (
+                    joint_spec.body0 == joint_spec.body1
+                    and body0_path in body_specs
+                    and (joint_spec.jointEnabled or not only_load_enabled_joints)
+                    and not any(re.match(p, joint_path) for p in ignore_paths)
+                ):
+                    raise ValueError(
+                        f"Unable to parse joint {joint_path}: both endpoints resolve to the same rigid body {body0_path}"
+                    )
+                joint_descriptions[joint_path] = joint_spec
 
     mjc_equality_connect_paths: set[str] = set()
     mjc_equality_weld_paths: set[str] = set()
