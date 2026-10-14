@@ -40,9 +40,7 @@ jobs:
       - name: Harden Runner
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
         with:
-          egress-policy: block
-          allowed-endpoints: >
-            api.github.com:443
+          egress-policy: audit
 
       - name: Delete all but the newest cache
         env:
@@ -56,6 +54,8 @@ jobs:
             --json id,key --jq '.[1:][] | "\(.id) \(.key)"' |
             while read -r id key; do
               echo "Deleting $key"
-              # A concurrent run may have deleted it already.
-              gh cache delete "$id" || echo "::warning::Could not delete $key"
+              if ! out=$(gh api -X DELETE "repos/$GH_REPO/actions/caches/$id" 2>&1); then
+                # A concurrent run may have deleted it already; fail on anything else.
+                [[ "$out" == *"HTTP 404"* ]] || { echo "$out"; exit 1; }
+              fi
             done
