@@ -81,7 +81,7 @@ you also attach, for example, a file handler to ``newton``:
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
     logging.getLogger("newton").setLevel(logging.WARNING)  # hide INFO output
-    logging.getLogger("newton").setLevel(logging.DEBUG)  # show debug details
+    # or: logging.getLogger("newton").setLevel(logging.DEBUG)  # show debug details
 
 Configure the ``newton`` logger itself; the names of its child loggers follow
 Newton's internal module layout and may change between releases. In tests,
