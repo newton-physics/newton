@@ -150,10 +150,9 @@ Code freeze and release branch creation
           # Minimum-dependency tests (lowest compatible PyPI versions)
           gh workflow run minimum_deps_tests.yml --ref release-X.Y
 
-          # Multi-GPU tests (both instance types provide 4× L40S GPUs)
+          # Multi-GPU tests (g7e.12xlarge = 4× L40S GPUs)
           gh workflow run aws_gpu_tests.yml --ref release-X.Y \
-              -f instance-type=g6e.12xlarge \
-              -f fallback-instance-type=g6e.24xlarge
+              -f instance-type=g7e.12xlarge
    * - ☐
      - Push tag ``vX.Y.Zrc1``.  This triggers the ``release.yml`` workflow
        (build wheel → PyPI publish with manual approval).
