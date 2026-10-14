@@ -1,0 +1,1 @@
+Correct MuJoCo Warp's conversion of per-contact stiffness [N/m] and damping [N·s/m] using the combined body inverse weight, contact impedance, and pyramidal normal regularization. Share the cone correction with shape-material force-space contacts. Retune gains calibrated to the previous conversion; authored/default contact mappings remain unchanged.
