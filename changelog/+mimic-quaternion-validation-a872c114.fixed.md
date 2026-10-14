@@ -1,1 +1,1 @@
-Reject quaternion joints as followers or references in `ModelBuilder.set_joint_mimic()` to prevent invalid quaternion coordinates.
+Validate that `ModelBuilder.set_joint_mimic()` followers and references are PRISMATIC, REVOLUTE, or D6 joints to prevent invalid quaternion coordinates and reject FIXED joints without mimic coordinates.

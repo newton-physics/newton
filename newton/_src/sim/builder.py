@@ -7009,7 +7009,7 @@ class ModelBuilder:
         *,
         coeffs: Vec2 = (0.0, 1.0),
     ) -> None:
-        """Configure a non-quaternion joint to mimic another with matching dimensions.
+        """Configure a PRISMATIC, REVOLUTE, or D6 joint to mimic another with matching dimensions.
 
         The relationship is applied componentwise to every position and
         velocity coordinate. The follower coordinates are defined by
@@ -7019,7 +7019,8 @@ class ModelBuilder:
 
         Quaternion joints (BALL, FREE, DISTANCE, and ROD) cannot be followers
         or references because the componentwise relationship does not preserve
-        unit quaternions.
+        unit quaternions. FIXED joints have no coordinates to mimic and are also
+        not supported.
 
         Mimic chains are not supported: the reference joint must be independent,
         and a joint referenced by another mimic joint cannot become a follower.
@@ -7032,8 +7033,8 @@ class ModelBuilder:
                 coordinates [m or rad, dimensionless].
 
         Raises:
-            ValueError: If an index is invalid, either joint uses quaternion
-                coordinates, the joint dimensions differ, the
+            ValueError: If an index is invalid, either joint type is unsupported,
+                the joint dimensions differ, the
                 joints belong to different worlds or articulations, the
                 coefficients are not finite, or the relationship creates a mimic
                 chain.
@@ -7052,12 +7053,12 @@ class ModelBuilder:
         if joint == reference_joint:
             raise ValueError(f"Joint {joint} cannot mimic itself")
 
-        quaternion_joint_types = (JointType.BALL, JointType.FREE, JointType.DISTANCE, JointType.ROD)
+        supported_joint_types = (JointType.PRISMATIC, JointType.REVOLUTE, JointType.D6)
         if (
-            self.joint_type[joint] in quaternion_joint_types
-            or self.joint_type[reference_joint] in quaternion_joint_types
+            self.joint_type[joint] not in supported_joint_types
+            or self.joint_type[reference_joint] not in supported_joint_types
         ):
-            raise ValueError("Mimic followers and references must be non-quaternion joints")
+            raise ValueError("Mimic followers and references only support PRISMATIC, REVOLUTE, and D6 joints")
 
         follower_dimensions = self.joint_type[joint].dof_count(sum(self.joint_dof_dim[joint]))
         reference_dimensions = self.joint_type[reference_joint].dof_count(sum(self.joint_dof_dim[reference_joint]))

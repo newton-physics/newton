@@ -3822,40 +3822,8 @@ class TestModelJoints(unittest.TestCase):
         self.assertEqual(builder.joint_mimic_joint[joint1], -1)
         self.assertEqual(builder.joint_mimic_coeffs[joint1], (0.0, 1.0))
 
-    def test_joint_mimic_rejects_quaternion_joints(self):
-        """Reject quaternion joints as mimic followers and references without changing metadata."""
-        for joint_type in (
-            newton.JointType.BALL,
-            newton.JointType.FREE,
-            newton.JointType.DISTANCE,
-            newton.JointType.ROD,
-        ):
-            for role in ("follower", "reference", "both"):
-                with self.subTest(joint_type=joint_type, role=role):
-                    builder = newton.ModelBuilder()
-                    bodies = [builder.add_link() for _ in range(2)]
-                    reference_type = joint_type if role in ("reference", "both") else newton.JointType.REVOLUTE
-                    follower_type = joint_type if role in ("follower", "both") else newton.JointType.REVOLUTE
-                    constructors = {
-                        newton.JointType.BALL: builder.add_joint_ball,
-                        newton.JointType.FREE: builder.add_joint_free,
-                        newton.JointType.DISTANCE: builder.add_joint_distance,
-                        newton.JointType.ROD: builder.add_joint_rod,
-                        newton.JointType.REVOLUTE: builder.add_joint_revolute,
-                    }
-                    reference = constructors[reference_type](parent=-1, child=bodies[0])
-                    follower = constructors[follower_type](parent=bodies[0], child=bodies[1])
-
-                    with self.assertRaisesRegex(ValueError, "non-quaternion"):
-                        builder.set_joint_mimic(follower, reference, coeffs=(0.0, 2.0))
-
-                    self.assertEqual(builder.joint_mimic_joint, [-1, -1])
-                    self.assertEqual(builder.joint_mimic_coeffs, [(0.0, 1.0), (0.0, 1.0)])
-                    builder.set_joint_mimic(follower, None)
-                    self.assertEqual(builder.joint_mimic_joint[follower], -1)
-
     def test_joint_mimic_validates_dimensions(self):
-        """Verify mimic relationships accept joint types only when their dimensions match."""
+        """Accept supported mimic types with matching dimensions and reject unsupported types."""
         builder = newton.ModelBuilder()
         bodies = [builder.add_link() for _ in range(3)]
         axis = newton.ModelBuilder.JointDofConfig.create_unlimited
@@ -3875,6 +3843,31 @@ class TestModelJoints(unittest.TestCase):
         self.assertEqual(builder.joint_mimic_joint[d6_scalar], reference)
         with self.assertRaisesRegex(ValueError, "matching position and velocity dimensions"):
             builder.set_joint_mimic(d6_vector, reference)
+
+        prismatic = builder.add_joint_prismatic(parent=-1, child=builder.add_link())
+        builder.set_joint_mimic(prismatic, reference)
+        self.assertEqual(builder.joint_mimic_joint[prismatic], reference)
+
+        for constructor in (
+            builder.add_joint_ball,
+            builder.add_joint_free,
+            builder.add_joint_distance,
+            builder.add_joint_rod,
+            builder.add_joint_fixed,
+        ):
+            joint0 = constructor(parent=-1, child=builder.add_link())
+            joint1 = constructor(parent=-1, child=builder.add_link())
+            for follower, leader in ((joint0, reference), (reference, joint0), (joint1, joint0)):
+                with self.subTest(joint_type=builder.joint_type[joint0], follower=follower, reference=leader):
+                    mimic_joints = list(builder.joint_mimic_joint)
+                    mimic_coeffs = list(builder.joint_mimic_coeffs)
+                    with self.assertRaisesRegex(ValueError, "only support PRISMATIC, REVOLUTE, and D6"):
+                        builder.set_joint_mimic(follower, leader, coeffs=(0.0, 2.0))
+                    self.assertEqual(builder.joint_mimic_joint, mimic_joints)
+                    self.assertEqual(builder.joint_mimic_coeffs, mimic_coeffs)
+            builder.set_joint_mimic(joint0, None)
+            self.assertEqual(builder.joint_mimic_joint[joint0], -1)
+            self.assertEqual(builder.joint_mimic_coeffs[joint0], (0.0, 1.0))
 
     def test_add_base_joint_fixed_to_parent(self):
         """Test that add_base_joint with parent creates fixed joint."""
