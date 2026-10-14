@@ -416,7 +416,7 @@ class ViewerViser(ViewerBase):
             port: Port number for the web server. Defaults to 8080.
             paused: Whether simulation stepping starts paused.
             label: Optional label for the viser server window title.
-            verbose: If True, print the server URL when starting. Defaults to True.
+            verbose: If True, log the server URL when starting. Defaults to True.
             share: If True, create a publicly accessible URL via viser's share feature.
             record_to_viser: Path to record the viewer to a ``*.viser`` recording file
                 (e.g. "my_recording.viser"). If None, the viewer will not record to a file.

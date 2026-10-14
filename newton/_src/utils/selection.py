@@ -774,7 +774,7 @@ class ArticulationView:
         allow_partial_layouts: If True, construct the view when only some selected
             data has a common layout. Access to data without a common layout raises
             :class:`AttributeError`.
-        verbose: If True, prints selection summary.
+        verbose: If True, logs selection summary.
     """
 
     def __init__(

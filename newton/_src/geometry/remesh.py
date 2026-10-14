@@ -1445,7 +1445,7 @@ class SurfaceReconstructor:
         Args:
             points: (N, 3) array of point positions.
             normals: (N, 3) array of surface normals (should be unit length).
-            verbose: Print progress information.
+            verbose: Log progress information.
 
         Returns:
             Mesh containing vertices and triangle indices.
@@ -1616,7 +1616,7 @@ def extract_largest_island(
     Args:
         vertices: Vertex positions, shape (N, 3).
         indices: Triangle indices, shape (M*3,) or (M, 3).
-        verbose: Print progress information. Default is False.
+        verbose: Log progress information. Default is False.
 
     Returns:
         Tuple of (new_vertices, new_indices) containing only the largest island.
@@ -1793,7 +1793,7 @@ def remesh_poisson(
             in areas with sparse point coverage.
         device: Warp device for GPU computation. Default uses the default Warp device.
         seed: Random seed for reproducibility. Default is 42.
-        verbose: Print progress information. Default is False.
+        verbose: Log progress information. Default is False.
 
     Returns:
         A tuple (vertices, faces) containing the remeshed mesh:

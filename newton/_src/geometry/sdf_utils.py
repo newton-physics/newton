@@ -933,7 +933,7 @@ def _compute_sdf_from_shape_impl(
         target_voxel_size: Target voxel size for sparse SDF grid. If None, computed as max_extent/max_resolution.
         max_resolution: Maximum dimension for sparse SDF grid when target_voxel_size is None. Must be divisible by 8.
         bake_scale: If True, bake shape_scale into the SDF. If False, use (1,1,1) scale.
-        verbose: Print debug info.
+        verbose: Log debug info.
         device: CUDA device for all GPU allocations. When ``None``, uses the
             current :class:`wp.ScopedDevice` or the Warp default device.
 
@@ -1164,7 +1164,7 @@ def compute_sdf_from_shape(
         max_resolution: Maximum sparse-grid dimension [voxel] when
             ``target_voxel_size`` is not provided.
         bake_scale: If ``True``, bake ``shape_scale`` into generated SDF data.
-        verbose: If ``True``, print debug information during SDF construction.
+        verbose: If ``True``, log debug information during SDF construction.
         device: CUDA device for SDF allocation. When ``None``, uses the
             current :class:`wp.ScopedDevice` or the Warp default device.
 

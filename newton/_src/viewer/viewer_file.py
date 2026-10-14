@@ -1208,7 +1208,7 @@ class ViewerFile(ViewerBase):
         Args:
             file_path: Optional override for the output path. If omitted, uses
                 the ``output_path`` from construction.
-            verbose: If True, print status output on success/failure.
+            verbose: If True, log status output on success/failure.
         """
         effective_path = file_path if file_path is not None else str(self.output_path)
         self._save_recording(effective_path, verbose=verbose)
@@ -1495,7 +1495,7 @@ class ViewerFile(ViewerBase):
         Args:
             file_path: Optional override for the file path. If omitted, uses
                 the ``output_path`` from construction.
-            verbose: If True, print status output after loading.
+            verbose: If True, log status output after loading.
         """
         effective_path = file_path if file_path is not None else str(self.output_path)
         self._load_from_file(effective_path)

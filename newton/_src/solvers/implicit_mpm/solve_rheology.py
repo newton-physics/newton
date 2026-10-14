@@ -1972,7 +1972,7 @@ def solve_rheology(
             for Jacobi solver).
         temporary_store: Temporary storage arena for intermediate arrays.
         use_graph: If True, uses conditional CUDA graphs for the iteration loop.
-        verbose: If True, print residuals/iteration counts. If False, suppress details. If None, print details when
+        verbose: If True, log residuals/iteration counts. If False, suppress details. If None, log details when
             ``wp.config.log_level`` is configured for debug logging.
 
     Returns:
