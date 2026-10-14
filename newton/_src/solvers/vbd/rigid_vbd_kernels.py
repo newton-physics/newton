@@ -286,6 +286,284 @@ def _world_selected(world: int, mask: wp.array[wp.bool]):
     return mask[mask_index]
 
 
+# -----------------------------
+# BDF2: per-world BDF1/BDF2 selection (theta) and the per-body step it implies
+# -----------------------------
+@wp.struct
+class RigidStepSize:
+    """Per-body rigid step for the per-world BDF1/BDF2 selection of the BDF2 integrator.
+
+    ``per_body == 0``: every kernel uses its scalar step and BDF2 flag (the solver-wide integrator).
+    Otherwise ``h[body]`` is the body's solve step (``dt`` on a BDF1 step, ``2/3 dt`` on a BDF2 step, both the
+    host-rounded values the scalar path would pass), ``inv_h2[body]`` the matching host-rounded ``1 / h^2`` and
+    ``bdf2[body]`` 1 on a BDF2 step. All bodies of a world share one value, so every joint and contact row has a
+    single step (the per-world fallback of the theta blend).
+    """
+
+    per_body: int
+    h: wp.array[float]
+    inv_h2: wp.array[float]
+    bdf2: wp.array[wp.int32]
+
+
+@wp.func
+def rigid_step_h(step: RigidStepSize, body: int, dt: float) -> float:
+    if step.per_body != 0 and body >= 0:
+        return step.h[body]
+    return dt
+
+
+@wp.func
+def rigid_step_inv_h2(step: RigidStepSize, body: int, inv_h2: float) -> float:
+    if step.per_body != 0 and body >= 0:
+        return step.inv_h2[body]
+    return inv_h2
+
+
+@wp.func
+def rigid_step_bdf2(step: RigidStepSize, body: int, bdf2_step: int) -> int:
+    if step.per_body != 0 and body >= 0:
+        return step.bdf2[body]
+    return bdf2_step
+
+
+@wp.func
+def rigid_step_contact_body(s0: int, s1: int, shape_body: wp.array[wp.int32]) -> int:
+    """Body whose step a contact row uses: shape 0's body, else shape 1's (both share a world)."""
+    b = int(-1)
+    if s0 >= 0:
+        b = shape_body[s0]
+    if b < 0 and s1 >= 0:
+        b = shape_body[s1]
+    return b
+
+
+@wp.func
+def _world_slot(world: int, slot_count: int) -> int:
+    if world < 0:
+        return slot_count - 1
+    return world
+
+
+@wp.kernel
+def bdf2_theta_detect_dofs(
+    dof_world: wp.array[wp.int32],
+    rebaseline_mask: wp.array[wp.bool],
+    dof_coord: wp.array[wp.int32],
+    joint_f: wp.array[float],
+    joint_q: wp.array[float],
+    limit_lower: wp.array[float],
+    limit_upper: wp.array[float],
+    force_abs_tol: float,
+    force_rel_tol: float,
+    limit_tol: float,
+    use_limits: int,
+    joint_f_prev: wp.array[float],
+    limit_state_prev: wp.array[wp.int32],
+    world_event: wp.array[wp.int32],
+):
+    """Pre-solve detectors per DOF: explicit force jump and joint-limit engagement or release.
+
+    Worlds without history (``rebaseline_mask``: construction or reset) only record the current values.
+    """
+    d = wp.tid()
+    world = dof_world[d]
+    slot = _world_slot(world, world_event.shape[0])
+    fresh = _world_selected(world, rebaseline_mask)
+    f = joint_f[d]
+    fp = joint_f_prev[d]
+    if not fresh and wp.abs(f - fp) > force_abs_tol + force_rel_tol * wp.abs(fp):
+        wp.atomic_max(world_event, slot, 1)
+    joint_f_prev[d] = f
+    c = dof_coord[d]
+    if use_limits != 0 and c >= 0:
+        lo = limit_lower[d]
+        hi = limit_upper[d]
+        state = int(0)
+        if lo < hi:
+            # Engaged only when the coordinate is past the bound by more than limit_tol, so a joint resting on its
+            # bound (gap ~ 0, flipping sign by rounding) does not fire an event every step.
+            q = joint_q[c]
+            if q < lo - limit_tol:
+                state = -1
+            elif q > hi + limit_tol:
+                state = 1
+        if not fresh and state != limit_state_prev[d]:
+            wp.atomic_max(world_event, slot, 1)
+        limit_state_prev[d] = state
+
+
+@wp.kernel
+def bdf2_theta_detect_bodies(
+    body_world: wp.array[wp.int32],
+    rebaseline_mask: wp.array[wp.bool],
+    body_inv_mass: wp.array[float],
+    body_qd: wp.array[wp.spatial_vector],
+    hist_qd: wp.array[wp.spatial_vector],
+    body_f: wp.array[wp.spatial_vector],
+    lin_tol: float,
+    ang_tol: float,
+    rel_tol: float,
+    force_abs_tol: float,
+    force_rel_tol: float,
+    use_events: int,
+    qd_m2: wp.array[wp.spatial_vector],
+    body_f_prev: wp.array[wp.spatial_vector],
+    world_event: wp.array[wp.int32],
+):
+    """Pre-solve detectors per body: velocity jump (second difference v_n - 2 v_{n-1} + v_{n-2}) and body_f jump.
+
+    Always keeps the velocity history; reports events only when ``use_events`` is nonzero. Worlds without
+    history (``rebaseline_mask``: construction or reset) only record the current values.
+    """
+    b = wp.tid()
+    if body_inv_mass[b] == 0.0:
+        return
+    world = body_world[b]
+    slot = _world_slot(world, world_event.shape[0])
+    v = body_qd[b]
+    if _world_selected(world, rebaseline_mask):
+        qd_m2[b] = v
+        body_f_prev[b] = body_f[b]
+        return
+    vm = hist_qd[b]
+    if use_events != 0:
+        d2 = v - 2.0 * vm + qd_m2[b]
+        lin = wp.length(wp.spatial_top(d2))
+        ang = wp.length(wp.spatial_bottom(d2))
+        if lin > lin_tol + rel_tol * wp.length(wp.spatial_top(v)) or ang > ang_tol + rel_tol * wp.length(
+            wp.spatial_bottom(v)
+        ):
+            wp.atomic_max(world_event, slot, 1)
+    qd_m2[b] = vm
+    if use_events != 0:
+        f = body_f[b]
+        fp = body_f_prev[b]
+        df = f - fp
+        if wp.length(wp.spatial_top(df)) > force_abs_tol + force_rel_tol * wp.length(wp.spatial_top(fp)) or wp.length(
+            wp.spatial_bottom(df)
+        ) > force_abs_tol + force_rel_tol * wp.length(wp.spatial_bottom(fp)):
+            wp.atomic_max(world_event, slot, 1)
+        body_f_prev[b] = f
+
+
+@wp.kernel
+def bdf2_theta_count_contacts(
+    rigid_contact_count: wp.array[int],
+    rigid_contact_shape0: wp.array[int],
+    rigid_contact_shape1: wp.array[int],
+    rigid_contact_point0: wp.array[wp.vec3],
+    rigid_contact_point1: wp.array[wp.vec3],
+    rigid_contact_normal: wp.array[wp.vec3],
+    rigid_contact_margin0: wp.array[float],
+    rigid_contact_margin1: wp.array[float],
+    shape_body: wp.array[wp.int32],
+    body_world: wp.array[wp.int32],
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    dt: float,
+    world_contacts: wp.array[wp.int32],
+):
+    """Count, per world, the contacts predicted active this step: separation + dt * approach rate < 0."""
+    i = wp.tid()
+    if i >= rigid_contact_count[0]:
+        return
+    s0 = rigid_contact_shape0[i]
+    s1 = rigid_contact_shape1[i]
+    b0 = shape_body[s0] if s0 >= 0 else -1
+    b1 = shape_body[s1] if s1 >= 0 else -1
+    n = rigid_contact_normal[i]
+    p0 = rigid_contact_point0[i]
+    p1 = rigid_contact_point1[i]
+    cp0 = p0
+    cp1 = p1
+    v0 = wp.vec3(0.0)
+    v1 = wp.vec3(0.0)
+    if b0 >= 0:
+        X = body_q[b0]
+        cp0 = wp.transform_point(X, p0)
+        r = cp0 - wp.transform_point(X, body_com[b0])
+        v0 = wp.spatial_top(body_qd[b0]) + wp.cross(wp.spatial_bottom(body_qd[b0]), r)
+    if b1 >= 0:
+        X = body_q[b1]
+        cp1 = wp.transform_point(X, p1)
+        r = cp1 - wp.transform_point(X, body_com[b1])
+        v1 = wp.spatial_top(body_qd[b1]) + wp.cross(wp.spatial_bottom(body_qd[b1]), r)
+    sep = contact_surface_separation(cp0, cp1, n, rigid_contact_margin0[i], rigid_contact_margin1[i])
+    if sep + dt * wp.dot(n, v1 - v0) < 0.0:
+        b = b0
+        if b < 0:
+            b = b1
+        if b >= 0:
+            wp.atomic_add(world_contacts, _world_slot(body_world[b], world_contacts.shape[0]), 1)
+
+
+@wp.kernel
+def bdf2_theta_select_worlds(
+    use_events: int,
+    hold_steps: int,
+    rebaseline_mask: wp.array[wp.bool],
+    world_contacts: wp.array[wp.int32],
+    world_contacts_prev: wp.array[wp.int32],
+    world_event: wp.array[wp.int32],
+    world_hold: wp.array[wp.int32],
+    world_bdf2: wp.array[wp.int32],
+):
+    """Choose BDF1 (0) or BDF2 (1) for this step per world.
+
+    A world without history (``rebaseline_mask``: construction or reset) always takes BDF1. With
+    ``use_events``, so does a world with a detected event or a change in its predicted active contact
+    count. Each of these holds BDF1 for ``hold_steps`` steps (this one included), so the next BDF2 step
+    has a history made of real BDF1 increments.
+    """
+    w = wp.tid()
+    event = int(0)
+    if rebaseline_mask[w]:
+        event = 1
+    if use_events != 0:
+        if world_event[w] != 0:
+            event = 1
+        if world_contacts[w] != world_contacts_prev[w]:
+            event = 1
+    hold = world_hold[w]
+    if event != 0:
+        hold = hold_steps
+    bdf2 = int(1)
+    if hold > 0:
+        bdf2 = 0
+        hold = hold - 1
+    world_hold[w] = hold
+    world_bdf2[w] = bdf2
+    world_contacts_prev[w] = world_contacts[w]
+    world_contacts[w] = 0
+    world_event[w] = 0
+
+
+@wp.kernel
+def bdf2_theta_expand_bodies(
+    body_world: wp.array[wp.int32],
+    world_bdf2: wp.array[wp.int32],
+    h_bdf1: float,
+    h_bdf2: float,
+    inv_h2_bdf1: float,
+    inv_h2_bdf2: float,
+    body_bdf2: wp.array[wp.int32],
+    body_h: wp.array[float],
+    body_inv_h2: wp.array[float],
+):
+    """Copy each world's BDF1/BDF2 choice and the matching step size to its bodies."""
+    b = wp.tid()
+    flag = world_bdf2[_world_slot(body_world[b], world_bdf2.shape[0])]
+    body_bdf2[b] = flag
+    if flag != 0:
+        body_h[b] = h_bdf2
+        body_inv_h2[b] = inv_h2_bdf2
+    else:
+        body_h[b] = h_bdf1
+        body_inv_h2[b] = inv_h2_bdf1
+
+
 @wp.func
 def _reset_world_selected(
     world: int,
@@ -4254,9 +4532,9 @@ def refresh_joint_material_params(
 # -----------------------------
 # Pre-iteration kernels (once per step)
 # -----------------------------
-@wp.kernel
-def forward_step_rigid_bodies(
-    # Inputs
+@wp.func
+def _forward_step_rigid_body(
+    tid: int,
     dt: float,
     gravity: wp.array[wp.vec3],
     body_world: wp.array[wp.int32],
@@ -4272,29 +4550,7 @@ def forward_step_rigid_bodies(
     body_q_prev: wp.array[wp.transform],
     body_inertia_q: wp.array[wp.transform],
 ):
-    """
-    Forward integration step for rigid bodies in SolverVBD.
-
-    Args:
-        dt: Time step [s].
-        gravity: Gravity vector array (world frame).
-        body_world: World index for each body.
-        pose_rebaseline_mask: Per-world flags for the ``body_q_prev`` rebaseline below.
-        body_f: External forces on bodies (spatial wrenches, world frame).
-        body_com: Centers of mass (local body frame).
-        body_inertia: Inertia tensors (local body frame).
-        body_inv_mass: Inverse masses (0 for kinematic bodies).
-        body_inv_inertia: Inverse inertia tensors (local body frame).
-        use_angular_velocity_target: Preserve the local solve's angular target independently of its predicted pose.
-        body_q: Body transforms (input: start-of-step pose, output: initial solve pose).
-        body_qd: Body velocities (input: start-of-step velocity, output: unconstrained target).
-        body_q_prev: Previous body transforms (output). Rebaselined to the current
-            pre-step pose for worlds selected by ``pose_rebaseline_mask`` (first step
-            after construction or reset); left unchanged otherwise.
-        body_inertia_q: Predicted transforms (output). The local angular solve uses ``body_qd`` instead.
-    """
-    tid = wp.tid()
-
+    """Forward-integrate one rigid body; see :func:`forward_step_rigid_bodies`."""
     world_idx = body_world[tid]
     q_current = body_q[tid]
     if _world_selected(world_idx, pose_rebaseline_mask):
@@ -4349,6 +4605,64 @@ def forward_step_rigid_bodies(
     body_q[tid] = q_new
     body_qd[tid] = qd_new
     body_inertia_q[tid] = q_new
+
+
+@wp.kernel
+def forward_step_rigid_bodies(
+    # Inputs
+    dt: float,
+    gravity: wp.array[wp.vec3],
+    body_world: wp.array[wp.int32],
+    pose_rebaseline_mask: wp.array[wp.bool],
+    body_f: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    body_inertia: wp.array[wp.mat33],
+    body_inv_mass: wp.array[float],
+    body_inv_inertia: wp.array[wp.mat33],
+    use_angular_velocity_target: bool,
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_q_prev: wp.array[wp.transform],
+    body_inertia_q: wp.array[wp.transform],
+):
+    """
+    Forward integration step for rigid bodies in SolverVBD.
+
+    Args:
+        dt: Time step [s].
+        gravity: Gravity vector array (world frame).
+        body_world: World index for each body.
+        pose_rebaseline_mask: Per-world flags for the ``body_q_prev`` rebaseline below.
+        body_f: External forces on bodies (spatial wrenches, world frame).
+        body_com: Centers of mass (local body frame).
+        body_inertia: Inertia tensors (local body frame).
+        body_inv_mass: Inverse masses (0 for kinematic bodies).
+        body_inv_inertia: Inverse inertia tensors (local body frame).
+        use_angular_velocity_target: Preserve the local solve's angular target independently of its predicted pose.
+        body_q: Body transforms (input: start-of-step pose, output: initial solve pose).
+        body_qd: Body velocities (input: start-of-step velocity, output: unconstrained target).
+        body_q_prev: Previous body transforms (output). Rebaselined to the current
+            pre-step pose for worlds selected by ``pose_rebaseline_mask`` (first step
+            after construction or reset); left unchanged otherwise.
+        body_inertia_q: Predicted transforms (output). The local angular solve uses ``body_qd`` instead.
+    """
+    _forward_step_rigid_body(
+        wp.tid(),
+        dt,
+        gravity,
+        body_world,
+        pose_rebaseline_mask,
+        body_f,
+        body_com,
+        body_inertia,
+        body_inv_mass,
+        body_inv_inertia,
+        use_angular_velocity_target,
+        body_q,
+        body_qd,
+        body_q_prev,
+        body_inertia_q,
+    )
 
 
 @wp.kernel
@@ -4669,6 +4983,7 @@ def _joint_coordinate_support(
 
 @wp.kernel
 def step_joint_C0_lambda_rho(
+    step_size: RigidStepSize,
     joint_type: wp.array[int],
     joint_enabled: wp.array[bool],
     joint_parent: wp.array[int],
@@ -4728,6 +5043,7 @@ def step_joint_C0_lambda_rho(
     c_start = int(joint_constraint_start[j])
     c_dim = int(joint_constraint_dim[j])
     child = joint_child[j]
+    inv_dt_sq = rigid_step_inv_h2(step_size, child, inv_dt_sq)
     parent = joint_parent[j]
 
     # 1. Penalty-k decay runs unconditionally (even for disabled joints).
@@ -5243,6 +5559,7 @@ def snapshot_body_body_contact_history(
 
 @wp.kernel
 def step_body_body_contact_C0_lambda(
+    step_size: RigidStepSize,
     rigid_contact_count: wp.array[int],
     rigid_contact_shape0: wp.array[int],
     rigid_contact_shape1: wp.array[int],
@@ -5286,6 +5603,9 @@ def step_body_body_contact_C0_lambda(
     i = wp.tid()
     if i >= rigid_contact_count[0]:
         return
+    inv_dt_sq = rigid_step_inv_h2(
+        step_size, rigid_step_contact_body(rigid_contact_shape0[i], rigid_contact_shape1[i], shape_body), inv_dt_sq
+    )
 
     contact_normal_rho[i] = 0.0
     contact_tangent_rho[i] = 0.0
@@ -5636,6 +5956,7 @@ def create_accumulate_body_body_contacts_per_body():
 
     @wp.kernel(module="unique")
     def accumulate_body_body_contacts_per_body(
+        step_size: RigidStepSize,
         dt: float,
         color_group: wp.array[wp.int32],
         body_q_prev: wp.array[wp.transform],
@@ -5689,6 +6010,7 @@ def create_accumulate_body_body_contacts_per_body():
         body_id = color_group[body_idx_in_group]
         if body_inv_mass[body_id] <= 0.0:
             return
+        dt = rigid_step_h(step_size, body_id, dt)
 
         num_contacts = body_contact_counts[body_id]
         if num_contacts > body_contact_buffer_pre_alloc:
@@ -6082,6 +6404,7 @@ compute_rigid_contact_forces = create_compute_rigid_contact_forces()
 
 @wp.kernel
 def compute_body_body_contact_forces(
+    step_size: RigidStepSize,
     dt: float,
     # Contact data
     rigid_contact_count: wp.array[int],
@@ -6129,6 +6452,11 @@ def compute_body_body_contact_forces(
     if contact_idx >= rigid_contact_count[0]:
         contact_force[contact_idx] = wp.spatial_vector()
         return
+    dt = rigid_step_h(
+        step_size,
+        rigid_step_contact_body(rigid_contact_shape0[contact_idx], rigid_contact_shape1[contact_idx], shape_body),
+        dt,
+    )
 
     _b0, _b1, _point0_world, _point1_world, force_0, torque_0, _force_1 = _evaluate_body_body_contact_slot(
         contact_idx,
@@ -6577,6 +6905,7 @@ def create_solve_rigid_body(has_tendons: bool):
 
     @wp.kernel(module="unique", enable_backward=False)
     def solve_rigid_body(
+        step_size: RigidStepSize,
         dt: float,
         body_ids_in_color: wp.array[wp.int32],
         body_q: wp.array[wp.transform],
@@ -6707,6 +7036,7 @@ def create_solve_rigid_body(has_tendons: bool):
         """
         tid = wp.tid()
         body_index = body_ids_in_color[tid]
+        dt = rigid_step_h(step_size, body_index, dt)
 
         q_current = body_q[body_index]
 
@@ -6954,6 +7284,7 @@ def create_solve_rigid_body(has_tendons: bool):
 
 @wp.kernel
 def update_duals_joint(
+    step_size: RigidStepSize,
     # Inputs
     joint_type: wp.array[int],
     joint_enabled: wp.array[bool],
@@ -7012,6 +7343,7 @@ def update_duals_joint(
 
     parent = joint_parent[j]
     child = joint_child[j]
+    dt = rigid_step_h(step_size, child, dt)
 
     # Early exit for invalid joints
     if child < 0:
@@ -7555,6 +7887,7 @@ def create_update_duals_body_body_contacts():
 
     @wp.kernel(module="unique")
     def update_duals_body_body_contacts(
+        step_size: RigidStepSize,
         rigid_contact_count: wp.array[int],
         rigid_contact_shape0: wp.array[int],
         rigid_contact_shape1: wp.array[int],
@@ -7597,6 +7930,10 @@ def create_update_duals_body_body_contacts():
 
         if body_id_0 < 0 and body_id_1 < 0:
             return
+        step_body = body_id_0
+        if step_body < 0:
+            step_body = body_id_1
+        dt = rigid_step_h(step_size, step_body, dt)
 
         cp0_local = rigid_contact_point0[idx]
         cp1_local = rigid_contact_point1[idx]
@@ -7778,9 +8115,147 @@ def rotation_vector_from_quat(q: wp.quat) -> wp.vec3:
     return 2.0 * v
 
 
+@wp.func
+def rotation_vector_compose(a: wp.vec3, b: wp.vec3) -> wp.vec3:
+    """Rotation vector of exp(a) exp(b) (apply b, then a), keeping small-term precision.
+
+    For small rotations (both below 0.03 rad) the third-order Baker-Campbell-Hausdorff series
+    a + b + (a x b) / 2 + (a x (a x b) + b x (b x a)) / 12 is evaluated on the vectors themselves: composing
+    near-identity unit quaternions would round away the digits of a 1e-5 rad step increment. Larger rotations use
+    the quaternion product. The choice is a select, not a branch, so CUDA graphs and the GPU code are unaffected.
+    """
+    ab = wp.cross(a, b)
+    small = a + b + 0.5 * ab + (wp.cross(a, ab) - wp.cross(b, ab)) * (1.0 / 12.0)
+    large = rotation_vector_from_quat(wp.mul(quat_from_rotation_vector(a), quat_from_rotation_vector(b)))
+    return wp.where(wp.max(wp.length(a), wp.length(b)) < 0.03, small, large)
+
+
+@wp.kernel
+def bdf2_predict_rigid_bodies(
+    step_size: RigidStepSize,
+    h: float,
+    dt: float,
+    gravity: wp.array[wp.vec3],
+    body_world: wp.array[wp.int32],
+    pose_rebaseline_mask: wp.array[wp.bool],
+    body_f: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    body_inertia: wp.array[wp.mat33],
+    body_inv_mass: wp.array[float],
+    body_inv_inertia: wp.array[wp.mat33],
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    hist_qd: wp.array[wp.spatial_vector],
+    inc_lin: wp.array[wp.vec3],
+    inc_ang: wp.array[wp.vec3],
+    pred_lin: wp.array[wp.vec3],
+    pred_ang: wp.array[wp.vec3],
+    body_q_prev: wp.array[wp.transform],
+    body_inertia_q: wp.array[wp.transform],
+    rate_reference: wp.array[wp.transform],
+    body_disp: wp.array[wp.vec3],
+    body_disp_ang: wp.array[wp.vec3],
+):
+    """BDF2 inertial target and rate reference.
+
+    With h = 2/3 dt, BDF2 is a backward-Euler-type solve of step h about the target
+    x~ = x_n + (x_n - x_{n-1}) / 3 + h v_pred, with v_pred = 4/3 v_n - 1/3 v_{n-1} + h a.
+    The previous step's motion (x_n - x_{n-1}) is carried exactly as a small increment
+    (``inc_lin`` / ``inc_ang``) instead of being formed by differencing rounded absolute poses.
+    The rotation target is composed, q~ = exp(h w_pred) exp(inc_ang / 3) q_n, and the angular
+    acceleration includes the explicit gyroscopic torque -w* x I w* at the extrapolated rate
+    w* = 2 w_n - w_{n-1}.
+
+    ``rate_reference`` receives x_n + (x_n - x_{n-1}) / 3, so (x - rate_reference) / h is the
+    BDF2 velocity used by damping, drive, friction and contact rates inside the solve.
+
+    Bodies whose world takes a BDF1 step (``step_size``) get the BDF1 prediction of
+    :func:`forward_step_rigid_bodies` with step ``dt`` and keep the velocity history for the next
+    BDF2 step. Worlds without history (``pose_rebaseline_mask``) always take a BDF1 step under the
+    per-world selection; should one take a BDF2 step, it starts from a constant-gravity history
+    v_{n-1} = v_n - dt g, x_n - x_{n-1} = dt v_n - dt^2 g / 2 (exact for free fall).
+    """
+    tid = wp.tid()
+    if rigid_step_bdf2(step_size, tid, 1) == 0:
+        hist_qd[tid] = body_qd[tid]
+        pred_lin[tid] = wp.vec3(0.0)
+        pred_ang[tid] = wp.vec3(0.0)
+        _forward_step_rigid_body(
+            tid,
+            dt,
+            gravity,
+            body_world,
+            pose_rebaseline_mask,
+            body_f,
+            body_com,
+            body_inertia,
+            body_inv_mass,
+            body_inv_inertia,
+            False,
+            body_q,
+            body_qd,
+            body_q_prev,
+            body_inertia_q,
+        )
+        # A BDF1 solve differences rates against x_n.
+        rate_reference[tid] = body_q_prev[tid]
+        return
+    q_n = body_q[tid]
+    qd_n = body_qd[tid]
+    qd_m = hist_qd[tid]
+    d_lin = inc_lin[tid]
+    d_ang = inc_ang[tid]
+    inv_m = body_inv_mass[tid]
+    f = body_f[tid]
+    c = body_com[tid]
+    rot_n = wp.transform_get_rotation(q_n)
+    com_n = wp.transform_get_translation(q_n) + wp.quat_rotate(rot_n, c)
+    R = wp.quat_to_matrix(rot_n)
+    inv_I_world = R * body_inv_inertia[tid] * wp.transpose(R)
+    if _world_selected(body_world[tid], pose_rebaseline_mask):
+        body_q_prev[tid] = q_n
+        body_disp[tid] = wp.vec3(0.0)  # no warm start across a reset
+        body_disp_ang[tid] = wp.vec3(0.0)
+        a_lin = wp.vec3(0.0)
+        if inv_m > 0.0:
+            a_lin = gravity[body_world[tid]]
+        qd_m = wp.spatial_vector(wp.spatial_top(qd_n) - dt * a_lin, wp.spatial_bottom(qd_n))
+        d_lin = dt * wp.spatial_top(qd_n) - (0.5 * dt * dt) * a_lin
+        d_ang = dt * wp.spatial_bottom(qd_n)
+    hist_qd[tid] = qd_n
+
+    rot_r = wp.normalize(wp.mul(quat_from_rotation_vector(d_ang * (1.0 / 3.0)), rot_n))
+    rate_reference[tid] = wp.transform(com_n + d_lin * (1.0 / 3.0) - wp.quat_rotate(rot_r, c), rot_r)
+
+    if inv_m == 0.0:
+        body_inertia_q[tid] = q_n
+        pred_lin[tid] = wp.vec3(0.0)
+        pred_ang[tid] = wp.vec3(0.0)
+        return
+    w_star = wp.quat_rotate_inv(rot_n, 2.0 * wp.spatial_bottom(qd_n) - wp.spatial_bottom(qd_m))
+    torque = wp.spatial_bottom(f) - wp.quat_rotate(rot_n, wp.cross(w_star, body_inertia[tid] * w_star))
+    v_pred = (
+        (4.0 / 3.0) * wp.spatial_top(qd_n)
+        - (1.0 / 3.0) * wp.spatial_top(qd_m)
+        + h * (gravity[body_world[tid]] + wp.spatial_top(f) * inv_m)
+    )
+    w_pred = (4.0 / 3.0) * wp.spatial_bottom(qd_n) - (1.0 / 3.0) * wp.spatial_bottom(qd_m) + h * (inv_I_world * torque)
+    off_lin = d_lin * (1.0 / 3.0) + h * v_pred
+    off_ang = rotation_vector_compose(h * w_pred, d_ang * (1.0 / 3.0))
+    pred_lin[tid] = off_lin
+    pred_ang[tid] = off_ang
+    rot_t = wp.normalize(wp.mul(quat_from_rotation_vector(off_ang), rot_n))
+    q_t = wp.transform(com_n + off_lin - wp.quat_rotate(rot_t, c), rot_t)
+    body_q[tid] = q_t
+    body_inertia_q[tid] = q_t
+    body_qd[tid] = wp.spatial_vector(v_pred, w_pred)
+
+
 @wp.kernel
 def add_armature_to_axis_support(
+    step_size: RigidStepSize,
     joint_type: wp.array[int],
+    joint_child: wp.array[int],
     joint_qd_start: wp.array[int],
     joint_armature: wp.array[float],
     inv_dt_sq: float,
@@ -7798,11 +8273,14 @@ def add_armature_to_axis_support(
     dof = joint_qd_start[j]
     support = joint_drive_limit_support[dof]
     if support > 0.0:
-        joint_drive_limit_support[dof] = support + joint_armature[dof] * inv_dt_sq
+        joint_drive_limit_support[dof] = support + joint_armature[dof] * rigid_step_inv_h2(
+            step_size, joint_child[j], inv_dt_sq
+        )
 
 
 @wp.kernel
 def floor_limit_axis_support(
+    step_size: RigidStepSize,
     joint_type: wp.array[int],
     joint_enabled: wp.array[bool],
     joint_child: wp.array[int],
@@ -7829,7 +8307,7 @@ def floor_limit_axis_support(
     jt = joint_type[j]
     if jt != JointType.REVOLUTE and jt != JointType.PRISMATIC and jt != JointType.D6:
         return
-    inv_dt = wp.sqrt(inv_dt_sq)
+    inv_dt = wp.sqrt(rigid_step_inv_h2(step_size, joint_child[j], inv_dt_sq))
     start = joint_qd_start[j]
     for axis in range(joint_dof_dim[j, 0] + joint_dof_dim[j, 1]):
         dof = start + axis
@@ -7838,6 +8316,69 @@ def floor_limit_axis_support(
         if support > 0.0 and _limit_row_exists(ke, joint_limit_lower[dof], joint_limit_upper[dof]):
             floor = _COMPLIANT_ALM_BILATERAL_MIN_RHO_OVER_K * (ke + wp.max(joint_limit_kd[dof], 0.0) * inv_dt)
             joint_drive_limit_support[dof] = wp.max(support, floor)
+
+
+@wp.kernel
+def bdf2_kinematic_rate_reference(
+    step_size: RigidStepSize,
+    h: float,
+    dt: float,
+    body_inv_mass: wp.array[float],
+    body_com: wp.array[wp.vec3],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    rate_reference: wp.array[wp.transform],
+):
+    """Rate reference of kinematic bodies on a BDF2 step.
+
+    A kinematic body does not move during the solve, so the BDF2 reference x_n + (x_n - x_{n-1}) / 3 makes its
+    in-solve and reported velocity -V/2 for a user-animated body. The reference x_n - (h / dt) (x_n - x_{n-1})
+    gives (x_n - reference) / h = (x_n - x_{n-1}) / dt, the BDF1 value.
+    """
+    tid = wp.tid()
+    if body_inv_mass[tid] != 0.0 or rigid_step_bdf2(step_size, tid, 1) == 0:
+        return
+    q = body_q[tid]
+    qp = body_q_prev[tid]
+    c = body_com[tid]
+    rot = wp.transform_get_rotation(q)
+    rot_p = wp.transform_get_rotation(qp)
+    com = wp.transform_get_translation(q) + wp.quat_rotate(rot, c)
+    com_p = wp.transform_get_translation(qp) + wp.quat_rotate(rot_p, c)
+    s = h / dt
+    rot_r = wp.normalize(
+        wp.mul(quat_from_rotation_vector(-s * rotation_vector_from_quat(wp.mul(rot, wp.quat_inverse(rot_p)))), rot)
+    )
+    com_r = com - s * (com - com_p)
+    rate_reference[tid] = wp.transform(com_r - wp.quat_rotate(rot_r, c), rot_r)
+
+
+@wp.kernel
+def bdf2_theta_detect_pose_writes(
+    body_world: wp.array[wp.int32],
+    body_inv_mass: wp.array[float],
+    body_q: wp.array[wp.transform],
+    body_q_prev: wp.array[wp.transform],
+    lin_tol: float,
+    ang_tol: float,
+    world_event: wp.array[wp.int32],
+):
+    """Flag worlds whose dynamic body poses were written outside the solver.
+
+    A start pose that differs from the solver's last final pose (an external write without :meth:`reset`)
+    invalidates the world's BDF2 history, so the world takes BDF1 steps and rebuilds it. Kinematic bodies
+    (user-animated by design) are skipped.
+    """
+    b = wp.tid()
+    if body_inv_mass[b] == 0.0:
+        return
+    q = body_q[b]
+    qp = body_q_prev[b]
+    dx = wp.length(wp.transform_get_translation(q) - wp.transform_get_translation(qp))
+    dq = wp.mul(wp.transform_get_rotation(q), wp.quat_inverse(wp.transform_get_rotation(qp)))
+    dang = wp.length(rotation_vector_from_quat(dq))
+    if dx > lin_tol or dang > ang_tol:
+        wp.atomic_max(world_event, _world_slot(body_world[b], world_event.shape[0]), 1)
 
 
 @wp.kernel
@@ -7864,6 +8405,7 @@ def add_external_wrench_to_solve(
 
 @wp.kernel
 def update_body_velocity(
+    step_size: RigidStepSize,
     dt: float,
     body_q: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
@@ -7872,6 +8414,12 @@ def update_body_velocity(
     body_in_sparse_articulation: wp.array[wp.int32],
     body_inv_mass: wp.array[float],
     use_displacement: int,
+    bdf2_enabled: int,
+    bdf2_inc_lin: wp.array[wp.vec3],
+    bdf2_inc_ang: wp.array[wp.vec3],
+    bdf2_pred_lin: wp.array[wp.vec3],
+    bdf2_pred_ang: wp.array[wp.vec3],
+    bdf2_rate_reference: wp.array[wp.transform],
     body_q_prev: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
     body_qd_mirror: wp.array[wp.spatial_vector],
@@ -7889,8 +8437,12 @@ def update_body_velocity(
     Bodies with a maintained solver displacement instead use the predicted velocity plus the
     linear displacement / dt and the composed predicted and accumulated rotation.
 
+    On a BDF2 step the velocity is (x - x_ref) / h with the BDF2 rate reference x_ref, and the
+    step increment x_{n+1} - x_n is kept for the next BDF2 prediction.
+
     Args:
-        dt: Time step.
+        step_size: Per-body step size and integrator of the BDF2 per-world selection.
+        dt: Time step (the solve step ``h`` on a BDF2 step).
         body_q: Current body transforms (world), from state_in (in-place iteration buffer).
         body_com: Center of mass offsets (local frame).
         body_disp: COM displacement from the inertial target accumulated by the
@@ -7902,6 +8454,13 @@ def update_body_velocity(
         body_inv_mass: Body inverse masses; kinematic bodies (zero) use the finite difference.
         use_displacement: Nonzero when the block-sparse solve maintains ``body_disp``
             and ``body_disp_ang`` for this step.
+        bdf2_enabled: Nonzero when the solver integrates with BDF2; the step increment is
+            then written to ``bdf2_inc_lin`` / ``bdf2_inc_ang``.
+        bdf2_inc_lin: Linear step increment x_{n+1} - x_n of the COM (output, BDF2 only).
+        bdf2_inc_ang: Rotation-vector step increment (output, BDF2 only).
+        bdf2_pred_lin: Linear offset of the BDF2 inertial target from x_n.
+        bdf2_pred_ang: Rotation-vector offset of the BDF2 inertial target from q_n.
+        bdf2_rate_reference: BDF2 rate reference x_n + (x_n - x_{n-1}) / 3.
         body_q_prev: Previous body transforms (input/output), advanced to the
             current pose for the next step. ``SolverVBD.reset()`` is the supported
             way to establish a new baseline after a discontinuous pose change.
@@ -7912,6 +8471,9 @@ def update_body_velocity(
         body_q_out: Output body transforms (state_out), fused copy of body_q.
     """
     tid = wp.tid()
+    # This body's step and integrator (BDF2 per-world selection).
+    dt = rigid_step_h(step_size, tid, dt)
+    bdf2_step = rigid_step_bdf2(step_size, tid, 0)
 
     # Read transforms
     pose = body_q[tid]
@@ -7932,7 +8494,22 @@ def update_body_velocity(
     # turning float32 rounding of absolute positions into unbalanced linear momentum.
     v = (x_com - x_com_prev) / dt
     omega = quat_velocity(q, q_prev, dt)
-    if use_displacement != 0 and body_in_sparse_articulation[tid] != 0 and body_inv_mass[tid] > 0.0:
+    sparse_dynamic = use_displacement != 0 and body_in_sparse_articulation[tid] != 0 and body_inv_mass[tid] > 0.0
+    if bdf2_step != 0 and not sparse_dynamic:
+        # BDF2 for bodies outside the sparse solve: v = (x - x_ref) / h, with
+        # x_ref = x_n + (x_n - x_{n-1}) / 3 from bdf2_predict_rigid_bodies.
+        reference = bdf2_rate_reference[tid]
+        q_ref = wp.transform_get_rotation(reference)
+        v = (x_com - (wp.transform_get_translation(reference) + wp.quat_rotate(q_ref, com_local))) / dt
+        omega = quat_velocity(q, q_ref, dt)
+        if bdf2_enabled != 0:
+            bdf2_inc_lin[tid] = x_com - x_com_prev
+            bdf2_inc_ang[tid] = rotation_vector_from_quat(wp.mul(q, wp.quat_inverse(q_prev)))
+    elif bdf2_enabled != 0 and not sparse_dynamic:
+        # BDF1 step of a BDF2 solver: keep the step increment for the next BDF2 step.
+        bdf2_inc_lin[tid] = x_com - x_com_prev
+        bdf2_inc_ang[tid] = rotation_vector_from_quat(wp.mul(q, wp.quat_inverse(q_prev)))
+    if sparse_dynamic:
         v = wp.spatial_top(body_qd_mirror[tid]) + body_disp[tid] / dt
         # The step's rotation is the predicted rotation exp(omega_pred * dt) followed by the
         # accumulated solver rotation exp(phi). Both are near identity, so composing them keeps
@@ -7942,6 +8519,18 @@ def update_body_velocity(
             quat_from_rotation_vector(body_disp_ang[tid]), quat_from_rotation_vector(omega_pred * dt)
         )
         omega = rotation_vector_from_quat(step_rotation) / dt
+        if bdf2_step != 0:
+            # BDF2: the rotation from the rate reference to the solved pose is exp(phi) exp(h omega_pred)
+            # (bdf2_predict_rigid_bodies), so omega_{n+1} composes the two instead of adding them.
+            omega = rotation_vector_compose(body_disp_ang[tid], omega_pred * dt) / dt
+        if bdf2_enabled != 0:
+            # Exact step increment x_{n+1} - x_n for the next BDF2 target, built from small terms.
+            if bdf2_step != 0:
+                bdf2_inc_lin[tid] = bdf2_pred_lin[tid] + body_disp[tid]
+                bdf2_inc_ang[tid] = rotation_vector_compose(body_disp_ang[tid], bdf2_pred_ang[tid])
+            else:
+                bdf2_inc_lin[tid] = v * dt
+                bdf2_inc_ang[tid] = omega * dt
 
     body_qd[tid] = wp.spatial_vector(v, omega)
 

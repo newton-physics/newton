@@ -71,14 +71,18 @@ from .rigid_sparse_articulation_kernels import (
     apply_articulation_sparse_delta_scalar,
     assemble_articulation_body_diagonal_scalar,
     assemble_articulation_joints_scalar,
+    assemble_articulation_joints_scalar_bdf2,
     init_body_displacement,
     mat66f,
     predict_articulation_armature,
+    predict_articulation_armature_bdf2,
     regularize_articulation_body_hessian,
     save_articulation_body_hessians,
     solve_articulation_sparse_block32_scalar,
     solve_articulation_sparse_serial_scalar,
+    solve_articulation_sparse_serial_scalar_bdf2,
     vec6f,
+    warm_start_body_displacement,
 )
 from .rigid_vbd_kernels import (
     _NUM_CONTACT_THREADS_PER_BODY,
@@ -86,6 +90,7 @@ from .rigid_vbd_kernels import (
     JointFrictionData,
     RigidContactHistory,
     RigidForceElementAdjacencyInfo,
+    RigidStepSize,
     _count_body_particle_attachments_per_body,
     _count_num_adjacent_joints,
     _fill_adjacent_joints,
@@ -97,6 +102,14 @@ from .rigid_vbd_kernels import (
     add_external_wrench_to_solve,
     apply_body_truncation_ts,
     apply_rigid_soft_truncation,
+    bdf2_kinematic_rate_reference,
+    bdf2_predict_rigid_bodies,
+    bdf2_theta_count_contacts,
+    bdf2_theta_detect_bodies,
+    bdf2_theta_detect_dofs,
+    bdf2_theta_detect_pose_writes,
+    bdf2_theta_expand_bodies,
+    bdf2_theta_select_worlds,
     build_body_body_contact_lists,
     build_body_particle_contact_lists,
     check_contact_overflow,
@@ -193,6 +206,22 @@ def _rigid_lambda_retention(alpha: float, gamma: float, use_compliant_alm: bool)
     residual. The legacy path keeps its historical ``alpha * gamma`` policy.
     """
     return gamma if use_compliant_alm else alpha * gamma
+
+
+# BDF2 per-world step selection (``rigid_bdf2_theta_policy``): number of BDF1 steps an event holds, and the
+# detector tolerances. A jump of joint_f or body_f fires when |f - f_prev| > abs + rel |f_prev| [N or N m]; a
+# velocity jump when the second difference of a body's velocity exceeds lin [m/s] or ang [rad/s] plus rel |v|;
+# a limit changes state when the coordinate passes a bound by more than limit [m or rad]; a pose write when the
+# start pose differs from the solver's last final pose by more than pose_lin [m] or pose_ang [rad].
+_BDF2_THETA_HOLD_STEPS = 2
+_BDF2_THETA_FORCE_ABS_TOL = 1.0
+_BDF2_THETA_FORCE_REL_TOL = 0.5
+_BDF2_THETA_VEL_LIN_TOL = 0.05
+_BDF2_THETA_VEL_ANG_TOL = 0.5
+_BDF2_THETA_VEL_REL_TOL = 0.2
+_BDF2_THETA_LIMIT_TOL = 1.0e-3
+_BDF2_THETA_POSE_LIN_TOL = 1.0e-6
+_BDF2_THETA_POSE_ANG_TOL = 1.0e-6
 
 
 class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
@@ -481,6 +510,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         rigid_articulation_solve: str = "local",
         rigid_articulation_relaxation: float = 0.65,
         rigid_articulation_diagonal_regularization: float = 0.0,
+        rigid_time_integration: Literal["bdf1", "bdf2"] = "bdf1",
+        rigid_bdf2_theta_policy: Literal["event", "fresh"] = "event",
         rigid_axis_support_armature: bool | None = None,
         rigid_limit_rho_floor: bool | None = None,
         rigid_external_force_mode: Literal["target", "solve"] | None = None,
@@ -754,18 +785,41 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 contact manifolds between collision updates.
             rigid_articulation_diagonal_regularization: Non-negative value added to each
                 translational and angular diagonal Hessian entry before sparse factorization.
+            rigid_time_integration: Rigid time integrator. ``"bdf1"`` (default) is backward
+                Euler. ``"bdf2"`` is the second-order backward differentiation formula: each step
+                solves with ``h = 2/3 dt`` about the BDF2 inertial target, and in-solve damping,
+                drive, friction and contact rates use the BDF2 velocity. It requires
+                ``rigid_articulation_solve="block_sparse_joints"`` and a model without joint mimics,
+                particles or tendons. A world has no step history after construction or
+                :meth:`reset`, so its first steps are BDF1 steps (see ``rigid_bdf2_theta_policy``).
+
+                .. experimental::
+                    ``rigid_time_integration="bdf2"`` is experimental and may change or be removed.
+            rigid_bdf2_theta_policy: Per-world choice between a BDF1 and a BDF2 step, made on the
+                device before each solve; only used with ``rigid_time_integration="bdf2"``. A world
+                that takes a BDF1 step holds BDF1 for two steps, so the next BDF2 step has a history
+                made of real increments. ``"fresh"`` takes BDF1 steps only in worlds without history
+                (after construction or :meth:`reset`). ``"event"`` (default) also takes them on
+                events that BDF2 does not resolve well: a contact predicted to activate or release, a
+                joint limit engaging or releasing, a jump of ``Control.joint_f`` or ``State.body_f``,
+                a velocity jump, or a body pose written outside the solver.
+
+                .. experimental::
+                    ``rigid_bdf2_theta_policy`` is experimental and may change or be removed.
             rigid_axis_support_armature: Add ``armature / h^2`` to the ALM support (penalty
                 stiffness) of revolute drive and limit rows. Without it the support counts only the
                 link inertias, so a limit on a light link driven through a large armature gets a
                 support far below its stiffness scale and overshoots at large time steps. ``None``
-                (default) disables it.
+                (default) enables it for ``rigid_time_integration="bdf2"`` and disables it for
+                ``"bdf1"``.
 
                 .. experimental::
                     ``rigid_axis_support_armature`` is experimental and may change or be removed.
             rigid_limit_rho_floor: Floor the ALM support of every revolute, prismatic and D6
                 joint-limit row at ``9 (K + D/h)``, as drive and structural rows already are. Without
                 it a limit next to a light link acts mostly through its slowly growing multiplier and
-                overshoots. ``None`` (default) disables it.
+                overshoots. ``None`` (default) enables it for ``rigid_time_integration="bdf2"`` and
+                disables it for ``"bdf1"``.
 
                 .. experimental::
                     ``rigid_limit_rho_floor`` is experimental and may change or be removed.
@@ -775,7 +829,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 inside the solve as a constant generalized force; the minimizer is the same, but the
                 iterations start from the force-free prediction, which converges better when a large
                 force acts on a light link held by stiff joints. ``None`` (default) selects
-                ``"target"``.
+                ``"target"`` for ``rigid_time_integration="bdf1"`` and ``"solve"`` for ``"bdf2"``.
 
                 .. experimental::
                     ``rigid_external_force_mode`` is experimental and may change or be removed.
@@ -1204,7 +1258,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         self._has_joint_mimics = self._integrates_rigid_bodies and has_supported_joint_mimics(model, "SolverVBD")
         self._update_displacement_mode()
-        self._setup_axis_support_options(rigid_axis_support_armature, rigid_limit_rho_floor)
+        self._setup_time_integration(
+            rigid_time_integration, rigid_bdf2_theta_policy, rigid_axis_support_armature, rigid_limit_rho_floor
+        )
         self._setup_external_force_mode(rigid_external_force_mode)
         self._joint_coordinates = JointCoordinates(model) if self._integrates_rigid_bodies else None
         self._mimic_solver = JointMimicSolver(model, self._joint_coordinates.data) if self._has_joint_mimics else None
@@ -1653,6 +1709,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self._has_joint_mimics = self._integrates_rigid_bodies and has_supported_joint_mimics(
                 self.model, "SolverVBD"
             )
+            self._check_bdf2_supported()
             self._mimic_solver = (
                 JointMimicSolver(self.model, self._joint_coordinates.data) if self._has_joint_mimics else None
             )
@@ -2936,6 +2993,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         if control is None:
             control = self.model.control(clone_variables=False)
 
+        # BDF2: the rigid phases solve with h = 2/3 dt about the BDF2 inertial target (see
+        # bdf2_predict_rigid_bodies). Worlds that take a BDF1 step this time read h = dt from the
+        # per-body step size, which _select_bdf2_theta fills on the device (CUDA-graph safe).
+        rigid_dt = dt * (2.0 / 3.0) if self._bdf2_enabled else dt
+        self._bdf2_full_dt = dt
+
         # Must run BEFORE _initialize_rigid_bodies: the dynamic routing activation
         # decision has to see the accepted pose, but the inertial predictor inside
         # _initialize_rigid_bodies overwrites state_in.body_q in place.
@@ -2949,7 +3012,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             if self.iterations == 0 or self.integrate_with_external_rigid_solver:
                 self.tendon_segment_lambda.zero_()
 
-        self._initialize_rigid_bodies(state_in, control, contacts, dt, update_rigid)
+        self._initialize_rigid_bodies(state_in, control, contacts, rigid_dt, update_rigid)
         self._init_body_displacement(state_in)
         self._initialize_particles(state_in, state_out, contacts, dt)
 
@@ -2961,7 +3024,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             state_in,
             state_out,
             contacts,
-            dt,
+            rigid_dt,
             rigid_due=rigid_due,
             soft_due=soft_due,
             preserve_history=self.rigid_contact_history,
@@ -2971,9 +3034,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             rigid_due = self.collision_pipeline is not None and self._rigid_collision_is_due(iter_num)
             soft_due = self.particle_enable_self_contact and self._self_contact_is_due(iter_num)
             self._mid_step_detection(
-                state_in, state_out, contacts, dt, rigid_due=rigid_due, soft_due=soft_due, preserve_history=True
+                state_in, state_out, contacts, rigid_dt, rigid_due=rigid_due, soft_due=soft_due, preserve_history=True
             )
-            self._solve_rigid_body_iteration(state_in, state_out, control, contacts, dt)
+            self._solve_rigid_body_iteration(state_in, state_out, control, contacts, rigid_dt)
             self._solve_particle_iteration(state_in, state_out, contacts, dt)
 
         update_tendon_diagnostics = (
@@ -2995,11 +3058,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         # Opt-in contact force export: evaluate at the final iterate while the pose history the
         # iterations used is still intact (finalization advances it below).
         if observables is not None and observables.is_requested(SolverBase.ObservableKind.CONTACT_F):
-            self._export_contact_forces(state_in, state_out, contacts, dt, observables.contact_f)
+            self._export_contact_forces(state_in, state_out, contacts, rigid_dt, observables.contact_f)
 
         # Snapshot solved rigid contact state for next-frame warm-start.
         self._snapshot_rigid_contact_history(contacts)
-        self._finalize_rigid_bodies(state_in, state_out, dt)
+        self._finalize_rigid_bodies(state_in, state_out, rigid_dt)
         if update_tendon_diagnostics:
             self._update_tendon_segment_diagnostics(state_out, dt)
         self._finalize_particles(state_out, dt)
@@ -3101,6 +3164,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             raise ValueError("'state' argument is required.")
         model = self.model
         world_mask = self._normalize_reset_world_mask(world_mask)
+        # reset() flags the selected worlds in _rigid_pose_rebaseline_mask, which also restarts
+        # their BDF2 history: the next steps of those worlds are BDF1 steps (_select_bdf2_theta).
 
         flags_value = int(StateFlags.ALL if flags is None else flags)
 
@@ -3910,6 +3975,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             kernel=step_body_body_contact_C0_lambda,
             dim=contacts.rigid_contact_max,
             inputs=[
+                self._step_size,
                 contacts.rigid_contact_count,
                 contacts.rigid_contact_shape0,
                 contacts.rigid_contact_shape1,
@@ -3996,6 +4062,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         # Rigid-only initialization
         # ---------------------------
         if self._integrates_rigid_bodies:
+            if self._bdf2_enabled:
+                self._select_bdf2_theta(state_in, control, contacts, self._bdf2_full_dt, dt)
             self._refresh_rigid_contact_state(contacts, refresh)
             self._joint_coordinates.begin_step(
                 state_in,
@@ -4054,7 +4122,28 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
             # Rotor inertia must not inherit feedforward/external torques from
             # the body's force-shifted inertial target.
-            if self.rigid_articulation_sparse_layout is not None:
+            if self.rigid_articulation_sparse_layout is not None and self._bdf2_enabled:
+                wp.launch(
+                    predict_articulation_armature_bdf2,
+                    dim=self.rigid_articulation_sparse_layout.articulation_joint_count,
+                    inputs=[
+                        self._step_size,
+                        self._joint_coordinates.data,
+                        self.rigid_articulation_sparse_layout.articulation_joints,
+                        state_in.body_q,
+                        state_in.body_qd,
+                        dt,
+                        self._bdf2_full_dt,
+                        model.body_world,
+                        self._rigid_pose_rebaseline_mask,
+                        self._bdf2_inc_lin,
+                        self._bdf2_inc_ang,
+                        self._bdf2_arm_rate,
+                    ],
+                    outputs=[self._rigid_articulation_armature_target, self._bdf2_arm_delta],
+                    device=self.device,
+                )
+            elif self.rigid_articulation_sparse_layout is not None:
                 wp.launch(
                     predict_articulation_armature,
                     dim=self.rigid_articulation_sparse_layout.articulation_joint_count,
@@ -4069,30 +4158,79 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     device=self.device,
                 )
 
-            # Forward integrate rigid bodies (body_q modified in-place for dynamic bodies only).
-            wp.launch(
-                kernel=forward_step_rigid_bodies,
-                inputs=[
-                    dt,
-                    model.gravity,
-                    model.body_world,
-                    self._rigid_pose_rebaseline_mask,
-                    body_f_for_integration,
-                    model.body_com,
-                    model.body_inertia,
-                    self.body_inv_mass_effective,
-                    self.body_inv_inertia_effective,
-                    self.rigid_articulation_solve == "local",
-                    state_in.body_q,  # input/output
-                    state_in.body_qd,  # input/output
-                ],
-                outputs=[
-                    self.body_q_prev,  # rebaselined for flagged worlds (first step / reset)
-                    self.body_inertia_q,
-                ],
-                dim=model.body_count,
-                device=self.device,
-            )
+            if self._bdf2_enabled:
+                wp.launch(
+                    bdf2_predict_rigid_bodies,
+                    dim=model.body_count,
+                    inputs=[
+                        self._step_size,
+                        dt,
+                        self._bdf2_full_dt,
+                        model.gravity,
+                        model.body_world,
+                        self._rigid_pose_rebaseline_mask,
+                        body_f_for_integration,
+                        model.body_com,
+                        model.body_inertia,
+                        self.body_inv_mass_effective,
+                        self.body_inv_inertia_effective,
+                        state_in.body_q,
+                        state_in.body_qd,
+                        self._bdf2_hist_qd,
+                        self._bdf2_inc_lin,
+                        self._bdf2_inc_ang,
+                        self._bdf2_pred_lin,
+                        self._bdf2_pred_ang,
+                    ],
+                    outputs=[
+                        self.body_q_prev,
+                        self.body_inertia_q,
+                        self._bdf2_rate_ref,
+                        self._body_disp,
+                        self._body_disp_ang,
+                    ],
+                    device=self.device,
+                )
+                wp.launch(
+                    bdf2_kinematic_rate_reference,
+                    dim=model.body_count,
+                    inputs=[
+                        self._step_size,
+                        dt,
+                        self._bdf2_full_dt,
+                        self.body_inv_mass_effective,
+                        model.body_com,
+                        state_in.body_q,
+                        self.body_q_prev,
+                    ],
+                    outputs=[self._bdf2_rate_ref],
+                    device=self.device,
+                )
+            else:
+                # Forward integrate rigid bodies (body_q modified in-place for dynamic bodies only).
+                wp.launch(
+                    kernel=forward_step_rigid_bodies,
+                    inputs=[
+                        dt,
+                        model.gravity,
+                        model.body_world,
+                        self._rigid_pose_rebaseline_mask,
+                        body_f_for_integration,
+                        model.body_com,
+                        model.body_inertia,
+                        self.body_inv_mass_effective,
+                        self.body_inv_inertia_effective,
+                        self.rigid_articulation_solve == "local",
+                        state_in.body_q,  # input/output
+                        state_in.body_qd,  # input/output
+                    ],
+                    outputs=[
+                        self.body_q_prev,  # rebaselined for flagged worlds (first step / reset)
+                        self.body_inertia_q,
+                    ],
+                    dim=model.body_count,
+                    device=self.device,
+                )
 
             # Truncate the forward step against the division planes before any
             # solve iterations run on the predicted poses.
@@ -4108,6 +4246,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     kernel=step_joint_C0_lambda_rho,
                     dim=model.joint_count,
                     inputs=[
+                        self._step_size,
                         model.joint_type,
                         model.joint_enabled,
                         model.joint_parent,
@@ -4160,6 +4299,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         kernel=floor_limit_axis_support,
                         dim=model.joint_count,
                         inputs=[
+                            self._step_size,
                             model.joint_type,
                             model.joint_enabled,
                             model.joint_child,
@@ -4179,7 +4319,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         kernel=add_armature_to_axis_support,
                         dim=model.joint_count,
                         inputs=[
+                            self._step_size,
                             model.joint_type,
+                            model.joint_child,
                             model.joint_qd_start,
                             model.joint_armature,
                             1.0 / (dt * dt),
@@ -4728,9 +4870,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 kernel=accumulate_body_body_contacts_per_body,
                 dim=dim,
                 inputs=[
+                    self._step_size,
                     dt,
                     body_group,
-                    self.body_q_prev,
+                    self._rate_reference_q,
                     state_in.body_q,
                     model.body_com,
                     self.body_inv_mass_effective,
@@ -4810,10 +4953,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             wp.launch(
                 kernel=self._solve_rigid_body_kernel,
                 inputs=[
+                    self._step_size,
                     dt,
                     color_group,
                     state_in.body_q,
-                    self.body_q_prev,
+                    self._rate_reference_q,
                     state_in.body_qd,
                     self.rigid_articulation_solve == "local",
                     model.body_q,
@@ -4912,6 +5056,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 kernel=update_duals_body_body_contacts,
                 dim=contacts.rigid_contact_max,
                 inputs=[
+                    self._step_size,
                     contacts.rigid_contact_count,
                     contacts.rigid_contact_shape0,
                     contacts.rigid_contact_shape1,
@@ -4925,7 +5070,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     contacts.rigid_contact_margin1,
                     model.shape_body,
                     state_in.body_q,
-                    self.body_q_prev,
+                    self._rate_reference_q,
                     dt,
                     self.body_body_contact_material_mu,
                     self.body_body_contact_C0,
@@ -4978,6 +5123,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 kernel=update_duals_joint,
                 dim=model.joint_count,
                 inputs=[
+                    self._step_size,
                     model.joint_type,
                     model.joint_enabled,
                     model.joint_parent,
@@ -4991,7 +5137,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     model.joint_target_q_start,
                     self.joint_constraint_start,
                     state_in.body_q,
-                    self.body_q_prev,
+                    self._rate_reference_q,
                     model.body_q,
                     model.joint_dof_dim,
                     self.joint_C0_lin,
@@ -5025,7 +5171,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             )
 
     def _solve_rigid_body_iteration_block_sparse_joints(
-        self, state_in: State, state_out: State, control: Control, contacts: Contacts | None, dt: float
+        self,
+        state_in: State,
+        state_out: State,
+        control: Control,
+        contacts: Contacts | None,
+        dt: float,
     ):
         """Solve one rigid iteration with coupled sparse articulation updates."""
         model = self.model
@@ -5073,6 +5224,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self._rigid_articulation_sparse_delta_scalar.zero_()
 
         joint_inputs = [
+            self._step_size,
             dt,
             layout.articulation_joints,
             layout.articulation_joint_body_start,
@@ -5080,7 +5232,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             layout.articulation_block_cols,
             layout.body_articulation_local,
             state_in.body_q,
-            self.body_q_prev,
+            self._rate_reference_q,
             model.body_q,
             self.body_inertia_q,
             model.body_com,
@@ -5110,6 +5262,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             model.joint_target_kd,
             model.joint_armature,
             self._rigid_articulation_armature_target,
+            self._body_disp_ang,
+            int(self._bdf2_enabled),
+            self._bdf2_pred_ang if self._bdf2_enabled else self._body_disp_ang,
+            self._bdf2_arm_delta if self._bdf2_enabled else self._rigid_articulation_armature_target,
             control.joint_target_q,
             control.joint_target_qd,
             model.joint_limit_lower,
@@ -5133,6 +5289,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 kernel=assemble_articulation_body_diagonal_scalar,
                 dim=layout.articulation_body_count,
                 inputs=[
+                    self._step_size,
                     dt,
                     layout.articulation_bodies,
                     layout.articulation_diag_slots,
@@ -5157,7 +5314,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             )
 
             wp.launch(
-                kernel=assemble_articulation_joints_scalar,
+                kernel=assemble_articulation_joints_scalar_bdf2
+                if self._bdf2_enabled
+                else assemble_articulation_joints_scalar,
                 dim=layout.articulation_joint_count,
                 inputs=joint_inputs,
                 outputs=[self._rigid_articulation_sparse_values_scalar, self._rigid_articulation_sparse_rhs_scalar],
@@ -5167,7 +5326,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         else:
             wp.launch(
-                kernel=solve_articulation_sparse_serial_scalar,
+                kernel=solve_articulation_sparse_serial_scalar_bdf2
+                if self._bdf2_enabled
+                else solve_articulation_sparse_serial_scalar,
                 dim=layout.articulation_count,
                 inputs=[
                     *joint_inputs,
@@ -5550,6 +5711,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             kernel=compute_body_body_contact_forces,
             dim=rigid_contact_max,
             inputs=[
+                self._step_size,
                 float(dt),
                 contacts.rigid_contact_count,
                 contacts.rigid_contact_shape0,
@@ -5564,7 +5726,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 contacts.rigid_contact_margin1,
                 model.shape_body,
                 state_in.body_q,
-                self.body_q_prev,
+                self._rate_reference_q,
                 model.body_com,
                 self.body_body_contact_penalty_k,
                 self.body_body_contact_normal_rho,
@@ -5796,21 +5958,235 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             device=self.device,
         )
 
-    def _setup_axis_support_options(self, rigid_axis_support_armature: bool | None, rigid_limit_rho_floor: bool | None):
-        """Validate the joint-axis support options; ``None`` disables them."""
+    @property
+    def _rate_reference_q(self):
+        """Pose that in-solve rates difference against: x_n (BDF1) or x_n + (x_n - x_{n-1}) / 3 (BDF2)."""
+        return self._bdf2_rate_ref if self._bdf2_enabled else self.body_q_prev
+
+    def _check_bdf2_supported(self):
+        """Raise if the model or solve mode cannot use ``rigid_time_integration="bdf2"``."""
+        if not self._bdf2_enabled:
+            return
+        if not self._integrates_rigid_bodies or self.rigid_articulation_solve != "block_sparse_joints":
+            raise ValueError(
+                "rigid_time_integration='bdf2' requires rigid_articulation_solve='block_sparse_joints' "
+                "and rigid bodies integrated by this solver"
+            )
+        if self._has_joint_mimics:
+            raise ValueError("rigid_time_integration='bdf2' does not support joint mimics")
+        if self.model.particle_count > 0:
+            raise ValueError("rigid_time_integration='bdf2' does not support particles")
+        if self.model.tendon_count > 0:
+            raise ValueError("rigid_time_integration='bdf2' does not support tendons")
+
+    def _setup_time_integration(
+        self,
+        rigid_time_integration: str,
+        rigid_bdf2_theta_policy: str,
+        rigid_axis_support_armature: bool | None,
+        rigid_limit_rho_floor: bool | None,
+    ):
+        """Validate the integrator options and allocate the BDF2 history (no allocation happens in a step)."""
+        if rigid_time_integration not in ("bdf1", "bdf2"):
+            raise ValueError(f"rigid_time_integration must be 'bdf1' or 'bdf2', got {rigid_time_integration!r}")
+        if rigid_bdf2_theta_policy not in ("event", "fresh"):
+            raise ValueError(f"rigid_bdf2_theta_policy must be 'event' or 'fresh', got {rigid_bdf2_theta_policy!r}")
         for name, value in (
             ("rigid_axis_support_armature", rigid_axis_support_armature),
             ("rigid_limit_rho_floor", rigid_limit_rho_floor),
         ):
             if value is not None and not isinstance(value, bool):
                 raise ValueError(f"{name} must be None, True or False, got {value!r}")
-        self.rigid_axis_support_armature = bool(rigid_axis_support_armature)
-        self.rigid_limit_rho_floor = bool(rigid_limit_rho_floor)
+        self.rigid_time_integration = rigid_time_integration
+        self.rigid_bdf2_theta_policy = rigid_bdf2_theta_policy
+        self._bdf2_enabled = rigid_time_integration == "bdf2"
+        self._check_bdf2_supported()
+        # The opt-in BDF1 accuracy fixes default to on with BDF2.
+        self.rigid_axis_support_armature = (
+            self._bdf2_enabled if rigid_axis_support_armature is None else rigid_axis_support_armature
+        )
+        self.rigid_limit_rho_floor = self._bdf2_enabled if rigid_limit_rho_floor is None else rigid_limit_rho_floor
+
+        # Per-body step size: per_body = 0 keeps every kernel on its scalar step (BDF1).
+        self._step_size = RigidStepSize()
+        self._step_size.per_body = 0
+        dummy_f = wp.zeros(1, dtype=float, device=self.device)
+        self._step_size.h = dummy_f
+        self._step_size.inv_h2 = dummy_f
+        self._step_size.bdf2 = wp.zeros(1, dtype=wp.int32, device=self.device)
+        if not self._bdf2_enabled:
+            return
+
+        model = self.model
+        dev = self.device
+        n = model.body_count
+        n_dof = model.joint_dof_count
+        # Previous-step velocity, exact previous-step increments x_n - x_{n-1} (rotation vector) and this
+        # step's prediction offsets x~ - x_n, all as small terms (never differences of rounded absolute poses).
+        self._bdf2_hist_qd = wp.zeros(n, dtype=wp.spatial_vector, device=dev)
+        self._bdf2_inc_lin = wp.zeros(n, dtype=wp.vec3, device=dev)
+        self._bdf2_inc_ang = wp.zeros(n, dtype=wp.vec3, device=dev)
+        self._bdf2_pred_lin = wp.zeros(n, dtype=wp.vec3, device=dev)
+        self._bdf2_pred_ang = wp.zeros(n, dtype=wp.vec3, device=dev)
+        # Rotor target minus q_n, and the previous rotor rate.
+        self._bdf2_arm_delta = wp.zeros(n_dof, dtype=float, device=dev)
+        self._bdf2_arm_rate = wp.zeros(n_dof, dtype=float, device=dev)
+        # x_n + (x_n - x_{n-1}) / 3: (x - reference) / h is the BDF2 velocity used by in-solve rates.
+        self._bdf2_rate_ref = wp.zeros(n, dtype=wp.transform, device=dev)
+        # Displacement warm start: the previous step's converged displacement.
+        self._warm_prev_disp = wp.zeros_like(self._body_disp)
+        self._warm_prev_disp_ang = wp.zeros_like(self._body_disp_ang)
+
+        # Per-world BDF1/BDF2 selection; every per-step value lives on the device.
+        slots = int(model.world_count) + 1
+        self._step_size = RigidStepSize()
+        self._step_size.per_body = 1
+        self._step_size.h = wp.zeros(n, dtype=float, device=dev)
+        self._step_size.inv_h2 = wp.zeros(n, dtype=float, device=dev)
+        self._step_size.bdf2 = wp.zeros(n, dtype=wp.int32, device=dev)
+        self._theta_use_events = int(rigid_bdf2_theta_policy == "event")
+        self._theta_world_bdf2 = wp.zeros(slots, dtype=wp.int32, device=dev)
+        self._theta_world_hold = wp.zeros(slots, dtype=wp.int32, device=dev)
+        self._theta_world_event = wp.zeros(slots, dtype=wp.int32, device=dev)
+        self._theta_world_contacts = wp.zeros(slots, dtype=wp.int32, device=dev)
+        self._theta_world_contacts_prev = wp.zeros(slots, dtype=wp.int32, device=dev)
+        self._theta_qd_m2 = wp.zeros(n, dtype=wp.spatial_vector, device=dev)
+        self._theta_body_f_prev = wp.zeros(n, dtype=wp.spatial_vector, device=dev)
+        self._theta_joint_f_prev = wp.zeros(max(n_dof, 1), dtype=float, device=dev)
+        self._theta_limit_prev = wp.zeros(max(n_dof, 1), dtype=wp.int32, device=dev)
+        self._theta_zero_joint_f = wp.zeros(max(n_dof, 1), dtype=float, device=dev)
+        dof_world = np.zeros(max(n_dof, 1), dtype=np.int32)
+        dof_coord = np.full(max(n_dof, 1), -1, dtype=np.int32)
+        if n_dof > 0:
+            qs = model.joint_q_start.numpy()
+            ds = model.joint_qd_start.numpy()
+            jt = model.joint_type.numpy()
+            jw = model.joint_world.numpy()
+            for j in range(model.joint_count):
+                dof_world[ds[j] : ds[j + 1]] = jw[j]
+                if jt[j] in (int(JointType.REVOLUTE), int(JointType.PRISMATIC)):
+                    dof_coord[ds[j]] = qs[j]
+        self._theta_dof_world = wp.array(dof_world, dtype=wp.int32, device=dev)
+        self._theta_dof_coord = wp.array(dof_coord, dtype=wp.int32, device=dev)
+
+    def _select_bdf2_theta(self, state_in: State, control: Control, contacts: Contacts | None, dt: float, h: float):
+        """Choose a BDF1 or BDF2 step per world before the solve and fill the per-body step size.
+
+        Runs entirely on the device with host constants, so it is CUDA-graph capturable.
+        """
+        model = self.model
+        dev = self.device
+        events = self._theta_use_events
+        n_dof = model.joint_dof_count
+        if events and n_dof > 0:
+            joint_f = (
+                control.joint_f if control is not None and control.joint_f is not None else self._theta_zero_joint_f
+            )
+            wp.launch(
+                bdf2_theta_detect_dofs,
+                dim=n_dof,
+                inputs=[
+                    self._theta_dof_world,
+                    self._rigid_pose_rebaseline_mask,
+                    self._theta_dof_coord,
+                    joint_f,
+                    state_in.joint_q,
+                    model.joint_limit_lower,
+                    model.joint_limit_upper,
+                    _BDF2_THETA_FORCE_ABS_TOL,
+                    _BDF2_THETA_FORCE_REL_TOL,
+                    _BDF2_THETA_LIMIT_TOL,
+                    int(state_in.joint_q is not None),
+                ],
+                outputs=[self._theta_joint_f_prev, self._theta_limit_prev, self._theta_world_event],
+                device=dev,
+            )
+        if model.body_count > 0:
+            wp.launch(
+                bdf2_theta_detect_bodies,
+                dim=model.body_count,
+                inputs=[
+                    model.body_world,
+                    self._rigid_pose_rebaseline_mask,
+                    self.body_inv_mass_effective,
+                    state_in.body_qd,
+                    self._bdf2_hist_qd,
+                    state_in.body_f,
+                    _BDF2_THETA_VEL_LIN_TOL,
+                    _BDF2_THETA_VEL_ANG_TOL,
+                    _BDF2_THETA_VEL_REL_TOL,
+                    _BDF2_THETA_FORCE_ABS_TOL,
+                    _BDF2_THETA_FORCE_REL_TOL,
+                    events,
+                ],
+                outputs=[self._theta_qd_m2, self._theta_body_f_prev, self._theta_world_event],
+                device=dev,
+            )
+        if events and model.body_count > 0:
+            wp.launch(
+                bdf2_theta_detect_pose_writes,
+                dim=model.body_count,
+                inputs=[
+                    model.body_world,
+                    self.body_inv_mass_effective,
+                    state_in.body_q,
+                    self.body_q_prev,
+                    _BDF2_THETA_POSE_LIN_TOL,
+                    _BDF2_THETA_POSE_ANG_TOL,
+                ],
+                outputs=[self._theta_world_event],
+                device=dev,
+            )
+        if events and contacts is not None and contacts.rigid_contact_max > 0:
+            wp.launch(
+                bdf2_theta_count_contacts,
+                dim=contacts.rigid_contact_max,
+                inputs=[
+                    contacts.rigid_contact_count,
+                    contacts.rigid_contact_shape0,
+                    contacts.rigid_contact_shape1,
+                    contacts.rigid_contact_point0,
+                    contacts.rigid_contact_point1,
+                    contacts.rigid_contact_normal,
+                    contacts.rigid_contact_margin0,
+                    contacts.rigid_contact_margin1,
+                    model.shape_body,
+                    model.body_world,
+                    state_in.body_q,
+                    state_in.body_qd,
+                    model.body_com,
+                    dt,
+                ],
+                outputs=[self._theta_world_contacts],
+                device=dev,
+            )
+        wp.launch(
+            bdf2_theta_select_worlds,
+            dim=self._theta_world_bdf2.shape[0],
+            inputs=[
+                events,
+                _BDF2_THETA_HOLD_STEPS,
+                self._rigid_pose_rebaseline_mask,
+                self._theta_world_contacts,
+                self._theta_world_contacts_prev,
+                self._theta_world_event,
+                self._theta_world_hold,
+            ],
+            outputs=[self._theta_world_bdf2],
+            device=dev,
+        )
+        wp.launch(
+            bdf2_theta_expand_bodies,
+            dim=model.body_count,
+            inputs=[model.body_world, self._theta_world_bdf2, dt, h, 1.0 / (dt * dt), 1.0 / (h * h)],
+            outputs=[self._step_size.bdf2, self._step_size.h, self._step_size.inv_h2],
+            device=dev,
+        )
 
     def _setup_external_force_mode(self, rigid_external_force_mode: str | None):
         """Select where external wrenches enter the rigid step and allocate the wrench snapshot."""
         if rigid_external_force_mode is None:
-            rigid_external_force_mode = "target"
+            rigid_external_force_mode = "solve" if self._bdf2_enabled else "target"
         if rigid_external_force_mode not in ("target", "solve"):
             raise ValueError(
                 f"rigid_external_force_mode must be None, 'target' or 'solve', got {rigid_external_force_mode!r}"
@@ -5853,6 +6229,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         model = self.model
         if model.body_count == 0 or not self._integrates_rigid_bodies:
             return
+        # BDF2 warm-starts each sparse body at the previous step's converged displacement.
+        warm = self._bdf2_enabled
+        if warm:
+            wp.copy(self._warm_prev_disp, self._body_disp)
+            wp.copy(self._warm_prev_disp_ang, self._body_disp_ang)
         wp.launch(
             kernel=init_body_displacement,
             dim=model.body_count,
@@ -5860,11 +6241,28 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             outputs=[self._body_disp, self._body_disp_ang],
             device=self.device,
         )
+        if warm:
+            wp.launch(
+                kernel=warm_start_body_displacement,
+                dim=model.body_count,
+                inputs=[
+                    self._step_size,
+                    self._body_in_sparse_articulation,
+                    self.body_inv_mass_effective,
+                    self.body_inertia_q,
+                    model.body_com,
+                    self._warm_prev_disp,
+                    self._warm_prev_disp_ang,
+                ],
+                outputs=[self._body_disp, self._body_disp_ang, state_in.body_q],
+                device=self.device,
+            )
 
     def _finalize_rigid_bodies(self, state_in: State, state_out: State, dt: float):
         """Finalize rigid body velocities and Dahl friction state after VBD iterations (post-iteration phase).
 
-        Updates rigid body velocities using BDF1 and updates Dahl hysteresis state for rod bend/twist.
+        Updates rigid body velocities with the step's integrator (BDF1 or BDF2) and updates Dahl
+        hysteresis state for rod bend/twist.
         Also transfers the final body poses from state_in to state_out.
         """
         model = self.model
@@ -5876,6 +6274,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         wp.launch(
             kernel=update_body_velocity,
             inputs=[
+                self._step_size,
                 dt,
                 state_in.body_q,
                 model.body_com,
@@ -5884,6 +6283,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self._body_in_sparse_articulation,
                 self.body_inv_mass_effective,
                 self._use_body_displacement,
+                int(self._bdf2_enabled),
+                self._bdf2_inc_lin if self._bdf2_enabled else self._body_disp,
+                self._bdf2_inc_ang if self._bdf2_enabled else self._body_disp,
+                self._bdf2_pred_lin if self._bdf2_enabled else self._body_disp,
+                self._bdf2_pred_ang if self._bdf2_enabled else self._body_disp,
+                self._bdf2_rate_ref if self._bdf2_enabled else self.body_q_prev,
             ],
             outputs=[self.body_q_prev, state_out.body_qd, state_in.body_qd, state_out.body_q],
             dim=model.body_count,

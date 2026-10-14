@@ -359,15 +359,22 @@ in its implicit body solve; no additional iteration setting is needed.
 Values in ``model.joint_damping`` can be changed without rebuilding the solver
 or recapturing a CUDA graph. Other VBD joint types currently ignore this property.
 
+VBD integrates rigid bodies with backward Euler (BDF1) by default. With
+``rigid_articulation_solve="block_sparse_joints"``, ``rigid_time_integration="bdf2"``
+selects the second-order BDF2 integrator, which damps motion much less than BDF1 at
+large time steps. A world takes BDF1 steps until it has a step history, that is after
+construction and after :meth:`~newton.solvers.SolverVBD.reset`, and, with the default
+``rigid_bdf2_theta_policy="event"``, around contact, joint-limit, force, velocity and pose-write
+events. BDF2 does not support joint mimics, particles or tendons. With either integrator,
 ``rigid_axis_support_armature`` and ``rigid_limit_rho_floor`` keep joint limits from
 overshooting when a light link is driven through a large armature at large time steps,
 and ``rigid_external_force_mode="solve"`` applies ``State.body_f`` and the mapped
 ``Control.joint_f`` inside the rigid solve instead of shifting the inertial target.
-These three options are off by default.
+These three options are off by default with BDF1 and on by default with BDF2.
 
 .. experimental::
-    ``rigid_axis_support_armature``, ``rigid_limit_rho_floor`` and ``rigid_external_force_mode`` may change or be
-    removed without prior notice.
+    ``rigid_time_integration="bdf2"``, ``rigid_bdf2_theta_policy``, ``rigid_axis_support_armature``,
+    ``rigid_limit_rho_floor`` and ``rigid_external_force_mode`` may change or be removed without prior notice.
 
 **Actuation and control**
 
