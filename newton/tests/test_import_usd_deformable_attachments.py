@@ -336,12 +336,12 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         self.assertGreater(model.body_count, 0)
 
     def test_strained_cable_attachments_use_rest_endpoints(self):
-        """Keep imported poses until FK closes a stretched cable's root attachment."""
+        """Keep initial anchors when rest points are absent; let FK close stretched root attachments."""
         from pxr import UsdGeom, UsdPhysics
 
-        for endpoint, expected_body, expected_z in ((0, 0, -0.05), (2, 1, 0.1)):
-            for rooted in (False, True):
-                with self.subTest(endpoint=endpoint, rooted=rooted):
+        for endpoint, expected_body in ((0, 0), (2, 1)):
+            for rooted, use_rest in ((False, False), (False, True), (True, False), (True, True)):
+                with self.subTest(endpoint=endpoint, rooted=rooted, use_rest=use_rest):
                     stage = _deformable_stage()
                     plug = UsdGeom.Cube.Define(stage, "/World/Plug")
                     plug.CreateSizeAttr(0.1)
@@ -349,7 +349,10 @@ class TestUSDDeformableAttachments(unittest.TestCase):
                     UsdPhysics.CollisionAPI.Apply(plug.GetPrim())
                     points = [(0, 0, 0), (0, 0, 0.4), (0, 0, 0.8)]
                     curves = _add_cable_curve(stage, "/World/Cable", points)
-                    _author_cable_rest_shape(curves, points=[(0, 0, 0), (0, 0, 0.1), (0, 0, 0.3)])
+                    if use_rest:
+                        _author_cable_rest_shape(curves, points=[(0, 0, 0), (0, 0, 0.1), (0, 0, 0.3)])
+                    half_lengths = [0.05, 0.1] if use_rest else [0.2, 0.2]
+                    expected_z = -half_lengths[0] if endpoint == 0 else half_lengths[1]
                     _add_physics_attachment(
                         stage,
                         "/World/Endpoint",
@@ -382,16 +385,19 @@ class TestUSDDeformableAttachments(unittest.TestCase):
                     np.testing.assert_allclose(builder.joint_X_c[joint][:3], [0, 0, expected_z], atol=1e-6)
                     self.assertEqual(builder.joint_articulation[joint] >= 0, rooted)
                     anchor = wp.transform_point(builder.body_q[bodies[expected_body]], wp.vec3(0, 0, expected_z))
-                    self.assertAlmostEqual(float(anchor[2]), 0.15 if endpoint == 0 else 0.7, places=6)
+                    expected_anchor = (0.15 if endpoint == 0 else 0.7) if use_rest else points[endpoint][2]
+                    self.assertAlmostEqual(float(anchor[2]), expected_anchor, places=6)
                     if not rooted:
                         segment_joint = result["path_attachment_map"]["/World/Segment"][0]
-                        np.testing.assert_allclose(builder.joint_X_c[segment_joint][:3], [-0.03, 0.02, 0.05], atol=1e-6)
+                        np.testing.assert_allclose(
+                            builder.joint_X_c[segment_joint][:3], [-0.03, 0.02, 0.5 * half_lengths[1]], atol=1e-6
+                        )
                     model = builder.finalize(device="cpu")
                     state = model.state()
                     np.testing.assert_allclose(state.body_q.numpy()[bodies], np.asarray(builder.body_q)[bodies])
                     newton.eval_fk(model, model.joint_q, model.joint_qd, state)
                     expected_positions = np.array([[0, 0, 0.2], [0, 0, 0.6]])
-                    if rooted:
+                    if rooted and use_rest:
                         expected_positions[:, 2] += -0.15 if endpoint == 0 else 0.1
                     np.testing.assert_allclose(state.body_q.numpy()[bodies, :3], expected_positions, atol=1e-6)
 

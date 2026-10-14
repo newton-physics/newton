@@ -229,7 +229,12 @@ The first release deliberately supports a narrow, predictable set of inputs:
   mass relative to Newton's former direct point interpretation, which untyped arrays retain during
   the deprecation window with a warning.
 * Simulation points, topology, normals, and rest arrays are read at the USD default time.
-  Cable ``physics:restShapePoints`` and ``physics:restNormals`` set a rest shape separate from
+  Missing cloth bend arrays use
+  ``physics:restBendAnglesDefault = "flat"``; ``"restShape"`` retains the imported dihedral.
+  If the token is unauthored and the imported cloth is non-planar, Newton warns that the proposal's
+  flat fallback changes the previous rest state and points to ``"restShape"`` as the preservation
+  choice. Explicit ``"flat"`` authoring and planar cloth do not emit this migration warning.
+* Cable ``physics:restShapePoints`` and ``physics:restNormals`` set a rest shape separate from
   the initial pose. This works for individual curves, periodic curves, cables rooted in an
   articulation, and welded cable graphs. Rest lengths set capsule sizes, mass volume weights,
   and the lengths used to convert material stiffness and damping to joint gains.
@@ -239,18 +244,18 @@ The first release deliberately supports a narrow, predictable set of inputs:
   first, including indexed values, then from ``normals``. Both initial and rest normals use
   the prim's linear transform as material directions.
 
+  With both rest fields absent, the cable uses its initial geometry as its rest shape,
+  without a rest-shape warning. Welded cables now honor authored initial normals even
+  without rest fields; earlier versions ignored those normals.
+
   Invalid rest arrays warn and use these fallbacks. A wrong array size or shape rejects that
   field for the whole prim. Non-finite points or zero-length rest segments reject only that
   curve's rest points. Invalid rest normals fall back independently, so valid rest lengths
-  still apply. If neither normal source is usable for the rest shape, Newton transports
-  the initial frames to the rest tangents. Invalid initial normals get a generated frame
-  per segment; valid initial normals on other segments still apply.
-
-  Missing cloth bend arrays use
-  ``physics:restBendAnglesDefault = "flat"``; ``"restShape"`` retains the imported dihedral.
-  If the token is unauthored and the imported cloth is non-planar, Newton warns that the proposal's
-  flat fallback changes the previous rest state and points to ``"restShape"`` as the preservation
-  choice. Explicit ``"flat"`` authoring and planar cloth do not emit this migration warning.
+  still apply. If any segment's normal cannot define a rest frame, Newton rejects that
+  normal source for the curve's rest frames, including when initial normals are the fallback.
+  If neither source works, Newton transports the initial frames to the rest tangents.
+  For the initial pose, invalid normals get a generated frame per segment;
+  valid initial normals on other segments still apply.
 * Hard cable-to-xform point attachments, and hard cable-to-cable junctions whose initial
   points coincide. Stretched cables can have separated material anchors; see the
   stretched cable attachment limitation below.
@@ -292,8 +297,11 @@ Known gaps of the experimental importer, tracked as follow-ups:
   initial points. Attachments use the capsule's material endpoints and rest-length segment
   coordinates, like native rod joints. Import preserves the initial poses in ``Model.body_q``
   and a newly created state. An attachment can start with separated anchors that the solver
-  must bring together. Calling :func:`~newton.eval_fk` instead enforces the root joint's
-  attachment position and can translate a stretched cable rooted at an endpoint.
+  must bring together. A gripper positioned around the initial curve may also miss the
+  shorter capsules. The importer does not reposition the cable to restore that contact.
+  Import does not call :func:`~newton.eval_fk`. If the application calls it, FK enforces
+  the articulation's root attachment and can translate a cable rooted at an endpoint.
+  Attachments outside articulations remain for the solver to enforce.
   This approximates the proposal's attachment positions on the initial curve.
 * **Springy attachments** -- attachments with a finite stiffness are not simulated. They are
   preserved in ``path_attachment_attrs`` with their authored stiffness and damping (silently
