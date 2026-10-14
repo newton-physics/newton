@@ -15,6 +15,7 @@ from ...sim.contacts import contact_surface_point, contact_surface_separation
 from .constants import (
     DEFAULT_LIMIT_SOLREF_DAMPRATIO,
     DEFAULT_LIMIT_SOLREF_TIMECONST,
+    HINGE_CONNECT_HALF_SPAN,
     MJ_MINMU,
     MJ_MINVAL,
     SOLREF_MODE_FORCE_SPACE,
@@ -1360,11 +1361,16 @@ def update_jnt_connect_constraint_rel_body_poses_at_qref_kernel(
     t_rel_out[world, mjc_eq] = wp.quat_rotate(q2_inv, pos1 - pos2)
 
 
+@wp.func
+def hinge_connect_anchor(anchor: wp.vec3, side: int, hinge_axis: wp.vec3) -> wp.vec3:
+    """Return a revolute loop joint's CONNECT point on ``side`` (``-1`` or ``+1``) of ``anchor``."""
+    return anchor + (HINGE_CONNECT_HALF_SPAN * float(side)) * hinge_axis
+
+
 @wp.kernel
 def recompute_jnt_eq_anchor1_kernel(
     mjc_eq_to_newton_jnt: wp.array2d[wp.int32],
     has_axis_offset: wp.array2d[wp.int32],
-    axis_offset_distance: float,
     joint_X_p: wp.array[wp.transform],
     joint_axis: wp.array[wp.vec3],
     joint_qd_start: wp.array[wp.int32],
@@ -1375,18 +1381,16 @@ def recompute_jnt_eq_anchor1_kernel(
 
     For each mapped ``[world, eq]`` entry, reads the translation from the
     joint's parent transform (``joint_X_p``).  When ``has_axis_offset`` is
-    set, adds ``axis_offset_distance`` along the hinge axis rotated into
-    the parent body frame.
+    nonzero, offsets the anchor to that side along the hinge axis rotated
+    into the parent body frame (see :func:`hinge_connect_anchor`).
 
     Args:
         mjc_eq_to_newton_jnt: Mapping from MuJoCo ``[world, eq]`` to Newton
             joint index, shape ``[world_count, neq]``.
             Negative values indicate unmapped entries.
-        has_axis_offset: ``1`` for the second hinge CONNECT that is offset
-            along the joint axis, ``0`` otherwise,
+        has_axis_offset: Side (``-1`` or ``+1``) along the joint axis for
+            hinge CONNECT rows, ``0`` otherwise,
             shape ``[world_count, neq]``.
-        axis_offset_distance: Distance [m] along the hinge axis for the
-            second CONNECT constraint point.
         joint_X_p: Parent-body-local joint transform [m],
             shape ``[joint_count]``, dtype ``wp.transform``.
         joint_axis: Joint axis in joint-local frame,
@@ -1405,11 +1409,12 @@ def recompute_jnt_eq_anchor1_kernel(
     xform = joint_X_p[newton_jnt]
     anchor = wp.transform_get_translation(xform)
 
-    if has_axis_offset[world, mjc_eq] != 0:
+    side = has_axis_offset[world, mjc_eq]
+    if side != 0:
         qd_start = joint_qd_start[newton_jnt]
         axis_local = joint_axis[qd_start]
         axis_parent = wp.quat_rotate(wp.transform_get_rotation(xform), axis_local)
-        anchor = anchor + axis_offset_distance * axis_parent
+        anchor = hinge_connect_anchor(anchor, side, axis_parent)
 
     jnt_eq_anchor1[world, mjc_eq] = anchor
 
@@ -1470,7 +1475,7 @@ def update_jnt_connect_constraint_anchors_kernel(
 def create_convert_mjw_contacts_to_newton_kernel():
     """Create contact conversion kernel; deferred so ``wp.static`` doesn't import mujoco_warp at module load."""
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def convert_mjw_contacts_to_newton_kernel(
         # inputs
         mjc_geom_to_newton_shape: wp.array2d[wp.int32],

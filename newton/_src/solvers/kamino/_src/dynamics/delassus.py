@@ -465,7 +465,7 @@ def _make_merge_preconditioner_kernel(block_type: BlockDType):
     elif len(block_shape) == 1:
         block_shape = (1, block_shape[0])
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def merge_preconditioner_kernel(
         # Inputs:
         num_nzb: wp.array[wp.int32],
@@ -742,7 +742,7 @@ def _scale_row_vector_kernel(
 def _make_block_sparse_gemv_regularization_kernel(alpha: wp.float32):
     # Note: this kernel factory allows to optimize for the common case alpha = 1.0. In use cases where
     # alpha changes over time, this would need to be revisited (to avoid multiple recompilations)
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def _block_sparse_gemv_regularization_kernel(
         # Matrix data:
         dims: wp.array2d[wp.int32],

@@ -8318,18 +8318,17 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
 
         solver = SolverMuJoCo(model)
 
-        # Revolute loop joint → 2x connect constraints (origin + offset along axis)
+        # Revolute loop joint → 2x connect constraints centered on the anchor along the axis
         self.assertEqual(solver.mj_model.neq, 2)
         self.assertEqual(int(solver.mj_model.eq_type[0]), int(solver._mujoco.mjtEq.mjEQ_CONNECT))
         self.assertEqual(int(solver.mj_model.eq_type[1]), int(solver._mujoco.mjtEq.mjEQ_CONNECT))
-        # First CONNECT: parent anchor on b2 at (0, 0, -0.5)
-        assert np.allclose(solver.mj_model.eq_data[0, 0:3], [0, 0, -0.5], atol=1e-6)
+        # Parent anchor on b2 at (0, 0, -0.5), offset by -/+0.05 along the hinge axis (0, 0, 1)
+        assert np.allclose(solver.mj_model.eq_data[0, 0:3], [0, 0, -0.55], atol=1e-6)
+        assert np.allclose(solver.mj_model.eq_data[1, 0:3], [0, 0, -0.45], atol=1e-6)
         # MuJoCo auto-computes child anchor from body positions at compile time:
-        # world point = b2_pos + (0,0,-0.5) = (0,0,1) + (0,0,-0.5) = (0,0,0.5)
-        # in b0 frame: (0,0,0.5) - b0_pos = (0,0,0.5)
-        assert np.allclose(solver.mj_model.eq_data[0, 3:6], [0, 0, 0.5], atol=1e-6)
-        # Second CONNECT: offset along hinge axis (0, 0, 1) by 0.1
-        assert np.allclose(solver.mj_model.eq_data[1, 0:3], [0, 0, -0.4], atol=1e-6)
+        # world point = b2_pos + (0,0,-0.55) = (0,0,1) + (0,0,-0.55) = (0,0,0.45)
+        # in b0 frame: (0,0,0.45) - b0_pos = (0,0,0.45)
+        assert np.allclose(solver.mj_model.eq_data[0, 3:6], [0, 0, 0.45], atol=1e-6)
 
         state = model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state)
@@ -8359,6 +8358,33 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         q_after = body_q_after[b_free, 3:7]
         quat_dist = min(np.linalg.norm(q_after - q_before), np.linalg.norm(q_after + q_before))
         self.assertLess(quat_dist, 1e-3, "Free body orientation corrupted by loop joint q_start offset")
+
+    def test_revolute_loop_joint_load_through_pin_does_not_twist(self):
+        """A load through a revolute loop joint's pin must not rotate the body off the hinge axis."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        base = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_articulation([builder.add_joint_fixed(parent=-1, child=base)])
+        body = builder.add_body(mass=34.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_joint_revolute(parent=base, child=body, axis=newton.Axis.Y)
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+        state_0, state_1 = model.state(), model.state()
+        control = model.control()
+        # Pull the body along x through the pin (its center of mass).
+        body_f = np.zeros((model.body_count, 6), dtype=np.float32)
+        body_f[body, 0] = 1.0e4
+        state_0.body_f.assign(body_f)
+        state_1.body_f.assign(body_f)
+        for _ in range(300):
+            solver.step(state_0, state_1, control, None, 1.0e-3)
+            state_0, state_1 = state_1, state_0
+
+        body_q = state_0.body_q.numpy()[body]
+        self.assertGreater(body_q[0], 1.0e-3, "Load did not deflect the loop closure")
+        hinge_axis = np.array(wp.quat_rotate(wp.quat(*body_q[3:]), wp.vec3(0.0, 1.0, 0.0)))
+        twist = np.degrees(np.arccos(np.clip(hinge_axis[1], -1.0, 1.0)))
+        self.assertLess(twist, 1.0e-2, f"Body twisted {twist:.4f} deg off the hinge axis")
 
     def test_ball_loop_joint_coordinate_conversion_offset(self):
         """Verify coordinate conversion when a ball loop joint precedes other joints.

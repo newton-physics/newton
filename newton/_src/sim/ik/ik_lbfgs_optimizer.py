@@ -1362,7 +1362,7 @@ class IKOptimizerLBFGS:
             jcalc_transform,
         )
 
-        @wp.kernel
+        @wp.kernel(module="unique")
         def _integrate_dq_dof(
             # model-wide
             joint_type: wp.array[wp.int32],  # (n_joints)

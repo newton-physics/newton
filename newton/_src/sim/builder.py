@@ -72,6 +72,7 @@ from .graph_coloring import (
     combine_independent_coloring_plan,
     construct_particle_graph,
 )
+from .joint_mimic import _SUPPORTED_JOINT_TYPES
 from .model import Model, _pack_shape_pair_codes
 from .rod import Rod
 from .tendon import TendonGuide, TendonGuideFlags, TendonGuideType
@@ -7009,13 +7010,18 @@ class ModelBuilder:
         *,
         coeffs: Vec2 = (0.0, 1.0),
     ) -> None:
-        """Configure a joint to mimic another joint with matching dimensions.
+        """Configure a PRISMATIC, REVOLUTE, or D6 joint to mimic another with matching dimensions.
 
         The relationship is applied componentwise to every position and
         velocity coordinate. The follower coordinates are defined by
         ``q[joint] = coeffs[0] + coeffs[1] * q[reference_joint]`` and
         ``qd[joint] = coeffs[1] * qd[reference_joint]``. Passing ``None`` as
         ``reference_joint`` clears the relationship.
+
+        Quaternion joints (BALL, FREE, DISTANCE, and ROD) cannot be followers
+        or references because the componentwise relationship does not preserve
+        unit quaternions. FIXED joints have no coordinates to mimic and are also
+        not supported.
 
         Mimic chains are not supported: the reference joint must be independent,
         and a joint referenced by another mimic joint cannot become a follower.
@@ -7028,7 +7034,8 @@ class ModelBuilder:
                 coordinates [m or rad, dimensionless].
 
         Raises:
-            ValueError: If an index is invalid, the joint dimensions differ, the
+            ValueError: If an index is invalid, either joint type is unsupported,
+                the joint dimensions differ, the
                 joints belong to different worlds or articulations, the
                 coefficients are not finite, or the relationship creates a mimic
                 chain.
@@ -7046,6 +7053,17 @@ class ModelBuilder:
             raise ValueError(f"Invalid reference joint index {reference_joint}; expected 0..{joint_count - 1}")
         if joint == reference_joint:
             raise ValueError(f"Joint {joint} cannot mimic itself")
+
+        if (
+            self.joint_type[joint] not in _SUPPORTED_JOINT_TYPES
+            or self.joint_type[reference_joint] not in _SUPPORTED_JOINT_TYPES
+        ):
+            supported_types = ", ".join(JointType(joint_type).name for joint_type in sorted(_SUPPORTED_JOINT_TYPES))
+            raise ValueError(
+                f"Mimic followers and references only support {supported_types} joints. "
+                f"Follower joint {joint} has type {self.joint_type[joint].name}; "
+                f"reference joint {reference_joint} has type {self.joint_type[reference_joint].name}."
+            )
 
         follower_dimensions = self.joint_type[joint].dof_count(sum(self.joint_dof_dim[joint]))
         reference_dimensions = self.joint_type[reference_joint].dof_count(sum(self.joint_dof_dim[reference_joint]))

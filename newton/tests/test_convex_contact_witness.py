@@ -74,7 +74,7 @@ def _create_witness_kernel(distance_query=None, *, refinement_normal=None):
     refine_only = refinement_normal is not None
     ray_normal = wp.vec3(0.0) if refinement_normal is None else wp.vec3(refinement_normal)
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(module="unique", enable_backward=False)
     def kernel(
         mesh_a: wp.uint64,
         mesh_b: wp.uint64,
