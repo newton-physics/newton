@@ -475,6 +475,25 @@ def test_solver_step_rejects_capture(test, device):
             solver.step(state, output, model.control(), None, 0.005)
 
 
+def test_missing_material_arrays_rejected(test, device):
+    """Require the per-contact material arrays that the compliant law reads."""
+    solver = SimpleNamespace(model=SimpleNamespace(device=device))
+    for name in ("rigid_contact_stiffness", "rigid_contact_damping", "rigid_contact_friction"):
+        contacts = _contacts(device)
+        setattr(contacts, name, None)
+        with test.subTest(missing=name), test.assertRaisesRegex(ValueError, "hydroelastic material arrays"):
+            start_step(solver, contacts, 0.005)
+    with test.assertRaisesRegex(ValueError, "hydroelastic material arrays"):
+        start_step(solver, None, 0.005)
+
+
+def test_invalid_contact_stiffness_rejected(test, device):
+    """Reject a negative or non-finite contact stiffness before writing compliant rows."""
+    for stiffness in (-1.0, float("nan")):
+        with test.subTest(stiffness=stiffness), test.assertRaisesRegex(ValueError, "Invalid contact stiffness"):
+            run_fixture(device=device, articulated=True, enabled=True, steps=1, stiffness=stiffness)
+
+
 def test_nonfinite_inputs_rejected(test, device):
     """Reject invalid time steps instead of emitting infinite row coefficients."""
     solver = SimpleNamespace(model=SimpleNamespace(device=device))
@@ -606,6 +625,8 @@ for _fn in (
     test_capture_rejected,
     test_solver_step_rejects_capture,
     test_nonfinite_inputs_rejected,
+    test_missing_material_arrays_rejected,
+    test_invalid_contact_stiffness_rejected,
     test_persistent_patch_guard,
     test_filtered_speculative_contacts_are_skipped,
     test_nonresponding_contact_is_skipped,

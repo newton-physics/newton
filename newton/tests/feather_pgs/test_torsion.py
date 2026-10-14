@@ -791,10 +791,27 @@ def test_selected_unsupported_shape_fails_at_construction(test, device):
 
 def test_hydro_contact_input_is_rejected(test, device):
     """Reject actual positive hydro contact stiffness, not a synthetic solver flag."""
-    _, solver, model, initial, contacts = fixture(0.01, device=device, center_only=True)
-    contacts.rigid_contact_stiffness = wp.ones(contacts.rigid_contact_max, device=model.device)
-    with test.assertRaisesRegex(ValueError, "hydroelastic"):
-        solver.step(initial, model.state(), model.control(), contacts, 0.0025)
+    for device_preparation in (False, True):
+        _, solver, model, initial, contacts = fixture(
+            0.01, device=device, center_only=True, contact_torsion_device=device_preparation, step=False
+        )
+        contacts.rigid_contact_stiffness = wp.ones(contacts.rigid_contact_max, device=model.device)
+        with test.subTest(device_preparation=device_preparation), test.assertRaisesRegex(ValueError, "hydroelastic"):
+            solver.step(initial, model.state(), model.control(), contacts, 0.0025)
+
+
+def test_contact_input_overflow_is_rejected(test, device):
+    """Reject a contact count beyond the buffer instead of grouping a truncated input."""
+    for device_preparation in (False, True):
+        _, solver, model, initial, contacts = fixture(
+            0.01, device=device, center_only=True, contact_torsion_device=device_preparation, step=False
+        )
+        contacts.rigid_contact_count.fill_(contacts.rigid_contact_max + 1)
+        with (
+            test.subTest(device_preparation=device_preparation),
+            test.assertRaisesRegex(RuntimeError, "Contact input overflow"),
+        ):
+            solver.step(initial, model.state(), model.control(), contacts, 0.0025)
 
 
 def test_patch_spanning_shape_pairs_takes_the_largest_radius(test, device):
@@ -879,6 +896,7 @@ for _fn in (
     test_contact_row_loss_fails_without_diagnostics,
     test_selected_unsupported_shape_fails_at_construction,
     test_hydro_contact_input_is_rejected,
+    test_contact_input_overflow_is_rejected,
     test_patch_spanning_shape_pairs_takes_the_largest_radius,
 ):
     add_function_test(TestContactTorsionRegressions, _fn.__name__, _fn, devices=get_cuda_test_devices())

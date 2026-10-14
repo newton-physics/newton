@@ -126,6 +126,12 @@ def test_invalid_options(test, device):
     # The same options are valid without sleeping, so the errors above come from the sleep guard.
     SolverFeatherPGS(model, solve_mode="matrix_free", velocity_iterations=1, friction_anchor_beta=0.0)
     SolverFeatherPGS(model, solve_mode="matrix_free", contact_warmstart=True, friction_anchor_beta=0.0)
+    builder = newton.ModelBuilder()
+    builder.add_ground_plane()
+    empty = builder.finalize(device=device)
+    SolverFeatherPGS(empty, solve_mode="matrix_free", friction_anchor_beta=0.0)
+    with test.assertRaisesRegex(ValueError, "at least one articulation"):
+        SolverFeatherPGS(empty, solve_mode="matrix_free", enable_sleeping=True, friction_anchor_beta=0.0)
 
 
 def test_default_and_explicit_disabled_match(test, device):
