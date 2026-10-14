@@ -1,12 +1,24 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Private helpers for loading Warp-NN policies with configurable batches."""
+"""Private helpers for loading ONNX models and Warp-NN policies."""
 
 import tempfile
 from pathlib import Path
 
 import warp as wp
+
+
+def require_onnx():
+    """Lazy import of the ``onnx`` package with a friendly error message."""
+    try:
+        import onnx  # noqa: PLC0415
+    except ImportError as exc:
+        raise ImportError(
+            "Loading neural-drive ONNX checkpoints requires the optional `onnx` package. "
+            "Install it with `pip install newton[onnx]`."
+        ) from exc
+    return onnx
 
 
 def load_onnx_runtime(

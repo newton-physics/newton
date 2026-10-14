@@ -4289,6 +4289,7 @@ class ModelBuilder:
         legacy_angular_velocity_units: bool = False,
         legacy_springref_units: bool = False,
         return_deformable_results: bool = False,
+        allow_unsafe_torch_checkpoints: bool = False,
     ) -> dict[str, Any]:
         """Parses a Universal Scene Description (USD) stage and adds rigid bodies, particles, soft bodies, shapes, and joints to the given ModelBuilder.
 
@@ -4454,6 +4455,10 @@ class ModelBuilder:
                 returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` /
                 ``path_attachment_map`` and the matching ``path_*_attrs``). Off by default, so the
                 default return shape carries no deformable additions.
+            allow_unsafe_torch_checkpoints: Allow USD neural actuators to reference
+                Torch checkpoints. Only use this for trusted USD assets and
+                checkpoints: loading a Torch checkpoint may execute code during
+                :meth:`newton.ModelBuilder.finalize`. Defaults to ``False``.
 
         Returns:
             .. experimental::
@@ -4608,6 +4613,7 @@ class ModelBuilder:
             legacy_angular_velocity_units=legacy_angular_velocity_units,
             legacy_springref_units=legacy_springref_units,
             return_deformable_results=return_deformable_results,
+            allow_unsafe_torch_checkpoints=allow_unsafe_torch_checkpoints,
         )
 
     def add_mjcf(
