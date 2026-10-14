@@ -8,7 +8,6 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
@@ -17,7 +16,6 @@ import warp as wp
 from ...core.reset import reset_world_selected as _reset_world_selected
 from ...geometry import ParticleFlags, ShapeFlags
 from ...sim import JointType, Model, ModelFlags, StateFlags
-from ..observables import SolverObservableFlags, SolverObservables
 from ..solver import SolverBase
 from .interface import (
     CouplingEndpointKind,
@@ -158,6 +156,14 @@ def _zero_reset_view_rows_kernel(
     global_id = local_to_global[local_id]
     if global_id >= 0 and _reset_world_selected(global_row_world[global_id], world_mask, world_count):
         values[local_id] = zero_value
+
+
+# Overloads instantiated lazily on launch change the module hash, making the
+# compiled module depend on launch order; declare the common dtypes up front.
+for _dtype in (wp.float32, wp.vec3, wp.mat33, wp.transform, wp.spatial_vector):
+    wp.overload(_copy_reset_view_rows_kernel, {"src": wp.array[_dtype], "dst": wp.array[_dtype]})
+    wp.overload(_scatter_reset_owned_rows_kernel, {"src": wp.array[_dtype], "dst": wp.array[_dtype]})
+    wp.overload(_zero_reset_view_rows_kernel, {"values": wp.array[_dtype], "zero_value": _dtype})
 
 
 def _identity_index_map(count: int, device) -> wp.array:
@@ -334,7 +340,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         stepping policy. The factory is called as ``solver(view)`` with the
         per-entry :class:`ModelView` and must return a configured
         :class:`SolverBase`. Bind any extra constructor arguments in the
-        factory itself (e.g. ``lambda v: SolverVBD(model=v, iterations=10, rigid_compliant_alm=True)``).
+        factory itself (e.g. ``lambda v: SolverVBD(model=v, iterations=10)``).
         Entry names must be unique. In-place stepping is only valid for solvers
         that explicitly support it. Shape ids remain in the parent model
         namespace so all entries can consume shared contact buffers.
@@ -363,42 +369,58 @@ class SolverCoupled(SolverBase, CouplingInterface):
         in_place: bool = False
 
     @dataclass(eq=False)
-    class Observables(SolverObservables):
-        """Global observables and the entry-local containers that populate them."""
+    class Observables(SolverBase.Observables):
+        """Global observables and the entry-local containers that populate them.
 
-        entry_observables: dict[str, SolverObservables] = field(default_factory=dict, init=False, repr=False)
+        See :ref:`solver_observables` for coupled solver support and selection.
+        """
+
+        entry_observables: dict[str, SolverBase.Observables] = field(default_factory=dict, init=False, repr=False)
         """Observable containers allocated by each owning sub-solver."""
 
-        def select(self, flags: Iterable[Enum]) -> SolverCoupled.Observables:
-            """Select global fields and matching entry-local arrays without allocating."""
-            selected = super().select(flags)
+        def select(self, kinds: Iterable[str]) -> SolverCoupled.Observables:
+            """Select global fields and matching entry-local arrays without allocating.
+
+            See :ref:`solver_observables` for selection examples.
+            """
+            selected = super().select(kinds)
             selected.entry_observables = {
-                name: entry.select(selected.flags.intersection(entry.flags))
+                name: entry.select(selected.kinds.intersection(entry.kinds))
                 for name, entry in self.entry_observables.items()
             }
             return selected
 
-    OBSERVABLES_TYPE = Observables
-
     @property
-    def supported_observable_flags(self):
-        """Return body observables supported by every entry that owns bodies."""
-        flags = set()
-        body_entries = [entry for entry in self._entries.values() if entry.body_indices.shape[0] > 0]
-        for flag in (SolverObservableFlags.BODY_QDD, SolverObservableFlags.BODY_PARENT_F):
-            if body_entries and all(flag in entry.solver.supported_observable_flags for entry in body_entries):
-                flags.add(flag)
-        return frozenset(flags)
+    def supported_observables(self):
+        """Return body observables supported by every entry that owns bodies.
 
-    def observables(self, flags: Iterable[Enum], *, requires_grad: bool | None = None) -> Observables:
-        """Allocate parent-model observables and matching entry-local containers."""
+        See :ref:`solver_observables` for solver support.
+        """
+        kinds = set()
+        body_entries = [entry for entry in self._entries.values() if entry.body_indices.shape[0] > 0]
+        for kind in (SolverBase.ObservableKind.BODY_QDD, SolverBase.ObservableKind.BODY_PARENT_F):
+            if body_entries and all(kind in entry.solver.supported_observables for entry in body_entries):
+                kinds.add(kind)
+        return frozenset(kinds)
+
+    def observables(
+        self, kinds: Iterable[str], *, contacts: Contacts | None = None, requires_grad: bool | None = None
+    ) -> SolverCoupled.Observables:
+        """Allocate parent-model observables and matching entry-local containers.
+
+        ``contacts`` is unused because this solver exposes only body observables.
+
+        See :meth:`SolverBase.observables() <newton.solvers.SolverBase.observables>`
+        for the shared allocation contract and errors, and :ref:`solver_observables`
+        for usage and solver support.
+        """
         if requires_grad is None:
             requires_grad = self.model.requires_grad
-        with self._create_observables(flags, requires_grad=requires_grad) as observables:
+        with self._create_observables(kinds, contacts=contacts, requires_grad=requires_grad) as observables:
             for entry in self._entries.values():
-                entry_flags = observables.flags if entry.body_indices.shape[0] > 0 else ()
+                entry_kinds = observables.kinds if entry.body_indices.shape[0] > 0 else ()
                 observables.entry_observables[entry.name] = entry.solver.observables(
-                    entry_flags, requires_grad=requires_grad
+                    kinds=entry_kinds, requires_grad=requires_grad
                 )
             return observables
 
@@ -420,6 +442,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
         coupling: object | None = None,
     ) -> None:
         super().__init__(model)
+
+        if model.tendon_count:
+            raise ValueError("SolverCoupled does not yet support partitioning tendon routes; use XPBD or VBD directly")
 
         self._attribute_projections = self._build_attribute_projections()
         self._joint_constraint_starts = self._build_joint_constraint_starts()
@@ -1078,7 +1103,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         )
         if attachment_order is None:
             self._warn_compaction_fallback(
-                cfg, "the selected body-particle attachments do not have a homogeneous world layout"
+                cfg, "the selected particle-body attachments do not have a homogeneous world layout"
             )
             return None
         compact, failure_reason = self._compact_index_lists(
@@ -1244,7 +1269,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             model.AttributeFrequency.TRIANGLE: list(range(model.tri_count)) if keep_deformables else [],
             model.AttributeFrequency.TETRAHEDRON: list(range(model.tet_count)) if keep_deformables else [],
             model.AttributeFrequency.SPRING: list(range(model.spring_count)) if keep_deformables else [],
-            model.AttributeFrequency.ATTACHMENT_BODY_PARTICLE: attachment_order,
+            model.AttributeFrequency.ATTACHMENT_PARTICLE_BODY: attachment_order,
             model.AttributeFrequency.WORLD: list(range(model.world_count)),
         }
         custom_frequency_orders = self._compact_custom_frequency_orders(built_in_frequency_orders)
@@ -1438,13 +1463,13 @@ class SolverCoupled(SolverBase, CouplingInterface):
     ) -> set[int]:
         """Select attachments whose endpoints are both owned by one entry."""
         model = self.model
-        if model.attachment_body_particle_count == 0:
+        if model.attachment_particle_body_count == 0:
             return set()
-        body = model.attachment_body_particle_body.numpy()
-        particle = model.attachment_body_particle_particle.numpy()
+        body = model.attachment_particle_body_body.numpy()
+        particle = model.attachment_particle_body_particle.numpy()
         return {
             attachment
-            for attachment in range(model.attachment_body_particle_count)
+            for attachment in range(model.attachment_particle_body_count)
             if int(body[attachment]) in body_set and int(particle[attachment]) in particle_set
         }
 
@@ -1457,10 +1482,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
         selected = self._body_particle_attachment_rows(body_set, particle_set)
         return self._ordered_world_subset(
             selected,
-            self.model.attachment_body_particle_world,
+            self.model.attachment_particle_body_world,
             None,
-            self.model.attachment_body_particle_count,
-            "body-particle attachments",
+            self.model.attachment_particle_body_count,
+            "particle-body attachments",
             allow_global=True,
         )
 
@@ -1477,7 +1502,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 {int(i) for i in cfg.particles},
             )
         )
-        attachment_frequency = model.AttributeFrequency.ATTACHMENT_BODY_PARTICLE
+        attachment_frequency = model.AttributeFrequency.ATTACHMENT_PARTICLE_BODY
         projections = self._entry_attribute_projections(None)
         world_frequency = model.AttributeFrequency.WORLD
         projections.setdefault(
@@ -1486,9 +1511,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
         )
         projections[attachment_frequency] = _compact_index_projection(
             rows,
-            model.attachment_body_particle_count,
+            model.attachment_particle_body_count,
         )
-        view.attachment_body_particle_count = len(rows)
+        view.attachment_particle_body_count = len(rows)
         self._project_compact_attributes(
             view,
             projections,
@@ -1520,7 +1545,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         tri_order = compact.order(frequency.TRIANGLE)
         tet_order = compact.order(frequency.TETRAHEDRON)
         spring_order = compact.order(frequency.SPRING)
-        attachment_order = compact.order(frequency.ATTACHMENT_BODY_PARTICLE)
+        attachment_order = compact.order(frequency.ATTACHMENT_PARTICLE_BODY)
 
         body_global_to_local = {global_id: local_id for local_id, global_id in enumerate(body_order)}
         view.body_count = len(body_order)
@@ -1533,7 +1558,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         view.articulation_count = len(articulation_order)
         view.constraint_mimic_count = len(mimic_order)
         view.spring_count = len(spring_order)
-        view.attachment_body_particle_count = len(attachment_order)
+        view.attachment_particle_body_count = len(attachment_order)
         view.tri_count = len(tri_order)
         view.edge_count = len(edge_order)
         view.tet_count = len(tet_order)
@@ -2333,7 +2358,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         contacts: Contacts | None,
         dt: float,
         *,
-        observables: SolverObservables | None = None,
+        observables: SolverBase.Observables | None = None,
     ) -> None:
         """Step all coupled sub-solvers for one time step.
 
@@ -2357,21 +2382,21 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
     def _reconcile_observables(self, observables: Observables) -> None:
         """Merge body-indexed entry observables into global observable arrays."""
-        for flag in (SolverObservableFlags.BODY_QDD, SolverObservableFlags.BODY_PARENT_F):
+        for flag in (SolverBase.ObservableKind.BODY_QDD, SolverBase.ObservableKind.BODY_PARENT_F):
             if observables.is_requested(flag):
-                getattr(observables, flag.value).zero_()
+                getattr(observables, flag).zero_()
 
         for entry in self._entries.values():
             entry_observables = observables.entry_observables[entry.name]
-            for flag in (SolverObservableFlags.BODY_QDD, SolverObservableFlags.BODY_PARENT_F):
+            for flag in (SolverBase.ObservableKind.BODY_QDD, SolverBase.ObservableKind.BODY_PARENT_F):
                 if (
                     not observables.is_requested(flag)
                     or not entry_observables.is_requested(flag)
                     or entry.body_indices.shape[0] == 0
                 ):
                     continue
-                src = getattr(entry_observables, flag.value)
-                dst = getattr(observables, flag.value)
+                src = getattr(entry_observables, flag)
+                dst = getattr(observables, flag)
                 wp.launch(
                     _scatter_spatial_observables_mapped,
                     dim=entry.body_indices.shape[0],
@@ -2838,7 +2863,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             entry_observables = self._active_observables.entry_observables[entry.name]
             # Entries without requested observables keep the plain step() call so
             # sub-solvers that predate the ``observables`` keyword remain usable.
-            if not entry_observables.flags:
+            if not entry_observables.kinds:
                 entry_observables = None
 
         def step_solver(state_in: State, state_out: State, step_dt: float) -> None:
@@ -3161,7 +3186,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 return True
         configuration_dof = attribute.name in ("joint_axis", "mujoco:dof_ref", "mujoco:dof_springref")
         if flags & int(ModelFlags.JOINT_PROPERTIES):
-            if frequency in (model_frequency.JOINT, model_frequency.JOINT_COORD) or attribute.name == "joint_axis":
+            if frequency in (model_frequency.JOINT, model_frequency.JOINT_COORD) or attribute.name in (
+                "joint_axis",
+                "joint_target_q",
+            ):
                 return True
         if flags & int(ModelFlags.JOINT_DOF_PROPERTIES):
             if frequency == model_frequency.JOINT_DOF or attribute.name == "joint_target_q":
@@ -3172,6 +3200,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             ) or attribute.name == "joint_target_q":
                 return True
         if flags & int(ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES) and attribute.name in (
+            "joint_target_q",
             "mujoco:dof_ref",
             "mujoco:dof_springref",
         ):
@@ -3185,7 +3214,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             if frequency in (model_frequency.ONCE, model_frequency.WORLD):
                 return True
         if flags & int(ModelFlags.CONSTRAINT_PROPERTIES):
-            if frequency in (model_frequency.CONSTRAINT_MIMIC, model_frequency.ATTACHMENT_BODY_PARTICLE):
+            if frequency in (model_frequency.CONSTRAINT_MIMIC, model_frequency.ATTACHMENT_PARTICLE_BODY):
                 return True
             if any(token in attribute.name for token in ("constraint", ":eq_", "mimic")):
                 return True

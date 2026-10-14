@@ -3,10 +3,10 @@
 
 """Test eager allocation, naming, and ownership of solver observables."""
 
-import inspect
+from __future__ import annotations
+
 import unittest
 from dataclasses import dataclass
-from enum import Enum
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -20,29 +20,35 @@ from newton.selection import ArticulationView
 class ContactSolver(newton.solvers.SolverBase):
     """Exercise the base allocation contract without a numerical backend."""
 
-    SUPPORTED_OBSERVABLE_FLAGS = frozenset(newton.solvers.SolverObservableFlags)
+    SUPPORTED_OBSERVABLES = frozenset(
+        {
+            newton.solvers.SolverBase.ObservableKind.BODY_QDD,
+            newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F,
+            newton.solvers.SolverBase.ObservableKind.CONTACT_F,
+        }
+    )
 
 
-class CustomContactFlags(Enum):
+class CustomContactKind:
     """Define a contact-indexed diagnostic independently of CONTACT_F."""
 
     PRESSURE = "pressure"
 
 
 @dataclass(eq=False)
-class CustomContactObservables(newton.solvers.SolverObservables):
+class CustomContactObservables(newton.solvers.SolverBase.Observables):
     """Keep custom contact pressure separate from the standard force array."""
 
-    pressure: wp.array[float] | None = newton.solvers.SolverObservables.field(
-        flag=CustomContactFlags.PRESSURE, dtype=float, frequency=newton.Model.AttributeFrequency.CONTACT_RIGID
+    pressure: wp.array[float] | None = newton.solvers.SolverBase.Observables.field(
+        kind=CustomContactKind.PRESSURE, dtype=float, frequency=newton.Model.AttributeFrequency.CONTACT_RIGID
     )
 
 
 class CustomContactSolver(ContactSolver):
     """Exercise eager allocation of solver-specific contact fields."""
 
-    OBSERVABLES_TYPE = CustomContactObservables
-    SUPPORTED_OBSERVABLE_FLAGS = ContactSolver.SUPPORTED_OBSERVABLE_FLAGS | {CustomContactFlags.PRESSURE}
+    Observables = CustomContactObservables
+    SUPPORTED_OBSERVABLES = ContactSolver.SUPPORTED_OBSERVABLES | {CustomContactKind.PRESSURE}
 
 
 class TestSolverObservables(unittest.TestCase):
@@ -54,60 +60,46 @@ class TestSolverObservables(unittest.TestCase):
         builder.add_body(mass=0.0)
         self.model = builder.finalize(device="cpu")
         self.solver = ContactSolver(self.model)
-        self.flags = {newton.solvers.SolverObservableFlags.CONTACT_F}
+        self.kinds = {newton.solvers.SolverBase.ObservableKind.CONTACT_F}
 
     def test_uninitialized_capacities(self):
         """Distinguish uninitialized capacities from valid zero capacities."""
         self.assertIsNone(self.model.rigid_contact_max)
         self.assertIsNone(self.model.soft_contact_max)
         with self.assertRaisesRegex(RuntimeError, "CollisionPipeline"):
-            self.solver.observables(self.flags)
-
-    def test_observables_api_names(self):
-        """Expose consistent observable names at producer and consumer boundaries."""
-        self.assertIn("SolverObservables", newton.solvers.__all__)
-        self.assertIn("SolverObservableFlags", newton.solvers.__all__)
-        self.assertIn("observables", inspect.signature(newton.solvers.SolverBase.step).parameters)
-        for consumer in (
-            newton.sensors.SensorIMU.update,
-            newton.sensors.SensorContact.update,
-            newton.viewer.ViewerBase.log_contacts,
-        ):
-            self.assertIn("observables", inspect.signature(consumer).parameters)
-            self.assertNotIn("outputs", inspect.signature(consumer).parameters)
-            self.assertNotIn("solver_results", inspect.signature(consumer).parameters)
-        self.assertTrue(callable(newton.solvers.SolverBase.observables))
-        self.assertFalse(hasattr(newton.solvers, "SolverOutputs"))
-        self.assertFalse(hasattr(newton.solvers, "SolverOutputFlags"))
-        self.assertFalse(hasattr(newton.solvers.SolverBase, "outputs"))
-        self.assertFalse(hasattr(newton.solvers.SolverBase, "results"))
-        self.assertFalse(hasattr(newton.solvers, "SolverResults"))
-        self.assertFalse(hasattr(newton.solvers, "SolverResultFlags"))
-        self.assertIs(newton.solvers.SolverMuJoCo.OBSERVABLES_TYPE, newton.solvers.SolverMuJoCo.Observables)
-        self.assertTrue(issubclass(newton.solvers.SolverMuJoCo.Observables, newton.solvers.SolverObservables))
+            self.solver.observables(kinds=self.kinds)
+        with self.assertRaisesRegex(RuntimeError, "CollisionPipeline"):
+            self.solver.observables(kinds=self.solver.supported_observables)
 
     def test_body_only_observables_need_no_pipeline(self):
         """Allocate body observables without constructing a collision pipeline."""
-        observables = self.solver.observables({newton.solvers.SolverObservableFlags.BODY_QDD})
+        observables = self.solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_QDD})
         self.assertEqual(observables.body_qdd.shape, (self.model.body_count,))
         self.assertIsNone(observables.contact_f)
+        self.assertIsNone(observables.contacts)
+        contacts = newton.Contacts(0, 0, device="cpu")
+        for kinds in ({newton.solvers.SolverBase.ObservableKind.BODY_QDD}, set()):
+            with self.subTest(kinds=kinds):
+                allocated = self.solver.observables(kinds=kinds, contacts=contacts)
+                self.assertIsNone(allocated.contacts)
+                self.solver.validate_observables(allocated)
 
     def test_select_shares_arrays_without_allocating(self):
         """Select existing buffers without allocating, copying, or mutating the source."""
-        flags = newton.solvers.SolverObservableFlags
-        observables = self.solver.observables({flags.BODY_QDD, flags.BODY_PARENT_F}, requires_grad=True)
+        kinds = newton.solvers.SolverBase.ObservableKind
+        observables = self.solver.observables(kinds={kinds.BODY_QDD, kinds.BODY_PARENT_F}, requires_grad=True)
         with patch("newton._src.solvers.solver.wp.zeros", side_effect=AssertionError("allocated")):
-            selected = observables.select({flags.BODY_QDD})
+            selected = observables.select({kinds.BODY_QDD})
         self.assertIsNot(selected, observables)
         self.assertIs(type(selected), type(observables))
         self.assertIs(selected.body_qdd, observables.body_qdd)
         self.assertIs(selected.body_qdd.grad, observables.body_qdd.grad)
         self.assertIsNone(selected.body_parent_f)
         self.assertIsNotNone(observables.body_parent_f)
-        self.assertEqual(observables.flags, {flags.BODY_QDD, flags.BODY_PARENT_F})
-        self.assertEqual(selected.flags, {flags.BODY_QDD})
-        self.assertTrue(selected.is_requested(flags.BODY_QDD))
-        self.assertFalse(selected.is_requested(flags.BODY_PARENT_F))
+        self.assertEqual(observables.kinds, {kinds.BODY_QDD, kinds.BODY_PARENT_F})
+        self.assertEqual(selected.kinds, {kinds.BODY_QDD})
+        self.assertTrue(selected.is_requested(kinds.BODY_QDD))
+        self.assertFalse(selected.is_requested(kinds.BODY_PARENT_F))
         self.assertIs(selected.model, self.model)
         selected.body_qdd.fill_(wp.spatial_vector(7.0))
         np.testing.assert_array_equal(observables.body_qdd.numpy(), np.full((1, 6), 7.0))
@@ -117,32 +109,35 @@ class TestSolverObservables(unittest.TestCase):
 
     def test_select_empty_and_nested_subsets(self):
         """Narrow selections without re-enabling fields excluded by their parent."""
-        flags = newton.solvers.SolverObservableFlags
-        observables = self.solver.observables({flags.BODY_QDD, flags.BODY_PARENT_F})
-        selected = observables.select({flags.BODY_QDD})
-        self.assertIs(selected.select(selected.flags).body_qdd, observables.body_qdd)
+        kinds = newton.solvers.SolverBase.ObservableKind
+        observables = self.solver.observables(kinds={kinds.BODY_QDD, kinds.BODY_PARENT_F})
+        selected = observables.select({kinds.BODY_QDD})
+        self.assertIs(selected.select(selected.kinds).body_qdd, observables.body_qdd)
         empty = selected.select(set())
-        self.assertEqual(empty.flags, frozenset())
+        self.assertEqual(empty.kinds, frozenset())
         self.assertIsNone(empty.body_qdd)
         self.assertIsNone(empty.body_parent_f)
         self.solver.validate_observables(empty)
-        for source, requested in ((observables, {flags.CONTACT_F}), (selected, {flags.BODY_PARENT_F})):
+        for source, requested in ((observables, {kinds.CONTACT_F}), (selected, {kinds.BODY_PARENT_F})):
             with self.subTest(requested=requested), self.assertRaisesRegex(ValueError, "not requested"):
                 source.select(requested)
         with self.assertRaises(AttributeError):
-            selected.flags = frozenset()
+            selected.kinds = frozenset()
         with self.assertRaisesRegex(ValueError, "allocated"):
-            newton.solvers.SolverObservables().select(set())
+            newton.solvers.SolverBase.Observables().select(set())
 
     def test_select_custom_fields_and_shared_contact_binding(self):
         """Share binding across custom contact subsets created before the first step."""
-        flags = newton.solvers.SolverObservableFlags
+        kinds = newton.solvers.SolverBase.ObservableKind
         pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=3, soft_contact_max=0)
+        contacts = pipeline.contacts()
         solver = CustomContactSolver(self.model)
-        observables = solver.observables({flags.BODY_QDD, flags.CONTACT_F, CustomContactFlags.PRESSURE})
-        pressure = observables.select({CustomContactFlags.PRESSURE})
-        force = observables.select({flags.CONTACT_F})
-        body = observables.select({flags.BODY_QDD})
+        observables = solver.observables(
+            contacts=contacts, kinds={kinds.BODY_QDD, kinds.CONTACT_F, CustomContactKind.PRESSURE}
+        )
+        pressure = observables.select({CustomContactKind.PRESSURE})
+        force = observables.select({kinds.CONTACT_F})
+        body = observables.select({kinds.BODY_QDD})
         self.assertIs(type(pressure), CustomContactObservables)
         self.assertIs(pressure.pressure, observables.pressure)
         self.assertIsNone(pressure.contact_f)
@@ -152,9 +147,8 @@ class TestSolverObservables(unittest.TestCase):
         solver.validate_observables(observables.select(set()))
         with self.assertRaisesRegex(ValueError, "Contacts"):
             solver.validate_observables(pressure)
-        contacts = pipeline.contacts()
         solver.validate_observables(pressure, contacts)
-        for selection in (observables, pressure, force, force.select(force.flags)):
+        for selection in (observables, pressure, force, force.select(force.kinds)):
             self.assertIs(selection.contacts, contacts)
             with self.assertRaisesRegex(ValueError, "Contacts instance"):
                 solver.validate_observables(selection, pipeline.contacts())
@@ -162,31 +156,34 @@ class TestSolverObservables(unittest.TestCase):
 
     def test_select_zero_capacity_remains_requested(self):
         """Treat selected zero-length contact buffers as requested."""
-        newton.CollisionPipeline(self.model, rigid_contact_max=0, soft_contact_max=0)
-        observables = self.solver.observables(self.flags)
-        selected = observables.select(self.flags)
-        self.assertTrue(selected.is_requested(newton.solvers.SolverObservableFlags.CONTACT_F))
+        pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=0, soft_contact_max=0)
+        contacts = pipeline.contacts()
+        with self.assertRaisesRegex(ValueError, "Contacts"):
+            self.solver.observables(kinds=self.kinds)
+        observables = self.solver.observables(contacts=contacts, kinds=self.kinds)
+        selected = observables.select(self.kinds)
+        self.assertTrue(selected.is_requested(newton.solvers.SolverBase.ObservableKind.CONTACT_F))
         self.assertIs(selected.contact_f, observables.contact_f)
         self.assertEqual(selected.contact_f.shape, (0,))
 
     def test_select_substep_schedule(self):
         """Update selected custom fields per substep and preserve skipped values."""
-        flags = newton.solvers.SolverObservableFlags
+        kinds = newton.solvers.SolverBase.ObservableKind
 
         class SamplingSolver(CustomContactSolver):
             def step(self, state_in, state_out, control, contacts, dt, *, observables=None):
                 self.validate_observables(observables, contacts)
                 if observables is not None:
-                    for flag in (flags.BODY_QDD, CustomContactFlags.PRESSURE):
-                        if observables.is_requested(flag):
-                            array = getattr(observables, flag.value)
-                            array.fill_(dt if flag is CustomContactFlags.PRESSURE else wp.spatial_vector(dt))
+                    for kind in (kinds.BODY_QDD, CustomContactKind.PRESSURE):
+                        if observables.is_requested(kind):
+                            array = getattr(observables, kind)
+                            array.fill_(dt if kind is CustomContactKind.PRESSURE else wp.spatial_vector(dt))
 
         pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=2, soft_contact_max=0)
         contacts = pipeline.contacts()
         solver = SamplingSolver(self.model)
-        observables = solver.observables({flags.BODY_QDD, CustomContactFlags.PRESSURE})
-        every_substep = observables.select({flags.BODY_QDD})
+        observables = solver.observables(contacts=contacts, kinds={kinds.BODY_QDD, CustomContactKind.PRESSURE})
+        every_substep = observables.select({kinds.BODY_QDD})
         observables.pressure.fill_(-1.0)
         for step in range(3):
             solver.step(None, None, None, contacts, step + 1, observables=every_substep)
@@ -207,18 +204,18 @@ class TestSolverObservables(unittest.TestCase):
         builder.add_body(mass=0.0)
         model = builder.finalize(device="cuda:0")
         solver = ContactSolver(model)
-        flags = newton.solvers.SolverObservableFlags
-        observables = solver.observables({flags.BODY_QDD, flags.BODY_PARENT_F})
-        early = observables.select({flags.BODY_QDD})
-        last = observables.select({flags.BODY_PARENT_F})
+        kinds = newton.solvers.SolverBase.ObservableKind
+        observables = solver.observables(kinds={kinds.BODY_QDD, kinds.BODY_PARENT_F})
+        early = observables.select({kinds.BODY_QDD})
+        last = observables.select({kinds.BODY_PARENT_F})
         pointer = observables.body_qdd.ptr
         with wp.ScopedCapture(device=model.device) as capture:
             for step in range(3):
                 selected = last if step == 2 else early
                 solver.validate_observables(selected)
-                for flag in flags:
-                    if selected.is_requested(flag):
-                        getattr(selected, flag.value).fill_(wp.spatial_vector(step + 1.0))
+                for kind in solver.supported_observables:
+                    if selected.is_requested(kind):
+                        getattr(selected, kind).fill_(wp.spatial_vector(step + 1.0))
         for _ in range(2):
             wp.capture_launch(capture.graph)
             np.testing.assert_array_equal(observables.body_qdd.numpy(), np.full((1, 6), 2.0))
@@ -231,17 +228,17 @@ class TestSolverObservables(unittest.TestCase):
             self.skipTest("Conditional CUDA graphs are unavailable")
         model = newton.ModelBuilder().finalize(device="cuda:0")
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=2, soft_contact_max=0)
-        solver = CustomContactSolver(model)
-        flags = newton.solvers.SolverObservableFlags
-        observables = solver.observables({flags.CONTACT_F, CustomContactFlags.PRESSURE})
-        selected = observables.select({CustomContactFlags.PRESSURE})
         contacts = pipeline.contacts()
+        solver = CustomContactSolver(model)
+        kinds = newton.solvers.SolverBase.ObservableKind
+        observables = solver.observables(contacts=contacts, kinds={kinds.CONTACT_F, CustomContactKind.PRESSURE})
+        selected = observables.select({CustomContactKind.PRESSURE})
         condition = wp.ones(1, dtype=wp.int32, device=model.device)
         observables.contact_f.fill_(wp.spatial_vector(-1.0))
 
         def body():
             solver.validate_observables(selected, contacts)
-            if selected.is_requested(CustomContactFlags.PRESSURE):
+            if selected.is_requested(CustomContactKind.PRESSURE):
                 selected.pressure.fill_(3.0)
 
         with wp.ScopedCapture(device=model.device) as capture:
@@ -255,7 +252,7 @@ class TestSolverObservables(unittest.TestCase):
         self.assertIs(observables.contacts, contacts)
 
     def test_observable_frequency_metadata(self):
-        """Inherit standard row frequencies without another capability flag set."""
+        """Inherit standard row frequencies without another capability kind set."""
         observables = CustomContactObservables()
         frequency = newton.Model.AttributeFrequency
         self.assertEqual(observables.get_attribute_frequency("body_qdd"), frequency.BODY)
@@ -266,15 +263,15 @@ class TestSolverObservables(unittest.TestCase):
     def test_missing_observable_declaration(self):
         """Reject custom requests without a field declaration before allocating."""
         solver = CustomContactSolver(self.model)
-        solver.OBSERVABLES_TYPE = newton.solvers.SolverObservables
-        with self.assertRaisesRegex(ValueError, "field.*PRESSURE"):
-            solver.observables({CustomContactFlags.PRESSURE})
+        solver.Observables = newton.solvers.SolverBase.Observables
+        with self.assertRaisesRegex(ValueError, "field.*pressure"):
+            solver.observables(kinds={CustomContactKind.PRESSURE})
 
     def test_invalid_frequency_declaration(self):
         """Reject integer frequency values rather than guessing their domain."""
 
         with self.assertRaisesRegex(TypeError, "Invalid observable frequency"):
-            newton.solvers.SolverObservables.field(flag=CustomContactFlags.PRESSURE, dtype=float, frequency=5)
+            newton.solvers.SolverBase.Observables.field(kind=CustomContactKind.PRESSURE, dtype=float, frequency=5)
 
     def test_contact_frequency_counts(self):
         """Resolve each contact domain from capacity rather than live counts."""
@@ -303,23 +300,24 @@ class TestSolverObservables(unittest.TestCase):
 
         @dataclass(eq=False)
         class SoftObservables(CustomContactObservables):
-            pressure: wp.array[float] | None = newton.solvers.SolverObservables.field(
-                flag=CustomContactFlags.PRESSURE, dtype=float, frequency=newton.Model.AttributeFrequency.CONTACT_SOFT
+            pressure: wp.array[float] | None = newton.solvers.SolverBase.Observables.field(
+                kind=CustomContactKind.PRESSURE, dtype=float, frequency=newton.Model.AttributeFrequency.CONTACT_SOFT
             )
 
         class SoftSolver(CustomContactSolver):
-            OBSERVABLES_TYPE = SoftObservables
+            Observables = SoftObservables
 
         solver = SoftSolver(self.model)
         with self.assertRaisesRegex(RuntimeError, "CollisionPipeline"):
-            solver.observables({CustomContactFlags.PRESSURE})
+            solver.observables(kinds={CustomContactKind.PRESSURE})
         pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=5, soft_contact_max=3)
-        observables = solver.observables({CustomContactFlags.PRESSURE})
+        contacts = pipeline.contacts()
+        observables = solver.observables(contacts=contacts, kinds={CustomContactKind.PRESSURE})
         self.assertEqual(observables.pressure.shape, (3,))
         self.assertIsNone(observables.contact_f)
         with self.assertRaisesRegex(ValueError, "Contacts"):
             solver.validate_observables(observables)
-        solver.validate_observables(observables, pipeline.contacts())
+        solver.validate_observables(observables, contacts)
 
     def test_selection_uses_observable_frequencies(self):
         """Select custom body and DOF arrays without registering fields on the model."""
@@ -336,16 +334,14 @@ class TestSolverObservables(unittest.TestCase):
         ):
             with self.subTest(frequency=frequency):
 
-                @dataclass(eq=False)
-                class Observables(CustomContactObservables):
-                    pressure: wp.array[float] | None = newton.solvers.SolverObservables.field(
-                        flag=CustomContactFlags.PRESSURE, dtype=float, frequency=frequency
-                    )
-
                 class Solver(CustomContactSolver):
-                    OBSERVABLES_TYPE = Observables
+                    @dataclass(eq=False)
+                    class Observables(CustomContactObservables):
+                        pressure: wp.array[float] | None = newton.solvers.SolverBase.Observables.field(
+                            kind=CustomContactKind.PRESSURE, dtype=float, frequency=frequency
+                        )
 
-                observables = Solver(model).observables({CustomContactFlags.PRESSURE})
+                observables = Solver(model).observables(kinds={CustomContactKind.PRESSURE})
                 values = np.arange(3 * width, dtype=np.float32)
                 observables.pressure.assign(values)
                 with self.assertRaises(KeyError):
@@ -357,24 +353,25 @@ class TestSolverObservables(unittest.TestCase):
                     view.get_attribute("body_qdd", observables)
                 with self.assertRaisesRegex(ValueError, "same model"):
                     view.get_attribute(
-                        "body_qdd", self.solver.observables({newton.solvers.SolverObservableFlags.BODY_QDD})
+                        "body_qdd", self.solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_QDD})
                     )
 
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=2, soft_contact_max=1)
-        observables = ContactSolver(model).observables(self.flags)
+        contacts = pipeline.contacts()
+        observables = ContactSolver(model).observables(contacts=contacts, kinds=self.kinds)
         with self.assertRaisesRegex(AttributeError, "dynamic contact"):
             view.get_attribute("contact_f", observables)
         self.assertEqual(observables.contact_f.shape, (pipeline.rigid_contact_max + pipeline.soft_contact_max,))
 
     def test_eager_capacity_allocation(self):
-        """Allocate full rigid and soft capacity before creating Contacts."""
+        """Allocate full rigid and soft capacity and bind Contacts immediately."""
         pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=5, soft_contact_max=3)
-        observables = self.solver.observables(self.flags, requires_grad=True)
+        contacts = pipeline.contacts()
+        observables = self.solver.observables(contacts=contacts, kinds=self.kinds, requires_grad=True)
         self.assertEqual((self.model.rigid_contact_max, self.model.soft_contact_max), (5, 3))
         self.assertEqual(observables.contact_f.shape, (8,))
         self.assertTrue(observables.contact_f.requires_grad)
-        self.assertIsNone(observables.contacts)
-        contacts = pipeline.contacts()
+        self.assertIs(observables.contacts, contacts)
         pointer = observables.contact_f.ptr
         self.solver.validate_observables(observables, contacts)
         self.assertIs(observables.contacts, contacts)
@@ -382,22 +379,32 @@ class TestSolverObservables(unittest.TestCase):
 
     def test_zero_capacity_is_requested(self):
         """Keep a requested empty array distinct from an unrequested field."""
-        newton.CollisionPipeline(self.model, rigid_contact_max=0, soft_contact_max=0)
-        observables = self.solver.observables(self.flags)
+        pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=0, soft_contact_max=0)
+        contacts = pipeline.contacts()
+        observables = self.solver.observables(contacts=contacts, kinds=self.kinds)
         self.assertIsNotNone(observables.contact_f)
         self.assertEqual(observables.contact_f.shape, (0,))
-        self.assertIsNone(self.solver.observables(set()).contact_f)
+        self.assertIsNone(self.solver.observables(kinds=set()).contact_f)
 
     def test_validate_contact_layout_and_identity(self):
-        """Reject mismatched layouts and bind storage on the first step."""
+        """Validate layouts at allocation and retain storage identity during use."""
         pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=5, soft_contact_max=3)
-        observables = self.solver.observables(self.flags)
+        with self.assertRaisesRegex(ValueError, "Contacts"):
+            self.solver.observables(kinds=self.kinds)
+        with self.assertRaisesRegex(TypeError, "Contacts"):
+            self.solver.observables(kinds=self.kinds, contacts=object())
+        for rigid_max, soft_max in ((4, 4), (5, 4), (4, 3)):
+            with self.subTest(rigid_max=rigid_max, soft_max=soft_max), self.assertRaisesRegex(ValueError, "capacit"):
+                self.solver.observables(kinds=self.kinds, contacts=newton.Contacts(rigid_max, soft_max, device="cpu"))
+        if wp.is_cuda_available():
+            with self.assertRaisesRegex(ValueError, "device"):
+                self.solver.observables(kinds=self.kinds, contacts=newton.Contacts(5, 3, device="cuda:0"))
+        self.assertIsNone(self.model._solver_observable_contact_capacity)
+        contacts = pipeline.contacts()
+        observables = self.solver.observables(kinds=self.kinds, contacts=contacts)
+        self.assertIs(observables.contacts, contacts)
         with self.assertRaisesRegex(ValueError, "Contacts"):
             self.solver.validate_observables(observables)
-        with self.assertRaisesRegex(ValueError, "capacit"):
-            self.solver.validate_observables(observables, newton.Contacts(4, 4, device="cpu"))
-        self.assertIsNone(observables.contacts)
-        contacts = pipeline.contacts()
         self.solver.validate_observables(observables, contacts)
         self.solver.validate_observables(observables, contacts)
         with self.assertRaisesRegex(ValueError, "Contacts instance"):
@@ -405,8 +412,9 @@ class TestSolverObservables(unittest.TestCase):
 
     def test_freeze_capacity_after_output_allocation(self):
         """Reject capacity changes that would invalidate allocated observables."""
-        newton.CollisionPipeline(self.model, rigid_contact_max=5, soft_contact_max=3)
-        self.solver.observables(self.flags)
+        pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=5, soft_contact_max=3)
+        contacts = pipeline.contacts()
+        self.solver.observables(contacts=contacts, kinds=self.kinds)
         with self.assertRaisesRegex(ValueError, "capacit"):
             newton.CollisionPipeline(self.model, rigid_contact_max=6, soft_contact_max=3)
         with self.assertRaisesRegex(ValueError, "capacit"):
@@ -424,19 +432,23 @@ class TestSolverObservables(unittest.TestCase):
 
     def test_late_pipeline_failure_preserves_published_capacity(self):
         """Publish both capacities only after every pipeline allocation succeeds."""
-        newton.CollisionPipeline(self.model, rigid_contact_max=5, soft_contact_max=3)
+        pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=5, soft_contact_max=3)
+        contacts = pipeline.contacts()
         with patch("newton._src.sim.collide.ContactSorter", side_effect=RuntimeError("sorter allocation failed")):
             with self.assertRaisesRegex(RuntimeError, "sorter allocation failed"):
                 newton.CollisionPipeline(self.model, rigid_contact_max=6, soft_contact_max=4, deterministic=True)
         self.assertEqual((self.model.rigid_contact_max, self.model.soft_contact_max), (5, 3))
-        self.assertEqual(self.solver.observables(self.flags).contact_f.shape, (8,))
+        self.assertEqual(self.solver.observables(contacts=contacts, kinds=self.kinds).contact_f.shape, (8,))
 
     def test_matching_pipeline_preserves_frozen_capacity(self):
         """Allow another pipeline only if its capacities preserve live observables."""
-        newton.CollisionPipeline(self.model, rigid_contact_max=5, soft_contact_max=3)
-        observables = self.solver.observables(self.flags)
+        pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=5, soft_contact_max=3)
+        contacts = pipeline.contacts()
+        observables = self.solver.observables(contacts=contacts, kinds=self.kinds)
         matching = newton.CollisionPipeline(self.model, rigid_contact_max=5, soft_contact_max=3)
-        self.solver.validate_observables(observables, matching.contacts())
+        self.solver.validate_observables(observables, contacts)
+        with self.assertRaisesRegex(ValueError, "Contacts instance"):
+            self.solver.validate_observables(observables, matching.contacts())
         self.assertEqual(observables.contact_f.shape, (8,))
 
     def test_contact_count_does_not_resize_output(self):
@@ -446,9 +458,9 @@ class TestSolverObservables(unittest.TestCase):
         builder.add_particle(pos=(0, 0, 1), vel=(0, 0, 0), mass=1.0, radius=0.1)
         model = builder.finalize(device="cpu")
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=0)
-        observables = ContactSolver(model).observables(self.flags)
-        pointer = observables.contact_f.ptr
         contacts = pipeline.contacts()
+        observables = ContactSolver(model).observables(contacts=contacts, kinds=self.kinds)
+        pointer = observables.contact_f.ptr
         state = model.state()
         pipeline.collide(state, contacts)
         self.assertEqual(contacts.soft_contact_count.numpy()[0], 0)
@@ -463,25 +475,27 @@ class TestSolverObservables(unittest.TestCase):
         self.model.rigid_contact_max = 5
         self.model.soft_contact_max = 3
         with self.assertRaisesRegex(RuntimeError, "CollisionPipeline"):
-            self.solver.observables(self.flags)
+            self.solver.observables(kinds=self.kinds)
 
     def test_custom_contact_output_without_contact_force(self):
-        """Resolve and freeze capacities for custom contact flags independently."""
+        """Resolve and freeze capacities for custom contact kinds independently."""
         solver = CustomContactSolver(self.model)
-        flags = {CustomContactFlags.PRESSURE}
+        kinds = {CustomContactKind.PRESSURE}
         with self.assertRaisesRegex(RuntimeError, "CollisionPipeline"):
-            solver.observables(flags)
+            solver.observables(kinds=kinds)
         pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=4, soft_contact_max=0)
-        observables = solver.observables(flags)
+        contacts = pipeline.contacts()
+        observables = solver.observables(contacts=contacts, kinds=kinds)
         self.assertEqual(observables.pressure.shape, (4,))
         self.assertIsNone(observables.contact_f)
-        solver.validate_observables(observables, pipeline.contacts())
+        solver.validate_observables(observables, contacts)
         with self.assertRaisesRegex(ValueError, "capacit"):
             self.model.rigid_contact_max = 5
 
     def test_native_backend_rejects_insufficient_capacity(self):
         """Reject incompatible native budgets without freezing the model's capacity."""
-        newton.CollisionPipeline(self.model, rigid_contact_max=2, soft_contact_max=0)
+        pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=2, soft_contact_max=0)
+        contacts = pipeline.contacts()
         mujoco = object.__new__(newton.solvers.SolverMuJoCo)
         newton.solvers.SolverBase.__init__(mujoco, self.model)
         mujoco.use_mujoco_cpu = False
@@ -495,11 +509,12 @@ class TestSolverObservables(unittest.TestCase):
         for solver in (mujoco, kamino):
             with self.subTest(solver=type(solver).__name__):
                 with self.assertRaisesRegex(ValueError, "exceeds CollisionPipeline capacity"):
-                    solver.observables(self.flags)
+                    solver.observables(contacts=contacts, kinds=self.kinds)
         # A failed request must not freeze setup; users can correct the budget.
-        newton.CollisionPipeline(self.model, rigid_contact_max=3, soft_contact_max=0)
+        pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=3, soft_contact_max=0)
+        contacts = pipeline.contacts()
         for solver in (mujoco, kamino):
-            self.assertEqual(solver.observables(self.flags).contact_f.shape, (3,))
+            self.assertEqual(solver.observables(contacts=contacts, kinds=self.kinds).contact_f.shape, (3,))
 
     def test_graph_reuses_preallocated_output(self):
         """Reuse a preallocated output across CUDA graph replays."""
@@ -507,9 +522,9 @@ class TestSolverObservables(unittest.TestCase):
             self.skipTest("CUDA graph capture requires a CUDA device")
         model = newton.ModelBuilder().finalize(device="cuda:0")
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=3, soft_contact_max=0)
-        solver = ContactSolver(model)
-        observables = solver.observables(self.flags)
         contacts = pipeline.contacts()
+        solver = ContactSolver(model)
+        observables = solver.observables(contacts=contacts, kinds=self.kinds)
         pointer = observables.contact_f.ptr
         with wp.ScopedCapture(device=model.device) as capture:
             solver.validate_observables(observables, contacts)
@@ -525,9 +540,9 @@ class TestSolverObservables(unittest.TestCase):
             self.skipTest("Conditional CUDA graphs are unavailable")
         model = newton.ModelBuilder().finalize(device="cuda:0")
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=3, soft_contact_max=0)
-        solver = ContactSolver(model)
-        observables = solver.observables(self.flags)
         contacts = pipeline.contacts()
+        solver = ContactSolver(model)
+        observables = solver.observables(contacts=contacts, kinds=self.kinds)
         condition = wp.ones(1, dtype=wp.int32, device=model.device)
 
         def body():

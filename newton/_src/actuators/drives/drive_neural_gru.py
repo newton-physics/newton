@@ -479,7 +479,7 @@ def _load_network_description(model_path: str) -> _GRUNetworkDescription:
 
 
 class DriveNeuralGRU(DriveBase):
-    """Stateful GRU actuator drive using Warp-NN.
+    """Stateful gated recurrent unit (GRU) actuator drive using Warp-NN.
 
     The network and its weights are read from an ONNX checkpoint and evaluated
     with Warp-NN. Hidden state is kept across timesteps through the

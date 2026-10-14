@@ -807,6 +807,8 @@ def initialize_test_process(lock, shared_index, args, temp_dir):
     It also ensures that Warp is initialized prior to running any tests.
     """
 
+    AllocationCleanupTestResultMixin._start_worker()
+
     # Apply before the worker imports any test module (suites are imported on
     # unpickle, before run_tests).
     if args.strict_warnings:

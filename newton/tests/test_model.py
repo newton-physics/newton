@@ -1008,6 +1008,26 @@ class TestModelMesh(unittest.TestCase):
             builder.approximate_meshes(method="coacd", shape_indices=[shape], threshold=0.2)
         self.assertEqual(captured["threshold"], 0.2)
 
+    def test_mesh_approximation_coacd_limits_hull_vertices(self):
+        """Limit each CoACD part to the source mesh's maxhullvert."""
+
+        sphere = newton.Mesh.create_sphere(compute_normals=False, compute_uvs=False, compute_inertia=False)
+        faces = sphere.indices.reshape(-1, 3)
+        parts = [(sphere.vertices, faces), (sphere.vertices + 3.0, faces)]
+        fake_coacd = SimpleNamespace(Mesh=lambda vertices, indices: None, run_coacd=lambda _mesh, **_kwargs: parts)
+        builder = ModelBuilder()
+        # Identical geometry with different limits must not share a cached decomposition.
+        for maxhullvert in (8, 16):
+            mesh = newton.Mesh(sphere.vertices, sphere.indices, compute_inertia=False, maxhullvert=maxhullvert)
+            builder.add_shape_mesh(body=-1, mesh=mesh)
+        with patch_sys_module("coacd", fake_coacd):
+            builder.approximate_meshes(method="coacd", raise_on_failure=True)
+
+        self.assertEqual(builder.shape_count, 4)
+        for shape in range(builder.shape_count):
+            mesh = builder.shape_source[shape]
+            self.assertEqual(len(mesh.vertices), mesh.maxhullvert)
+
     def test_mesh_approximation_coacd_unavailable_falls_back_to_convex_hull(self):
         builder = ModelBuilder()
         box = newton.Mesh.create_box(

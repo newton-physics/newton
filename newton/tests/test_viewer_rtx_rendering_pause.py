@@ -3,13 +3,14 @@
 
 """Exercise RTX rendering modes and independent rendering pause."""
 
+import contextlib
 import unittest
 from unittest import mock
 
 import numpy as np
 import warp as wp
 
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import USD_AVAILABLE, patch_sys_module
 from newton.viewer import ViewerRTX
 
 
@@ -17,9 +18,9 @@ from newton.viewer import ViewerRTX
 class TestRenderingPauseRTX(unittest.TestCase):
     def setUp(self):
         """Create a viewer without initializing a renderer or a window."""
-        ovrtx = mock.patch.dict("sys.modules", {"ovrtx": mock.Mock(__version__="0.3.0")})
-        ovrtx.start()
-        self.addCleanup(ovrtx.stop)
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(patch_sys_module("ovrtx", mock.Mock(__version__="0.3.0")))
         with wp.ScopedDevice("cpu"):
             self.viewer = ViewerRTX(headless=True, num_frames=4)
         self.addCleanup(self.viewer.close)

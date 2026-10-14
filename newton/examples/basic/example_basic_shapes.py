@@ -108,7 +108,6 @@ class Example:
             self.solver = newton.solvers.SolverVBD(
                 self.model,
                 iterations=5,
-                rigid_compliant_alm=True,
             )
         elif self.solver_type == "kamino":
             solver_config = newton.solvers.SolverKamino.Config.from_model(
@@ -138,7 +137,7 @@ class Example:
             self.collision_pipeline = newton.CollisionPipeline(self.model)
             self.contacts = self.collision_pipeline.contacts()
         self.solver_observables = (
-            self.solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+            self.solver.observables(contacts=self.contacts, kinds={self.solver.ObservableKind.CONTACT_F})
             if self.solver_type == "kamino"
             else None
         )
