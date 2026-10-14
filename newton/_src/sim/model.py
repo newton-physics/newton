@@ -94,6 +94,34 @@ class _ShapeCollisionFilterPairs(AbstractSet[tuple[int, int]]):
     def __len__(self) -> int:
         return self._packed.shape[0]
 
+    def copy(self) -> set[tuple[int, int]]:
+        """Return an independent mutable copy of the filter pairs."""
+        return set(self)
+
+    def union(self, *others: Iterable[tuple[int, int]]) -> set[tuple[int, int]]:
+        """Return an independent set containing pairs from any operand."""
+        return set(self).union(*others)
+
+    def intersection(self, *others: Iterable[tuple[int, int]]) -> set[tuple[int, int]]:
+        """Return an independent set containing pairs common to all operands."""
+        return set(self).intersection(*others)
+
+    def difference(self, *others: Iterable[tuple[int, int]]) -> set[tuple[int, int]]:
+        """Return an independent set containing pairs absent from other operands."""
+        return set(self).difference(*others)
+
+    def symmetric_difference(self, other: Iterable[tuple[int, int]]) -> set[tuple[int, int]]:
+        """Return an independent set containing pairs in exactly one operand."""
+        return set(self).symmetric_difference(other)
+
+    def issubset(self, other: Iterable[tuple[int, int]]) -> bool:
+        """Return whether every filter pair occurs in the other iterable."""
+        return set(self).issubset(other)
+
+    def issuperset(self, other: Iterable[tuple[int, int]]) -> bool:
+        """Return whether every pair in the other iterable is filtered."""
+        return set(self).issuperset(other)
+
     def _contains_code(self, code: int) -> bool:
         index = int(np.searchsorted(self._packed, code))
         return bool(index < self._packed.shape[0] and self._packed[index] == code)
@@ -1463,7 +1491,13 @@ class Model:
 
     @property
     def shape_collision_filter_pairs(self) -> AbstractSet[tuple[int, int]]:
-        """Read-only set of explicit canonical shape index pairs that should not collide."""
+        """Read-only set of explicit canonical shape index pairs that should not collide.
+
+        Supports non-mutating ``set`` methods, including ``copy()``, ``union()``,
+        ``intersection()``, ``difference()``, ``symmetric_difference()``,
+        ``issubset()``, and ``issuperset()``. Methods returning sets create
+        independent mutable copies; changing them does not change model filters.
+        """
         return self._shape_collision_filter_pairs
 
     def shape_collision_filter_contains(self, shape_a: SupportsIndex, shape_b: SupportsIndex) -> bool:

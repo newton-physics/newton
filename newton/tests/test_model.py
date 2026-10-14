@@ -1742,6 +1742,53 @@ class TestModelMesh(unittest.TestCase):
         contact_pairs = {tuple(pair) for pair in shape_contact_pairs.numpy()}
         self.assertEqual(contact_pairs, {(ground, 1), (ground, 2), (ground, 3), (ground, 4), (ground, 5), (ground, 6)})
 
+    def test_collision_filter_named_set_reads(self):
+        """Preserve named set reads and return independent mutable results."""
+        for expected in (set(), {(0, 1), (1, 2)}):
+            with self.subTest(pairs=expected):
+                builder = ModelBuilder()
+                for _ in range(4):
+                    builder.add_shape_box(body=builder.add_body())
+                for pair in expected:
+                    builder.add_shape_collision_filter_pair(*pair)
+                model = builder.finalize(device="cpu")
+                filters = model.shape_collision_filter_pairs
+                extra = [(0, 1), (2, 3), (2, 3)]
+                other = [(1, 2)]
+
+                for method in ("copy", "union", "intersection", "difference"):
+                    operand_counts = (0,) if method == "copy" else (0, 1, 2)
+                    for count in operand_counts:
+                        with self.subTest(method=method, operands=count):
+                            args = (extra, other)[:count]
+                            result = getattr(filters, method)(*(iter(arg) for arg in args))
+                            self.assertIs(type(result), set)
+                            self.assertEqual(result, getattr(expected, method)(*args))
+                            result.add((0, 3))
+                            self.assertEqual(filters, expected)
+
+                result = filters.symmetric_difference(iter(extra))
+                self.assertIs(type(result), set)
+                self.assertEqual(result, expected.symmetric_difference(extra))
+                result.clear()
+                self.assertEqual(filters, expected)
+
+                for method in ("issubset", "issuperset"):
+                    for operand in ([], extra, list(expected), list(expected | {(2, 3)})):
+                        with self.subTest(method=method, operand=operand):
+                            self.assertEqual(
+                                getattr(filters, method)(iter(operand)), getattr(expected, method)(operand)
+                            )
+
+                for method in ("union", "intersection", "difference", "symmetric_difference", "issubset", "issuperset"):
+                    with self.subTest(method=method, invalid_operand=True):
+                        with self.assertRaises(TypeError):
+                            getattr(filters, method)(None)
+
+                with self.assertRaises(AttributeError):
+                    filters.add((0, 3))
+                self.assertEqual(model.shape_collision_filter_pairs, expected)
+
     def test_collision_filter_in_place_mutation_is_rejected(self):
         """Reject augmented assignment on finalized-model collision filters."""
 

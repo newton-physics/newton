@@ -717,6 +717,12 @@ set of ``(shape_index_a, shape_index_b)`` tuples (canonical order: ``a < b``). U
 :attr:`~ModelBuilder.shape_collision_filter_pairs` before calling ``finalize()`` and rebuild the
 model to change collision filters.
 
+The read-only set supports membership, iteration, set operators, and non-mutating
+``set`` methods such as ``copy()``, ``union()``, ``intersection()``, ``difference()``,
+``symmetric_difference()``, ``issubset()``, and ``issuperset()``. Named methods that
+return a set produce an independent mutable copy; modifying that copy does not
+change the model's collision filters.
+
 **USD Import Example**
 
 .. code-block:: python
