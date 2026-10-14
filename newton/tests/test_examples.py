@@ -27,6 +27,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 from unittest import mock
@@ -1471,6 +1472,66 @@ add_function_test(
     TestContactsExamples,
     "test_pyramid_kamino_impact",
     test_pyramid_kamino_impact,
+    devices=cuda_test_devices,
+)
+
+
+def test_pyramid_kamino_heavy_ball_support(test, device):
+    """Keep a cube above ground when the pyramid's heavy ball lands on it."""
+    from newton.examples.contacts.example_pyramid import (  # noqa: PLC0415
+        CUBE_HALF,
+        WRECKING_BALL_RADIUS,
+        Y_STACK,
+        Example,
+    )
+
+    with contextlib.redirect_stdout(io.StringIO()), wp.ScopedDevice(device):
+        example = Example(
+            ViewerNull(),
+            SimpleNamespace(
+                test=False,
+                world_count=1,
+                solver="kamino",
+                num_pyramids=1,
+                pyramid_size=1,
+                broad_phase="sap",
+            ),
+        )
+        # Exercise the full pyramid's sorted contact path with only two bodies.
+        # The small-buffer path uses a different contact ordering and can hide
+        # insufficient convergence at the ball-to-cube mass ratio of 6545:1.
+        config = example.solver._config
+        config = replace(config, collision_detector=replace(config.collision_detector, max_contacts_per_world=8192))
+        example.graph = None
+        example.solver = newton.solvers.SolverKamino(example.model, config=config)
+        example.capture()
+
+        poses = example.state_0.body_q.numpy()
+        poses[example.box_count, :3] = (0.0, Y_STACK, WRECKING_BALL_RADIUS + 2.0 * CUBE_HALF + 0.2)
+        velocities = example.state_0.body_qd.numpy()
+        velocities[example.box_count, 2] = -8.0
+        example.state_0.body_q.assign(poses)
+        example.state_0.body_qd.assign(velocities)
+
+        for frame in range(40):
+            example.step()
+            poses = example.state_0.body_q.numpy()
+            cube = poses[0]
+            ball = poses[example.box_count]
+            rotation = wp.quat(*cube[3:7])
+            bottom = cube[2] - CUBE_HALF * np.abs(np.asarray(wp.quat_to_matrix(rotation)).reshape(3, 3)[2]).sum()
+            test.assertGreater(bottom, -0.1, f"Frame {frame}: the heavy ball pushed the cube below the ground")
+
+            # Preserve both sides of the coupled contact problem.
+            local_ball = np.asarray(wp.quat_rotate_inv(rotation, wp.vec3(*(ball[:3] - cube[:3]))))
+            separation = np.linalg.norm(np.maximum(np.abs(local_ball) - CUBE_HALF, 0.0)) - WRECKING_BALL_RADIUS
+            test.assertGreater(separation, -0.1, f"Frame {frame}: the ball penetrated the cube")
+
+
+add_function_test(
+    TestContactsExamples,
+    "test_pyramid_kamino_heavy_ball_support",
+    test_pyramid_kamino_heavy_ball_support,
     devices=cuda_test_devices,
 )
 
