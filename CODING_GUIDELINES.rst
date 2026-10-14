@@ -105,28 +105,18 @@ USD schema and importer support
 -------------------------------
 
 New or substantially changed user-authorable simulation features should ship
-with USD schema representation and importer support alongside the public API.
-This includes model properties, materials, constraints, and other simulation
-configuration that users can author in an asset. Schema design should inform
-the public API before merge, so USD-authored and builder-created models express
-the same supported semantics.
+with USD schema and importer support. Design the schema alongside the public
+API, and test equivalent behavior in USD-authored and builder-created models,
+including applicable defaults, units, frames, references, and invalid inputs.
+Document the supported subset and limitations.
 
-Reuse standard OpenUSD schemas or the AOUSD proposals already supported by
-Newton where applicable. Extend Newton-owned schemas when necessary, including
-any companion schema-package changes and compatible dependency versions.
-The normal authoring and import path should work with OpenUSD without requiring
-Omniverse or vendor-specific schema packages.
+Reuse standard OpenUSD schemas or AOUSD proposals already supported by Newton;
+extend Newton-owned schemas when needed, with compatible schema-package
+versions. The normal path should require no Omniverse or vendor schema packages.
 
-Cover schema parsing and runtime behavior with tests comparing representative
-USD-authored models with equivalent builder-created models. Check applicable
-defaults, units, frames, references, and unsupported inputs, and document the
-supported subset and limitations.
-
-Every applicable change must state its schema and importer disposition. A
-justified deferral must record the reason, tracking issue, owner, and target
-milestone, and must be explicitly accepted during review. Intentionally
-runtime-only or non-authorable features must explain why schema support does
-not apply.
+Each feature must state its disposition: supported; deferred with explicit
+review acceptance, reason, issue, owner, and target milestone; or not applicable
+with an explanation that the feature is runtime-only or non-authorable.
 
 Naming
 ------
@@ -323,9 +313,7 @@ When reviewing a new or substantially changed public API, check that:
   options, and safe defaults;
 - new categorical types use an enum where the execution boundary supports it;
 - new public nouns are necessary and have clear ownership;
-- user-authorable features include schema and importer support with behavioral
-  coverage, or an explicitly accepted deferral; runtime-only or non-authorable
-  features explain why this does not apply;
+- authorable features satisfy the schema and importer policy above;
 - optional parameters are keyword-only unless an established idiom justifies
   positional use;
 - reusable Warp-native math is placed at the appropriate ownership layer; and

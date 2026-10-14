@@ -521,12 +521,7 @@ access), deprecates the old names, and adjusts default Gaussian sorting modes.
 
 {{SCHEMA_IMPORTER_SUPPORT}}
 
-<!-- Render the Phase 4h table:
-     Feature | Disposition | Evidence / remaining work.
-     Include supported features, explicitly accepted deferrals with reason,
-     issue, owner, and target milestone, justified not-applicable cases, and
-     gaps requiring a release decision. If there are no relevant features in
-     the audited range, state that explicitly rather than inventing rows. -->
+<!-- Render the Phase 4h table, or state that no relevant features were found. -->
 
 ---
 

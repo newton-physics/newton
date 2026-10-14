@@ -98,17 +98,10 @@ Apply four gates:
   left, who can maintain and validate it, and which existing priority will
   lose capacity.
 
-For new or substantially changed user-authorable simulation features, expect
-USD schema and importer support alongside the public API, following the
-:ref:`source-code-guidelines`. Check that the schema design informs the API and
-that standard OpenUSD or applicable AOUSD schemas are reused before introducing
-Newton-owned extensions. The normal path should not require Omniverse or
-vendor-specific schema packages.
-
-Require an explicit disposition: implemented support; a justified deferral
-with a tracking issue, owner, and target milestone explicitly accepted during
-review; or an explanation that the feature is runtime-only or non-authorable.
-A tracking issue alone does not establish that deferral is acceptable.
+For authorable simulation features, apply the schema and importer policy in
+:ref:`source-code-guidelines`: schema design should inform the API before merge.
+Require implemented support, an explicitly accepted and tracked deferral, or a
+reason this does not apply. A follow-up issue alone is not acceptance.
 
 Return one explicit verdict:
 
@@ -139,11 +132,9 @@ Check for:
 - inconsistencies between the implementation, documentation, tests, and
   stated behavior.
 
-For applicable authorable features, trace USD parsing through the public
-builder API to runtime behavior. Require representative tests showing
-equivalence with builder-created models, including applicable defaults, units,
-frames, references, and unsupported inputs. Check the declared supported subset
-against the schema rather than assuming similarly named fields are equivalent.
+For authorable features, trace schema parsing through the builder to runtime
+behavior and check tests against equivalent builder-created models. Verify
+schema semantics and the documented supported subset.
 
 Review the relevant invariants, boundary conditions, failure paths, state and
 resource ownership, and supported execution modes. Pay particular attention
@@ -183,8 +174,7 @@ for incompatible changes.
 Check the repository obligations relevant to the change, including:
 
 - focused regression coverage and documentation;
-- schema and importer disposition, companion schema-package changes and
-  compatible dependency versions where needed, and recorded deferrals;
+- schema/importer coverage, compatible schema-package versions, and deferrals;
 - accurate, correctly categorized Towncrier fragments for user-facing changes;
 - dependency and lockfile changes, licenses, and required notices;
 - packaging, supported platforms, workflows, and downstream compatibility;

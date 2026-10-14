@@ -390,35 +390,24 @@ Tag every matched entry internally as `experimental=True`. Do not alter the CHAN
 
 ### 4h — Schema and importer completeness
 
-Reconcile new or substantially changed user-authorable simulation features
-across the audited range with the schema and importer policy in
-`CODING_GUIDELINES.rst` and `REVIEW_GUIDELINES.rst`. Include capability additions
-to existing APIs and relevant commits without a changelog entry, not only new
-Python symbols. Runtime-only or non-authorable features may be marked not
-applicable with a concrete reason.
+Apply the guides' schema/importer policy to new or substantially changed
+authorable features across the audited range, including existing-API extensions
+and commits without changelog entries. Inspect schema definitions/proposal
+revisions, parsing, compatible schema-package versions, and behavioral tests at
+the audited ref; schema representation alone is not complete support.
 
-For each feature, inspect the applicable schema definition or proposal
-revision, importer path, companion schema-package changes and compatible
-dependency versions where needed, and tests demonstrating equivalent
-USD-authored and builder-created behavior. Existing schema representation alone
-does not establish importer or runtime support. Check that the normal path
-works with OpenUSD without requiring Omniverse or vendor-specific packages.
+Render **Schema & Importer Support** with columns
+`Feature | Disposition | Evidence / remaining work`:
 
-Render a **Schema & Importer Support** table with columns
-`Feature | Disposition | Evidence / remaining work`. Use these dispositions:
-
-- **Supported**: schema representation, parsing, and behavioral coverage are
-  present at the audited ref; cite the evidence.
-- **Explicitly deferred**: cite review acceptance, reason, tracking issue,
-  owner, and target milestone. Surface the remaining limitation for release
-  review; a follow-up issue by itself is not acceptance.
+- **Supported**: cite schema, parsing, and behavioral coverage.
+- **Explicitly deferred**: cite review acceptance, reason, issue, owner, and
+  target milestone, plus the remaining limitation.
 - **Not applicable**: explain why the feature is runtime-only or non-authorable.
-- **Gap / decision required**: support or evidence is missing, or a deferral
-  lacks explicit acceptance or required tracking. Identify the missing pieces
-  for a keep/defer decision; do not silently classify the feature as complete.
+- **Gap / decision required**: identify missing support, evidence, or accepted
+  deferral details for a keep/defer decision.
 
-In retrospective mode, pin evidence to the target tag and distinguish gaps
-under the current policy from violations of requirements in force at that tag.
+For retrospective audits, distinguish current-policy gaps from violations of
+requirements in force at the target tag.
 
 ## Phase 5 — Review CHANGELOG language and bake
 
