@@ -106,6 +106,20 @@ class TestLoggingDefaults(unittest.TestCase):
         self.assertEqual((stdout, stderr), ("", ""))
         self.assertEqual(len(handler.records), 1)
 
+    def test_kamino_messages_leave_logging_configuration_alone(self):
+        """Route Kamino messages through the newton fallback without configuring the root logger."""
+        from newton._src.solvers.kamino._src.utils import logger as msg  # noqa: PLC0415
+
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            msg.warning("kamino problem")
+            msg.info("kamino detail")
+            self.logger.info("loaded asset")
+
+        self.assertEqual(logging.getLogger().handlers, [])
+        self.assertEqual(stdout.getvalue(), "loaded asset\n")
+        self.assertEqual(stderr.getvalue(), "Warning: kamino problem\n")
+
     def test_verbose_diagnostics_print_without_configuration(self):
         """Keep ``verbose=True`` importer output on stdout when the application has not configured logging."""
         mjcf = '<mujoco><worldbody><body name="b"><geom type="box" size="0.1 0.1 0.1"/></body></worldbody></mujoco>'

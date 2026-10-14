@@ -43,7 +43,11 @@ class LogLevel(IntEnum):
 
 
 class Logger(logging.Formatter):
-    """Base logger with color highlighting for log levels."""
+    """Formatter with color highlighting for Kamino log levels.
+
+    Kamino messages go through the ``newton`` logger hierarchy; attach this
+    formatter to an application handler to get Kamino-style console output.
+    """
 
     HEADER = "[KAMINO]"
     HEADERCOL = "\x1b[38;5;13m"
@@ -73,21 +77,8 @@ class Logger(logging.Formatter):
     """Dictionary mapping log levels to their respective formats."""
 
     def __init__(self):
-        """Initialize the Logger with a stream handler and set the default logging level."""
         super().__init__()
-
-        # Create a stream handler with the custom logger format.
-        self._streamhandler = logging.StreamHandler()
-        self._streamhandler.setFormatter(self)
-
-        # Add custom level NOTIF to the logging module
         logging.addLevelName(LogLevel.NOTIF, "NOTIF")
-
-        # Set the default logging level to DEBUG
-        logging.basicConfig(
-            handlers=[self._streamhandler],
-            level=LogLevel.NOTIF,  # Default level set to NOTIF
-        )
 
     def format(self, record):
         """Format the log record with the appropriate color based on the log level."""
@@ -96,8 +87,8 @@ class Logger(logging.Formatter):
         return formatter.format(record)
 
     def get(self):
-        """Get the global logger instance."""
-        return logging.getLogger()
+        """Get the Kamino logger."""
+        return logging.getLogger(_LOGGER_NAME)
 
     def notif(self, msg, *args, **kwargs):
         """
@@ -115,6 +106,8 @@ class Logger(logging.Formatter):
 # Globals
 ###
 
+_LOGGER_NAME = "newton._src.solvers.kamino"
+
 
 LOGGER: Logger | None = None
 """Global logger instance for the application."""
@@ -130,6 +123,9 @@ def get_default_logger() -> logging.Logger:
     global LOGGER  # noqa: PLW0603
     if LOGGER is None:
         LOGGER = Logger()
+        # Keep Kamino's INFO messages hidden by default, as before it shared the newton logger.
+        if LOGGER.get().level == logging.NOTSET:
+            LOGGER.get().setLevel(LogLevel.NOTIF)
     return LOGGER.get()
 
 
