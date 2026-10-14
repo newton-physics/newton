@@ -85,6 +85,8 @@ use a reusable read buffer. Use the setter to write the changes. Values retain
 the full view shape, even when the mask selects only one row. Getters can also
 read a model's initial state arrays, for example to save reset values.
 
+.. _selection-particle-properties:
+
 Surface and volume views can also snapshot inverse masses and flags from the
 Model. These scalar properties have the same object and particle layout:
 
@@ -97,6 +99,8 @@ Model. These scalar properties have the same object and particle layout:
 .. testoutput:: selection-overview
 
     (3, 4) (3, 4)
+
+.. _selection-array-shapes:
 
 Array and mask shapes
 ---------------------
