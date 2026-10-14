@@ -7779,6 +7779,90 @@ def rotation_vector_from_quat(q: wp.quat) -> wp.vec3:
 
 
 @wp.kernel
+def add_armature_to_axis_support(
+    joint_type: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_armature: wp.array[float],
+    inv_dt_sq: float,
+    joint_drive_limit_support: wp.array[float],
+):
+    """Add the rotor inertia to the support (ALM rho) of revolute drive and limit rows.
+
+    Used with ``rigid_axis_support_armature``. The support is the row's effective mass over h^2 from the link
+    inertias only, but the armature acts on the same coordinate, so without it a light link with a large armature
+    gets a rho far below the row's stiffness scale.
+    """
+    j = wp.tid()
+    if joint_type[j] != JointType.REVOLUTE:
+        return
+    dof = joint_qd_start[j]
+    support = joint_drive_limit_support[dof]
+    if support > 0.0:
+        joint_drive_limit_support[dof] = support + joint_armature[dof] * inv_dt_sq
+
+
+@wp.kernel
+def floor_limit_axis_support(
+    joint_type: wp.array[int],
+    joint_enabled: wp.array[bool],
+    joint_child: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_dof_dim: wp.array2d[int],
+    joint_limit_lower: wp.array[float],
+    joint_limit_upper: wp.array[float],
+    joint_limit_ke: wp.array[float],
+    joint_limit_kd: wp.array[float],
+    inv_dt_sq: float,
+    joint_drive_limit_support: wp.array[float],
+):
+    """Floor the support (ALM rho) of every revolute, prismatic and D6 limit row at 9 (K + D/h).
+
+    Used with ``rigid_limit_rho_floor``; drive and structural rows already get this floor
+    (``_bilateral_auto_rho``). The limit rho is the row support, which next to a very light link (or without
+    armature) is far below the limit stiffness, so the limit acts only through its slowly growing multiplier
+    (overshoot, wind-up, rebound). The axis support is shared with a drive on the same DOF, whose own rho is
+    max(support, 9 K_drive), so that drive converges faster too.
+    """
+    j = wp.tid()
+    if not joint_enabled[j] or joint_child[j] < 0:
+        return
+    jt = joint_type[j]
+    if jt != JointType.REVOLUTE and jt != JointType.PRISMATIC and jt != JointType.D6:
+        return
+    inv_dt = wp.sqrt(inv_dt_sq)
+    start = joint_qd_start[j]
+    for axis in range(joint_dof_dim[j, 0] + joint_dof_dim[j, 1]):
+        dof = start + axis
+        support = joint_drive_limit_support[dof]
+        ke = joint_limit_ke[dof]
+        if support > 0.0 and _limit_row_exists(ke, joint_limit_lower[dof], joint_limit_upper[dof]):
+            floor = _COMPLIANT_ALM_BILATERAL_MIN_RHO_OVER_K * (ke + wp.max(joint_limit_kd[dof], 0.0) * inv_dt)
+            joint_drive_limit_support[dof] = wp.max(support, floor)
+
+
+@wp.kernel
+def add_external_wrench_to_solve(
+    external_wrench: wp.array[wp.spatial_vector],
+    body_inv_mass: wp.array[float],
+    body_forces: wp.array[wp.vec3],
+    body_torques: wp.array[wp.vec3],
+):
+    """Add the step's external wrench (``body_f`` plus mapped ``joint_f``, world frame, force at the COM) to the
+    per-body solve forces as a constant generalized force (gradient -f, Hessian 0).
+
+    Used with ``rigid_external_force_mode="solve"``: the inertial target then holds only the kinematic
+    prediction and gravity, so the minimizer is unchanged but the iteration starts from the force-free
+    prediction instead of one shifted by h^2 M^-1 f.
+    """
+    tid = wp.tid()
+    if body_inv_mass[tid] == 0.0:
+        return
+    w = external_wrench[tid]
+    body_forces[tid] = body_forces[tid] + wp.spatial_top(w)
+    body_torques[tid] = body_torques[tid] + wp.spatial_bottom(w)
+
+
+@wp.kernel
 def update_body_velocity(
     dt: float,
     body_q: wp.array[wp.transform],

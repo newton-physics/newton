@@ -1540,6 +1540,200 @@ def test_sparse_pendulum_matches_implicit_euler(test, device):
     test.assertLess(max_energy_error, 5.0e-3)
 
 
+def _make_light_link_limit_model(device) -> tuple[newton.Model, int]:
+    """Build a heavy torso that falls onto a pitch limit through a light, armature-heavy yaw link."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+    base = builder.add_link(
+        xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()),
+        mass=10.0,
+        inertia=wp.mat33(np.eye(3, dtype=np.float32) * 0.1),
+    )
+    base_joint = builder.add_joint_fixed(-1, base, parent_xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()))
+    light_inertia = 7.5e-6
+    light = builder.add_link(
+        xform=wp.transform((0.0, 0.0, 1.05), wp.quat_identity()),
+        mass=0.047,
+        com=wp.vec3(0.0, 0.0, 0.01),
+        inertia=wp.mat33(np.eye(3, dtype=np.float32) * light_inertia),
+    )
+    yaw = builder.add_joint_revolute(
+        base,
+        light,
+        axis=newton.Axis.Z,
+        parent_xform=wp.transform((0.0, 0.0, 0.05), wp.quat_identity()),
+        armature=0.01,
+        damping=0.05,
+        limit_lower=-2.6,
+        limit_upper=2.6,
+    )
+    torso = builder.add_link(
+        xform=wp.transform((0.0, 0.0, 1.05), wp.quat_identity()),
+        mass=9.6,
+        com=wp.vec3(0.0, 0.0, 0.18),
+        inertia=wp.mat33(np.eye(3, dtype=np.float32) * 0.12),
+    )
+    pitch = builder.add_joint_revolute(
+        light,
+        torso,
+        axis=newton.Axis.Y,
+        parent_xform=wp.transform((0.0, 0.0, 0.05), wp.quat_identity()),
+        armature=0.01,
+        damping=0.05,
+        limit_lower=-0.52,
+        limit_upper=0.52,
+    )
+    builder.add_articulation([base_joint, yaw, pitch])
+    builder.joint_q[builder.joint_q_start[pitch]] = 0.3
+    builder.color()
+    model = builder.finalize(device=device)
+    return model, builder.joint_q_start[pitch]
+
+
+def _limit_overshoot(device, **options) -> float:
+    """Return how far the light-link model's pitch passes its 0.52 rad limit within 1 s at a 4 ms step."""
+    model, pitch_q = _make_light_link_limit_model(device)
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=7,
+        rigid_compliant_alm=True,
+        rigid_articulation_solve="block_sparse_joints",
+        rigid_joint_linear_ke=1.0e5,
+        rigid_joint_angular_ke=1.0e5,
+        rigid_joint_linear_kd=500.0,
+        rigid_joint_angular_kd=500.0,
+        **options,
+    )
+    state_in = model.state()
+    state_out = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+    control = model.control()
+    max_q = -math.inf
+    for _ in range(250):
+        solver.step(state_in, state_out, control, None, 4.0e-3)
+        state_in, state_out = state_out, state_in
+        max_q = max(max_q, float(state_in.joint_q.numpy()[pitch_q]))
+    return max_q - 0.52
+
+
+def test_sparse_limit_options_bound_light_link_overshoot(test, device):
+    """Hold a joint limit behind a light, armature-heavy link at 4 ms only with the limit support options."""
+    test.assertGreater(_limit_overshoot(device), 0.1)
+    for options in (
+        {"rigid_axis_support_armature": True},
+        {"rigid_limit_rho_floor": True},
+        {"rigid_axis_support_armature": True, "rigid_limit_rho_floor": True},
+    ):
+        test.assertLess(_limit_overshoot(device, **options), 0.02, f"overshoot [rad] with {options}")
+
+
+def test_sparse_external_force_solve_mode_gives_exact_velocity(test, device):
+    """Apply a constant body wrench inside the solve and get the exact velocity change per step."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+    inertia = wp.mat33(0.02, 0.001, 0.0, 0.001, 0.03, 0.0, 0.0, 0.0, 0.04)
+    articulated = builder.add_link(mass=2.0, com=wp.vec3(0.01, 0.02, 0.0), inertia=inertia)
+    builder.add_articulation([builder.add_joint_free(articulated)])
+    standalone = builder.add_link(mass=3.0, com=wp.vec3(0.0, 0.01, 0.0), inertia=inertia)
+    builder.color()
+    model = builder.finalize(device=device)
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=2,
+        rigid_compliant_alm=True,
+        rigid_articulation_solve="block_sparse_joints",
+        rigid_articulation_relaxation=1.0,
+        rigid_external_force_mode="solve",
+    )
+    test.assertEqual(solver.rigid_external_force_mode, "solve")
+
+    wrench = np.zeros((model.body_count, 6), dtype=np.float32)
+    wrench[articulated] = (3.0, -1.0, 25.0, 0.02, -0.01, 0.03)
+    wrench[standalone] = (-2.0, 1.0, 35.0, 0.01, 0.02, -0.02)
+    body_f = wp.array(wrench, dtype=wp.spatial_vector, device=device)
+    mass = model.body_mass.numpy()
+    gravity = np.array((0.0, 0.0, -9.81))
+    inertia_inv = np.linalg.inv(np.array(inertia, dtype=np.float64).reshape(3, 3))
+    dt = 8.0e-4
+
+    state_in = model.state()
+    state_out = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+    for step in range(5):
+        velocity = state_in.body_qd.numpy().astype(np.float64)
+        state_in.clear_forces()
+        wp.copy(state_in.body_f, body_f)
+        solver.step(state_in, state_out, None, None, dt)
+        state_in, state_out = state_out, state_in
+        new_velocity = state_in.body_qd.numpy().astype(np.float64)
+        for body in (articulated, standalone):
+            expected = dt * (wrench[body, 0:3] / mass[body] + gravity)
+            np.testing.assert_allclose(
+                new_velocity[body, 0:3] - velocity[body, 0:3], expected, rtol=1.0e-4, atol=1.0e-7
+            )
+            if step == 0:
+                # Bodies start at rest with the identity rotation: no gyroscopic term in the first step.
+                np.testing.assert_allclose(
+                    new_velocity[body, 3:6], dt * inertia_inv @ wrench[body, 3:6], rtol=1.0e-4, atol=1.0e-9
+                )
+
+
+def test_sparse_limit_and_force_options_reject_invalid_values(test, device):
+    """Reject invalid values of the limit support and external force options."""
+    model, _ = _make_light_link_limit_model(device)
+    for options in (
+        {"rigid_external_force_mode": "inertial"},
+        {"rigid_axis_support_armature": "yes"},
+        {"rigid_limit_rho_floor": 1.0},
+    ):
+        with test.assertRaises(ValueError, msg=str(options)):
+            newton.solvers.SolverVBD(
+                model, rigid_compliant_alm=True, rigid_articulation_solve="block_sparse_joints", **options
+            )
+
+
+def _run_limit_and_force_scene(**options) -> tuple[np.ndarray, np.ndarray]:
+    """Step a light-link limit scene with joint and body forces on the CPU; return the final body state."""
+    model, _ = _make_light_link_limit_model("cpu")
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=7,
+        rigid_compliant_alm=True,
+        rigid_articulation_solve="block_sparse_joints",
+        **options,
+    )
+    state_in = model.state()
+    state_out = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+    control = model.control()
+    control.joint_f.assign(np.linspace(-0.5, 0.5, model.joint_dof_count, dtype=np.float32))
+    wrench = np.zeros((model.body_count, 6), dtype=np.float32)
+    wrench[-1] = (1.0, 0.0, 0.0, 0.0, 0.2, 0.0)
+    body_f = wp.array(wrench, dtype=wp.spatial_vector, device="cpu")
+    for _ in range(100):
+        state_in.clear_forces()
+        wp.copy(state_in.body_f, body_f)
+        solver.step(state_in, state_out, control, None, 4.0e-3)
+        state_in, state_out = state_out, state_in
+    return state_in.body_q.numpy(), state_in.body_qd.numpy()
+
+
+def test_sparse_limit_and_force_options_default_off(test, device):
+    """Keep the default BDF1 result bitwise identical to the result with the options explicitly off."""
+    default_q, default_qd = _run_limit_and_force_scene()
+    off_q, off_qd = _run_limit_and_force_scene(
+        rigid_axis_support_armature=False, rigid_limit_rho_floor=False, rigid_external_force_mode="target"
+    )
+    np.testing.assert_array_equal(default_q, off_q)
+    np.testing.assert_array_equal(default_qd, off_qd)
+    # The scene is sensitive to each option, so the comparison above covers all three defaults.
+    for options in (
+        {"rigid_axis_support_armature": True},
+        {"rigid_limit_rho_floor": True},
+        {"rigid_external_force_mode": "solve"},
+    ):
+        on_q, _ = _run_limit_and_force_scene(**options)
+        test.assertFalse(np.array_equal(default_q, on_q), f"no effect of {options}")
+
+
 add_function_test(
     TestVBDSparseArticulationDevices,
     "test_sparse_falls_back_to_local_without_articulations",
@@ -1607,6 +1801,30 @@ add_function_test(
     devices=devices,
 )
 
+add_function_test(
+    TestVBDSparseArticulationDevices,
+    "test_sparse_limit_options_bound_light_link_overshoot",
+    test_sparse_limit_options_bound_light_link_overshoot,
+    devices=devices,
+)
+add_function_test(
+    TestVBDSparseArticulationDevices,
+    "test_sparse_external_force_solve_mode_gives_exact_velocity",
+    test_sparse_external_force_solve_mode_gives_exact_velocity,
+    devices=devices,
+)
+add_function_test(
+    TestVBDSparseArticulationDevices,
+    "test_sparse_limit_and_force_options_reject_invalid_values",
+    test_sparse_limit_and_force_options_reject_invalid_values,
+    devices=devices,
+)
+add_function_test(
+    TestVBDSparseArticulationDevices,
+    "test_sparse_limit_and_force_options_default_off",
+    test_sparse_limit_and_force_options_default_off,
+    devices=[device for device in devices if device.is_cpu],
+)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

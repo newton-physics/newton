@@ -7,7 +7,7 @@ import warnings
 import weakref
 from collections.abc import Mapping
 from math import isfinite
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import warp as wp
@@ -93,6 +93,8 @@ from .rigid_vbd_kernels import (
     accumulate_body_body_contacts_per_body,
     accumulate_body_particle_attachments_per_body,
     accumulate_body_particle_contacts_per_body,
+    add_armature_to_axis_support,
+    add_external_wrench_to_solve,
     apply_body_truncation_ts,
     apply_rigid_soft_truncation,
     build_body_body_contact_lists,
@@ -103,6 +105,7 @@ from .rigid_vbd_kernels import (
     compute_rigid_contact_forces,
     compute_rod_dahl_parameters,
     create_solve_rigid_body,
+    floor_limit_axis_support,
     forward_step_rigid_bodies,
     init_body_body_contact_materials,
     init_body_body_contacts_alm,
@@ -478,6 +481,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         rigid_articulation_solve: str = "local",
         rigid_articulation_relaxation: float = 0.65,
         rigid_articulation_diagonal_regularization: float = 0.0,
+        rigid_axis_support_armature: bool | None = None,
+        rigid_limit_rho_floor: bool | None = None,
+        rigid_external_force_mode: Literal["target", "solve"] | None = None,
         deterministic: wp.DeterministicMode | None = None,
         collision_pipeline: CollisionPipeline | None = None,
         collision_frequency: Mapping[SolverBase.CollisionSlot, int] | None = None,
@@ -748,6 +754,31 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 contact manifolds between collision updates.
             rigid_articulation_diagonal_regularization: Non-negative value added to each
                 translational and angular diagonal Hessian entry before sparse factorization.
+            rigid_axis_support_armature: Add ``armature / h^2`` to the ALM support (penalty
+                stiffness) of revolute drive and limit rows. Without it the support counts only the
+                link inertias, so a limit on a light link driven through a large armature gets a
+                support far below its stiffness scale and overshoots at large time steps. ``None``
+                (default) disables it.
+
+                .. experimental::
+                    ``rigid_axis_support_armature`` is experimental and may change or be removed.
+            rigid_limit_rho_floor: Floor the ALM support of every revolute, prismatic and D6
+                joint-limit row at ``9 (K + D/h)``, as drive and structural rows already are. Without
+                it a limit next to a light link acts mostly through its slowly growing multiplier and
+                overshoots. ``None`` (default) disables it.
+
+                .. experimental::
+                    ``rigid_limit_rho_floor`` is experimental and may change or be removed.
+            rigid_external_force_mode: Where ``State.body_f`` and the mapped ``Control.joint_f``
+                enter the rigid step. ``"target"`` shifts each body's inertial target by
+                ``h^2 M^-1 f``. ``"solve"`` keeps the inertial target force-free and adds the wrench
+                inside the solve as a constant generalized force; the minimizer is the same, but the
+                iterations start from the force-free prediction, which converges better when a large
+                force acts on a light link held by stiff joints. ``None`` (default) selects
+                ``"target"``.
+
+                .. experimental::
+                    ``rigid_external_force_mode`` is experimental and may change or be removed.
             deterministic: Opt-in determinism for this solver's atomic-emitting
                 kernel modules. Pass a :class:`warp.DeterministicMode`, or
                 ``None`` (default) to inherit the current
@@ -1173,6 +1204,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         self._has_joint_mimics = self._integrates_rigid_bodies and has_supported_joint_mimics(model, "SolverVBD")
         self._update_displacement_mode()
+        self._setup_axis_support_options(rigid_axis_support_armature, rigid_limit_rho_floor)
+        self._setup_external_force_mode(rigid_external_force_mode)
         self._joint_coordinates = JointCoordinates(model) if self._integrates_rigid_bodies else None
         self._mimic_solver = JointMimicSolver(model, self._joint_coordinates.data) if self._has_joint_mimics else None
 
@@ -4014,6 +4047,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     device=self.device,
                 )
 
+            if self._ext_force_in_solve:
+                # The wrench enters the solve (_add_external_wrench_to_solve); the prediction is force-free.
+                wp.copy(self._ext_wrench, body_f_for_integration)
+                body_f_for_integration = self._ext_zero_wrench
+
             # Rotor inertia must not inherit feedforward/external torques from
             # the body's force-shifted inertial target.
             if self.rigid_articulation_sparse_layout is not None:
@@ -4117,6 +4155,38 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     ],
                     device=self.device,
                 )
+                if self.rigid_limit_rho_floor:
+                    wp.launch(
+                        kernel=floor_limit_axis_support,
+                        dim=model.joint_count,
+                        inputs=[
+                            model.joint_type,
+                            model.joint_enabled,
+                            model.joint_child,
+                            model.joint_qd_start,
+                            model.joint_dof_dim,
+                            model.joint_limit_lower,
+                            model.joint_limit_upper,
+                            model.joint_limit_ke,
+                            model.joint_limit_kd,
+                            1.0 / (dt * dt),
+                        ],
+                        outputs=[self.joint_drive_limit_support],
+                        device=self.device,
+                    )
+                if self.rigid_axis_support_armature:
+                    wp.launch(
+                        kernel=add_armature_to_axis_support,
+                        dim=model.joint_count,
+                        inputs=[
+                            model.joint_type,
+                            model.joint_qd_start,
+                            model.joint_armature,
+                            1.0 / (dt * dt),
+                        ],
+                        outputs=[self.joint_drive_limit_support],
+                        device=self.device,
+                    )
 
             # Compute rod bend/twist Dahl hysteresis parameters once per timestep.
             if self.enable_dahl_friction and model.joint_count > 0:
@@ -4725,6 +4795,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self.body_hessian_aa.zero_()
             self.body_hessian_al.zero_()
             self.body_hessian_ll.zero_()
+            self._add_external_wrench_to_solve()
             if self._mimic_solver is not None:
                 self._mimic_solver.accumulate_reactions(state_in.body_q, self.body_forces, self.body_torques)
             body_color_groups = model.body_color_groups
@@ -4979,6 +5050,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self.body_hessian_aa.zero_()
         self.body_hessian_al.zero_()
         self.body_hessian_ll.zero_()
+        self._add_external_wrench_to_solve()
 
         if self._mimic_solver is not None:
             self._mimic_solver.accumulate_reactions(state_in.body_q, self.body_forces, self.body_torques)
@@ -5721,6 +5793,46 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             kernel=update_velocity,
             inputs=[dt, self.particle_q_prev, state_out.particle_q, state_out.particle_qd],
             dim=self.model.particle_count,
+            device=self.device,
+        )
+
+    def _setup_axis_support_options(self, rigid_axis_support_armature: bool | None, rigid_limit_rho_floor: bool | None):
+        """Validate the joint-axis support options; ``None`` disables them."""
+        for name, value in (
+            ("rigid_axis_support_armature", rigid_axis_support_armature),
+            ("rigid_limit_rho_floor", rigid_limit_rho_floor),
+        ):
+            if value is not None and not isinstance(value, bool):
+                raise ValueError(f"{name} must be None, True or False, got {value!r}")
+        self.rigid_axis_support_armature = bool(rigid_axis_support_armature)
+        self.rigid_limit_rho_floor = bool(rigid_limit_rho_floor)
+
+    def _setup_external_force_mode(self, rigid_external_force_mode: str | None):
+        """Select where external wrenches enter the rigid step and allocate the wrench snapshot."""
+        if rigid_external_force_mode is None:
+            rigid_external_force_mode = "target"
+        if rigid_external_force_mode not in ("target", "solve"):
+            raise ValueError(
+                f"rigid_external_force_mode must be None, 'target' or 'solve', got {rigid_external_force_mode!r}"
+            )
+        self.rigid_external_force_mode = rigid_external_force_mode
+        self._ext_force_in_solve = (
+            rigid_external_force_mode == "solve" and self._integrates_rigid_bodies and self.model.body_count > 0
+        )
+        if self._ext_force_in_solve:
+            # Step snapshot of body_f + mapped joint_f, and a zero wrench for the force-free prediction.
+            self._ext_wrench = wp.zeros(self.model.body_count, dtype=wp.spatial_vector, device=self.device)
+            self._ext_zero_wrench = wp.zeros(self.model.body_count, dtype=wp.spatial_vector, device=self.device)
+
+    def _add_external_wrench_to_solve(self):
+        """``rigid_external_force_mode="solve"``: add the step's external wrench to the zeroed solve forces."""
+        if not self._ext_force_in_solve:
+            return
+        wp.launch(
+            add_external_wrench_to_solve,
+            dim=self.model.body_count,
+            inputs=[self._ext_wrench, self.body_inv_mass_effective],
+            outputs=[self.body_forces, self.body_torques],
             device=self.device,
         )
 

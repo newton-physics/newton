@@ -359,6 +359,16 @@ in its implicit body solve; no additional iteration setting is needed.
 Values in ``model.joint_damping`` can be changed without rebuilding the solver
 or recapturing a CUDA graph. Other VBD joint types currently ignore this property.
 
+``rigid_axis_support_armature`` and ``rigid_limit_rho_floor`` keep joint limits from
+overshooting when a light link is driven through a large armature at large time steps,
+and ``rigid_external_force_mode="solve"`` applies ``State.body_f`` and the mapped
+``Control.joint_f`` inside the rigid solve instead of shifting the inertial target.
+These three options are off by default.
+
+.. experimental::
+    ``rigid_axis_support_armature``, ``rigid_limit_rho_floor`` and ``rigid_external_force_mode`` may change or be
+    removed without prior notice.
+
 **Actuation and control**
 
 .. list-table::
