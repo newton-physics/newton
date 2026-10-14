@@ -747,6 +747,47 @@ add_example_test(
 )
 
 
+class TestTendonExamples(unittest.TestCase):
+    """Exercise the experimental massless tendon examples."""
+
+
+add_example_test(
+    TestTendonExamples,
+    name="tendon.example_tendon_pulley",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 30},
+)
+add_example_test(
+    TestTendonExamples,
+    name="tendon.example_tendon_pinhole",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 30},
+)
+add_example_test(
+    TestTendonExamples,
+    name="tendon.example_tendon_capstan_friction",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 45},
+)
+add_example_test(
+    TestTendonExamples,
+    name="tendon.example_tendon_mujoco_switch",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 210},
+)
+add_example_test(
+    TestTendonExamples,
+    name="tendon.example_tendon_3d_routing",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 60},
+)
+
+
 class TestClothExamples(unittest.TestCase):
     pass
 

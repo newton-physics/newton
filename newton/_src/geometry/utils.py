@@ -403,18 +403,11 @@ def load_mesh(filename: str, method: str | None = None):
 
             m = trimesh.load(filename)
             if hasattr(m, "geometry"):
-                # multiple meshes are contained in a scene; combine to one mesh
-                mesh_points = []
-                mesh_indices = []
-                index_offset = 0
-                for geom in m.geometry.values():
-                    vertices = np.array(geom.vertices, dtype=np.float32)
-                    faces = np.array(geom.faces.flatten(), dtype=np.int32)
-                    mesh_points.append(vertices)
-                    mesh_indices.append(faces + index_offset)
-                    index_offset += len(vertices)
-                mesh_points = np.concatenate(mesh_points, axis=0)
-                mesh_indices = np.concatenate(mesh_indices)
+                # Combine scene parts with their node transforms applied;
+                # raw vertices are in node-local space.
+                combined = m.to_mesh()
+                mesh_points = np.array(combined.vertices, dtype=np.float32)
+                mesh_indices = np.array(combined.faces.flatten(), dtype=np.int32)
             else:
                 # a single mesh
                 mesh_points = np.array(m.vertices, dtype=np.float32)
