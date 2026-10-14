@@ -665,25 +665,25 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     ) -> SolverMuJoCo.Observables:
         """Allocate solver observables with a compatible native contact export budget.
 
-        Supply ``contacts`` when requesting contact-indexed fields; the factory
-        validates and binds that storage for subsequent steps and consumers.
+        Supply ``contacts`` when requesting contact-indexed fields; their
+        capacities size the contact arrays.
 
         See :meth:`SolverBase.observables` for the shared allocation contract and
         errors, and :ref:`solver_observables` for usage and native collision setup.
 
         Raises:
             ValueError: If the native contact export capacity exceeds the
-                :class:`~newton.CollisionPipeline` rigid contact capacity.
+                rigid contact capacity of ``contacts``.
         """
         with self._create_observables(kinds, contacts=contacts, requires_grad=requires_grad) as observables:
             if (
                 observables.is_requested(SolverBase.ObservableKind.CONTACT_F)
                 and self.mjw_model.opt.run_collision_detection
-                and self.mjw_data.naconmax > self.model.rigid_contact_max
+                and self.mjw_data.naconmax > observables.contacts.rigid_contact_max
             ):
                 raise ValueError(
-                    f"MuJoCo contact capacity ({self.mjw_data.naconmax}) exceeds CollisionPipeline capacity "
-                    f"({self.model.rigid_contact_max}). Construct CollisionPipeline with "
+                    f"MuJoCo contact capacity ({self.mjw_data.naconmax}) exceeds Contacts capacity "
+                    f"({observables.contacts.rigid_contact_max}). Construct CollisionPipeline with "
                     "rigid_contact_max=solver.get_max_contact_count() before requesting contact observables."
                 )
             return observables
@@ -4736,7 +4736,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         observable_contacts.force is not None
                         and observable_contacts.force.ptr != observables.contact_f.ptr
                     ):
-                        observable_contacts.force.assign(observables.contact_f)
+                        wp.copy(
+                            observable_contacts.force,
+                            observables.contact_f,
+                            count=observable_contacts.force.shape[0],
+                        )
         self._step += 1
 
     @override

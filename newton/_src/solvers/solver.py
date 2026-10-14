@@ -215,6 +215,24 @@ def _normalize_observable_kinds(kinds: Iterable[str]) -> frozenset[str]:
     return requested
 
 
+_CONTACT_FREQUENCIES = frozenset(
+    (
+        Model.AttributeFrequency.CONTACT,
+        Model.AttributeFrequency.CONTACT_RIGID,
+        Model.AttributeFrequency.CONTACT_SOFT,
+    )
+)
+
+
+def _contact_row_count(frequency: Model.AttributeFrequency, contacts: Contacts) -> int:
+    """Return the rows a contact-indexed array needs to follow the layout of ``contacts``."""
+    if frequency == Model.AttributeFrequency.CONTACT_RIGID:
+        return contacts.rigid_contact_max
+    if frequency == Model.AttributeFrequency.CONTACT_SOFT:
+        return contacts.soft_contact_max
+    return contacts.rigid_contact_max + contacts.soft_contact_max
+
+
 class SolverBase:
     """Generic base class for solvers.
 
@@ -358,11 +376,14 @@ class SolverBase:
         contact_f: wp.array[wp.spatial_vector] | None = field(  # noqa: RUF009
             dtype=wp.spatial_vector, frequency=Model.AttributeFrequency.CONTACT
         )
-        """Contact forces [N, N·m], shape ``(rigid_contact_max + soft_contact_max,)``."""
+        """Contact forces [N, N·m], shape ``(rigid_contact_max + soft_contact_max,)`` of the allocation contacts."""
 
         _kinds: frozenset[str] = dataclass_field(default_factory=frozenset, init=False, repr=False)
         _solver: SolverBase | None = dataclass_field(default=None, init=False, repr=False)
-        _contacts: Contacts | None = dataclass_field(default=None, init=False, repr=False)
+        # Contacts whose layout each contact-indexed array follows, keyed by kind.
+        # Selections share this mapping, so a step through any subset updates
+        # the source and its siblings for exactly the arrays it wrote.
+        _contact_layouts: dict[str, Contacts] = dataclass_field(default_factory=dict, init=False, repr=False)
 
         @classmethod
         def _observable_fields(cls) -> Mapping[str, tuple[str, _ObservableField]]:
@@ -457,23 +478,24 @@ class SolverBase:
             for kind in self.kinds.difference(requested):
                 name, _ = declarations[kind]
                 setattr(selected, name, None)
-            if not selected._has_contact_observables():
-                selected._contacts = None
             return selected
 
-        def _has_contact_observables(self) -> bool:
-            """Validate row frequencies and identify contact-indexed requests."""
+        def _contact_fields(self) -> dict[str, tuple[str, _ObservableField]]:
+            """Return the requested contact-indexed declarations, keyed by kind."""
             declarations = self._observable_fields()
-            frequencies = {declarations[kind][1].frequency for kind in self.kinds}
-            return bool(
-                frequencies.intersection(
-                    (
-                        Model.AttributeFrequency.CONTACT,
-                        Model.AttributeFrequency.CONTACT_RIGID,
-                        Model.AttributeFrequency.CONTACT_SOFT,
-                    )
-                )
-            )
+            return {
+                kind: declarations[kind]
+                for kind in self.kinds
+                if declarations[kind][1].frequency in _CONTACT_FREQUENCIES
+            }
+
+        def _has_contact_observables(self) -> bool:
+            """Identify containers that request contact-indexed arrays."""
+            return bool(self._contact_fields())
+
+        def _contacts_for(self, kind: str) -> Contacts | None:
+            """Return the contacts whose layout the array of ``kind`` follows."""
+            return self._contact_layouts.get(kind) if kind in self.kinds else None
 
         def get_attribute_frequency(self, name: str) -> Model.AttributeFrequency | str:
             """Return an array's row domain, including inherited declarations.
@@ -497,8 +519,24 @@ class SolverBase:
 
         @property
         def contacts(self) -> Contacts | None:
-            """Contact storage supplied at allocation, or None without contact requests."""
-            return self._contacts
+            """Contact storage whose layout the requested contact-indexed arrays follow.
+
+            This is the storage supplied at allocation until a step validates
+            the container with other compatible contacts; see
+            :meth:`SolverBase.validate_observables`. It is ``None`` without
+            contact-indexed requests.
+
+            Raises:
+                ValueError: If subsets of this container were last produced with
+                    different contact storage.
+            """
+            bound = {id(self._contact_layouts[kind]): self._contact_layouts[kind] for kind in self._contact_fields()}
+            if len(bound) > 1:
+                raise ValueError(
+                    "Contact-indexed observables in this container were produced with different Contacts; "
+                    "select the arrays produced by one step before reading their contact storage."
+                )
+            return next(iter(bound.values()), None)
 
     class CollisionSlot(IntEnum):
         """Collision-detection categories scheduled by a solver."""
@@ -738,19 +776,21 @@ class SolverBase:
         solver-specific initialization is needed.
 
         All requested arrays are allocated before this method returns; unrequested
-        fields remain ``None``. Contact arrays use the model's resolved rigid
-        and soft capacities, not the live contact count. Allocate before graph
-        capture and pass the same :class:`~newton.Contacts` to :meth:`step` and consumers.
+        fields remain ``None``. Contact arrays use the rigid and soft capacities
+        of ``contacts``, not the live contact count. Allocate before graph
+        capture. :meth:`step` accepts these contacts or any other buffer on the
+        same device whose capacities fit the allocated arrays.
 
         Args:
             kinds: Required set or other iterable of observable names. Entries from
                 :class:`ObservableKind` and literal strings are interchangeable.
                 Pass :attr:`supported_observables` to allocate all observables
                 for this instance. An empty collection allocates no arrays.
-            contacts: Contact storage to bind to contact-indexed observables.
-                Required when any requested field has contact frequency, including
-                zero-capacity fields. Its device and rigid/soft capacities must match
-                the model. Ignored when no contact-indexed fields are requested.
+            contacts: Contact storage that sizes contact-indexed observables.
+                Defaults to :attr:`contacts` when this solver owns a collision
+                pipeline. Required otherwise when any requested field has contact
+                frequency, including zero-capacity fields. Must be on the solver
+                device. Ignored when no contact-indexed fields are requested.
             requires_grad: Whether allocated arrays require gradients. If
                 ``None``, use the model's setting.
 
@@ -764,9 +804,7 @@ class SolverBase:
                 :class:`~newton.Contacts` instance.
             ValueError: If this solver does not support a requested observable
                 or its container does not declare a unique field for the kind,
-                or required contacts are missing or incompatible.
-            RuntimeError: If contact-indexed observables are requested before
-                constructing :class:`~newton.CollisionPipeline` for the model.
+                or required contacts are missing or on another device.
 
         .. experimental::
 
@@ -784,7 +822,7 @@ class SolverBase:
         contacts: Contacts | None = None,
         requires_grad: bool | None = None,
     ) -> Iterator[SolverBase.Observables]:
-        """Share built-in factory allocation, freezing capacities only after setup succeeds."""
+        """Share built-in factory allocation with overrides that finish setup in the managed block."""
         requested = _normalize_observable_kinds(kinds)
         unsupported = requested.difference(self.supported_observables)
         if unsupported:
@@ -803,35 +841,35 @@ class SolverBase:
         observables._solver = self
         if requires_grad is None:
             requires_grad = self.model.requires_grad
-        contact_capacity = None
-        if observables._has_contact_observables():
-            contact_capacity = self.model._get_contact_capacity()
+        contact_fields = observables._contact_fields()
+        if contact_fields:
+            if contacts is None:
+                contacts = self.contacts
             if contacts is None:
                 raise ValueError("Pass Contacts to solver.observables() when requesting contact-indexed observables.")
-            if not isinstance(contacts, Contacts):
-                raise TypeError("Contact-indexed observables require a Contacts instance.")
-            if contacts.device != self.model.device:
-                raise ValueError("Solver observables and Contacts must be on the solver device.")
-            if (contacts.rigid_contact_max, contacts.soft_contact_max) != contact_capacity:
-                raise ValueError(f"Contacts capacities must match the model: {contact_capacity}.")
-            observables._contacts = contacts
+            self._validate_observable_contacts(contacts)
+            observables._contact_layouts.update(dict.fromkeys(contact_fields, contacts))
         # Declaration order makes allocation deterministic even for unordered requests.
         for kind, (name, spec) in declarations.items():
             if kind not in requested:
                 continue
+            if kind in contact_fields:
+                count = _contact_row_count(spec.frequency, contacts)
+            else:
+                count = self.model._attribute_frequency_count(spec.frequency)
             setattr(
                 observables,
                 name,
-                wp.zeros(
-                    self.model._attribute_frequency_count(spec.frequency),
-                    dtype=spec.dtype,
-                    device=self.model.device,
-                    requires_grad=requires_grad,
-                ),
+                wp.zeros(count, dtype=spec.dtype, device=self.model.device, requires_grad=requires_grad),
             )
         yield observables
-        if contact_capacity is not None:
-            self.model._solver_observable_contact_capacity = contact_capacity
+
+    def _validate_observable_contacts(self, contacts: Contacts) -> None:
+        """Check that contacts can describe rows of observables on this solver."""
+        if not isinstance(contacts, Contacts):
+            raise TypeError("Contact-indexed observables require a Contacts instance.")
+        if contacts.device != self.model.device:
+            raise ValueError("Solver observables and Contacts must be on the solver device.")
 
     def validate_observables(
         self, observables: SolverBase.Observables | None, contacts: Contacts | None = None
@@ -839,18 +877,28 @@ class SolverBase:
         """Validate ownership and contact storage before a custom solver step.
 
         Call this at the start of :meth:`step`, before launching work or writing
-        observable arrays. Passing ``None`` is a no-op. This checks only ownership
-        and contact identity; layout validation happens during allocation.
+        observable arrays. Passing ``None`` is a no-op. For contact-indexed
+        observables, ``contacts`` may be the allocation storage or any other
+        buffer on the solver device whose capacities fit the allocated arrays;
+        larger arrays are accepted. The requested contact-indexed arrays then
+        follow the layout of ``contacts``, which consumers such as
+        :class:`~newton.sensors.SensorContact` check before pairing rows with
+        contact geometry. This performs no device work and is safe during graph
+        capture.
 
         See :ref:`solver_observables` for custom solver integration.
 
         Args:
             observables: Optional container allocated by this solver.
-            contacts: The instance supplied at allocation, required for contact-indexed observables.
+            contacts: Contact storage used by this step, required for contact-indexed
+                observables. Defaults to :attr:`contacts` when this solver owns a
+                collision pipeline.
 
         Raises:
-            TypeError: If the container has an incompatible type.
-            ValueError: If the owner or contact storage is incompatible.
+            TypeError: If the container has an incompatible type or contacts are
+                not a :class:`~newton.Contacts` instance.
+            ValueError: If the owner is incompatible, or contact storage is missing,
+                on another device, or exceeds the allocated capacity.
 
         .. experimental::
         """
@@ -860,8 +908,24 @@ class SolverBase:
             raise TypeError(f"'observables' must be an instance of {self.Observables.__name__}.")
         if observables._solver is not self:
             raise ValueError("Solver observables must be passed to the solver instance that allocated them.")
-        if observables.contacts is not None and contacts is not observables.contacts:
-            raise ValueError("Contact solver observables must use the Contacts instance supplied at allocation.")
+        contact_fields = observables._contact_fields()
+        if not contact_fields:
+            return
+        if contacts is None:
+            contacts = self.contacts
+        if contacts is None:
+            raise ValueError("Pass the step's Contacts when using contact-indexed solver observables.")
+        self._validate_observable_contacts(contacts)
+        for name, spec in contact_fields.values():
+            required = _contact_row_count(spec.frequency, contacts)
+            allocated = getattr(observables, name).shape[0]
+            if required > allocated:
+                raise ValueError(
+                    f"Contacts capacities (rigid={contacts.rigid_contact_max}, soft={contacts.soft_contact_max}) "
+                    f"need {required} rows for observable '{name}', which has {allocated}; allocate observables "
+                    "with the largest Contacts they will be used with."
+                )
+        observables._contact_layouts.update(dict.fromkeys(contact_fields, contacts))
 
     def _set_module_options(self, options: dict[str, Any], module: Any) -> None:
         self._module_options[module] = dict(options)

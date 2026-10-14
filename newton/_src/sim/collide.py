@@ -1552,6 +1552,7 @@ class CollisionPipeline:
         contact_reduction_hashtable_size_factor: float = 0.25,
         speculative_contact_gap_max: float | None = None,
         dynamic_shape_scale: bool = False,
+        publish_capacity: bool = True,
     ):
         """
         Initialize the CollisionPipeline (expert API).
@@ -1700,6 +1701,13 @@ class CollisionPipeline:
                 warning once and a later :meth:`collide` call outside graph capture raise
                 :class:`RuntimeError`. Mesh-plane and mesh-convex contacts are unaffected.
                 Ignored when ``narrow_phase`` is provided. Defaults to ``False``.
+            publish_capacity: Whether to publish the resolved rigid and soft contact
+                capacities to :attr:`Model.rigid_contact_max <newton.Model.rigid_contact_max>`
+                and :attr:`Model.soft_contact_max <newton.Model.soft_contact_max>`, where later
+                pipelines constructed without explicit capacities reuse them. Pass ``False``
+                for a pipeline private to one component, such as a solver's internal contact
+                detection, so it leaves the defaults of other pipelines unchanged.
+                Defaults to ``True``.
 
         .. experimental::
 
@@ -2278,11 +2286,12 @@ class CollisionPipeline:
         # _get_soft_self_contact_detector).
         self._soft_self_contact_detector: TriMeshCollisionDetector | None = None
 
-        # Publish only after all construction succeeds. Observables can now allocate
-        # from these capacities without needing a Contacts instance or a collide.
-        model.rigid_contact_max = rigid_contact_max
-        model.soft_contact_max = soft_contact_max
-        model._contact_capacity_initialized = True
+        # Publish only after all construction succeeds. Private pipelines keep their
+        # capacities to themselves so they cannot resize other pipelines' defaults.
+        if publish_capacity:
+            model.rigid_contact_max = rigid_contact_max
+            model.soft_contact_max = soft_contact_max
+            model._contact_capacity_initialized = True
 
     @property
     def rigid_contact_max(self) -> int:

@@ -926,7 +926,7 @@ class SolverXPBD(SolverBase, CouplingInterface):
                         device=model.device,
                     )
                 if contacts is not None and contacts.force is not None and contacts.force.ptr != contact_f.ptr:
-                    contacts.force.assign(contact_f)
+                    wp.copy(contacts.force, contact_f, count=contacts.force.shape[0])
 
             # Populate optional ``body_parent_f`` (incoming joint
             # wrench per body) from the per-joint accumulated child-side

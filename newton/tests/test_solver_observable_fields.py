@@ -202,7 +202,7 @@ class TestSolverObservableFields(unittest.TestCase):
     def test_custom_contact_field_binds_storage(self):
         """Apply contact rules using the declaration rather than the kind value."""
         solver = self.make_solver(self.model)
-        with self.assertRaisesRegex(RuntimeError, "CollisionPipeline"):
+        with self.assertRaisesRegex(ValueError, "Contacts"):
             solver.observables(kinds={CustomKind.PRESSURE})
         pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=0, soft_contact_max=0)
         contacts = pipeline.contacts()

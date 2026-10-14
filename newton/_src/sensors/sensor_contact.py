@@ -629,13 +629,14 @@ class SensorContact:
             contacts: The contact data to evaluate.
             observables: Solver observable arrays containing :attr:`~newton.solvers.SolverBase.Observables.contact_f`.
                 If omitted, the deprecated ``contacts.force`` array is used when available.
-                Must use the same contacts supplied to :meth:`~newton.solvers.SolverBase.observables`.
+                ``contacts`` must be the buffer the most recent step producing ``contact_f`` used,
+                or the allocation buffer before any step.
                 Before the first solver step, newly allocated observables report zero contact forces.
                 See :ref:`solver_observables` for allocation and usage examples.
 
         Raises:
             ValueError: If ``observables`` belong to a different model, no contact-force
-                output is available, or the observables are bound to a different ``contacts`` instance.
+                output is available, or ``contact_f`` was produced with a different ``contacts`` instance.
             ValueError: If legacy contacts are on a different device from the sensor.
         """
         if observables is not None and observables.model is not self._model:
@@ -647,8 +648,11 @@ class SensorContact:
                 "SolverBase.ObservableKind.CONTACT_F and pass the SolverBase.Observables to update()."
             )
         if observables is not None:
-            if observables.contacts is not contacts:
-                raise ValueError("Contact solver observables must use the Contacts instance supplied at allocation.")
+            if observables._contacts_for(SolverBase.ObservableKind.CONTACT_F) is not contacts:
+                raise ValueError(
+                    "Contact solver observables were produced with a different Contacts instance; "
+                    "pass the Contacts used by the step that produced them."
+                )
         elif contacts.device != self.device:
             raise ValueError(f"Contacts device ({contacts.device}) does not match sensor device ({self.device}).")
 

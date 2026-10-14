@@ -70,11 +70,11 @@ class TestSolverObservableConsumers(unittest.TestCase):
         viewer.show_contacts = True
         viewer.log_contacts(contacts, model.state(), observables=observables)
         self.assertIs(observables.contacts, contacts)
-        with self.assertRaisesRegex(ValueError, "Contacts instance"):
+        with self.assertRaisesRegex(ValueError, "different Contacts"):
             viewer.log_contacts(pipeline.contacts(), model.state(), observables=observables)
 
     def test_kamino_does_not_require_export_capacity_without_request(self):
-        """Allow a native solver with a smaller unrelated pipeline until forces are requested."""
+        """Allow a native solver with smaller unrelated contacts until forces are requested."""
         builder = newton.ModelBuilder()
         builder.begin_world()
         body = builder.add_body(mass=1.0)
@@ -86,7 +86,7 @@ class TestSolverObservableConsumers(unittest.TestCase):
         config = newton.solvers.SolverKamino.Config(use_collision_detector=True)
         solver = newton.solvers.SolverKamino(model, config=config)
         solver.step(model.state(), model.state(), model.control(), None, 0.001)
-        with self.assertRaisesRegex(ValueError, "exceeds CollisionPipeline capacity"):
+        with self.assertRaisesRegex(ValueError, "exceeds Contacts capacity"):
             solver.observables(contacts=contacts, kinds={SolverBase.ObservableKind.CONTACT_F})
 
 

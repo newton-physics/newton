@@ -1161,6 +1161,7 @@ class SolverCoupledADMM(SolverCoupled):
                 rigid_contact_max=rigid_contact_max,
                 soft_contact_max=None if self._admm_rigid_particle_contact_specs else 0,
                 soft_contact_gap=0.0,
+                publish_capacity=False,
                 contact_matching=(
                     coupling.rigid_contact_matching if self._admm_rigid_rigid_contact_specs else "disabled"
                 ),

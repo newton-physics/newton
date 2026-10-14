@@ -202,8 +202,8 @@ Reuse that same buffer for the solver step and sensor:
    imu.update(state_out, observables=observables)
    contact_sensor.update(state_out, contacts, observables=observables)
 
-Contact observables are allocated from the model's resolved rigid and soft contact
-capacities, not the current number of contacts. See :ref:`solver_observables` for
+Contact observables are allocated from the rigid and soft capacities of the
+supplied contacts, not the current number of contacts. See :ref:`solver_observables` for
 pipeline setup with native collision backends and graph capture.
 
 Both :class:`~newton.solvers.SolverKamino` and
