@@ -89,25 +89,22 @@ jobs:
       - name: Test dependency resolution (Python 3.13)
         run: uv sync --dry-run --python 3.13 --extra dev
 
+  # Unsharded legs report their required check names directly.
   newton-unittests:
     needs: dependency-install-test
-    name: newton-unittests (${{ matrix.os }}${{ matrix.shard-count > 1 && format(', shard {0}/{1}', matrix.shard-index, matrix.shard-count) || '' }})
+    name: newton-unittests (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        include: &unittest-matrix
-          - { os: ubuntu-latest, shard-index: 0, shard-count: 2 }
-          - { os: ubuntu-latest, shard-index: 1, shard-count: 2 }
-          - { os: ubuntu-24.04-arm, shard-index: 0, shard-count: 1 }
-          - { os: windows-latest, shard-index: 0, shard-count: 2 }
-          - { os: windows-latest, shard-index: 1, shard-count: 2 }
-          - { os: macos-latest, shard-index: 0, shard-count: 1 }
+        include:
+          - &unittest-arm { os: ubuntu-24.04-arm, shard-index: 0, shard-count: 1 }
+          - &unittest-macos { os: macos-latest, shard-index: 0, shard-count: 1 }
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.os == 'macos-latest' && 120 || 60 }}
     env:
       OS: ${{ matrix.os }}
 
-    steps:
+    steps: &unittest-steps
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
         with:
@@ -205,34 +202,82 @@ jobs:
           retention-days: 1
           overwrite: true
 
-  # Branch protection requires these unsharded check names. `needs` only
-  # exposes the combined result of all legs, so any failing leg fails both.
-  newton-unittests-gate:
-    needs: newton-unittests
-    if: ${{ always() && (github.event_name != 'push' || github.repository == 'newton-physics/newton') }}
-    name: newton-unittests (${{ matrix.os }})
+  # Sharded OSes get one job each, so each gate below sees only its own shards.
+  newton-unittests-ubuntu:
+    needs: dependency-install-test
+    name: newton-unittests (${{ matrix.os }}, shard ${{ matrix.shard-index }}/${{ matrix.shard-count }})
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        include:
+          - &unittest-ubuntu-0 { os: ubuntu-latest, shard-index: 0, shard-count: 2 }
+          - &unittest-ubuntu-1 { os: ubuntu-latest, shard-index: 1, shard-count: 2 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      OS: ${{ matrix.os }}
+    steps: *unittest-steps
+
+  newton-unittests-windows:
+    needs: dependency-install-test
+    name: newton-unittests (${{ matrix.os }}, shard ${{ matrix.shard-index }}/${{ matrix.shard-count }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - &unittest-windows-0 { os: windows-latest, shard-index: 0, shard-count: 2 }
+          - &unittest-windows-1 { os: windows-latest, shard-index: 1, shard-count: 2 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      OS: ${{ matrix.os }}
+    steps: *unittest-steps
+
+  # Report the unsharded check names that branch protection requires.
+  newton-unittests-ubuntu-gate:
+    needs: newton-unittests-ubuntu
+    if: ${{ always() && (github.event_name != 'push' || github.repository == 'newton-physics/newton') }}
+    name: newton-unittests (ubuntu-latest)
     runs-on: ubuntu-latest
     steps:
-      - name: Check unit test result
+      - name: Check shard results
         env:
-          RESULT: ${{ needs.newton-unittests.result }}
+          RESULT: ${{ needs.newton-unittests-ubuntu.result }}
         run: |
           if [ "$RESULT" != "success" ]; then
-            echo "::error::newton-unittests finished with result '$RESULT'."
+            echo "::error::Ubuntu unit test shards finished with result '$RESULT'."
+            exit 1
+          fi
+
+  newton-unittests-windows-gate:
+    needs: newton-unittests-windows
+    if: ${{ always() && (github.event_name != 'push' || github.repository == 'newton-physics/newton') }}
+    name: newton-unittests (windows-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check shard results
+        env:
+          RESULT: ${{ needs.newton-unittests-windows.result }}
+        run: |
+          if [ "$RESULT" != "success" ]; then
+            echo "::error::Windows unit test shards finished with result '$RESULT'."
             exit 1
           fi
 
   codecov-upload:
     name: Upload reports to Codecov
-    needs: newton-unittests
-    if: ${{ !cancelled() && needs.newton-unittests.result != 'skipped' }}
+    needs: [newton-unittests, newton-unittests-ubuntu, newton-unittests-windows]
+    if: ${{ !cancelled() && (needs.newton-unittests.result != 'skipped' || needs.newton-unittests-ubuntu.result != 'skipped' || needs.newton-unittests-windows.result != 'skipped') }}
     strategy:
       fail-fast: false
       matrix:
-        include: *unittest-matrix
+        include:
+          - *unittest-ubuntu-0
+          - *unittest-ubuntu-1
+          - *unittest-arm
+          - *unittest-windows-0
+          - *unittest-windows-1
+          - *unittest-macos
     runs-on: ubuntu-latest
     # Same-run artifact downloads use the runtime token; contents access is
     # only used to build Codecov's source network for coverage path mapping.
