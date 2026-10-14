@@ -68,6 +68,8 @@
 
 ### Changed
 
+- Require explicit opt-in to import Torch neural checkpoints (`.pt2`, `.pt`, or `.pth`) referenced by USD assets; pass `allow_unsafe_torch_checkpoints=True` to `ModelBuilder.add_usd()` only for trusted assets and checkpoints. Direct neural-drive construction retains its existing checkpoint-loading behavior. ([PR #4654](https://github.com/newton-physics/newton/pull/4654))
+- Reduce cold-start Warp compilation for XPBD scenes without mimic joints by isolating the mimic kernels, while retaining XPBD and VBD deterministic options when those kernels are used. ([PR #4669](https://github.com/newton-physics/newton/pull/4669))
 - Require the published `warp-nn` 0.4 release series (previously 0.3.1) for the `onnx` extra. Upgrade existing installations with `pip install --upgrade "newton[onnx]"`. ONNX LSTM inference is slower with Warp-NN 0.4.0; re-benchmark latency-sensitive policies when upgrading to Newton 1.7. ([PR #4569](https://github.com/newton-physics/newton/pull/4569))
 - Import MJCF `damper` actuator shortcuts. ([#3749](https://github.com/newton-physics/newton/issues/3749))
 - Resolve USD visual meshes to triangle geometry and per-vertex normals, which may duplicate vertices for sharp shading even on untextured meshes. Use `newton.usd.get_mesh(..., load_normals=False)` for geometry-only loading without normal-driven vertex splitting, or select `face_varying_normal_conversion="vertex_averaging"` or `"angle_weighted"` when smoothing authored face normals is desired. USD/RTX viewers now render final polygonal meshes with explicit normals rather than reconstructing source subdivision surfaces. ([#4052](https://github.com/newton-physics/newton/issues/4052))
@@ -158,6 +160,9 @@
 
 ### Fixed
 
+- Validate that `ModelBuilder.set_joint_mimic()` followers and references are PRISMATIC, REVOLUTE, or D6 joints, rejecting quaternion and FIXED joints. Reject cross-articulation mimic pairs during model finalization, including pairs configured before articulation assignment. `SolverFeatherstone` additionally requires all pairs participating in active mimic reduction to share an assigned articulation; use maximal-coordinate solvers for standalone or mixed-membership pairs. ([PR #4683](https://github.com/newton-physics/newton/pull/4683), [PR #4684](https://github.com/newton-physics/newton/pull/4684))
+- Fix `SensorCamera` forward depth and ray-depth conversion to include caller-supplied ray origins when measuring depth from the camera plane, preserving ray-distance depth and zero/negative clear-depth values. ([PR #4685](https://github.com/newton-physics/newton/pull/4685))
+- Suppress spurious overflow warnings when `SolverMuJoCo` converts MuJoCo's unallocated discrete-integrator arrays to float32 during initialization. ([PR #4687](https://github.com/newton-physics/newton/pull/4687))
 - Infer omitted custom-frequency world owners from `ModelBuilder.current_world`. ([#3329](https://github.com/newton-physics/newton/issues/3329))
 - Clarify the one-dimensional boolean mask accepted by `eval_jacobian()` and `eval_mass_matrix()`. ([#3355](https://github.com/newton-physics/newton/issues/3355))
 - Fix `ArticulationView` layout validation and access:
