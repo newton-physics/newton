@@ -144,7 +144,15 @@ Geometry types
      - Heightfield data is stored normalized to ``[0, 1]`` on the Newton
        :class:`~newton.Heightfield` source and forwarded as-is. The geom
        origin is shifted by ``min_z`` so the lowest point is at the
-       correct world height.
+       correct world height. MJCF's base depth is preserved in the per-shape
+       ``mujoco:hfield_base`` custom attribute [m], after import scaling, and
+       multiplied by the shape's Z scale on conversion. This depth extends
+       below the lowest elevation; it does not change the height samples.
+       MJCF import requires exactly four positive ``size`` values, matching
+       MuJoCo; missing, zero, or negative sizes are rejected.
+       For native Newton fields, an absent or negative value (the default) retains the legacy
+       ``1e-4`` m MuJoCo base. This attribute affects only the MuJoCo solver;
+       recreate the solver after changing it.
    * - :attr:`~newton.GeoType.MESH` / :attr:`~newton.GeoType.CONVEX_MESH`
      - ``mjGEOM_MESH``
      - MuJoCo only supports **convex** collision meshes. Non-convex
@@ -280,7 +288,15 @@ active mapping. On the force-space Newton-contacts path,
 pair by ``1 - dmax`` and the sum of the bodies' translational
 ``body_invweight0[..., 0]`` values before writing per-contact ``solref``. Here
 ``dmax = solimp[1]``. This inverse-weight scaling is Newton's implemented
-force-space contract, but it is not the full scalar contact effective mass
+force-space contract. For pyramidal contacts with ``condim > 1``, the factor
+also includes ``mu**2 * (1 + mu**2) / (impratio * (condim - 1))`` to account
+for the summed pyramid-edge normal response. Here ``mu`` is the final sliding
+friction after contact overrides. Elliptic and frictionless contacts retain
+the inverse-weight factor alone. The same mapping applies to positive
+per-contact stiffness and damping overrides; zero per-contact damping retains
+the critical-damping fallback.
+
+This resting-contact approximation is not the full scalar contact effective mass
 :math:`(J M^{-1} J^T)^{-1}` for arbitrary articulated or off-center contacts.
 
 ``model.mujoco.solref_mode`` (per shape) records how
@@ -529,8 +545,7 @@ are excluded from MuJoCo's ``nq`` / ``nv``.
 Tendons
 -------
 
-Newton's core API does not currently expose tendons (fixed or spatial)
-as first-class concepts. They are implemented through the MuJoCo
+MuJoCo's fixed and spatial tendons use the
 :ref:`custom-attribute namespace <mujoco-custom-attributes>`: populated
 on import from MJCF/USD and parsed into MuJoCo's tendon structures by
 ``SolverMuJoCo._init_tendons``. To author tendons programmatically, use
@@ -539,6 +554,13 @@ on import from MJCF/USD and parsed into MuJoCo's tendon structures by
 ``geom``, and ``pulley`` wrap elements; any other wrap type and any
 degenerate tendon definition produces a warning and is skipped rather
 than raising.
+
+These provider tendons are separate from Newton's experimental
+:doc:`massless routed tendons </tendons>` used by XPBD and VBD. There is no
+automatic conversion between native ``Model.tendon_*`` routes and
+``model.mujoco.tendon_*`` data. USD ``MjcTendon`` import and tendon-actuator
+target resolution use the provider path; see
+:doc:`/concepts/usd_parsing` for supported path attributes.
 
 For force-based limit gains, set ``model.mujoco.tendon_limit_ke`` (stiffness
 [N/m]) and ``tendon_limit_kd`` (damping [N s/m]), select force-space authoring

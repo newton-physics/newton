@@ -955,6 +955,16 @@ def intersect_ray(
         fast_math: Whether to compile the intersection kernel with fast math enabled.
     """
 
+    if model.bvh_shape_enabled is not None and model.bvh_shape_count_enabled == 0:
+        # The shape BVH was built but no shape was selected, so every ray misses.
+        if out_dist is not None:
+            out_dist.fill_(-1.0)
+        if out_shape_id is not None:
+            out_shape_id.fill_(-1)
+        if out_normal is not None:
+            out_normal.zero_()
+        return
+
     if model.bvh_shapes is None:
         raise RuntimeError(
             "BVH raycasting requires a shape BVH built for the queried state. "

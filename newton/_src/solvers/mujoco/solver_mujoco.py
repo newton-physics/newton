@@ -13,7 +13,7 @@ from array import array
 from collections.abc import Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass
-from enum import Enum, IntEnum
+from enum import IntEnum
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -41,7 +41,6 @@ from ...utils import topological_sort
 from ...utils.benchmark import event_scope
 from ...utils.import_utils import string_to_warp
 from ..coupled.interface import CouplingEndpointKind, CouplingInterface
-from ..observables import SolverObservableFlags, SolverObservables
 from ..solver import SolverBase
 from . import kernels, speculative
 from .collision_masks import (
@@ -53,7 +52,6 @@ from .collision_masks import (
 )
 from .constants import (
     DEFAULT_LIMIT_SOLREF,
-    HINGE_CONNECT_AXIS_OFFSET,
     KINEMATIC_ARMATURE,
     MJ_MINVAL,
     SOLREF_MODE_FORCE_SPACE,
@@ -83,6 +81,7 @@ from .kernels import (
     eval_mujoco_coupling_effective_mass_block_kernel,
     eval_mujoco_coupling_effective_mass_kernel,
     eval_mujoco_coupling_gravity_acceleration_kernel,
+    hinge_connect_anchor,
     recompute_jnt_eq_anchor1_kernel,
     repeat_array_kernel,
     reset_joint_state_kernel,
@@ -527,17 +526,6 @@ _MJW_BATCHED_MODEL_FIELDS = (
 )
 
 
-class _MuJoCoObservableFlags(Enum):
-    """MuJoCo-specific solver observables.
-
-    .. experimental::
-        The solver observable API may change without prior notice.
-    """
-
-    QFRC_ACTUATOR = "qfrc_actuator"
-    """Actuator forces in Newton generalized-coordinate order."""
-
-
 class SolverMuJoCo(SolverBase, CouplingInterface):
     """
     This solver provides an interface to simulate physics using the `MuJoCo <https://github.com/google-deepmind/mujoco>`_ physics engine,
@@ -606,11 +594,22 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             solver.render_mujoco_viewer()
     """
 
-    ObservableFlags = _MuJoCoObservableFlags
-    """MuJoCo-specific observable flags."""
+    class ObservableKind(SolverBase.ObservableKind):
+        """Standard and MuJoCo-specific observable kinds.
+
+        Inherits all standard names from :class:`SolverBase.ObservableKind`.
+        Backend support is reported by :attr:`SolverMuJoCo.supported_observables`.
+
+        See :ref:`solver_observables` for solver-specific kinds and backend support.
+
+        .. experimental::
+        """
+
+        QFRC_ACTUATOR = "qfrc_actuator"
+        """Actuator forces in Newton generalized-coordinate order."""
 
     @dataclass(eq=False)
-    class Observables(SolverObservables):
+    class Observables(SolverBase.Observables):
         """Standard and MuJoCo-specific observable arrays.
 
         The native CPU backend (``use_mujoco_cpu=True``) supports only
@@ -621,48 +620,64 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         uses the pipeline's own capacity. Construct a compatible
         :class:`~newton.CollisionPipeline` before allocating contact observables.
 
+        See :ref:`solver_observables` for allocation and native collision examples.
+
         .. experimental::
             The solver observable API may change without prior notice.
         """
 
-        qfrc_actuator: wp.array[wp.float32] | None = SolverObservables.field(  # noqa: RUF009
-            flag=_MuJoCoObservableFlags.QFRC_ACTUATOR,
+        qfrc_actuator: wp.array[wp.float32] | None = SolverBase.Observables.field(  # noqa: RUF009
             dtype=wp.float32,
             frequency=AttributeFrequency.JOINT_DOF,
         )
         """Actuator forces [N or N·m], shape ``(joint_dof_count,)``."""
 
-    OBSERVABLES_TYPE = Observables
-    SUPPORTED_OBSERVABLE_FLAGS = frozenset(
+    SUPPORTED_OBSERVABLES = frozenset(
         {
-            SolverObservableFlags.BODY_QDD,
-            SolverObservableFlags.BODY_PARENT_F,
-            SolverObservableFlags.CONTACT_F,
-            ObservableFlags.QFRC_ACTUATOR,
+            SolverBase.ObservableKind.BODY_QDD,
+            SolverBase.ObservableKind.BODY_PARENT_F,
+            SolverBase.ObservableKind.CONTACT_F,
+            ObservableKind.QFRC_ACTUATOR,
         }
     )
 
     @property
-    def supported_observable_flags(self):
-        """Return observables available for the configured MuJoCo backend."""
-        flags = super().supported_observable_flags
+    def supported_observables(self):
+        """Return observables available for the configured MuJoCo backend.
+
+        See :ref:`solver_observables` for backend limitations.
+        """
+        kinds = super().supported_observables
         if self.use_mujoco_cpu:
             # Body exports currently read MuJoCo Warp's RNE buffers, which the
             # native CPU step does not update. Do not expose stale diagnostics.
-            return flags.difference(
+            return kinds.difference(
                 {
-                    SolverObservableFlags.BODY_QDD,
-                    SolverObservableFlags.BODY_PARENT_F,
-                    SolverObservableFlags.CONTACT_F,
+                    SolverBase.ObservableKind.BODY_QDD,
+                    SolverBase.ObservableKind.BODY_PARENT_F,
+                    SolverBase.ObservableKind.CONTACT_F,
                 }
             )
-        return flags
+        return kinds
 
-    def observables(self, flags: Iterable[Enum], *, requires_grad: bool | None = None) -> Observables:
-        """Allocate solver observables with a compatible native contact export budget."""
-        with self._create_observables(flags, requires_grad=requires_grad) as observables:
+    def observables(
+        self, kinds: Iterable[str], *, contacts: Contacts | None = None, requires_grad: bool | None = None
+    ) -> SolverMuJoCo.Observables:
+        """Allocate solver observables with a compatible native contact export budget.
+
+        Supply ``contacts`` when requesting contact-indexed fields; the factory
+        validates and binds that storage for subsequent steps and consumers.
+
+        See :meth:`SolverBase.observables` for the shared allocation contract and
+        errors, and :ref:`solver_observables` for usage and native collision setup.
+
+        Raises:
+            ValueError: If the native contact export capacity exceeds the
+                :class:`~newton.CollisionPipeline` rigid contact capacity.
+        """
+        with self._create_observables(kinds, contacts=contacts, requires_grad=requires_grad) as observables:
             if (
-                observables.is_requested(SolverObservableFlags.CONTACT_F)
+                observables.is_requested(SolverBase.ObservableKind.CONTACT_F)
                 and self.mjw_model.opt.run_collision_detection
                 and self.mjw_data.naconmax > self.model.rigid_contact_max
             ):
@@ -1331,6 +1346,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 return angle * (np.pi / 180.0)
             return angle
 
+        def parse_joint_springref_usd(value: Any, context: dict[str, Any]) -> float:
+            """Keep the legacy raw spring reference only when explicitly requested."""
+            if context.get("legacy_springref_units", False):
+                return float(value)
+            return parse_joint_angle_usd(value, context)
+
         # region custom frequencies
         builder.add_custom_frequency(ModelBuilder.CustomFrequency(name="pair", namespace="mujoco"))
         builder.add_custom_frequency(
@@ -1444,6 +1465,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 namespace="mujoco",
                 usd_attribute_name="mjc:group",
                 mjcf_attribute_name="group",
+            )
+        )
+        # MJCF stores this on the hfield asset, not the geom. Keep it per shape
+        # so builder copies preserve the authored collision volume.
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="hfield_base",
+                frequency=AttributeFrequency.SHAPE,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.float32,
+                default=-1.0,
+                namespace="mujoco",
             )
         )
         builder.add_custom_attribute(
@@ -1657,7 +1690,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 namespace="mujoco",
                 usd_attribute_name="mjc:springref",
                 mjcf_attribute_name="springref",
-                usd_value_transformer=parse_joint_angle_usd,
+                usd_value_transformer=parse_joint_springref_usd,
                 mjcf_value_transformer=cls._angle_value_transformer,
             )
         )
@@ -4394,7 +4427,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self.jnt_eq_anchor1: wp.array2d[wp.vec3] | None = None
         """Body1-local anchor [m] per ``[world, eq]`` for joint-synthesized CONNECT constraints, ``wp.array2d[wp.vec3]``, shape ``[world_count, neq]``."""
         self.jnt_eq_anchor1_has_axis_offset: wp.array2d[wp.int32] | None = None
-        """Whether each ``[world, eq]`` entry is the second hinge CONNECT offset along the joint axis, ``wp.array2d[wp.int32]``, shape ``[world_count, neq]``."""
+        """Side (``-1`` or ``+1``) along the joint axis of each hinge CONNECT ``[world, eq]`` entry, ``0`` for other entries, ``wp.array2d[wp.int32]``, shape ``[world_count, neq]``."""
         self.jnt_connect_constraint_q_rel: wp.array2d[wp.quat] | None = None
         """Relative rotation per ``[world, eq]`` for joint-synthesized CONNECT constraints, ``wp.array2d[wp.quat]``, shape ``[world_count, neq]``."""
         self.jnt_connect_constraint_t_rel: wp.array2d[wp.vec3] | None = None
@@ -4676,7 +4709,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         contacts: Contacts,
         dt: float,
         *,
-        observables: SolverObservables | None = None,
+        observables: SolverBase.Observables | None = None,
     ) -> None:
         self.validate_observables(observables, contacts)
         if self._use_speculative_contacts and (not math.isfinite(dt) or dt <= 0.0):
@@ -4702,7 +4735,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._update_newton_state(
                     self.model, state_out, self.mjw_data, state_prev=state_in, observables=observables
                 )
-                if observables is not None and observables.is_requested(SolverObservableFlags.CONTACT_F):
+                if observables is not None and observables.is_requested(SolverBase.ObservableKind.CONTACT_F):
                     observable_contacts = observables.contacts
                     if observable_contacts is None:
                         raise ValueError("Contact storage is missing from solver observables.")
@@ -4974,17 +5007,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             device=self.model.device,
         )
 
-    def _enable_rne_postconstraint(self, state_out: State, observables: SolverObservables | None = None):
+    def _enable_rne_postconstraint(self, state_out: State, observables: SolverBase.Observables | None = None):
         """Request computation of RNE forces for solver observables or legacy state fields."""
         # TODO: handle use_mujoco_cpu
         m = self.mjw_model
         if m.opt.run_rne_postconstraint:
             return
         needs_body_qdd = state_out.body_qdd is not None or (
-            observables is not None and observables.is_requested(SolverObservableFlags.BODY_QDD)
+            observables is not None and observables.is_requested(SolverBase.ObservableKind.BODY_QDD)
         )
         needs_body_parent_f = state_out.body_parent_f is not None or (
-            observables is not None and observables.is_requested(SolverObservableFlags.BODY_PARENT_F)
+            observables is not None and observables.is_requested(SolverBase.ObservableKind.BODY_PARENT_F)
         )
         if needs_body_qdd or needs_body_parent_f:
             # Required for cacc and cfrc_int. Unlike sensor_rne_postconstraint,
@@ -5760,7 +5793,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         state: State,
         mj_data: MjWarpData | MjData,
         state_prev: State,
-        observables: SolverObservables | None = None,
+        observables: SolverBase.Observables | None = None,
     ):
         """Update a Newton state from MuJoCo coordinates and kinematics.
 
@@ -5821,15 +5854,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
         # Update requested rigid-body observables. Extended state attributes remain
-        # compatibility destinations during migration to SolverObservables.
+        # compatibility destinations during migration to SolverBase.Observables.
         body_qdd = (
             observables.body_qdd
-            if observables is not None and observables.is_requested(SolverObservableFlags.BODY_QDD)
+            if observables is not None and observables.is_requested(SolverBase.ObservableKind.BODY_QDD)
             else state.body_qdd
         )
         body_parent_f = (
             observables.body_parent_f
-            if observables is not None and observables.is_requested(SolverObservableFlags.BODY_PARENT_F)
+            if observables is not None and observables.is_requested(SolverBase.ObservableKind.BODY_PARENT_F)
             else state.body_parent_f
         )
         if body_qdd is not None or body_parent_f is not None:
@@ -5864,8 +5897,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         legacy_qfrc_actuator = getattr(getattr(state, "mujoco", None), "qfrc_actuator", None)
         qfrc_actuator = (
             observables.qfrc_actuator
-            if isinstance(observables, self.Observables)
-            and observables.is_requested(self.ObservableFlags.QFRC_ACTUATOR)
+            if isinstance(observables, self.Observables) and observables.is_requested(self.ObservableKind.QFRC_ACTUATOR)
             else None
         )
         if qfrc_actuator is None:
@@ -6082,14 +6114,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         .. deprecated:: 1.7
             Exporting ``contacts.force`` is deprecated. Request
-            :attr:`~newton.solvers.SolverObservableFlags.CONTACT_F` and pass the
+            :attr:`~newton.solvers.SolverBase.ObservableKind.CONTACT_F` and pass the
             resulting container to :meth:`step` instead. Geometry-only export
             is not deprecated.
         """
         if contacts.force is not None:
             warnings.warn(
                 "SolverMuJoCo.update_contacts() force export is deprecated in Newton 1.7; request "
-                "SolverObservableFlags.CONTACT_F and pass SolverObservables to step().",
+                "SolverBase.ObservableKind.CONTACT_F and pass SolverBase.Observables to step().",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -6521,6 +6553,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         shape_mjc_collision_mask_domain = get_custom_attribute("collision_mask_domain")
         shape_condim = get_custom_attribute("condim")
         shape_geom_group = get_custom_attribute("geom_group")
+        shape_hfield_base = get_custom_attribute("hfield_base")
         shape_priority = get_custom_attribute("geom_priority")
         shape_geom_solimp = get_custom_attribute("geom_solimp")
         shape_geom_solmix = get_custom_attribute("geom_solmix")
@@ -7007,13 +7040,21 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     # Convert Newton heightfield to MuJoCo format
                     # MuJoCo size: (size_x, size_y, size_z, size_base) — all must be positive
                     # Our data is normalized [0,1], height range = max_z - min_z
-                    # We set size_base to eps (MuJoCo requires positive) and shift the
-                    # geom origin by min_z so the lowest point is at the right Z. The
+                    # Preserve an authored base; native fields keep the legacy epsilon.
+                    # Shift the geom origin by min_z so the lowest point is at the right Z. The
                     # shape's scale applies to hx, hy, min_z, and max_z alike.
                     eps = 1e-4
                     hfield_scale = shape_size[shape]
                     mj_size_z = max((hfield_src.max_z - hfield_src.min_z) * hfield_scale[2], eps)
-                    mj_size = (hfield_src.hx * hfield_scale[0], hfield_src.hy * hfield_scale[1], mj_size_z, eps)
+                    mj_size_base = eps
+                    if shape_hfield_base is not None and shape_hfield_base[shape] >= 0.0:
+                        mj_size_base = float(shape_hfield_base[shape]) * hfield_scale[2]
+                    mj_size = (
+                        hfield_src.hx * hfield_scale[0],
+                        hfield_src.hy * hfield_scale[1],
+                        mj_size_z,
+                        mj_size_base,
+                    )
                     elevation_data = hfield_src.data.flatten()
 
                     hfield_name = f"{model.shape_label[shape].replace('/', '_')}_{shape}"
@@ -7851,7 +7892,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # (the UsdPhysics way of defining loop closures)
         mjc_eq_to_newton_jnt = {}
         jnt_eq_anchor1_dict = {}  # mjc_eq_id -> anchor1 as [x, y, z] for CONNECT constraints from joints
-        jnt_eq_anchor1_has_axis_offset = {}  # mjc_eq_id -> bool, True for the second hinge CONNECT
+        jnt_eq_anchor1_has_axis_offset = {}  # mjc_eq_id -> hinge CONNECT side along the axis (-1/+1), 0 otherwise
         for j in joints_loop:
             if int(j) in converted_loop_joint_targets:
                 continue
@@ -7889,32 +7930,22 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # Rotate axis into the parent body frame (anchor data[0:3] is
                 # in the parent body frame, so the offset must be too).
                 hinge_axis = wp.quat_rotate(parent_xform_tf.q, hinge_axis_local)
-                offset = HINGE_CONNECT_AXIS_OFFSET
 
                 self.has_jnt_connect_constraints = True
 
-                # First CONNECT at the joint anchor
-                eq1 = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
-                eq1.type = mujoco.mjtEq.mjEQ_CONNECT
-                eq1.active = True
-                eq1.name1 = parent_name
-                eq1.name2 = child_name
-                eq1.data[0:3] = parent_anchor
-                mjc_eq_to_newton_jnt[eq1.id] = j
-                jnt_eq_anchor1_dict[eq1.id] = list(parent_anchor)
-                jnt_eq_anchor1_has_axis_offset[eq1.id] = False
-
-                # Second CONNECT offset along the hinge axis
-                parent_anchor_offset = np.array(parent_anchor) + offset * np.array(hinge_axis)
-                eq2 = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
-                eq2.type = mujoco.mjtEq.mjEQ_CONNECT
-                eq2.active = True
-                eq2.name1 = parent_name
-                eq2.name2 = child_name
-                eq2.data[0:3] = parent_anchor_offset
-                mjc_eq_to_newton_jnt[eq2.id] = j
-                jnt_eq_anchor1_dict[eq2.id] = list(parent_anchor_offset)
-                jnt_eq_anchor1_has_axis_offset[eq2.id] = True
+                # Center the pair on the joint anchor: a one-sided pair takes a
+                # load through the pin on one row only and twists the joint.
+                for side in (-1, 1):
+                    anchor = list(hinge_connect_anchor(wp.vec3(*parent_anchor), side, hinge_axis))
+                    eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
+                    eq.type = mujoco.mjtEq.mjEQ_CONNECT
+                    eq.active = True
+                    eq.name1 = parent_name
+                    eq.name2 = child_name
+                    eq.data[0:3] = anchor
+                    mjc_eq_to_newton_jnt[eq.id] = j
+                    jnt_eq_anchor1_dict[eq.id] = anchor
+                    jnt_eq_anchor1_has_axis_offset[eq.id] = side
 
             elif lin_count == 0 and ang_count == 3:
                 # Ball loop joint: 1x CONNECT constrains 3 translational
@@ -8438,9 +8469,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             jnt_eq_anchor1_np = np.zeros((nworld, neq, 3), dtype=np.float32)
             jnt_eq_anchor1_has_axis_offset_np = np.zeros((nworld, neq), dtype=np.int32)
             for mjc_eq_id, anchor in jnt_eq_anchor1_dict.items():
-                has_offset = jnt_eq_anchor1_has_axis_offset.get(mjc_eq_id, False)
                 jnt_eq_anchor1_np[:, mjc_eq_id] = anchor
-                jnt_eq_anchor1_has_axis_offset_np[:, mjc_eq_id] = int(has_offset)
+                jnt_eq_anchor1_has_axis_offset_np[:, mjc_eq_id] = jnt_eq_anchor1_has_axis_offset.get(mjc_eq_id, 0)
             self.jnt_eq_anchor1 = wp.array(jnt_eq_anchor1_np, dtype=wp.vec3)
             self.jnt_eq_anchor1_has_axis_offset = wp.array(jnt_eq_anchor1_has_axis_offset_np, dtype=wp.int32)
 
@@ -8566,15 +8596,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         f"nvmax={nvmax} is too small: the initial state has {minimum_nvmax} awake degrees of freedom."
                     )
 
-            self.mjw_data = mujoco_warp.put_data(
-                self.mj_model,
-                self.mj_data,
-                nworld=nworld,
-                nconmax=nconmax,
-                njmax=njmax,
-                njmax_nnz=njmax_nnz,
-                nvmax=nvmax,
-            )
+            # MuJoCo's bindings expose unallocated efm_* arrays as uninitialized memory,
+            # whose float32 conversion can spuriously warn about overflow.
+            with np.errstate(over="ignore"):
+                self.mjw_data = mujoco_warp.put_data(
+                    self.mj_model,
+                    self.mj_data,
+                    nworld=nworld,
+                    nconmax=nconmax,
+                    njmax=njmax,
+                    njmax_nnz=njmax_nnz,
+                    nvmax=nvmax,
+                )
             self.nvmax = self.mjw_data.nvmax
             if self.enable_sleeping:
                 self._capture_initial_sleeping_state()
@@ -9355,7 +9388,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             inputs=[
                 self.mjc_eq_to_newton_jnt,
                 self.jnt_eq_anchor1_has_axis_offset,
-                HINGE_CONNECT_AXIS_OFFSET,
                 self.model.joint_X_p,
                 self.model.joint_axis,
                 self.model.joint_qd_start,

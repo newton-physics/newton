@@ -306,7 +306,7 @@ def test_free_plus_revolute_position_target(
         test.skipTest("qfrc_actuator-based check is MuJoCo-specific")
 
     state_0, state_1 = model.state(), model.state()
-    observables = solver.observables({solver.ObservableFlags.QFRC_ACTUATOR})
+    observables = solver.observables(kinds={solver.ObservableKind.QFRC_ACTUATOR})
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
     control = model.control()
 
@@ -452,7 +452,7 @@ def test_qfrc_actuator(
 
     state_0 = model.state()
     state_1 = model.state()
-    observables = solver.observables({solver.ObservableFlags.QFRC_ACTUATOR})
+    observables = solver.observables(kinds={solver.ObservableKind.QFRC_ACTUATOR})
 
     test.assertIsNotNone(observables.qfrc_actuator)
     test.assertEqual(len(observables.qfrc_actuator), model.joint_dof_count)
@@ -547,7 +547,7 @@ def test_free_joint_qfrc_actuator_frame(
 
     state_0 = model.state()
     state_1 = model.state()
-    observables = solver.observables({solver.ObservableFlags.QFRC_ACTUATOR})
+    observables = solver.observables(kinds={solver.ObservableKind.QFRC_ACTUATOR})
 
     control = model.control()
     # Set ctrl: [thrust=10, yaw=10]
