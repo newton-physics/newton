@@ -1,14 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Map between decision vectors and cable candidates."""
+"""Map between decision vectors and cable parameters."""
 
 from __future__ import annotations
 
 import math
 from collections.abc import Sequence
 
-from .evaluate import CableCandidate
+from .evaluate import CableParameters
 
 
 class CableSearchSpace:
@@ -83,7 +83,7 @@ class CableSearchSpace:
     def searched_scalars(self) -> list[str]:
         """Return the names of the searched scalars, in layout order.
 
-        The names are :class:`~.evaluate.CableCandidate` attributes. The rest
+        The names are :class:`~.evaluate.CableParameters` attributes. The rest
         angles are not included.
         """
         off = self._offsets()
@@ -114,7 +114,7 @@ class CableSearchSpace:
             parts.append(f"{2 * self.n_bend} rest angles")
         return ", ".join(parts)
 
-    def decode(self, x: Sequence[float]) -> CableCandidate:
+    def decode(self, x: Sequence[float]) -> CableParameters:
         """Return the candidate that a decision vector describes.
 
         Raises:
@@ -148,7 +148,7 @@ class CableSearchSpace:
         else:
             twist_damping = float(s.twist_damping_mode)
 
-        return CableCandidate(
+        return CableParameters(
             angles=angles,
             bend_stiffness=bend_stiffness,
             twist_stiffness=twist_stiffness,
