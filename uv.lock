@@ -3566,7 +3566,7 @@ wheels = [
 
 [[package]]
 name = "newton"
-version = "1.7.0rc2"
+version = "1.7.0"
 source = { editable = "." }
 dependencies = [
     { name = "warp-lang" },
