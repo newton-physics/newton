@@ -163,6 +163,7 @@ class CableCalibrationProblem:
             diagnostics={
                 "search_dimension": self.search_space.dim,
                 "stop_reason": outcome.stop_reason,
+                "invalid_candidates": outcome.invalid,
             },
             provenance={
                 "run_id": uuid.uuid4().hex,

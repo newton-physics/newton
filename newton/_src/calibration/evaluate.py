@@ -195,8 +195,9 @@ class CableEvaluator:
             candidates: The :class:`CableParameters` population to score.
 
         Returns:
-            One objective value per candidate, in the order given. An empty
-            population gives an empty list.
+            One objective value per candidate, in the order given. A candidate
+            whose rollout failed (its cable state became non-finite) gets NaN.
+            An empty population gives an empty list.
 
         Raises:
             ValueError: If :class:`~.model.CableSimulation` rejects the

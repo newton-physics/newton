@@ -239,13 +239,33 @@ class TestCalibrationOrchestration(unittest.TestCase):
         self.assertEqual(result.loss, 0.0)
         self.assertEqual(result.stop_reason, "maxiter")
 
-    def test_problem_is_closed_when_evaluation_fails(self):
-        """Verify a non-finite objective value stops the search and closes the problem."""
+    def test_invalid_start_is_refused_and_the_problem_closed(self):
+        """Verify a start with a non-finite objective value stops the search and closes the problem."""
         problem = self.Problem()
-        problem.evaluate = lambda vectors: [float("nan")] * len(vectors)
-        with self.assertRaisesRegex(ValueError, "finite scalar"):
+        problem.evaluate = lambda vectors: [math.nan] * len(vectors)
+        with self.assertRaisesRegex(ValueError, "start is invalid"):
             calibrate(problem, optimizer=OptimizerCMA(seed=1, popsize=4, maxiter=2))
         self.assertTrue(problem.closed)
+
+    def test_invalid_candidates_are_ranked_last(self):
+        """Verify non-finite values never become the best, are counted, and stop the search when a whole iteration is invalid."""
+        problem = self.Problem()
+        evaluate = problem.evaluate
+        # The region x[0] < 1 is invalid, so the minimum at the origin cannot be reached.
+        problem.evaluate = lambda vectors: [
+            v if x[0] >= 1.0 else math.nan for x, v in zip(vectors, evaluate(vectors), strict=True)
+        ]
+        result = calibrate(problem, optimizer=OptimizerCMA(seed=2, popsize=8, maxiter=30, sigma0=1.0))
+        self.assertGreater(result.invalid, 0)
+        self.assertLess(result.loss, 1.03)  # the best valid point is (1, 0), with loss 1
+        self.assertTrue(all(math.isfinite(loss) and x[0] >= 1.0 for loss, x in result.history))
+        self.assertNotEqual(result.stop_reason, "all candidates invalid")
+
+        problem = self.Problem()
+        problem.evaluate = lambda vectors: [13.0 if list(x) == [3.0, -2.0] else math.nan for x in vectors]
+        result = calibrate(problem, optimizer=OptimizerCMA(seed=1, popsize=4, maxiter=5))
+        self.assertEqual(result.stop_reason, "all candidates invalid")
+        self.assertEqual((result.loss, result.vector, result.invalid), (13.0, [3.0, -2.0], 4))
 
     def test_interrupt_keeps_the_best_candidate(self):
         """Verify an interrupt after the first iteration returns the best candidate so far."""
@@ -319,10 +339,11 @@ class TestCalibrationCableProblem(unittest.TestCase):
             self.assertEqual(history[-1]["loss"], result.metrics["loss"])
             self.assertIsNone(problem._evaluator)
 
-            stopped = SearchOutcome([2.0], 0.0, 0, True, [(0.0, [2.0])], "interrupted")
+            stopped = SearchOutcome([2.0], 0.0, 0, True, [(0.0, [2.0])], "interrupted", 3)
             interrupted = problem.build_result(stopped, optimizer=optimizer, artifacts={})
             self.assertEqual(interrupted.status, STATUS_INTERRUPTED)
             self.assertEqual(interrupted.diagnostics["stop_reason"], "interrupted")
+            self.assertEqual(interrupted.diagnostics["invalid_candidates"], 3)
 
     @unittest.skipUnless(importlib.util.find_spec("cma"), "requires newton[calibration]")
     def test_failed_trace_keeps_the_result(self):

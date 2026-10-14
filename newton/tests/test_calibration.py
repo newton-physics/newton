@@ -1213,6 +1213,17 @@ class TestCalibrationRunSequence(unittest.TestCase):
             self.assertEqual(mask.shape, (24, 32))
             self.assertEqual(set(np.unique(mask)), {0, 255})
 
+    def test_failed_world_scores_nan(self):
+        """Verify a world whose cable state becomes non-finite gets NaN, and the other worlds keep their score."""
+        world = make_world(population=2)
+        body_q = world.state_0.body_q.numpy()
+        body_q[world.cable_bodies_list[1][0], 0] = np.nan
+        world.state_0.body_q.assign(body_q)
+        values, _, _ = world.run_sequence(2, [1.0], SCENE_CROP, LossGoalValue())
+        self.assertEqual(world.failed_worlds(), [False, True])
+        self.assertEqual(values[0], 1.0)
+        self.assertTrue(math.isnan(values[1]))
+
     def test_goal_frames_are_scored_at_their_simulation_frames(self):
         """Verify each goal frame is scored at the simulation frame nearest its capture time.
 

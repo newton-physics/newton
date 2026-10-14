@@ -37,7 +37,11 @@ class SearchOutcome:
     """The best ``(loss, vector)`` so far after each iteration. Entry 0 is the scored start."""
 
     stop_reason: str
-    """Why the search stopped, for example ``"maxiter"``, a convergence criterion, or ``"interrupted"``."""
+    """Why the search stopped, for example ``"maxiter"``, a convergence criterion, ``"interrupted"`` or
+    ``"all candidates invalid"``."""
+
+    invalid: int
+    """Number of evaluated candidates whose objective value was not finite."""
 
 
 class OptimizerCMA:
@@ -85,9 +89,15 @@ class OptimizerCMA:
         ``space.describe(vector)`` are logged at ``INFO`` level. The stop
         reason is the names of the CMA-ES stop criteria that were met.
 
+        A candidate whose objective value is not finite is invalid: CMA-ES ranks
+        it below every valid candidate, and it is never the best. The search
+        stops with the stop reason ``"all candidates invalid"`` when a whole
+        iteration is invalid.
+
         Args:
             objective: Object with ``evaluate(vectors)``, which returns one
-                finite value per decision vector.
+                value per decision vector. A value that is not finite marks an
+                invalid candidate.
             space: Object with ``dim``, ``x0()``, the search start,
                 ``bounds()``, the lower and upper bound of each decision
                 variable (infinite for no bound), and ``describe(vector)``,
@@ -99,7 +109,8 @@ class OptimizerCMA:
 
         Raises:
             ImportError: If the ``cma`` package is not installed.
-            ValueError: If the objective does not return one finite value per vector.
+            ValueError: If the objective does not return one value per vector,
+                or the start is invalid.
             RuntimeError: If the search stops before it scores the start.
         """
         try:
@@ -122,38 +133,54 @@ class OptimizerCMA:
         x0 = list(space.x0())
         es = cma.CMAEvolutionStrategy(x0, self.sigma0, opts)
 
-        best_x, best_loss, history, interrupted = None, float("inf"), [], False
+        best_x, best_loss, history, interrupted, invalid, stop_reason = None, math.inf, [], False, 0, None
 
-        def record():
+        def record(n_invalid=0):
             history.append((best_loss, list(best_x)))
-            logger.info("iteration %d: loss %.6g, %s", len(history) - 1, best_loss, space.describe(best_x))
+            note = f", {n_invalid} invalid" if n_invalid else ""
+            logger.info("iteration %d: loss %.6g, %s%s", len(history) - 1, best_loss, space.describe(best_x), note)
 
         try:
             # CMA-ES samples around the start but does not score it.
-            best_x, best_loss = x0, float(_evaluate(objective, [x0])[0])
+            start_loss = float(_evaluate(objective, [x0])[0])
+            if not math.isfinite(start_loss):
+                raise ValueError("the search start is invalid: its objective value is not finite.")
+            best_x, best_loss = x0, start_loss
             record()
             while not es.stop():
                 solutions = es.ask()
                 losses = _evaluate(objective, solutions)
-                es.tell(solutions, losses)
-                i = int(np.argmin(losses))
-                if losses[i] < best_loss:
-                    best_x, best_loss = list(solutions[i]), float(losses[i])
-                record()
+                valid = np.isfinite(losses)
+                n_invalid = int(np.count_nonzero(~valid))
+                invalid += n_invalid
+                if not valid.any():
+                    record(n_invalid)
+                    stop_reason = "all candidates invalid"
+                    break
+                # CMA-ES uses only the ranking, so an invalid candidate ranks below every valid one.
+                ranked = np.where(valid, losses, math.inf)
+                es.tell(solutions, ranked)
+                i = int(np.argmin(ranked))
+                if ranked[i] < best_loss:
+                    best_x, best_loss = list(solutions[i]), float(ranked[i])
+                record(n_invalid)
         except KeyboardInterrupt:
             interrupted = True
 
         if not history:
             raise RuntimeError("the search stopped before it scored the start.")
-        stop_reason = "interrupted" if interrupted else ", ".join(es.stop())
+        if interrupted:
+            stop_reason = "interrupted"
+        elif stop_reason is None:
+            stop_reason = ", ".join(es.stop())
         logger.info("search stopped: %s", stop_reason)
         best_loss, best_x = history[-1]
-        return SearchOutcome(list(best_x), best_loss, len(history) - 1, interrupted, history, stop_reason)
+        return SearchOutcome(list(best_x), best_loss, len(history) - 1, interrupted, history, stop_reason, invalid)
 
 
 def _evaluate(objective, vectors) -> np.ndarray:
-    """Evaluate ``vectors`` and require one finite value per vector."""
+    """Evaluate ``vectors`` and require one value per vector. A value may be non-finite."""
     values = np.asarray(objective.evaluate(vectors), dtype=float)
-    if values.shape != (len(vectors),) or not np.all(np.isfinite(values)):
-        raise ValueError("objective must return one finite scalar per decision vector.")
+    if values.shape != (len(vectors),):
+        raise ValueError("objective must return one scalar per decision vector.")
     return values

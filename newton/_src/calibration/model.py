@@ -129,6 +129,19 @@ def project_cable_kernel(
         out[w, i, 1] = cy - fy * d[1] / depth
 
 
+@wp.kernel
+def _mark_failed_worlds_kernel(
+    body_q: wp.array[wp.transform],
+    bodies: wp.array2d[wp.int32],  # (n_worlds, n_capsules)
+    failed: wp.array[wp.int32],  # (n_worlds,)
+):
+    """Mark each world whose cable has a capsule pose that is not finite. A mark stays set."""
+    w, i = wp.tid()
+    tb = body_q[bodies[w, i]]
+    if not (wp.isfinite(wp.transform_get_translation(tb)) and wp.isfinite(wp.transform_get_rotation(tb))):
+        failed[w] = 1
+
+
 # The only supported rest-angle parametrization: a joint's (alpha, beta) pair is the
 # rotation vector (alpha, beta, 0), so a joint has no twist about the segment axis.
 ANGLE_PARAM_EXP = "exp_map"
@@ -580,6 +593,8 @@ class CableSimulation:
             device=self.model.device,
         )
         self._proj_uv = wp.zeros((self.n, self.num_elements + 1, 2), dtype=wp.float32, device=self.model.device)
+        # 1 for each world whose cable state became non-finite; see failed_worlds().
+        self._failed = wp.zeros(self.n, dtype=wp.int32, device=self.model.device)
 
         self.solver = newton.solvers.SolverVBD(
             self.model,
@@ -705,12 +720,25 @@ class CableSimulation:
         )
 
     def _simulate(self) -> None:
-        """Advance all worlds by one frame of ``sim_substeps`` substeps."""
+        """Advance all worlds by one frame of ``sim_substeps`` substeps, then mark the failed worlds."""
         for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
             self._apply_drive(substep)
             self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
+        wp.launch(
+            _mark_failed_worlds_kernel,
+            dim=self._cable_bodies.shape,
+            inputs=[self.state_0.body_q, self._cable_bodies],
+            outputs=[self._failed],
+        )
+
+    def failed_worlds(self) -> list[bool]:
+        """Return, for each world, whether its cable state became non-finite in a step so far.
+
+        The settle steps count. A failed world stays failed.
+        """
+        return [bool(v) for v in self._failed.numpy()]
 
     def _step(self, frame_idx: int) -> None:
         """Advance one frame, with the drive at frame ``frame_idx``.
@@ -934,7 +962,9 @@ class CableSimulation:
         the call, so call :meth:`settle` first.
 
         Each goal frame is scored against one simulation frame. A world's loss is
-        the sum of its frame scores divided by the number of goal frames.
+        the sum of its frame scores divided by the number of goal frames. A world
+        whose cable state became non-finite in any step, including the settle,
+        gets NaN in every view (see :meth:`failed_worlds`).
 
         With several views (see ``cameras``), ``goal_reprs``, ``crop`` and
         ``goal_times`` take one entry per view, and ``losses``, ``recorded_frames``
@@ -1060,11 +1090,12 @@ class CableSimulation:
                             recorded_masks[c][i].append(masks[i])
             self._step(f)
 
+        failed = self.failed_worlds()
         for c in range(self.n_cameras):
             if accums[c] is not None:
                 losses[c] = accums[c].totals()
             n_goal_c = max(1, len(reprs[c]))
-            losses[c] = [l / n_goal_c for l in losses[c]]
+            losses[c] = [math.nan if failed[i] else l / n_goal_c for i, l in enumerate(losses[c])]
         if multi:
             return losses, recorded_frames, recorded_masks
         return (
