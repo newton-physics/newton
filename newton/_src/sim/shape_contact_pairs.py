@@ -3,12 +3,22 @@
 
 """Collision topology summaries and on-demand explicit shape pairs."""
 
+from __future__ import annotations
+
 from collections import defaultdict
 from functools import cached_property
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from ..geometry.flags import ShapeFlags
+
+if TYPE_CHECKING:
+    import warp as wp
+    from numpy.typing import ArrayLike
+
+    from ..solvers.coupled.model_view import ModelView
+    from . import Model
 
 # Bound enumeration and replicated replay scratch independently of scene size.
 _PAIR_CHUNK_SIZE = 262144
@@ -17,7 +27,15 @@ _PAIR_CHUNK_SIZE = 262144
 class _ShapeContactPairs:
     """Finalized collision topology for counting and enumerating collision pairs."""
 
-    def __init__(self, shape_body, shape_world, shape_group, shape_flags, filter_pairs, world_count):
+    def __init__(
+        self,
+        shape_body: ArrayLike,
+        shape_world: ArrayLike,
+        shape_group: ArrayLike,
+        shape_flags: ArrayLike,
+        filter_pairs: ArrayLike,
+        world_count: int,
+    ) -> None:
         self.shape_body = np.maximum(np.asarray(shape_body, dtype=np.int32), -1)
         self.shape_world = np.array(shape_world, dtype=np.int32, copy=True)
         self.shape_group = np.array(shape_group, dtype=np.int32, copy=True)
@@ -132,7 +150,7 @@ class _ShapeContactPairs:
         )
         return counts
 
-    def _store_pairs(self, output, a, b) -> int:
+    def _store_pairs(self, output: np.ndarray, a: np.ndarray, b: np.ndarray) -> int:
         """Canonicalize candidate indices and remove authored exclusions."""
         shape_a, shape_b = np.minimum(a, b), np.maximum(a, b)
         if len(self.filter_pairs) and len(shape_a):
@@ -146,7 +164,7 @@ class _ShapeContactPairs:
         output[: len(shape_a), 1] = shape_b
         return len(shape_a)
 
-    def _write_dense_pairs(self, output, first, second, *, triangular) -> int:
+    def _write_dense_pairs(self, output: np.ndarray, first: np.ndarray, second: np.ndarray, *, triangular: bool) -> int:
         """Fill compatible uniform groups with cache-sized rectangular blocks."""
         written = 0
         rows_per_chunk = max(1, _PAIR_CHUNK_SIZE // len(second))
@@ -162,7 +180,9 @@ class _ShapeContactPairs:
                 written += self._store_pairs(output[written:], rows[row], cols[column])
         return written
 
-    def _write_pair_ranges(self, output, first, second, starts, ends) -> int:
+    def _write_pair_ranges(
+        self, output: np.ndarray, first: np.ndarray, second: np.ndarray, starts: np.ndarray, ends: np.ndarray
+    ) -> int:
         """Emit ragged rows of group-compatible candidates in bounded chunks."""
         sizes = ends - starts
         offsets = np.empty(len(first) + 1, dtype=np.int64)
@@ -359,7 +379,7 @@ class _ShapeContactPairs:
         return pairs
 
 
-def _shape_contact_pair_counts(model, *, shape_mask: np.ndarray | None = None) -> np.ndarray:
+def _shape_contact_pair_counts(model: Model | ModelView, *, shape_mask: np.ndarray | None = None) -> np.ndarray:
     """Cache read-only counts for globals (slot zero) and each local world.
 
     Default pairs use finalized topology; supplied arrays use their full contents.
@@ -392,12 +412,14 @@ def _shape_contact_pair_counts(model, *, shape_mask: np.ndarray | None = None) -
     return counts
 
 
-def _shape_contact_pair_topology(model) -> _ShapeContactPairs:
+def _shape_contact_pair_topology(model: Model | ModelView) -> _ShapeContactPairs:
     """Use the finalized Model topology inherited alongside the default pair list."""
-    return model._shape_contact_pair_data
+    topology = model._shape_contact_pair_data
+    assert topology is not None
+    return topology
 
 
-def _shape_contact_pair_override(model):
+def _shape_contact_pair_override(model: Model | ModelView) -> tuple[bool, wp.array[wp.vec2i] | None]:
     """Distinguish authored pair lists from a cache of model-derived pairs."""
     overrides = vars(model).get("_overrides")
     if overrides is not None:
@@ -410,7 +432,9 @@ def _shape_contact_pair_override(model):
     return False, None
 
 
-def _shape_contact_pairs_for_mask(model, shape_mask: np.ndarray, *, shape_pairs=None) -> np.ndarray:
+def _shape_contact_pairs_for_mask(
+    model: Model | ModelView, shape_mask: np.ndarray, *, shape_pairs: wp.array[wp.vec2i] | None = None
+) -> np.ndarray:
     """Get a subset without materializing the model's full explicit pair cache."""
     supplied, pairs = _shape_contact_pair_override(model)
     if shape_pairs is None and not supplied:
@@ -422,7 +446,9 @@ def _shape_contact_pairs_for_mask(model, shape_mask: np.ndarray, *, shape_pairs=
     return pairs[shape_mask[pairs[:, 0]] & shape_mask[pairs[:, 1]]]
 
 
-def _shape_contact_pair_count_for_mask(model, shape_mask: np.ndarray, *, shape_pairs=None) -> int:
+def _shape_contact_pair_count_for_mask(
+    model: Model | ModelView, shape_mask: np.ndarray, *, shape_pairs: wp.array[wp.vec2i] | None = None
+) -> int:
     """Count a subset without triggering lazy pair construction."""
     if shape_pairs is None:
         return int(_shape_contact_pair_counts(model, shape_mask=shape_mask).sum())

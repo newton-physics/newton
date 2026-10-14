@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import dataclasses
 import warnings
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import warp as wp
@@ -42,6 +42,9 @@ from ..sim.contacts import GENERATION_SENTINEL, Contacts
 from ..sim.model import Model
 from ..sim.shape_contact_pairs import _shape_contact_pair_count_for_mask, _shape_contact_pair_counts
 from ..sim.state import State
+
+if TYPE_CHECKING:
+    from ..solvers.coupled.model_view import ModelView
 
 
 def _shape_collide_mask(model: Model, shape_count: int | None = None) -> np.ndarray:
@@ -773,7 +776,7 @@ def _warn_large_rigid_contact_estimate(estimate: _RigidContactCountEstimate) -> 
     )
 
 
-def _estimate_rigid_contact_max_per_world(model: Model, rigid_contact_max: int) -> int:
+def _estimate_rigid_contact_max_per_world(model: Model | ModelView, rigid_contact_max: int) -> int:
     """Estimate the busiest world's share of a global rigid-contact capacity.
 
     The collision pipeline stores contacts in one heterogeneous global buffer,
