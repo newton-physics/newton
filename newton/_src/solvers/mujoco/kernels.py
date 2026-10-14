@@ -2599,6 +2599,7 @@ def update_geom_properties_kernel(
 def update_site_properties_kernel(
     shape_transform: wp.array[wp.transform],
     shape_scale: wp.array[wp.vec3],
+    site_display_size: wp.array[wp.vec3],
     site_shape_index: wp.array[wp.int32],
     site_is_global: wp.array[bool],
     shapes_per_world: int,
@@ -2625,6 +2626,8 @@ def update_site_properties_kernel(
     # source of truth; per-world site sizes are not representable.
     if world == 0:
         scale = shape_scale[shape]
+        if shape < site_display_size.shape[0] and site_display_size[shape][2] >= 0.0:
+            scale[2] = site_display_size[shape][2]
         # Mirror export: fill zero components with the first positive one.
         nonzero = 0.0
         if scale[0] > 0.0:

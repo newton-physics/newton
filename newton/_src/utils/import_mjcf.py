@@ -1673,15 +1673,26 @@ def parse_mjcf(
                 site_size = wp.vec3(radius, half_height, 0.0)
 
             # Add site using builder.add_site()
+            site_attributes = None
+            if site_type == "cylinder":
+                # MuJoCo's third site-size component is display metadata, not
+                # Newton's cylinder barrel radius. Preserve it for export.
+                site_attributes = {
+                    "mujoco:site_size_is_display": True,
+                    "mujoco:site_size": wp.vec3(*(abs(component) for component in site_size)),
+                }
+                site_scale = wp.vec3(site_size[0], site_size[1], 0.0)
+            else:
+                site_scale = site_size
             site_label = f"{label_prefix}/{site_name}" if label_prefix else site_name
             s = builder.add_site(
                 body=link,
                 xform=site_xform,
                 type=geo_type,
-                scale=site_size,
+                scale=site_scale,
                 label=site_label,
                 visible=visible,
-                custom_attributes={"mujoco:site_size_is_display": True} if site_type == "cylinder" else None,
+                custom_attributes=site_attributes,
             )
             site_shapes.append(s)
             site_name_to_idx[sanitize_name(site_name)] = s

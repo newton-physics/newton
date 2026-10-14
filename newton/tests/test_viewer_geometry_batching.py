@@ -233,7 +233,8 @@ class TestViewerGeometryBatching(unittest.TestCase):
         self.assertEqual(len(sites), 1)
 
         site = sites[0]
-        self.assertAlmostEqual(builder.shape_scale[site][2], 0.005)
+        self.assertEqual(builder.shape_scale[site][2], 0.0)
+        self.assertAlmostEqual(builder.custom_attributes["mujoco:site_size"].values[site][2], 0.005)
 
         viewer = _ViewerGeometryBatchingProbe()
         viewer.set_model(builder.finalize())

@@ -690,10 +690,6 @@ class ModelBuilder:
         "muscle_bodies": Model.AttributeSpec("muscle_point", references=Model.AttributeFrequency.BODY),
         "muscle_points": Model.AttributeSpec("muscle_point"),
         "world_gravity": Model.AttributeSpec(Model.AttributeFrequency.WORLD, compaction_policy="passthrough"),
-        "_equality_constraint_world_start": Model.AttributeSpec(
-            Model.AttributeFrequency.WORLD,
-            compaction_policy="passthrough",
-        ),
         "_shape_collision_filter_pairs": Model.AttributeSpec(
             Model.AttributeFrequency.ONCE,
             compaction_policy="passthrough",
@@ -1359,10 +1355,22 @@ class ModelBuilder:
         Mutually exclusive with :attr:`references`; the callback owns reference remapping.
         """
 
+        preserve_referenced_bodies: bool = False
+        """Keep referenced bodies from being collapsed into the world.
+
+        Requires ``references="body"`` and a scalar integer dtype.
+        During :meth:`ModelBuilder.collapse_fixed_joints`,
+        a referenced body may still merge into a surviving parent body, but will
+        not become the world sentinel. Use this for rows that require a physical
+        body after collapsing fixed joints.
+        """
+
         def __post_init__(self):
             """Initialize default values and validate dtype compatibility."""
             if self.references is not None and self.reference_value_transformer is not None:
                 raise ValueError("references and reference_value_transformer cannot both be specified.")
+            if self.preserve_referenced_bodies and (self.references != "body" or not wp.types.type_is_int(self.dtype)):
+                raise ValueError("preserve_referenced_bodies requires references='body' and a scalar integer dtype.")
             # Allow str dtype for string attributes (stored as Python lists, not warp arrays)
             if self.dtype is not str:
                 # ensure dtype is a valid Warp dtype
@@ -1586,6 +1594,37 @@ class ModelBuilder:
         these values like other entity labels.
         """
 
+        world_attribute: str | None = None
+        """Optional full key of the integer attribute assigning rows to worlds.
+
+        The key must be named ``<frequency>_world``, use this frequency, be assigned
+        to the model, and declare ``references="world"``. Finalization validates
+        its world ordering with the built-in entities and publishes
+        ``<frequency>_count`` and ``<frequency>_world_start`` in the frequency's
+        namespace. The starts include global rows at the beginning and end.
+        """
+
+        builder_validator: Callable[[ModelBuilder], None] | None = None
+        """Optional structural validator for this frequency's authored rows.
+
+        Called during :meth:`ModelBuilder.finalize` unless structural validation
+        is skipped. Treat the builder as read-only and raise :class:`ValueError`
+        for invalid rows. The callback must also accept a frequency with no rows.
+        """
+
+        collapse_transformer: Callable[[ModelBuilder, dict[str, Any]], None] | None = None
+        """Optional in-place fixup for :meth:`ModelBuilder.collapse_fixed_joints`.
+
+        Called after rebuilding bodies and joints, before custom attribute values
+        with ``references="body"`` or ``references="joint"`` are remapped. The
+        context contains ``body_remap``, ``joint_remap``, ``articulation_remap``,
+        ``body_merged_parent``, ``body_merged_transform``, and ``verbose`` with the
+        same meanings as the collapse result and argument. Treat these mappings
+        as read-only. Use the original indices in custom values to transform local
+        frames or disable rows whose references were removed; ordinary reference
+        remapping remains the builder's responsibility.
+        """
+
         def __post_init__(self):
             """Validate frequency naming and callback relationships."""
             if not self.name or ":" in self.name:
@@ -1603,6 +1642,7 @@ class ModelBuilder:
                     f"{self.key}_articulation",
                 ),
                 ("label_attribute", self.label_attribute, f"{self.key}_label"),
+                ("world_attribute", self.world_attribute, f"{self.key}_world"),
             ):
                 if attribute_key is not None and attribute_key != expected_key:
                     raise ValueError(
@@ -2186,8 +2226,6 @@ class ModelBuilder:
         """Per-world joint starts accumulated for :attr:`Model.joint_world_start`."""
         self.articulation_world_start: list[int] = []
         """Per-world articulation starts accumulated for :attr:`Model.articulation_world_start`."""
-        self._equality_constraint_world_start: list[int] = []
-        """Per-world equality-constraint starts accumulated for ``model.mujoco.equality_constraint_world_start``."""
         self.joint_dof_world_start: list[int] = []
         """Per-world joint DoF starts accumulated for :attr:`Model.joint_dof_world_start`."""
         self.joint_coord_world_start: list[int] = []
@@ -2211,17 +2249,13 @@ class ModelBuilder:
         """Running counts for custom string frequencies used to size custom attribute arrays."""
         self._custom_frequency_owner_resolved_counts: dict[str, int] = {}
         """Row counts covered by the latest custom-frequency owner resolution."""
+        self._custom_frequency_world_starts: dict[str, list[int]] = {}
+        """Per-world starts for custom frequencies with world ownership metadata."""
 
         # Actuator entries (accumulated during add_actuator calls)
         # Key is (drive_class, delay is not None, clamping_key, drive_shared_key) to group compatible actuators
         self.actuator_entries: dict[tuple, ModelBuilder.ActuatorEntry] = {}
         """Actuator entry groups accumulated from :meth:`add_actuator`, keyed by drive class and shared params."""
-
-        # Equality constraints are canonical MuJoCo custom attributes and must be available
-        # independently of SolverMuJoCo. Lazy import avoids a module-level solver dependency.
-        from ..solvers.mujoco.equality import _register_equality_constraint_attributes  # noqa: PLC0415
-
-        _register_equality_constraint_attributes(self)
 
         self._array_backed_attributes: dict[str, _ArrayBackedAttribute] = {}
         """Array-backed attributes and their list-materialization descriptors."""
@@ -2251,34 +2285,6 @@ class ModelBuilder:
             yield
         finally:
             self._raw_array_access_active = previous_value
-
-    def _eq_attr(self, name: str) -> ModelBuilder.CustomAttribute:
-        """Return the per-equality-constraint :class:`CustomAttribute` for the bare ``name`` (no ``mujoco:`` prefix)."""
-        return self.custom_attributes[f"mujoco:{name}"]
-
-    def _eq_values_raw(self, name: str) -> list[Any]:
-        """Backing values list for equality field ``name`` (no default-filling); empty list if unset.
-
-        Internal callers (``finalize`` validation/collapse) read this instead of :meth:`_eq_list`
-        to avoid materializing a dense, default-filled copy of every equality row up front.
-        """
-        return self._eq_attr(name).values or []
-
-    def _eq_list(self, name: str) -> list[Any]:
-        """Dense list of equality-constraint ``name`` values, default-filled to match :meth:`finalize`."""
-        attr = self._eq_attr(name)
-        count = self._equality_constraint_count
-        if not attr.values:
-            return [attr.default] * count
-        return [
-            (attr.values[i] if i < len(attr.values) and attr.values[i] is not None else attr.default)
-            for i in range(count)
-        ]
-
-    @property
-    def _equality_constraint_count(self) -> int:
-        """Number of equality constraints added to this builder (from the ``mujoco:equality_constraint`` counter)."""
-        return self._custom_frequency_counts.get("mujoco:equality_constraint", 0)
 
     @property
     def shape_collision_filter_pairs(self) -> list[tuple[int, int]]:
@@ -2335,6 +2341,7 @@ class ModelBuilder:
             and existing.namespace == incoming.namespace
             and existing.references == incoming.references
             and existing.reference_value_transformer is incoming.reference_value_transformer
+            and existing.preserve_referenced_bodies == incoming.preserve_referenced_bodies
         )
 
     @staticmethod
@@ -2345,6 +2352,9 @@ class ModelBuilder:
             and existing.articulation_owner_attribute == incoming.articulation_owner_attribute
             and existing.articulation_owner_resolver is incoming.articulation_owner_resolver
             and existing.label_attribute == incoming.label_attribute
+            and existing.world_attribute == incoming.world_attribute
+            and existing.builder_validator is incoming.builder_validator
+            and existing.collapse_transformer is incoming.collapse_transformer
         )
 
     def add_custom_attribute(self, attribute: CustomAttribute) -> None:
@@ -2585,9 +2595,42 @@ class ModelBuilder:
             owner_attribute.values = owners
             self._custom_frequency_owner_resolved_counts[frequency_key] = count
 
+    def _custom_frequency_world_values(self, frequency: CustomFrequency) -> list[int]:
+        """Validate a frequency's world attribute and read its default-filled rows."""
+        attribute = self.custom_attributes.get(frequency.world_attribute)
+        if (
+            attribute is None
+            or attribute.frequency != frequency.key
+            or attribute.assignment != Model.AttributeAssignment.MODEL
+            or attribute.references != "world"
+            or not wp.types.type_is_int(attribute.dtype)
+        ):
+            raise ValueError(
+                f"World attribute '{frequency.world_attribute}' must be a model integer attribute "
+                f"with frequency '{frequency.key}' and references='world'"
+            )
+        count = self._custom_frequency_counts.get(frequency.key, 0)
+        values = attribute.values or []
+        return [values[i] if i < len(values) and values[i] is not None else attribute.default for i in range(count)]
+
     def _finalize_custom_frequency_metadata(self, model: Model, device: Devicelike | None) -> None:
         """Materialize articulation ownership and label metadata on a model."""
         for frequency_key, frequency in self.custom_frequencies.items():
+            if frequency.world_attribute is not None:
+                namespace = model
+                if frequency.namespace is not None:
+                    if not hasattr(model, frequency.namespace):
+                        setattr(model, frequency.namespace, Model.AttributeNamespace(frequency.namespace))
+                    namespace = getattr(model, frequency.namespace)
+                for name in (f"{frequency.name}_count", f"{frequency.name}_world_start"):
+                    if hasattr(namespace, name):
+                        raise AttributeError(f"Custom frequency metadata '{frequency_key}': '{name}' already exists")
+                setattr(namespace, f"{frequency.name}_count", model.custom_frequency_counts[frequency_key])
+                setattr(
+                    namespace,
+                    f"{frequency.name}_world_start",
+                    wp.array(self._custom_frequency_world_starts[frequency_key], dtype=wp.int32, device=device),
+                )
             owner_key = frequency.articulation_owner_attribute
             if owner_key is not None:
                 owner_attribute = self.custom_attributes.get(owner_key)
@@ -4900,10 +4943,8 @@ class ModelBuilder:
                 Use for MJCF files authored against MuJoCo <= 3.8. Defaults
                 to False (identity translation matching MuJoCo 3.9 semantics).
         """
-        from ..solvers.mujoco.solver_mujoco import SolverMuJoCo  # noqa: PLC0415
         from ..utils.import_mjcf import parse_mjcf  # noqa: PLC0415
 
-        SolverMuJoCo.register_custom_attributes(self)
         return parse_mjcf(
             self,
             source,
@@ -5102,29 +5143,6 @@ class ModelBuilder:
         self._resolve_custom_frequency_articulation_owners()
         custom_frequency_offsets = dict(self._custom_frequency_counts)
 
-        # Builders allocate MJCF mask-domain IDs independently. Remap every
-        # incoming domain as one unit so its IDs cannot collide with domains
-        # already present in the destination builder.
-        collision_mask_domain_key = "mujoco:collision_mask_domain"
-        collision_mask_domain_remap: dict[int, int] = {}
-        source_domain_attr = builder.custom_attributes.get(collision_mask_domain_key)
-        if source_domain_attr is not None and source_domain_attr.values:
-            source_items = (
-                source_domain_attr.values.items()
-                if isinstance(source_domain_attr.values, dict)
-                else enumerate(source_domain_attr.values)
-            )
-            # Copied shape ranges never overlap, so the first destination shape
-            # in each source domain is already a unique, deterministic ID. This
-            # avoids rescanning the growing destination during replication.
-            shape_offset = entity_offsets["shape"]
-            for shape, value in source_items:
-                if value is None:
-                    continue
-                source_domain = int(value)
-                if source_domain >= 0:
-                    collision_mask_domain_remap.setdefault(source_domain, shape_offset + shape)
-
         def get_offset(entity_or_key: str | None) -> int:
             if entity_or_key is None:
                 return 0
@@ -5162,8 +5180,6 @@ class ModelBuilder:
 
             use_current_world = attr.references == "world"
             value_offset = 0 if use_current_world else get_offset(attr.references)
-            is_equality_target_attr = full_key == "mujoco:equality_constraint_target"
-            is_collision_mask_domain_attr = full_key == collision_mask_domain_key and bool(collision_mask_domain_remap)
             source_values = attr.values
             if attr.reference_value_transformer is not None:
                 # Remap all rows of this attribute in one call so the transformer
@@ -5197,38 +5213,9 @@ class ModelBuilder:
                     source_values = list(transformed)
                 needs_remap = False
             else:
-                needs_remap = (
-                    value_offset != 0 or use_current_world or is_equality_target_attr or is_collision_mask_domain_attr
-                )
+                needs_remap = value_offset != 0 or use_current_world
 
             if needs_remap:
-
-                def transform_equality_target_value(entity_idx: int, value: Any) -> Any:
-                    try:
-                        target = int(value)
-                    except (TypeError, ValueError):
-                        return value
-                    if target < 0:
-                        return value
-
-                    target_kind_attr = builder.custom_attributes.get("mujoco:equality_constraint_target_kind")
-                    target_kind = 0
-                    if (
-                        target_kind_attr is not None
-                        and target_kind_attr.values
-                        and entity_idx < len(target_kind_attr.values)
-                        and target_kind_attr.values[entity_idx] is not None
-                    ):
-                        try:
-                            target_kind = int(target_kind_attr.values[entity_idx])
-                        except (TypeError, ValueError):
-                            target_kind = 0
-
-                    if target_kind == 1:
-                        return target + entity_offsets["joint"]
-                    if target_kind == 2:
-                        return target + entity_offsets["constraint_mimic"]
-                    return value
 
                 def transform_value(
                     value: Any,
@@ -5251,32 +5238,16 @@ class ModelBuilder:
                     except TypeError:
                         return value
 
-                def transform_enum_value(
-                    entity_idx: int,
-                    value: Any,
-                    is_equality_target: bool = is_equality_target_attr,
-                    is_collision_mask_domain: bool = is_collision_mask_domain_attr,
-                ) -> Any:
-                    if is_equality_target:
-                        return transform_equality_target_value(entity_idx, value)
-                    if is_collision_mask_domain:
-                        return collision_mask_domain_remap.get(int(value), value)
-                    return transform_value(value)
-
             merged = self.custom_attributes.get(full_key)
             if merged is None:
                 if isinstance(freq_key, str):
                     mapped_values = [None] * index_offset
                     if needs_remap:
-                        mapped_values.extend(
-                            transform_enum_value(idx, value) for idx, value in enumerate(source_values)
-                        )
+                        mapped_values.extend(transform_value(value) for value in source_values)
                     else:
                         mapped_values.extend(source_values)
                 elif needs_remap:
-                    mapped_values = {
-                        index_offset + idx: transform_enum_value(idx, value) for idx, value in source_values.items()
-                    }
+                    mapped_values = {index_offset + idx: transform_value(value) for idx, value in source_values.items()}
                 else:
                     mapped_values = {index_offset + idx: value for idx, value in source_values.items()}
                 merged = replace(attr, values=mapped_values)
@@ -5298,12 +5269,12 @@ class ModelBuilder:
                 if len(merged.values) < index_offset:
                     merged.values.extend([None] * (index_offset - len(merged.values)))
                 if needs_remap:
-                    merged.values.extend(transform_enum_value(idx, value) for idx, value in enumerate(source_values))
+                    merged.values.extend(transform_value(value) for value in source_values)
                 else:
                     merged.values.extend(source_values)
             elif needs_remap:
                 merged.values.update(
-                    {index_offset + idx: transform_enum_value(idx, value) for idx, value in source_values.items()}
+                    {index_offset + idx: transform_value(value) for idx, value in source_values.items()}
                 )
             else:
                 merged.values.update({index_offset + idx: value for idx, value in source_values.items()})
@@ -5329,16 +5300,6 @@ class ModelBuilder:
                     label = label_attribute.values[row]
                     if label:
                         label_attribute.values[row] = f"{label_prefix}/{label}"
-
-            if builder._equality_constraint_count > 0:
-                label_attr = self.custom_attributes.get("mujoco:equality_constraint_label")
-                if label_attr is not None and label_attr.values:
-                    start = self._equality_constraint_count
-                    for i in range(start, start + builder._equality_constraint_count):
-                        if i < len(label_attr.values):
-                            label = label_attr.values[i]
-                            if label:
-                                label_attr.values[i] = f"{label_prefix}/{label}"
 
         for freq_key, freq_obj in builder.custom_frequencies.items():
             if freq_key not in self.custom_frequencies:
@@ -7200,17 +7161,27 @@ class ModelBuilder:
         for children in body_children.values():
             children.sort(key=lambda x: body_data[x]["original_id"])
 
-        # Find bodies referenced in equality constraints that shouldn't be merged into world
+        # Some custom rows require a surviving body rather than a world sentinel.
         bodies_in_constraints = set()
-        for body1, body2 in zip(
-            self._eq_list("equality_constraint_body1"),
-            self._eq_list("equality_constraint_body2"),
-            strict=False,
-        ):
-            if body1 >= 0:
-                bodies_in_constraints.add(body1)
-            if body2 >= 0:
-                bodies_in_constraints.add(body2)
+        for attribute in self.custom_attributes.values():
+            if not attribute.preserve_referenced_bodies:
+                continue
+            authored = attribute.values or {}
+            values = authored.values() if isinstance(authored, dict) else authored
+            for body in values:
+                if self._is_integer_scalar(body) and body >= 0:
+                    bodies_in_constraints.add(int(body))
+            if attribute.default >= 0:
+                if attribute.is_custom_frequency:
+                    count = self._custom_frequency_counts.get(attribute.frequency, 0)
+                elif attribute.frequency == Model.AttributeFrequency.ONCE:
+                    count = 1
+                elif attribute.frequency == Model.AttributeFrequency.WORLD:
+                    count = max(1, self.world_count)
+                else:
+                    count = self._builder_merge_counts(self)[attribute.frequency.name.lower()]
+                if len(authored) < count or (attribute.is_custom_frequency and any(v is None for v in values)):
+                    bodies_in_constraints.add(int(attribute.default))
 
         # A particle-body attachment needs a surviving body to anchor to and to receive the
         # reaction force, so its body must not be merged into the world.
@@ -7729,96 +7700,19 @@ class ModelBuilder:
         # Reset the constraint count based on the retained joints
         self.joint_constraint_count = len(self.joint_cts)
 
-        # Remap equality constraint body/joint indices and transform anchors for merged bodies.
-        # Import locally to avoid a cycle while the public simulation package initializes.
-        from ..solvers.mujoco.enums import EqType  # noqa: PLC0415
-
-        # Each ``*_values`` is the ``list`` backing the string-frequency CustomAttribute. These
-        # lists are sparse: ``add_custom_values`` only populates the fields that were supplied,
-        # so an omitted optional field can be ``None``, shorter than the row count, or absent
-        # entirely. Reads go through ``_at`` (default fallback), and writes pad the list to the
-        # row index before assignment.
-        body1_attr = self._eq_attr("equality_constraint_body1")
-        body2_attr = self._eq_attr("equality_constraint_body2")
-        type_attr = self._eq_attr("equality_constraint_type")
-        anchor_attr = self._eq_attr("equality_constraint_anchor")
-        relpose_attr = self._eq_attr("equality_constraint_relpose")
-        joint1_attr = self._eq_attr("equality_constraint_joint1")
-        joint2_attr = self._eq_attr("equality_constraint_joint2")
-        enabled_attr = self._eq_attr("equality_constraint_enabled")
-        body1_values = body1_attr.values or []
-        body2_values = body2_attr.values or []
-        type_values = type_attr.values or []
-        if anchor_attr.values is None:
-            anchor_attr.values = []
-        anchor_values = anchor_attr.values
-        if relpose_attr.values is None:
-            relpose_attr.values = []
-        relpose_values = relpose_attr.values
-        joint1_values = joint1_attr.values or []
-        joint2_values = joint2_attr.values or []
-        if enabled_attr.values is None:
-            enabled_attr.values = []
-        enabled_values = enabled_attr.values
-
-        def _at(values: list, idx: int, default: Any) -> Any:
-            if idx >= len(values):
-                return default
-            return default if values[idx] is None else values[idx]
-
-        # Body/joint index remapping for body1/body2/joint1/joint2 is handled generically below
-        # via the ``references`` field. Here we only apply the MuJoCo-specific fixups that depend
-        # on the original indices: anchor/relpose frame transforms when a referenced body was
-        # merged into its parent, and disabling rows whose joint reference was removed.
-        for i in range(self._equality_constraint_count):
-            old_body1 = _at(body1_values, i, body1_attr.default)
-            old_body2 = _at(body2_values, i, body2_attr.default)
-            body1_was_merged = old_body1 in body_merged_parent
-            body2_was_merged = old_body2 in body_merged_parent
-
-            constraint_type = _at(type_values, i, type_attr.default)
-
-            # Transform anchor/relpose from merged body's frame to parent body's frame
-            if body1_was_merged:
-                merge_xform = body_merged_transform[old_body1]
-                if constraint_type == EqType.CONNECT:
-                    anchor = axis_to_vec3(_at(anchor_values, i, anchor_attr.default))
-                    while len(anchor_values) <= i:
-                        anchor_values.append(None)
-                    anchor_values[i] = wp.transform_point(merge_xform, anchor)
-                if constraint_type == EqType.WELD:
-                    relpose = _at(relpose_values, i, relpose_attr.default)
-                    while len(relpose_values) <= i:
-                        relpose_values.append(None)
-                    relpose_values[i] = merge_xform * relpose
-
-            if body2_was_merged and constraint_type == EqType.WELD:
-                merge_xform = body_merged_transform[old_body2]
-                anchor = axis_to_vec3(_at(anchor_values, i, anchor_attr.default))
-                relpose = _at(relpose_values, i, relpose_attr.default)
-                while len(anchor_values) <= i:
-                    anchor_values.append(None)
-                while len(relpose_values) <= i:
-                    relpose_values.append(None)
-                anchor_values[i] = wp.transform_point(merge_xform, anchor)
-                relpose_values[i] = relpose * wp.transform_inverse(merge_xform)
-
-            old_joint1 = _at(joint1_values, i, joint1_attr.default)
-            old_joint2 = _at(joint2_values, i, joint2_attr.default)
-
-            if old_joint1 != -1 and old_joint1 not in joint_remap:
-                if verbose:
-                    print(f"Warning: Equality constraint references removed joint {old_joint1}, disabling constraint")
-                while len(enabled_values) <= i:
-                    enabled_values.append(None)
-                enabled_values[i] = False
-
-            if old_joint2 != -1 and old_joint2 not in joint_remap:
-                if verbose:
-                    print(f"Warning: Equality constraint references removed joint {old_joint2}, disabling constraint")
-                while len(enabled_values) <= i:
-                    enabled_values.append(None)
-                enabled_values[i] = False
+        # Provider callbacks run before generic references are rewritten, while
+        # custom values still contain the original body and joint indices.
+        collapse_context = {
+            "body_remap": body_remap,
+            "joint_remap": joint_remap,
+            "articulation_remap": articulation_remap,
+            "body_merged_parent": body_merged_parent,
+            "body_merged_transform": body_merged_transform,
+            "verbose": verbose,
+        }
+        for frequency in self.custom_frequencies.values():
+            if frequency.collapse_transformer is not None:
+                frequency.collapse_transformer(self, collapse_context)
 
         # Remap mimic constraint joint indices
         for i in range(len(self.constraint_mimic_joint0)):
@@ -7839,35 +7733,6 @@ class ModelBuilder:
                     print(f"Warning: Mimic constraint references removed joint {old_joint1}, disabling constraint")
                 self.constraint_mimic_enabled[i] = False
 
-        target_kind_attr = self.custom_attributes.get("mujoco:equality_constraint_target_kind")
-        target_attr = self.custom_attributes.get("mujoco:equality_constraint_target")
-        if target_kind_attr is not None and target_attr is not None and target_attr.values:
-            for eq_idx in range(len(target_attr.values)):
-                target = target_attr.values[eq_idx]
-                if target is None:
-                    continue
-                target_kind_value = (
-                    target_kind_attr.values[eq_idx]
-                    if target_kind_attr.values and eq_idx < len(target_kind_attr.values)
-                    else None
-                )
-                try:
-                    target_kind = int(target_kind_value) if target_kind_value is not None else 0
-                    old_target = int(target)
-                except (TypeError, ValueError):
-                    continue
-                if old_target < 0:
-                    continue
-                if target_kind == 1:
-                    if old_target in joint_remap:
-                        target_attr.values[eq_idx] = joint_remap[old_target]
-                    else:
-                        target_attr.values[eq_idx] = -1
-                        target_kind_attr.values[eq_idx] = 0
-                elif target_kind == 2 and old_target >= len(self.constraint_mimic_joint0):
-                    target_attr.values[eq_idx] = -1
-                    target_kind_attr.values[eq_idx] = 0
-
         # Remap particle-body attachments onto the reindexed bodies. When the anchored body was
         # merged into its parent, the local anchor must be re-expressed in the surviving parent's
         # frame so the attachment keeps its world-space position.
@@ -7882,8 +7747,7 @@ class ModelBuilder:
             else:
                 self.attachment_particle_body_body[i] = body_remap[old_body]
 
-        # Generic entity-reference remap for any custom attribute that points at bodies or joints
-        # (e.g. ``mujoco:equality_constraint_body1/joint1`` and MuJoCo tendon joint references).
+        # Generic entity-reference remap for custom attributes that point at bodies or joints.
         # Body references follow merges: a reference to a body that was merged into its parent
         # resolves to the surviving parent. Joint references to removed joints collapse to -1.
         # Domain-specific fixups that need the original indices run above, before this rewrite.
@@ -8087,10 +7951,7 @@ class ModelBuilder:
             GeoType.GAUSSIAN,
         ):
             scale = (abs(float(scale[0])), abs(float(scale[1])), abs(float(scale[2])))
-            site_size_is_display = cfg.is_site and bool(
-                custom_attributes and custom_attributes.get("mujoco:site_size_is_display", False)
-            )
-            if type == GeoType.CYLINDER and not site_size_is_display and scale[2] != 0.0 and scale[2] < scale[1]:
+            if type == GeoType.CYLINDER and scale[2] != 0.0 and scale[2] < scale[1]:
                 raise ValueError(f"Cylinder barrel radius must be zero or at least the half-height; got scale={scale}.")
         elif type == GeoType.CONE:
             if float(scale[1]) < 0.0:
@@ -12692,10 +12553,14 @@ class ModelBuilder:
                 ("shape_world", self.shape_world),
                 ("joint_world", self.joint_world),
                 ("articulation_world", self.articulation_world),
-                ("equality_constraint_world", self._eq_list("equality_constraint_world")),
                 ("constraint_mimic_world", self.constraint_mimic_world),
             ]
 
+        world_arrays.extend(
+            (frequency.world_attribute, self._custom_frequency_world_values(frequency))
+            for frequency in self.custom_frequencies.values()
+            if frequency.world_attribute is not None
+        )
         all_world_indices = set()
 
         for array_name, world_array in world_arrays:
@@ -12982,8 +12847,8 @@ class ModelBuilder:
         This method performs consolidated validation of all structural constraints,
         using vectorized numpy operations for efficiency:
 
-        - Body references: shape_body, joint_parent, joint_child, equality_constraint_body1/2
-        - Joint references: equality_constraint_joint1/2
+        - Body references: shape_body, joint_parent, joint_child
+        - Registered custom-frequency validators
         - Particle references: spring, triangle, edge, and tetrahedron connectivity
         - Self-referential joints: joint_parent[i] != joint_child[i]
         - Start array monotonicity: joint_q_start, joint_qd_start, articulation_start, articulation_end
@@ -13072,61 +12937,9 @@ class ModelBuilder:
                     f"Self-referential joint: joint {idx} ('{joint_label}') has parent and child both set to body {joint_parent[idx]}."
                 )
 
-        # Validate equality constraint body/joint references
-        equality_count = self._equality_constraint_count
-        if equality_count > 0:
-            label_values = self._eq_values_raw("equality_constraint_label")
-
-            def _eq_label(idx: int) -> str:
-                label = label_values[idx] if idx < len(label_values) and label_values[idx] is not None else None
-                return label or f"equality_constraint_{idx}"
-
-            def _eq_index_array(name: str) -> np.ndarray:
-                # Coerce raw custom-attribute values straight into the int32 array, applying the
-                # attribute default for missing/``None`` rows, without an intermediate Python list.
-                values = self._eq_values_raw(name)
-                count, default = len(values), self._eq_attr(name).default
-                return np.fromiter(
-                    (values[i] if i < count and values[i] is not None else default for i in range(equality_count)),
-                    dtype=np.int32,
-                    count=equality_count,
-                )
-
-            eq_body1 = _eq_index_array("equality_constraint_body1")
-            invalid_mask = (eq_body1 < -1) | (eq_body1 >= body_count)
-            if np.any(invalid_mask):
-                idx = int(np.where(invalid_mask)[0][0])
-                raise ValueError(
-                    f"Invalid body reference in equality_constraint_body1: constraint {idx} ('{_eq_label(idx)}') references body {eq_body1[idx]}, "
-                    f"but valid range is [-1, {body_count - 1}] (body_count={body_count})."
-                )
-
-            eq_body2 = _eq_index_array("equality_constraint_body2")
-            invalid_mask = (eq_body2 < -1) | (eq_body2 >= body_count)
-            if np.any(invalid_mask):
-                idx = int(np.where(invalid_mask)[0][0])
-                raise ValueError(
-                    f"Invalid body reference in equality_constraint_body2: constraint {idx} ('{_eq_label(idx)}') references body {eq_body2[idx]}, "
-                    f"but valid range is [-1, {body_count - 1}] (body_count={body_count})."
-                )
-
-            eq_joint1 = _eq_index_array("equality_constraint_joint1")
-            invalid_mask = (eq_joint1 < -1) | (eq_joint1 >= joint_count)
-            if np.any(invalid_mask):
-                idx = int(np.where(invalid_mask)[0][0])
-                raise ValueError(
-                    f"Invalid joint reference in equality_constraint_joint1: constraint {idx} ('{_eq_label(idx)}') references joint {eq_joint1[idx]}, "
-                    f"but valid range is [-1, {joint_count - 1}] (joint_count={joint_count})."
-                )
-
-            eq_joint2 = _eq_index_array("equality_constraint_joint2")
-            invalid_mask = (eq_joint2 < -1) | (eq_joint2 >= joint_count)
-            if np.any(invalid_mask):
-                idx = int(np.where(invalid_mask)[0][0])
-                raise ValueError(
-                    f"Invalid joint reference in equality_constraint_joint2: constraint {idx} ('{_eq_label(idx)}') references joint {eq_joint2[idx]}, "
-                    f"but valid range is [-1, {joint_count - 1}] (joint_count={joint_count})."
-                )
+        for frequency in self.custom_frequencies.values():
+            if frequency.builder_validator is not None:
+                frequency.builder_validator(self)
 
         # Validate start array monotonicity
         if joint_count > 0:
@@ -13435,13 +13248,20 @@ class ModelBuilder:
             (self.shape_world_start, self.shape_count, self.shape_world, "shape"),
             (self.joint_world_start, self.joint_count, self.joint_world, "joint"),
             (self.articulation_world_start, self.articulation_count, self.articulation_world, "articulation"),
-            (
-                self._equality_constraint_world_start,
-                self._equality_constraint_count,
-                self._eq_list("equality_constraint_world"),
-                "equality constraint",
-            ),
         ]
+
+        self._custom_frequency_world_starts.clear()
+        for frequency_key, frequency in self.custom_frequencies.items():
+            if frequency.world_attribute is not None:
+                starts = self._custom_frequency_world_starts[frequency_key] = []
+                world_entity_start_arrays.append(
+                    (
+                        starts,
+                        self._custom_frequency_counts.get(frequency_key, 0),
+                        self._custom_frequency_world_values(frequency),
+                        frequency_key,
+                    )
+                )
 
         def build_entity_start_array(
             entity_count: int, entity_world: list[int], world_entity_start: list[int], name: str
@@ -14044,21 +13864,12 @@ class ModelBuilder:
 
                 return nx, ny, nz
 
-            site_display_size_attr = self.custom_attributes.get("mujoco:site_size_is_display")
-            for _shape_idx, (shape_type, shape_src, shape_scale) in enumerate(
-                zip(self.shape_type, self.shape_source, shape_scale_list, strict=True)
+            for shape_type, shape_src, shape_scale in zip(
+                self.shape_type, self.shape_source, shape_scale_list, strict=True
             ):
-                site_size_is_display = bool(
-                    site_display_size_attr
-                    and site_display_size_attr.values.get(_shape_idx, site_display_size_attr.default)
-                )
                 # Create cache key based on shape type and parameters
                 if (shape_type == GeoType.MESH or shape_type == GeoType.CONVEX_MESH) and shape_src is not None:
                     cache_key = (shape_type, id(shape_src), tuple(shape_scale))
-                elif shape_type == GeoType.CYLINDER and site_size_is_display:
-                    # MuJoCo cylinder sites may carry an unused third display-size component.
-                    # It is not Newton's barrel radius and does not affect their bounds.
-                    cache_key = (shape_type, (shape_scale[0], shape_scale[1], 0.0))
                 else:
                     cache_key = (shape_type, tuple(shape_scale))
 
@@ -14117,8 +13928,6 @@ class ModelBuilder:
                     elif shape_type == GeoType.CYLINDER:
                         # Cylinder: shape_scale = (end_radius, half_height, barrel_radius)
                         r, half_height, barrel_radius = shape_scale
-                        if site_size_is_display:
-                            barrel_radius = 0.0
                         radial_extent = r
                         if barrel_radius > 0.0:
                             radial_extent += (half_height * half_height) / (
@@ -14906,14 +14715,6 @@ class ModelBuilder:
             m.max_joints_per_articulation = max_joints_per_articulation
             m.max_dofs_per_articulation = max_dofs_per_articulation
 
-            # ---------------------
-            # Ensure the ``mujoco`` namespace exists so the equality-constraint count (set below)
-            # can live on it. The per-row ``equality_constraint_*`` arrays are materialized by the
-            # standard custom-attribute pipeline below, which is exempted from the zero-count skip
-            # for this frequency so the arrays stay shape-stable (empty) even with no constraints.
-            if not hasattr(m, "mujoco"):
-                m.mujoco = Model.AttributeNamespace("mujoco")
-
             # deprecated sparse mimic constraints
             m.constraint_mimic_joint0 = wp.array(self.constraint_mimic_joint0, dtype=wp.int32)
             m.constraint_mimic_joint1 = wp.array(self.constraint_mimic_joint1, dtype=wp.int32)
@@ -14950,8 +14751,6 @@ class ModelBuilder:
             m.attachment_particle_body_count = self.attachment_particle_body_count
             m.muscle_count = len(self.muscle_start)
             m.articulation_count = len(self.articulation_start)
-            m.mujoco.equality_constraint_count = self._equality_constraint_count
-            m.mujoco.equality_constraint_world_start = wp.array(self._equality_constraint_world_start, dtype=wp.int32)
             m.constraint_mimic_count = len(self.constraint_mimic_joint0)
 
             self._find_shape_contact_pairs(m)
@@ -15073,10 +14872,7 @@ class ModelBuilder:
                 freq_key = custom_attr.frequency
                 count = m._attribute_frequency_count(freq_key)
 
-                # Keep canonical MuJoCo equality attributes shape-stable at zero rows. This lets
-                # callers consume ``model.mujoco.equality_constraint_*`` without branching on
-                # whether the model contains any equality constraints.
-                if count == 0 and freq_key != "mujoco:equality_constraint":
+                if count == 0:
                     continue
 
                 result = custom_attr.build_array(count, device=device, requires_grad=requires_grad)

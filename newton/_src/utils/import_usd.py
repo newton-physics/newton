@@ -619,6 +619,10 @@ def parse_usd(
     # Resolver-owned deformable read (physics: first, then opted-in vendor namespaces).
     deformable_read = R.read_deformable_attr
 
+    # Equality metadata is owned by the importer, including when only native
+    # Newton constraints are requested and no MuJoCo solver is installed.
+    _register_equality_constraint_attributes(builder)
+
     # Validate solver-specific custom attributes are registered
     for resolver in schema_resolvers:
         resolver.validate_custom_attributes(builder)
@@ -1428,7 +1432,6 @@ def parse_usd(
     builder_custom_attr_joint: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         [AttributeFrequency.JOINT, AttributeFrequency.JOINT_DOF, AttributeFrequency.JOINT_COORD]
     )
-    _register_equality_constraint_attributes(builder)
     builder_custom_attr_eq: list[ModelBuilder.CustomAttribute] = builder.get_custom_attributes_by_frequency(
         ["mujoco:equality_constraint"]
     )

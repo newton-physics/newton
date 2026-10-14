@@ -29,6 +29,7 @@ class TestEqualityConstraints(unittest.TestCase):
     def test_raw_equality_rows_infer_world_ownership(self):
         """Infer omitted equality world owners from the active world."""
         builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
 
         for expected_world in range(2):
             builder.begin_world()
@@ -364,7 +365,9 @@ class TestEqualityConstraints(unittest.TestCase):
         The canonical ``model.mujoco.equality_constraint_*`` fields stay shape-stable (empty
         arrays) even when no constraints are present.
         """
-        model = newton.ModelBuilder().finalize()
+        builder = newton.ModelBuilder()
+        newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
+        model = builder.finalize()
 
         self.assertEqual(model.mujoco.equality_constraint_count, 0)
 
@@ -511,7 +514,7 @@ class TestEqualityConstraints(unittest.TestCase):
         # Verify initial state
         self.assertEqual(builder.body_count, 4)
         self.assertEqual(builder.joint_count, 4)
-        self.assertEqual(builder._equality_constraint_count, 3)
+        self.assertEqual(builder._custom_frequency_counts["mujoco:equality_constraint"], 3)
 
         # Collapse fixed joints
         result = builder.collapse_fixed_joints(verbose=False)

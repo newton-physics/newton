@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
@@ -18,6 +19,21 @@ MUJOCO_COLLISION_MASK_DOMAIN_UNSET = -1
 
 NEWTON_COLLISION_MASK_MAX_SHAPE_COUNT = 256
 NEWTON_COLLISION_MASK_MAX_EXCLUDED_PAIR_COUNT = 1024
+
+
+def _remap_collision_mask_domains(values: list[Any], context: dict[str, Any]) -> list[Any]:
+    """Allocate one destination ID per source-local mask domain in a copied builder."""
+    domains: dict[int, int] = {}
+    shape_offset = context["entity_offsets"]["shape"]
+    result = []
+    for shape, value in zip(context["row_indices"], values, strict=True):
+        if value is None or int(value) < 0:
+            result.append(value)
+        else:
+            # Copied shape ranges are disjoint. Their first authored shape is a
+            # unique ID without rescanning the growing destination on each copy.
+            result.append(domains.setdefault(int(value), shape_offset + shape))
+    return result
 
 
 def mujoco_mask_to_signed(value: int) -> int:

@@ -10752,7 +10752,7 @@ class TestSiteFromto(unittest.TestCase):
         )
         np.testing.assert_allclose(
             builder.shape_scale[builder.shape_label.index("site_fromto/worldbody/cylinder")],
-            [0.1, 1.0, 0.3],
+            [0.1, 1.0, 0.0],
             atol=1.0e-6,
         )
         model = builder.finalize(device="cpu")
@@ -10815,7 +10815,7 @@ class TestSiteFromto(unittest.TestCase):
         shape_idx = builder.shape_label.index("site_fromto_frame/worldbody/site")
         shape_xform = builder.shape_transform[shape_idx]
         np.testing.assert_allclose(shape_xform[:3], [1.0, 3.0, 3.0], atol=1.0e-6)
-        np.testing.assert_allclose(builder.shape_scale[shape_idx], [0.2, 1.0, 0.005], atol=1.0e-6)
+        np.testing.assert_allclose(builder.shape_scale[shape_idx], [0.2, 1.0, 0.0], atol=1.0e-6)
 
         shape_quat = wp.quat(*shape_xform[3:])
         rotated_z = wp.quat_rotate(shape_quat, wp.vec3(0.0, 0.0, 1.0))
