@@ -7974,7 +7974,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mimic_coef0_warns_for_multi_dof_follower(self):
-        """A spherical follower has no scalar angle, so the offset is passed through with a warning."""
+        """Warn and preserve the offset for a supported D6 follower with mixed coordinate units."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -7991,19 +7991,22 @@ def Xform "Articulation" (
             UsdPhysics.CollisionAPI.Apply(link)
             links.append(link)
 
-        def joint(joint_cls, path, body0, body1):
-            j = joint_cls.Define(stage, path)
+        def joint(path, body0, body1):
+            j = UsdPhysics.Joint.Define(stage, path)
             j.CreateBody0Rel().SetTargets([body0.GetPath()])
             j.CreateBody1Rel().SetTargets([body1.GetPath()])
             j.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
             j.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
             j.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
             j.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
-            j.CreateAxisAttr().Set("Z")
+            for axis in ("transX", "rotZ"):
+                limit = UsdPhysics.LimitAPI.Apply(j.GetPrim(), axis)
+                limit.CreateLowAttr().Set(-1.0)
+                limit.CreateHighAttr().Set(1.0)
             return j
 
-        leader = joint(UsdPhysics.SphericalJoint, "/World/Root/Leader", root, links[0])
-        follower = joint(UsdPhysics.SphericalJoint, "/World/Root/Follower", links[0], links[1])
+        leader = joint("/World/Root/Leader", root, links[0])
+        follower = joint("/World/Root/Follower", links[0], links[1])
         prim = follower.GetPrim()
         prim.ApplyAPI("NewtonMimicAPI")
         prim.GetRelationship("newton:mimicJoint").SetTargets([leader.GetPrim().GetPath()])
@@ -8015,9 +8018,11 @@ def Xform "Articulation" (
             result = builder.add_usd(stage)
         model = builder.finalize()
 
-        # A ball joint's coordinates are a quaternion, so no scalar conversion applies.
+        # Mixed linear/angular coordinates have no single scalar unit for the offset.
         leader_idx = result["path_joint_map"]["/World/Root/Leader"]
         follower_idx = result["path_joint_map"]["/World/Root/Follower"]
+        self.assertEqual(builder.joint_type[follower_idx], newton.JointType.D6)
+        self.assertEqual(builder.joint_dof_dim[follower_idx], (1, 1))
         self.assertEqual(model.constraint_mimic_count, 0)
         self.assertEqual(model.joint_mimic_joint.numpy()[follower_idx], leader_idx)
         self.assertAlmostEqual(model.joint_mimic_coeffs.numpy()[follower_idx, 0], 0.5, places=6)
