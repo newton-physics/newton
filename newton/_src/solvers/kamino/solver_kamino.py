@@ -1053,22 +1053,24 @@ class SolverKamino(SolverBase, CouplingInterface):
         """
         with self._create_observables(kinds, contacts=contacts, requires_grad=requires_grad) as observables:
             if observables.is_requested(SolverBase.ObservableKind.CONTACT_F):
-                if self._collision_detector_kamino is not None:
-                    native_max = (
-                        self._contacts_kamino.model_max_contacts_host if self._contacts_kamino is not None else 0
-                    )
-                    rigid_contact_max = observables.contacts.rigid_contact_max
-                    if native_max > rigid_contact_max:
-                        raise ValueError(
-                            f"Kamino contact capacity ({native_max}) exceeds Contacts capacity "
-                            f"({rigid_contact_max}). Increase rigid_contact_max before requesting contact observables."
-                        )
+                self._validate_native_contact_export(observables, observables.contacts)
                 if self._contact_observable_state is None:
                     # Preserve input poses for in-place steps; publish scratch only after allocation succeeds.
                     state = State()
                     state.body_q = wp.empty(self.model.body_count, dtype=wp.transform, device=self.device)
                     self._contact_observable_state = state
             return observables
+
+    @override
+    def _validate_native_contact_export(self, observables: SolverBase.Observables, contacts: Contacts) -> None:
+        if not observables.is_requested(SolverBase.ObservableKind.CONTACT_F) or self._collision_detector_kamino is None:
+            return
+        native_max = self._contacts_kamino.model_max_contacts_host if self._contacts_kamino is not None else 0
+        if native_max > contacts.rigid_contact_max:
+            raise ValueError(
+                f"Kamino contact capacity ({native_max}) exceeds Contacts capacity "
+                f"({contacts.rigid_contact_max}). Increase rigid_contact_max before requesting contact observables."
+            )
 
     @override
     def step(

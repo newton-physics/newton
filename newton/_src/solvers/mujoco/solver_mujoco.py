@@ -676,17 +676,23 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 rigid contact capacity of ``contacts``.
         """
         with self._create_observables(kinds, contacts=contacts, requires_grad=requires_grad) as observables:
-            if (
-                observables.is_requested(SolverBase.ObservableKind.CONTACT_F)
-                and self.mjw_model.opt.run_collision_detection
-                and self.mjw_data.naconmax > observables.contacts.rigid_contact_max
-            ):
-                raise ValueError(
-                    f"MuJoCo contact capacity ({self.mjw_data.naconmax}) exceeds Contacts capacity "
-                    f"({observables.contacts.rigid_contact_max}). Construct CollisionPipeline with "
-                    "rigid_contact_max=solver.get_max_contact_count() before requesting contact observables."
-                )
+            if observables.contacts is not None:
+                self._validate_native_contact_export(observables, observables.contacts)
             return observables
+
+    @override
+    def _validate_native_contact_export(self, observables: SolverBase.Observables, contacts: Contacts) -> None:
+        if (
+            observables.is_requested(SolverBase.ObservableKind.CONTACT_F)
+            and not self.use_mujoco_cpu
+            and self.mjw_model.opt.run_collision_detection
+            and self.mjw_data.naconmax > contacts.rigid_contact_max
+        ):
+            raise ValueError(
+                f"MuJoCo contact capacity ({self.mjw_data.naconmax}) exceeds Contacts capacity "
+                f"({contacts.rigid_contact_max}). Construct CollisionPipeline with "
+                "rigid_contact_max=solver.get_max_contact_count() before requesting contact observables."
+            )
 
     EqType = _EqType
     """MuJoCo equality constraint type."""

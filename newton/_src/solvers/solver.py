@@ -939,7 +939,17 @@ class SolverBase:
                     f"need {required} rows for observable '{name}', which has {allocated}; allocate observables "
                     "with the largest Contacts they will be used with."
                 )
+        self._validate_native_contact_export(observables, contacts)
         observables._contact_layouts.update(dict.fromkeys(contact_fields, contacts))
+
+    def _validate_native_contact_export(self, observables: SolverBase.Observables, contacts: Contacts) -> None:
+        """Check that ``contacts`` can hold the contacts a native backend exports.
+
+        Solvers that write their own contact geometry into the observable's
+        contacts override this hook. It runs at allocation and in
+        :meth:`validate_observables`, before a step launches work.
+        """
+        del observables, contacts
 
     def _set_module_options(self, options: dict[str, Any], module: Any) -> None:
         self._module_options[module] = dict(options)

@@ -598,9 +598,16 @@ class TestSolverObservables(unittest.TestCase):
                     solver.observables(contacts=contacts, kinds=self.kinds)
         # A larger buffer from another pipeline satisfies the budget.
         pipeline = newton.CollisionPipeline(self.model, rigid_contact_max=3, soft_contact_max=0)
-        contacts = pipeline.contacts()
+        large = pipeline.contacts()
         for solver in (mujoco, kamino):
-            self.assertEqual(solver.observables(contacts=contacts, kinds=self.kinds).contact_f.shape, (3,))
+            with self.subTest(solver=type(solver).__name__):
+                observables = solver.observables(contacts=large, kinds=self.kinds)
+                self.assertEqual(observables.contact_f.shape, (3,))
+                # Steps reject a smaller buffer before launching work or recording it.
+                with self.assertRaisesRegex(ValueError, "exceeds Contacts capacity"):
+                    solver.validate_observables(observables, contacts)
+                self.assertIs(observables.contacts, large)
+                solver.validate_observables(observables.select(set()), contacts)
 
     def test_graph_reuses_preallocated_output(self):
         """Reuse a preallocated output across CUDA graph replays."""
