@@ -203,7 +203,10 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
 
         result.hit = wp.bool(True)
         if wp.static(state.render_forward_depth):
-            result.forward_depth = closest_hit.distance * wp.dot(ray_dir_world, forward_axis)
+            ray_origin_offset_world = wp.transform_vector(camera_transform, camera_ray_origin)
+            result.forward_depth = wp.dot(ray_origin_offset_world, forward_axis) + closest_hit.distance * wp.dot(
+                ray_dir_world, forward_axis
+            )
         return result
 
     @wp.func
