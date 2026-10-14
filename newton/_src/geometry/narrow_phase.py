@@ -175,6 +175,34 @@ class ConvexPairQueryData:
     enlarge: float
 
 
+@wp.func
+def _penetration_bounds_half(
+    shape: int,
+    shape_type: int,
+    shape_data: wp.array[wp.vec4],
+    lower: wp.array[wp.vec3],
+    upper: wp.array[wp.vec3],
+) -> wp.vec3:
+    """Use current primitive dimensions and cached hull bounds for penetration checks."""
+    data = shape_data[shape]
+    scale = wp.vec3(data[0], data[1], data[2])
+    half = wp.vec3(0.0)
+    if shape_type == GeoType.BOX or shape_type == GeoType.ELLIPSOID:
+        half = scale
+    elif shape_type == GeoType.SPHERE:
+        half = wp.vec3(scale[0])
+    elif shape_type == GeoType.CAPSULE:
+        half = wp.vec3(scale[0], scale[0], scale[0] + scale[1])
+    elif shape_type == GeoType.CYLINDER or shape_type == GeoType.CONE:
+        radius = scale[0]
+        if shape_type == GeoType.CYLINDER and scale[2] > 0.0 and scale[2] >= scale[1]:
+            radius += scale[1] * scale[1] / (scale[2] + wp.sqrt(scale[2] * scale[2] - scale[1] * scale[1]))
+        half = wp.vec3(radius, radius, scale[1])
+    elif shape_type == GeoType.CONVEX_MESH and lower.shape[0] > 0:
+        half = 0.5 * (upper[shape] - lower[shape])
+    return half
+
+
 def create_prepare_convex_pair(external_aabb: bool, speculative: bool = False):
     """Create pair preparation shared by the split convex-contact kernels."""
 
@@ -1151,6 +1179,13 @@ def create_narrow_phase_kernel_gjk_mpr(
                 shape_data_b.center = 0.5 * (shape_collision_aabb_lower[shape_b] + shape_collision_aabb_upper[shape_b])
             data_provider = provider_type()
             data_provider.shape_support_data = shape_support_data
+            if type_a != GeoType.PLANE and type_b != GeoType.PLANE:
+                shape_data_a.bounds_half = _penetration_bounds_half(
+                    shape_a, type_a, shape_data, shape_collision_aabb_lower, shape_collision_aabb_upper
+                )
+                shape_data_b.bounds_half = _penetration_bounds_half(
+                    shape_b, type_b, shape_data, shape_collision_aabb_lower, shape_collision_aabb_upper
+                )
             if wp.static(accelerated_support):
                 data_provider.support_lut = support_lut
                 data_provider.support_vertex_offsets = support_vertex_offsets
@@ -1371,6 +1406,11 @@ def create_narrow_phase_kernels_gjk_mpr_split(
                     wp.vec3(0.0),
                 )
                 needs_certificate = wp.static(solve_mpr.needs_certificate)(query.geom_a, query.geom_b)
+                needs_certificate = needs_certificate or (
+                    query.type_a != GeoType.PLANE
+                    and query.type_b != GeoType.PLANE
+                    and shape_collision_aabb_lower.shape[0] > 0
+                )
                 if collision and (not witnesses_valid or needs_certificate):
                     # Queue confirmed overlaps from the back of the same array,
                     # keeping both passes compact without another work buffer.
@@ -1467,6 +1507,21 @@ def create_narrow_phase_kernels_gjk_mpr_split(
                 if valid:
                     provider = provider_type()
                     provider.shape_support_data = shape_support_data
+                    if query.type_a != GeoType.PLANE and query.type_b != GeoType.PLANE:
+                        query.geom_a.bounds_half = _penetration_bounds_half(
+                            query.shape_a,
+                            query.type_a,
+                            shape_data,
+                            shape_collision_aabb_lower,
+                            shape_collision_aabb_upper,
+                        )
+                        query.geom_b.bounds_half = _penetration_bounds_half(
+                            query.shape_b,
+                            query.type_b,
+                            shape_data,
+                            shape_collision_aabb_lower,
+                            shape_collision_aabb_upper,
+                        )
                     if wp.static(accelerated_support):
                         provider.support_lut = support_lut
                         provider.support_vertex_offsets = support_vertex_offsets
