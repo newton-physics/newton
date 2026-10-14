@@ -3728,9 +3728,8 @@ class TestModelJoints(unittest.TestCase):
         bodies = [builder.add_link() for _ in range(2)]
         reference = builder.add_joint_revolute(parent=-1, child=bodies[0], axis=newton.Axis.Z)
         follower = builder.add_joint_revolute(parent=bodies[0], child=bodies[1], axis=newton.Axis.Z)
-        builder.add_articulation([reference, follower])
-
         builder.set_joint_mimic(follower, reference, coeffs=(0.5, 2.0))
+        builder.add_articulation([reference, follower])
 
         self.assertEqual(builder.joint_mimic_joint, [-1, reference])
         np.testing.assert_allclose(
@@ -3801,6 +3800,50 @@ class TestModelJoints(unittest.TestCase):
         builder.set_joint_mimic(joint1, None)
         self.assertEqual(builder.joint_mimic_joint[joint1], -1)
         self.assertEqual(builder.joint_mimic_coeffs[joint1], (0.0, 1.0))
+
+    def test_joint_mimic_validates_final_articulations(self):
+        """Reject deferred cross-articulation mimics unless validation is disabled."""
+        for assigned_before_mimic in (None, "reference", "follower"):
+            with self.subTest(assigned_before_mimic=assigned_before_mimic):
+                builder = newton.ModelBuilder()
+                bodies = [builder.add_link() for _ in range(2)]
+                reference = builder.add_joint_revolute(parent=-1, child=bodies[0])
+                follower = builder.add_joint_revolute(parent=-1, child=bodies[1])
+                if assigned_before_mimic == "follower":
+                    reference, follower = follower, reference
+                if assigned_before_mimic == "reference":
+                    builder.add_articulation([reference])
+                elif assigned_before_mimic == "follower":
+                    builder.add_articulation([follower])
+                builder.set_joint_mimic(follower, reference)
+                if assigned_before_mimic != "reference":
+                    builder.add_articulation([reference])
+                if assigned_before_mimic != "follower":
+                    builder.add_articulation([follower])
+                with self.assertRaisesRegex(ValueError, "Mimic joints must belong to the same articulation"):
+                    builder.finalize(device="cpu")
+
+        # Reuse the final rejected builder to exercise both validation opt-outs.
+        for kwargs in ({"skip_validation_joints": True}, {"skip_all_validations": True}):
+            with self.subTest(**kwargs):
+                model = builder.finalize(device="cpu", **kwargs)
+                self.assertEqual(model.joint_mimic_joint.numpy()[follower], reference)
+
+    def test_joint_mimic_preserves_unassigned_articulations(self):
+        """Finalize standalone or mixed mimic pairs without imposing Featherstone's restriction."""
+        for membership in ("neither", "reference", "follower"):
+            with self.subTest(membership=membership):
+                builder = newton.ModelBuilder()
+                bodies = [builder.add_link() for _ in range(2)]
+                reference = builder.add_joint_revolute(parent=-1, child=bodies[0])
+                follower = builder.add_joint_revolute(parent=-1, child=bodies[1])
+                builder.set_joint_mimic(follower, reference)
+                if membership == "reference":
+                    builder.add_articulation([reference])
+                if membership == "follower":
+                    builder.add_articulation([follower])
+                model = builder.finalize(device="cpu")
+                np.testing.assert_array_equal(model.joint_mimic_joint.numpy(), [-1, reference])
 
     def test_joint_mimic_validates_dimensions(self):
         """Accept supported mimic types with matching dimensions and reject unsupported types."""
