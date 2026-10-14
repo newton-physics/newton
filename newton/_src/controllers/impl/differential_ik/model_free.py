@@ -83,7 +83,6 @@ from ._common import (
     _qd_from_y_kernel,
     _qd_in_singular_basis_damped_kernel,
     _qd_in_singular_basis_truncated_kernel,
-    _scatter_pinv_transpose_by_axis_kernel,
     _svd_reconstruct_scaled_kernel,
     get_svd_one_sided_jacobi_kernel,
 )
@@ -882,14 +881,11 @@ class ControllerDifferentialIKModelFree(ControllerBase):
         # array2d[float] storage below into the shapes the SVD kernel
         # needs -- a zero-copy reinterpret, not a separate allocation/layout
         # (see the section comment above _svd_one_sided_jacobi in _common.py).
-        # Reused for both the primary task solve's SVD and (when enabled)
-        # the null-space projector's own SVD, since both are the same 6 x
-        # max_controlled_dofs shape.
         svd_mat_u = wp.types.matrix(shape=(max_task_dim, max_task_dim), dtype=wp.float32)
         svd_mat_j = wp.types.matrix(shape=(max_task_dim, max_controlled_dofs), dtype=wp.float32)
         svd_mat_v = wp.types.matrix(shape=(max_controlled_dofs, max_controlled_dofs), dtype=wp.float32)
         svd_vec_s = wp.types.vector(length=max_controlled_dofs, dtype=wp.float32)
-        self._svd_kernel = get_svd_one_sided_jacobi_kernel(6, max_controlled_dofs)
+        self._svd_kernel = get_svd_one_sided_jacobi_kernel(max_task_dim, max_controlled_dofs)
 
         # Primary task solve: J_w = diag(w) @ J is gathered+weighted into
         # compact slot order, then decomposed once per step; every
@@ -953,6 +949,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
             # task dimension (up to 6 per protected frame), independent of
             # the primary task's max_task_dim, so it needs its own matrix
             # types rather than reusing svd_mat_u/svd_mat_j above.
+            self._svd_null_kernel = get_svd_one_sided_jacobi_kernel(max_null_space_task_dim, max_controlled_dofs)
             svd_mat_u_null = wp.types.matrix(shape=(max_null_space_task_dim, max_null_space_task_dim), dtype=wp.float32)
             svd_mat_j_null = wp.types.matrix(shape=(max_null_space_task_dim, max_controlled_dofs), dtype=wp.float32)
             self._svd_u_null_buf = wp.zeros(
@@ -1449,7 +1446,7 @@ class ControllerDifferentialIKModelFree(ControllerBase):
                 device=self._device,
             )
             wp.launch(
-                self._svd_kernel,
+                self._svd_null_kernel,
                 dim=controlled_robot_count,
                 inputs=[
                     self._jacobian_active_view,

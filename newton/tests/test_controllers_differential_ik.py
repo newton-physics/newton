@@ -2603,6 +2603,54 @@ def _dls_multiframe_oracle(jacobians_np, errors_np, damping_val, bandwidth_np):
 
 
 class TestControllerDifferentialIKModelFreeMultiFrame(unittest.TestCase):
+    def test_full_pose_frames_with_position_null_space_matches_numpy(self):
+        """Solve a twelve-row primary task and six-row protected task independently."""
+        rng = np.random.default_rng(43)
+        dofs = 7
+        jacobian_np = rng.normal(size=(2, 6, dofs)).astype(np.float32)
+        position_error = rng.normal(size=(2, 3)).astype(np.float32) * 0.1
+        error = np.zeros((2, 6), dtype=np.float64)
+        error[:, :3] = position_error
+        posture = rng.normal(size=dofs).astype(np.float32)
+        primary = jacobian_np.reshape(12, dofs).astype(np.float64)
+        protected = jacobian_np[:, :3].reshape(6, dofs).astype(np.float64)
+        expected_primary = primary.T @ np.linalg.solve(primary @ primary.T + 0.2**2 * np.eye(12), error.ravel())
+        projector = np.eye(dofs) - protected.T @ np.linalg.solve(
+            protected @ protected.T + 0.1**2 * np.eye(6), protected
+        )
+        expected = expected_primary + projector @ posture
+
+        for device in devices:
+            with self.subTest(device=device):
+                ctrl = ControllerDifferentialIKModelFree(
+                    controlled_dofs_per_robot=_dofs_arr([dofs], device),
+                    frames_per_robot=_dofs_arr([2], device),
+                    bandwidth=1.0,
+                    damping=0.2,
+                    use_null_space_posture_control=True,
+                    null_space_stiffness=1.0,
+                    null_space_damping=0.1,
+                    null_space_axes=_POSITION_ONLY_AXIS_WEIGHT,
+                    device=device,
+                )
+                inputs = ctrl.input()
+                outputs = ctrl.output()
+                inputs.tool_pose_world = _identity_transform(2, device)
+                inputs.desired_tool_pose_world = wp.array(
+                    [wp.transform(wp.vec3(*row), wp.quat_identity()) for row in position_error],
+                    dtype=wp.transform,
+                    device=device,
+                )
+                inputs.jacobian_tool_world = wp.array(jacobian_np, dtype=wp.float32, device=device)
+                inputs.q_des_null = wp.array(posture, dtype=wp.float32, device=device)
+                ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+                np.testing.assert_allclose(outputs.joint_qd_target.numpy(), expected, atol=2e-5)
+                if device.is_cuda:
+                    with wp.ScopedCapture(device=device) as capture:
+                        ctrl.step(inputs=inputs, outputs=outputs, dt=0.01)
+                    wp.capture_launch(capture.graph)
+                    np.testing.assert_allclose(outputs.joint_qd_target.numpy(), expected, atol=2e-5)
+
     def test_frames_per_robot_defaults_to_one_frame_per_robot(self):
         """Omitting frames_per_robot gives every robot exactly one frame, matching today's behavior."""
         device = wp.get_device()
