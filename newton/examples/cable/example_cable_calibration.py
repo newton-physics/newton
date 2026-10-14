@@ -8,21 +8,19 @@ Run with::
     uv run --extra calibration -m newton.examples cable_calibration
 
 Without --bundle, the example downloads its bundle from newton-assets.
-Without --run-spec, the example reads run-spec.json from the bundle directory.
-Use optimizer.kind="cma" for CMA-ES. Install newton[calibration]. A null
-output.directory writes no files. The search logs its progress after each
+Install newton[calibration]. The search logs its progress after each
 iteration; the result is in result.json and the search history in history.json.
 Trace masks come from visible cable shape IDs, independently of material color;
 the Chamfer objective uses projected cable geometry and needs no simulation mask.
-The run spec separates physical setup from fitting configuration.
 
-An editable template is provided in newton/examples/cable/run-spec.json.
-Its geometry and initial physical values are illustrative; adapt them to your
-cable. It fits rest shape and bend stiffness, with damping held fixed. Output
-paths are relative to the working directory and must be absent or empty.
-The attachment transform is explicit: the template uses zero offset and identity
-rotation (+Z cable direction). For driven recordings it is relative to the TCP;
-otherwise its rotation is in the robot base frame and offset is from cable_start.
+The setup, the searched parameters and the solver settings are set in code
+below. Their values are illustrative; adapt them to your cable. The example
+fits the rest shape and the bend stiffness, with the damping held fixed and the
+twist coupled to the bend. The output directory is relative to the working
+directory and must be absent or empty. The attachment transform is explicit:
+zero offset and identity rotation (+Z cable direction). For driven recordings
+it is relative to the TCP; otherwise its rotation is in the robot base frame
+and its offset is from cable_start.
 """
 
 from __future__ import annotations
@@ -33,6 +31,10 @@ import logging
 import sys
 from pathlib import Path
 
+NUM_ELEMENTS = 8
+OUTPUT_DIR = "synthetic-fit-output"
+TRACE_EVERY = 40
+
 
 class Example:
     """Demonstrate problem construction, explicit search, and result consumption."""
@@ -42,35 +44,59 @@ class Example:
         self.result = None
 
     def run(self):
-        """Fit the configured problem through the public calibration API."""
+        """Fit the configured problem through the calibration API."""
         # The calibration module is private until its public PR; import it from _src for now.
         import newton.utils  # noqa: PLC0415 -- keep CLI help lightweight
+        from newton._src.calibration.cable_setup import CableSetup  # noqa: PLC0415
         from newton._src.calibration.calibrate import calibrate  # noqa: PLC0415
+        from newton._src.calibration.evaluate import CableParameters  # noqa: PLC0415
         from newton._src.calibration.evidence import CableEvidenceBundle  # noqa: PLC0415
-        from newton._src.calibration.optimizer import optimizer_from_spec  # noqa: PLC0415
+        from newton._src.calibration.optimizer import OptimizerCMA  # noqa: PLC0415
         from newton._src.calibration.problem import CableCalibrationProblem  # noqa: PLC0415
-        from newton._src.calibration.run_spec import CableRunSpec  # noqa: PLC0415
+        from newton._src.calibration.search_space import CableSearchSpace  # noqa: PLC0415
 
         # Show the progress lines that the search logs after each iteration.
         logging.basicConfig(stream=sys.stdout, format="%(message)s", level=logging.WARNING)
         logging.getLogger("newton._src.calibration").setLevel(logging.INFO)
 
-        # Physical setup is independent of objective, search, and solver policy.
-        # This driver selects the optimizer and output explicitly.
         bundle_dir = self.args.bundle or newton.utils.download_asset("cable_calibration_demo")
         bundle = CableEvidenceBundle.load(bundle_dir)
-        run_spec_path = self.args.run_spec or Path(bundle_dir) / "run-spec.json"
-        with run_spec_path.open(encoding="utf-8") as stream:
-            run_spec = CableRunSpec.from_dict(json.load(stream))
 
-        optimizer = optimizer_from_spec(run_spec.optimizer)
+        # The physical cable.
+        setup = CableSetup(
+            num_elements=NUM_ELEMENTS,
+            segment_length=0.05,
+            cable_radius=0.007,
+            cable_mass=0.05,
+            angle_parametrization="exp_map",
+            attachment_transform=[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
+            clamp_position=0.0,
+            stretch_stiffness=1000.0,
+        )
 
-        problem = CableCalibrationProblem.from_bundle(bundle, bundle_dir, run_spec)
+        # The search start: a straight cable. Fields that are not searched keep these values.
+        start = CableParameters(
+            angles=[(0.0, 0.0)] * NUM_ELEMENTS,
+            bend_stiffness=5.0,
+            twist_stiffness=5.0,
+            bend_damping=0.04,
+            twist_damping=0.04,
+        )
+        search_space = CableSearchSpace(
+            start,
+            search=["angles", "bend_stiffness"],
+            bounds={"bend_stiffness": (0.01, 1000.0)},
+            couple_twist=True,
+        )
+
+        problem = CableCalibrationProblem.from_bundle(
+            bundle, bundle_dir, setup, search_space, settle_mode="dynamic", settle_frames=500, sim_iterations=20
+        )
         self.result = calibrate(
             problem,
-            optimizer=optimizer,
-            output_dir=run_spec.output.directory,
-            trace_every=run_spec.output.trace_every,
+            optimizer=OptimizerCMA(seed=42, sigma0=0.1, maxiter=120, popsize=24),
+            output_dir=OUTPUT_DIR,
+            trace_every=TRACE_EVERY,
         )
 
         print(
@@ -96,14 +122,6 @@ def create_parser() -> argparse.ArgumentParser:
         "--bundle",
         type=Path,
         help="Local directory containing bundle.json. If omitted, the bundle is downloaded from newton-assets.",
-    )
-    parser.add_argument(
-        "--run-spec",
-        type=Path,
-        help=(
-            "CableRunSpec JSON: setup, objective, optimizer, solver, and output settings. "
-            "If omitted, run-spec.json in the bundle directory is used."
-        ),
     )
     return parser
 

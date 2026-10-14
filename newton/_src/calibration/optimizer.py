@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import logging
 import math
-from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -60,9 +59,6 @@ class OptimizerCMA:
             integer of at least 1, or ``popsize`` is not an integer of at least 2.
     """
 
-    SETTINGS = frozenset({"seed", "maxiter", "sigma0", "popsize"})
-    """Names of the settings that :func:`optimizer_from_spec` accepts."""
-
     def __init__(self, *, seed: int | None = None, sigma0: float = 0.1, maxiter: int = 500, popsize: int = 128):
         if seed is not None and (type(seed) is not int or not 0 <= seed < 2**32):
             raise ValueError(f"CMA seed must be None or an integer in [0, 2**32 - 1], got {seed!r}.")
@@ -92,8 +88,11 @@ class OptimizerCMA:
         Args:
             objective: Object with ``evaluate(vectors)``, which returns one
                 finite value per decision vector.
-            space: Object with ``dim``, ``x0()``, the search start, and
-                ``describe(vector)``, which returns the searched values as text.
+            space: Object with ``dim``, ``x0()``, the search start,
+                ``bounds()``, the lower and upper bound of each decision
+                variable (infinite for no bound), and ``describe(vector)``,
+                which returns the searched values as text. The search stays
+                within the bounds.
 
         Returns:
             The search outcome.
@@ -108,7 +107,9 @@ class OptimizerCMA:
         except ImportError as exc:
             raise ImportError("OptimizerCMA requires the 'cma' package; install newton[calibration].") from exc
 
+        lower, upper = space.bounds()
         opts = {
+            "bounds": [list(lower), list(upper)],
             "maxiter": self.maxiter,
             "popsize": self.popsize,
             "tolconditioncov": 1e12,
@@ -148,36 +149,6 @@ class OptimizerCMA:
         logger.info("search stopped: %s", stop_reason)
         best_loss, best_x = history[-1]
         return SearchOutcome(list(best_x), best_loss, len(history) - 1, interrupted, history, stop_reason)
-
-
-OPTIMIZERS = {"cma": OptimizerCMA}
-"""Optimizer classes by the ``kind`` that a run spec names."""
-
-
-def optimizer_from_spec(settings: Mapping[str, Any]) -> OptimizerCMA:
-    """Create an optimizer from its settings.
-
-    Args:
-        settings: Mapping with ``kind`` (``"cma"``) and the keyword settings of
-            that optimizer. The mapping is not changed.
-
-    Returns:
-        The optimizer. Optional dependencies load when the search starts.
-
-    Raises:
-        ValueError: If the kind or a setting is not known, or a setting is not valid.
-    """
-    if not isinstance(settings, Mapping):
-        raise ValueError("optimizer settings must be a mapping with 'kind'.")
-    settings = dict(settings)
-    kind = settings.pop("kind", None)
-    if not isinstance(kind, str) or kind not in OPTIMIZERS:
-        raise ValueError(f"unknown optimizer {kind!r}; choose from {sorted(OPTIMIZERS)}.")
-    cls = OPTIMIZERS[kind]
-    unknown = sorted(set(settings) - cls.SETTINGS)
-    if unknown:
-        raise ValueError(f"{kind}: unknown optimizer setting(s) {unknown}.")
-    return cls(**settings)
 
 
 def _evaluate(objective, vectors) -> np.ndarray:

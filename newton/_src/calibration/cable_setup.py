@@ -6,17 +6,15 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from typing import Any
 
 from .model import ANGLE_PARAM_EXP
-from .schema import SCHEMA_VERSION, check_fields, check_schema_version
 from .schema import is_real as _is_real
 
 
 @dataclass
-class CableSetupSpec:
+class CableSetup:
     """Geometry, discretization and attachment of a cable experiment."""
 
     num_elements: int
@@ -59,41 +57,20 @@ class CableSetupSpec:
     frame for non-driven evidence. The value applies to every recording.
     """
 
-    schema_version: int = SCHEMA_VERSION
-    """Format version of the serialized setup."""
-
     def to_dict(self) -> dict[str, Any]:
-        """Return the setup as a JSON-serializable mapping."""
+        """Return the setup as a JSON-serializable mapping, for the provenance of a result."""
         return asdict(self)
-
-    @classmethod
-    def from_dict(cls, d: Mapping[str, Any]) -> CableSetupSpec:
-        """Build and validate a setup from :meth:`to_dict` output.
-
-        Raises:
-            ValueError: If the schema version is not supported, ``d`` has a
-                field this class does not define, or :meth:`validate` fails.
-            TypeError: If ``d`` has no value for a required field.
-        """
-        d = dict(d)
-        check_schema_version(d.get("schema_version"), "CableSetupSpec")
-        check_fields(cls, d, "CableSetupSpec")
-        result = cls(**d)
-        result.validate()
-        return result
 
     def validate(self) -> None:
         """Check the geometry, mass, stiffness and attachment.
 
         Raises:
-            ValueError: If the schema version is not supported, if a value has
-                the wrong type, is not finite, not positive or out of range, if
-                the angle parametrization is not
+            ValueError: If a value has the wrong type, is not finite, not
+                positive or out of range, if the angle parametrization is not
                 supported, if the attachment is not a finite position and unit
                 quaternion, or if the cable axis is not three finite numbers that
                 are not all zero.
         """
-        check_schema_version(self.schema_version, "CableSetupSpec")
         if type(self.num_elements) is not int or self.num_elements <= 0:
             raise ValueError(f"num_elements must be an integer > 0, got {self.num_elements!r}.")
         for name in ("segment_length", "cable_radius", "cable_mass", "stretch_stiffness"):

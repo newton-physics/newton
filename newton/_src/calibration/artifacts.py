@@ -66,14 +66,10 @@ class CableRunWriter:
         """Write ``result.json`` and ``history.json``.
 
         Args:
-            result: The result of the run. Its output settings are set here.
+            result: The result of the run.
             history: The best ``(loss, vector)`` after each iteration. Entry 0
                 is the scored start.
         """
-        result.provenance["run_spec"]["output"] = {
-            "directory": str(self.directory.resolve()),
-            "trace_every": self.trace_every,
-        }
         self.directory.mkdir(parents=True, exist_ok=True)
         self._write(
             "history.json",

@@ -18,13 +18,14 @@ import warp as wp
 import newton
 
 from .artifacts import CableRunWriter
+from .cable_setup import CableSetup
 from .evaluate import CableEvaluator, CableParameters, CableTraceView
 from .evidence import CableEvidenceBundle
 from .loss_chamfer import CHAMFER
+from .model import SETTLE_MODES
 from .optimizer import SearchOutcome
 from .rehydrate import bundle_to_goals
 from .result import STATUS_INTERRUPTED, STATUS_OK, CableCalibrationResult
-from .run_spec import CableRunSpec
 from .search_space import CableSearchSpace
 
 
@@ -32,47 +33,76 @@ class CableCalibrationProblem:
     """A cable experiment and the parameter space to search.
 
     Create the problem with :meth:`from_bundle` and give it to
-    :func:`~.calibrate.calibrate`. Only the ``"chamfer"`` loss is supported. Each
+    :func:`~.calibrate.calibrate`. The objective is the Chamfer loss. Each
     recording has unit weight, shared equally among its camera views.
 
-    The problem keeps copies of the bundle and the run spec, so changes that
-    the caller makes later do not change the problem. It decodes the masks
-    once. It creates the simulation worlds only during an evaluation.
+    The problem keeps copies of the bundle, the setup and the search space, so
+    changes that the caller makes later do not change the problem. It decodes
+    the masks once. It creates the simulation worlds only during an evaluation.
     """
 
     @classmethod
     def from_bundle(
-        cls, bundle: CableEvidenceBundle, bundle_dir: str | os.PathLike, run_spec: CableRunSpec
+        cls,
+        bundle: CableEvidenceBundle,
+        bundle_dir: str | os.PathLike,
+        setup: CableSetup,
+        search_space: CableSearchSpace,
+        *,
+        settle_mode: str,
+        settle_frames: int,
+        sim_iterations: int,
     ) -> CableCalibrationProblem:
-        """Validate a bundle and a run spec, and read the evidence into goals.
+        """Validate the evidence and the settings, and read the evidence into goals.
 
         Args:
             bundle: The cable evidence.
             bundle_dir: Directory that the bundle's relative paths resolve against.
-            run_spec: Setup and fit settings. The optimizer and the output
-                directory are given to :func:`~.calibrate.calibrate`, not read from here.
+            setup: The physical cable setup.
+            search_space: The start values, the searched fields and their bounds.
+            settle_mode: How to reach the initial equilibrium. One of
+                :data:`~.model.SETTLE_MODES`.
+            settle_frames: Maximum number of frames spent settling before frame 0.
+                0 does not settle.
+            sim_iterations: Solver iterations per substep.
 
         Returns:
             The prepared problem.
 
         Raises:
-            ValueError: If the bundle or the run spec is not valid, or a
+            ValueError: If the bundle, the setup or a setting is not valid, the
+                search space does not match the number of elements, or a
                 referenced file is missing.
         """
+        if not isinstance(setup, CableSetup):
+            raise ValueError(f"setup must be a CableSetup, got {type(setup).__name__}.")
+        if not isinstance(search_space, CableSearchSpace):
+            raise ValueError(f"search_space must be a CableSearchSpace, got {type(search_space).__name__}.")
+        if settle_mode not in SETTLE_MODES:
+            raise ValueError(f"settle_mode {settle_mode!r} is not one of {list(SETTLE_MODES)}.")
+        if type(settle_frames) is not int or settle_frames < 0:
+            raise ValueError(f"settle_frames must be a nonnegative integer, got {settle_frames!r}.")
+        if type(sim_iterations) is not int or sim_iterations <= 0:
+            raise ValueError(f"sim_iterations must be a positive integer, got {sim_iterations!r}.")
+        setup.validate()
+        if len(search_space.start.angles) != setup.num_elements:
+            raise ValueError(
+                f"the search start has {len(search_space.start.angles)} rest-angle pair(s) "
+                f"for {setup.num_elements} element(s)."
+            )
         self = cls.__new__(cls)
         self.bundle = copy.deepcopy(bundle)
         self.bundle_dir = Path(bundle_dir).resolve()
-        self.run_spec = copy.deepcopy(run_spec)
+        self.setup = copy.deepcopy(setup)
+        self.search_space = copy.deepcopy(search_space)
+        self.simulation = {"settle_mode": settle_mode, "settle_frames": settle_frames, "sim_iterations": sim_iterations}
         self.bundle.validate()
-        self.run_spec.validate_problem()
-        self.search_space = CableSearchSpace(self.run_spec)
-        setup = self.run_spec.setup
         self.goals = bundle_to_goals(
             self.bundle,
             self.bundle_dir,
-            attachment_transform=setup.attachment_transform,
-            clamp_position=setup.clamp_position,
-            cable_axis=setup.cable_axis,
+            attachment_transform=self.setup.attachment_transform,
+            clamp_position=self.setup.clamp_position,
+            cable_axis=self.setup.cable_axis,
         )
         self.objective = self
         self._evaluator = None
@@ -81,14 +111,11 @@ class CableCalibrationProblem:
     def _prepare_evaluator(self):
         """Create the evaluator on first use and return it."""
         if self._evaluator is None:
-            spec = self.run_spec
-            setup = spec.setup
+            setup = self.setup
             self._evaluator = CableEvaluator(
                 self.goals,
                 CHAMFER,
-                settle_frames=spec.settle_frames,
-                settle_mode=spec.settle_mode,
-                sim_iterations=spec.sim_iterations,
+                **self.simulation,
                 stretch_stiffness=setup.stretch_stiffness,
                 num_elements=setup.num_elements,
                 segment_length=setup.segment_length,
@@ -118,14 +145,11 @@ class CableCalibrationProblem:
 
         Returns:
             The validated result. Its ``fit`` holds only the fitted values. The
-            setup needed to use them is in ``provenance["run_spec"]``.
+            provenance holds what ran: the setup needed to use the values, the
+            search space, the simulation settings and the optimizer settings.
         """
         candidate = self.candidate(outcome.vector)
-        spec = self.run_spec
         optimizer_settings = optimizer.to_dict()
-        effective_spec = spec.to_dict()
-        effective_spec["optimizer"] = optimizer_settings
-        effective_spec["output"] = {"directory": None, "trace_every": 0}
         result = CableCalibrationResult(
             status=STATUS_INTERRUPTED if outcome.interrupted else STATUS_OK,
             fit={
@@ -137,7 +161,6 @@ class CableCalibrationProblem:
             },
             metrics={"loss": outcome.loss, "iterations": outcome.iterations},
             diagnostics={
-                "searched_groups": spec.searched_groups(),
                 "search_dimension": self.search_space.dim,
                 "stop_reason": outcome.stop_reason,
             },
@@ -145,7 +168,10 @@ class CableCalibrationProblem:
                 "run_id": uuid.uuid4().hex,
                 "finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
                 "bundle_path": str(self.bundle_dir),
-                "run_spec": effective_spec,
+                "setup": self.setup.to_dict(),
+                "search_space": self.search_space.to_dict(),
+                "simulation": dict(self.simulation),
+                "optimizer": optimizer_settings,
                 "seed": optimizer_settings.get("seed"),
                 "package_versions": {
                     "python": sys.version.split()[0],

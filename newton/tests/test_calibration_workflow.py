@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Tests for the calibration run spec, search space, optimizer, search orchestration and cable problem."""
+"""Tests for the calibration setup, search space, optimizer, search orchestration and cable problem."""
 
 from __future__ import annotations
 
@@ -15,31 +15,21 @@ from unittest.mock import patch
 
 import numpy as np
 
+from newton._src.calibration.cable_setup import CableSetup
 from newton._src.calibration.calibrate import calibrate
-from newton._src.calibration.evaluate import CableTraceView
+from newton._src.calibration.evaluate import CableParameters, CableTraceView
 from newton._src.calibration.evidence import CableEvidenceBundle, CableRecording
-from newton._src.calibration.optimizer import OptimizerCMA, SearchOutcome, optimizer_from_spec
+from newton._src.calibration.optimizer import OptimizerCMA, SearchOutcome
 from newton._src.calibration.problem import CableCalibrationProblem
 from newton._src.calibration.result import STATUS_INTERRUPTED, STATUS_OK, CableCalibrationResult
-from newton._src.calibration.run_spec import CableRunSpec, CalibrationOutputSpec
 from newton._src.calibration.search_space import CableSearchSpace
-from newton._src.calibration.setup_spec import CableSetupSpec
 from newton._src.calibration.trace import CableTraceWriter
 
-SETUP_FIELDS = {
-    "num_elements",
-    "segment_length",
-    "cable_radius",
-    "cable_mass",
-    "angle_parametrization",
-    "attachment_transform",
-    "clamp_position",
-    "stretch_stiffness",
-}
+SIMULATION = {"settle_mode": "dynamic", "settle_frames": 0, "sim_iterations": 20}
 
 
-def make_run_spec(**overrides):
-    """A small cable run spec that searches only the log10 bend stiffness."""
+def make_setup(**overrides):
+    """A small three-element cable setup."""
     values = {
         "num_elements": 3,
         "segment_length": 0.05,
@@ -49,18 +39,26 @@ def make_run_spec(**overrides):
         "attachment_transform": [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
         "clamp_position": 0.0,
         "stretch_stiffness": 1000.0,
-        "optimizer": {"kind": "cma"},
-        "loss": "chamfer",
-        "init_bend_stiffness": 100.0,
-        "init_bend_damping": 0.01,
-        "settle_mode": "dynamic",
-        "settle_frames": 0,
-        "sim_iterations": 20,
-        "opt_rest_config": False,
-        "opt_bend_damping": False,
     }
-    setup = CableSetupSpec(**{name: values.pop(name) for name in SETUP_FIELDS})
-    return CableRunSpec(**({"setup": setup} | values | overrides))
+    return CableSetup(**(values | overrides))
+
+
+def make_start(**overrides):
+    """Start values of a straight three-element cable."""
+    values = {
+        "angles": [(0.0, 0.0)] * 3,
+        "bend_stiffness": 100.0,
+        "twist_stiffness": 100.0,
+        "bend_damping": 0.01,
+        "twist_damping": 0.01,
+    }
+    return CableParameters(**(values | overrides))
+
+
+def make_space(start=None, **overrides):
+    """A search space that searches only the bend stiffness, with the twist coupled to the bend."""
+    values = {"search": ["bend_stiffness"], "bounds": {"bend_stiffness": (1.0, 1.0e4)}, "couple_twist": True}
+    return CableSearchSpace(start or make_start(), **(values | overrides))
 
 
 def write_bundle(directory):
@@ -91,140 +89,84 @@ def write_bundle(directory):
     return bundle
 
 
-class TestCalibrationRunSpec(unittest.TestCase):
-    """Serialization and validation of the run spec and the search space."""
-
-    def test_round_trip_through_json(self):
-        """Verify a run spec reads back equal from JSON and refuses unknown fields."""
-        spec = make_run_spec(optimizer={"kind": "cma", "seed": 17, "maxiter": 2}, output=CalibrationOutputSpec("out"))
-        data = json.loads(json.dumps(spec.to_dict()))
-        self.assertEqual(CableRunSpec.from_dict(data), spec)
-        for part in (data, data["setup"], data["output"]):
-            with self.subTest(keys=sorted(part)), self.assertRaisesRegex(ValueError, "unknown field"):
-                part["unknown_option"] = True
-                CableRunSpec.from_dict(data)
-            del part["unknown_option"]
-
-    def test_unsupported_schema_version_is_refused(self):
-        """Verify a missing or unknown schema version is refused."""
-        for version in (None, 2):
-            with self.subTest(version=version), self.assertRaises(ValueError):
-                CableRunSpec.from_dict({"schema_version": version})
+class TestCalibrationSetupAndSearchSpace(unittest.TestCase):
+    """Validation of the cable setup, the search space and the optimizer settings."""
 
     def test_setup_is_checked(self):
-        """Verify a missing or malformed setup value is refused, not replaced by a default."""
+        """Verify a malformed setup value is refused, not replaced by a default."""
         for settings in (
             {"num_elements": True},
             {"segment_length": float("nan")},
             {"angle_parametrization": "euler_xy"},
             {"cable_axis": [0.0, 0.0, 0.0]},
-        ):
-            spec = make_run_spec()
-            for name, value in settings.items():
-                setattr(spec.setup, name, value)
-            with self.subTest(settings=settings), self.assertRaises(ValueError):
-                spec.validate()
-        for transform in (None, [], [[0, 0, 0], [0, 0, 0, 0]]):
-            spec = make_run_spec()
-            spec.setup.attachment_transform = transform
-            with self.subTest(transform=transform), self.assertRaises(ValueError):
-                spec.validate()
-        for clamp_position in (None, -0.01, 0.16):
-            spec = make_run_spec()
-            spec.setup.clamp_position = clamp_position
-            with self.subTest(clamp_position=clamp_position), self.assertRaises(ValueError):
-                spec.validate()
-        for name in ("attachment_transform", "clamp_position", "stretch_stiffness"):
-            data = make_run_spec().to_dict()
-            del data["setup"][name]
-            with self.subTest(name=name), self.assertRaises(TypeError):
-                CableRunSpec.from_dict(data)
-
-    def test_fit_settings_are_checked(self):
-        """Verify the loss, start, simulation and output settings are checked before a fit."""
-        for settings in (
-            {"loss": "l2"},
-            {"init_bend_stiffness": float("nan")},
-            {"init_twist_damping": -1.0},
-            {"twist_damping_mode": True},
-            {"twist_stiffness_mode": -1.0},
-            {"init_angles": [[0.0, 0.0, 0.0]] * 3},
-            {"init_angles": [[0.0, 0.0]] * 2},
-            {"settle_mode": "newton"},
-            {"settle_frames": -1},
-            {"sim_iterations": 0},
-            {"output": CalibrationOutputSpec(None, 2)},
+            {"attachment_transform": None},
+            {"attachment_transform": []},
+            {"attachment_transform": [[0, 0, 0], [0, 0, 0, 0]]},
+            {"clamp_position": None},
+            {"clamp_position": -0.01},
+            {"clamp_position": 0.16},
         ):
             with self.subTest(settings=settings), self.assertRaises(ValueError):
-                make_run_spec(**settings).validate()
-        with self.assertRaisesRegex(ValueError, "mapping"):
-            CableRunSpec.from_dict({**make_run_spec().to_dict(), "setup": [3]})
-
-        # One element has no searchable rest angle, so this spec searches nothing.
-        spec = make_run_spec(opt_rest_config=True, opt_bend_stiffness=False)
-        spec.setup.num_elements = 1
-        with self.assertRaisesRegex(ValueError, "no parameter"):
-            spec.validate()
+                make_setup(**settings).validate()
 
     def test_decode_inverts_the_search_start(self):
-        """Verify each searched group has its own slot and decoding the start gives the start values."""
-        angles = [[0.1, -0.2], [0.3, 0.0], [0.5, 0.6]]
-        spec = make_run_spec(
-            opt_rest_config=True,
-            opt_bend_damping=True,
-            twist_stiffness_mode="fit",
-            init_twist_stiffness=7.0,
-            twist_damping_mode="fit",
-            init_twist_damping=0.25,
-            init_angles=angles,
-        )
-        space = CableSearchSpace(spec)
+        """Verify each searched field has its own slot, decoding the start gives the start, and bounds hold."""
+        angles = [(0.1, -0.2), (0.3, 0.0), (0.5, 0.6)]
+        start = make_start(angles=angles, twist_stiffness=7.0, twist_damping=0.25)
         scalars = ["bend_stiffness", "twist_stiffness", "bend_damping", "twist_damping"]
+        bounds = {"bend_stiffness": (1.0, 1e4), "twist_stiffness": (1.0, 1e3), "bend_damping": (1e-4, 1.0)}
+        space = CableSearchSpace(
+            start,
+            search=["twist_damping", "angles", *scalars[:3]],
+            bounds=bounds | {"twist_damping": (1e-3, 1.0)},
+            couple_twist=False,
+        )
         self.assertEqual(space.dim, 2 * 2 + 4)
+        self.assertEqual(space.search, ["angles", *scalars])
         self.assertEqual(space.searched_scalars(), scalars)
-        self.assertEqual(spec.searched_groups(), ["rest_config", *scalars])
-        candidate = space.decode(space.x0())
-        np.testing.assert_allclose(candidate.angles, angles)
-        self.assertAlmostEqual(candidate.bend_stiffness, 100.0)
-        self.assertAlmostEqual(candidate.twist_stiffness, 7.0)
-        self.assertAlmostEqual(candidate.bend_damping, 0.01)
-        self.assertAlmostEqual(candidate.twist_damping, 0.25)
+        decoded = space.decode(space.x0())
+        np.testing.assert_allclose(decoded.angles, angles)
+        for name in scalars:
+            self.assertAlmostEqual(getattr(decoded, name), getattr(start, name))
+        lower, upper = space.bounds()
+        self.assertEqual(lower[:4], [-math.inf] * 4)
+        np.testing.assert_allclose(upper[4:], [4.0, 3.0, 0.0, 0.0])
         self.assertEqual(
             space.describe(space.x0()),
             "bend_stiffness=100, twist_stiffness=7, bend_damping=0.01, twist_damping=0.25, 4 rest angles",
         )
+        with self.assertRaisesRegex(ValueError, "within the bounds"):
+            space.decode([0.0] * 4 + [400.0, 0.0, -2.0, -1.0])
 
-        coupled = CableSearchSpace(make_run_spec(twist_stiffness_mode="coupled", twist_damping_mode=0.25))
+        coupled = make_space()
         self.assertEqual(coupled.decode([2.5]).twist_stiffness, 10.0**2.5)
-        self.assertEqual(coupled.decode([2.5]).twist_damping, 0.25)
+        self.assertEqual(coupled.decode([2.5]).twist_damping, 0.01)
 
-    def test_non_positive_search_start_is_refused(self):
-        """Verify a log-space search refuses a start value that is not positive."""
+    def test_search_space_is_checked(self):
+        """Verify unknown fields, missing or invalid bounds, contradicting coupling and an empty search are refused."""
         for settings in (
-            {"twist_damping_mode": "fit", "init_twist_damping": 0.0},
-            {"twist_stiffness_mode": "fit", "init_twist_stiffness": -1.0},
-        ):
-            with self.subTest(settings=settings), self.assertRaisesRegex(ValueError, "positive"):
-                CableSearchSpace(make_run_spec(**settings))
-
-    def test_optimizer_factory(self):
-        """Verify the factory refuses unknown kinds and settings and does not change its input."""
-        for settings in (
-            {"kind": "missing"},
-            {"kind": "cma", "unknown_option": 1},
-            {"kind": "cma", "seed": True},
-            {"kind": "cma", "seed": 2**32},
-            {"kind": "cma", "sigma0": 0.0},
-            {"kind": "cma", "maxiter": 2.5},
-            {"kind": "cma", "popsize": 1},
+            {"search": ["rest_config"]},
+            {"search": "bend_stiffness"},
+            {"bounds": {}},
+            {"bounds": {"bend_stiffness": (1.0, 1e4), "bend_damping": (1e-4, 1.0)}},
+            {"bounds": {"bend_stiffness": (0.0, 1e4)}},
+            {"bounds": {"bend_stiffness": (1e4, 1.0)}},
+            {"bounds": {"bend_stiffness": (200.0, 1e4)}},
+            {"search": ["twist_stiffness"], "bounds": {"twist_stiffness": (1.0, 1e4)}},
+            {"couple_twist": 1},
+            {"start": make_start(twist_damping=0.5)},
+            {"start": make_start(bend_stiffness=float("nan"))},
+            {"start": make_start(angles=[(0.0, 0.0)]), "search": ["angles"], "bounds": {}},
         ):
             with self.subTest(settings=settings), self.assertRaises(ValueError):
-                optimizer_from_spec(settings)
-        settings = {"kind": "cma", "seed": 5, "popsize": 8, "maxiter": 2}
-        before = dict(settings)
-        optimizer = optimizer_from_spec(settings)
-        self.assertIsInstance(optimizer, OptimizerCMA)
-        self.assertEqual(settings, before)
+                make_space(**settings)
+
+    def test_optimizer_settings_are_checked(self):
+        """Verify the CMA-ES settings are refused when out of range or of the wrong type."""
+        for settings in ({"seed": True}, {"seed": 2**32}, {"sigma0": 0.0}, {"maxiter": 2.5}, {"popsize": 1}):
+            with self.subTest(settings=settings), self.assertRaises(ValueError):
+                OptimizerCMA(**settings)
+        optimizer = OptimizerCMA(seed=5, popsize=8, maxiter=2)
         self.assertEqual(optimizer.to_dict(), {"kind": "cma", "seed": 5, "sigma0": 0.1, "popsize": 8, "maxiter": 2})
 
 
@@ -235,11 +177,15 @@ class TestCalibrationOrchestration(unittest.TestCase):
     class Space:
         dim = 2
 
-        def __init__(self, start=(3.0, -2.0)):
+        def __init__(self, start=(3.0, -2.0), lower=(-math.inf, -math.inf)):
             self.start = list(start)
+            self.lower = list(lower)
 
         def x0(self):
             return self.start
+
+        def bounds(self):
+            return self.lower, [math.inf, math.inf]
 
         def describe(self, vector):
             return str(vector)
@@ -247,12 +193,14 @@ class TestCalibrationOrchestration(unittest.TestCase):
     class Problem:
         """A quadratic problem, to show that :func:`calibrate` does not depend on the model type."""
 
-        def __init__(self, start=(3.0, -2.0)):
-            self.search_space = TestCalibrationOrchestration.Space(start)
+        def __init__(self, start=(3.0, -2.0), lower=(-math.inf, -math.inf)):
+            self.search_space = TestCalibrationOrchestration.Space(start, lower)
             self.objective = self
             self.closed = False
+            self.vectors = []
 
         def evaluate(self, vectors):
+            self.vectors += [list(x) for x in vectors]
             return [float(np.sum(np.square(x))) for x in vectors]
 
         def build_result(self, outcome, *, optimizer, artifacts):
@@ -276,6 +224,13 @@ class TestCalibrationOrchestration(unittest.TestCase):
             self.assertEqual(losses, sorted(losses, reverse=True))
             outcomes.append(result)
         self.assertEqual(outcomes[0], outcomes[1])
+
+    def test_search_stays_within_the_bounds(self):
+        """Verify every evaluated vector respects a lower bound that excludes the unbounded minimum."""
+        problem = self.Problem(lower=(1.0, -math.inf))
+        result = calibrate(problem, optimizer=OptimizerCMA(seed=2, popsize=8, maxiter=30, sigma0=1.0))
+        self.assertTrue(all(x[0] >= 1.0 for x in problem.vectors))
+        self.assertAlmostEqual(result.vector[0], 1.0, places=3)
 
     def test_start_is_kept_when_no_sample_is_better(self):
         """Verify the search returns the start when it is already the minimum."""
@@ -332,9 +287,11 @@ class TestCalibrationCableProblem(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp, patch("newton._src.calibration.problem.CableEvaluator", Evaluator):
             directory = Path(tmp)
-            spec = make_run_spec()
-            problem = CableCalibrationProblem.from_bundle(write_bundle(directory), directory, spec)
-            spec.init_bend_stiffness = 999.0
+            setup, space = make_setup(), make_space()
+            problem = CableCalibrationProblem.from_bundle(
+                write_bundle(directory), directory, setup, space, **SIMULATION
+            )
+            space.start.bend_stiffness = 999.0
             out = directory / "result"
             optimizer = OptimizerCMA(seed=3, sigma0=0.5, popsize=6, maxiter=40)
             result = calibrate(problem, optimizer=optimizer, output_dir=out)
@@ -346,11 +303,13 @@ class TestCalibrationCableProblem(unittest.TestCase):
             self.assertEqual(result.fit["bend_damping"], 0.01)
             loaded = CableCalibrationResult.from_dict(json.loads((out / "result.json").read_text()))
             self.assertEqual(loaded, result)
-            saved = CableRunSpec.from_dict(result.provenance["run_spec"])
-            self.assertEqual(saved.init_bend_stiffness, 100.0)
-            self.assertEqual(saved.setup, spec.setup)
-            self.assertEqual(saved.optimizer, optimizer.to_dict())
-            self.assertEqual(result.provenance["seed"], 3)
+            provenance = result.provenance
+            self.assertEqual(provenance["setup"], setup.to_dict())
+            self.assertEqual(provenance["search_space"]["start"]["bend_stiffness"], 100.0)
+            self.assertEqual(provenance["search_space"]["bounds"], {"bend_stiffness": [1.0, 1.0e4]})
+            self.assertEqual(provenance["simulation"], SIMULATION)
+            self.assertEqual(provenance["optimizer"], optimizer.to_dict())
+            self.assertEqual(provenance["seed"], 3)
             self.assertEqual(result.artifacts, {"result": "result.json", "history": "history.json"})
             for relative in result.artifacts.values():
                 self.assertTrue((out / relative).exists())
@@ -381,22 +340,38 @@ class TestCalibrationCableProblem(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp, patch("newton._src.calibration.problem.CableEvaluator", Evaluator):
             directory = Path(tmp)
-            problem = CableCalibrationProblem.from_bundle(write_bundle(directory), directory, make_run_spec())
+            problem = CableCalibrationProblem.from_bundle(
+                write_bundle(directory), directory, make_setup(), make_space(), **SIMULATION
+            )
             out = directory / "result"
             with self.assertRaisesRegex(RuntimeError, "render failed"):
                 calibrate(problem, optimizer=OptimizerCMA(seed=3, popsize=4, maxiter=2), output_dir=out, trace_every=1)
             for name in ("result.json", "history.json"):
                 self.assertTrue((out / name).exists(), name)
 
-    def test_evaluator_receives_the_setup_and_run_settings(self):
-        """Verify the setup reaches the goals and the evaluator."""
+    def test_evaluator_receives_the_setup_and_simulation_settings(self):
+        """Verify the setup reaches the goals and the evaluator, and invalid settings are refused."""
         with tempfile.TemporaryDirectory() as tmp, patch("newton._src.calibration.problem.CableEvaluator") as evaluator:
             directory = Path(tmp)
-            spec = make_run_spec(sim_iterations=37, settle_frames=12)
-            spec.setup.attachment_transform = [[0.1, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]]
-            spec.setup.clamp_position = 0.05
-            spec.setup.cable_axis = [1.0, 0.0, 0.0]
-            problem = CableCalibrationProblem.from_bundle(write_bundle(directory), directory, spec)
+            bundle = write_bundle(directory)
+            setup = make_setup(
+                attachment_transform=[[0.1, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0]],
+                clamp_position=0.05,
+                cable_axis=[1.0, 0, 0],
+            )
+            for settings in (
+                {"settle_mode": "newton"},
+                {"settle_frames": -1},
+                {"sim_iterations": 0},
+                {"search_space": make_space(make_start(angles=[(0.0, 0.0)] * 2))},
+            ):
+                with self.subTest(settings=settings), self.assertRaises(ValueError):
+                    values = {"search_space": make_space(), **SIMULATION} | settings
+                    CableCalibrationProblem.from_bundle(bundle, directory, setup, **values)
+
+            problem = CableCalibrationProblem.from_bundle(
+                bundle, directory, setup, make_space(), settle_mode="dynamic", settle_frames=12, sim_iterations=37
+            )
             goal = problem.goals[0]
             self.assertEqual(goal.attachment_transform, ((0.1, 0.0, 0.0), (0.0, 0.0, 1.0, 0.0)))
             self.assertEqual(goal.clamp_position, 0.05)

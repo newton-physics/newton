@@ -32,8 +32,7 @@ def calibrate(
     Args:
         problem: The calibration problem, for example a cable calibration
             problem.
-        optimizer: The search, for example from
-            :func:`~.optimizer.optimizer_from_spec`.
+        optimizer: The search, for example :class:`~.optimizer.OptimizerCMA`.
         output_dir: Artifact directory. It must be absent or empty. The
             result and the search history are written to it before any trace.
             ``None`` writes no files.
