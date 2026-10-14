@@ -32,11 +32,16 @@ if sys.platform == "win32":
 
 
 class LogLevel(IntEnum):
-    """Enumeration for log levels."""
+    """Enumeration for log levels.
+
+    Kamino ``INFO`` sits between the standard ``DEBUG`` and ``INFO`` levels so it
+    stays hidden at the ``newton`` logger's default level; ``NOTIF`` is the
+    standard ``INFO`` level.
+    """
 
     DEBUG = logging.DEBUG
-    INFO = logging.INFO
-    NOTIF = logging.INFO + 5
+    INFO = logging.DEBUG + 5
+    NOTIF = logging.INFO
     WARNING = logging.WARNING
     ERROR = logging.ERROR
     CRITICAL = logging.CRITICAL
@@ -78,7 +83,7 @@ class Logger(logging.Formatter):
 
     def __init__(self):
         super().__init__()
-        logging.addLevelName(LogLevel.NOTIF, "NOTIF")
+        logging.addLevelName(LogLevel.INFO, "DETAIL")
 
     def format(self, record):
         """Format the log record with the appropriate color based on the log level."""
@@ -123,9 +128,6 @@ def get_default_logger() -> logging.Logger:
     global LOGGER  # noqa: PLW0603
     if LOGGER is None:
         LOGGER = Logger()
-        # Keep Kamino's INFO messages hidden by default, as before it shared the newton logger.
-        if LOGGER.get().level == logging.NOTSET:
-            LOGGER.get().setLevel(LogLevel.NOTIF)
     return LOGGER.get()
 
 
@@ -136,9 +138,8 @@ def set_log_level(level: LogLevel):
 
 
 def reset_log_level():
-    """Reset the logging level for the default logger to WARNING."""
-    get_default_logger().setLevel(LogLevel.NOTIF)
-    get_default_logger().debug(f"Log level reset to: {logging.getLevelName(LogLevel.NOTIF)}")
+    """Make the default logger inherit its level from the ``newton`` logger again."""
+    get_default_logger().setLevel(logging.NOTSET)
 
 
 def set_log_header(header: str):
@@ -158,7 +159,7 @@ def debug(msg: str, *args, **kwargs):
 
 def info(msg: str, *args, **kwargs):
     """Log an info message."""
-    get_default_logger().info(msg, *args, **kwargs, stacklevel=2)
+    get_default_logger().log(LogLevel.INFO, msg, *args, **kwargs, stacklevel=2)
 
 
 def notif(msg: str, *args, **kwargs):

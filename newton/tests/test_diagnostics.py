@@ -105,18 +105,24 @@ class TestLoggingDefaults(unittest.TestCase):
         self.assertEqual((stdout, stderr), ("", ""))
         self.assertEqual(len(handler.records), 1)
 
-    def test_kamino_messages_leave_logging_configuration_alone(self):
-        """Route Kamino messages through the newton fallback without configuring the root logger."""
+    def test_kamino_messages_follow_newton_logger(self):
+        """Route Kamino messages through the newton logger and its level without configuring logging."""
         from newton._src.solvers.kamino._src.utils import logger as msg  # noqa: PLC0415
+
+        msg.reset_log_level()  # undo a level an earlier test may have set
+        newton_logger = logging.getLogger("newton")
+        self.addCleanup(newton_logger.setLevel, newton_logger.level)
 
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             msg.warning("kamino problem")
             msg.info("kamino detail")
-            self.logger.info("loaded asset")
+            msg.notif("kamino status")
+            newton_logger.setLevel(logging.DEBUG)
+            msg.info("kamino detail on request")
 
         self.assertEqual(logging.getLogger().handlers, [])
-        self.assertEqual(stdout.getvalue(), "loaded asset\n")
+        self.assertEqual(stdout.getvalue(), "kamino status\nkamino detail on request\n")
         self.assertEqual(stderr.getvalue(), "Warning: kamino problem\n")
 
     def test_verbose_diagnostics_print_without_configuration(self):
