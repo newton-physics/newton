@@ -52,7 +52,6 @@ from .collision_masks import (
 )
 from .constants import (
     DEFAULT_LIMIT_SOLREF,
-    HINGE_CONNECT_AXIS_OFFSET,
     KINEMATIC_ARMATURE,
     MJ_MINVAL,
     SOLREF_MODE_FORCE_SPACE,
@@ -82,6 +81,7 @@ from .kernels import (
     eval_mujoco_coupling_effective_mass_block_kernel,
     eval_mujoco_coupling_effective_mass_kernel,
     eval_mujoco_coupling_gravity_acceleration_kernel,
+    hinge_connect_anchor,
     recompute_jnt_eq_anchor1_kernel,
     repeat_array_kernel,
     reset_joint_state_kernel,
@@ -7829,14 +7829,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # Rotate axis into the parent body frame (anchor data[0:3] is
                 # in the parent body frame, so the offset must be too).
                 hinge_axis = wp.quat_rotate(parent_xform_tf.q, hinge_axis_local)
-                offset = HINGE_CONNECT_AXIS_OFFSET
 
                 self.has_jnt_connect_constraints = True
 
                 # Center the pair on the joint anchor: a one-sided pair takes a
                 # load through the pin on one row only and twists the joint.
                 for side in (-1, 1):
-                    anchor = np.array(parent_anchor) + 0.5 * side * offset * np.array(hinge_axis)
+                    anchor = list(hinge_connect_anchor(wp.vec3(*parent_anchor), side, hinge_axis))
                     eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
                     eq.type = mujoco.mjtEq.mjEQ_CONNECT
                     eq.active = True
@@ -7844,7 +7843,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     eq.name2 = child_name
                     eq.data[0:3] = anchor
                     mjc_eq_to_newton_jnt[eq.id] = j
-                    jnt_eq_anchor1_dict[eq.id] = list(anchor)
+                    jnt_eq_anchor1_dict[eq.id] = anchor
                     jnt_eq_anchor1_has_axis_offset[eq.id] = side
 
             elif lin_count == 0 and ang_count == 3:
@@ -9281,7 +9280,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             inputs=[
                 self.mjc_eq_to_newton_jnt,
                 self.jnt_eq_anchor1_has_axis_offset,
-                HINGE_CONNECT_AXIS_OFFSET,
                 self.model.joint_X_p,
                 self.model.joint_axis,
                 self.model.joint_qd_start,
