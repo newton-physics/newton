@@ -1058,7 +1058,7 @@ def apply_joint_forces(
             t_parent = t_total + wp.cross(r_pc, f_total)
             wp.atomic_sub(body_f, id_p, wp.spatial_vector(f_total, t_parent))
         # Record the contribution to the inbound joint wrench (used to populate
-        # ``SolverObservables.body_parent_f``). For FREE and ROD joints this is
+        # ``SolverBase.Observables.body_parent_f``). For FREE and ROD joints this is
         # diagnostic only; for DISTANCE joints the solver adds its contribution.
         # Convention: positive = wrench transmitted parent->child at child COM.
         if joint_impulse:
@@ -1113,7 +1113,7 @@ def apply_joint_forces(
     wp.atomic_add(body_f, id_c, child_wrench_at_com)
 
     # Record the joint-f contribution to the inbound joint wrench (used to
-    # populate ``SolverObservables.body_parent_f``).  We accumulate the child-side spatial
+    # populate ``SolverBase.Observables.body_parent_f``).  We accumulate the child-side spatial
     # wrench (linear ``[N]``, torque ``[N·m]`` at the child COM, world frame)
     # multiplied by ``dt`` so that the same `impulse / dt` conversion applied
     # in :func:`convert_joint_impulse_to_parent_f` recovers the wrench.
@@ -2108,7 +2108,7 @@ def _joint_mimic_effective_mass(
     return body_inv_m[body] * wp.length_sq(linear) + wp.dot(angular_body, body_inv_I[body] * angular_body)
 
 
-@wp.kernel
+@wp.kernel(module="unique")
 def solve_joint_mimics(
     body_q: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
@@ -2256,7 +2256,7 @@ def solve_joint_mimics(
             wp.atomic_add(joint_impulse, reference, impulse_reference_child * delta_lambda)
 
 
-@wp.kernel
+@wp.kernel(module="unique")
 def apply_joint_mimic_deltas(
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],

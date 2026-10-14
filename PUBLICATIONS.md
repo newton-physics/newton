@@ -44,7 +44,11 @@ published citation when available and retain an accessible preprint link.
 
 ### 2026
 
+- **FlashNeRD: Performance-First Contact-Rich Neural Robot Dynamics**. *M. Ataei, M. A. Nabian, J. Xu, M. Macklin, Y. Narang, E. Heiden, O. Zhang, Y. Guo, R. D'Sa, O. Hennigh, G. State, S. Choudhry*. October 2026. [arXiv:2610.09130](https://arxiv.org/abs/2610.09130)
+
 - **Same Action, Different Outcome: Variability in Dynamic Cloth Manipulation**. *M. Dadgostar, G. Alenyà, J. Borràs*. October 2026. [arXiv:2610.10801](https://arxiv.org/abs/2610.10801)
+
+- **Mixed Material Point Methods for Stiff Elastoplasticity**. *G. Daviet*. ACM Transactions on Graphics 45(4), July 2026. [DOI:10.1145/3811345](https://doi.org/10.1145/3811345)
 
 - **Backpropagating Through Simulation: Analytic Policy Gradients for Sample and Learning Efficient Differentiable Continuous Control**. *Y. Deng*. June 2026. [arXiv:2606.21525](https://arxiv.org/abs/2606.21525)
 
@@ -54,15 +58,17 @@ published citation when available and retain an accessible preprint link.
 
 - **LUMO: Designing Luminous Contact Morphology for Repeatable Whole-Finger Contact Observation**. *D. H. Kang, Y. Ko, L. Sentis*. September 2026. [arXiv:2609.18165](https://arxiv.org/abs/2609.18165)
 
-- **ROBOGATE: Adaptive Failure Discovery for Safe Robot Policy Deployment via Two-Stage Boundary-Focused Sampling**. *A. Kim*. April 2026. [arXiv:2603.22126](https://arxiv.org/abs/2603.22126)
-
 - **Ostrich: Taking Large Strides Through Stiff Contact in Differentiable Dynamics**. *A. Kučera, K. Zimmermann*. September 2026. [arXiv:2609.08800](https://arxiv.org/abs/2609.08800)
 
 - **PileBelief: Persistent Physical State for Interaction-Driven World Modeling**. *H. Lin, S. Zhang, H. Liu, Y. Liu, J. Zhao, X. Qu*. September 2026. [arXiv:2609.22858](https://arxiv.org/abs/2609.22858)
 
+- **High-Fidelity 4D Cloth Capture Pipeline with a Two-Level Pattern**. *Z. Liu, A. Chen, S. Chen, Y. Yang, C. Yuksel, J. H. Lin*. ACM Transactions on Graphics 45(4), July 2026. [DOI:10.1145/3811305](https://doi.org/10.1145/3811305), [author version](https://graphics.cs.utah.edu/research/projects/two-level-cloth-capture-pattern/two-level-cloth-capture-pattern.pdf)
+
 - **OrchardBench: A Physically-Grounded, GPU-Parallel Apple-Orchard Simulation Benchmark for Agricultural Robotics**. *H. Munn*. July 2026. [arXiv:2607.06337](https://arxiv.org/abs/2607.06337)
 
 - **DetAug: Obstacle-Blind Trajectory Augmentation for Zero-shot Obstacle Avoidance**. *R. O'Mahoney, M. Zoellner, I. Havoutis*. September 2026. [arXiv:2609.18395](https://arxiv.org/abs/2609.18395)
+
+- **Architecting the Next Generation of Asynchronous, Distributed GPUs for the AI Era**. *J. Pan, W. An, C. Avalos Baddouh, C. D. Bose, N. Kang, A. Barnes, A. Alawneh, F. Shen, Y. Liu, A. Nallathambi, A. Chandrashekar, T. G. Rogers*. August 2026. [arXiv:2608.22602](https://arxiv.org/abs/2608.22602)
 
 - **PersistGS: Differentiable Physics for Object Permanence in 4D Gaussian Splatting**. *A. Ramlal, J. S. Zelek*. CVPR Workshops, 2026. [arXiv:2606.03479](https://arxiv.org/abs/2606.03479)
 
@@ -78,9 +84,15 @@ published citation when available and retain an accessible preprint link.
 
 - **Learning Sim-Grounded Policies for Bimanual Rope Manipulation from Human Teleoperation Data**. *G. Wigginghaus, T. Missal, B. Guler, S. Manschitz, J. Peters*. May 2026. [arXiv:2605.16043](https://arxiv.org/abs/2605.16043)
 
+- **Learning Expressive and Compositional Motion Representation via Spectral Skills**. *F. Wu, C. Gao, C. Yang, Y. Zhao, B. Dai, A. Wu*. September 2026. [arXiv:2609.37677](https://arxiv.org/abs/2609.37677)
+
 - **RopeFormer: Cross-Trial Adaptation from Interaction History for Dynamic Rope Manipulation**. *M. Wu, K. Yao, S. Luan, M. Tomizuka, Y. Chen*. September 2026. [arXiv:2609.23432](https://arxiv.org/abs/2609.23432)
 
 - **PointCast: One World Model for Rigid, Articulated, and Deformable Object Manipulation**. *H. Ye, R. Worobel, Z. Xie, M. Li, H. Yu, Y. Hong, C. Choi*. September 2026. [arXiv:2609.28393](https://arxiv.org/abs/2609.28393)
+
+- **AlphaNIST: Emergent Assembly Skills from Binary Task Rewards**. *O. Zhang, I. Akinola, R. Scalise, M. Guaman Castro, P. Yin, T. Widmer, M. Macklin, C. Amevor, D. Turpin, D. Van Gelder, J. Carius, A. Handa, G. State, Y. Guo, Y. Narang*. October 2026. [arXiv:2610.13354](https://arxiv.org/abs/2610.13354)
+
+- **A Balanced Data Diet: Addressing the Exploration Bottleneck in Mega-Scale RL for Robot Control**. *O. Zhang, M. Guaman Castro, P. Yin, I. Dagnino, A. Gupta, R. Scalise, B. Boots*. October 2026. [arXiv:2610.12465](https://arxiv.org/abs/2610.12465)
 
 - **SIM1: Physics-Aligned Simulator as Zero-Shot Data Scaler in Deformable Worlds**. *Y. Zhou, H. Liu, X. Jiang, X. Shen, Y. Zhou, H. Wang, B. Fang, Y. Tian, M. Yu, Q. Yu, L. Ma, H. Li, H. Wang, J. Zeng, J. Pang*. April 2026. [arXiv:2604.08544](https://arxiv.org/abs/2604.08544)
 

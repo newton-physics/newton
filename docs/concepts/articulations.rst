@@ -223,10 +223,12 @@ during a partial reset:
   newton.eval_mimic(model, state, indices=articulation_indices)
   newton.eval_fk(model, state.joint_q, state.joint_qd, state, indices=articulation_indices)
 
-Mimic chains are not supported. The reference joint must be independent, and a
-joint that is already the reference for a follower cannot itself become a
-follower. :meth:`newton.ModelBuilder.set_joint_mimic` raises an error if either
-case would create a chain.
+Joint-owned mimic chains are not supported. The reference joint must be
+independent, and a joint that is already the reference for a follower cannot
+itself become a follower. :meth:`newton.ModelBuilder.set_joint_mimic` raises
+an error if either case would create a chain. When importing URDF,
+:meth:`newton.ModelBuilder.add_urdf` composes chained ``<mimic>`` coefficients
+into direct references to independent joints.
 
 Call :func:`newton.eval_mimic` before :func:`newton.eval_fk` when
 maximal-coordinate body poses should reflect the mimic relationship.
