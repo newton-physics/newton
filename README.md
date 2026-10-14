@@ -23,7 +23,7 @@ Newton was initiated by [Disney Research](https://www.disneyresearch.com/), [Goo
   On an R545–R579 driver or an older supported GPU, install with `warp-lang==1.17.0` (see the installation guide).
   No local CUDA Toolkit is required; macOS runs on CPU.
 
-For detailed system requirements, see the [installation guide](https://newton-physics.github.io/newton/latest/guide/installation.html). For tested configurations and Newton's versioning and deprecation policies, see the [compatibility guide](https://newton-physics.github.io/newton/latest/guide/compatibility.html).
+For detailed system requirements, see the [installation guide](https://newton-physics.github.io/newton/1.7.0/guide/installation.html). For tested configurations and Newton's versioning and deprecation policies, see the [compatibility guide](https://newton-physics.github.io/newton/1.7.0/guide/compatibility.html).
 
 ## Quickstart
 
@@ -32,7 +32,7 @@ pip install "newton[examples]"
 python -m newton.examples
 ```
 
-To install from source with [uv](https://docs.astral.sh/uv/), see the [installation guide](https://newton-physics.github.io/newton/latest/guide/installation.html).
+To install from source with [uv](https://docs.astral.sh/uv/), see the [installation guide](https://newton-physics.github.io/newton/1.7.0/guide/installation.html).
 
 ## Examples
 
@@ -999,11 +999,11 @@ python -m newton.examples basic_viewer --viewer gl --num-frames 500 --device cpu
 
 ## Contributing and Development
 
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for ways to contribute and the pull-request process. The [governance contribution guidelines](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md) cover legal requirements, project roles, and approval authority. Use the [development guide](https://newton-physics.github.io/newton/latest/guide/development.html) for environment setup and development workflows. Code and public API changes must follow the [source code guidelines](CODING_GUIDELINES.rst); reviewers may use the suggested [review guidelines](REVIEW_GUIDELINES.rst).
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for ways to contribute and the pull-request process. The [governance contribution guidelines](https://github.com/newton-physics/newton-governance/blob/main/CONTRIBUTING.md) cover legal requirements, project roles, and approval authority. Use the [development guide](https://newton-physics.github.io/newton/1.7.0/guide/development.html) for environment setup and development workflows. Code and public API changes must follow the [source code guidelines](CODING_GUIDELINES.rst); reviewers may use the suggested [review guidelines](REVIEW_GUIDELINES.rst).
 
 ## Support and Community Discussion
 
-For questions, please consult the [Newton documentation](https://newton-physics.github.io/newton/latest/guide/overview.html) first before creating [a discussion in the main repository](https://github.com/newton-physics/newton/discussions).
+For questions, please consult the [Newton documentation](https://newton-physics.github.io/newton/1.7.0/guide/overview.html) first before creating [a discussion in the main repository](https://github.com/newton-physics/newton/discussions).
 
 ## Code of Conduct
 
