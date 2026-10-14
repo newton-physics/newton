@@ -1020,8 +1020,8 @@ class TestSensorContactFeatherPGS(unittest.TestCase):
         sensor = SensorContact(
             model, request_contact_attributes=False, sensing_bodies=["a", "b"], counterpart_shapes="*"
         )
-        observables = solver.observables(sensor.solver_observable_flags)
         contacts = pipeline.contacts()
+        observables = solver.observables(contacts=contacts, kinds=sensor.solver_observable_kinds)
         state_in, state_out, control = model.state(), model.state(), model.control()
         sim_dt = 1.0 / 240.0
         for _ in range(240):

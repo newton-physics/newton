@@ -1441,7 +1441,13 @@ def _build_mimic_layout(joint_type):
         joints.append(joint)
         parent = child
     builder.add_articulation(joints)
-    builder.set_joint_mimic(joints[2], joints[1], coeffs=(0.1, -0.5))
+    if joint_type in (newton.JointType.BALL, newton.JointType.FREE, newton.JointType.DISTANCE):
+        # Bypass the authoring guard to exercise defensive solver handling of
+        # unsupported metadata supplied directly by callers.
+        builder.joint_mimic_joint[joints[2]] = joints[1]
+        builder.joint_mimic_coeffs[joints[2]] = (0.1, -0.5)
+    else:
+        builder.set_joint_mimic(joints[2], joints[1], coeffs=(0.1, -0.5))
     return builder, joints[1], joints[2]
 
 
