@@ -14,8 +14,8 @@ DEFAULT_LIMIT_SOLREF_DAMPRATIO = DEFAULT_LIMIT_SOLREF[1]
 DEFAULT_LIMIT_SOLREF_TIMECONST = DEFAULT_LIMIT_SOLREF[0]
 """MuJoCo's implicit default joint-limit solref time-constant component."""
 
-HINGE_CONNECT_AXIS_OFFSET = 0.1
-"""Distance [m] along the hinge axis for the second CONNECT constraint point of a revolute loop joint."""
+HINGE_CONNECT_HALF_SPAN = 0.05
+"""Distance [m] along the hinge axis from a revolute loop joint's anchor to each of its two CONNECT points."""
 
 KINEMATIC_ARMATURE = 1.0e10
 """Large MuJoCo armature value used to make kinematic-body DOFs effectively immovable."""
