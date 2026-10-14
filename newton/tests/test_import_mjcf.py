@@ -1761,11 +1761,12 @@ class TestImportMjcfMeshScale(unittest.TestCase):
 <mujoco>
   <default>
     <default class="referenced">
-      <mesh refpos="1 2 3" refquat="0.7071067811865476 0 0 0.7071067811865476"/>
+      <mesh scale="2 3 4"/>
     </default>
   </default>
   <asset>
-    <mesh name="m" class="referenced" file="mesh.obj" scale="2 3 4"/>
+    <mesh name="m" class="referenced" file="mesh.obj"
+          refpos="1 2 3" refquat="0.7071067811865476 0 0 0.7071067811865476"/>
   </asset>
   <worldbody>
     <body>
@@ -8638,7 +8639,6 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         <default>
             <geom condim="4" priority="5" solmix="2.0" gap="0.01"
                   solimp="0.8 0.9 0.01 0.4 1.0"/>
-            <body gravcomp="0.5"/>
             <joint margin="1.0" solimplimit="0.8 0.9 0.01 0.4 1.0"
                    solreffriction="0.05 2.0" solimpfriction="0.7 0.85 0.02 0.3 1.5"
                    stiffness="2.0" damping="3.0" springref="45" ref="30"
@@ -8652,7 +8652,6 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
             <default class="special">
                 <geom condim="6" solmix="5.0"
                       solimp="0.7 0.85 0.005 0.3 1.5"/>
-                <body gravcomp="1.0"/>
                 <joint margin="10.0" stiffness="20.0" damping="30.0"
                        springref="90" ref="60"/>
                 <general gainprm="200" biasprm="0 -200 -20"
@@ -8667,22 +8666,22 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
             </default>
         </default>
         <worldbody>
-            <body name="b_default" pos="0 0 0">
+            <body name="b_default" pos="0 0 0" gravcomp="0.5">
                 <joint name="j_default" type="hinge" axis="0 0 1"/>
                 <geom name="g_default" type="sphere" size="0.1"/>
-                <body name="b_class" class="special" pos="0 0 1">
+                <body name="b_class" childclass="special" pos="0 0 1" gravcomp="1.0">
                     <joint name="j_class" type="hinge" axis="0 0 1" class="special"/>
                     <geom name="g_class" type="sphere" size="0.1" class="special"/>
-                    <body name="b_override" class="special" pos="0 0 1" gravcomp="0.75">
+                    <body name="b_override" childclass="special" pos="0 0 1" gravcomp="0.75">
                         <joint name="j_override" type="hinge" axis="0 0 1"
                                class="special" margin="99.0"/>
                         <geom name="g_override" type="sphere" size="0.1"
                               class="special" condim="1"/>
-                        <body name="b_child" pos="0 0 1">
+                        <body name="b_child" pos="0 0 1" gravcomp="1.0">
                             <joint name="j_child" type="hinge" axis="0 0 1"/>
                             <geom name="g_child" type="sphere" size="0.1"
                                   class="special_child"/>
-                            <body name="b_child2" pos="0 0 1">
+                            <body name="b_child2" pos="0 0 1" gravcomp="1.0">
                                 <joint name="j_child2" type="hinge" axis="0 0 1"/>
                                 <geom type="sphere" size="0.1"/>
                             </body>
@@ -8745,8 +8744,8 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         self.assertAlmostEqual(float(m.geom_solmix.numpy()[g_child]), 5.0, places=5)
         self.assertAlmostEqual(float(self.model.shape_gap.numpy()[g_child]), 0.05, places=5)
 
-    def test_body_defaults(self):
-        """BODY: gravcomp."""
+    def test_body_gravcomp(self):
+        """Read gravity compensation from concrete body elements."""
         gravcomp = self.model.mujoco.gravcomp.numpy()
         idx = self.builder.body_label.index
         wb = "worldbody/b_default"
@@ -9569,7 +9568,7 @@ class TestContypeConaffinityZero(unittest.TestCase):
 <mujoco>
     <default>
         <default class="scaled_pair">
-            <pair geom1="a" geom2="b" margin="0.1" gap="0.02"/>
+            <pair margin="0.1" gap="0.02"/>
         </default>
     </default>
     <worldbody>
@@ -9577,7 +9576,7 @@ class TestContypeConaffinityZero(unittest.TestCase):
         <geom name="b" type="sphere" size="0.1" pos="0 0 1"/>
     </worldbody>
     <contact>
-        <pair class="scaled_pair"/>
+        <pair class="scaled_pair" geom1="a" geom2="b"/>
     </contact>
 </mujoco>
 """
@@ -9618,12 +9617,12 @@ class TestContypeConaffinityZero(unittest.TestCase):
         self.assertGreater(solver.mj_data.ncon, 0)
 
     def test_default_pair_retains_unclassified_geoms_without_visuals(self):
-        """Retain zero-mask geoms referenced only by inherited pair endpoints."""
+        """Retain zero-mask geoms referenced by pairs with inherited contact parameters."""
         mjcf = """<mujoco>
             <default>
                 <geom contype="0" conaffinity="0"/>
-                <default class="endpoint_pair">
-                    <pair geom1="floor_geom" geom2="ball_geom"/>
+                <default class="contact_pair">
+                    <pair condim="3"/>
                 </default>
             </default>
             <worldbody>
@@ -9635,7 +9634,7 @@ class TestContypeConaffinityZero(unittest.TestCase):
                 </body>
             </worldbody>
             <contact>
-                <pair class="endpoint_pair" condim="3"/>
+                <pair class="contact_pair" geom1="floor_geom" geom2="ball_geom"/>
             </contact>
         </mujoco>"""
         builder = newton.ModelBuilder()
