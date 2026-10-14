@@ -268,7 +268,8 @@ filter Newton warnings without matching messages:
   everything else.
 
 Pass a ``stacklevel`` that attributes the warning to the caller's code rather
-than to Newton internals. CI runs tests with ``--strict-warnings``, which turns
+than to Newton internals, and do not start the message with ``Warning:``
+because the category already conveys it. CI runs tests with ``--strict-warnings``, which turns
 Newton warnings into errors; a test that triggers a warning on purpose must
 assert it, for example with :meth:`~unittest.TestCase.assertWarns`.
 
@@ -322,6 +323,14 @@ When writing a message:
 Test log output with :meth:`~unittest.TestCase.assertLogs` on the ``newton``
 logger rather than by capturing stdout, which depends on how the test process
 configured logging.
+
+``wp.printf()`` in Warp kernels bypasses logging, so users cannot filter or
+silence it. Use it only for conditions the host cannot report without an extra
+synchronization, and keep a ``Warning:`` or ``Error:`` prefix there because
+nothing else marks the level.
+
+:ref:`diagnostics` documents this behavior for users; update it when changing
+the defaults.
 
 Documentation and comments
 --------------------------

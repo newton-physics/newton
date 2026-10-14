@@ -67,30 +67,11 @@ For rich real-time graphics, users commonly pair Newton with Isaac Lab, which pr
 How can I control Newton's console output?
 ------------------------------------------
 
-Newton reports diagnostics through the standard :mod:`logging` module under
-the ``newton`` logger, which defaults to the ``INFO`` level. Until your
-application configures logging, Newton prints ``INFO`` records to stdout and
-warnings and errors to stderr. Once a handler is attached to the ``newton``
-logger or to one of its ancestors, such as by :func:`logging.basicConfig`,
-Newton records go only to your handlers, so add a console handler as well if
-you also attach, for example, a file handler to ``newton``:
-
-.. code-block:: python
-
-    import logging
-
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-    logging.getLogger("newton").setLevel(logging.WARNING)  # hide INFO output
-    # or: logging.getLogger("newton").setLevel(logging.DEBUG)  # show debug details
-
-Configure the ``newton`` logger itself; the names of its child loggers follow
-Newton's internal module layout and may change between releases. In tests,
-capture Newton output with :meth:`~unittest.TestCase.assertLogs` on
-``"newton"`` or pytest's ``caplog`` fixture.
-
-Warnings that ask you to change your code are emitted with :mod:`warnings`
-using the categories in :mod:`newton.exceptions`, so you can filter them with
-:func:`warnings.filterwarnings`.
+Newton logs diagnostics through the standard :mod:`logging` module under the
+``newton`` logger and emits warnings with the categories in
+:mod:`newton.exceptions`. Without logging configuration, Newton prints
+``INFO`` records to stdout and warnings and errors to stderr. To hide, route,
+or filter this output, see :doc:`Logging and Warnings <guide/diagnostics>`.
 
 How can I contribute to Newton?
 -------------------------------

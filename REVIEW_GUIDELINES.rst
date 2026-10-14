@@ -170,6 +170,8 @@ for incompatible changes.
 Check the repository obligations relevant to the change, including:
 
 - focused regression coverage and documentation;
+- diagnostics that follow the error, warning, and logging rules, including
+  Newton warning categories and module loggers instead of ``print()``;
 - accurate, correctly categorized Towncrier fragments for user-facing changes;
 - dependency and lockfile changes, licenses, and required notices;
 - packaging, supported platforms, workflows, and downstream compatibility;
