@@ -610,7 +610,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Actuator forces in Newton generalized-coordinate order."""
 
         OVERFLOW = "overflow"
-        """Per-world capacity-overflow bitmask for the most recent step; see :class:`SolverMuJoCo.OverflowBits`."""
+        """Per-world capacity-overflow bitmask for the most recent step; see :ref:`mujoco_overflow_observable`."""
 
     @dataclass(eq=False)
     class Observables(SolverBase.Observables):
@@ -648,6 +648,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         Bits 0-15 carry MuJoCo Warp's own ``mujoco_warp.OverflowType`` flags
         (``NEFC``, ``NJMAX_NNZ``, ``BROADPHASE``, ...). The members below are the
         bits Newton adds on top.
+
+        See :ref:`mujoco_overflow_observable` for allocation, interpretation,
+        backend support, and shared-buffer attribution.
         """
 
         CONTACT_PIPELINE = int(kernels.OVERFLOW_CONTACT_PIPELINE)
@@ -4798,12 +4801,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         Bits 0-15 carry MuJoCo Warp's own
         ``mujoco_warp.OverflowType`` flags (``NEFC``, ``NJMAX_NNZ``,
         ``BROADPHASE``, ``NVMAX``, …).  The bits Newton adds are
-        :attr:`OverflowBits.CONTACT_PIPELINE`, set when the Newton collision
-        pipeline dropped contacts beyond ``rigid_contact_max``, and
-        :attr:`OverflowBits.SOLVER_NCONMAX`, set when runtime contacts exceeded
-        ``nconmax``.  The bitmask is reset to zero at the start of every step so
+        :attr:`SolverMuJoCo.OverflowBits.CONTACT_PIPELINE`, set when the Newton
+        collision pipeline dropped contacts beyond ``rigid_contact_max``, and
+        :attr:`SolverMuJoCo.OverflowBits.SOLVER_NCONMAX`, set when runtime
+        contacts exceeded ``nconmax``. The bitmask is reset at every step so
         it always reflects the current step only.  Steps that are not passed the
         container leave it unchanged.
+
+        See :ref:`mujoco_overflow_observable` for the bit layout, public flag
+        names, and shared-buffer attribution.
 
         Args:
             state_in: Input state for this step.
