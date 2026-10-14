@@ -377,7 +377,12 @@ class Example:
         joint_count_before = builder.joint_count
         coord_count_before = builder.joint_coord_count
         body_count_before = builder.body_count
-        builder.add_urdf(urdf_path, xform=wp.transform(base_position, wp.quat_identity()), floating=False)
+        builder.add_urdf(
+            urdf_path,
+            xform=wp.transform(base_position, wp.quat_identity()),
+            floating=False,
+            joint_damping_mode="passive",
+        )
 
         # fr3_joint1..7 are the first 7 non-fixed joints after the (fixed,
         # 0-coordinate) base/mount joints this URDF starts with; the finger
