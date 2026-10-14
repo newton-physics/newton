@@ -289,7 +289,7 @@ def _get_sparse_contact_response_kernel(
         diagonal: wp.array2d[float],
     ): ...
 
-    def contact_kernel(
+    def contact_kernel(  # pragma: no cover - compiled by wp.kernel
         contact_count: wp.array[int],
         total_num_workers: int,
         contact_point0: wp.array[wp.vec3],

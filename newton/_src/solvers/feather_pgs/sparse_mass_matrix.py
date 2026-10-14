@@ -381,7 +381,7 @@ def _get_crba_sparse_factor_kernel(dof_count: int, nonzero_count: int, *, warps_
         status: wp.array[int],
     ): ...
 
-    def factor_kernel(
+    def factor_kernel(  # pragma: no cover - compiled by wp.kernel
         group_to_art: wp.array[int],
         mass_update_mask: wp.array[int],
         articulation_start: wp.array[int],

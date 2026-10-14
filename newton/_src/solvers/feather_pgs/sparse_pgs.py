@@ -347,7 +347,7 @@ def _get_pgs_solve_sparse_kernel(
         factor_velocity_delta: wp.array2d[float],
     ): ...
 
-    def solve(
+    def solve(  # pragma: no cover - compiled by wp.kernel
         world_count: int,
         world_constraint_count: wp.array[int],
         rhs_bias: wp.array2d[float],
