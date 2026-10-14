@@ -1411,6 +1411,135 @@ def test_sparse_updates_soft_contact_penalty_without_rigid_capacity(test, device
     test.assertGreater(float(np.max(solver.body_particle_contact_penalty_k.numpy())), 1.0)
 
 
+def _run_free_chain_drift(device, offset: tuple[float, float, float]) -> tuple[float, float]:
+    """Simulate a free-floating chain with internal motion and zero momentum; return COM drift and momentum."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    axes = (newton.Axis.Z, newton.Axis.Y, newton.Axis.X, newton.Axis.Z, newton.Axis.Y)
+    joints = []
+    parent = -1
+    for i, axis in enumerate(axes):
+        mass = 1.0 + 0.5 * i
+        body = builder.add_link(mass=mass, inertia=wp.mat33(np.eye(3, dtype=np.float32) * 0.05 * mass))
+        if parent < 0:
+            joints.append(builder.add_joint_free(child=body))
+        else:
+            joints.append(
+                builder.add_joint_revolute(
+                    parent=parent,
+                    child=body,
+                    parent_xform=wp.transform((0.25, 0.0, 0.0), wp.quat_identity()),
+                    child_xform=wp.transform((-0.25, 0.0, 0.0), wp.quat_identity()),
+                    axis=axis,
+                )
+            )
+        parent = body
+    builder.add_articulation(joints)
+    builder.joint_q[0:3] = offset
+    for i, joint in enumerate(joints[1:]):
+        builder.joint_qd[builder.joint_qd_start[joint]] = 2.0 * (-1.0) ** i
+    builder.color()
+    model = builder.finalize(device=device)
+
+    state_in = model.state()
+    state_out = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+    body_mass = model.body_mass.numpy().astype(np.float64)
+    total_mass = float(np.sum(body_mass))
+    body_qd = state_in.body_qd.numpy()
+    # Remove the net linear momentum so the system COM must stay at rest.
+    com_velocity = (body_mass[:, None] * body_qd[:, 0:3]).sum(axis=0) / total_mass
+    body_qd[:, 0:3] -= com_velocity.astype(np.float32)
+    state_in.body_qd.assign(body_qd)
+
+    def system_com(state: newton.State) -> np.ndarray:
+        body_q = state.body_q.numpy().astype(np.float64)
+        return (body_mass[:, None] * body_q[:, 0:3]).sum(axis=0) / total_mass
+
+    com_start = system_com(state_in)
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=8,
+        rigid_compliant_alm=True,
+        rigid_articulation_solve="block_sparse_joints",
+    )
+    for _ in range(1000):
+        solver.step(state_in, state_out, None, None, 1.0e-3)
+        state_in, state_out = state_out, state_in
+
+    momentum = (body_mass[:, None] * state_in.body_qd.numpy()[:, 0:3].astype(np.float64)).sum(axis=0)
+    return float(np.linalg.norm(system_com(state_in) - com_start)), float(np.linalg.norm(momentum))
+
+
+def test_sparse_free_chain_conserves_momentum(test, device):
+    """Keep the COM of a free-floating chain at rest near the origin and 100 m away."""
+    for offset in ((0.0, 0.0, 0.0), (100.0, 0.0, 0.0)):
+        com_drift, momentum = _run_free_chain_drift(device, offset)
+        test.assertLess(momentum, 1.0e-3, f"linear momentum at offset {offset}")
+        test.assertLess(com_drift, 1.0e-3, f"COM drift [m] at offset {offset}")
+
+
+def test_sparse_pendulum_matches_implicit_euler(test, device):
+    """Match the implicit-Euler angle and energy of a passive pendulum at a small time step."""
+    mass, length, gravity = 1.0, 0.5, 9.81
+    rod_inertia = mass * length * length / 12.0
+    half_length = 0.5 * length
+    pivot_inertia = rod_inertia + mass * half_length * half_length
+    theta_start = 0.2
+    dt = 1.25e-4
+
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, -gravity))
+    body = builder.add_link(mass=mass, inertia=wp.mat33(np.diag([rod_inertia, rod_inertia, 1.0e-3]).astype(np.float32)))
+    joint = builder.add_joint_revolute(
+        parent=-1,
+        child=body,
+        child_xform=wp.transform((0.0, 0.0, half_length), wp.quat_identity()),
+        axis=newton.Axis.Y,
+    )
+    builder.add_articulation([joint])
+    builder.joint_q[builder.joint_q_start[joint]] = theta_start
+    builder.color()
+    model = builder.finalize(device=device)
+    state_in = model.state()
+    state_out = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+    solver = newton.solvers.SolverVBD(
+        model,
+        iterations=8,
+        rigid_compliant_alm=True,
+        rigid_articulation_solve="block_sparse_joints",
+    )
+
+    def motion_energy(theta: float, omega: float) -> float:
+        # Energy above the hanging rest pose, relative to the initial energy.
+        energy = 0.5 * pivot_inertia * omega * omega + mass * gravity * half_length * (1.0 - math.cos(theta))
+        return energy / (mass * gravity * half_length * (1.0 - math.cos(theta_start)))
+
+    stiffness = mass * gravity * half_length / pivot_inertia
+    theta_ref, omega_ref = theta_start, 0.0
+    max_angle_error = 0.0
+    max_energy_error = 0.0
+    for _ in range(4000):
+        solver.step(state_in, state_out, None, None, dt)
+        state_in, state_out = state_out, state_in
+
+        # Implicit-Euler reference of the reduced pendulum, solved with Newton's method.
+        theta_next = theta_ref
+        for _ in range(8):
+            residual = theta_next - theta_ref - dt * (omega_ref - dt * stiffness * math.sin(theta_next))
+            theta_next -= residual / (1.0 + dt * dt * stiffness * math.cos(theta_next))
+        omega_ref -= dt * stiffness * math.sin(theta_next)
+        theta_ref = theta_next
+
+        rotation = state_in.body_q.numpy()[body, 3:7].astype(np.float64)
+        theta = 2.0 * math.atan2(rotation[1], rotation[3])
+        omega = float(state_in.body_qd.numpy()[body, 4])
+        max_angle_error = max(max_angle_error, abs(theta - theta_ref))
+        max_energy_error = max(max_energy_error, abs(motion_energy(theta, omega) - motion_energy(theta_ref, omega_ref)))
+
+    test.assertLess(max_angle_error, 1.0e-3)
+    test.assertLess(max_energy_error, 5.0e-3)
+
+
 add_function_test(
     TestVBDSparseArticulationDevices,
     "test_sparse_falls_back_to_local_without_articulations",
@@ -1463,6 +1592,18 @@ add_function_test(
     TestVBDSparseArticulationDevices,
     "test_sparse_updates_soft_contact_penalty_without_rigid_capacity",
     test_sparse_updates_soft_contact_penalty_without_rigid_capacity,
+    devices=devices,
+)
+add_function_test(
+    TestVBDSparseArticulationDevices,
+    "test_sparse_free_chain_conserves_momentum",
+    test_sparse_free_chain_conserves_momentum,
+    devices=devices,
+)
+add_function_test(
+    TestVBDSparseArticulationDevices,
+    "test_sparse_pendulum_matches_implicit_euler",
+    test_sparse_pendulum_matches_implicit_euler,
     devices=devices,
 )
 

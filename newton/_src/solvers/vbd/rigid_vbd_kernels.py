@@ -7754,11 +7754,40 @@ def update_duals_body_particle_contacts(
 # -----------------------------
 # Post-iteration kernels (after all iterations)
 # -----------------------------
+@wp.func
+def quat_from_rotation_vector(phi: wp.vec3) -> wp.quat:
+    """Unit quaternion for a world-frame rotation vector, accurate for small angles."""
+    angle = wp.length(phi)
+    if angle > 1.0e-7:
+        return wp.quat_from_axis_angle(phi / angle, angle)
+    half = 0.5 * phi
+    return wp.normalize(wp.quat(half[0], half[1], half[2], 1.0))
+
+
+@wp.func
+def rotation_vector_from_quat(q: wp.quat) -> wp.vec3:
+    """Rotation vector of a unit quaternion (shortest arc), accurate for small angles."""
+    v = wp.vec3(q[0], q[1], q[2])
+    w = q[3]
+    if w < 0.0:
+        v = -v
+        w = -w
+    s = wp.length(v)
+    if s > 1.0e-12:
+        return v * (2.0 * wp.atan2(s, w) / s)
+    return 2.0 * v
+
+
 @wp.kernel
 def update_body_velocity(
     dt: float,
     body_q: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
+    body_disp: wp.array[wp.vec3],
+    body_disp_ang: wp.array[wp.vec3],
+    body_in_sparse_articulation: wp.array[wp.int32],
+    body_inv_mass: wp.array[float],
+    use_displacement: int,
     body_q_prev: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
     body_qd_mirror: wp.array[wp.spatial_vector],
@@ -7773,11 +7802,22 @@ def update_body_velocity(
 
     Linear: v = (com_current - com_prev) / dt
     Angular: omega from quaternion difference dq = q * q_prev^-1
+    Bodies with a maintained solver displacement instead use the predicted velocity plus the
+    linear displacement / dt and the composed predicted and accumulated rotation.
 
     Args:
         dt: Time step.
         body_q: Current body transforms (world), from state_in (in-place iteration buffer).
         body_com: Center of mass offsets (local frame).
+        body_disp: COM displacement from the inertial target accumulated by the
+            block-sparse articulation solve (world frame).
+        body_disp_ang: Rotation vector from the inertial target rotation accumulated by
+            the block-sparse articulation solve (world frame).
+        body_in_sparse_articulation: Per-body flag, nonzero for bodies of the
+            block-sparse articulation solve.
+        body_inv_mass: Body inverse masses; kinematic bodies (zero) use the finite difference.
+        use_displacement: Nonzero when the block-sparse solve maintains ``body_disp``
+            and ``body_disp_ang`` for this step.
         body_q_prev: Previous body transforms (input/output), advanced to the
             current pose for the next step. ``SolverVBD.reset()`` is the supported
             way to establish a new baseline after a discontinuous pose change.
@@ -7803,11 +7843,21 @@ def update_body_velocity(
     x_com = x + wp.quat_rotate(q, com_local)
     x_com_prev = x_prev + wp.quat_rotate(q_prev, com_local)
 
-    # Linear velocity
+    # Linear velocity. Dynamic bodies of the sparse articulation solve use the predicted
+    # velocity plus their accumulated displacement from the inertial target, which avoids
+    # turning float32 rounding of absolute positions into unbalanced linear momentum.
     v = (x_com - x_com_prev) / dt
-
-    # Angular velocity
     omega = quat_velocity(q, q_prev, dt)
+    if use_displacement != 0 and body_in_sparse_articulation[tid] != 0 and body_inv_mass[tid] > 0.0:
+        v = wp.spatial_top(body_qd_mirror[tid]) + body_disp[tid] / dt
+        # The step's rotation is the predicted rotation exp(omega_pred * dt) followed by the
+        # accumulated solver rotation exp(phi). Both are near identity, so composing them keeps
+        # full precision, unlike differencing the stored absolute quaternions.
+        omega_pred = wp.spatial_bottom(body_qd_mirror[tid])
+        step_rotation = wp.mul(
+            quat_from_rotation_vector(body_disp_ang[tid]), quat_from_rotation_vector(omega_pred * dt)
+        )
+        omega = rotation_vector_from_quat(step_rotation) / dt
 
     body_qd[tid] = wp.spatial_vector(v, omega)
 
