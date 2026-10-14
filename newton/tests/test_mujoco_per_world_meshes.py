@@ -9,11 +9,7 @@ import warp as wp
 
 import newton
 from newton._src.core.types import vec5
-from newton._src.solvers.mujoco.geometry import (
-    build_shape_layout,
-    compile_layout_collision_masks,
-    supports_missing_meshes,
-)
+from newton._src.solvers.mujoco.geometry import build_shape_layout, compile_layout_collision_masks
 from newton.solvers import SolverMuJoCo
 
 
@@ -42,16 +38,6 @@ def build_world(count, *, offset=0.0, half_height=0.1):
 
 
 class TestMuJoCoPerWorldMeshes(unittest.TestCase):
-    def test_native_padding_requires_broadphase_fix(self):
-        """Reject native padding when absent mesh slots can generate constraints."""
-        builder = newton.ModelBuilder()
-        builder.add_world(build_world(2))
-        builder.add_world(build_world(5))
-        model = builder.finalize()
-        with patch("newton._src.solvers.mujoco.solver_mujoco.supports_missing_meshes", return_value=False):
-            with self.assertRaisesRegex(ValueError, "mujoco_warp#1689"):
-                SolverMuJoCo(model)
-
     def test_large_unfiltered_layout(self):
         """Allow simple collision graphs with more than 256 mesh slots."""
         builder = newton.ModelBuilder()
@@ -95,8 +81,6 @@ class TestMuJoCoPerWorldMeshes(unittest.TestCase):
 
     def test_native_collision_groups_must_match(self):
         """Require shared slot groups even when the differing pair is sometimes absent."""
-        if not supports_missing_meshes():
-            self.skipTest("Requires MuJoCo Warp #1689")
         builder = newton.ModelBuilder()
         for world_index in range(2):
             world = build_world(1)
@@ -181,10 +165,6 @@ class TestMuJoCoPerWorldMeshes(unittest.TestCase):
         builder.add_world(first)
         builder.add_world(first if replicated else build_world(counts[1], offset=-0.21))
         model = builder.finalize()
-        if native and counts[0] != counts[1] and not supports_missing_meshes():
-            with self.assertRaisesRegex(ValueError, "mujoco_warp#1689"):
-                SolverMuJoCo(model, separate_worlds=True)
-            return
         solver = SolverMuJoCo(model, separate_worlds=True, use_mujoco_contacts=native, nconmax=64, njmax=128)
         self.assertEqual(solver.mj_model.ngeom, max(counts) + 1)
         self.assertEqual(solver.mjw_model.nmesh, (1 if replicated else 2) + int(mesh_floor))
@@ -233,12 +213,16 @@ class TestMuJoCoPerWorldMeshes(unittest.TestCase):
         self.assertFalse(np.any(solver.mjw_data.overflow.numpy()))
         if native:
             observables = solver.observables({SolverMuJoCo.ObservableKind.CONTACT_F}, contacts=contacts)
-            solver.step(state, state_next, control, contacts, 0.002, observables=observables)
-            state, state_next = state_next, state
-            count = int(contacts.rigid_contact_count.numpy()[0])
-            for field in (contacts.rigid_contact_shape0, contacts.rigid_contact_shape1):
-                self.assertTrue(np.all(np.isin(field.numpy()[:count], mapping[mapping >= 0])))
-            np.testing.assert_allclose(observables.contact_f.numpy()[:count, 2].sum(), -2.0 * 9.81, rtol=0.05)
+            # Single-point hull-on-hull contacts rock slightly, so average the support force.
+            normal_force = 0.0
+            for _ in range(20):
+                solver.step(state, state_next, control, contacts, 0.002, observables=observables)
+                state, state_next = state_next, state
+                count = int(contacts.rigid_contact_count.numpy()[0])
+                for field in (contacts.rigid_contact_shape0, contacts.rigid_contact_shape1):
+                    self.assertTrue(np.all(np.isin(field.numpy()[:count], mapping[mapping >= 0])))
+                normal_force += observables.contact_f.numpy()[:count, 2].sum() / 20
+            np.testing.assert_allclose(normal_force, -2.0 * 9.81, rtol=0.05)
         ncon = int(solver.mjw_data.nacon.numpy()[0])
         worlds = solver.mjw_data.contact.worldid.numpy()[:ncon]
         geoms = solver.mjw_data.contact.geom.numpy()[:ncon]
@@ -517,8 +501,6 @@ class TestMuJoCoPerWorldMeshes(unittest.TestCase):
 
     def test_empty_mesh_slots_do_not_contact(self):
         """Prevent absent slots inside a mesh floor from generating physical constraints."""
-        if not supports_missing_meshes():
-            self.skipTest("Requires MuJoCo Warp #1689")
         empty = newton.ModelBuilder()
         body = empty.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         joint = empty.add_joint_free(child=body)

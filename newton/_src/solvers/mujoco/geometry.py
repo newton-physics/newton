@@ -45,13 +45,6 @@ class ShapeLayout:
         )
 
 
-def supports_missing_meshes() -> bool:
-    """Detect the broadphase fix until Newton requires MJWarp #1689."""
-    from mujoco_warp._src import collision_driver
-
-    return hasattr(collision_driver, "_mesh_missing")
-
-
 def build_shape_layout(
     model: Model,
     *,

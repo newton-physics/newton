@@ -62,7 +62,7 @@ from .constants import (
 from .enums import EqType as _EqType
 from .enums import _ActuatorBiasType, _ActuatorDynamicsType, _ActuatorGainType
 from .equality import MJC_OBJ_BODY, MjcEqualityTargetKind, _register_equality_constraint_attributes
-from .geometry import build_shape_layout, compile_layout_collision_masks, supports_missing_meshes
+from .geometry import build_shape_layout, compile_layout_collision_masks
 from .kernels import (
     _snapshot_nacon_count,
     apply_mjc_body_f_kernel,
@@ -7004,13 +7004,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     visualize_graph=False,
                     shape_labels=model.shape_label,
                 )
-
-        if padded_shapes and self._use_mujoco_contacts and not disable_contacts and not supports_missing_meshes():
-            raise ValueError(
-                "Native contacts with absent mesh slots require the MuJoCo Warp broadphase fix "
-                "google-deepmind/mujoco_warp#1689 (not included in the 3.14.0 release). "
-                "Use a build containing that fix, or set use_mujoco_contacts=False."
-            )
 
         mesh_export_cache = {}
         mesh_assets = {}
