@@ -69,17 +69,19 @@ names follow Newton's internal module layout and may change between releases.
 
 Functions that accept ``verbose=True``, such as
 :meth:`~newton.ModelBuilder.add_mjcf` and :meth:`~newton.ModelBuilder.add_usd`,
-log their output at ``INFO``. The ``newton`` logger defaults to ``INFO``, so
-this output is visible unless you raise the logger's level.
+log their output at ``INFO``; some also report skipped asset content at
+``WARNING`` only when ``verbose`` is set. The ``newton`` logger defaults to
+``INFO``, so this output is visible unless you raise the logger's level.
 
 Controlling warnings
 --------------------
 
-Every warning Newton emits is a :class:`~newton.exceptions.NewtonWarning`.
-Deprecations use :class:`~newton.exceptions.NewtonDeprecationWarning`, which
-also subclasses :class:`DeprecationWarning`, so existing filters for
-:class:`UserWarning` and :class:`DeprecationWarning` keep matching. Filter
-them by category instead of by message:
+Newton emits deprecations as
+:class:`~newton.exceptions.NewtonDeprecationWarning`, a subclass of
+:class:`DeprecationWarning`, and all other warnings as
+:class:`~newton.exceptions.NewtonWarning`, a subclass of :class:`UserWarning`.
+Existing filters for the builtin categories therefore keep matching the same
+warnings as before. Filter them by category instead of by message:
 
 .. code-block:: python
 
@@ -87,7 +89,7 @@ them by category instead of by message:
 
     import newton
 
-    # Silence all Newton warnings.
+    # Silence Newton warnings other than deprecations.
     warnings.filterwarnings("ignore", category=newton.exceptions.NewtonWarning)
 
     # Fail on Newton deprecations, for example in your test suite.

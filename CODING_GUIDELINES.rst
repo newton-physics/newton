@@ -267,6 +267,9 @@ filter Newton warnings without matching messages:
 - :class:`~newton.exceptions.NewtonWarning`, or a subclass of it, for
   everything else.
 
+Keep deprecations out of the :class:`~newton.exceptions.NewtonWarning`
+hierarchy so :class:`UserWarning` filters do not change how they are reported.
+
 Pass a ``stacklevel`` that attributes the warning to the caller's code rather
 than to Newton internals, and do not start the message with ``Warning:``
 because the category already conveys it. CI runs tests with ``--strict-warnings``, which turns

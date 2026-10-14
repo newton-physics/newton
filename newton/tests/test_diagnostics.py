@@ -24,17 +24,16 @@ def _library_sources():
 
 
 class TestWarningCategories(unittest.TestCase):
-    def test_deprecation_category_matches_builtin_filters(self):
-        """Keep Newton deprecations filterable as both Newton and Python deprecation warnings."""
+    def test_categories_match_the_same_builtin_filters(self):
+        """Keep UserWarning filters from changing how Newton deprecations are reported."""
         self.assertTrue(issubclass(NewtonWarning, UserWarning))
-        self.assertTrue(issubclass(NewtonDeprecationWarning, NewtonWarning))
         self.assertTrue(issubclass(NewtonDeprecationWarning, DeprecationWarning))
 
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            warnings.filterwarnings("ignore", category=NewtonWarning)
-            warnings.warn("ignored", NewtonDeprecationWarning, stacklevel=1)
-        self.assertEqual(caught, [])
+            warnings.filterwarnings("error", category=UserWarning)
+            warnings.warn("reported", NewtonDeprecationWarning, stacklevel=1)
+        self.assertEqual([type(w.message) for w in caught], [NewtonDeprecationWarning])
 
     def test_library_warnings_use_newton_categories(self):
         """Require an explicit, non-generic category for every warning Newton emits."""
