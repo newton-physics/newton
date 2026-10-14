@@ -972,6 +972,7 @@ def _compute_mesh_vs_convex_query_aabb(
     shape_data: wp.array[wp.vec4],
     shape_source_ptr: wp.array[wp.uint64],
     contact_threshold: float,
+    non_mesh_center: wp.vec3,
 ) -> tuple[wp.vec3, wp.vec3, wp.vec3]:
     """Compute unscaled mesh-BVH bounds for a convex shape."""
     X_mesh_sw = wp.transform_inverse(X_mesh_ws)
@@ -1006,7 +1007,9 @@ def _compute_mesh_vs_convex_query_aabb(
         contact_threshold / wp.max(wp.abs(mesh_scale[1]), 1.0e-12),
         contact_threshold / wp.max(wp.abs(mesh_scale[2]), 1.0e-12),
     )
-    center_in_bvh = wp.cw_mul(pos_in_mesh, inv_scale)
+    # Hull vertices can be offset from their shape origin. Culling against
+    # that origin can discard triangles actually penetrating the hull.
+    center_in_bvh = wp.cw_mul(wp.transform_point(X_mesh_shape, non_mesh_center), inv_scale)
     return aabb_lower_bvh - margin_vec, aabb_upper_bvh + margin_vec, center_in_bvh
 
 
@@ -1042,6 +1045,7 @@ def mesh_vs_convex_midphase(
     shape_data: wp.array[wp.vec4],
     shape_source_ptr: wp.array[wp.uint64],
     contact_threshold: float,
+    non_mesh_center: wp.vec3,
     triangle_pairs: wp.array[wp.vec3i],
     triangle_pairs_count: wp.array[int],
 ):
@@ -1063,6 +1067,7 @@ def mesh_vs_convex_midphase(
         shape_data: Array of shape data (vec4: scale.xyz, margin.w)
         shape_source_ptr: Array of mesh/SDF source pointers
         contact_threshold: Contact candidate distance [m], including margin and gap
+        non_mesh_center: Center of the convex shape's scaled local AABB
         triangle_pairs: Output array for triangle pairs (mesh_shape, non_mesh_shape, tri_index)
         triangle_pairs_count: Counter for triangle pairs
     """
@@ -1081,6 +1086,7 @@ def mesh_vs_convex_midphase(
                 shape_data,
                 shape_source_ptr,
                 contact_threshold,
+                non_mesh_center,
             )
         bounds = wp.mat33(
             aabb_lower[0],
@@ -1109,6 +1115,7 @@ def mesh_vs_convex_midphase(
             shape_data,
             shape_source_ptr,
             contact_threshold,
+            non_mesh_center,
         )
 
     if wp.static(ENABLE_TILE_BVH_QUERY):

@@ -2477,7 +2477,9 @@ def mesh_triangle_contacts_to_reducer_kernel(
         # through its extruded support function.
         if shape_data_a.shape_type == int(GeoTypeEx.TRIANGLE):
             face_normal = wp.cross(shape_data_a.scale, shape_data_a.auxiliary)
-            center_dist = wp.dot(face_normal, pos_b - pos_a)
+            # Off-origin hulls must use the same geometry center as midphase.
+            center_b = pos_b + wp.quat_rotate(quat_b, shape_data_b.center)
+            center_dist = wp.dot(face_normal, center_b - pos_a)
             if center_dist < 0.0:
                 continue
 

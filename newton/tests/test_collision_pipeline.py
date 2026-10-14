@@ -22,6 +22,7 @@ from newton._src.geometry.kernels import (
     mesh_sdf,
     resolve_mesh_sign_method,
 )
+from newton._src.geometry.sdf_contact import sample_sdf_grad_using_mesh, sample_sdf_using_mesh
 from newton._src.geometry.sdf_texture import TextureSDFData
 from newton._src.geometry.soft_contacts_sdf import (
     SDF_EDGE_ITERS,
@@ -877,6 +878,52 @@ class TestMeshSignQueries(unittest.TestCase):
     pass
 
 
+def test_open_mesh_boundary_contacts(test, device):
+    """Keep contacts near a finite sheet instead of its distant back-side edges."""
+    for scale in (wp.vec3(1.0), wp.vec3(-2.0, 1.5, 0.5)):
+        builder = newton.ModelBuilder()
+        cfg = builder.ShapeConfig(density=0.0, gap=0.01)
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
+        # A long edge crosses a small patch, with its lower endpoint well
+        # outside the patch. Only the crossing should produce penetration.
+        builder.add_shape_mesh(
+            body,
+            mesh=newton.Mesh(
+                [[0.002, 0.002, 0.01], [0.1, 0.1, -0.1], [0.003, 0.002, 0.01]],
+                [0, 1, 2],
+                compute_inertia=False,
+            ),
+            scale=scale,
+            cfg=cfg,
+        )
+        builder.add_shape_mesh(
+            -1,
+            mesh=newton.Mesh([[0.0, 0.0, 0.0], [0.02, 0.0, 0.0], [0.0, 0.02, 0.0]], [0, 1, 2], compute_inertia=False),
+            scale=scale,
+            cfg=cfg,
+        )
+        model = builder.finalize(device=device)
+        state = model.state()
+        for reduction in (False, True):
+            with test.subTest(scale=scale, reduce_contacts=reduction):
+                pipeline = newton.CollisionPipeline(model, reduce_contacts=reduction)
+                contacts = pipeline.contacts()
+                pipeline.collide(state, contacts)
+                count = int(contacts.rigid_contact_count.numpy()[0])
+                test.assertGreater(count, 0)
+                distance = wp.empty(contacts.rigid_contact_max, dtype=float, device=device)
+                newton.eval_rigid_contact_kinematics(model, state, contacts, out_distance=distance)
+                test.assertGreater(float(distance.numpy()[:count].min()), -0.02)
+
+
+add_function_test(
+    TestMeshSignQueries,
+    "test_open_mesh_boundary_contacts",
+    test_open_mesh_boundary_contacts,
+    devices=get_test_devices(),
+)
+
+
 @wp.kernel
 def _query_mesh_signs(
     mesh: wp.uint64,
@@ -893,6 +940,23 @@ def _query_mesh_signs(
 
     normal = wp.mesh_query_point_sign_normal(mesh, p, max_dist)
     normal_sign[i] = normal.sign if normal.result else 0.0
+
+
+@wp.kernel(enable_backward=False)
+def _sample_bounded_mesh_sdf(
+    mesh: wp.uint64,
+    points: wp.array[wp.vec3],
+    lower: wp.vec3,
+    upper: wp.vec3,
+    sign_method: int,
+    values: wp.array2d[float],
+    gradients: wp.array[wp.vec3],
+):
+    i = wp.tid()
+    values[i, 0] = sample_sdf_using_mesh(mesh, points[i], 10.0, sign_method, lower, upper)
+    distance, gradient = sample_sdf_grad_using_mesh(mesh, points[i], 10.0, sign_method, lower, upper)
+    values[i, 1] = distance
+    gradients[i] = gradient
 
 
 @wp.kernel
@@ -1111,6 +1175,65 @@ def _make_open_box() -> tuple[np.ndarray, np.ndarray]:
         dtype=np.int32,
     )
     return vertices, faces
+
+
+def test_bounded_mesh_sdf_sign(test, device):
+    """Bound open edges while preserving finite faces, container interiors, and parity."""
+    sheet = (np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32), np.array([[0, 1, 2]]))
+    for geometry, points, expected, expected_gradients, sign_method in (
+        (
+            sheet,
+            [[0.2, 0.2, -0.1], [0.2, 0.2, 0.1], [0.9, 0.9, -0.1], [-0.2, 0.0, -0.1]],
+            [-0.1, 0.1, np.sqrt(0.33), np.sqrt(0.05)],
+            [
+                [0, 0, 1],
+                [0, 0, 1],
+                np.array([0.4, 0.4, -0.1]) / np.sqrt(0.33),
+                np.array([-0.2, 0, -0.1]) / np.sqrt(0.05),
+            ],
+            MeshSignMethod.NORMAL,
+        ),
+        (
+            _make_open_box(),
+            [[0.49, 0.0, 0.49], [0.0, 0.0, -0.4]],
+            [-0.01, -0.1],
+            [[1, 0, 0], [0, 0, -1]],
+            MeshSignMethod.NORMAL,
+        ),
+        (
+            _make_watertight_box((0, 0, 0), (0.5, 0.5, 0.5)),
+            [[0.4, 0.0, 0.0], [0.6, 0.0, 0.0]],
+            [-0.1, 0.1],
+            [[1, 0, 0], [1, 0, 0]],
+            MeshSignMethod.PARITY,
+        ),
+    ):
+        with test.subTest(sign_method=sign_method, points=points):
+            vertices, faces = geometry
+            mesh = _make_warp_mesh(vertices, faces, device)
+            values = wp.empty((len(points), 2), dtype=float, device=device)
+            gradients = wp.empty(len(points), dtype=wp.vec3, device=device)
+            wp.launch(
+                _sample_bounded_mesh_sdf,
+                dim=len(points),
+                inputs=[
+                    mesh.id,
+                    wp.array(points, dtype=wp.vec3, device=device),
+                    wp.vec3(vertices.min(axis=0)),
+                    wp.vec3(vertices.max(axis=0)),
+                    int(sign_method),
+                    values,
+                    gradients,
+                ],
+                device=device,
+            )
+            np.testing.assert_allclose(values.numpy(), np.repeat(np.asarray(expected)[:, None], 2, axis=1), atol=1.0e-6)
+            np.testing.assert_allclose(gradients.numpy(), expected_gradients, atol=1.0e-6)
+
+
+add_function_test(
+    TestMeshSignQueries, "test_bounded_mesh_sdf_sign", test_bounded_mesh_sdf_sign, devices=get_test_devices()
+)
 
 
 def test_mixed_winding_convex_pile_contact_normal(test, device):
@@ -3315,6 +3438,51 @@ class TestPlanarSDFOptIn(unittest.TestCase):
         model = builder.finalize()
 
         self.assertEqual(int(model._shape_sdf_index.numpy()[convex]), -1)
+
+
+def test_triangle_contact_independent_of_convex_origin(test, device):
+    """Preserve triangle contacts when shifting the convex hull's local origin."""
+    rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.3, 0.4, 0.5)), 0.6)
+    pose = wp.transform(wp.vec3(1.0, -2.0, 3.0), rotation)
+    # Place the authoring origin on the top face, at the center, and outside
+    # the hull while keeping the world-space geometry unchanged.
+    for offset in (0.0, 0.5, -2.0):
+        builder = newton.ModelBuilder()
+        cfg = builder.ShapeConfig(density=0.0, gap=0.01)
+        body = builder.add_body(xform=pose, mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
+        builder.add_shape_mesh(
+            body,
+            mesh=newton.Mesh(
+                [[-0.02, -0.02, -0.002], [0.0, 0.02, -0.002], [0.02, -0.02, -0.002]],
+                [0, 1, 2],
+                compute_inertia=False,
+            ),
+            cfg=cfg,
+        )
+        hull = newton.Mesh.create_box(1.0, 1.0, 0.5, duplicate_vertices=False, compute_inertia=False)
+        hull.vertices += np.array([0.0, 0.0, offset - 0.5])
+        hull_pose = wp.transform_multiply(pose, wp.transform(wp.vec3(0.0, 0.0, -offset), wp.quat_identity()))
+        builder.add_shape_convex_hull(-1, mesh=hull, xform=hull_pose, scale=wp.vec3(1.5, 0.75, 1.0), cfg=cfg)
+        model = builder.finalize(device=device)
+        state = model.state()
+        for reduction in (False, True):
+            with test.subTest(offset=offset, reduce_contacts=reduction):
+                pipeline = newton.CollisionPipeline(model, reduce_contacts=reduction)
+                contacts = pipeline.contacts()
+                pipeline.collide(state, contacts)
+                count = int(contacts.rigid_contact_count.numpy()[0])
+                test.assertGreater(count, 0)
+                distances = wp.empty(contacts.rigid_contact_max, dtype=float, device=device)
+                newton.eval_rigid_contact_kinematics(model, state, contacts, out_distance=distances)
+                np.testing.assert_allclose(distances.numpy()[:count], -0.002, atol=1.0e-5)
+
+
+add_function_test(
+    TestMeshConvexMidphase,
+    "test_triangle_contact_independent_of_convex_origin",
+    test_triangle_contact_independent_of_convex_origin,
+    devices=get_test_devices(),
+)
 
 
 def test_mesh_convex_midphase_queries_margin_shell(test, device):
