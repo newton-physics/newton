@@ -2106,7 +2106,7 @@ def _joint_mimic_effective_mass(
     return body_inv_m[body] * wp.length_sq(linear) + wp.dot(angular_body, body_inv_I[body] * angular_body)
 
 
-@wp.kernel
+@wp.kernel(module="unique")
 def solve_joint_mimics(
     body_q: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
@@ -2254,7 +2254,7 @@ def solve_joint_mimics(
             wp.atomic_add(joint_impulse, reference, impulse_reference_child * delta_lambda)
 
 
-@wp.kernel
+@wp.kernel(module="unique")
 def apply_joint_mimic_deltas(
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
