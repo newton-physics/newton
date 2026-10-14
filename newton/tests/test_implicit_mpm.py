@@ -12,11 +12,13 @@ import warp.fem as fem
 import warp.sparse as sp
 
 import newton
-from newton._src.solvers.implicit_mpm.implicit_mpm_solver_kernels import collision_weight_field
+from newton._src.solvers.implicit_mpm.implicit_mpm_solver_kernels import collision_weight_field, compute_eigenvalues
 from newton._src.solvers.implicit_mpm.rasterized_collisions import (
     _ALL_COLLIDER_WORLDS,
     Collider,
+    _triangle_distance_sq_and_pseudonormal,
     collision_sdf,
+    get_average_face_normal,
     rasterize_collider_kernel,
 )
 from newton._src.solvers.implicit_mpm.rheology_solver_kernels import (
@@ -46,6 +48,7 @@ from newton._src.solvers.implicit_mpm.solve_rheology import (
     solve_rheology,
     update_batched_condition,
 )
+from newton.examples.mpm.example_mpm_viscous import Example as MPMViscousExample
 from newton.solvers import SolverImplicitMPM, SolverXPBD
 from newton.solvers.experimental.coupled import SolverCoupled, SolverCoupledProxy
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
@@ -2209,6 +2212,91 @@ basic_cuda_devices = get_cuda_test_devices(mode="basic")
 
 
 @wp.kernel
+def _query_triangle_pseudonormal(
+    positions: wp.array[wp.vec3],
+    distances: wp.array[float],
+    normals: wp.array[wp.vec3],
+):
+    i = wp.tid()
+    distance, normal = _triangle_distance_sq_and_pseudonormal(
+        positions[i], wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 1.0, 0.0), 1.0e-6
+    )
+    distances[i] = distance
+    normals[i] = normal
+
+
+def test_collision_triangle_distance_and_normal(test, device):
+    """Check fused triangle distances and weights for every closest-feature region."""
+    positions = (
+        (0.2, 0.2, 0.0005),
+        (0.5, -0.0004, 0.0003),
+        (-0.0003, -0.0004, 0.0),
+        (1.0003, -0.0004, 0.0),
+        (-0.0004, 1.0003, 0.0),
+        (0.5003, 0.5003, 0.0004),
+        (0.0002, 0.0003, 0.0004),
+        (0.5, 0.0004, 0.0003),
+        (0.2, 0.2, 0.002),
+    )
+    distances = wp.empty(len(positions), dtype=float, device=device)
+    normals = wp.empty(len(positions), dtype=wp.vec3, device=device)
+    wp.launch(
+        _query_triangle_pseudonormal,
+        dim=len(positions),
+        inputs=[wp.array(positions, dtype=wp.vec3, device=device)],
+        outputs=[distances, normals],
+        device=device,
+    )
+    np.testing.assert_allclose(
+        distances.numpy(), (2.5e-7, 2.5e-7, 2.5e-7, 2.5e-7, 2.5e-7, 3.4e-7, 1.6e-7, 9.0e-8, 4.0e-6), atol=5.0e-11
+    )
+    expected = np.zeros((len(positions), 3))
+    expected[:, 2] = (2.0, 1.0, 0.5, 0.25, 0.25, 1.0, 0.5, 1.0, 0.0)
+    np.testing.assert_allclose(normals.numpy(), expected, atol=1.0e-6)
+
+
+@wp.kernel
+def _query_average_face_normal(
+    mesh: wp.uint64,
+    positions: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+):
+    i = wp.tid()
+    normals[i] = get_average_face_normal(mesh, positions[i])
+
+
+def test_collision_normal_corner_angles(test, device):
+    """Preserve corner-angle weighting when a coplanar face is subdivided."""
+    for corner_angle in (np.pi / 2.0, np.pi / 6.0):
+        for subdivisions in (1, 8):
+            with test.subTest(corner_angle=corner_angle, subdivisions=subdivisions):
+                angles = np.linspace(0.0, np.pi / 2.0, subdivisions + 1)
+                vertices = [(0.0, 0.0, 0.0), *[(np.cos(a), np.sin(a), 0.0) for a in angles]]
+                indices = [i for j in range(subdivisions) for i in (0, j + 1, j + 2)]
+                first = len(vertices)
+                vertices.extend(((0.0, 0.0, 1.0), (0.0, np.sin(corner_angle), np.cos(corner_angle))))
+                indices.extend((0, first, first + 1))
+                points = wp.array(vertices, dtype=wp.vec3, device=device)
+                mesh = wp.Mesh(points, wp.array(indices, dtype=int, device=device), wp.zeros_like(points))
+                positions = [(0.0, 0.0, 0.0)]
+                expected = [(-corner_angle, 0.0, np.pi / 2.0)]
+                if corner_angle == np.pi / 2.0:
+                    positions.extend(((0.0, 0.5, 0.0), (0.25, 0.25, 0.0)))
+                    expected.extend(((-1.0, 0.0, 1.0), (0.0, 0.0, 1.0)))
+                normals = wp.empty(len(positions), dtype=wp.vec3, device=device)
+                wp.launch(
+                    _query_average_face_normal,
+                    dim=len(positions),
+                    inputs=[mesh.id, wp.array(positions, dtype=wp.vec3, device=device)],
+                    outputs=[normals],
+                    device=device,
+                )
+                expected = np.array(expected)
+                expected /= np.linalg.norm(expected, axis=1)[:, None]
+                np.testing.assert_allclose(normals.numpy(), expected, atol=1.0e-6)
+
+
+@wp.kernel
 def _query_collision_distance(
     positions: wp.array[wp.vec3],
     collider: Collider,
@@ -2265,6 +2353,30 @@ def test_collision_sdf_sign_with_sliver_faces(test, device):
     test.assertLess(below_diagonal, -0.04)
 
 
+def test_collision_sdf_funnel_outlet(test, device):
+    """Keep points below an open funnel outside despite unequal wall and rim areas."""
+    model = _make_mpm_particle_builder(gravity=(0.0, 0.0, 0.0)).finalize(device=device)
+    solver = SolverImplicitMPM(model, _make_mpm_config())
+    vertices, indices = MPMViscousExample.create_funnel_mesh(0.01, 0.05, 0.2, 0.2)
+    points = wp.array(vertices, dtype=wp.vec3, device=device)
+    mesh = wp.Mesh(points, wp.array(indices, dtype=int, device=device), wp.zeros_like(points))
+    solver.setup_collider(collider_meshes=[mesh])
+    collider = solver._mpm_model.collider
+    collider.query_max_dist = 1.0
+    collider.material_thickness.zero_()
+    positions = np.array(((0.005, 0.0, 0.15), (0.0075, 0.0, 0.17), (0.01, 0.0, 0.19)), dtype=np.float32)
+    distances = wp.empty(len(positions), dtype=float, device=device)
+    state = model.state()
+    wp.launch(
+        _query_collision_distance,
+        dim=len(positions),
+        inputs=[wp.array(positions, dtype=wp.vec3, device=device), collider, state.body_q, state.body_qd, None],
+        outputs=[distances],
+        device=device,
+    )
+    test.assertTrue(np.all(distances.numpy() >= 0.2 - positions[:, 2] - 1.0e-6))
+
+
 def test_collision_sdf_zero_average_normal(test, device):
     """Use the closest face when opposing nearby surfaces cancel the average normal."""
     model = _make_mpm_particle_builder(gravity=(0.0, 0.0, 0.0)).finalize(device=device)
@@ -2293,6 +2405,139 @@ def test_collision_sdf_zero_average_normal(test, device):
     test.assertAlmostEqual(float(above), 0.01, delta=1.0e-5)
     test.assertAlmostEqual(float(below), 0.01, delta=1.0e-5)
     test.assertLess(inside, 0.0)
+
+
+def test_strain_mode_mass_filter(test, device):
+    """Keep a positive-mass zero-mean mode while dropping a zero-mass mode."""
+    with wp.ScopedDevice(device):
+        mass = np.diag((1.0, 1.0 / 12.0, 0.0)).astype(np.float32)
+        eigenvalues = wp.empty((1, 3), dtype=float, device=device)
+        eigenvectors = wp.empty((1, 3, 3), dtype=float, device=device)
+        rotated_volume = wp.empty((1, 3), dtype=float, device=device)
+        wp.launch(
+            compute_eigenvalues,
+            dim=1,
+            inputs=[
+                wp.array((0, 1), dtype=int, device=device),
+                wp.array((0,), dtype=int, device=device),
+                wp.array(mass[None], dtype=wp.mat33, device=device),
+                wp.array(((1.0, 0.0, 0.0),), dtype=float, device=device),
+                eigenvalues,
+                eigenvectors,
+                rotated_volume,
+            ],
+            device=device,
+        )
+        modes = eigenvectors.numpy()[0]
+        np.testing.assert_allclose(modes.T @ modes, np.diag((1.0, 1.0, 0.0)), atol=1.0e-6)
+        np.testing.assert_allclose(modes.T @ np.diag(eigenvalues.numpy()[0]) @ modes, mass, atol=1.0e-6)
+
+
+def test_strain_mode_near_zero_mean_orientation(test, device):
+    """Preserve nonnegative averaged divergence for modes with nearly cancelled integrals."""
+    with wp.ScopedDevice(device):
+        mass = np.array(((2.0, 1.0), (1.0, 2.0)), dtype=np.float32)
+        for perturbation in (-1.0e-5, 1.0e-5):
+            with test.subTest(perturbation=perturbation):
+                volume = np.array((1.0, 1.0 + perturbation), dtype=np.float32)
+                eigenvalues = wp.empty((1, 2), dtype=float, device=device)
+                eigenvectors = wp.empty((1, 2, 2), dtype=float, device=device)
+                rotated_volume = wp.empty((1, 2), dtype=float, device=device)
+                wp.launch(
+                    compute_eigenvalues,
+                    dim=1,
+                    inputs=[
+                        wp.array((0, 1), dtype=int, device=device),
+                        wp.array((0,), dtype=int, device=device),
+                        wp.array(mass[None], dtype=wp.mat22, device=device),
+                        wp.array(volume[None], dtype=float, device=device),
+                        eigenvalues,
+                        eigenvectors,
+                        rotated_volume,
+                    ],
+                    device=device,
+                )
+                modes = eigenvectors.numpy()[0]
+                np.testing.assert_allclose(modes.T @ modes, np.eye(2), atol=1.0e-6)
+                np.testing.assert_allclose(modes.T @ np.diag(eigenvalues.numpy()[0]) @ modes, mass, atol=1.0e-6)
+
+                # Each nonnegative modal divergence must contribute a nonnegative integral,
+                # even when material normalization treats its small mean as zero.
+                averaged_divergence = modes @ volume
+                test.assertGreaterEqual(float(averaged_divergence.min()), 0.0)
+                near_zero_mode = int(np.argmin(np.abs(averaged_divergence)))
+                test.assertEqual(float(rotated_volume.numpy()[0, near_zero_mode]), 0.0)
+
+
+def test_strain_modes_symmetric_cell(test, device):
+    """Retain full-rank strain modes and uniform material parameters on a symmetric cell."""
+
+    class ModeSolver(SolverImplicitMPM):
+        def _build_strain_eigenbasis(self, pic, scratch, inv_cell_volume):
+            eigenvectors, rotated_volume = super()._build_strain_eigenbasis(pic, scratch, inv_cell_volume)
+            self.element = int(pic.cell_indices.numpy().reshape(-1)[0])
+            self.mode_count = eigenvectors.shape[1]
+            self.modes = eigenvectors.numpy()[self.element].copy()
+            self.mode_mass = (
+                scratch.strain_node_particle_volume.numpy().reshape(-1, self.mode_count)[self.element].copy()
+            )
+            return eigenvectors, rotated_volume
+
+        def _solve_rheology(self, pic, scratch, rigidity_operator, last_step_data, inv_cell_volume):
+            result = super()._solve_rheology(pic, scratch, rigidity_operator, last_step_data, inv_cell_volume)
+            self.mode_yield_parameters = (
+                scratch.strain_yield_parameters_field.dof_values.numpy()
+                .reshape(-1, self.mode_count, 6)[self.element]
+                .copy()
+            )
+            return result
+
+    abscissae = (0.5 - 0.5 / np.sqrt(3.0), 0.5 + 0.5 / np.sqrt(3.0))
+    positions = np.array(np.meshgrid(abscissae, abscissae, abscissae)).reshape(3, -1).T
+    expected_yield = np.array((300.0 * np.sqrt(1.5), 150.0 * np.sqrt(1.5), 20.0, 60.0, 0.0, 1000.0))
+    with wp.ScopedDevice(device):
+        for integration_scheme in ("pic", "gimp"):
+            for strain_basis in ("P1d", "Q1d"):
+                with test.subTest(integration_scheme=integration_scheme, strain_basis=strain_basis):
+                    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+                    SolverImplicitMPM.register_custom_attributes(builder)
+                    for position in positions:
+                        builder.add_particle(
+                            pos=position,
+                            vel=(0.0, 0.0, 0.0),
+                            mass=0.125,
+                            radius=0.25,
+                            custom_attributes={
+                                "mpm:young_modulus": 1.0e4,
+                                "mpm:friction": 0.2,
+                                "mpm:yield_pressure": 300.0,
+                                "mpm:tensile_yield_ratio": 0.5,
+                                "mpm:yield_stress": 20.0,
+                                "mpm:viscosity": 10.0,
+                            },
+                        )
+                    model = builder.finalize(device=device)
+                    solver = ModeSolver(
+                        model,
+                        SolverImplicitMPM.Config(
+                            voxel_size=1.0,
+                            grid_type="fixed",
+                            integration_scheme=integration_scheme,
+                            strain_basis=strain_basis,
+                            max_iterations=0,
+                            warmstart_mode="none",
+                        ),
+                    )
+                    state = model.state()
+                    solver.step(state, state, None, None, 0.01)
+                    test.assertTrue(np.all(solver.mode_mass > 1.0e-6))
+                    np.testing.assert_allclose(solver.modes @ solver.modes.T, np.eye(solver.mode_count), atol=2.0e-5)
+                    np.testing.assert_allclose(
+                        solver.mode_yield_parameters,
+                        np.tile(expected_yield, (solver.mode_count, 1)),
+                        rtol=2.0e-4,
+                        atol=2.0e-4,
+                    )
 
 
 @wp.kernel
@@ -2713,12 +2958,34 @@ add_function_test(
 
 add_function_test(
     TestImplicitMPM,
+    "test_collision_triangle_distance_and_normal",
+    test_collision_triangle_distance_and_normal,
+    devices=devices,
+)
+add_function_test(
+    TestImplicitMPM, "test_collision_normal_corner_angles", test_collision_normal_corner_angles, devices=devices
+)
+add_function_test(
+    TestImplicitMPM,
     "test_collision_sdf_sign_with_sliver_faces",
     test_collision_sdf_sign_with_sliver_faces,
     devices=devices,
 )
 add_function_test(
+    TestImplicitMPM, "test_collision_sdf_funnel_outlet", test_collision_sdf_funnel_outlet, devices=devices
+)
+add_function_test(
     TestImplicitMPM, "test_collision_sdf_zero_average_normal", test_collision_sdf_zero_average_normal, devices=devices
+)
+add_function_test(TestImplicitMPM, "test_strain_mode_mass_filter", test_strain_mode_mass_filter, devices=devices)
+add_function_test(
+    TestImplicitMPM,
+    "test_strain_mode_near_zero_mean_orientation",
+    test_strain_mode_near_zero_mean_orientation,
+    devices=devices,
+)
+add_function_test(
+    TestImplicitMPM, "test_strain_modes_symmetric_cell", test_strain_modes_symmetric_cell, devices=devices
 )
 add_function_test(
     TestImplicitMPM, "test_flow_rule_empty_node_viscosity", test_flow_rule_empty_node_viscosity, devices=devices

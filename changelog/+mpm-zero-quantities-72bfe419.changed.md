@@ -1,0 +1,1 @@
+Use nodal mass orthogonalization for the implicit MPM solver's P1d/Q1d strain bases, with Gauss-Legendre reference nodes for Q1d and supported-subspace solves for rank-deficient cells. Existing `strain_basis` configurations remain valid; results can change in partially filled cells.
