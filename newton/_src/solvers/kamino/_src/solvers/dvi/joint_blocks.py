@@ -455,7 +455,10 @@ def _assemble_diagonal(
 def _make_assemble_entries(shared: bool):
     """Specialize assembly for shared local or original global indices."""
 
-    @wp.kernel
+    @wp.kernel(
+        module="unique",
+        module_options={"enable_backward": False, "enable_mathdx_solver": False, "enable_mathdx_gemm": False},
+    )
     def assemble_entries(
         inv_mass: wp.array[wp.float32],
         inv_inertia: wp.array[wp.mat33f],
