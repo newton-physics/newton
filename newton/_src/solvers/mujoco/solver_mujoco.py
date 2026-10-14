@@ -4110,10 +4110,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if refsite_name is not None:
                 general_args["refsite"] = refsite_name
             act = spec.add_actuator(target=target_name, **general_args)
-            if shortcut == "position":
-                act.set_to_position(**shortcut_args)
-            elif shortcut == "velocity":
-                act.set_to_velocity(**shortcut_args)
+            if shortcut is not None:
+                if shortcut == "position":
+                    act.set_to_position(**shortcut_args)
+                else:
+                    act.set_to_velocity(**shortcut_args)
+                # Shortcuts reset the activation settings (all of them since MuJoCo 3.16).
+                for key in ("dyntype", "dynprm", "actdim", "actearly", "actlimited"):
+                    if key in general_args:
+                        setattr(act, key, general_args[key])
             # CTRL_DIRECT actuators - store MJCF-order index into control.mujoco.ctrl
             # mujoco_act_idx is the index in Newton's mujoco:actuator frequency (MJCF order)
             mjc_actuator_ctrl_source_list.append(1)  # CTRL_DIRECT
