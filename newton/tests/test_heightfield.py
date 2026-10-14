@@ -4,6 +4,7 @@
 import os
 import tempfile
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -430,6 +431,124 @@ class TestHeightfield(unittest.TestCase):
         final_z = float(state_in.body_q.numpy()[sphere_body, 2])
         self.assertGreater(final_z, -0.3 + sphere_radius - 0.01)
         self.assertLess(final_z, -0.3 + sphere_radius + 0.03)
+
+    @staticmethod
+    def _per_world_hfield_model(heightfields, sphere_starts):
+        """Build one world per heightfield, each dropping a sphere of radius 0.05 above a ground plane at z = -1."""
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane(height=-1.0)
+        for heightfield, start in zip(heightfields, sphere_starts, strict=True):
+            world = newton.ModelBuilder()
+            world.add_shape_heightfield(heightfield=heightfield)
+            body = world.add_body(xform=wp.transform(start, wp.quat_identity()))
+            world.add_shape_sphere(body, radius=0.05)
+            builder.add_world(world)
+        # Heightfields in different worlds never collide, but finalize() warns
+        # about any model that holds more than one.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="Heightfield-vs-heightfield collision is not supported")
+            return builder.finalize()
+
+    @staticmethod
+    def _sphere_heights(model, steps):
+        """Step the model with SolverMuJoCo and return each body's final height."""
+        solver = SolverMuJoCo(model)
+        state_in, state_out, control = model.state(), model.state(), model.control()
+        for _ in range(steps):
+            solver.step(state_in, state_out, control, None, 0.002)
+            state_in, state_out = state_out, state_in
+        return state_in.body_q.numpy()[:, 2]
+
+    def test_solver_mujoco_hfield_per_world(self):
+        """Collide each world against its own heightfield when the worlds' terrains differ."""
+        try:
+            SolverMuJoCo.import_mujoco()
+        except ImportError:
+            self.skipTest("MuJoCo not installed")
+
+        tops = (0.1, 0.2, 0.3)
+        heightfields = []
+        for top in tops:
+            # A plateau at `top` with its rim at 0.
+            plateau = np.full((9, 9), top, dtype=np.float32)
+            plateau[[0, -1], :] = plateau[:, [0, -1]] = 0.0
+            heightfields.append(Heightfield(data=plateau, nrow=9, ncol=9, hx=0.5, hy=0.5))
+        model = self._per_world_hfield_model(heightfields, [(0.0, 0.0, top + 0.07) for top in tops])
+
+        np.testing.assert_allclose(self._sphere_heights(model, steps=500), np.array(tops) + 0.05, atol=0.01)
+
+    def test_solver_mujoco_hfield_per_world_bounds(self):
+        """Bound each world's heightfield geom by that world's terrain, so the broadphase keeps its contacts."""
+        try:
+            mujoco, _ = SolverMuJoCo.import_mujoco()
+        except ImportError:
+            self.skipTest("MuJoCo not installed")
+
+        # Flat terrains 1 m and 4 m wide. A sphere dropped 1.5 m off center misses
+        # world 0's terrain and lands on world 1's.
+        heightfields = [
+            Heightfield(data=np.zeros((5, 5), dtype=np.float32), nrow=5, ncol=5, hx=hx, hy=hx, min_z=0.0, max_z=0.2)
+            for hx in (0.5, 2.0)
+        ]
+        start = (1.5, 0.0, 0.1)
+        model = self._per_world_hfield_model(heightfields, [start, start])
+
+        solver = SolverMuJoCo(model)
+        geom = np.flatnonzero(solver.mj_model.geom_type == mujoco.mjtGeom.mjGEOM_HFIELD)[0]
+        aabb = solver.mjw_model.geom_aabb.numpy()
+        rbound = solver.mjw_model.geom_rbound.numpy()
+        for world, heightfield in enumerate(heightfields):
+            # The bounds MuJoCo compiles for this world's terrain on its own.
+            reference = SolverMuJoCo(self._per_world_hfield_model([heightfield], [start])).mj_model
+            reference_geom = np.flatnonzero(reference.geom_type == mujoco.mjtGeom.mjGEOM_HFIELD)[0]
+            # MuJoCo Warp reads world w's entry from row w % rows of a model field.
+            np.testing.assert_allclose(
+                aabb[world % aabb.shape[0], geom], reference.geom_aabb[reference_geom].reshape(2, 3), rtol=1e-6
+            )
+            np.testing.assert_allclose(
+                rbound[world % rbound.shape[0], geom], reference.geom_rbound[reference_geom], rtol=1e-6
+            )
+
+        heights = self._sphere_heights(model, steps=300)
+        self.assertLess(heights[0], -0.5)
+        self.assertAlmostEqual(float(heights[1]), 0.05, delta=0.01)
+
+    def test_solver_mujoco_hfield_identical_worlds_share_asset(self):
+        """Keep one MuJoCo heightfield and shared geom arrays when every world has the same terrain."""
+        try:
+            SolverMuJoCo.import_mujoco()
+        except ImportError:
+            self.skipTest("MuJoCo not installed")
+
+        elevation = np.random.default_rng(0).random((6, 6)).astype(np.float32)
+        # Equal terrains in distinct objects, as when each world builds its own.
+        heightfields = [Heightfield(data=elevation, nrow=6, ncol=6, hx=1.0, hy=1.0) for _ in range(3)]
+        model = self._per_world_hfield_model(heightfields, [(0.0, 0.0, 1.5)] * 3)
+
+        solver = SolverMuJoCo(model)
+        self.assertEqual(solver.mj_model.nhfield, 1)
+        self.assertEqual(solver.mjw_model.geom_dataid.shape[0], 1)
+        self.assertEqual(solver.mjw_model.geom_aabb.shape[0], 1)
+
+    def test_solver_mujoco_hfield_per_world_after_in_place_edit(self):
+        """Collide each world against its heightfield's current data after an in-place edit keeps its cached hash."""
+        try:
+            SolverMuJoCo.import_mujoco()
+        except ImportError:
+            self.skipTest("MuJoCo not installed")
+
+        heightfields = [
+            Heightfield(data=np.zeros((5, 5), dtype=np.float32), nrow=5, ncol=5, hx=0.5, hy=0.5, min_z=0.0, max_z=0.3)
+            for _ in range(2)
+        ]
+        starts = [(0.0, 0.0, 0.42)] * 2
+        # finalize() caches each heightfield's hash while both terrains are flat.
+        self._per_world_hfield_model(heightfields, starts)
+        # Raise world 0's center to 0.3 m in place, which keeps the cached hash.
+        heightfields[0].data[1:-1, 1:-1] = 1.0
+        model = self._per_world_hfield_model(heightfields, starts)
+
+        np.testing.assert_allclose(self._sphere_heights(model, steps=400), [0.35, 0.05], atol=0.01)
 
     def test_heightfield_always_static(self):
         """Test that heightfields are always static (zero mass, zero inertia)."""
