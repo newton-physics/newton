@@ -487,20 +487,22 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
         if wp.length_sq(direction) == 0.0:
             direction = wp.vec3(1.0, 0.0, 0.0)
 
-        # The support plane along the ray is the exact depth in that direction,
-        # so it is the fallback if every distance query fails. A support
-        # vertex's distance is not a depth: it can reach a far corner of the
-        # Minkowski difference. Never return extrapolated portal witnesses.
+        # The support plane bounds the depth along the initial ray. A
+        # support vertex's length is not a depth: it can reach a far corner
+        # of the Minkowski difference. Recover a contact pair within this
+        # bound rather than returning the unrelated support vertices.
         support = mpr_support(geom_a, geom_b, direction, orientation_b, position_b, 0.0, data_provider)
         point_a = vert_a(support)
         point_b = support.B
-        # Float32 resolution follows coordinate magnitude; scale absolute tolerances.
-        tolerance = wp.max(1.0, wp.max(wp.length(point_a), wp.length(point_b)))
+        # GJK uses corner supports, even when MPR selected a face center.
+        # Its roundoff follows those corner coordinates, not the much
+        # smaller centered witnesses (e.g. a tiny triangle on a wide box).
+        corner = _minkowski_support(geom_a, geom_b, direction, orientation_b, position_b, 0.0, data_provider)
+        tolerance = wp.max(1.0, wp.max(wp.length(vert_a(corner)), wp.length(corner.B)))
         normal = direction
         penetration = wp.dot(support.BtoA, direction) + extend
         resolved = bool(False)
-        # Manifolds anchor each body's contact plane at its witness, so keep
-        # the genuine support points; they span the depth along the normal.
+        # Provisional inflated points are replaced by resolved witnesses.
         point_a += normal * (0.5 * extend)
         point_b -= normal * (0.5 * extend)
 
@@ -545,6 +547,28 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
                     geom_a, geom_b, candidate, orientation_b, position_b, extend, data_provider
                 )
                 support_gap = wp.dot(certificate.BtoA, candidate) - depth
+                # Subtracting large support coordinates can leave a small
+                # tangential error in GJK's witnesses. At shallow penetration,
+                # normalizing that error tilts the normal enough to select a
+                # distant hull corner. The ray direction remains usable if
+                # its support plane certifies the depth and the witnesses
+                # agree tangentially within float32 roundoff.
+                ray_depth = wp.dot(physical_delta, direction)
+                tangent_error = physical_delta - ray_depth * direction
+                ray_certificate = certificate_support(
+                    geom_a, geom_b, direction, orientation_b, position_b, 0.0, data_provider
+                )
+                ray_gap = wp.dot(ray_certificate.BtoA, direction) - ray_depth
+                roundoff = 2.0e-7 * tolerance
+                if wp.length(tangent_error) <= roundoff and wp.abs(ray_gap) <= COLLIDE_EPSILON + roundoff:
+                    candidate = direction
+                    physical_depth = ray_depth
+                    physical_length = wp.abs(ray_depth)
+                    depth = ray_depth + extend
+                    support_gap = ray_gap
+                    center = 0.5 * (pa + pb)
+                    pa = center + 0.5 * ray_depth * direction
+                    pb = center - 0.5 * ray_depth * direction
                 # For physical witnesses inside the hulls, this sum of
                 # support deficits bounds each witness's surface error. The
                 # budget is the portal's contact tolerance scaled by
@@ -579,12 +603,24 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
                 break
             direction = gradient
         if not resolved:
-            # Support witnesses alone do not establish overlap. Check the
-            # physical shapes before accepting a conservative positive depth.
-            physical_hit, _pa, _pb, _normal, _depth, _seed, _valid = solve_mpr_portal(
+            # An overlap test cannot turn unrelated support vertices into
+            # contact witnesses. Accept a physical portal only when it also
+            # supplies a valid pair; never emit the fallback support corners.
+            physical_hit, pa, pb, physical_normal, physical_depth, physical_seed, physical_valid = solve_mpr_portal(
                 geom_a, geom_b, orientation_b, position_b, 0.0, data_provider, wp.vec3(0.0)
             )
-            resolved = physical_hit
+            for _physical_retry in range(8):
+                if not physical_hit or physical_valid or wp.length_sq(physical_seed) == 0.0:
+                    break
+                physical_hit, pa, pb, physical_normal, physical_depth, physical_seed, physical_valid = solve_mpr_portal(
+                    geom_a, geom_b, orientation_b, position_b, 0.0, data_provider, physical_seed
+                )
+            if physical_hit and physical_valid and physical_depth <= penetration - extend + COLLIDE_EPSILON * tolerance:
+                normal = physical_normal
+                point_a = pa + normal * (0.5 * extend)
+                point_b = pb - normal * (0.5 * extend)
+                penetration = physical_depth + extend
+                resolved = True
         return point_a, point_b, normal, penetration, resolved
 
     @wp.func
