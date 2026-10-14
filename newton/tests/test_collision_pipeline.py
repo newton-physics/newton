@@ -924,6 +924,43 @@ add_function_test(
 )
 
 
+def test_open_mesh_boundary_authoring_rotation(test, device):
+    """Keep separated finite meshes contact-free across equivalent authoring frames."""
+    for angle in (0.0, 0.6, 1.2):
+        rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.3, 0.4, 0.5)), angle)
+        builder = newton.ModelBuilder()
+        cfg = builder.ShapeConfig(density=0.0, gap=0.001)
+        body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
+        for owner, authored_vertices in (
+            (body, [[0.55, 0.55, -0.01], [0.9, 0.2, -0.01], [0.55, 0.55, 0.001]]),
+            (-1, [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
+        ):
+            # Rotate the authoring frame and compensate the shape transform,
+            # leaving the world geometry and its finite separation unchanged.
+            vertices = np.array([wp.quat_rotate(rotation, wp.vec3(v)) for v in authored_vertices], dtype=np.float32)
+            builder.add_shape_mesh(
+                owner,
+                mesh=newton.Mesh(vertices, [0, 1, 2], compute_inertia=False),
+                xform=wp.transform(wp.vec3(0.0), wp.quat_inverse(rotation)),
+                cfg=cfg,
+            )
+        model = builder.finalize(device=device)
+        for reduction in (False, True):
+            with test.subTest(angle=angle, reduce_contacts=reduction):
+                pipeline = newton.CollisionPipeline(model, reduce_contacts=reduction)
+                contacts = pipeline.contacts()
+                pipeline.collide(model.state(), contacts)
+                test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 0)
+
+
+add_function_test(
+    TestMeshSignQueries,
+    "test_open_mesh_boundary_authoring_rotation",
+    test_open_mesh_boundary_authoring_rotation,
+    devices=get_test_devices(),
+)
+
+
 @wp.kernel
 def _query_mesh_signs(
     mesh: wp.uint64,
@@ -946,15 +983,14 @@ def _query_mesh_signs(
 def _sample_bounded_mesh_sdf(
     mesh: wp.uint64,
     points: wp.array[wp.vec3],
-    lower: wp.vec3,
-    upper: wp.vec3,
     sign_method: int,
     values: wp.array2d[float],
     gradients: wp.array[wp.vec3],
 ):
+    """Sample finite-boundary mesh distances and gradients together."""
     i = wp.tid()
-    values[i, 0] = sample_sdf_using_mesh(mesh, points[i], 10.0, sign_method, lower, upper)
-    distance, gradient = sample_sdf_grad_using_mesh(mesh, points[i], 10.0, sign_method, lower, upper)
+    values[i, 0] = sample_sdf_using_mesh(mesh, points[i], 10.0, sign_method)
+    distance, gradient = sample_sdf_grad_using_mesh(mesh, points[i], 10.0, sign_method)
     values[i, 1] = distance
     gradients[i] = gradient
 
@@ -1201,6 +1237,33 @@ def test_bounded_mesh_sdf_sign(test, device):
             MeshSignMethod.NORMAL,
         ),
         (
+            # A shared concave edge has an interior pseudo-normal sign even
+            # when the closest point is outside both finite face projections.
+            (
+                np.array([[0, -1, 0], [0, 1, 0], [1, -1, 0], [1, 1, 0], [0, -1, 1], [0, 1, 1]], dtype=np.float32),
+                np.array([[0, 2, 3], [0, 3, 1], [0, 1, 5], [0, 5, 4]]),
+            ),
+            [[-0.1, 0.0, -0.1]],
+            [-np.sqrt(0.02)],
+            [[1 / np.sqrt(2), 0, 1 / np.sqrt(2)]],
+            MeshSignMethod.NORMAL,
+        ),
+        (
+            # The origin has a closed face fan; the remote outer edges are
+            # open. Split vertex indices exercise geometric edge matching.
+            (
+                np.array(
+                    [[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, 0], [0, 0, 1], [1, 0, 0]],
+                    dtype=np.float32,
+                ),
+                np.array([[0, 1, 2], [3, 4, 5], [6, 7, 8]]),
+            ),
+            [[-0.1, -0.1, -0.1]],
+            [-np.sqrt(0.03)],
+            [[1 / np.sqrt(3), 1 / np.sqrt(3), 1 / np.sqrt(3)]],
+            MeshSignMethod.NORMAL,
+        ),
+        (
             _make_watertight_box((0, 0, 0), (0.5, 0.5, 0.5)),
             [[0.4, 0.0, 0.0], [0.6, 0.0, 0.0]],
             [-0.1, 0.1],
@@ -1208,8 +1271,12 @@ def test_bounded_mesh_sdf_sign(test, device):
             MeshSignMethod.PARITY,
         ),
     ):
-        with test.subTest(sign_method=sign_method, points=points):
+        for angle in (0.0, 0.6):
+            rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.3, 0.4, 0.5)), angle)
             vertices, faces = geometry
+            vertices = np.array([wp.quat_rotate(rotation, wp.vec3(v)) for v in vertices], dtype=np.float32)
+            rotated_points = [wp.quat_rotate(rotation, wp.vec3(p)) for p in points]
+            rotated_gradients = [wp.quat_rotate(rotation, wp.vec3(g)) for g in expected_gradients]
             mesh = _make_warp_mesh(vertices, faces, device)
             values = wp.empty((len(points), 2), dtype=float, device=device)
             gradients = wp.empty(len(points), dtype=wp.vec3, device=device)
@@ -1218,17 +1285,20 @@ def test_bounded_mesh_sdf_sign(test, device):
                 dim=len(points),
                 inputs=[
                     mesh.id,
-                    wp.array(points, dtype=wp.vec3, device=device),
-                    wp.vec3(vertices.min(axis=0)),
-                    wp.vec3(vertices.max(axis=0)),
+                    wp.array(rotated_points, dtype=wp.vec3, device=device),
                     int(sign_method),
                     values,
                     gradients,
                 ],
                 device=device,
             )
-            np.testing.assert_allclose(values.numpy(), np.repeat(np.asarray(expected)[:, None], 2, axis=1), atol=1.0e-6)
-            np.testing.assert_allclose(gradients.numpy(), expected_gradients, atol=1.0e-6)
+            with test.subTest(sign_method=sign_method, points=points, angle=angle):
+                np.testing.assert_allclose(
+                    values.numpy(), np.repeat(np.asarray(expected)[:, None], 2, axis=1), atol=1.0e-6
+                )
+                # Rotating float32 closest points amplifies roundoff when the
+                # gradient normalizes a short point-to-surface displacement.
+                np.testing.assert_allclose(gradients.numpy(), rotated_gradients, atol=2.0e-5 if angle else 1.0e-6)
 
 
 add_function_test(

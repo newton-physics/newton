@@ -37,8 +37,6 @@ from .kernels import mesh_query_point_sign, resolve_mesh_sign_method
 # four orders of magnitude, where values near sqrt(FLT_MAX) ~ 1.8e19 would
 # overflow. Kept finite (rather than ``wp.inf``) for the same reason.
 _MESH_QUERY_MAX_DIST = 1.0e11
-_MESH_QUERY_LOWER = wp.constant(wp.vec3(-_MESH_QUERY_MAX_DIST))
-_MESH_QUERY_UPPER = wp.constant(wp.vec3(_MESH_QUERY_MAX_DIST))
 
 # Search-radius slack over the narrow-band culling threshold for midpoint SDF
 # queries. Slightly exceeding the threshold guarantees points right at the
@@ -187,34 +185,81 @@ def scale_sdf_result_to_world(
 
 
 @wp.func
-def _query_mesh_sdf(
-    mesh_id: wp.uint64,
-    point: wp.vec3,
-    max_dist: float,
-    sign_method: int,
-    lower: wp.vec3,
-    upper: wp.vec3,
-):
-    """Query a local mesh side without extending boundary normals beyond its bounds."""
+def _mesh_edge_is_boundary(mesh_id: wp.uint64, a: wp.vec3, b: wp.vec3) -> bool:
+    """Identify an unshared edge, including meshes with duplicated vertex indices."""
+    midpoint = 0.5 * (a + b)
+    padding = 1.0e-6 * wp.max(wp.max(wp.length(a), wp.length(b)), wp.length(b - a))
+    query = wp.mesh_query_aabb(mesh_id, midpoint - wp.vec3(padding), midpoint + wp.vec3(padding))
+    mesh = wp.mesh_get(mesh_id)
+    face = int(0)
+    count = int(0)
+    while wp.mesh_query_aabb_next(query, face):
+        has_a = False
+        has_b = False
+        for corner in range(3):
+            vertex = mesh.points[mesh.indices[3 * face + corner]]
+            has_a = has_a or wp.length_sq(vertex - a) == 0.0
+            has_b = has_b or wp.length_sq(vertex - b) == 0.0
+        if has_a and has_b:
+            count += 1
+            if count > 1:
+                return False
+    return count == 1
+
+
+@wp.func
+def _mesh_vertex_is_boundary(mesh_id: wp.uint64, vertex: wp.vec3, padding: float) -> bool:
+    """Identify a vertex incident to any unshared edge in its local face fan."""
+    query = wp.mesh_query_aabb(mesh_id, vertex - wp.vec3(padding), vertex + wp.vec3(padding))
+    mesh = wp.mesh_get(mesh_id)
+    face = int(0)
+    while wp.mesh_query_aabb_next(query, face):
+        for corner in range(3):
+            p = mesh.points[mesh.indices[3 * face + corner]]
+            if wp.length_sq(p - vertex) == 0.0:
+                a = mesh.points[mesh.indices[3 * face + (corner + 1) % 3]]
+                b = mesh.points[mesh.indices[3 * face + (corner + 2) % 3]]
+                if _mesh_edge_is_boundary(mesh_id, vertex, a) or _mesh_edge_is_boundary(mesh_id, vertex, b):
+                    return True
+    return False
+
+
+@wp.func
+def _query_mesh_sdf(mesh_id: wp.uint64, point: wp.vec3, max_dist: float, sign_method: int):
+    """Keep pseudo-normal signs at shared features without extending open boundaries."""
     query = mesh_query_point_sign(mesh_id, point, max_dist, sign_method)
     if query.result and sign_method == MeshSignMethod.NORMAL and query.sign < 0.0:
-        outside = wp.length_sq(point - wp.min(wp.max(point, lower), upper)) > 0.0
-        if outside:
-            # An open boundary's pseudo-normal defines a local side, not an
-            # unbounded solid. Outside the mesh bounds, retain a negative
-            # distance only when the point projects onto the finite face.
-            # This preserves one-sided sheets without extending their edge
-            # and vertex normals into distant phantom penetration regions.
+        u = query.u
+        v = query.v
+        w = 1.0 - u - v
+        # Face-interior queries need no topology lookup. Shared concave edges
+        # and closed vertex fans must retain their pseudo-normal interior sign.
+        if wp.min(wp.min(u, v), w) <= 1.0e-6:
             mesh = wp.mesh_get(mesh_id)
             a = mesh.points[mesh.indices[query.face * 3]]
             b = mesh.points[mesh.indices[query.face * 3 + 1]]
             c = mesh.points[mesh.indices[query.face * 3 + 2]]
             normal = wp.normalize(wp.cross(b - a, c - a))
-            closest = wp.mesh_eval_position(mesh_id, query.face, query.u, query.v)
+            closest = wp.mesh_eval_position(mesh_id, query.face, u, v)
             delta = point - closest
             tangent = delta - wp.dot(delta, normal) * normal
             if wp.length_sq(tangent) > 1.0e-12 * wp.length_sq(delta):
-                query.sign = 1.0
+                padding = 1.0e-6 * wp.max(wp.max(wp.length(a), wp.length(b)), wp.max(wp.length(c), wp.length(b - a)))
+                boundary = False
+                if u <= 1.0e-6 and v <= 1.0e-6:
+                    boundary = _mesh_vertex_is_boundary(mesh_id, c, padding)
+                elif u <= 1.0e-6 and w <= 1.0e-6:
+                    boundary = _mesh_vertex_is_boundary(mesh_id, b, padding)
+                elif v <= 1.0e-6 and w <= 1.0e-6:
+                    boundary = _mesh_vertex_is_boundary(mesh_id, a, padding)
+                elif u <= 1.0e-6:
+                    boundary = _mesh_edge_is_boundary(mesh_id, b, c)
+                elif v <= 1.0e-6:
+                    boundary = _mesh_edge_is_boundary(mesh_id, a, c)
+                else:
+                    boundary = _mesh_edge_is_boundary(mesh_id, a, b)
+                if boundary:
+                    query.sign = 1.0
     return query
 
 
@@ -224,8 +269,6 @@ def sample_sdf_using_mesh(
     world_pos: wp.vec3,
     max_dist: float = _MESH_QUERY_MAX_DIST,
     sign_method: int = MeshSignMethod.NORMAL,
-    lower: wp.vec3 = _MESH_QUERY_LOWER,
-    upper: wp.vec3 = _MESH_QUERY_UPPER,
 ) -> float:
     """
     Sample signed distance to mesh surface using mesh query.
@@ -239,13 +282,11 @@ def sample_sdf_using_mesh(
         world_pos: Query position in mesh local coordinates
         max_dist: Maximum distance to search for closest point
         sign_method: Method used to determine the mesh query sign.
-        lower: Optional unscaled mesh bounds for finite open-boundary support.
-        upper: Optional unscaled mesh bounds for finite open-boundary support.
 
     Returns:
         The signed distance value (negative inside, positive outside)
     """
-    res = _query_mesh_sdf(mesh_id, world_pos, max_dist, sign_method, lower, upper)
+    res = _query_mesh_sdf(mesh_id, world_pos, max_dist, sign_method)
 
     if res.result:
         closest = wp.mesh_eval_position(mesh_id, res.face, res.u, res.v)
@@ -260,8 +301,6 @@ def sample_sdf_grad_using_mesh(
     world_pos: wp.vec3,
     max_dist: float = _MESH_QUERY_MAX_DIST,
     sign_method: int = MeshSignMethod.NORMAL,
-    lower: wp.vec3 = _MESH_QUERY_LOWER,
-    upper: wp.vec3 = _MESH_QUERY_UPPER,
 ) -> tuple[float, wp.vec3]:
     """
     Sample signed distance and gradient to mesh surface using mesh query.
@@ -278,8 +317,6 @@ def sample_sdf_grad_using_mesh(
         world_pos: Query position in mesh local coordinates
         max_dist: Maximum distance to search for closest point
         sign_method: Method used to determine the mesh query sign.
-        lower: Optional unscaled mesh bounds for finite open-boundary support.
-        upper: Optional unscaled mesh bounds for finite open-boundary support.
 
     Returns:
         Tuple of (distance, gradient) where:
@@ -288,7 +325,7 @@ def sample_sdf_grad_using_mesh(
     """
     gradient = wp.vec3(0.0, 0.0, 0.0)
 
-    res = _query_mesh_sdf(mesh_id, world_pos, max_dist, sign_method, lower, upper)
+    res = _query_mesh_sdf(mesh_id, world_pos, max_dist, sign_method)
 
     if res.result:
         closest = wp.mesh_eval_position(mesh_id, res.face, res.u, res.v)
@@ -736,28 +773,14 @@ def _create_sdf_contact_funcs(
             elif wp.static(use_texture_sdf_only):
                 return wp.static(sample_sdf)(texture_sdf, pp)
             elif use_bvh_for_sdf:
-                return sample_sdf_using_mesh(
-                    sdf_mesh_id,
-                    pp,
-                    _MESH_QUERY_MAX_DIST,
-                    sdf_mesh_query_type,
-                    texture_sdf.sdf_box_lower,
-                    texture_sdf.sdf_box_upper,
-                )
+                return sample_sdf_using_mesh(sdf_mesh_id, pp, _MESH_QUERY_MAX_DIST, sdf_mesh_query_type)
             else:
                 return wp.static(sample_sdf)(texture_sdf, pp)
         else:
             if wp.static(use_texture_sdf_only):
                 return wp.static(sample_sdf)(texture_sdf, pp)
             elif use_bvh_for_sdf:
-                return sample_sdf_using_mesh(
-                    sdf_mesh_id,
-                    pp,
-                    _MESH_QUERY_MAX_DIST,
-                    sdf_mesh_query_type,
-                    texture_sdf.sdf_box_lower,
-                    texture_sdf.sdf_box_upper,
-                )
+                return sample_sdf_using_mesh(sdf_mesh_id, pp, _MESH_QUERY_MAX_DIST, sdf_mesh_query_type)
             else:
                 return wp.static(sample_sdf)(texture_sdf, pp)
 
@@ -1177,8 +1200,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
         shape_angular_velocity: wp.array[wp.vec3],
         collision_update_dt: float,
         max_speculative_extension: float,
-        shape_collision_aabb_lower: wp.array[wp.vec3],
-        shape_collision_aabb_upper: wp.array[wp.vec3],
+        _shape_collision_aabb_lower: wp.array[wp.vec3],
+        _shape_collision_aabb_upper: wp.array[wp.vec3],
         _shape_voxel_resolution: wp.array[wp.vec3i],
         shape_pairs_mesh_mesh: wp.array[wp.vec2i],
         shape_pairs_mesh_mesh_count: wp.array[int],
@@ -1325,11 +1348,6 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 wp.tile_scatter_masked(progress, 0, 0, t == 0)
 
                 sdf_is_heightfield = sdf_is_hfield
-                if wp.static(not use_texture_sdf_only) and use_bvh_for_sdf:
-                    lower = wp.cw_mul(shape_collision_aabb_lower[sdf_shape], inv_sdf_scale)
-                    upper = wp.cw_mul(shape_collision_aabb_upper[sdf_shape], inv_sdf_scale)
-                    texture_sdf.sdf_box_lower = wp.min(lower, upper)
-                    texture_sdf.sdf_box_upper = wp.max(lower, upper)
                 sdf_aabb_lower = texture_sdf.sdf_box_lower
                 sdf_aabb_upper = texture_sdf.sdf_box_upper
 
@@ -1404,8 +1422,6 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                     bsphere_center,
                                     _SDF_QUERY_RADIUS_SLACK * threshold,
                                     sdf_mesh_query_type,
-                                    sdf_aabb_lower,
-                                    sdf_aabb_upper,
                                 )
                                 add_edge = midpoint_sdf <= threshold
                             else:
@@ -1524,8 +1540,6 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                             point_unscaled,
                                             _MESH_QUERY_MAX_DIST,
                                             sdf_mesh_query_type,
-                                            sdf_aabb_lower,
-                                            sdf_aabb_upper,
                                         )
                                     else:
                                         # Brent already produced the SDF value at
@@ -1540,8 +1554,6 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                             point_unscaled,
                                             _MESH_QUERY_MAX_DIST,
                                             sdf_mesh_query_type,
-                                            sdf_aabb_lower,
-                                            sdf_aabb_upper,
                                         )
                                     else:
                                         # Brent already produced the SDF value at
@@ -1800,11 +1812,6 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 wp.tile_scatter_masked(progress, 0, edge_start, t == 0)
 
                 sdf_is_heightfield = sdf_is_hfield
-                if wp.static(not use_texture_sdf_only) and use_bvh_for_sdf:
-                    lower = wp.cw_mul(shape_collision_aabb_lower[sdf_shape], inv_sdf_scale)
-                    upper = wp.cw_mul(shape_collision_aabb_upper[sdf_shape], inv_sdf_scale)
-                    texture_sdf.sdf_box_lower = wp.min(lower, upper)
-                    texture_sdf.sdf_box_upper = wp.max(lower, upper)
                 sdf_aabb_lower = texture_sdf.sdf_box_lower
                 sdf_aabb_upper = texture_sdf.sdf_box_upper
 
@@ -1866,8 +1873,6 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                     bsphere_center,
                                     _SDF_QUERY_RADIUS_SLACK * threshold,
                                     sdf_mesh_query_type,
-                                    sdf_aabb_lower,
-                                    sdf_aabb_upper,
                                 )
                                 add_edge = midpoint_sdf <= threshold
                             else:
@@ -1983,8 +1988,6 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                             point_unscaled,
                                             _MESH_QUERY_MAX_DIST,
                                             sdf_mesh_query_type,
-                                            sdf_aabb_lower,
-                                            sdf_aabb_upper,
                                         )
                                     else:
                                         # Brent already produced the SDF value at
@@ -1999,8 +2002,6 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                                             point_unscaled,
                                             _MESH_QUERY_MAX_DIST,
                                             sdf_mesh_query_type,
-                                            sdf_aabb_lower,
-                                            sdf_aabb_upper,
                                         )
                                     else:
                                         # Brent already produced the SDF value at
