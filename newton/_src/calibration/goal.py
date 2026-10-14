@@ -168,7 +168,7 @@ class CableGoalGroup:
         return self.views[0].recording_key if len(self.views) > 1 else self.views[0].label
 
     def cameras(self) -> list[dict[str, Any]]:
-        """Per-view camera descriptors, shaped for ``CableWorld``."""
+        """Per-view camera descriptors, shaped for ``CableSimulation``."""
         return [
             {
                 "sensor_pos": v.sensor_pos,
@@ -181,7 +181,7 @@ class CableGoalGroup:
         ]
 
     def run_args(self, group_reprs: Sequence[Any]) -> tuple[Any, Any, Any]:
-        """``(goal_reprs, crop, frame_times)`` shaped for ``CableWorld.run_sequence``.
+        """``(goal_reprs, crop, frame_times)`` shaped for ``CableSimulation.run_sequence``.
 
         Per-view lists for a multi-camera group, bare values for a single-camera
         one, matching run_sequence's rule that the shapes follow the camera count.
