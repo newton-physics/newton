@@ -98,8 +98,8 @@ def _test_solver_mimic(test, device, solver_name):
                         joint_mimic_kd=3.0,
                     )
                 generalized = False
-            elif solver_name == "feather_pgs":
-                solver = newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free")
+            elif solver_name == "steel":
+                solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free")
                 generalized = True
             elif solver_name == "vbd":
                 solver = newton.solvers.SolverVBD(
@@ -112,8 +112,8 @@ def _test_solver_mimic(test, device, solver_name):
                 raise ValueError(f"Unknown solver {solver_name}")
 
             # Penalty and Baumgarte-stabilized mimics converge over many steps.
-            step_count = 240 if solver_name in ("semi_implicit", "feather_pgs") else 1
-            dt = 1.0 / 240.0 if solver_name in ("semi_implicit", "feather_pgs") else 1.0 / 60.0
+            step_count = 240 if solver_name in ("semi_implicit", "steel") else 1
+            dt = 1.0 / 240.0 if solver_name in ("semi_implicit", "steel") else 1.0 / 60.0
             for _ in range(step_count):
                 solver.step(state_in, state_out, None, None, dt)
                 state_in, state_out = state_out, state_in
@@ -186,9 +186,9 @@ def test_semi_implicit_mimic_validates_gains(test, device):
                     newton.solvers.SolverSemiImplicit(model, **{name: value})
 
 
-def test_feather_pgs_mimic(test, device):
-    """Enforce scalar and vectorized mimic relationships in FeatherPGS."""
-    _test_solver_mimic(test, device, "feather_pgs")
+def test_steel_mimic(test, device):
+    """Enforce scalar and vectorized mimic relationships in Steel."""
+    _test_solver_mimic(test, device, "steel")
 
 
 def test_vbd_mimic(test, device):
@@ -271,9 +271,9 @@ add_function_test(
     devices=devices,
 )
 add_function_test(TestSolverMimic, "test_vbd_mimic", test_vbd_mimic, devices=devices)
-# FeatherPGS mimic rows need the CUDA-only matrix-free solve; its split solve rejects them.
+# Steel mimic rows need the CUDA-only matrix-free solve; its split solve rejects them.
 for device in get_cuda_test_devices():
-    add_function_test(TestSolverMimic, "test_feather_pgs_mimic", test_feather_pgs_mimic, devices=[device])
+    add_function_test(TestSolverMimic, "test_steel_mimic", test_steel_mimic, devices=[device])
 
 
 if __name__ == "__main__":

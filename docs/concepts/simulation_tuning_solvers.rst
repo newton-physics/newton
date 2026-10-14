@@ -219,7 +219,7 @@ repository examples spend tuning effort, not a shared solver API.
        generally requires smaller ``dt``. Examples use
        ``update_mass_matrix_interval`` when articulation dynamics are coupled
        with cloth or soft-body work.
-   * - :class:`~newton.solvers.SolverFeatherPGS`
+   * - :class:`~newton.solvers.SolverSteel`
      - ``solve_mode``, ``iterations``, ``baumgarte``, ``cfm``, ``relaxation``,
        ``update_mass_matrix_interval``, ``enable_joint_limits``,
        ``joint_limit_activation_gap``, ``enable_joint_velocity_limits``,
@@ -269,7 +269,7 @@ repository examples spend tuning effort, not a shared solver API.
        the work and the closing allowance of speculative contacts.
        Experimental contact torsion adds spin friction to the contacts of
        articulated bodies whose shapes carry a positive
-       ``feather_pgs:min_torsional_patch_radius`` (imported from
+       ``steel:min_torsional_patch_radius`` (imported from
        ``physxCollision:minTorsionalPatchRadius``), bounded by the shared
        Coulomb budget; the radius is an effective footprint (``2 R / 3`` for
        a uniformly loaded disk of radius ``R``). ``contact_torsion_device``

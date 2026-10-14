@@ -78,7 +78,7 @@ solvers = {
     "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
     "kamino": newton.solvers.SolverKamino,
     # The matrix-free solve is CUDA-only; split is the CPU route.
-    "feather_pgs": lambda model: newton.solvers.SolverFeatherPGS(
+    "steel": lambda model: newton.solvers.SolverSteel(
         model, solve_mode="matrix_free" if model.device.is_cuda else "split"
     ),
 }

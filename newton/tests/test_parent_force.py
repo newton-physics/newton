@@ -307,7 +307,7 @@ for device in devices:
     )
 
     if device.is_cuda:
-        # FeatherPGS (CUDA only) publishes the same COM-referenced incoming joint wrench.
+        # Steel (CUDA only) publishes the same COM-referenced incoming joint wrench.
         for name, test_fn in (
             ("test_parent_force_static_pendulum", test_parent_force_static_pendulum),
             ("test_parent_force_centrifugal", test_parent_force_centrifugal),
@@ -316,12 +316,12 @@ for device in devices:
         ):
             add_function_test(
                 TestParentForce,
-                f"{name}_feather_pgs",
+                f"{name}_steel",
                 test_fn,
                 devices=[device],
-                solver_fn=lambda model: newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free"),
+                solver_fn=lambda model: newton.solvers.SolverSteel(model, solve_mode="matrix_free"),
             )
-    # The FeatherPGS split solve publishes the same wrench on every device.
+    # The Steel split solve publishes the same wrench on every device.
     for name, test_fn in (
         ("test_parent_force_static_pendulum", test_parent_force_static_pendulum),
         ("test_parent_force_centrifugal", test_parent_force_centrifugal),
@@ -330,10 +330,10 @@ for device in devices:
     ):
         add_function_test(
             TestParentForce,
-            f"{name}_feather_pgs_split",
+            f"{name}_steel_split",
             test_fn,
             devices=[device],
-            solver_fn=lambda model: newton.solvers.SolverFeatherPGS(model, solve_mode="split"),
+            solver_fn=lambda model: newton.solvers.SolverSteel(model, solve_mode="split"),
         )
 
 

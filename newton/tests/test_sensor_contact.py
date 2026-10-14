@@ -13,7 +13,7 @@ import newton
 from newton._src.solvers.kamino._src.geometry import ContactAggregation
 from newton._src.utils import is_graph_capture_allocation_enabled
 from newton.sensors import SensorContact
-from newton.solvers import SolverFeatherPGS, SolverKamino, SolverMuJoCo
+from newton.solvers import SolverKamino, SolverMuJoCo, SolverSteel
 from newton.tests.unittest_utils import assert_np_equal
 from newton.tests.utils import basics
 
@@ -1000,8 +1000,8 @@ class TestSensorContactMuJoCo(unittest.TestCase):
         self.assertAlmostEqual(base_force[0, 2], -total_weight, delta=total_weight * 0.01)
 
 
-class TestSensorContactFeatherPGS(unittest.TestCase):
-    """End-to-end contact-sensor test using the FeatherPGS contact-force observable."""
+class TestSensorContactSteel(unittest.TestCase):
+    """End-to-end contact-sensor test using the Steel contact-force observable."""
 
     def test_stacking_scenario(self):
         """Report each stacked box's weight through ``SensorContact.total_force``."""
@@ -1016,7 +1016,7 @@ class TestSensorContactFeatherPGS(unittest.TestCase):
         mass_a, mass_b = 45.0, 4.0  # kg (from density * volume)
 
         pipeline = newton.CollisionPipeline(model, rigid_contact_max=64)
-        solver = SolverFeatherPGS(model, solve_mode="matrix_free" if model.device.is_cuda else "split", iterations=32)
+        solver = SolverSteel(model, solve_mode="matrix_free" if model.device.is_cuda else "split", iterations=32)
         sensor = SensorContact(
             model, request_contact_attributes=False, sensing_bodies=["a", "b"], counterpart_shapes="*"
         )

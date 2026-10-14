@@ -1,1 +1,0 @@
-Support the `BODY_PARENT_F` and `CONTACT_F` solver observables in `SolverFeatherPGS`. `contact_f` holds the linear force of each solved rigid contact (the torque part is zero); contacts without solved rows, such as rows dropped for capacity or skipped for sleeping islands, report zero.

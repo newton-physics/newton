@@ -56,7 +56,7 @@ and the comparison tables below.
 For a rigid articulated robot, first decide which coordinate representation
 fits the application. :class:`~newton.solvers.SolverMuJoCo`,
 :class:`~newton.solvers.SolverFeatherstone`, and
-:class:`~newton.solvers.SolverFeatherPGS` use generalized coordinates, while
+:class:`~newton.solvers.SolverSteel` use generalized coordinates, while
 :class:`~newton.solvers.SolverXPBD`,
 :class:`~newton.solvers.SolverSemiImplicit`, and
 :class:`~newton.solvers.SolverKamino` use maximal coordinates. For deformable
@@ -81,14 +81,6 @@ Supported Features
      - Cloth
      - Soft bodies
      - Differentiable
-   * - :class:`~newton.solvers.SolverFeatherPGS`
-     - Semi-implicit, implicit drives
-     - ✅
-     - ✅ generalized coordinates
-     - ❌
-     - ❌
-     - ❌
-     - ❌
    * - :class:`~newton.solvers.SolverFeatherstone`
      - Semi-implicit
      - ✅
@@ -129,6 +121,14 @@ Supported Features
      - 🟨 no self-collision
      - ✅
      - 🟨 basic :sup:`2`
+   * - :class:`~newton.solvers.SolverSteel`
+     - Semi-implicit, implicit drives
+     - ✅
+     - ✅ generalized coordinates
+     - ❌
+     - ❌
+     - ❌
+     - ❌
    * - :class:`~newton.solvers.SolverStyle3D`
      - Implicit
      - ❌
@@ -160,7 +160,7 @@ Supported Features
   see :ref:`Differentiability` for further details.
 
 .. experimental::
-    :class:`~newton.solvers.SolverFeatherPGS`'s public API and behavior may change without prior notice.
+    :class:`~newton.solvers.SolverSteel`'s public API and behavior may change without prior notice.
     Its default ``solve_mode="matrix_free"`` requires a CUDA device; ``solve_mode="split"`` runs on CPU and CUDA with the base feature set.
 
 .. experimental::
@@ -180,7 +180,7 @@ which fields are currently used by Newton's built-in solvers. External solvers
 may use different subsets or interpret these fields according to their own
 formulation.
 
-- ``mu``: :class:`~newton.solvers.SolverFeatherPGS` (arithmetic mean of the two
+- ``mu``: :class:`~newton.solvers.SolverSteel` (arithmetic mean of the two
   shapes, scaled by ``contact_friction_scale``), :class:`~newton.solvers.SolverFeatherstone`,
   :class:`~newton.solvers.SolverSemiImplicit`,
   :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverMuJoCo`,
@@ -195,7 +195,7 @@ formulation.
   :class:`~newton.solvers.SolverSemiImplicit`; ``kf`` is also used by
   :class:`~newton.solvers.SolverMuJoCo`
   (see :ref:`mujoco-contact-friction-solreffriction`).
-- ``restitution``: :class:`~newton.solvers.SolverFeatherPGS` (arithmetic mean of
+- ``restitution``: :class:`~newton.solvers.SolverSteel` (arithmetic mean of
   the two shapes, for impacts faster than ``restitution_velocity_threshold``, unless
   ``enable_restitution=False``),
   :class:`~newton.solvers.SolverXPBD` when ``enable_restitution=True``, and
@@ -216,7 +216,7 @@ Joint Feature Support
 Not every solver supports every joint type or joint property.
 The tables below document which joint features each solver handles.
 
-:class:`~newton.solvers.SolverFeatherstone`, :class:`~newton.solvers.SolverFeatherPGS`, and
+:class:`~newton.solvers.SolverFeatherstone`, :class:`~newton.solvers.SolverSteel`, and
 :class:`~newton.solvers.SolverMuJoCo` operate on :ref:`articulations <Articulations>` (generalized/reduced coordinates).
 The maximal-coordinate solvers (:class:`~newton.solvers.SolverSemiImplicit`,
 :class:`~newton.solvers.SolverXPBD`, and :class:`~newton.solvers.SolverKamino`)
@@ -234,7 +234,7 @@ constraints, with unified compliant ALM by default and a deprecated legacy AVBD 
 
    * - Joint type
      - :class:`~newton.solvers.SolverFeatherstone`
-     - :class:`~newton.solvers.SolverFeatherPGS`
+     - :class:`~newton.solvers.SolverSteel`
      - :class:`~newton.solvers.SolverSemiImplicit`
      - :class:`~newton.solvers.SolverXPBD`
      - :class:`~newton.solvers.SolverMuJoCo`
@@ -316,7 +316,7 @@ constraints, with unified compliant ALM by default and a deprecated legacy AVBD 
 
    * - Property
      - :class:`~newton.solvers.SolverFeatherstone`
-     - :class:`~newton.solvers.SolverFeatherPGS`
+     - :class:`~newton.solvers.SolverSteel`
      - :class:`~newton.solvers.SolverSemiImplicit`
      - :class:`~newton.solvers.SolverXPBD`
      - :class:`~newton.solvers.SolverMuJoCo`
@@ -390,7 +390,7 @@ constraints, with unified compliant ALM by default and a deprecated legacy AVBD 
 
    * - Feature
      - :class:`~newton.solvers.SolverFeatherstone`
-     - :class:`~newton.solvers.SolverFeatherPGS`
+     - :class:`~newton.solvers.SolverSteel`
      - :class:`~newton.solvers.SolverSemiImplicit`
      - :class:`~newton.solvers.SolverXPBD`
      - :class:`~newton.solvers.SolverMuJoCo`
@@ -430,7 +430,7 @@ constraints, with unified compliant ALM by default and a deprecated legacy AVBD 
 
    * - Feature
      - :class:`~newton.solvers.SolverFeatherstone`
-     - :class:`~newton.solvers.SolverFeatherPGS`
+     - :class:`~newton.solvers.SolverSteel`
      - :class:`~newton.solvers.SolverSemiImplicit`
      - :class:`~newton.solvers.SolverXPBD`
      - :class:`~newton.solvers.SolverMuJoCo`
@@ -466,11 +466,11 @@ constraints, with unified compliant ALM by default and a deprecated legacy AVBD 
 | :sup:`5` XPBD and VBD enforce joint-owned mimic relationships through coupled maximal-coordinate corrections. Both apply one mimic correction per solver iteration.
 | :sup:`6` MuJoCo lowers each joint-owned relationship to joint equality constraints. Multi-axis D6 relationships produce one equality constraint per axis.
 | :sup:`7` VBD interprets ``joint_target_kd`` and ``joint_limit_kd`` as absolute damping coefficients in physical units.
-| :sup:`8` FeatherPGS rejects models with disabled articulation joints instead of ignoring them; a disabled loop-closing joint starts as a released closure.
-| :sup:`9` FeatherPGS enforces joint limits as hard unilateral constraint rows when constructed with ``enable_joint_limits=True`` (off by default).
-| :sup:`10` FeatherPGS clamps the explicit joint drive force to the effort limit. With the default ``drive_mode="augmented"`` the implicit stiffness and damping response is unbounded, so under a large external load the drive reaction can exceed the limit; the PGS drive rows of ``drive_mode="rows"`` bound the complete reaction.
-| :sup:`11` FeatherPGS enforces velocity limits of PRISMATIC, REVOLUTE, and D6 DOFs when constructed with ``enable_joint_velocity_limits=True`` and ``solve_mode="matrix_free"``. With ``drive_mode="rows"``, driven DOFs are clamped at the end of every solver iteration instead of using velocity-limit rows (``fuse_joint_velocity_limits``).
-| :sup:`12` With ``solve_mode="matrix_free"``, FeatherPGS enforces each mimic relationship within one articulation as one bilateral constraint row per follower coordinate; mimics of BALL, FREE, and DISTANCE joints and mimics across articulations are rejected. It also enforces loop-closing BALL joints as point constraints. ``solve_mode="split"`` rejects mimic relationships and loop-closing joints; the propagation contact responses (``articulated_contact_response``) reject loop-closing joints and solve mimic rows iteratively.
+| :sup:`8` Steel rejects models with disabled articulation joints instead of ignoring them; a disabled loop-closing joint starts as a released closure.
+| :sup:`9` Steel enforces joint limits as hard unilateral constraint rows when constructed with ``enable_joint_limits=True`` (off by default).
+| :sup:`10` Steel clamps the explicit joint drive force to the effort limit. With the default ``drive_mode="augmented"`` the implicit stiffness and damping response is unbounded, so under a large external load the drive reaction can exceed the limit; the PGS drive rows of ``drive_mode="rows"`` bound the complete reaction.
+| :sup:`11` Steel enforces velocity limits of PRISMATIC, REVOLUTE, and D6 DOFs when constructed with ``enable_joint_velocity_limits=True`` and ``solve_mode="matrix_free"``. With ``drive_mode="rows"``, driven DOFs are clamped at the end of every solver iteration instead of using velocity-limit rows (``fuse_joint_velocity_limits``).
+| :sup:`12` With ``solve_mode="matrix_free"``, Steel enforces each mimic relationship within one articulation as one bilateral constraint row per follower coordinate; mimics of BALL, FREE, and DISTANCE joints and mimics across articulations are rejected. It also enforces loop-closing BALL joints as point constraints. ``solve_mode="split"`` rejects mimic relationships and loop-closing joints; the propagation contact responses (``articulated_contact_response``) reject loop-closing joints and solve mimic rows iteratively.
 | :sup:`13` See :ref:`Particle-body attachments` for authoring and semantics. Attachments spanning two
   solvers are coupled by :class:`~newton.solvers.experimental.coupled.SolverCoupledADMM` instead.
 

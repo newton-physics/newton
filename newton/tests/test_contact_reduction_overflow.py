@@ -192,7 +192,7 @@ def test_coupled_entry_contacts_keep_reduction_loss(test, device):
 
 
 def test_reducer_failures_reach_solver_status(test, device, solve_mode="matrix_free"):
-    """Latch FeatherPGS capacity status for every world when the reducer dropped contact candidates."""
+    """Latch Steel capacity status for every world when the reducer dropped contact candidates."""
     model = _boxes_on_mesh_model(device)
     state_0, state_1 = model.state(), model.state()
     control = model.control()
@@ -203,7 +203,7 @@ def test_reducer_failures_reach_solver_status(test, device, solve_mode="matrix_f
 
     pipeline = newton.CollisionPipeline(model, max_triangle_pairs=candidate_count - 2, verify_buffers=False)
     contacts = pipeline.contacts()
-    solver = newton.solvers.SolverFeatherPGS(model, solve_mode=solve_mode, warn_constraint_overflow=False)
+    solver = newton.solvers.SolverSteel(model, solve_mode=solve_mode, warn_constraint_overflow=False)
 
     # A lossless pass leaves the status clear.
     solver.step(state_0, state_1, control, reference_contacts, 1.0 / 60.0)

@@ -198,11 +198,11 @@ def test_featherstone_ball_joint_damping_decays_velocity(test: TestJointDamping,
     test.assertLess(damped_final, damped_initial * 0.85)
 
 
-def test_feather_pgs_ball_joint_damping_matches_featherstone(test: TestJointDamping, device):
-    """Decay FeatherPGS ball-joint speed with joint damping, as SolverFeatherstone does."""
+def test_steel_ball_joint_damping_matches_featherstone(test: TestJointDamping, device):
+    """Decay Steel ball-joint speed with joint damping, as SolverFeatherstone does."""
 
     def solver_fn(model):
-        return newton.solvers.SolverFeatherPGS(model, solve_mode="matrix_free" if model.device.is_cuda else "split")
+        return newton.solvers.SolverSteel(model, solve_mode="matrix_free" if model.device.is_cuda else "split")
 
     def featherstone_fn(model):
         return newton.solvers.SolverFeatherstone(model, angular_damping=0.0)
@@ -247,10 +247,8 @@ solvers = {
     "semi_implicit": (lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0), True),
     "kamino": (newton.solvers.SolverKamino, False),
     # The matrix-free solve is CUDA-only; split is the CPU route.
-    "feather_pgs": (
-        lambda model: newton.solvers.SolverFeatherPGS(
-            model, solve_mode="matrix_free" if model.device.is_cuda else "split"
-        ),
+    "steel": (
+        lambda model: newton.solvers.SolverSteel(model, solve_mode="matrix_free" if model.device.is_cuda else "split"),
         False,
     ),
 }
@@ -281,8 +279,8 @@ for device in devices:
     )
     add_function_test(
         TestJointDamping,
-        "test_feather_pgs_ball_joint_damping_matches_featherstone",
-        test_feather_pgs_ball_joint_damping_matches_featherstone,
+        "test_steel_ball_joint_damping_matches_featherstone",
+        test_steel_ball_joint_damping_matches_featherstone,
         devices=[device],
     )
     add_function_test(

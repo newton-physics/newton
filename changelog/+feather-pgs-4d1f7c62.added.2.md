@@ -1,1 +1,0 @@
-Add mimic joints, loop-closing BALL joints (including closures to a kinematic body or the world, released, engaged and re-anchored at runtime through `Model.joint_enabled`, `Model.joint_X_p` and `Model.joint_X_c`) and opt-in regularized bilateral pre-elimination (`enable_bilateral_preelimination`) to `SolverFeatherPGS`.
