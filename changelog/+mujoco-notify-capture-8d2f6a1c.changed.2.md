@@ -1,0 +1,1 @@
+Stop mirroring runtime joint-limit `solref` and tendon-limit parameter updates into `SolverMuJoCo.mj_model` on the MuJoCo Warp backend. Read `jnt_solref`, `tendon_solref_lim`, and `tendon_range` from `solver.mjw_model` for current per-world values instead of the host template's `solver.mj_model`.

@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from pxr import Usd
 
     from ..sim.builder import ModelBuilder
+    from ..usd._resolution_policy import _PhysicsMaterial
 
 # AOUSD SI fallbacks: density [kg/m^3], thickness [m], Young's modulus [Pa],
 # and dimensionless Poisson's ratio.
@@ -670,6 +671,31 @@ def _builder_body_xform(builder: ModelBuilder, body_id: int) -> wp.transform:
         wp.vec3(float(body_q[0]), float(body_q[1]), float(body_q[2])),
         wp.quat(float(body_q[3]), float(body_q[4]), float(body_q[5]), float(body_q[6])),
     )
+
+
+def _resolve_attachment_target(
+    ctx: _DeformableImportContext, target_path: str, local_point: wp.vec3
+) -> tuple[int, wp.vec3] | None:
+    """Resolve an attachment target to a body index and a point in that body's frame."""
+    if target_path in ("", "/"):
+        world_point = wp.transform_point(ctx.incoming_world_xform, local_point)
+        return -1, world_point
+
+    target_prim = ctx.stage.GetPrimAtPath(target_path)
+    if not target_prim or not target_prim.IsValid():
+        return None
+
+    target_mat = ctx.get_prim_world_mat(target_prim, None, ctx.incoming_world_xform)
+    world_point = wp.transform_point(target_mat, local_point)
+    body_path = ctx.get_rigid_body_ancestor_path(target_prim)
+    if body_path is None:
+        return -1, world_point
+
+    body = ctx.path_body_map.get(body_path)
+    if body is None:
+        return None
+    body_point = wp.transform_point(wp.transform_inverse(_builder_body_xform(ctx.builder, body)), world_point)
+    return body, body_point
 
 
 def _resolve_deformable_density(
@@ -1359,6 +1385,7 @@ class _DeformableImportContext:
     stage: Usd.Stage
     root_prim: Usd.Prim
     resolver: Any
+    material_specs: dict[str, _PhysicsMaterial]
     collect_schema_attrs: bool
     deformable_read: Callable
     get_prim_world_mat: Callable

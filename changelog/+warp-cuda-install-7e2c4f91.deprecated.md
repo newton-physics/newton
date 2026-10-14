@@ -1,0 +1,1 @@
+Deprecate CUDA 12 GPU support in Newton 1.7. Fresh installs select Warp 1.18, whose standard wheel requires an R580-series or newer driver. For drivers from R545 through R579, install Newton with `warp-lang==1.17.0` to retain GPU acceleration in this release.

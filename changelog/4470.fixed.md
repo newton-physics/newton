@@ -1,0 +1,1 @@
+Preserve winding in VBD drive and limit evaluation for revolute joints and D6 joints with one angular DOF, so targets beyond half a turn do not cause unintended continuous rotation. Multi-angular-axis D6 joints are unchanged.

@@ -586,9 +586,9 @@ def fill_collider_coupling_matrices(
         particle_j = collider.collider_particle_ids[flat_j]
         particle_k = collider.collider_particle_ids[flat_k]
 
-        w_j = query.u
-        w_k = query.v
-        w_i = 1.0 - w_j - w_k
+        w_i = query.u
+        w_j = query.v
+        w_k = 1.0 - w_i - w_j
 
         Id = wp.identity(n=3, dtype=float)
 

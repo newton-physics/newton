@@ -34,7 +34,7 @@ def _build_mimic_model(device, vectorized, *, kinematic_reference=False, small_m
     builder.add_articulation([reference, follower])
     offset = 0.1
     multiplier = -1.5
-    builder.set_joint_mimic(follower, reference, (offset, multiplier))
+    builder.set_joint_mimic(follower, reference, coeffs=(offset, multiplier))
     builder.color()
     model = builder.finalize(device=device)
     model.joint_q.assign(np.asarray(initial_q, dtype=np.float32))
@@ -187,11 +187,66 @@ def test_vbd_mimic(test, device):
     _test_solver_mimic(test, device, "vbd")
 
 
+def test_eval_mimic_selection(test, device):
+    """Select articulations without overwriting unselected output coordinates."""
+    builder = newton.ModelBuilder()
+    for _ in range(2):
+        reference_body, follower_body = builder.add_link(), builder.add_link()
+        reference = builder.add_joint_revolute(-1, reference_body)
+        follower = builder.add_joint_revolute(reference_body, follower_body)
+        builder.add_articulation([reference, follower])
+        builder.set_joint_mimic(follower, reference, coeffs=(0.5, -2.0))
+    model = builder.finalize(device=device)
+    state_in, state_out = model.state(), model.state()
+    q, qd = [1.0, 9.0, 2.0, 9.0], [3.0, 9.0, 4.0, 9.0]
+    mask = wp.array([False, True], dtype=bool, device=device)
+    indices = wp.array([-1, 1, 2], dtype=int, device=device)
+    cases = (
+        ({"mask": mask}, True),
+        ({"indices": indices}, True),
+        ({"mask": wp.zeros(2, dtype=bool, device=device)}, False),
+        ({"indices": wp.empty(0, dtype=int, device=device)}, False),
+    )
+    for selection, selected in cases:
+        for in_place in (False, True):
+            with test.subTest(selection=selection, in_place=in_place):
+                state_in.joint_q.assign(q)
+                state_in.joint_qd.assign(qd)
+                state_out.joint_q.fill_(-17.0)
+                state_out.joint_qd.fill_(-19.0)
+                result = state_in if in_place else state_out
+                expected_q, expected_qd = result.joint_q.numpy(), result.joint_qd.numpy()
+                if selected:
+                    expected_q[2:] = [2.0, -3.5]
+                    expected_qd[2:] = [4.0, -8.0]
+                newton.eval_mimic(model, state_in, None if in_place else state_out, **selection)
+                np.testing.assert_array_equal(result.joint_q.numpy(), expected_q)
+                np.testing.assert_array_equal(result.joint_qd.numpy(), expected_qd)
+                if not in_place:
+                    np.testing.assert_array_equal(state_in.joint_q.numpy(), q)
+                    np.testing.assert_array_equal(state_in.joint_qd.numpy(), qd)
+
+    with test.assertRaisesRegex(ValueError, "both mask and indices"):
+        newton.eval_mimic(model, state_in, mask=mask, indices=indices)
+
+    if device.is_cuda:
+        state_in.joint_q.assign(q)
+        state_in.joint_qd.assign(qd)
+        mask.zero_()
+        with wp.ScopedCapture(device=device) as capture:
+            newton.eval_mimic(model, state_in, mask=mask)
+        mask.assign([False, True])
+        wp.capture_launch(capture.graph)
+        np.testing.assert_array_equal(state_in.joint_q.numpy(), [1.0, 9.0, 2.0, -3.5])
+        np.testing.assert_array_equal(state_in.joint_qd.numpy(), [3.0, 9.0, 4.0, -8.0])
+
+
 class TestSolverMimic(unittest.TestCase):
     pass
 
 
 devices = get_test_devices()
+add_function_test(TestSolverMimic, "test_eval_mimic_selection", test_eval_mimic_selection, devices=devices)
 add_function_test(TestSolverMimic, "test_featherstone_mimic", test_featherstone_mimic, devices=devices)
 add_function_test(TestSolverMimic, "test_semi_implicit_mimic", test_semi_implicit_mimic, devices=devices)
 add_function_test(

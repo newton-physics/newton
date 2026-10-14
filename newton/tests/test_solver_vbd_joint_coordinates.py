@@ -3,6 +3,7 @@
 
 import math
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -93,9 +94,14 @@ def test_vbd_multiturn_drive_limit(test, device, *, solve="local"):
                     control = model.control()
                     control.joint_target_q.fill_(target)
                     state, next_state = model.state(), model.state()
-                    solver = newton.solvers.SolverVBD(
-                        model, iterations=16, rigid_compliant_alm=compliant, rigid_articulation_solve=solve
-                    )
+                    with warnings.catch_warnings():
+                        # Retain legacy-mode coverage without suppressing unrelated warnings.
+                        warnings.filterwarnings(
+                            "ignore", message="^rigid_compliant_alm=False is deprecated", category=DeprecationWarning
+                        )
+                        solver = newton.solvers.SolverVBD(
+                            model, iterations=16, rigid_compliant_alm=compliant, rigid_articulation_solve=solve
+                        )
                     for _ in range(480):
                         solver.step(state, next_state, control, None, 1.0 / 120.0)
                         state, next_state = next_state, state

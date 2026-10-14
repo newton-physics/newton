@@ -1008,7 +1008,7 @@ def apply_joint_forces(
     type = joint_type[tid]
     if not joint_enabled[tid]:
         return
-    if type == JointType.FIXED or type == JointType.ROD:
+    if type == JointType.FIXED:
         return
 
     # rigid body indices of the child and parent
@@ -1047,17 +1047,19 @@ def apply_joint_forces(
     t_total = wp.vec3()
     f_total = wp.vec3()
 
-    if type == JointType.FREE or type == JointType.DISTANCE:
+    if type == JointType.FREE or type == JointType.DISTANCE or type == JointType.ROD:
         f_total = wp.vec3(joint_f[qd_start + 0], joint_f[qd_start + 1], joint_f[qd_start + 2])
         t_total = wp.vec3(joint_f[qd_start + 3], joint_f[qd_start + 4], joint_f[qd_start + 5])
-        # Interpret free-joint forces as spatial wrench at the COM (same as body_f).
-        # Avoid adding a moment arm that would introduce torque for pure forces.
+        # The input wrench is world-frame and referenced at the child's COM.
         wp.atomic_add(body_f, id_c, wp.spatial_vector(f_total, t_total))
         if id_p >= 0:
-            wp.atomic_sub(body_f, id_p, wp.spatial_vector(f_total, t_total))
+            # Shift the reaction wrench to the parent's COM.
+            r_pc = wp.transform_point(pose_c, com_c) - wp.transform_point(pose_p, com_p)
+            t_parent = t_total + wp.cross(r_pc, f_total)
+            wp.atomic_sub(body_f, id_p, wp.spatial_vector(f_total, t_parent))
         # Record the contribution to the inbound joint wrench (used to populate
-        # ``State.body_parent_f``).  For FREE joints this is a diagnostic only;
-        # for DISTANCE joints the constraint solver adds its own contribution.
+        # ``SolverBase.Observables.body_parent_f``). For FREE and ROD joints this is
+        # diagnostic only; for DISTANCE joints the solver adds its contribution.
         # Convention: positive = wrench transmitted parent->child at child COM.
         if joint_impulse:
             wp.atomic_add(joint_impulse, tid, wp.spatial_vector(f_total, t_total) * dt)
@@ -1111,7 +1113,7 @@ def apply_joint_forces(
     wp.atomic_add(body_f, id_c, child_wrench_at_com)
 
     # Record the joint-f contribution to the inbound joint wrench (used to
-    # populate ``State.body_parent_f``).  We accumulate the child-side spatial
+    # populate ``SolverBase.Observables.body_parent_f``).  We accumulate the child-side spatial
     # wrench (linear ``[N]``, torque ``[N·m]`` at the child COM, world frame)
     # multiplied by ``dt`` so that the same `impulse / dt` conversion applied
     # in :func:`convert_joint_impulse_to_parent_f` recovers the wrench.
@@ -1270,7 +1272,7 @@ def solve_simple_body_joints(
 
     if not joint_enabled[tid]:
         return
-    if type == JointType.FREE:
+    if type == JointType.FREE or type == JointType.ROD:
         return
     if type == JointType.DISTANCE:
         return
@@ -1590,7 +1592,7 @@ def solve_body_joints(
 
     if not joint_enabled[tid]:
         return
-    if type == JointType.FREE:
+    if type == JointType.FREE or type == JointType.ROD:
         return
     # if type == JointType.FIXED:
     #     return
@@ -2106,7 +2108,7 @@ def _joint_mimic_effective_mass(
     return body_inv_m[body] * wp.length_sq(linear) + wp.dot(angular_body, body_inv_I[body] * angular_body)
 
 
-@wp.kernel
+@wp.kernel(module="unique")
 def solve_joint_mimics(
     body_q: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
@@ -2254,7 +2256,7 @@ def solve_joint_mimics(
             wp.atomic_add(joint_impulse, reference, impulse_reference_child * delta_lambda)
 
 
-@wp.kernel
+@wp.kernel(module="unique")
 def apply_joint_mimic_deltas(
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
@@ -2454,8 +2456,8 @@ def compute_angular_correction(
     return delta_lambda
 
 
-@wp.kernel
-def solve_body_contact_positions(
+@wp.func
+def _solve_body_contact_positions(
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
     body_flags: wp.array[wp.int32],
@@ -2466,6 +2468,7 @@ def solve_body_contact_positions(
     contact_count: wp.array[int],
     contact_point0: wp.array[wp.vec3],
     contact_point1: wp.array[wp.vec3],
+    contact_surface_velocity: wp.vec3,
     contact_offset0: wp.array[wp.vec3],
     contact_offset1: wp.array[wp.vec3],
     contact_normal: wp.array[wp.vec3],
@@ -2478,12 +2481,11 @@ def solve_body_contact_positions(
     shape_material_mu_rolling: wp.array[float],
     relaxation: float,
     dt: float,
-    # outputs
     deltas: wp.array[wp.spatial_vector],
     contact_inv_weight: wp.array[float],
     contact_impulse: wp.array[wp.spatial_vector],
+    tid: int,
 ):
-    tid = wp.tid()
 
     count = contact_count[0]
     if tid >= count:
@@ -2617,6 +2619,7 @@ def solve_body_contact_positions(
         if body_b >= 0 and (body_flags[body_b] & int(BodyFlags.KINEMATIC)) != 0:
             v_b = velocity_at_point(body_qd[body_b], r_b)
             rel_v_kin_t = rel_v_kin_t + (v_b - wp.dot(n, v_b) * n)
+        rel_v_kin_t += contact_surface_velocity - wp.dot(n, contact_surface_velocity) * n
         friction_delta += rel_v_kin_t * dt
 
         perp = wp.normalize(friction_delta)
@@ -2693,6 +2696,70 @@ def solve_body_contact_positions(
 
 
 @wp.kernel
+def solve_body_contact_positions(
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_flags: wp.array[wp.int32],
+    body_com: wp.array[wp.vec3],
+    body_m_inv: wp.array[float],
+    body_I_inv: wp.array[wp.mat33],
+    shape_body: wp.array[int],
+    contact_count: wp.array[int],
+    contact_point0: wp.array[wp.vec3],
+    contact_point1: wp.array[wp.vec3],
+    contact_surface_velocity: wp.array[wp.vec3],
+    contact_offset0: wp.array[wp.vec3],
+    contact_offset1: wp.array[wp.vec3],
+    contact_normal: wp.array[wp.vec3],
+    contact_thickness0: wp.array[float],
+    contact_thickness1: wp.array[float],
+    contact_shape0: wp.array[int],
+    contact_shape1: wp.array[int],
+    shape_material_mu: wp.array[float],
+    shape_material_mu_torsional: wp.array[float],
+    shape_material_mu_rolling: wp.array[float],
+    relaxation: float,
+    dt: float,
+    deltas: wp.array[wp.spatial_vector],
+    contact_inv_weight: wp.array[float],
+    contact_impulse: wp.array[wp.spatial_vector],
+):
+    tid = wp.tid()
+    surface_velocity = wp.vec3(0.0)
+    if contact_surface_velocity:
+        surface_velocity = contact_surface_velocity[tid]
+    _solve_body_contact_positions(
+        body_q,
+        body_qd,
+        body_flags,
+        body_com,
+        body_m_inv,
+        body_I_inv,
+        shape_body,
+        contact_count,
+        contact_point0,
+        contact_point1,
+        surface_velocity,
+        contact_offset0,
+        contact_offset1,
+        contact_normal,
+        contact_thickness0,
+        contact_thickness1,
+        contact_shape0,
+        contact_shape1,
+        shape_material_mu,
+        shape_material_mu_torsional,
+        shape_material_mu_rolling,
+        relaxation,
+        dt,
+        deltas,
+        contact_inv_weight,
+        contact_impulse,
+        tid,
+    )
+
+
+@wp.kernel
 def accumulate_weighted_contact_impulse(
     contact_count: wp.array[int],
     contact_impulse_iter: wp.array[wp.spatial_vector],
@@ -2762,7 +2829,7 @@ def convert_contact_impulse_to_force(
     # output
     contact_force: wp.array[wp.spatial_vector],
 ):
-    """Convert accumulated per-contact spatial impulse to ``contacts.force`` spatial vectors.
+    """Convert accumulated per-contact spatial impulse to contact-force output vectors.
 
     The XPBD lambda convention used in this solver already absorbs one power
     of ``dt`` (see ``compute_contact_constraint_delta``), so dividing the
@@ -2797,7 +2864,7 @@ def convert_joint_impulse_to_parent_f(
     # output
     body_parent_f: wp.array[wp.spatial_vector],
 ):
-    """Convert accumulated child-side joint impulse to ``state.body_parent_f``.
+    """Convert accumulated child-side joint impulse to a body-parent-wrench output.
 
     The accumulated ``joint_impulse[joint_id]`` contains two contributions:
 

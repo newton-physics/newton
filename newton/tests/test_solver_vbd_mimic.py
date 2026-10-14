@@ -65,7 +65,7 @@ class _MimicRig:
             else:
                 follower = builder.add_joint(newton.JointType.PRISMATIC, -1, child, linear_axes=[cfg])
             builder.add_articulation([reference, follower])
-            builder.set_joint_mimic(follower, reference, (offset, ratio))
+            builder.set_joint_mimic(follower, reference, coeffs=(offset, ratio))
             builder.joint_q[-2:] = [initial, offset + ratio * initial]
             if world >= 0:
                 builder.end_world()
@@ -175,7 +175,7 @@ def test_vbd_mimic_d6_coordinates(test, device):
         )
         joints.append(builder.add_joint_d6(-1, body, linear_axes=[cfg], angular_axes=[cfg]))
     builder.add_articulation(joints)
-    builder.set_joint_mimic(joints[1], joints[0], (0.0, 0.5))
+    builder.set_joint_mimic(joints[1], joints[0], coeffs=(0.0, 0.5))
     initial = 4.0 * math.pi + 0.2
     builder.joint_q[-4:] = [2.0, initial, 1.0, 0.5 * initial]
     builder.color()

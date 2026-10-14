@@ -148,6 +148,12 @@ class Mesh:
             ``compute_inertia`` is ``True``.
         com [m]: Mesh center of mass in local coordinates.
         inertia [kg*m^2]: Mesh inertia tensor about :attr:`com` in local coordinates.
+        enable_surface_velocity: If True, rigid contacts sample the finalized Warp
+            mesh's per-vertex velocities for contact friction.
+        mesh: Most recently finalized Warp mesh. Its ``velocities`` array may be
+            updated on the device to prescribe per-vertex surface motion [m/s].
+            Contact solvers use only the component tangent to the contact surface;
+            normal motion must be represented by updating the mesh geometry.
 
     Example:
         Load a mesh from an OBJ file using OpenMesh and create a Newton Mesh:
@@ -185,6 +191,7 @@ class Mesh:
         texture_transform: Sequence[Sequence[float]] | np.ndarray = ((1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
         sdf: "SDF | None" = None,
         opacity: float | None = None,
+        enable_surface_velocity: bool = False,
     ):
         """
         Construct a Mesh object from a triangle mesh.
@@ -210,6 +217,12 @@ class Mesh:
                 authored UV coordinates as ``(u', v') = M @ (u, v) + t``.
             sdf: Optional prebuilt SDF object owned by this mesh.
             opacity: Optional per-mesh opacity in [0, 1].
+            enable_surface_velocity: If ``True``, rigid contacts sample per-vertex
+                velocities from the finalized Warp mesh for friction. Solvers use
+                only the component tangent to the contact surface; normal motion
+                must be represented by updating the mesh geometry. Disabled by
+                default so ordinary mesh contacts incur no surface-velocity query
+                cost.
         """
         from .inertia import compute_inertia_mesh  # noqa: PLC0415
 
@@ -228,6 +241,7 @@ class Mesh:
         self._roughness = roughness
         self._metallic = metallic
         self.is_solid = is_solid
+        self.enable_surface_velocity = enable_surface_velocity
         self.has_inertia = compute_inertia
         self.mesh = None
         # Finalized wp.Mesh cache keyed by (device, requires_grad, bvh_constructor).
@@ -239,6 +253,7 @@ class Mesh:
             maxhullvert = Mesh.MAX_HULL_VERTICES
         self.maxhullvert = maxhullvert
         self._cached_hash = None
+        self._cached_render_attribute_hash = None
         self._texture_hash = None
         self._edges = None
         self._collision_edges: np.ndarray | None = None
@@ -800,6 +815,7 @@ class Mesh:
         m = Mesh(
             vertices,
             indices,
+            enable_surface_velocity=self.enable_surface_velocity,
             compute_inertia=recompute_inertia,
             is_solid=self.is_solid,
             maxhullvert=self.maxhullvert,
@@ -1160,8 +1176,11 @@ class Mesh:
         method automatically. Call it explicitly after modifying those arrays
         in place (e.g. ``mesh.vertices[0] = ...``), which bypasses the
         property setters and would otherwise leave stale cached data.
+        Also call this after modifying :attr:`normals` or :attr:`uvs` in place
+        to invalidate the rendering identity.
         """
         self._cached_hash = None
+        self._cached_render_attribute_hash = None
         self._edges = None
         self._collision_edges = None
         self._is_watertight = None
@@ -1672,6 +1691,17 @@ class Mesh:
             hull_mesh.inertia = self.inertia
             return hull_mesh
 
+    def _get_render_hash(self) -> int:
+        """Include vertex attributes without changing simulation mesh caching."""
+        if self._cached_render_attribute_hash is None:
+            self._cached_render_attribute_hash = hash(
+                (
+                    None if self._normals is None else self._normals.tobytes(),
+                    None if self._uvs is None else self._uvs.tobytes(),
+                )
+            )
+        return hash((hash(self), self._cached_render_attribute_hash))
+
     @override
     def __hash__(self) -> int:
         """
@@ -1725,17 +1755,9 @@ class Mesh:
         Returns:
             Mesh: A new Mesh instance.
         """
-        from ..usd.utils import get_mesh  # noqa: PLC0415
+        from ..usd._mesh_loading import _create_mesh  # noqa: PLC0415
 
-        if prim is not None:
-            if source is not None:
-                raise TypeError("Mesh.create_from_usd() received both 'source' and legacy 'prim'; pass only one.")
-            source = prim
-
-        result = get_mesh(source, **kwargs)
-        if isinstance(result, tuple):
-            return result[0]
-        return result
+        return _create_mesh(source, prim=prim, **kwargs)
 
     @staticmethod
     def create_from_file(filename: str, method: str | None = None, **kwargs) -> "Mesh":
@@ -2739,7 +2761,7 @@ class Gaussian:
             Gaussian.Data struct containing the Warp arrays.
         """
 
-        from ..sensors.warp_raytrace.gaussians import compute_gaussian_bvh_bounds  # noqa: PLC0415
+        from ..sensors.sensor_camera_render.gaussians import compute_gaussian_bvh_bounds  # noqa: PLC0415
 
         with wp.ScopedDevice(device):
             warp_data = Gaussian.Data()
@@ -2801,7 +2823,7 @@ class Gaussian:
         Reads positions (``x/y/z``), rotations (``rot_0..3``), scales
         (``scale_0..2``, stored as log-scale), opacities (logit-space),
         and SH coefficients (``f_dc_*``, ``f_rest_*``). Converts log-scale
-        and logit-opacity to linear values.
+        and logit-opacity to linear values. Requires Open3D 0.20 or newer.
 
         Args:
             filename: Path to a ``.ply`` file in standard 3DGS format.
@@ -2812,93 +2834,44 @@ class Gaussian:
         """
         import open3d as o3d
 
+        if tuple(int(part) for part in o3d.__version__.split(".")[:2]) < (0, 20):
+            raise ImportError(f"Gaussian.create_from_ply requires open3d>=0.20, found {o3d.__version__}")
+
         pcd = o3d.t.io.read_point_cloud(filename)
-        point_attrs = {name: np.asarray(tensor.numpy()) for name, tensor in pcd.point.items()}
+        point_attrs = {name: np.asarray(tensor.numpy(), dtype=np.float32) for name, tensor in pcd.point.items()}
 
         positions = point_attrs.get("positions")
         if positions is None:
             raise ValueError("PLY Gaussian point cloud is missing required 'positions' attribute")
-        positions = np.ascontiguousarray(np.asarray(positions, dtype=np.float32).reshape(-1, 3))
+        positions = np.ascontiguousarray(positions.reshape(-1, 3))
+        count = positions.shape[0]
 
-        def _get_point_attr(name: str, width: int | None = None) -> np.ndarray | None:
-            values = point_attrs.get(name)
-            if values is None:
-                return None
-
-            values = np.asarray(values, dtype=np.float32)
-            if width is None:
-                return np.ascontiguousarray(values.reshape(-1))
-            return np.ascontiguousarray(values.reshape(-1, width))
-
-        def _require_point_attr(name: str, message: str) -> np.ndarray:
-            values = _get_point_attr(name)
-            if values is None:
-                raise ValueError(message)
-            return values
-
-        # Rotations (quaternion w,x,y,z)
-        if "rot_0" in point_attrs:
-            missing_rotation = "PLY Gaussian point cloud is missing one or more rotation attributes"
-            rot_0 = _require_point_attr("rot_0", missing_rotation)
-            rot_1 = _require_point_attr("rot_1", missing_rotation)
-            rot_2 = _require_point_attr("rot_2", missing_rotation)
-            rot_3 = _require_point_attr("rot_3", missing_rotation)
-
-            rotations = np.stack([rot_1, rot_2, rot_3, rot_0], axis=1).astype(np.float32)
+        rotations = None
+        if "rot" in point_attrs:
+            # Open3D stores quaternions as wxyz.
+            rotations = np.ascontiguousarray(point_attrs["rot"].reshape(count, 4)[:, [1, 2, 3, 0]])
             rotations /= np.maximum(np.linalg.norm(rotations, axis=1, keepdims=True), 1e-12)
-        else:
-            rotations = None
 
-        # Scales (stored as log-scale in standard 3DGS)
-        if "scale_0" in point_attrs:
-            missing_scale = "PLY Gaussian point cloud is missing one or more scale attributes"
-            scale_0 = _require_point_attr("scale_0", missing_scale)
-            scale_1 = _require_point_attr("scale_1", missing_scale)
-            scale_2 = _require_point_attr("scale_2", missing_scale)
+        scales = None
+        if "scale" in point_attrs:
+            scales = point_attrs["scale"].reshape(count, 3)
+            # Open3D converts scales to linear only when all 3DGS attributes are present.
+            if not all(name in point_attrs for name in ("opacity", "rot", "f_dc")):
+                scales = np.exp(scales)
+            scales = np.ascontiguousarray(scales)
 
-            log_scales = np.stack([scale_0, scale_1, scale_2], axis=1).astype(np.float32)
-            scales = np.exp(log_scales)
-        else:
-            scales = None
-
-        # Opacities (stored in logit-space in standard 3DGS)
+        opacities = None
         if "opacity" in point_attrs:
-            logit_opacities = _get_point_attr("opacity")
-            opacities = 1.0 / (1.0 + np.exp(-logit_opacities))
-        else:
-            opacities = None
-
-        # Spherical harmonic coefficients
-        sh_dc_names = [f"f_dc_{i}" for i in range(3)]
-        has_sh_dc = all(name in point_attrs for name in sh_dc_names)
+            opacities = 1.0 / (1.0 + np.exp(-point_attrs["opacity"].reshape(-1)))
 
         sh_coeffs = None
-        if has_sh_dc:
-            sh_dc = np.stack(
-                [
-                    _require_point_attr(name, "PLY Gaussian point cloud is missing SH DC attributes")
-                    for name in sh_dc_names
-                ],
-                axis=1,
-            ).astype(np.float32)
-
-            rest_names = []
-            i = 0
-            while f"f_rest_{i}" in point_attrs:
-                rest_names.append(f"f_rest_{i}")
-                i += 1
-
-            if rest_names:
-                sh_rest = np.stack(
-                    [
-                        _require_point_attr(name, "PLY Gaussian point cloud is missing SH rest attributes")
-                        for name in rest_names
-                    ],
-                    axis=1,
-                ).astype(np.float32)
-                sh_coeffs = np.concatenate([sh_dc, sh_rest], axis=1)
-            else:
-                sh_coeffs = sh_dc
+        if "f_dc" in point_attrs:
+            sh_coeffs = point_attrs["f_dc"].reshape(count, 3)
+            if "f_rest" in point_attrs:
+                # Open3D stores f_rest basis-major (N, K, 3); restore the file's channel-major order.
+                sh_rest = point_attrs["f_rest"].reshape(count, -1, 3).transpose(0, 2, 1).reshape(count, -1)
+                sh_coeffs = np.concatenate([sh_coeffs, sh_rest], axis=1)
+            sh_coeffs = np.ascontiguousarray(sh_coeffs)
 
         return Gaussian(
             positions=positions,

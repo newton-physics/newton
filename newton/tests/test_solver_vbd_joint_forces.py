@@ -4,6 +4,7 @@
 """Check the optional VBD incoming-joint wrench reconstruction."""
 
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -33,9 +34,14 @@ def _make_joint_model(device, joint_type, *, friction=0.0, damping=0.0, **joint_
 
 def _setup(model, *, alm=True, solve="local"):
     """Allocate a solver, initialized states, and force-query buffers."""
-    solver = newton.solvers.SolverVBD(
-        model, iterations=64, rigid_compliant_alm=alm, rigid_avbd_alpha=0.0, rigid_articulation_solve=solve
-    )
+    with warnings.catch_warnings():
+        # Retain legacy-mode coverage without suppressing unrelated warnings.
+        warnings.filterwarnings(
+            "ignore", message="^rigid_compliant_alm=False is deprecated", category=DeprecationWarning
+        )
+        solver = newton.solvers.SolverVBD(
+            model, iterations=64, rigid_compliant_alm=alm, rigid_avbd_alpha=0.0, rigid_articulation_solve=solve
+        )
     state, next_state = model.state(), model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state)
     previous = wp.clone(state.body_q)
@@ -184,8 +190,8 @@ def test_vbd_joint_force_mimic(test, device, *, solve="local", standalone=False)
                     builder.add_joint_prismatic(-1, body, axis=newton.Axis.X, friction=friction[i], damping=damping[i])
                 )
             builder.add_articulation(joints)
-            builder.set_joint_mimic(joints[1], joints[0], (0.0, -1.0))
-            builder.set_joint_mimic(joints[2], joints[0], (0.0, 2.0))
+            builder.set_joint_mimic(joints[1], joints[0], coeffs=(0.0, -1.0))
+            builder.set_joint_mimic(joints[2], joints[0], coeffs=(0.0, 2.0))
             builder.joint_qd[:] = ratios.tolist()
             if standalone:
                 # Exercise the local-body sweep after the sparse assembly.

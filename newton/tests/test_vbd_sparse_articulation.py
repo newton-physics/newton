@@ -798,6 +798,15 @@ def _solve_offset_com_single_body_q(mode: str) -> np.ndarray:
 
 
 class TestVBDSparseArticulation(unittest.TestCase):
+    def setUp(self):
+        # Retain legacy-mode coverage without suppressing unrelated warnings.
+        catcher = warnings.catch_warnings()
+        catcher.__enter__()
+        self.addCleanup(catcher.__exit__, None, None, None)
+        warnings.filterwarnings(
+            "ignore", message="^rigid_compliant_alm=False is deprecated", category=DeprecationWarning
+        )
+
     def test_builder_rejects_closed_loop_articulation(self):
         """Reject closed-loop articulations unless the caller opts in."""
         builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
@@ -995,6 +1004,15 @@ class TestVBDSparseArticulation(unittest.TestCase):
 
 
 class TestVBDSparseArticulationDevices(unittest.TestCase):
+    def setUp(self):
+        # Retain legacy-mode coverage without suppressing unrelated warnings.
+        catcher = warnings.catch_warnings()
+        catcher.__enter__()
+        self.addCleanup(catcher.__exit__, None, None, None)
+        warnings.filterwarnings(
+            "ignore", message="^rigid_compliant_alm=False is deprecated", category=DeprecationWarning
+        )
+
     pass
 
 

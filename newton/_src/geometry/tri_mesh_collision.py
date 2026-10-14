@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -389,7 +390,7 @@ class TriMeshCollisionDetector:
         triangle_triangle_collision_buffer_pre_alloc=8,
         triangle_triangle_collision_buffer_max_alloc=256,
         edge_edge_parallel_epsilon=1e-5,
-        collision_detection_block_size=16,
+        collision_detection_block_size: int | None = None,
         collision_info: TriMeshCollisionInfo | None = None,
         init_collision_info: bool = False,
     ):
@@ -420,6 +421,7 @@ class TriMeshCollisionDetector:
             raise ValueError("model.soft_mesh_adjacency is missing; finalize the model with ModelBuilder.")
         self.mesh_adjacency = model.soft_mesh_adjacency.init_vertex_adjacency(model.particle_count)
 
+        # None picks the block size per kernel launch (see _edge_collision_block_size).
         self.collision_detection_block_size = collision_detection_block_size
 
         # Build each filter family independently: generate a side only when the caller did not
@@ -961,8 +963,13 @@ class TriMeshCollisionDetector:
             ],
             dim=self.model.particle_count,
             device=self.model.device,
-            block_dim=self.collision_detection_block_size,
+            block_dim=self._vertex_collision_block_size(),
         )
+
+    def _vertex_collision_block_size(self) -> int:
+        if self.collision_detection_block_size is None:
+            return 16
+        return self.collision_detection_block_size
 
     def edge_edge_collision_detection(
         self, max_query_radius, min_query_radius=0.0, min_distance_filtering_ref_pos=None
@@ -995,8 +1002,20 @@ class TriMeshCollisionDetector:
             ],
             dim=self.model.edge_count,
             device=self.model.device,
-            block_dim=self.collision_detection_block_size,
+            block_dim=self._edge_collision_block_size(),
         )
+
+    def _edge_collision_block_size(self) -> int:
+        if self.collision_detection_block_size is not None:
+            return self.collision_detection_block_size
+
+        # The per-edge BVH traversal diverges heavily within a warp. Launches too small to fill the
+        # GPU are latency bound and run fastest with few threads per block, while large launches
+        # need full warps for throughput. Aim for about 16 blocks per SM, clamped to [8, 32].
+        if not self.device.is_cuda:
+            return 16
+        blocks_per_sm = max(self.model.edge_count / (16 * self.device.sm_count), 1.0)
+        return int(min(32, max(8, 2 ** round(math.log2(blocks_per_sm)))))
 
     def triangle_triangle_intersection_detection(self):
         if self.triangle_intersecting_triangles is None:

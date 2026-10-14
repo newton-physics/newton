@@ -3,6 +3,7 @@
 
 import os
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 import warp as wp
@@ -1736,7 +1737,25 @@ devices = get_test_devices()
 
 
 class TestCollision(unittest.TestCase):
-    pass
+    def test_collision_detection_block_size_policy(self):
+        """Honor explicit block sizes and select bounded automatic values."""
+        detector = object.__new__(TriMeshCollisionDetector)
+        detector.model = SimpleNamespace(edge_count=1)
+        detector.device = SimpleNamespace(is_cuda=False)
+
+        detector.collision_detection_block_size = 0
+        self.assertEqual(detector._vertex_collision_block_size(), 0)
+        self.assertEqual(detector._edge_collision_block_size(), 0)
+
+        detector.collision_detection_block_size = None
+        self.assertEqual(detector._vertex_collision_block_size(), 16)
+        self.assertEqual(detector._edge_collision_block_size(), 16)
+
+        detector.device = SimpleNamespace(is_cuda=True, sm_count=10)
+        for edge_count, expected in ((1, 8), (1280, 8), (1920, 16), (2560, 16), (3840, 32), (1_000_000, 32)):
+            with self.subTest(edge_count=edge_count):
+                detector.model.edge_count = edge_count
+                self.assertEqual(detector._edge_collision_block_size(), expected)
 
 
 add_function_test(TestCollision, "test_vertex_triangle_collision", test_vertex_triangle_collision, devices=devices)

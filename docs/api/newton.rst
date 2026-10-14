@@ -30,9 +30,9 @@ newton
    Axis
    BodyFlags
    CollisionPipeline
+   CollisionSubstepScheduler
    Contacts
    Control
-   EqType
    Gaussian
    GeoType
    Heightfield
@@ -48,6 +48,9 @@ newton
    ShapeFlags
    State
    StateFlags
+   TendonGuide
+   TendonGuideFlags
+   TendonGuideType
    TetMesh
 
 .. rubric:: Functions
@@ -77,6 +80,6 @@ newton
    * - ``MAXVAL``
      - ``10000000000.0``
    * - ``__version__``
-     - ``1.7.0.dev0``
+     - ``1.8.0.dev0``
    * - ``use_coord_layout_targets``
      - ``True``

@@ -1,0 +1,1 @@
+Fix `SolverVBD` post-initialization rigid collision detection (`CollisionFrequencyType.PRE_POST_INIT`) reading stale particle positions from `state_out`; detection now uses the current `state_in` particle iterate.

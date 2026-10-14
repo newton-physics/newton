@@ -35,7 +35,7 @@ def _build_model(device, joint_type, damping, *, friction=None, serial=False, mi
             parent = body
     builder.add_articulation(joints)
     if mimic_ratio is not None:
-        builder.set_joint_mimic(joints[1], joints[0], (0.0, mimic_ratio))
+        builder.set_joint_mimic(joints[1], joints[0], coeffs=(0.0, mimic_ratio))
     builder.color()
     return builder.finalize(device=device)
 

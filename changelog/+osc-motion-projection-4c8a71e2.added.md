@@ -1,0 +1,1 @@
+Add optional `use_motion_wrench_projection` to operational-space controllers to reapply motion selection after inertia decoupling, reducing motion-induced stationary force bias with complementary motion and force masks.

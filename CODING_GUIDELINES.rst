@@ -20,7 +20,7 @@ General review concerns such as requirements fidelity, project fit,
 reviewability, and maintenance burden are covered by the
 :ref:`review-guidelines`.
 Release readiness is assessed by the
-`release-audit workflow <https://github.com/newton-physics/newton/tree/main/.claude/skills/release-audit>`__.
+`release-audit workflow <https://github.com/newton-physics/newton/tree/main/.agents/skills/release-audit>`__.
 
 In this document, *must* identifies a requirement, *should* identifies the
 normal choice from which a well-justified exception may be made, and *may*

@@ -7,6 +7,11 @@ name: Push - AWS GPU
 
 on:
   push:
+    tags:
+      - v*
+    branches:
+      - main
+      - release-*
     paths-ignore:
       - "docs/**"
       - "**.md"

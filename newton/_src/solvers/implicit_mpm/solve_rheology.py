@@ -438,6 +438,7 @@ class _DelassusOperator:
         self._computed = False
         self._split_mass = False
         self._mass_multiplicity_used = False
+        self._majorize = False
 
         self._has_strain_mat_transpose = False
 
@@ -448,6 +449,7 @@ class _DelassusOperator:
         split_mass: bool = False,
         strain_batch: wp.array | None = None,
         mass_multiplicity: wp.array | None = None,
+        majorize: bool = False,
     ):
         """Compute or recompute the Delassus diagonal eigendecomposition.
 
@@ -461,12 +463,14 @@ class _DelassusOperator:
             mass_multiplicity: Pre-computed per-batch per-velocity-node
                 multiplicity (float 2D array, shape ``[n_batches, n_vel]``).
                 Overrides *split_mass* when provided.
+            majorize: Bound spherical/deviatoric coupling for nonlinear updates.
         """
         if (
             mass_multiplicity is None
             and self._computed
             and not self._mass_multiplicity_used
             and self._split_mass == split_mass
+            and self._majorize == majorize
         ):
             return
 
@@ -512,6 +516,7 @@ class _DelassusOperator:
                 self.rheology.compliance_mat.values,
                 batch_map,
                 mult,
+                majorize,
             ],
             outputs=[
                 self.delassus_rotation,
@@ -522,6 +527,7 @@ class _DelassusOperator:
         self._computed = True
         self._split_mass = split_mass
         self._mass_multiplicity_used = mass_multiplicity is not None
+        self._majorize = majorize
 
     def require_strain_mat_transpose(self):
         if not self._has_strain_mat_transpose:
@@ -634,13 +640,15 @@ class _RheologySolver:
         self.device = self.momentum.velocity.device
 
         self.delta_stress = fem.borrow_temporary_like(self.rheology.stress, temporary_store)
+        # Colored solvers only write active strain nodes; the residual reads every entry.
+        self.delta_stress.zero_()
         self.strain_residual = fem.borrow_temporary(
             temporary_store, shape=(self.size,), dtype=float, device=self.device
         )
         self.strain_residual.zero_()
 
         if not skip_factorization:
-            self.delassus_operator.compute_diagonal_factorization(split_mass)
+            self.delassus_operator.compute_diagonal_factorization(split_mass, majorize=True)
 
         self._evaluate_strain_residual_launch = wp.launch(
             kernel=evaluate_strain_residual,
@@ -834,7 +842,7 @@ class _ReorderedGaussSeidelSolver(_RheologySolver):
             device=self.device,
         )
 
-        # Expand color blocks into flat constraint IDs (fully written by kernel)
+        # Expand color blocks into flat constraint IDs (kernel writes the colored prefix)
         self._flat_constraint_ids = fem.borrow_temporary(
             temporary_store, shape=(n_total,), dtype=int, device=self.device
         )
@@ -872,6 +880,7 @@ class _ReorderedGaussSeidelSolver(_RheologySolver):
             kernel=reorder_strain_mat,
             dim=n_total,
             inputs=[
+                self._flat_color_offsets,
                 self._flat_constraint_ids,
                 self.rheology.strain_mat.offsets,
                 self.rheology.strain_mat.columns,
@@ -1076,6 +1085,7 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
             kernel=reorder_strain_mat,
             dim=n_total,
             inputs=[
+                self._flat_color_offsets,
                 self._flat_constraint_ids,
                 self.rheology.strain_mat.offsets,
                 self.rheology.strain_mat.columns,
@@ -1126,6 +1136,7 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
         self.delassus_operator.compute_diagonal_factorization(
             strain_batch=self._strain_batch,
             mass_multiplicity=batch_sharing,
+            majorize=True,
         )
 
         # ── Launch config ────────────────────────────────────────────────
@@ -1434,7 +1445,7 @@ class _LinearSolver:
         self._method_fn = _ITERATIVE_LINEAR_SOLVERS[method]
 
         self.delassus_operator.require_strain_mat_transpose()
-        self.delassus_operator.compute_diagonal_factorization(split_mass=False)
+        self.delassus_operator.compute_diagonal_factorization(split_mass=False, majorize=False)
 
         self.delta_velocity = fem.borrow_temporary_like(self.momentum.velocity, temporary_store)
 

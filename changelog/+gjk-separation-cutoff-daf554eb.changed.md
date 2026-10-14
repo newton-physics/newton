@@ -1,0 +1,1 @@
+Speed up convex contact generation by stopping the GJK distance query once a support-plane bound shows a candidate pair is separated by more than its contact threshold plus a float32 rounding margin; such pairs still produce no contacts. No migration is required.
