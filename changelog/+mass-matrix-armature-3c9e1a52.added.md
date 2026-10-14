@@ -1,1 +1,0 @@
-Add an `include_armature` option to `newton.eval_mass_matrix()`, `newton.eval_inverse_dynamics_passive()` and the matching `ArticulationView` methods that adds `Model.joint_armature` to the joint-space inertia.
