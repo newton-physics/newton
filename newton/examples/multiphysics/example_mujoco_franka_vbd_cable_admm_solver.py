@@ -219,7 +219,6 @@ class Example:
             return lambda v: SolverVBD(
                 model=v,
                 iterations=vbd_iterations,
-                rigid_compliant_alm=True,
                 rigid_contact_history=False,
             )
         if self.payload_kind == "xpbd-chain":
@@ -285,6 +284,7 @@ class Example:
             enable_self_collisions=False,
             parse_visuals_as_colliders=False,
             force_show_colliders=False,
+            joint_damping_mode="passive",
         )
         builder.joint_q[: len(FRANKA_Q)] = FRANKA_Q
         builder.joint_target_q[: len(FRANKA_Q)] = FRANKA_Q

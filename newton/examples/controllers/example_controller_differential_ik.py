@@ -351,7 +351,7 @@ class Example:
 
         # Set such that Franka at y=0, UR10 at y=1.8, planar arm at y=3.6,
         # and the 5-DOF arm at y=5.4 are all in view together.
-        self.viewer.set_camera(pos=wp.vec3(4.0, -2.4, 3.0), pitch=-20.0, yaw=15.0)
+        self.viewer.set_camera(pos=wp.vec3(4.0, -2.4, 3.0), pitch=-22.6114, yaw=125.2176)
         if hasattr(self.viewer, "camera"):
             self.viewer.camera.look_at(wp.vec3(0.4, 2.7, 0.4))
 
@@ -377,7 +377,12 @@ class Example:
         joint_count_before = builder.joint_count
         coord_count_before = builder.joint_coord_count
         body_count_before = builder.body_count
-        builder.add_urdf(urdf_path, xform=wp.transform(base_position, wp.quat_identity()), floating=False)
+        builder.add_urdf(
+            urdf_path,
+            xform=wp.transform(base_position, wp.quat_identity()),
+            floating=False,
+            joint_damping_mode="passive",
+        )
 
         # fr3_joint1..7 are the first 7 non-fixed joints after the (fixed,
         # 0-coordinate) base/mount joints this URDF starts with; the finger

@@ -80,6 +80,70 @@ def _make_box_model(device: str | wp.Device):
     return builder.finalize(device=device)
 
 
+class TestRenderingPauseGL(unittest.TestCase):
+    def test_freeze_capture_resize_and_resume(self):
+        """Keep an image stable through logging, resize, and UI-driven toggles."""
+        with wp.ScopedDevice("cpu"):
+            viewer = _make_headless_viewer_gl_or_skip(self)
+        self.addCleanup(viewer.close)
+        model = _make_box_model("cpu")
+        viewer.set_model(model)
+        state = model.state()
+        before = np.zeros((48, 64, 3), dtype=np.uint8)
+        before[:24, :, 0] = 255
+        before[24:, :, 1] = 255
+        after = np.zeros_like(before)
+        after[:, :, 2] = 255
+
+        viewer.set_rendering_paused(True)
+        viewer.begin_frame(0.0)
+        viewer.end_frame()
+        with self.assertRaisesRegex(RuntimeError, "displayed frame"):
+            viewer.get_frame()
+        viewer.set_rendering_paused(False)
+        viewer.begin_frame(1.0)
+        viewer.log_image("sensor", before, fullscreen=True)
+        viewer.end_frame()
+        reference = viewer.get_frame().numpy().copy()
+        np.testing.assert_array_equal(reference, before)
+
+        gui = mock.Mock()
+        gui.prepare_frame.side_effect = lambda: viewer.set_rendering_paused(True)
+        viewer.gui = gui
+        viewer.begin_frame(2.0)
+        viewer.log_state(state)
+        with mock.patch.object(viewer.renderer, "render", wraps=viewer.renderer.render) as render:
+            viewer.end_frame()
+            render.assert_not_called()
+        np.testing.assert_array_equal(viewer.get_frame().numpy(), reference)
+        np.testing.assert_array_equal(viewer._displayed_frame.pixels()[::-1, :, :3], reference)
+        gui.render_prepared_frame.assert_called_once()
+        viewer.gui = None
+
+        viewer.renderer.window.set_size(128, 96)
+        viewer.renderer._on_window_resize(128, 96)
+        viewer.begin_frame(3.0)
+        viewer.log_image("sensor", after, fullscreen=True)
+        viewer.end_frame()
+        resized = viewer.get_frame().numpy()
+        self.assertEqual(resized.shape, (96, 128, 3))
+        np.testing.assert_array_equal(resized[10, 10], [255, 0, 0])
+        np.testing.assert_array_equal(resized[80, 10], [0, 255, 0])
+
+        viewer.set_rendering_paused(False)
+        viewer.begin_frame(4.0)
+        viewer.log_image("sensor", after, fullscreen=True)
+        viewer.end_frame()
+        np.testing.assert_array_equal(viewer.get_frame().numpy()[10, 10], [0, 0, 255])
+        viewer.set_rendering_paused(True)
+        viewer.clear_model()
+        viewer.begin_frame(5.0)
+        viewer.end_frame()
+        self.assertTrue(viewer.is_rendering_paused())
+        with self.assertRaises(RuntimeError):
+            viewer.get_frame()
+
+
 class _FakeGL:
     GL_PIXEL_PACK_BUFFER = 0x88EB
     GL_STREAM_READ = 0x88E1
@@ -164,7 +228,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
             self.assertGreater(np.ptp(frame.numpy()), 0)
 
             target = wp.empty(shape=(48, 64, 3), dtype=wp.uint8, device=cpu_device)
-            self.assertIs(viewer.get_frame(target_image=target), target)
+            self.assertIs(viewer.get_frame(output=target), target)
 
             viewer._invalidate_pbo()
             self.assertEqual(viewer.get_frame().shape, (48, 64, 3))
@@ -380,6 +444,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
         ).reshape(-1)
         fake_gl = _FakeGL(pixels)
         viewer = ViewerGL.__new__(ViewerGL)
+        viewer._rendering_paused = False
         viewer.device = wp.get_device("cpu")
         viewer.renderer = SimpleNamespace(
             _screen_width=2,
@@ -400,6 +465,18 @@ class TestViewerGLGetFrame(unittest.TestCase):
             ),
         ):
             frame = viewer.get_frame()
+            output = wp.empty_like(frame)
+            self.assertIs(viewer.get_frame(output=output), output)
+            np.testing.assert_array_equal(output.numpy(), frame.numpy())
+
+            with self.assertWarnsRegex(DeprecationWarning, "target_image.*output"):
+                self.assertIs(viewer.get_frame(target_image=output), output)
+            with self.assertWarnsRegex(DeprecationWarning, "Passing 'output' positionally"):
+                self.assertIs(viewer.get_frame(output), output)
+            with self.assertWarnsRegex(DeprecationWarning, "Passing 'output', 'render_ui' positionally"):
+                self.assertIs(viewer.get_frame(output, False), output)
+            with self.assertRaisesRegex(TypeError, "output.*target_image"):
+                viewer.get_frame(output=output, target_image=output)
 
         np.testing.assert_array_equal(
             frame.numpy(),
@@ -412,7 +489,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
             ),
         )
         self.assertEqual(frame.device, wp.get_device("cpu"))
-        self.assertEqual(fake_gl.readback_count, 1)
+        self.assertEqual(fake_gl.readback_count, 5)
 
     def test_texture_affine_transform_matches_authored_coordinates(self):
         """Apply a UsdTransform2d affine mapping exactly once before GL sampling."""

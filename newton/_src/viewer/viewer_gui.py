@@ -21,13 +21,13 @@ from time import perf_counter
 from typing import Any, Literal
 
 import numpy as np
-import warp as wp
 
 import newton as nt
 from newton.selection import ArticulationView
 
 from ..core.types import Axis
 from .gl.gui import UI
+from .transform import transform_assign, transform_assign_matrix, transform_to_matrix
 
 # Width of the left sidebar in logical (96-DPI) pixels.
 _SIDEBAR_WIDTH_PX = 300.0
@@ -58,6 +58,7 @@ class ViewerGui:
 
         # Gizmo active-frame tracking (handles snap_to on release)
         self._gizmo_active = {}
+        self._frame_prepared = False
 
         # FPS tracking
         self._fps_history: list[float] = []
@@ -111,7 +112,15 @@ class ViewerGui:
             return False
         return bool(self.ui.io.want_capture_keyboard)
 
+    def on_rendering_paused(self) -> None:
+        """Release camera motion and gizmos when the displayed image freezes."""
+        self._cam_vel.fill(0.0)
+        self._gizmo_active.clear()
+        self._viewer.gizmo_is_using = False
+
     def should_ignore_mouse_input(self, allow_active_pick_drag: bool = False) -> bool:
+        if self._viewer.is_rendering_paused():
+            return True
         if allow_active_pick_drag and self.is_pick_active():
             return False
         return self.is_mouse_capturing()
@@ -148,7 +157,7 @@ class ViewerGui:
 
     def update_camera_from_keys(self, dt: float, is_key_down):
         """Update camera position from WASD/QE keys. Uses same speed and damping as ViewerGL."""
-        if self.is_capturing():
+        if self.is_capturing() or self._viewer.is_rendering_paused():
             return
         camera = getattr(self._viewer, "camera", None)
         if camera is None:
@@ -204,6 +213,8 @@ class ViewerGui:
     def frame_camera_on_model(self):
         """Frame the camera to show all visible objects in the scene."""
         viewer = self._viewer
+        if viewer.is_rendering_paused():
+            return
         if getattr(viewer, "model", None) is None:
             return
         from pyglet.math import Vec3 as PyVec3
@@ -436,6 +447,12 @@ class ViewerGui:
 
     def render_frame(self, update_fps: bool = True):
         """Render GUI into the active OpenGL framebuffer."""
+        self.prepare_frame(update_fps=update_fps)
+        self.render_prepared_frame()
+
+    def prepare_frame(self, update_fps: bool = True):
+        """Process UI actions before the viewer chooses its next scene image."""
+        self._frame_prepared = False
         if update_fps:
             self._update_fps()
         if not self.is_available:
@@ -448,7 +465,13 @@ class ViewerGui:
         if self._loading_splash_active:
             self._render_loading_splash()
         self.ui.end_frame()
-        self.ui.render()
+        self._frame_prepared = True
+
+    def render_prepared_frame(self):
+        """Draw the prepared UI over the scene without processing actions twice."""
+        if self._frame_prepared:
+            self.ui.render()
+            self._frame_prepared = False
 
     def register_ui_callback(
         self,
@@ -496,6 +519,8 @@ class ViewerGui:
     def _render_gizmos(self):
         viewer = self._viewer
         if not self.is_available:
+            return
+        if viewer.is_rendering_paused():
             return
         if not hasattr(viewer, "_gizmo_log") or not viewer._gizmo_log:
             self._gizmo_active.clear()
@@ -580,13 +605,13 @@ class ViewerGui:
             was_active = self._gizmo_active.get(gid, False)
             if not ops:
                 if was_active and snap_to is not None:
-                    transform[:] = snap_to
+                    transform_assign(transform, snap_to)
                 self._gizmo_active[gid] = False
                 continue
 
             giz.push_id(str(gid))
 
-            M = wp.transform_to_matrix(transform)
+            M = transform_to_matrix(transform)
             M_ = m44_to_mat16(M)
 
             op_modified = False
@@ -600,10 +625,10 @@ class ViewerGui:
                 is_active = op_modified or (was_active and any_gizmo_is_using)
 
             if was_active and not is_active and snap_to is not None:
-                transform[:] = snap_to
+                transform_assign(transform, snap_to)
             else:
                 M[:] = M_.values.reshape(4, 4, order="F")
-                transform[:] = wp.transform_from_matrix(M)
+                transform_assign_matrix(transform, M)
 
             self._gizmo_active[gid] = is_active
 
@@ -725,8 +750,8 @@ class ViewerGui:
         if not self.is_available:
             return
 
-        self._render_gizmos()
         self._render_left_panel()
+        self._render_gizmos()
         self._render_stats_overlay()
         self._render_scalar_plots()
         self._render_logged_images()
@@ -768,6 +793,13 @@ class ViewerGui:
         if imgui.begin(f"Newton Viewer v{nt.__version__}", flags=flags):
             imgui.separator()
             header_flags = 0
+
+            changed, paused = imgui.checkbox("Pause Rendering", viewer.is_rendering_paused())
+            if changed:
+                viewer.set_rendering_paused(paused)
+            if paused:
+                imgui.text_disabled("Image frozen")
+            imgui.separator()
 
             # Run controls — shown once a model is loaded
             if viewer.model is not None:

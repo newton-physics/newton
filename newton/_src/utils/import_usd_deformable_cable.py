@@ -933,7 +933,6 @@ def _deformable_prepare_cable_topology(
             cfg=cfg,
             label=cid,
             wrap_in_articulation=True,
-            body_frame_origin="com",
         )
         edge_radii = [curve_recs[key].segment_radii[segment] for key, segment in edge_owner]
         body_radii = dict(zip(body_ids, edge_radii, strict=True))
@@ -1309,7 +1308,6 @@ def _deformable_import_cable(
                         cfg=cable_cfg,
                         label=label,
                         wrap_in_articulation=True,
-                        body_frame_origin="com",
                     )
             else:
                 articulation_root_joints: list[int] = []

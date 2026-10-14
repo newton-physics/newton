@@ -54,8 +54,10 @@ class TestModelAttributeSpecs(unittest.TestCase):
         np.testing.assert_array_equal(target.numpy(), [2.0])
 
     def test_attribute_frequencies_have_count_metadata(self):
-        model = newton.Model(device="cpu")
+        """Resolve every indexed frequency through its declared count attribute."""
+        model = newton.ModelBuilder().finalize(device="cpu")
         frequency = newton.Model.AttributeFrequency
+        self.assertEqual(len(frequency.__members__), len(frequency), "Attribute frequencies must have distinct values.")
         expected_count_frequencies = set(frequency).difference({frequency.ONCE})
         actual_count_frequencies = set(model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS)
         self.assertEqual(
@@ -65,6 +67,7 @@ class TestModelAttributeSpecs(unittest.TestCase):
             "Add a count-attribute mapping for each new frequency and remove mappings for deleted frequencies.",
         )
 
+        newton.CollisionPipeline(model, rigid_contact_max=5, soft_contact_max=3)
         for attribute_frequency, count_attribute in model._ATTRIBUTE_FREQUENCY_COUNT_ATTRS.items():
             with self.subTest(frequency=attribute_frequency):
                 self.assertTrue(
@@ -1004,6 +1007,26 @@ class TestModelMesh(unittest.TestCase):
         with patch_sys_module("coacd", fake_coacd):
             builder.approximate_meshes(method="coacd", shape_indices=[shape], threshold=0.2)
         self.assertEqual(captured["threshold"], 0.2)
+
+    def test_mesh_approximation_coacd_limits_hull_vertices(self):
+        """Limit each CoACD part to the source mesh's maxhullvert."""
+
+        sphere = newton.Mesh.create_sphere(compute_normals=False, compute_uvs=False, compute_inertia=False)
+        faces = sphere.indices.reshape(-1, 3)
+        parts = [(sphere.vertices, faces), (sphere.vertices + 3.0, faces)]
+        fake_coacd = SimpleNamespace(Mesh=lambda vertices, indices: None, run_coacd=lambda _mesh, **_kwargs: parts)
+        builder = ModelBuilder()
+        # Identical geometry with different limits must not share a cached decomposition.
+        for maxhullvert in (8, 16):
+            mesh = newton.Mesh(sphere.vertices, sphere.indices, compute_inertia=False, maxhullvert=maxhullvert)
+            builder.add_shape_mesh(body=-1, mesh=mesh)
+        with patch_sys_module("coacd", fake_coacd):
+            builder.approximate_meshes(method="coacd", raise_on_failure=True)
+
+        self.assertEqual(builder.shape_count, 4)
+        for shape in range(builder.shape_count):
+            mesh = builder.shape_source[shape]
+            self.assertEqual(len(mesh.vertices), mesh.maxhullvert)
 
     def test_mesh_approximation_coacd_unavailable_falls_back_to_convex_hull(self):
         builder = ModelBuilder()
@@ -3727,7 +3750,7 @@ class TestModelJoints(unittest.TestCase):
         follower = builder.add_joint_revolute(parent=bodies[0], child=bodies[1], axis=newton.Axis.Z)
         builder.add_articulation([reference, follower])
 
-        builder.set_joint_mimic(follower, reference, (0.5, 2.0))
+        builder.set_joint_mimic(follower, reference, coeffs=(0.5, 2.0))
 
         self.assertEqual(builder.joint_mimic_joint, [-1, reference])
         np.testing.assert_allclose(
@@ -3769,7 +3792,7 @@ class TestModelJoints(unittest.TestCase):
         reference = builder.add_joint_d6(parent=-1, child=bodies[0], linear_axes=axes)
         follower = builder.add_joint_d6(parent=bodies[0], child=bodies[1], linear_axes=axes)
         builder.add_articulation([reference, follower])
-        builder.set_joint_mimic(follower, reference, (-0.5, 2.0))
+        builder.set_joint_mimic(follower, reference, coeffs=(-0.5, 2.0))
 
         model = builder.finalize()
         state = model.state()

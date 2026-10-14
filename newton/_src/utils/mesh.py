@@ -606,7 +606,7 @@ class MeshAdjacency:
             return self
 
         if _has_entries(self.edge_indices):
-            self.v_adj_edges, self.v_adj_edges_offsets = _build_vertex_adjacency_with_warp(
+            self.v_adj_edges, self.v_adj_edges_offsets = build_vertex_adjacency_with_warp(
                 _as_cpu_int_array2d(self.edge_indices, 4),
                 particle_count,
                 count_kernel=_count_num_adjacent_edges,
@@ -617,7 +617,7 @@ class MeshAdjacency:
             self.v_adj_edges, self.v_adj_edges_offsets = _empty_vertex_adjacency()
 
         if _has_entries(self.indices):
-            self.v_adj_tris, self.v_adj_tris_offsets = _build_vertex_adjacency_with_warp(
+            self.v_adj_tris, self.v_adj_tris_offsets = build_vertex_adjacency_with_warp(
                 _as_cpu_int_array2d(self.indices, 3),
                 particle_count,
                 count_kernel=_count_num_adjacent_tris,
@@ -628,7 +628,7 @@ class MeshAdjacency:
             self.v_adj_tris, self.v_adj_tris_offsets = _empty_vertex_adjacency()
 
         if _has_entries(self.tet_indices):
-            self.v_adj_tets, self.v_adj_tets_offsets = _build_vertex_adjacency_with_warp(
+            self.v_adj_tets, self.v_adj_tets_offsets = build_vertex_adjacency_with_warp(
                 _as_cpu_int_array2d(self.tet_indices, 4),
                 particle_count,
                 count_kernel=_count_num_adjacent_tets,
@@ -639,7 +639,7 @@ class MeshAdjacency:
             self.v_adj_tets, self.v_adj_tets_offsets = _empty_vertex_adjacency()
 
         if _has_entries(self.spring_indices):
-            self.v_adj_springs, self.v_adj_springs_offsets = _build_vertex_adjacency_with_warp(
+            self.v_adj_springs, self.v_adj_springs_offsets = build_vertex_adjacency_with_warp(
                 _as_cpu_int_array1d(self.spring_indices),
                 particle_count,
                 count_kernel=_count_num_adjacent_springs,
@@ -894,7 +894,7 @@ def _empty_vertex_adjacency() -> tuple[np.ndarray, np.ndarray]:
     return np.empty(0, dtype=np.int32), np.empty(0, dtype=np.int32)
 
 
-def _build_vertex_adjacency_with_warp(
+def build_vertex_adjacency_with_warp(
     topology: wp.array,
     particle_count: int,
     *,
@@ -902,10 +902,15 @@ def _build_vertex_adjacency_with_warp(
     fill_kernel,
     values_per_entry: int,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Build vertex-adjacency CSR arrays (NumPy) using the VBD count/fill Warp kernels on CPU.
+    """Build a CSR adjacency (NumPy) from ``particle_count`` buckets to topology entries.
 
-    The kernels run on CPU; results are copied out to NumPy so the host
-    ``MeshAdjacency`` stays free of Warp arrays (``to`` re-uploads on demand).
+    Generic count/fill driver: ``count_kernel`` and ``fill_kernel`` interpret ``topology``
+    and write per-bucket counts/values; this function turns those into offsets and a values
+    array via a prefix sum. Used for mesh vertex adjacency (edges/triangles/tets/springs) and
+    for other topology-to-bucket adjacency structures outside of mesh vertex data.
+
+    The kernels run on CPU; results are copied out to NumPy so the caller stays free of
+    Warp arrays (``wp.array(..., device=...)`` re-uploads on demand).
     """
     with wp.ScopedDevice("cpu"):
         counts = wp.zeros(shape=(particle_count,), dtype=wp.int32, device="cpu")
