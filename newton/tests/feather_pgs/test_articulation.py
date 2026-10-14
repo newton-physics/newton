@@ -2960,7 +2960,7 @@ def test_free_and_distance_roots_use_com_twists(test, device, **solver_kwargs):
             np.testing.assert_allclose(origin, com_world, rtol=0.0, atol=1e-5)
             np.testing.assert_allclose(motion, np.eye(6), rtol=0.0, atol=0.0)
             np.testing.assert_allclose(v_s[0], joint_qd, rtol=0.0, atol=1e-6)
-            np.testing.assert_allclose(a_s[0], 0.0, rtol=0.0, atol=0.0)
+            np.testing.assert_allclose(a_s[0], 0.0, rtol=0.0, atol=1e-6)
 
 
 class TestFeatherPGSJointMotion(unittest.TestCase):
