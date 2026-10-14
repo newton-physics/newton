@@ -37,11 +37,15 @@ class SearchOutcome:
     """The best ``(loss, vector)`` so far after each iteration. Entry 0 is the scored start."""
 
     stop_reason: str
-    """Why the search stopped, for example ``"maxiter"``, a convergence criterion, ``"interrupted"`` or
-    ``"all candidates invalid"``."""
+    """Why the search stopped, for example ``"maxiter"``, a convergence criterion, ``"interrupted"``,
+    ``"all candidates invalid"`` or ``"error"``."""
 
     invalid: int
     """Number of evaluated candidates whose objective value was not finite."""
+
+    error: Exception | None
+    """The error that stopped the search, or ``None``. Then :attr:`vector` is the best of the
+    iterations completed before the error."""
 
 
 class OptimizerCMA:
@@ -94,6 +98,11 @@ class OptimizerCMA:
         stops with the stop reason ``"all candidates invalid"`` when a whole
         iteration is invalid.
 
+        An error after the start is scored stops the search with the stop
+        reason ``"error"``. The outcome then holds the error and the best of the
+        iterations completed before it, so the caller can keep that progress and
+        raise the error.
+
         Args:
             objective: Object with ``evaluate(vectors)``, which returns one
                 value per decision vector. A value that is not finite marks an
@@ -109,9 +118,10 @@ class OptimizerCMA:
 
         Raises:
             ImportError: If the ``cma`` package is not installed.
-            ValueError: If the objective does not return one value per vector,
-                or the start is invalid.
-            RuntimeError: If the search stops before it scores the start.
+            ValueError: If the objective does not return one value per vector
+                for the start, or the start is invalid.
+            RuntimeError: If an interrupt stops the search before it scores the start.
+            Exception: Any error raised before the start is scored.
         """
         try:
             import cma  # noqa: PLC0415 -- optional dependency
@@ -133,7 +143,7 @@ class OptimizerCMA:
         x0 = list(space.x0())
         es = cma.CMAEvolutionStrategy(x0, self.sigma0, opts)
 
-        best_x, best_loss, history, interrupted, invalid, stop_reason = None, math.inf, [], False, 0, None
+        best_x, best_loss, history, interrupted, invalid, stop_reason, error = None, math.inf, [], False, 0, None, None
 
         def record(n_invalid=0):
             history.append((best_loss, list(best_x)))
@@ -166,16 +176,24 @@ class OptimizerCMA:
                 record(n_invalid)
         except KeyboardInterrupt:
             interrupted = True
+        except Exception as exc:
+            if not history:
+                raise
+            error = exc
 
         if not history:
             raise RuntimeError("the search stopped before it scored the start.")
         if interrupted:
             stop_reason = "interrupted"
+        elif error is not None:
+            stop_reason = "error"
         elif stop_reason is None:
             stop_reason = ", ".join(es.stop())
-        logger.info("search stopped: %s", stop_reason)
+        logger.info("search stopped: %s", stop_reason if error is None else f"error ({type(error).__name__}: {error})")
         best_loss, best_x = history[-1]
-        return SearchOutcome(list(best_x), best_loss, len(history) - 1, interrupted, history, stop_reason, invalid)
+        return SearchOutcome(
+            list(best_x), best_loss, len(history) - 1, interrupted, history, stop_reason, invalid, error
+        )
 
 
 def _evaluate(objective, vectors) -> np.ndarray:

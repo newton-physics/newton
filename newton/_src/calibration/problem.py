@@ -25,7 +25,7 @@ from .loss_chamfer import CHAMFER
 from .model import SETTLE_MODES
 from .optimizer import SearchOutcome
 from .rehydrate import bundle_to_goals
-from .result import STATUS_INTERRUPTED, STATUS_OK, CableCalibrationResult
+from .result import STATUS_FAILED, STATUS_INTERRUPTED, STATUS_OK, CableCalibrationResult
 from .search_space import CableSearchSpace
 
 
@@ -150,8 +150,21 @@ class CableCalibrationProblem:
         """
         candidate = self.candidate(outcome.vector)
         optimizer_settings = optimizer.to_dict()
+        if outcome.error is not None:
+            status = STATUS_FAILED
+        elif outcome.interrupted:
+            status = STATUS_INTERRUPTED
+        else:
+            status = STATUS_OK
+        diagnostics = {
+            "search_dimension": self.search_space.dim,
+            "stop_reason": outcome.stop_reason,
+            "invalid_candidates": outcome.invalid,
+        }
+        if outcome.error is not None:
+            diagnostics["error"] = f"{type(outcome.error).__name__}: {outcome.error}"
         result = CableCalibrationResult(
-            status=STATUS_INTERRUPTED if outcome.interrupted else STATUS_OK,
+            status=status,
             fit={
                 "bend_angles": [list(a) for a in candidate.angles],
                 "bend_stiffness": candidate.bend_stiffness,
@@ -160,11 +173,7 @@ class CableCalibrationProblem:
                 "twist_damping": candidate.twist_damping,
             },
             metrics={"loss": outcome.loss, "iterations": outcome.iterations},
-            diagnostics={
-                "search_dimension": self.search_space.dim,
-                "stop_reason": outcome.stop_reason,
-                "invalid_candidates": outcome.invalid,
-            },
+            diagnostics=diagnostics,
             provenance={
                 "run_id": uuid.uuid4().hex,
                 "finished_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),

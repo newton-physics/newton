@@ -54,11 +54,15 @@ class CableRunWriter:
         if trace_every:
             self.trace = CableTraceWriter(str(self.directory / "trace"), bundle, str(bundle_dir))
 
-    @property
-    def artifacts(self) -> dict[str, str]:
-        """Paths that this writer writes, relative to the output directory."""
+    def artifacts(self, *, traces: bool) -> dict[str, str]:
+        """Return the paths that this writer writes, relative to the output directory.
+
+        Args:
+            traces: Whether :meth:`write_traces` runs. The trace directory is
+                listed only then, and only when ``trace_every`` is not 0.
+        """
         paths = {"result": "result.json", "history": "history.json"}
-        if self.trace is not None:
+        if traces and self.trace is not None:
             paths["trace"] = "trace"
         return paths
 

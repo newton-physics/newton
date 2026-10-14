@@ -21,7 +21,7 @@ from newton._src.calibration.evaluate import CableParameters, CableTraceView
 from newton._src.calibration.evidence import CableEvidenceBundle, CableRecording
 from newton._src.calibration.optimizer import OptimizerCMA, SearchOutcome
 from newton._src.calibration.problem import CableCalibrationProblem
-from newton._src.calibration.result import STATUS_INTERRUPTED, STATUS_OK, CableCalibrationResult
+from newton._src.calibration.result import STATUS_FAILED, STATUS_INTERRUPTED, STATUS_OK, CableCalibrationResult
 from newton._src.calibration.search_space import CableSearchSpace
 from newton._src.calibration.trace import CableTraceWriter
 
@@ -339,7 +339,7 @@ class TestCalibrationCableProblem(unittest.TestCase):
             self.assertEqual(history[-1]["loss"], result.metrics["loss"])
             self.assertIsNone(problem._evaluator)
 
-            stopped = SearchOutcome([2.0], 0.0, 0, True, [(0.0, [2.0])], "interrupted", 3)
+            stopped = SearchOutcome([2.0], 0.0, 0, True, [(0.0, [2.0])], "interrupted", 3, None)
             interrupted = problem.build_result(stopped, optimizer=optimizer, artifacts={})
             self.assertEqual(interrupted.status, STATUS_INTERRUPTED)
             self.assertEqual(interrupted.diagnostics["stop_reason"], "interrupted")
@@ -369,6 +369,49 @@ class TestCalibrationCableProblem(unittest.TestCase):
                 calibrate(problem, optimizer=OptimizerCMA(seed=3, popsize=4, maxiter=2), output_dir=out, trace_every=1)
             for name in ("result.json", "history.json"):
                 self.assertTrue((out / name).exists(), name)
+
+    @unittest.skipUnless(importlib.util.find_spec("cma"), "requires newton[calibration]")
+    def test_failed_search_keeps_the_completed_iterations(self):
+        """Verify an error during the search writes a failed result with the completed iterations, then raises.
+
+        The evaluator fails on its third call: the start and iteration 1 complete. An error
+        before the start is scored writes nothing.
+        """
+
+        class Evaluator:
+            fail_on_call = 3
+
+            def __init__(self, *args, **kwargs):
+                self.calls = 0
+
+            def evaluate(self, candidates):
+                self.calls += 1
+                if self.calls == self.fail_on_call:
+                    raise RuntimeError("simulation failed")
+                return [(np.log10(c.bend_stiffness) - 1.5) ** 2 for c in candidates]
+
+        with tempfile.TemporaryDirectory() as tmp, patch("newton._src.calibration.problem.CableEvaluator", Evaluator):
+            directory = Path(tmp)
+            bundle = write_bundle(directory)
+            out = directory / "result"
+            problem = CableCalibrationProblem.from_bundle(bundle, directory, make_setup(), make_space(), **SIMULATION)
+            with self.assertRaisesRegex(RuntimeError, "simulation failed"):
+                calibrate(problem, optimizer=OptimizerCMA(seed=3, popsize=4, maxiter=5), output_dir=out, trace_every=1)
+            result = CableCalibrationResult.from_dict(json.loads((out / "result.json").read_text()))
+            history = json.loads((out / "history.json").read_text())
+            self.assertEqual(result.status, STATUS_FAILED)
+            self.assertEqual(result.diagnostics["error"], "RuntimeError: simulation failed")
+            self.assertEqual(result.metrics["iterations"], 1)
+            self.assertEqual(len(history), 2)
+            self.assertEqual(result.metrics["loss"], history[-1]["loss"])
+            self.assertNotIn("trace", result.artifacts)
+            self.assertFalse((out / "trace").exists())
+
+            Evaluator.fail_on_call = 1
+            problem = CableCalibrationProblem.from_bundle(bundle, directory, make_setup(), make_space(), **SIMULATION)
+            with self.assertRaisesRegex(RuntimeError, "simulation failed"):
+                calibrate(problem, optimizer=OptimizerCMA(seed=3, popsize=4, maxiter=5), output_dir=directory / "early")
+            self.assertFalse((directory / "early").exists())
 
     def test_evaluator_receives_the_setup_and_simulation_settings(self):
         """Verify the setup reaches the goals and the evaluator, and invalid settings are refused."""

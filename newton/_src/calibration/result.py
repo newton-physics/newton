@@ -46,7 +46,9 @@ class CableCalibrationResult:
 
     status: str
     """One of :data:`STATUSES`. ``interrupted`` means the search stopped early and
-    the fit holds the best values found, which are not converged."""
+    the fit holds the best values found, which are not converged. ``failed``
+    means the search stopped on an error, and the fit holds the best values of
+    the iterations completed before it."""
 
     fit: dict[str, Any]
     """Fitted values as a flat mapping, for example ``bend_angles`` and ``bend_stiffness``."""

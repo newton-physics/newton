@@ -20,7 +20,7 @@ def calibrate(
     The problem supplies ``search_space``, ``objective.evaluate(vectors)``,
     ``build_result(outcome, optimizer=..., artifacts=...)``,
     ``create_writer(output_dir, trace_every=...)`` and ``close()``. The writer
-    supplies ``artifacts``, ``write_result(result, history)`` and
+    supplies ``artifacts(traces=...)``, ``write_result(result, history)`` and
     ``write_traces(history)``. This function does not depend on the model type.
 
     The optimizer supplies ``to_dict()``, which returns its ``kind`` and
@@ -46,8 +46,12 @@ def calibrate(
         cable problem. Artifact paths are relative to ``output_dir``.
 
     Raises:
-        ValueError: If a setting is not valid or the objective is not finite.
-        RuntimeError: If the search stops before it scores the start.
+        ValueError: If a setting is not valid or the search start is invalid.
+        RuntimeError: If an interrupt stops the search before it scores the start.
+        Exception: The error that stopped the search. If it came after the
+            start was scored, the result (status ``"failed"``) and the history
+            of the completed iterations are written to ``output_dir`` first,
+            without traces.
 
     On ``KeyboardInterrupt`` after the start is scored, the optimizer returns
     the best candidate so far and the result status is ``"interrupted"``. The
@@ -65,12 +69,17 @@ def calibrate(
             writer = problem.create_writer(output_dir, trace_every=trace_every)
 
         outcome = optimizer.minimize(problem.objective, problem.search_space)
-        artifacts = writer.artifacts if writer is not None else {}
+        # After an error, no traces are rendered: they would run the simulation that failed.
+        traces = outcome.error is None
+        artifacts = writer.artifacts(traces=traces) if writer is not None else {}
         result = problem.build_result(outcome, optimizer=optimizer, artifacts=artifacts)
         if writer is not None:
             # Write the result before the traces, so a failed trace keeps it.
             writer.write_result(result, outcome.history)
-            writer.write_traces(outcome.history)
+            if traces:
+                writer.write_traces(outcome.history)
+        if outcome.error is not None:
+            raise outcome.error
         return result
     finally:
         problem.close()
