@@ -95,10 +95,10 @@ class Example:
             solver_config = newton.solvers.SolverKamino.Config.from_model(
                 self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
             )
-            # Bounded joint drives and foot contacts need the bilateral rows
-            # resolved throughout the alternating solve to hold the stance.
+            # Eliminate bilateral rows once before the projected inequality sweeps.
             solver_config.dvi.max_alternating_iterations = 32
-            solver_config.dvi.bilateral_solve_interval = 1
+            solver_config.dvi.use_schur_complement = True
+            solver_config.dvi.bilateral_solver_type = "LLTBRCM"
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             self.solver = newton.solvers.SolverMuJoCo(

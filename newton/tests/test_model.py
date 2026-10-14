@@ -3823,7 +3823,7 @@ class TestModelJoints(unittest.TestCase):
         self.assertEqual(builder.joint_mimic_coeffs[joint1], (0.0, 1.0))
 
     def test_joint_mimic_validates_dimensions(self):
-        """Verify mimic relationships accept joint types only when their dimensions match."""
+        """Accept supported mimic types with matching dimensions and reject unsupported types."""
         builder = newton.ModelBuilder()
         bodies = [builder.add_link() for _ in range(3)]
         axis = newton.ModelBuilder.JointDofConfig.create_unlimited
@@ -3843,6 +3843,37 @@ class TestModelJoints(unittest.TestCase):
         self.assertEqual(builder.joint_mimic_joint[d6_scalar], reference)
         with self.assertRaisesRegex(ValueError, "matching position and velocity dimensions"):
             builder.set_joint_mimic(d6_vector, reference)
+
+        prismatic = builder.add_joint_prismatic(parent=-1, child=builder.add_link())
+        builder.set_joint_mimic(prismatic, reference)
+        self.assertEqual(builder.joint_mimic_joint[prismatic], reference)
+
+        for constructor in (
+            builder.add_joint_ball,
+            builder.add_joint_free,
+            builder.add_joint_distance,
+            builder.add_joint_rod,
+            builder.add_joint_fixed,
+        ):
+            joint0 = constructor(parent=-1, child=builder.add_link())
+            joint1 = constructor(parent=-1, child=builder.add_link())
+            for follower, leader in ((joint0, reference), (reference, joint0), (joint1, joint0)):
+                with self.subTest(joint_type=builder.joint_type[joint0], follower=follower, reference=leader):
+                    mimic_joints = list(builder.joint_mimic_joint)
+                    mimic_coeffs = list(builder.joint_mimic_coeffs)
+                    with self.assertRaisesRegex(ValueError, "only support") as caught:
+                        builder.set_joint_mimic(follower, leader, coeffs=(0.0, 2.0))
+                    self.assertIn(
+                        f"Follower joint {follower} has type {builder.joint_type[follower].name}", str(caught.exception)
+                    )
+                    self.assertIn(
+                        f"reference joint {leader} has type {builder.joint_type[leader].name}", str(caught.exception)
+                    )
+                    self.assertEqual(builder.joint_mimic_joint, mimic_joints)
+                    self.assertEqual(builder.joint_mimic_coeffs, mimic_coeffs)
+            builder.set_joint_mimic(joint0, None)
+            self.assertEqual(builder.joint_mimic_joint[joint0], -1)
+            self.assertEqual(builder.joint_mimic_coeffs[joint0], (0.0, 1.0))
 
     def test_add_base_joint_fixed_to_parent(self):
         """Test that add_base_joint with parent creates fixed joint."""
