@@ -7,18 +7,39 @@ import warnings
 
 import warp as wp
 
-from .articulation import (
-    invert_2d_rotational_dofs,
-    invert_3d_rotational_dofs,
-    transform_2d_rotational_axes,
-    transform_3d_rotational_axes,
-)
+from .articulation import invert_3d_rotational_dofs, transform_3d_rotational_axes
 from .enums import JointType
 from .model import Model
 from .state import State
 
 _SUPPORTED_JOINT_TYPES = {int(JointType.PRISMATIC), int(JointType.REVOLUTE), int(JointType.D6)}
 _MAX_REPORTED_UNSUPPORTED_JOINTS = 10
+
+
+@wp.func
+def eval_angular_coordinates(
+    joint_axis: wp.array[wp.vec3], axis_start: int, axis_count: int, q_p: wp.quat, q_c: wp.quat
+):
+    """Returns the coordinates of a 2- or 3-axis angular D6 and the world-frame covectors as matrix rows.
+
+    Covector ``k`` maps the relative angular velocity to ``dq_k/dt``, so it is also the torque direction of a
+    generalized force on coordinate ``k``. For two axes, coordinate 2 is the locked rotation about their cross product.
+    """
+    axis_0 = joint_axis[axis_start]
+    axis_1 = joint_axis[axis_start + 1]
+    axis_2 = wp.cross(axis_0, axis_1)
+    if axis_count == 3:
+        axis_2 = joint_axis[axis_start + 2]
+    coords, _vels = invert_3d_rotational_dofs(axis_0, axis_1, axis_2, q_p, q_c, wp.vec3(0.0))
+    a0, a1, a2 = transform_3d_rotational_axes(axis_0, axis_1, axis_2, coords[0], coords[1])
+    a0 = wp.quat_rotate(q_p, a0)
+    a1 = wp.quat_rotate(q_p, a1)
+    a2 = wp.quat_rotate(q_p, a2)
+
+    # dual basis of the transported axes, bounded near gimbal lock
+    det = wp.dot(a0, wp.cross(a1, a2))
+    inv_det = 1.0 / (wp.sign(det) * wp.max(wp.abs(det), 1.0e-4))
+    return coords, wp.matrix_from_rows(wp.cross(a1, a2), wp.cross(a2, a0), wp.cross(a0, a1)) * inv_det
 
 
 @wp.func
@@ -310,51 +331,14 @@ def eval_joint_mimic_coordinate(
         else:
             angular_component = component - lin_axis_count
             angular_start = qd_start + lin_axis_count
-            local_covector = wp.vec3(0.0)
             if ang_axis_count == 1:
                 axis = joint_axis[angular_start]
                 coordinate = wp.quat_twist_angle_signed(axis, rel_q)
-                local_covector[0] = axis[0]
-                local_covector[1] = axis[1]
-                local_covector[2] = axis[2]
-            elif ang_axis_count == 2:
-                axis_0 = joint_axis[angular_start + 0]
-                axis_1 = joint_axis[angular_start + 1]
-                coordinates_2, _unused_velocities_2 = invert_2d_rotational_dofs(axis_0, axis_1, q_p, q_c, wp.vec3(0.0))
-                coordinate = coordinates_2[angular_component]
-                axis_0_q, axis_1_q = transform_2d_rotational_axes(axis_0, axis_1, coordinates_2[0])
-                if angular_component == 0:
-                    local_covector[0] = axis_0_q[0]
-                    local_covector[1] = axis_0_q[1]
-                    local_covector[2] = axis_0_q[2]
-                else:
-                    local_covector[0] = axis_1_q[0]
-                    local_covector[1] = axis_1_q[1]
-                    local_covector[2] = axis_1_q[2]
-            elif ang_axis_count == 3:
-                axis_0 = joint_axis[angular_start + 0]
-                axis_1 = joint_axis[angular_start + 1]
-                axis_2 = joint_axis[angular_start + 2]
-                coordinates_3, _unused_velocities_3 = invert_3d_rotational_dofs(
-                    axis_0, axis_1, axis_2, q_p, q_c, wp.vec3(0.0)
-                )
-                coordinate = coordinates_3[angular_component]
-                axis_0_q, axis_1_q, axis_2_q = transform_3d_rotational_axes(
-                    axis_0, axis_1, axis_2, coordinates_3[0], coordinates_3[1]
-                )
-                if angular_component == 0:
-                    local_covector[0] = axis_0_q[0]
-                    local_covector[1] = axis_0_q[1]
-                    local_covector[2] = axis_0_q[2]
-                elif angular_component == 1:
-                    local_covector[0] = axis_1_q[0]
-                    local_covector[1] = axis_1_q[1]
-                    local_covector[2] = axis_1_q[2]
-                else:
-                    local_covector[0] = axis_2_q[0]
-                    local_covector[1] = axis_2_q[1]
-                    local_covector[2] = axis_2_q[2]
-            angular_covector = wp.quat_rotate(q_p, local_covector)
+                angular_covector = wp.quat_rotate(q_p, axis)
+            else:
+                coordinates, covectors = eval_angular_coordinates(joint_axis, angular_start, ang_axis_count, q_p, q_c)
+                coordinate = coordinates[angular_component]
+                angular_covector = covectors[angular_component]
 
     r_p = wp.vec3(0.0)
     if parent >= 0:

@@ -11,34 +11,7 @@ from ...sim import (
     Model,
     State,
 )
-from ...sim.articulation import invert_3d_rotational_dofs, transform_3d_rotational_axes
-from ...sim.joint_mimic import eval_joint_mimic_coordinate, eval_joint_mimic_velocity
-
-
-@wp.func
-def eval_rotational_dof_covectors(axis_0: wp.vec3, axis_1: wp.vec3, axis_2: wp.vec3, q_p: wp.quat, q_c: wp.quat):
-    """Returns the intrinsic-Euler coordinates of a 3D rotational joint and their world-frame covectors.
-
-    Covector ``b_k`` is the dual basis of the FK-transported axes, so ``dq_k/dt = dot(b_k, w_c - w_p)`` and a
-    generalized force ``tau_k`` corresponds to the torque ``tau_k * b_k`` on the child.
-    """
-    coords, _vels = invert_3d_rotational_dofs(axis_0, axis_1, axis_2, q_p, q_c, wp.vec3(0.0))
-    a0, a1, a2 = transform_3d_rotational_axes(axis_0, axis_1, axis_2, coords[0], coords[1])
-    a0 = wp.quat_rotate(q_p, a0)
-    a1 = wp.quat_rotate(q_p, a1)
-    a2 = wp.quat_rotate(q_p, a2)
-
-    c12 = wp.cross(a1, a2)
-    det = wp.dot(a0, c12)
-    # Bound the dual basis near gimbal lock (det -> 0 at a middle angle of +-90 deg).
-    min_det = 1.0e-4
-    if det >= 0.0 and det < min_det:
-        det = min_det
-    elif det < 0.0 and det > -min_det:
-        det = -min_det
-    inv_det = 1.0 / det
-
-    return coords, c12 * inv_det, wp.cross(a2, a0) * inv_det, wp.cross(a0, a1) * inv_det
+from ...sim.joint_mimic import eval_angular_coordinates, eval_joint_mimic_coordinate, eval_joint_mimic_velocity
 
 
 @wp.func
@@ -469,13 +442,8 @@ def eval_body_joints(
                 wp.transform_vector(X_wp, ang_err) * joint_attach_ke + w_err * joint_attach_kd * angular_damping_scale
             )
 
-        i_0 = lin_axis_count + qd_start + 0
-        i_1 = lin_axis_count + qd_start + 1
-        i_2 = lin_axis_count + qd_start + 2
-        i_0_q = lin_axis_count + target_q_start + 0
-        i_1_q = lin_axis_count + target_q_start + 1
-        i_2_q = lin_axis_count + target_q_start + 2
-        qdi_start = qd_start + lin_axis_count
+        i_0 = lin_axis_count + qd_start
+        i_0_q = lin_axis_count + target_q_start
 
         if ang_axis_count == 1:
             axis = joint_axis[i_0]
@@ -487,7 +455,7 @@ def eval_body_joints(
             qd = wp.dot(w_err, axis_p)
 
             t_total = axis_p * (
-                -joint_f[qdi_start]
+                -joint_f[i_0]
                 - joint_force(
                     q,
                     qd,
@@ -509,68 +477,31 @@ def eval_body_joints(
             t_total += swing_err * joint_attach_ke + (w_err - qd * axis_p) * joint_attach_kd * angular_damping_scale
 
         if ang_axis_count >= 2:
-            axis_0 = joint_axis[i_0]
-            axis_1 = joint_axis[i_1]
-            axis_2 = wp.cross(axis_0, axis_1)
-            if ang_axis_count == 3:
-                axis_2 = joint_axis[i_2]
-            angles, b_0, b_1, b_2 = eval_rotational_dof_covectors(axis_0, axis_1, axis_2, q_p, q_c)
-
-            t_total += b_0 * (
-                -joint_f[i_0]
-                - joint_force(
-                    angles[0],
-                    wp.dot(b_0, w_err),
-                    joint_target_q[i_0_q],
-                    joint_target_qd[i_0],
-                    joint_target_ke[i_0],
-                    joint_target_kd[i_0],
-                    joint_limit_lower[i_0],
-                    joint_limit_upper[i_0],
-                    joint_limit_ke[i_0],
-                    joint_limit_kd[i_0],
-                    joint_damping[i_0],
-                )
-            )
-            t_total += b_1 * (
-                -joint_f[i_1]
-                - joint_force(
-                    angles[1],
-                    wp.dot(b_1, w_err),
-                    joint_target_q[i_1_q],
-                    joint_target_qd[i_1],
-                    joint_target_ke[i_1],
-                    joint_target_kd[i_1],
-                    joint_limit_lower[i_1],
-                    joint_limit_upper[i_1],
-                    joint_limit_ke[i_1],
-                    joint_limit_kd[i_1],
-                    joint_damping[i_1],
-                )
-            )
-
-            if ang_axis_count == 3:
-                t_total += b_2 * (
-                    -joint_f[i_2]
-                    - joint_force(
-                        angles[2],
-                        wp.dot(b_2, w_err),
-                        joint_target_q[i_2_q],
-                        joint_target_qd[i_2],
-                        joint_target_ke[i_2],
-                        joint_target_kd[i_2],
-                        joint_limit_lower[i_2],
-                        joint_limit_upper[i_2],
-                        joint_limit_ke[i_2],
-                        joint_limit_kd[i_2],
-                        joint_damping[i_2],
+            angles, covectors = eval_angular_coordinates(joint_axis, i_0, ang_axis_count, q_p, q_c)
+            for k in range(3):
+                b = covectors[k]
+                qd_k = wp.dot(b, w_err)
+                if k < ang_axis_count:
+                    i = i_0 + k
+                    t_total += b * (
+                        -joint_f[i]
+                        - joint_force(
+                            angles[k],
+                            qd_k,
+                            joint_target_q[i_0_q + k],
+                            joint_target_qd[i],
+                            joint_target_ke[i],
+                            joint_target_kd[i],
+                            joint_limit_lower[i],
+                            joint_limit_upper[i],
+                            joint_limit_ke[i],
+                            joint_limit_kd[i],
+                            joint_damping[i],
+                        )
                     )
-                )
-            else:
-                # lock the rotation about the remaining axis
-                t_total += b_2 * (
-                    angles[2] * joint_attach_ke + wp.dot(b_2, w_err) * joint_attach_kd * angular_damping_scale
-                )
+                else:
+                    # lock the rotation about the remaining axis
+                    t_total += b * (angles[k] * joint_attach_ke + qd_k * joint_attach_kd * angular_damping_scale)
 
     eval_joint_mimic_forces(
         tid,

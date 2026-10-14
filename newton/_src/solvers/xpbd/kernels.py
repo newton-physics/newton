@@ -14,8 +14,7 @@ from ...math import (
 )
 from ...sim import BodyFlags, JointType, Model
 from ...sim.contacts import contact_surface_point, contact_surface_separation
-from ...sim.joint_mimic import eval_joint_mimic_coordinate
-from ..semi_implicit.kernels_body import eval_rotational_dof_covectors
+from ...sim.joint_mimic import eval_angular_coordinates, eval_joint_mimic_coordinate
 
 
 @wp.kernel
@@ -1093,17 +1092,13 @@ def apply_joint_forces(
             axis = joint_axis[ang_start]
             t_total += joint_f[ang_start] * wp.transform_vector(X_wp, axis)
         elif ang_axis_count > 1:
-            axis_0 = joint_axis[ang_start]
-            axis_1 = joint_axis[ang_start + 1]
-            axis_2 = wp.cross(axis_0, axis_1)
-            if ang_axis_count == 3:
-                axis_2 = joint_axis[ang_start + 2]
-            _angles, b_0, b_1, b_2 = eval_rotational_dof_covectors(
-                axis_0, axis_1, axis_2, wp.transform_get_rotation(X_wp), wp.transform_get_rotation(X_wc)
+            _angles, covectors = eval_angular_coordinates(
+                joint_axis, ang_start, ang_axis_count, wp.transform_get_rotation(X_wp), wp.transform_get_rotation(X_wc)
             )
-            t_total += joint_f[ang_start] * b_0 + joint_f[ang_start + 1] * b_1
+            tau = wp.vec3(joint_f[ang_start], joint_f[ang_start + 1], 0.0)
             if ang_axis_count == 3:
-                t_total += joint_f[ang_start + 2] * b_2
+                tau[2] = joint_f[ang_start + 2]
+            t_total += wp.transpose(covectors) * tau
 
     else:
         print("joint type not handled in apply_joint_forces")
@@ -1894,15 +1889,9 @@ def solve_body_joints(
         # constrain the intrinsic-Euler coordinates used by eval_fk, one per angular DOF
         ang_start = axis_start + lin_axis_count
         ang_target_start = target_axis_start + lin_axis_count
-        axis_0 = joint_axis[ang_start]
-        axis_1 = joint_axis[ang_start + 1]
-        axis_2 = wp.cross(axis_0, axis_1)
-        if ang_axis_count == 3:
-            axis_2 = joint_axis[ang_start + 2]
-        angles, b_0, b_1, b_2 = eval_rotational_dof_covectors(
-            axis_0, axis_1, axis_2, wp.transform_get_rotation(X_wp), wp.transform_get_rotation(X_wc)
+        angles, covectors = eval_angular_coordinates(
+            joint_axis, ang_start, ang_axis_count, wp.transform_get_rotation(X_wp), wp.transform_get_rotation(X_wc)
         )
-        covectors = wp.matrix_from_rows(b_0, b_1, b_2)
         omega_rel = omega_c - omega_p
 
         for dim in range(3):
@@ -1924,8 +1913,7 @@ def solve_body_joints(
                 ke = joint_target_ke[ang_start + dim]
                 kd = joint_target_kd[ang_start + dim]
                 target_pos = joint_target_q[ang_target_start + dim]
-                if kd > 0.0:
-                    target_vel = joint_target_qd[ang_start + dim]
+                target_vel = joint_target_qd[ang_start + dim]
 
             err = 0.0
             compliance = angular_compliance
