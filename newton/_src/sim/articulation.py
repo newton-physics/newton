@@ -1817,22 +1817,29 @@ def _eval_mass_matrix(
         )
         eval_jacobian(model, state, J, joint_S_s=joint_S_s, mask=mask)
 
-    wp.launch(
-        kernel=eval_articulation_mass_matrix,
-        dim=model.articulation_count,
-        inputs=[
-            model.articulation_start,
-            model.articulation_end,
-            model.articulation_count,
-            mask,
-            model.joint_child,
-            model.joint_qd_start,
-            body_I_s,
-            J,
-            model.joint_armature if include_armature else None,
-        ],
-        outputs=[H],
-        device=model.device,
-    )
+    inputs = [
+        model.articulation_start,
+        model.articulation_end,
+        model.articulation_count,
+        mask,
+        model.joint_child,
+        model.joint_qd_start,
+        body_I_s,
+        J,
+        model.joint_armature if include_armature else None,
+    ]
+    requires_grad = model.requires_grad or any(x is not None and x.requires_grad for x in [*inputs[6:], H])
+    if model.device.is_cuda and not requires_grad:
+        from .articulation_mass import _assemble_mass_matrix  # noqa: PLC0415
+
+        _assemble_mass_matrix(inputs, H)
+    else:
+        wp.launch(
+            kernel=eval_articulation_mass_matrix,
+            dim=model.articulation_count,
+            inputs=inputs,
+            outputs=[H],
+            device=model.device,
+        )
 
     return H
