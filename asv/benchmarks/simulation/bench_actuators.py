@@ -19,7 +19,6 @@ wp.config.enable_backward = False
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
 
-from benchmark_config import pr_gate_repeat
 from benchmark_mujoco import _setup_g1
 
 KP = 1000.0
@@ -133,11 +132,11 @@ class _ActuatorBenchmark:
             raise RuntimeError("Actuator benchmark produced non-finite joint positions.")
 
 
-class FastActuatorG1(_ActuatorBenchmark):
+class ActuatorG1(_ActuatorBenchmark):
     """Time 200 steps of 1024 G1 robots on SolverMuJoCo for each response source."""
 
     params = [["implicit", "implicit_from_solve"], [1024]]
-    repeat = pr_gate_repeat(6)
+    repeat = 3
 
 
 if __name__ == "__main__":
@@ -146,7 +145,7 @@ if __name__ == "__main__":
     from newton.utils import run_benchmark
 
     benchmark_list = {
-        "FastActuatorG1": FastActuatorG1,
+        "ActuatorG1": ActuatorG1,
     }
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
