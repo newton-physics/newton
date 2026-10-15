@@ -2,11 +2,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import base64
+import nturl2path
 import os
 import tempfile
 import unittest
 import warnings
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -16,6 +17,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton._src.geometry.types import GeoType
+from newton._src.utils.import_urdf import _resolve_urdf_uri
 from newton._src.utils.import_urdf import parse_urdf as direct_parse_urdf
 from newton._src.utils.mesh import load_meshes_from_file
 from newton.tests.unittest_utils import assert_np_equal
@@ -1970,9 +1972,39 @@ f 1/1 2/2 3/3
                 self.assertEqual(builder.shape_count, 1)
                 self.assertEqual(builder.shape_type[0], GeoType.MESH)
                 mesh = builder.shape_source[0]
-                self.assertEqual(Path(mesh.texture), texture_path.resolve())
+                self.assertTrue(Path(mesh.texture).samefile(texture_path))
                 texture = newton.utils.load_texture(mesh.texture)
                 np.testing.assert_array_equal(texture[0, 0, :3], [255, 0, 0])
+
+    @unittest.skipUnless(resolve_robotics_uri, "resolve-robotics-uri-py not installed")
+    def test_file_uri_preserves_symlink_asset_directory(self):
+        """Load relative assets beside a symlinked URDF for both paths and URIs."""
+        source_path = self.base_path / "robot.urdf"
+        source_path.write_text(self.SIMPLE_URDF.format(geo=self.MESH_GEO.format(filename="link.obj")))
+        bundle = self.base_path / "bundle"
+        bundle.mkdir()
+        alias = bundle / "robot.urdf"
+        try:
+            alias.symlink_to(source_path)
+        except OSError as exc:
+            self.skipTest(f"Cannot create symlinks: {exc}")
+        (bundle / "link.obj").write_text(MESH_OBJ)
+        for source in (str(alias), alias.as_uri()):
+            with self.subTest(source=source):
+                builder = newton.ModelBuilder()
+                builder.add_urdf(source)
+                self.assertEqual(builder.shape_count, 1)
+                self.assertEqual(builder.shape_type[0], GeoType.MESH)
+
+    def test_file_uri_rejects_windows_relative_paths(self):
+        """Validate converted Windows paths independently of the host platform."""
+        with (
+            patch("newton._src.utils.import_urdf.url2pathname", nturl2path.url2pathname),
+            patch("newton._src.utils.import_urdf.PurePath", PureWindowsPath),
+        ):
+            for uri in ("file:///C:mesh.obj", "file:///mesh.obj"):
+                with self.subTest(uri=uri), self.assertRaisesRegex(ValueError, "file URI"):
+                    _resolve_urdf_uri(uri, [])
 
     @unittest.skipUnless(resolve_robotics_uri, "resolve-robotics-uri-py not installed")
     def test_explicit_package_dirs(self):

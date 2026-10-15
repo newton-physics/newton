@@ -7,9 +7,10 @@ import os
 import tempfile
 import warnings
 import xml.etree.ElementTree as ET
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Literal
 from urllib.parse import unquote, urlsplit
+from urllib.request import url2pathname
 
 import numpy as np
 import warp as wp
@@ -43,6 +44,7 @@ except ImportError:
 
 
 def _resolve_urdf_uri(uri: str, package_dirs: list[str]) -> str:
+    local_path = None
     if uri.lower().startswith("file:"):
         parsed = urlsplit(uri)
         # The resolver discards the authority and would interpret remote URIs as local files.
@@ -51,13 +53,18 @@ def _resolve_urdf_uri(uri: str, package_dirs: list[str]) -> str:
         path = unquote(parsed.path).replace("\\", "/")
         if not path.startswith("/") or path.startswith("//") or parsed.query or parsed.fragment:
             raise ValueError(f'Invalid local file URI "{uri}"; expected an absolute path without query or fragment.')
+        local_path = url2pathname(parsed.path)
+        if not PurePath(local_path).is_absolute():
+            raise ValueError(f'Invalid local file URI "{uri}"; expected an absolute filesystem path.')
         uri = "file:" + uri[5:]
     if resolve_robotics_uri is None:
         raise ImportError(
             f'Cannot resolve URI "{uri}" without resolve-robotics-uri-py. '
             "Install it with: pip install 'newton[importers]'"
         )
-    return os.fspath(resolve_robotics_uri(uri, package_dirs=package_dirs))
+    resolved = resolve_robotics_uri(uri, package_dirs=package_dirs)
+    # Preserve symlinks so relative assets use the same directory as a plain file path.
+    return local_path if local_path is not None else os.fspath(resolved)
 
 
 def _download_file(dst, url: str) -> None:
