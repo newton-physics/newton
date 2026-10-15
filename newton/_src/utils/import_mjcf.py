@@ -3527,7 +3527,6 @@ def parse_mjcf(
             if crank_length is not None:
                 parsed_attrs["mujoco:actuator_cranklength"] = crank_length
 
-            # Shortcut defaults must not overwrite authored custom attributes.
             for key, value in _ACTUATOR_SHORTCUT_DEFAULTS.get(actuator_type, {}).items():
                 parsed_attrs.setdefault(key, value)
 
