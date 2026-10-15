@@ -79,6 +79,13 @@ Pre-release planning
        public PyPI: warp-lang, mujoco, mujoco-warp, newton-usd-schemas.  Land
        release-ready versions on ``main`` before the branch cut when possible.
    * - ☐
+     - Announce MuJoCo minimum-version or compatibility-range changes in a
+       developer channel when the bump is proposed.  Coordinate with the
+       ``mujoco-usd-converter`` and downstream integration maintainers early
+       enough to publish compatible converter releases before integration
+       begins.  Record the target versions, owners, and required companion
+       releases in the release progress record.
+   * - ☐
      - When the stable Warp version for the upcoming Newton release is
        published before the branch cut, stabilize it on ``main``: replace the
        dev or RC requirement in ``pyproject.toml`` and the pin in
@@ -136,6 +143,22 @@ Code freeze and release branch creation
        in ``asv.conf.json`` to the same stable release from public PyPI, without
        ``--pre`` or the NVIDIA index.  Then regenerate ``uv.lock`` (``uv lock``)
        and commit.
+   * - ☐
+     - Verify dependency versions are updated consistently across
+       ``pyproject.toml``, ``uv.lock``, ``asv.conf.json``, and any explicit
+       pins in CI, installation instructions, and downstream integration
+       configurations.  Confirm that each resolved or pinned version
+       satisfies the intended release requirements.
+   * - ☐
+     - Confirm required companion releases are published and their dependency
+       ranges accept the selected versions, especially
+       ``mujoco-usd-converter`` after a MuJoCo bump.  With the integration
+       maintainers, verify that Newton and the converters resolve and install
+       together in a clean target integration environment, then smoke-test
+       conversion and loading.  Check runtime compatibility as well as
+       package metadata, including newly introduced MuJoCo options
+       used by Newton.  Record exact tested versions and results before
+       tagging the RC.
    * - ☐
      - Run the ``release-audit`` skill in **release-candidate mode** against
        ``release-X.Y``; address or acknowledge flagged entries before
@@ -266,6 +289,11 @@ otherwise.
    * - ☐
      - Verify all dependency pins in ``pyproject.toml`` use stable
        (non-pre-release) versions.
+   * - ☐
+     - Recheck dependency-version consistency and companion-release
+       availability against the final GA dependency set.  Repeat the clean
+       integration installation and conversion/loading smoke test if any
+       dependency or converter version changed since the last validated RC.
    * - ☐
      - Bump the version in ``pyproject.toml`` to ``X.Y.Z`` (remove the RC suffix) and
        run ``uv run docs/generate_api.py``.
