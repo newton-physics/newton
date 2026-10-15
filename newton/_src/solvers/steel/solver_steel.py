@@ -911,9 +911,10 @@ class _SteelTreePlan:
         return cls(tuple(groups))
 
 
-_DENSE_META_ROW_TYPE_BITS = 4
+_DENSE_META_ROW_TYPE_BITS = 3
 _DENSE_META_ROW_TYPE_MASK = (1 << _DENSE_META_ROW_TYPE_BITS) - 1
-_DENSE_META_MAX_PARENT = ((2**31 - 1) >> _DENSE_META_ROW_TYPE_BITS) - 1
+# The matrix-free sweep widens the type field by one bit for joint-friction rows.
+_DENSE_META_MAX_PARENT = ((2**31 - 1) >> (_DENSE_META_ROW_TYPE_BITS + 1)) - 1
 
 
 def _use_resident_mfgs_metadata(
@@ -5276,6 +5277,7 @@ class SolverSteel(SolverBase):
                 friction_mode=self._friction_mode,
                 factor_coordinates=self._paired_factor_coordinates,
                 skip_local_internal_worlds=self._local_internal_fast_path,
+                joint_friction=bool(self._joint_friction_warp_kernels),
             )
             self._init_local_solve_kernels(device_arch, mf_rows)
 
@@ -9619,6 +9621,7 @@ class SolverSteel(SolverBase):
                 device_arch,
                 has_drive_rows=self._has_drive_rows,
                 fuse_vel_limits=self._velocity_limits_fused,
+                joint_friction=bool(self._joint_friction_warp_kernels),
             )
         elif self._propagation_colored:
             self._init_colored_kernels(model)
@@ -13412,6 +13415,7 @@ def _get_pgs_solve_mf_gs_kernel(
     friction_mode: str = "fixed_normal",
     factor_coordinates: bool = False,
     skip_local_internal_worlds: bool = False,
+    joint_friction: bool = False,
 ) -> "wp.Kernel":
     """Build the fused matrix-free projected Gauss-Seidel kernel for one solver shape.
 
@@ -13491,8 +13495,9 @@ def _get_pgs_solve_mf_gs_kernel(
     M_MF = free_body_constraint_max
     D = max_world_dofs
     ELEMS_PER_LANE = (D + 31) // 32
-    type_mask = _DENSE_META_ROW_TYPE_MASK
-    type_bits = _DENSE_META_ROW_TYPE_BITS
+    # Joint-friction rows (type 8) need a fourth row-type bit.
+    type_bits = _DENSE_META_ROW_TYPE_BITS + int(joint_friction)
+    type_mask = (1 << type_bits) - 1
 
     def lanes(template: str) -> str:
         """Repeat a per-lane snippet for each strided DOF element of the lane."""
@@ -13603,6 +13608,14 @@ def _get_pgs_solve_mf_gs_kernel(
     )
     torsion_skip = f"if (row_type == {int(PGS_CONSTRAINT_TYPE_TORSION)}) continue;" if contact_torsion else ""
     torsion_sweep = torque_sweep_source(D) if contact_torsion else ""
+    joint_friction_projection = (
+        f""" else if (row_type == {int(PGS_CONSTRAINT_TYPE_JOINT_FRICTION)}) {{
+                // Joint friction box [-f dt, f dt]; mu holds the bound.
+                new_impulse = fminf(fmaxf(new_impulse, -s_mu_dense[i]), s_mu_dense[i]);
+            }}"""
+        if joint_friction
+        else ""
+    )
 
     if row_phases:
         phase_bounds = """    if (row_phase == 1 || row_phase == 4) {
@@ -13844,10 +13857,7 @@ def _get_pgs_solve_mf_gs_kernel(
                                                row_type == {int(PGS_CONSTRAINT_TYPE_JOINT_LIMIT)})) {{
                 // Contact and joint-limit rows are unilateral; mimic and connect rows are bilateral.
                 new_impulse = 0.0f;
-            }} else if (row_type == {int(PGS_CONSTRAINT_TYPE_JOINT_FRICTION)}) {{
-                // Joint friction box [-f dt, f dt]; mu holds the bound.
-                new_impulse = fminf(fmaxf(new_impulse, -s_mu_dense[i]), s_mu_dense[i]);
-            }}
+            }}{joint_friction_projection}
             float delta_impulse = new_impulse - old_impulse;
             s_lam_dense[i] = new_impulse;
             if (delta_impulse != 0.0f) {{
@@ -17971,6 +17981,7 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
     device_arch: str,
     has_drive_rows: bool = False,
     fuse_vel_limits: bool = False,
+    joint_friction: bool = False,
 ) -> "wp.Kernel":
     """Build the one-warp-per-world kernel that runs every propagation Gauss-Seidel iteration.
 
@@ -17981,8 +17992,8 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
     articulations of ``target_size`` response DOFs, the only articulated size group the
     fused response supports.
 
-    The internal rows are the drive (with ``has_drive_rows``), mimic, connect and joint-limit
-    rows; ``fuse_vel_limits`` adds the end-of-iteration velocity clamp of driven DOFs to the
+    The internal rows are the drive (with ``has_drive_rows``), mimic, connect, joint-limit and
+    (with ``joint_friction``) joint-friction rows; ``fuse_vel_limits`` adds the end-of-iteration velocity clamp of driven DOFs to the
     velocity-limit stage. With ``regularize`` the contact rows of every family relax toward
     zero with their row weights, and ``freeze_drive_rows`` skips the drive rows.
     """
@@ -18028,6 +18039,14 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
                     delta_impulse = new_impulse - old_impulse;
                 }} else"""
         if has_drive_rows
+        else ""
+    )
+    fused_joint_friction_projection = (
+        f"""                    // Joint friction box [-f dt, f dt]; mu holds the bound.
+                    if (row_type == {int(PGS_CONSTRAINT_TYPE_JOINT_FRICTION)})
+                        new_impulse = fminf(fmaxf(new_impulse, -s_mu_dense[i]), s_mu_dense[i]);
+"""
+        if joint_friction
         else ""
     )
     # Stateless clamp of driven DOFs, after the velocity-limit rows of the same iteration.
@@ -18188,10 +18207,7 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
                     // Contact and joint-limit rows are unilateral; mimic and connect rows are bilateral.
                     if (new_impulse < 0.0f && (row_type == {contact_type} || row_type == {int(PGS_CONSTRAINT_TYPE_JOINT_LIMIT)}))
                         new_impulse = 0.0f;
-                    // Joint friction box [-f dt, f dt]; mu holds the bound.
-                    if (row_type == {int(PGS_CONSTRAINT_TYPE_JOINT_FRICTION)})
-                        new_impulse = fminf(fmaxf(new_impulse, -s_mu_dense[i]), s_mu_dense[i]);
-                    delta_impulse = new_impulse - old_impulse;
+{fused_joint_friction_projection}                    delta_impulse = new_impulse - old_impulse;
                 }}
                 __syncwarp(MASK);
                 if (lane == 0) s_lam_dense[i] = new_impulse;
