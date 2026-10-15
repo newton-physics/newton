@@ -141,6 +141,7 @@ def _load_and_expand_mjcf(
     Raises:
         ValueError: If a circular include is detected
     """
+    is_included = included_files is not None
     if included_files is None:
         included_files = set()
 
@@ -223,6 +224,8 @@ def _load_and_expand_mjcf(
             # MuJoCo prefers assets beside the main model over included-file paths.
             if os.path.isfile(os.path.join(main_dir, resolved_path)):
                 asset_base_dir = main_dir
+            elif is_included and not os.path.isabs(file_attr):
+                resolved_path = file_attr
         if asset_base_dir is None and path_resolver is _default_path_resolver and not os.path.isabs(resolved_path):
             elem.set("file", resolved_path)
         else:
@@ -384,7 +387,7 @@ def parse_mjcf(
             See :ref:`custom_attributes` for details on custom attributes. If False (default), position/velocity
             actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode where control comes
             from :attr:`newton.Control.joint_target_q` and :attr:`newton.Control.joint_target_qd`.
-        path_resolver: Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. By default, assets are searched relative to the main model first, then the file defining them.
+        path_resolver: Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. By default, assets are searched relative to the main model with the compiler asset directory, then relative to the included file without that directory prefix.
         legacy_margin_gap: If True, restore pre-MuJoCo-3.9 import behavior
             where ``shape_margin`` is computed as ``mj_margin - mj_gap``.
             Use for MJCF files authored against MuJoCo <= 3.8. Defaults

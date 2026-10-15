@@ -10139,22 +10139,28 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
                     )
 
     def test_include_with_assetdir(self):
-        """Resolve an included file's assets relative to its own assetdir."""
+        """Fall back to the included file's directory without prepending assetdir."""
         with tempfile.TemporaryDirectory() as tmpdir:
             models_dir = os.path.join(tmpdir, "models")
-            assets_dir = os.path.join(models_dir, "assets")
-            os.makedirs(assets_dir)
-            self._create_cube_stl(os.path.join(assets_dir, "cube.stl"))
+            os.makedirs(models_dir)
+            self._create_cube_stl(os.path.join(models_dir, "cube.stl"))
+            self._create_png(os.path.join(models_dir, "checker.png"))
+            with open(os.path.join(models_dir, "terrain.bin"), "wb") as f:
+                f.write(struct.pack("<ii4f", 2, 2, 0.0, 0.25, 0.5, 1.0))
 
             included_content = """\
 <mujoco>
     <compiler assetdir="assets"/>
     <asset>
         <mesh name="cube" file="cube.stl"/>
+        <texture name="checker" type="2d" file="checker.png"/>
+        <material name="checker" texture="checker"/>
+        <hfield name="terrain" file="terrain.bin" nrow="2" ncol="2" size="1 1 1 0.1"/>
     </asset>
     <worldbody>
         <body name="robot">
-            <geom type="mesh" mesh="cube"/>
+            <geom type="mesh" mesh="cube" material="checker"/>
+            <geom type="hfield" hfield="terrain"/>
         </body>
     </worldbody>
 </mujoco>"""
@@ -10171,12 +10177,13 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
                 f.write(main_content)
 
             root, _ = _load_and_expand_mjcf(main_path)
-            self.assertEqual(root.find(".//mesh").get("file"), os.path.join(assets_dir, "cube.stl"))
+            for tag, filename in (("mesh", "cube.stl"), ("texture", "checker.png"), ("hfield", "terrain.bin")):
+                self.assertEqual(root.find(f".//{tag}").get("file"), os.path.join(models_dir, filename))
 
             builder = newton.ModelBuilder()
             builder.add_mjcf(main_path)
             self.assertEqual(builder.body_count, 1)
-            self.assertEqual(builder.shape_count, 1)
+            self.assertEqual(builder.shape_count, 2)
 
     def test_include_with_meshdir(self):
         """Test that meshdir in included file is used to resolve mesh paths."""
@@ -10251,6 +10258,14 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             main_path = os.path.join(tmpdir, "main.xml")
             with open(main_path, "w") as f:
                 f.write(main_content)
+
+            with self.assertRaises(ValueError):
+                newton.ModelBuilder().add_mjcf(main_path)
+
+            included_mesh = os.path.join(models_dir, "cube.stl")
+            self._create_cube_stl(included_mesh)
+            root, _ = _load_and_expand_mjcf(main_path)
+            self.assertEqual(root.find(".//mesh").get("file"), included_mesh)
 
             builder = newton.ModelBuilder()
             builder.add_mjcf(main_path)
