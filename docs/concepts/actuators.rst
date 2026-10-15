@@ -412,6 +412,14 @@ The predicted state accounts only for the actuator's own impulse. Gravity, any
 other applied force, other actuators driving the same articulation, and joint
 drive applied without the actuator are all absent from it.
 
+With an :class:`~newton.actuators.InputProcessorBacklash`, the drive reads the
+link side of the backlash joint, but the predicted state still uses the
+response of the actuated joint alone. While the backlash gap is open, the
+motor's effort does not reach the link, yet the solve assumes it does, so it
+applies less effort than needed to close the gap.
+:meth:`~newton.actuators.Actuator.set_effort_mode_implicit` warns about this
+combination.
+
 The implicit effort mode necessarily requires the joint-space inverse mass
 matrix. This is supplied by a :class:`~newton.actuators.JointSpaceResponse`, which
 is refreshed once per step at the current pose:
@@ -549,6 +557,53 @@ Battery
   add their motor torque; the sag of a step therefore comes from the previous
   step's torque of all actuators on that battery, also across actuator
   groups.  ``Battery.dof_battery`` maps each DOF to its battery.
+
+One :class:`Battery` object holds every supply. Below, DOFs 0 and 1 share
+battery 0 and DOF 2 draws from battery 1:
+
+.. testcode:: actuator-battery
+
+   import warp as wp
+   import newton
+   from newton.actuators import Battery, DriveBAM
+
+   builder = newton.ModelBuilder()
+   for _ in range(3):
+       link = builder.add_link()
+       builder.add_shape_box(link, hx=0.1, hy=0.02, hz=0.02)
+       joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
+       builder.add_articulation([joint])
+       builder.add_actuator(
+           DriveBAM,
+           index=builder.joint_qd_start[joint],
+           kp=5.0,
+           kt=0.5,
+           resistance=2.0,
+           vin=12.0,
+           max_pwm=1.0,
+       )
+   model = builder.finalize()
+
+   battery = Battery(
+       dof_battery=wp.array([0, 0, 1], dtype=wp.int32),
+       nominal_voltage=wp.array([12.0, 12.0], dtype=wp.float32),
+       sag_gain=wp.array([0.5, 0.5], dtype=wp.float32),
+       min_voltage=wp.array([9.0, 9.0], dtype=wp.float32),
+   )
+
+   solver = newton.solvers.SolverFeatherstone(model)
+   state_0, state_1 = model.state(), model.state()
+   control = model.control()
+   control.joint_target_q.fill_(1.0)
+   dt = 0.01
+
+   for _ in range(10):
+       battery.refresh()
+       control.joint_f.zero_()
+       for actuator in model.actuators:
+           actuator.step(state_0, control, dt=dt, battery=battery)
+       solver.step(state_0, state_1, control, None, dt)
+       state_0, state_1 = state_1, state_0
 
 Clamping
 ^^^^^^^^

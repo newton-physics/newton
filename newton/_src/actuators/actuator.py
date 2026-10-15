@@ -17,6 +17,7 @@ from .drives.base import DriveBase
 from .effort_mode_explicit import _EffortModeExplicit
 from .effort_mode_implicit import ImplicitOptions, JointSpaceResponse, _EffortModeImplicit
 from .input_processors.base import InputProcessorBase
+from .input_processors.input_processor_backlash import InputProcessorBacklash
 from .input_processors.input_processor_delay import InputProcessorDelay
 
 if TYPE_CHECKING:
@@ -587,6 +588,11 @@ class Actuator:
         Raises:
             NotImplementedError: The actuator was built with ``requires_grad=True``.
                 The implicit solve is not differentiable.
+
+        Warns:
+            UserWarning: The actuator has an :class:`~newton.actuators.InputProcessorBacklash`.
+                The solve uses the motor-side response only, so it is inaccurate
+                while the backlash gap is open.
         """
         if self.requires_grad:
             raise NotImplementedError(
@@ -598,6 +604,13 @@ class Actuator:
             raise NotImplementedError(
                 f"{type(self.drive).__name__} declares custom inputs but does not override prepare_implicit, "
                 "so the implicit solve would ignore them."
+            )
+        if any(isinstance(p, InputProcessorBacklash) for p in self.input_processors):
+            warnings.warn(
+                "Implicit actuation with InputProcessorBacklash predicts the link-side state from the "
+                "motor-side response only, so it is inaccurate while the backlash gap is open.",
+                UserWarning,
+                stacklevel=2,
             )
         self._effort_mode = _EffortModeImplicit(
             self.drive,

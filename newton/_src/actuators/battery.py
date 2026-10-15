@@ -37,6 +37,9 @@ def _battery_reset_kernel(
 class Battery:
     """Supply shared by the actuators of one or more DOFs.
 
+    Holds B batteries; each per-battery array has one entry per battery, and
+    :attr:`dof_battery` maps each DOF to the battery it draws from.
+
     The supply voltage sags with the total motor torque drawn from it:
 
     .. math::
