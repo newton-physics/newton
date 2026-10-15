@@ -77,6 +77,116 @@ def _inverse_block_from_mass_matrix_kernel(
             inv_block[a, i, c] = t / L[a, i, i]
 
 
+@wp.func
+def _compensated_divide(value: wp.float32, diagonal: wp.float32, reciprocal: wp.float32):
+    estimate = value * reciprocal
+    correction = value - estimate * diagonal
+    result = estimate + correction * reciprocal
+    if not wp.isfinite(estimate):
+        result = value / diagonal
+    return result
+
+
+@wp.kernel(enable_backward=False, module="unique")
+def _inverse_block_cooperative_kernel(
+    mass: wp.array3d[wp.float32],
+    counts: wp.array[wp.int32],
+    L: wp.array3d[wp.float32],
+    inverse: wp.array3d[wp.float32],
+):
+    batch, lane = wp.tid()
+    count = counts[batch]
+    lower = wp.tile_empty(shape=(64, 65), dtype=wp.float32, storage="shared")
+    source = wp.tile_load(mass[batch], shape=(64, 64))
+    wp.tile_assign(lower, source)
+    values = wp.tile_empty(shape=(64, 65), dtype=wp.float32, storage="shared")
+    pivots = wp.tile_empty(shape=(64,), dtype=wp.float32, storage="shared")
+    for column in range(count):
+        original_diagonal = lower[column, column]
+        value = float(0.0)
+        if lane >= column and lane < count:
+            value = lower[lane, column]
+            for inner in range(column):
+                value -= lower[lane, inner] * lower[column, inner]
+        pivots[lane] = value
+        diagonal = wp.max(pivots[column], _FLOAT32_EPS * wp.max(wp.abs(original_diagonal), 1.0))
+        root = wp.sqrt(diagonal)
+        result = float(0.0)
+        if lane == column:
+            result = root
+        elif lane > column and lane < count:
+            result = value / root
+        lower[lane, column] = result
+        if lane >= column and lane < count:
+            L[batch, lane, column] = result
+    reciprocal = float(1.0)
+    if lane < count:
+        reciprocal = 1.0 / lower[lane, lane]
+    lower[lane, 64] = reciprocal
+    for row in range(count):
+        value = float(0.0)
+        if row == lane:
+            value = 1.0
+        for inner in range(row):
+            value -= lower[row, inner] * values[lane, inner]
+        values[lane, row] = _compensated_divide(value, lower[row, row], lower[row, 64])
+    for reverse in range(count):
+        row = count - 1 - reverse
+        value = values[lane, row]
+        for inner in range(row + 1, count):
+            value -= lower[inner, row] * values[lane, inner]
+        values[lane, row] = _compensated_divide(value, lower[row, row], lower[row, 64])
+    if lane < count:
+        for row in range(count):
+            inverse[batch, row, lane] = values[lane, row]
+
+
+@wp.kernel(enable_backward=False, module="unique")
+def _factor_block_kernel(
+    mass: wp.array3d[wp.float32],
+    counts: wp.array[wp.int32],
+    lower: wp.array3d[wp.float32],
+):
+    batch = wp.tid()
+    count = counts[batch]
+    for column in range(count):
+        diagonal = mass[batch, column, column]
+        for inner in range(column):
+            diagonal -= lower[batch, column, inner] * lower[batch, column, inner]
+        diagonal = wp.max(diagonal, _FLOAT32_EPS * wp.max(wp.abs(mass[batch, column, column]), 1.0))
+        root = wp.sqrt(diagonal)
+        lower[batch, column, column] = root
+        for row in range(column + 1, count):
+            value = mass[batch, row, column]
+            for inner in range(column):
+                value -= lower[batch, row, inner] * lower[batch, column, inner]
+            lower[batch, row, column] = value / root
+
+
+@wp.kernel(enable_backward=False, module="unique")
+def _solve_inverse_columns_kernel(
+    counts: wp.array[wp.int32],
+    lower: wp.array3d[wp.float32],
+    inverse: wp.array3d[wp.float32],
+):
+    batch, column = wp.tid()
+    count = counts[batch]
+    if column < count:
+        for row in range(count):
+            value = float(0.0)
+            if row == column:
+                value = 1.0
+            for inner in range(row):
+                value -= lower[batch, row, inner] * inverse[batch, inner, column]
+            inverse[batch, row, column] = value / lower[batch, row, row]
+        for reverse in range(count):
+            row = count - 1 - reverse
+            value = inverse[batch, row, column]
+            for inner in range(row + 1, count):
+                value -= lower[batch, inner, row] * inverse[batch, inner, column]
+            inverse[batch, row, column] = value / lower[batch, row, row]
+
+
 @wp.kernel(enable_backward=False)
 def _unit_rhs_kernel(column: int, rhs: wp.array2d[float]):
     """Right-hand side ``e_column`` for every world."""
@@ -317,10 +427,38 @@ class JointSpaceResponse:
     def _invert_blocks(self) -> None:
         """Invert the per-articulation blocks of ``self._H`` into :attr:`inverse_blocks`."""
         self._inv_block.zero_()
-        wp.launch(
-            _inverse_block_from_mass_matrix_kernel,
-            dim=self.model.articulation_count,
-            inputs=[self._H, self._art_dof_count],
-            outputs=[self._L, self._inv_block],
-            device=self.model.device,
-        )
+        width = self._H.shape[1]
+        if (
+            self.model.device.is_cuda
+            and tuple(int(part) for part in wp.__version__.split(".")[:2]) >= (1, 18)
+            and self.model.device.max_shared_memory_per_block >= 50_176
+            and 1 < width <= 64
+        ):
+            wp.launch(
+                _inverse_block_cooperative_kernel,
+                dim=(self.model.articulation_count, 64),
+                inputs=[self._H, self._art_dof_count, self._L, self._inv_block],
+                block_dim=64,
+                device=self.model.device,
+            )
+        elif self.model.device.is_cuda and width > 64:
+            wp.launch(
+                _factor_block_kernel,
+                dim=self.model.articulation_count,
+                inputs=[self._H, self._art_dof_count, self._L],
+                device=self.model.device,
+            )
+            wp.launch(
+                _solve_inverse_columns_kernel,
+                dim=(self.model.articulation_count, width),
+                inputs=[self._art_dof_count, self._L, self._inv_block],
+                device=self.model.device,
+            )
+        else:
+            wp.launch(
+                _inverse_block_from_mass_matrix_kernel,
+                dim=self.model.articulation_count,
+                inputs=[self._H, self._art_dof_count],
+                outputs=[self._L, self._inv_block],
+                device=self.model.device,
+            )
