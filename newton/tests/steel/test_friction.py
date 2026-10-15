@@ -1774,7 +1774,8 @@ class TestSteelFrictionGraspHistory(unittest.TestCase):
                             self.assertGreater(np.mean(retained), 0.8)
                             self.assertLess(drifts[-1], 1.0e-4)
                 with self.subTest(geometry=geometry):
-                    self.assertGreater(drifts[0], 5 * drifts[1] + 5.0e-5)
+                    # The anchor-free drift depends on contact order; require a large ratio, not a fixed floor.
+                    self.assertGreater(drifts[0], 20 * drifts[1] + 1.0e-5)
 
     def test_default_patch_friction_and_explicit_opt_out(self):
         """Build persistent patches by default while retaining an explicit velocity-only opt-out."""
