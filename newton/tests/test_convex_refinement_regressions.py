@@ -19,7 +19,9 @@ from newton.tests.test_convex_contact_witness import (
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
-def _contacts(test, device, half, vertices, indices, pose, scale, *, swap=False, split=False, margin=0.0):
+def _contacts(
+    test, device, half, vertices, indices, pose, scale, *, swap=False, split=False, margin=0.0, triangle=False
+):
     """Return physical witnesses and box-to-mesh normals through the public pipeline."""
     builder = newton.ModelBuilder()
     body = builder.add_body(xform=pose, mass=1.0, inertia=wp.mat33(np.eye(3)))
@@ -29,6 +31,8 @@ def _contacts(test, device, half, vertices, indices, pose, scale, *, swap=False,
     for box in (False, True) if swap else (True, False):
         if box:
             box_index = builder.add_shape_box(-1, hx=half[0], hy=half[1], hz=half[2], cfg=cfg)
+        elif triangle:
+            builder.add_shape_mesh(body, mesh=mesh, scale=scale, cfg=cfg)
         else:
             builder.add_shape_convex_hull(body, mesh=mesh, scale=scale, cfg=cfg)
     model = builder.finalize(device)
@@ -217,6 +221,28 @@ def test_refinement_unconverged_query_separation(test, device):
     test_refinement_failed_query_separation(test, device, unconverged=True)
 
 
+def test_refinement_triangle_box_depth(test, device):
+    """Resolve a small triangle on a wide box through the nearest supporting face."""
+    half = np.array([10.0, 10.0, 0.5])
+    vertices = np.array([[0.0, 0.0, 0.0], [0.0, 0.01, 0.0], [0.01, 0.0, 0.0]], dtype=np.float32)
+    # At the edge, the initial portal can exit sideways by 0.1 m instead of
+    # through the top by 0.02 m. Include a shallow contact as a control.
+    for position, swap in product(((9.9, 0.1, 0.48), (0.3, 0.2, 0.4999)), (False, True)):
+        with test.subTest(position=position, swap=swap):
+            pose = wp.transform(wp.vec3(position), wp.quat_identity())
+            pa, pb, normals = _contacts(
+                test, device, half, vertices, [0, 1, 2], pose, np.ones(3), swap=swap, triangle=True
+            )
+            np.testing.assert_allclose(normals, np.tile([0.0, 0.0, 1.0], (len(normals), 1)), atol=1.0e-5)
+            depths = np.sum((pa - pb) * normals, axis=1)
+            np.testing.assert_allclose(depths, half[2] - position[2], atol=1.0e-5)
+            np.testing.assert_allclose(pa[:, 2], half[2], atol=1.0e-5)
+            local = pb - position
+            np.testing.assert_allclose(local[:, 2], 0.0, atol=1.0e-5)
+            test.assertGreaterEqual(float(np.min(local[:, :2])), -1.0e-5)
+            test.assertLessEqual(float(np.max(np.sum(local[:, :2], axis=1))), 0.01 + 1.0e-5)
+
+
 def test_refinement_resting_box_stack(test, device):
     """Report face contacts for centered, nearly aligned resting cubes.
 
@@ -272,6 +298,7 @@ for function in (
     test_refinement_source_topology,
     test_refinement_failed_query_separation,
     test_refinement_unconverged_query_separation,
+    test_refinement_triangle_box_depth,
     test_refinement_resting_box_stack,
 ):
     add_function_test(TestConvexRefinementRegressions, function.__name__, function, devices=get_test_devices())

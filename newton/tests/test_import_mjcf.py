@@ -394,14 +394,8 @@ class TestImportMjcfBasic(unittest.TestCase):
             builder.add_mjcf(mjcf_path, parse_meshes=True)
             model = builder.finalize()
 
-            # Check that meshes have correct maxhullvert values
-            # Note: This assumes meshes are added in order they appear in MJCF
-            meshes = [model.shape_source[i] for i in range(3) if hasattr(model.shape_source[i], "maxhullvert")]
-
-            if len(meshes) >= 3:
-                self.assertEqual(meshes[0].maxhullvert, 32)
-                self.assertEqual(meshes[1].maxhullvert, 128)
-                self.assertEqual(meshes[2].maxhullvert, 64)  # Default value
+            self.assertEqual(len(model.shape_source), 3)
+            self.assertEqual([mesh.maxhullvert for mesh in model.shape_source], [32, 128, 64])
 
     def test_mesh_geom_ignores_geom_size_length(self):
         obj = "\n".join(
@@ -3259,12 +3253,12 @@ f 4 5 8
     <body name="root" pos="0 0 0">
       <geom type="box" size="0.1 0.1 0.1"/>
       <body name="link1" pos="0 -0.5 0">
-        <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5" limited="true"/>
         <geom type="cylinder" size="0.05 0.025"/>
         <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
       </body>
       <body name="link2" pos="0 -0.7 0">
-        <joint name="joint2" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <joint name="joint2" type="slide" axis="1 0 0" range="-50.5 50.5" limited="true"/>
         <geom type="cylinder" size="0.05 0.025"/>
         <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
       </body>
@@ -3297,6 +3291,10 @@ f 4 5 8
         builder.add_world(individual_builder)
         model = builder.finalize()
         solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
+
+        mujoco = SolverMuJoCo.import_mujoco()[0]
+        native = mujoco.MjModel.from_xml_string(mjcf)
+        np.testing.assert_array_equal(solver.mj_model.jnt_limited, native.jnt_limited)
 
         # Tendon with explicit limited="true" -> limited=1
         self.assertEqual(
@@ -5471,7 +5469,7 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
             <geom type="box" size="0.1 0.1 0.1"/>
         </body>
         <body name="link2" pos="1 0 0">
-            <joint name="joint2" axis="0 1 0" type="slider" range="-45 45" actuatorfrcrange="-50 50" actuatorfrclimited="auto"/>
+            <joint name="joint2" axis="0 1 0" type="slide" range="-45 45" actuatorfrcrange="-50 50" actuatorfrclimited="auto"/>
             <geom type="box" size="0.1 0.1 0.1"/>
         </body>
         <body name="link3" pos="2 0 0">
@@ -8647,7 +8645,7 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
                      ctrllimited="true" forcelimited="true" ctrlrange="-2 2"
                      forcerange="-100 100" gear="2 0 0 0 0 0"
                      dynprm="0.5 0 0 0 0 0 0 0 0 0"
-                     actlimited="true" actrange="-1 1" actdim="2" actearly="true"/>
+                     actlimited="true" actrange="-1 1" actdim="1" actearly="true"/>
             <position kp="50"/>
             <default class="special">
                 <geom condim="6" solmix="5.0"
@@ -8798,7 +8796,7 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         self.assertAlmostEqual(float(m.actuator_dynprm.numpy()[0, 0]), 0.5, places=4)
         self.assertEqual(m.actuator_actlimited.numpy()[0], 1)
         np.testing.assert_allclose(m.actuator_actrange.numpy()[0], [-1.0, 1.0], atol=1e-4)
-        self.assertEqual(m.actuator_actdim.numpy()[0], 2)
+        self.assertEqual(m.actuator_actdim.numpy()[0], 1)
         self.assertEqual(m.actuator_actearly.numpy()[0], 1)
 
         np.testing.assert_allclose(m.actuator_gainprm.numpy()[1, 0], 200.0, atol=1.0)
@@ -8812,6 +8810,9 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
 
         np.testing.assert_allclose(m.actuator_gainprm.numpy()[3, 0], 300.0, atol=1.0)
         np.testing.assert_allclose(m.actuator_biasprm.numpy()[3, :3], [0.0, -300.0, -30.0], atol=1.0)
+
+        solver = SolverMuJoCo(self.model)
+        self.assertEqual(solver.mj_model.actuator_actnum[0], 1)
 
     def test_position_actuator_defaults(self):
         """ACTUATOR (position): kp inherited from <position> defaults."""
