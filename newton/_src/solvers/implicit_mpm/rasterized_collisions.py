@@ -24,7 +24,7 @@ _INFINITY = wp.constant(1.0e12)
 """Threshold over which values are considered infinite"""
 
 _CLOSEST_POINT_NORMAL_EPSILON = wp.constant(1.0e-3)
-"""Epsilon for closest point normal calculation"""
+"""Maximum neighborhood radius for closest point normal calculation"""
 
 _SDF_SIGN_FROM_AVERAGE_NORMAL = True
 """If true, determine the sign of the sdf from the average normal of the faces around the closest point.
@@ -99,7 +99,7 @@ def _triangle_distance_sq_and_pseudonormal(q: wp.vec3, e1: wp.vec3, e2: wp.vec3,
     """Return squared distance to triangle (0, e1, e2) and its weighted pseudonormal.
 
     Reuse the projection coordinates for vertex/edge classification. Degenerate
-    faces and faces beyond the absolute neighborhood contribute a zero normal.
+    faces and faces beyond the adaptive neighborhood contribute a zero normal.
     """
     e3 = e2 - e1
     e1_sq = wp.length_sq(e1)
@@ -111,6 +111,9 @@ def _triangle_distance_sq_and_pseudonormal(q: wp.vec3, e1: wp.vec3, e2: wp.vec3,
     edge_scale = wp.max(wp.max(e1_sq, e2_sq), e3_sq)
     if normal_sq <= 1.0e-12 * edge_scale * edge_scale:
         return float(_INFINITY), wp.vec3(0.0)
+
+    # Keep vertex neighborhoods disjoint, even on faces smaller than the search radius.
+    eps_sq = wp.min(eps_sq, 0.01 * wp.min(wp.min(e1_sq, e2_sq), e3_sq))
 
     e1q = wp.dot(e1, q)
     e2q = wp.dot(e2, q)
@@ -177,10 +180,11 @@ def get_average_face_normal(
     mesh_id: wp.uint64,
     point: wp.vec3,
 ):
-    """Compute an angle-weighted pseudonormal within an absolute-distance neighborhood.
+    """Compute an angle-weighted pseudonormal within an adaptive-distance neighborhood.
 
     Use corner angles at vertices, pi at edges, and 2*pi in face interiors.
-    Both face selection and feature classification use the same absolute epsilon.
+    Face selection and feature classification use the same radius, capped at
+    one tenth of each face's shortest edge and the absolute search radius.
 
     Args:
         mesh_id: The mesh to query.
