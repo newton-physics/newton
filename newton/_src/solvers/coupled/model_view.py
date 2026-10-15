@@ -98,6 +98,9 @@ class ModelView:
 
     def __setattr__(self, name: str, value) -> None:
         parent = object.__getattribute__(self, "_parent")
+        if parent.tendon_count and name in {"body_count", "tendon_count", "tendon_guide_count", "tendon_segment_count"}:
+            if value != getattr(parent, name):
+                raise ValueError("Partial model views containing tendons are unsupported; use a complete tendon model")
         spec = parent._attribute_spec(name)
         if spec is not None and spec.alias_of is not None:
             getattr(parent, name)  # Validate availability and emit the deprecation warning.

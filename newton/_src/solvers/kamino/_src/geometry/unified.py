@@ -514,19 +514,19 @@ class CollisionPipelineUnifiedKamino:
             self.shape_sdf_data = wp.empty(shape=(0,), dtype=TextureSDFData)
             self.shape_sdf_index = wp.full_like(self._model.geoms.type, -1)
 
+        # Local bounds also certify penetration depths for primitive pairs.
+        self.collision_aabb_lower = self._model.geoms.collision_aabb_lower
+        self.collision_aabb_upper = self._model.geoms.collision_aabb_upper
+
         # Wire mesh / heightfield data from the model when explicit shapes exist;
         # otherwise use empty placeholder arrays that satisfy the narrow-phase interface.
         if _has_explicit:
-            self.collision_aabb_lower = self._model.geoms.collision_aabb_lower
-            self.collision_aabb_upper = self._model.geoms.collision_aabb_upper
             self.voxel_resolution = self._model.geoms.voxel_resolution
             self.heightfield_index = self._model.geoms.heightfield_index
             self.heightfield_data = self._model.geoms.heightfield_data
             self.heightfield_elevations = self._model.geoms.heightfield_elevations
         else:
             with wp.ScopedDevice(self._device):
-                self.collision_aabb_lower = wp.empty(shape=(0,), dtype=wp.vec3)
-                self.collision_aabb_upper = wp.empty(shape=(0,), dtype=wp.vec3)
                 self.voxel_resolution = wp.empty(shape=(0,), dtype=wp.vec3i)
             self.heightfield_index = None
             self.heightfield_data = None

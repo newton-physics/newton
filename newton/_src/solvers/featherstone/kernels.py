@@ -1683,7 +1683,7 @@ def dense_gemm(
 
 
 def create_inertia_matrix_kernel(num_joints, num_dofs):
-    @wp.kernel
+    @wp.kernel(module="unique")
     def eval_dense_gemm_tile(J_arr: wp.array3d[float], M_arr: wp.array3d[float], H_arr: wp.array3d[float]):
         articulation = wp.tid()
 
@@ -1715,7 +1715,7 @@ def create_inertia_matrix_kernel(num_joints, num_dofs):
 def create_batched_cholesky_kernel(num_dofs):
     assert num_dofs == 18
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def eval_tiled_dense_cholesky_batched(A: wp.array3d[float], R: wp.array2d[float], L: wp.array3d[float]):
         articulation = wp.tid()
 
@@ -1729,7 +1729,7 @@ def create_batched_cholesky_kernel(num_dofs):
 
 
 def create_inertia_matrix_cholesky_kernel(num_joints, num_dofs):
-    @wp.kernel
+    @wp.kernel(module="unique")
     def eval_dense_gemm_and_cholesky_tile(
         J_arr: wp.array3d[float],
         M_arr: wp.array3d[float],

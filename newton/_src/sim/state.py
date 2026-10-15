@@ -117,6 +117,18 @@ class State:
         self.particle_f: wp.array | None = None
         """3D forces on particles [N], shape (particle_count,), dtype :class:`vec3`."""
 
+        self.tendon_segment_rest_length: wp.array[float] | None = None
+        """Material rest lengths [m], shape (tendon_segment_count,). Initialized on the first solver step."""
+        self.tendon_segment_attachment_l_local: wp.array[wp.vec3] | None = None
+        """Previous left tangent points in body-local coordinates [m], shape (tendon_segment_count,)."""
+        self.tendon_segment_attachment_r_local: wp.array[wp.vec3] | None = None
+        """Previous right tangent points in body-local coordinates [m], shape (tendon_segment_count,)."""
+        self.tendon_guide_active: wp.array[wp.bool] | None = None
+        """Accepted routing activity, shape (tendon_guide_count,). Initialized on the first solver step."""
+        # Initialization/reset bookkeeping is copied by assign() along with physical history.
+        self._tendon_initialized: wp.array[wp.bool] | None = None
+        self._tendon_rebaseline: wp.array[wp.bool] | None = None
+
         self.body_q: wp.array | None = None
         """Rigid body transforms (7-DOF) [m, unitless quaternion], shape (body_count,), dtype :class:`transform`."""
 

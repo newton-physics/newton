@@ -50,6 +50,8 @@ and :meth:`~newton.ModelBuilder.replicate` preserve the records and offset their
 element ranges. Label prefixes also apply to deformable labels. The builder's
 range lists remain private; use the public model arrays to inspect finalized ranges.
 
+.. _deformable-objects-model-arrays:
+
 Model labels and ranges
 -----------------------
 
@@ -85,8 +87,9 @@ Coupled solver models
 Compact coupled-solver models retain only deformable objects whose recorded
 elements are all present. Their ranges refer to the compact model's arrays,
 not the parent model's arrays. Particle-based deformables follow the coupled
-solver's existing particle layout. For rods reduced during builder collapse,
-see :ref:`deformable-objects-collapse`.
+solver's existing particle layout. Unlike :ref:`builder fixed-joint collapse
+<deformable-objects-collapse>`, a solver partition does not retain partially
+included curves.
 
 Curves
 ------
@@ -194,10 +197,6 @@ A curve with a remaining body is retained even if its joint range is empty.
 Newton warns and omits a curve only when none of its segment bodies survive.
 Use ``joints_to_keep`` to preserve the original segment layout. Particle,
 triangle, and tetrahedron ranges are not affected by fixed-joint collapse.
-
-A compact coupled-solver model must include every element in a curve's current
-ranges to retain that curve. Omitting part of a range from a solver partition
-is different from reducing the range during builder collapse.
 
 .. _deformable-objects-welded-usd-graphs:
 .. _welded-usd-graphs:

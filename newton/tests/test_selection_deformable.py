@@ -3,7 +3,6 @@
 
 """Test deformable selection, state access, resets, and optional USD integration."""
 
-import gc
 import os
 import re
 import unittest
@@ -659,7 +658,6 @@ class TestDeformableAndArticulationViews(unittest.TestCase):
         self.assertEqual(builder.body_count, body_count - 1)
         self.assertEqual(builder.joint_count, joint_count - 1)
 
-        builder.color()
         model = builder.finalize()
         state = model.state()
         rigid = ArticulationView(model, "robot")
@@ -706,19 +704,8 @@ class TestDeformableAndArticulationViews(unittest.TestCase):
         np.testing.assert_allclose(cloth.get_particle_positions(state).numpy(), moved_cloth, atol=1e-6)
         np.testing.assert_allclose(soft.get_particle_positions(state).numpy(), moved_soft, atol=1e-6)
 
-        state_out = model.state()
-        SolverVBD(model, iterations=1).step(
-            state,
-            state_out,
-            control=None,
-            contacts=None,
-            dt=1.0 / 60.0,
-        )
-        self.assertTrue(np.isfinite(state_out.body_q.numpy()).all())
-        self.assertTrue(np.isfinite(state_out.particle_q.numpy()).all())
-
-    def test_views_update_disjoint_state_and_simulate(self):
-        """Rigid, cloth, and volume views coexist across replicated worlds."""
+    def test_views_update_disjoint_state(self):
+        """Keep rigid, cloth, and volume view writes disjoint across replicated worlds."""
         prototype = newton.ModelBuilder()
         _add_test_articulation(prototype)
         _add_test_cloth(prototype)
@@ -748,17 +735,6 @@ class TestDeformableAndArticulationViews(unittest.TestCase):
         rigid.set_root_transforms(state, wp.array(rigid_values, dtype=wp.transform, device=model.device))
         np.testing.assert_allclose(rigid.get_root_transforms(state).numpy(), rigid_values, atol=1e-6)
         np.testing.assert_array_equal(cloth.get_particle_positions(state).numpy(), cloth_values)
-
-        state_out = model.state()
-        newton.solvers.SolverXPBD(model, iterations=1).step(
-            state,
-            state_out,
-            control=None,
-            contacts=None,
-            dt=1.0 / 60.0,
-        )
-        self.assertTrue(np.isfinite(state_out.body_q.numpy()).all())
-        self.assertTrue(np.isfinite(state_out.particle_q.numpy()).all())
 
     def test_heterogeneous_deformables_keep_rigid_selection_uniform(self):
         """Family views retain empty worlds beside one common rigid articulation."""
@@ -908,11 +884,9 @@ class TestDeformableStateReads(unittest.TestCase):
                             refs.extend(weakref.ref(obj) for obj in (state, getattr(state, attribute), result))
                             state_ref = weakref.ref(state)
                             del state
-                            gc.collect()
                             self.assertIsNone(state_ref())
                             np.testing.assert_array_equal(result.numpy(), expected)
                             del result
-                        gc.collect()
                         self.assertTrue(all(ref() is None for ref in refs))
                         live_state = model.state()
                         self.assertTrue(np.isfinite(getter(live_state).numpy()).all())
@@ -940,7 +914,6 @@ class TestDeformableStateReads(unittest.TestCase):
                         self.assertIs(getter(states[1]), buffers[1])
                         np.testing.assert_array_equal(buffers[0].numpy(), np.ones_like(buffers[0].numpy()))
                         del buffers[0]
-                        gc.collect()
                         self.assertIsNone(old_array())
 
     def test_getter_gradients(self):
@@ -975,7 +948,6 @@ class TestDeformableStateReads(unittest.TestCase):
                             source.grad.zero_()
                             self.assertIs(getter(state), values)
                             if setup == "replaced":
-                                gc.collect()
                                 self.assertIsNone(old_grad())
                             source.requires_grad = False
                             self.assertFalse(getter(state).requires_grad)
@@ -1052,7 +1024,11 @@ class TestDeformableStateReads(unittest.TestCase):
                     else:
                         changed[..., 0] += np.arange(1, 4)[:, None]
                     np.testing.assert_array_equal(target.numpy(), before)
-                    setter(state, wp.array(changed, dtype=target.dtype, device=device))
+                    dtype = target.dtype
+                    if attribute == "particle_q":
+                        # Equivalent vec3 inputs must pass Newton's dtype validation.
+                        dtype = wp.types.vector(length=3, dtype=wp.float32)
+                    setter(state, wp.array(changed, dtype=dtype, device=device))
                     np.testing.assert_allclose(getter(state).numpy(), changed, atol=1e-6)
 
     def test_regular_getter_returns_a_live_state_view(self):

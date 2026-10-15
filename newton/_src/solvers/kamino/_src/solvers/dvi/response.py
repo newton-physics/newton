@@ -27,7 +27,7 @@ def make_response_kernel(width: int = _RESPONSE_WIDTH):
     """
     block_size = 32
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False})
     def response(
         dim: wp.array[wp.int32],
         njc: wp.array[wp.int32],

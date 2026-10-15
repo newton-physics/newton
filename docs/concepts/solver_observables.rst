@@ -149,8 +149,9 @@ the velocity impulse divided by ``dt``. MuJoCo Warp computes ``BODY_QDD`` and
 ``BODY_PARENT_F`` even with ``disable_sensors=True`` by enabling the
 post-constraint RNE stage independently of sensors.
 The native MuJoCo CPU backend (``use_mujoco_cpu=True``) supports only
-``SolverMuJoCo.ObservableKind.QFRC_ACTUATOR``; body and contact observable
-requests are rejected. MuJoCo Warp supports body observables on both CPU and GPU.
+``SolverMuJoCo.ObservableKind.QFRC_ACTUATOR``; body, contact, and overflow
+observable requests are rejected. MuJoCo Warp supports body observables on both
+CPU and GPU.
 
 Kamino exports contact points in the step's input body frames and world-frame
 wrenches about the input centers of mass.
@@ -191,6 +192,97 @@ Pass a collection even for one kind, such as ``{"body_qdd"}``. Bare strings and
 unknown names are rejected. ``ObservableKind`` is not iterable; query
 ``solver.supported_observables`` for the names accepted by the configured backend.
 An inherited name does not imply support for that observable.
+
+.. _mujoco_overflow_observable:
+
+MuJoCo overflow diagnostics
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+:class:`~newton.solvers.SolverMuJoCo` exposes
+:attr:`~newton.solvers.SolverMuJoCo.ObservableKind.OVERFLOW` through
+``observables.overflow``, an ``int32`` array with shape ``(model.world_count,)``.
+It reports capacity overflow after a step without synchronizing the device in
+the solver. Requesting it requires the MuJoCo Warp backend
+(``use_mujoco_cpu=False``); the native MuJoCo CPU backend rejects the request.
+
+Use :class:`~newton.solvers.SolverMuJoCo.OverflowBits` to interpret Newton's
+flags, and ``mujoco_warp.OverflowType`` for MuJoCo Warp's flags. For example,
+this scene deliberately allocates fewer solver contacts than Newton generates:
+
+.. code-block:: python
+
+   import mujoco_warp
+   import newton
+   import warp as wp
+   from newton.solvers import SolverMuJoCo
+
+   builder = newton.ModelBuilder()
+   builder.add_ground_plane()
+   for i in range(4):
+       body = builder.add_body(xform=wp.transform((i * 0.2, 0.0, 0.04), wp.quat_identity()))
+       builder.add_shape_sphere(body, radius=0.05)
+   model = builder.finalize()
+
+   solver = SolverMuJoCo(model, use_mujoco_contacts=False, nconmax=1)
+   pipeline = newton.CollisionPipeline(model)
+   contacts = pipeline.contacts()
+   state_in, state_out = model.state(), model.state()
+   newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+   observables = solver.observables(kinds={solver.ObservableKind.OVERFLOW})
+
+   pipeline.collide(state_in, contacts)
+   solver.step(state_in, state_out, model.control(), contacts, 1.0 / 60.0, observables=observables)
+   overflow = observables.overflow.numpy()
+
+   if (overflow & SolverMuJoCo.OverflowBits.CONTACT_PIPELINE).any():
+       print("Newton contact pipeline capacity exceeded")
+   if (overflow & SolverMuJoCo.OverflowBits.SOLVER_NCONMAX).any():
+       print("MuJoCo Warp solver contact capacity exceeded")
+   if (overflow & mujoco_warp.OverflowType.NEFC).any():
+       print("MuJoCo Warp constraint capacity exceeded")
+
+The bit layout is:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 12 38 50
+
+   * - Bits
+     - Public flags
+     - Meaning
+   * - 0-15
+     - ``mujoco_warp.OverflowType``
+     - MuJoCo Warp diagnostics, including ``NEFC``, ``NJMAX_NNZ``, collision
+       overflow, and solver iteration limits.
+   * - 16
+     - :attr:`~newton.solvers.SolverMuJoCo.OverflowBits.CONTACT_PIPELINE`
+     - Newton generated more rigid contacts than ``contacts.rigid_contact_max``.
+   * - 17
+     - :attr:`~newton.solvers.SolverMuJoCo.OverflowBits.SOLVER_NCONMAX`
+     - Newton generated more rigid contacts than the solver's shared
+       ``naconmax`` buffer can consume.
+
+The Newton flags describe shared contact buffers and are repeated in every
+world's mask when the global count exceeds capacity. They do not identify which
+world lost contacts. MuJoCo Warp's flags retain their backend-provided world
+assignment. When MuJoCo Warp performs its own collision detection
+(``use_mujoco_contacts=True``), the Newton flags are suppressed and ``contacts``
+may be ``None``.
+
+Allocate the container before CUDA graph capture and pass it to each step that
+should update the diagnostic. The mask reflects that step only, including after
+graph replay; omitted or unselected observables remain unchanged. Reading
+``.numpy()`` synchronizes with the device, so inspect the result outside capture.
+
+Newton checks every declared ``mujoco_warp.OverflowType`` member when importing
+the backend and raises ``RuntimeError`` if any flag uses bits above 15. This
+prevents future upstream flags from silently colliding with Newton's flags,
+even if the upstream ``ALL`` mask omits a member.
+
+The observable reports runtime diagnostics; ``strict_capacity=True`` instead
+compares the two buffer capacities before conversion. A capacity mismatch can occur
+without actual overflow, and no Python warning or exception is automatically
+raised for a nonzero runtime mask.
 
 Selection
 ---------

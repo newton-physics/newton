@@ -315,6 +315,7 @@ def _setup_quadruped(articulation_builder):
         xform=wp.transform([0.0, 0.0, 0.7], wp.quat_identity()),
         floating=True,
         enable_self_collisions=False,
+        joint_damping_mode="passive",
     )
     armature_inertia = wp.mat33(np.eye(3, dtype=np.float32)) * 0.01
     for i in range(articulation_builder.body_count):

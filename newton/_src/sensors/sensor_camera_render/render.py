@@ -203,7 +203,10 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
 
         result.hit = wp.bool(True)
         if wp.static(state.render_forward_depth):
-            result.forward_depth = closest_hit.distance * wp.dot(ray_dir_world, forward_axis)
+            ray_origin_offset_world = wp.transform_vector(camera_transform, camera_ray_origin)
+            result.forward_depth = wp.dot(ray_origin_offset_world, forward_axis) + closest_hit.distance * wp.dot(
+                ray_dir_world, forward_axis
+            )
         return result
 
     @wp.func
@@ -238,6 +241,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         light_cast_shadow: wp.array[wp.bool],
         light_positions: wp.array[wp.vec3f],
         light_orientations: wp.array[wp.vec3f],
+        light_colors: wp.array[wp.vec3f],
+        ambient_lighting: wp.array[wp.vec3f],
     ) -> ShadeResult:
         result = ShadeResult()
         result.albedo = wp.vec3f(0.0)
@@ -286,15 +291,16 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         shaded_color = closest_hit.color
         if not is_gaussian:
             if wp.static(config.enable_ambient_lighting):
-                up = wp.vec3f(0.0, 0.0, 1.0)
+                # ambient_lighting holds (sky radiance, ground radiance, up vector).
+                sky = ambient_lighting[0]
+                ground = ambient_lighting[1]
+                up = ambient_lighting[2]
                 len_n = wp.length(closest_hit.normal)
                 n = closest_hit.normal if len_n > 0.0 else up
                 n = wp.normalize(n)
                 hemispheric = 0.5 * (wp.dot(n, up) + 1.0)
-                sky = wp.vec3f(0.4, 0.4, 0.45)
-                ground = wp.vec3f(0.1, 0.1, 0.12)
                 ambient_color = sky * hemispheric + ground * (1.0 - hemispheric)
-                shaded_color = wp.cw_mul(albedo_color, ambient_color * 0.5)
+                shaded_color = wp.cw_mul(albedo_color, ambient_color)
 
             for light_index in range(light_count):
                 light_contribution = compute_lighting(
@@ -323,7 +329,7 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                     closest_hit.normal,
                     hit_point,
                 )
-                shaded_color = shaded_color + albedo_color * light_contribution
+                shaded_color = shaded_color + wp.cw_mul(albedo_color, light_colors[light_index]) * light_contribution
 
         result.color = shaded_color
         return result
@@ -365,6 +371,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         light_cast_shadow: wp.array[wp.bool],
         light_positions: wp.array[wp.vec3f],
         light_orientations: wp.array[wp.vec3f],
+        light_colors: wp.array[wp.vec3f],
+        ambient_lighting: wp.array[wp.vec3f],
     ) -> RenderSample:
         result = RenderSample()
         result.hit = wp.bool(False)
@@ -450,6 +458,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
             light_cast_shadow,
             light_positions,
             light_orientations,
+            light_colors,
+            ambient_lighting,
         )
         result.albedo = shade.albedo
         result.color = shade.color
@@ -504,6 +514,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
         light_cast_shadow: wp.array[wp.bool],
         light_positions: wp.array[wp.vec3f],
         light_orientations: wp.array[wp.vec3f],
+        light_colors: wp.array[wp.vec3f],
+        ambient_lighting: wp.array[wp.vec3f],
         # Outputs
         out_color: wp.array[wp.uint32],
         out_depth: wp.array[wp.float32],
@@ -604,6 +616,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                 light_cast_shadow,
                 light_positions,
                 light_orientations,
+                light_colors,
+                ambient_lighting,
             )
             if not sample.hit:
                 write_clear_outputs(
@@ -703,6 +717,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                     light_cast_shadow,
                     light_positions,
                     light_orientations,
+                    light_colors,
+                    ambient_lighting,
                 )
                 if not sample.hit:
                     if wp.static(state.render_color):
@@ -883,6 +899,8 @@ def create_kernel(config: RenderConfig, state: RenderContext.RenderState, clear_
                             light_cast_shadow,
                             light_positions,
                             light_orientations,
+                            light_colors,
+                            ambient_lighting,
                         )
                         sample_color = shade.color
                         sample_albedo = shade.albedo

@@ -202,6 +202,10 @@ applied componentwise when the joints have more than one coordinate.
 The joint types do not need to match; only their position and velocity
 dimensions must match. For example, a one-axis D6 joint can mimic another
 one-dimensional joint.
+Both joints must be PRISMATIC, REVOLUTE, or D6 joints. Quaternion joints
+(BALL, FREE, DISTANCE, and ROD) are not supported because componentwise
+scaling and offsets do not preserve unit quaternions. FIXED joints have no
+coordinates to mimic and are also not supported.
 
 :func:`newton.eval_mimic` updates the follower coordinates in a state. For each
 follower, it reads all position and velocity coordinates of the reference joint
@@ -223,10 +227,12 @@ during a partial reset:
   newton.eval_mimic(model, state, indices=articulation_indices)
   newton.eval_fk(model, state.joint_q, state.joint_qd, state, indices=articulation_indices)
 
-Mimic chains are not supported. The reference joint must be independent, and a
-joint that is already the reference for a follower cannot itself become a
-follower. :meth:`newton.ModelBuilder.set_joint_mimic` raises an error if either
-case would create a chain.
+Joint-owned mimic chains are not supported. The reference joint must be
+independent, and a joint that is already the reference for a follower cannot
+itself become a follower. :meth:`newton.ModelBuilder.set_joint_mimic` raises
+an error if either case would create a chain. When importing URDF,
+:meth:`newton.ModelBuilder.add_urdf` composes chained ``<mimic>`` coefficients
+into direct references to independent joints.
 
 Call :func:`newton.eval_mimic` before :func:`newton.eval_fk` when
 maximal-coordinate body poses should reflect the mimic relationship.

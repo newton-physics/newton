@@ -75,17 +75,11 @@ shape ``(count, particles_per_deformable_object)``, with the same rows and parti
 order as the position getter. Inverse masses use ``wp.float32`` in [1/kg]; flags
 use ``wp.int32`` bitmasks from :class:`~newton.ParticleFlags`.
 
-An application can save these properties before applying kinematic targets:
-
-.. code-block:: python
-
-    inverse_masses_default = wp.clone(surfaces.get_particle_inv_masses(model))
-    flags_default = wp.clone(surfaces.get_particle_flags(model))
-
-Clone the results to keep independent snapshots. Do not edit the getter results:
-they may share Model storage or use a reusable buffer. These methods only read
-existing Model data. Applying kinematic targets and restoring the saved properties
-remain application responsibilities; the views do not provide property setters.
+See the :ref:`particle-property example <selection-particle-properties>` for
+saving independent snapshots with ``wp.clone()``. Do not edit getter results:
+they may share Model storage or use a reusable buffer. Applying kinematic targets
+and restoring saved properties remain application responsibilities; the views do
+not provide property setters.
 
 Update selected deformable objects
 ----------------------------------
@@ -266,23 +260,10 @@ deformable object does not make batched access valid.
 Inspect all deformable objects
 ------------------------------
 
-Use the :ref:`public model arrays <deformable-objects>` to inspect all deformable
-objects without a selection pattern:
-
-.. code-block:: python
-
-    # Read metadata once during setup, outside simulation steps or graph capture.
-    worlds = model.surface_world.numpy()
-    starts = model.surface_particle_start.numpy()
-    ends = model.surface_particle_end.numpy()
-    for label, world, start, end in zip(
-        model.surface_label, worlds, starts, ends, strict=True
-    ):
-        print(label, "world:", world, "particles:", end - start)
-
-These arrays include global deformable objects and worlds with different object
-counts. A view contains only its matches. Its row indices refer to that selection,
-not to all deformable objects in the model.
+Use the :ref:`public model arrays <deformable-objects-model-arrays>` to inspect
+all deformable objects without a selection pattern, including global objects.
+Read this metadata during setup, outside simulation steps or graph capture.
+A view contains only its matches; its row indices are not model-global indices.
 
 Comparison with ArticulationView
 --------------------------------
@@ -308,20 +289,11 @@ identical worlds, each with one robot, two cables, and one cloth:
     cable_segment_transforms = cables.get_body_transforms(state)
     cloth_particle_positions = cloths.get_particle_positions(state)
 
-The method style is similar, but the layouts serve different needs:
-
-* ArticulationView arranges data by world and articulation. Its
-  ``allow_partial_layouts=True`` option allows access to the data that can still
-  be batched when other selected data has an incompatible layout. Deformable
-  views use one row per selected deformable object. Worlds may have different
-  object counts, but batched reads and writes require equal counts of the
-  requested element kind. Neither view pads incompatible data.
-* Both views use Boolean masks with full-sized input arrays. Deformable masks
-  have one entry per selected object, including when worlds have different
-  object counts. A small reset still requires a full-view value buffer.
-* :meth:`~newton.selection.ArticulationView.get_attribute` is a generic entry
-  point. Deformable views provide state getters and setters, particle inverse-mass
-  and flag getters, and element ranges. Generic attribute access remains a follow-up.
+See :ref:`selection-array-shapes` for the data and mask layouts. Both views use
+Boolean masks with full-sized input arrays. Deformable masks have one entry per
+selected object, so resetting a world may require several mask entries.
+ArticulationView also provides :meth:`~newton.selection.ArticulationView.get_attribute`;
+generic attribute access remains a follow-up for deformable views.
 
 For example, these calls reset velocities in world 1 of a three-world model.
 ``robot_velocities`` has the full shape returned by ``get_dof_velocities()``.

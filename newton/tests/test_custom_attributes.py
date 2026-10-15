@@ -2119,6 +2119,50 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         self.assertFalse(hasattr(model, "test"))
         self.assertEqual(model.get_custom_frequency_count("test:empty"), 0)
 
+    def test_merge_empty_reference_frequency(self):
+        """Keep empty reference declarations without adding rows or losing populated defaults."""
+        sources = []
+        for tags in ((), (10, 20)):
+            source = ModelBuilder()
+            source.add_body(mass=1.0)
+            source.add_custom_frequency(ModelBuilder.CustomFrequency(name="sensor"))
+            source.add_custom_attribute(
+                ModelBuilder.CustomAttribute(name="sensor_tag", frequency="sensor", dtype=wp.int32)
+            )
+            for tag in tags:
+                source.add_custom_values(sensor_tag=tag)
+            # Both sources have no explicit references; only one has sensor rows.
+            source.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name="sensor_body",
+                    frequency="sensor",
+                    dtype=wp.int32,
+                    references=AttributeFrequency.BODY,
+                    default=0,
+                )
+            )
+            sources.append(source)
+        empty, populated = sources
+
+        for method in ("add_builder", "replicate"):
+            with self.subTest(method=method):
+                builder = ModelBuilder()
+                for source in (empty, populated, empty, populated):
+                    if method == "add_builder":
+                        builder.add_builder(source)
+                    else:
+                        builder.replicate(source, 1)
+                    self.assertIn("sensor", builder.custom_frequencies)
+                    self.assertIn("sensor_body", builder.custom_attributes)
+                    if builder.body_count == 1:
+                        self.assertEqual(builder.custom_attributes["sensor_body"].values, [])
+                model = builder.finalize(device=self.device)
+                self.assertEqual(model.get_custom_frequency_count("sensor"), 4)
+                np.testing.assert_array_equal(model.sensor_tag.numpy(), [10, 20, 10, 20])
+                np.testing.assert_array_equal(model.sensor_body.numpy(), [1, 1, 3, 3])
+        for source in sources:
+            self.assertEqual(source.custom_attributes["sensor_body"].values, [])
+
     def test_custom_frequency_unknown_raises_keyerror(self):
         """Test that get_custom_frequency_count raises KeyError for unknown frequencies."""
         builder = ModelBuilder()
