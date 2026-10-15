@@ -13,7 +13,7 @@ import xml.etree.ElementTree as ET
 from unittest import mock
 
 import newton.tests.unittest_utils as unittest_utils
-from newton.tests.thirdparty.unittest_parallel import _enable_strict_warnings, _spread_by_module
+from newton.tests.thirdparty.unittest_parallel import _enable_strict_warnings
 from newton.tests.thirdparty.unittest_parallel import main as unittest_parallel_main
 
 NewtonTestCase = unittest_utils.NewtonTestCase
@@ -388,21 +388,6 @@ class TestNewtonTestCaseOutputContract(unittest.TestCase):
         self.assertTrue(stderr_capture.begin_called)
         self.assertTrue(stdout_capture.end_called)
         self.assertFalse(output_capture.active)
-
-
-class TestSuiteOrder(unittest.TestCase):
-    def test_spread_by_module_spaces_packages_and_modules(self):
-        def suite(module, name):
-            case = type(name, (unittest.TestCase,), {"__module__": module, "test_x": lambda self: None})
-            return unittest.TestSuite([case("test_x")])
-
-        suites = [suite("kamino.test_a", f"A{i}") for i in range(3)]
-        suites += [suite("kamino.test_b", f"B{i}") for i in range(3)]
-        suites += [suite("test_c", "C0"), suite("test_d", "D0")]
-
-        order = [type(next(iter(s))).__name__ for s in _spread_by_module(suites)]
-
-        self.assertEqual(order, ["A0", "B0", "A1", "C0", "D0", "B1", "A2", "B2"])
 
 
 class TestShardSelection(unittest.TestCase):
