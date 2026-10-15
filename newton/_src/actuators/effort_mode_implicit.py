@@ -343,6 +343,165 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
     return solve
 
 
+_coupled_cooperative_cache: dict[tuple, wp.Kernel] = {}
+
+
+def _build_coupled_cooperative_kernel(evaluate_force, clamp_chain, cache_key, width):
+    """Build a block-cooperative Newton solve with generic drive/clamp callbacks.
+
+    Each lane holds one coupling/Jacobian row. Tile broadcasts share pivot
+    rows and impulses while the arithmetic and stopping order match the scalar
+    solve. Large groups and CPU execution retain that scalar implementation.
+    """
+    row_width = 8 if width <= 8 else 64
+    key = (*cache_key, row_width)
+    cached = _coupled_cooperative_cache.get(key)
+    if cached is not None:
+        return cached
+    row_type = wp.types.vector(length=row_width, dtype=wp.float64)
+
+    @wp.kernel(enable_backward=False, module="unique")
+    def solve(
+        group_size: wp.array[wp.int32],
+        group_art: wp.array[wp.int32],
+        group_slot: wp.array2d[wp.int32],
+        group_local: wp.array2d[wp.int32],
+        inverse_blocks: wp.array3d[float],
+        pos_indices: wp.array[wp.uint32],
+        vel_indices: wp.array[wp.uint32],
+        target_pos_indices: wp.array[wp.uint32],
+        target_vel_indices: wp.array[wp.uint32],
+        positions: wp.array[float],
+        velocities: wp.array[float],
+        target_pos: wp.array[float],
+        target_vel: wp.array[float],
+        feedforward: wp.array[float],
+        params: wp.array2d[float],
+        h: float,
+        max_iters: int,
+        residual_tol: float,
+        update_tol: float,
+        fd_epsilon: float,
+        derivative_floor: float,
+        warm_zero: int,
+        clamp_params: wp.array2d[float],
+        pbuf: wp.array2d[wp.float64],
+        rbuf: wp.array2d[wp.float64],
+        sbuf: wp.array2d[wp.float64],
+        jbuf: wp.array3d[wp.float64],
+        computed_efforts: wp.array[float],
+        applied_efforts: wp.array[float],
+    ):
+        thread = wp.tid()
+        group = thread // 64
+        row = thread % 64
+        count = group_size[group]
+        if count == 0:
+            return
+        step = wp.float64(h)
+        slot = int(0)
+        qinitial = wp.float64(0.0)
+        vinitial = wp.float64(0.0)
+        tq = wp.float64(0.0)
+        tv = wp.float64(0.0)
+        ff = wp.float64(0.0)
+        impulse = wp.float64(0.0)
+        coupling = row_type(wp.float64(0.0))
+        if row < count:
+            slot = group_slot[group, row]
+            qinitial = wp.float64(positions[pos_indices[slot]])
+            vinitial = wp.float64(velocities[vel_indices[slot]])
+            tq = wp.float64(target_pos[target_pos_indices[slot]])
+            tv = wp.float64(target_vel[target_vel_indices[slot]])
+            if feedforward:
+                ff = wp.float64(feedforward[target_vel_indices[slot]])
+            local = group_local[group, row]
+            art = group_art[group]
+            for column in range(count):
+                coupling[column] = wp.float64(inverse_blocks[art, local, group_local[group, column]])
+            if warm_zero == 0:
+                effort = evaluate_force(qinitial, vinitial, tq, tv, ff, params, slot)
+                impulse = step * clamp_chain(effort, qinitial, vinitial, clamp_params, slot)
+        for _iteration in range(max_iters):
+            impulses = wp.tile(impulse)
+            velocity = vinitial
+            for column in range(count):
+                velocity += coupling[column] * wp.tile_extract(impulses, column)
+            position = qinitial + step * velocity
+            residual = wp.float64(0.0)
+            slope = wp.float64(0.0)
+            if row < count:
+                effort = evaluate_force(position, velocity, tq, tv, ff, params, slot)
+                force = clamp_chain(effort, position, velocity, clamp_params, slot)
+                residual = impulse - step * force
+                delta = wp.float64(fd_epsilon) * (wp.float64(1.0) + wp.abs(velocity))
+                qplus = position + step * delta
+                vplus = velocity + delta
+                plus_raw = evaluate_force(qplus, vplus, tq, tv, ff, params, slot)
+                plus = clamp_chain(plus_raw, qplus, vplus, clamp_params, slot)
+                slope = (plus - force) / delta
+            residuals = wp.tile(residual)
+            norm = wp.float64(0.0)
+            for column in range(count):
+                value = wp.tile_extract(residuals, column)
+                norm += value * value
+            if norm < wp.float64(residual_tol) * wp.float64(residual_tol):
+                break
+            jacobian = row_type(wp.float64(0.0))
+            for column in range(count):
+                value = -step * slope * coupling[column]
+                if row == column:
+                    value += wp.float64(1.0)
+                jacobian[column] = value
+            rhs = -residual
+            for pivot_index in range(count):
+                rows = wp.tile(jacobian)
+                pivot = wp.tile_extract(rows, pivot_index, pivot_index)
+                if wp.abs(pivot) < wp.float64(derivative_floor):
+                    pivot = wp.where(
+                        pivot < wp.float64(0.0), -wp.float64(derivative_floor), wp.float64(derivative_floor)
+                    )
+                    if row == pivot_index:
+                        jacobian[pivot_index] = pivot
+                right_sides = wp.tile(rhs)
+                pivot_rhs = wp.tile_extract(right_sides, pivot_index)
+                if row > pivot_index and row < count:
+                    factor = jacobian[pivot_index] / pivot
+                    for column in range(pivot_index + 1, count):
+                        jacobian[column] -= factor * wp.tile_extract(rows, column, pivot_index)
+                    rhs -= factor * pivot_rhs
+            for reverse in range(count):
+                solved = wp.tile(rhs)
+                pivot_index = count - 1 - reverse
+                value = rhs
+                for column in range(pivot_index + 1, count):
+                    other = wp.tile_extract(solved, column)
+                    if row == pivot_index:
+                        value -= jacobian[column] * other
+                if row == pivot_index:
+                    rhs = value / jacobian[pivot_index]
+                    impulse += rhs
+            updates = wp.tile(rhs)
+            norm = wp.float64(0.0)
+            for reverse in range(count):
+                value = wp.tile_extract(updates, count - 1 - reverse)
+                norm += value * value
+            if norm < wp.float64(update_tol) * wp.float64(update_tol):
+                break
+        impulses = wp.tile(impulse)
+        velocity = vinitial
+        for column in range(count):
+            velocity += coupling[column] * wp.tile_extract(impulses, column)
+        if row < count:
+            position = qinitial + step * velocity
+            effort = evaluate_force(position, velocity, tq, tv, ff, params, slot)
+            computed_efforts[slot] = wp.float32(effort)
+            applied_efforts[slot] = wp.float32(clamp_chain(impulse / step, position, velocity, clamp_params, slot))
+
+    _coupled_cooperative_cache[key] = solve
+    return solve
+
+
 # ---------------------------------------------------------------------------
 # The mode object installed by Actuator.set_effort_mode_implicit
 # ---------------------------------------------------------------------------
@@ -391,9 +550,9 @@ class _EffortModeImplicit:
         # Set for drives that require per-step preparation ahead of the implicit
         # solve, such as advancing an integral term or relinearizing a network.
         self._needs_prepare = type(drive).prepare_implicit is not DriveBase.prepare_implicit
-        self._init_solver(drive, clamping)
         # Up front: this reads to host and allocates, both illegal during graph capture.
         self._build_groups(vel_indices)
+        self._init_solver(drive, clamping)
 
     def _resolve_force_law(self, drive):
         """Validate the drive's in-kernel force law and adopt its params.
@@ -453,7 +612,16 @@ class _EffortModeImplicit:
         self._resolve_force_law(drive)
         chain, entries = self._pack_clamps(clamping)
         key = (drive.evaluate_force, entries)
-        self._kernel = _build_coupled_solve_kernel(drive.evaluate_force, chain, key)
+        width = self._group_slot.shape[1]
+        self._cooperative = (
+            self._device.is_cuda
+            and tuple(int(part) for part in wp.__version__.split(".")[:2]) >= (1, 18)
+            and width <= 64
+        )
+        if self._cooperative:
+            self._kernel = _build_coupled_cooperative_kernel(drive.evaluate_force, chain, key, width)
+        else:
+            self._kernel = _build_coupled_solve_kernel(drive.evaluate_force, chain, key)
 
     def _build_groups(self, vel_indices) -> None:
         """Map actuator DOFs to (articulation, local index) and group by articulation."""
@@ -616,7 +784,8 @@ class _EffortModeImplicit:
         opts = self._options
         wp.launch(
             self._kernel,
-            dim=self._num_groups,
+            dim=self._num_groups * 64 if self._cooperative else self._num_groups,
+            block_dim=64 if self._cooperative else 256,
             inputs=[
                 self._group_size,
                 self._group_art,
