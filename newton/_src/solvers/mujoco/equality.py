@@ -347,6 +347,10 @@ def _add_equality_constraint(
 
         values = _prepare_custom_frequency_row(builder, "mujoco:equality_constraint", values, custom_attributes)
         custom_attributes = None
+    # Pad omitted columns with None (default) so an optional attribute authored only on
+    # earlier rows, e.g. MJCF solref, isn't left short and flagged at finalize.
+    for attribute in builder.get_custom_attributes_by_frequency(["mujoco:equality_constraint"]):
+        values.setdefault(attribute.key, None)
     indices = builder.add_custom_values(**values)
     constraint_idx = indices["mujoco:equality_constraint_type"]
 
