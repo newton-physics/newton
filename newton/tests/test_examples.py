@@ -1457,30 +1457,29 @@ def test_pyramid_kamino_impact(test, device):
                 broad_phase="sap",
             ),
         )
-        # Skip the initial ramp acceleration by starting the ball halfway down
-        # at rolling speed. The stack still has about a second to settle before
-        # impact, and the rollout covers the ball's passage and falling debris.
+        # Start near the ramp's foot at approximately the normal impact speed.
+        # Retain the post-impact rollout while skipping the ramp traversal.
         ramp = example.model.shape_transform.numpy()[-1]
         ramp_pose = wp.transform(wp.vec3(*ramp[:3]), wp.quat(*ramp[3:]))
         poses = example.state_0.body_q.numpy()
         velocities = example.state_0.body_qd.numpy()
-        ball_speed = 7.0
+        ball_speed = 9.5
         poses[example.box_count, :3] = wp.transform_point(
-            ramp_pose, wp.vec3(0.0, 1.0, WRECKING_BALL_RADIUS + 0.5 * RAMP_THICKNESS)
+            ramp_pose, wp.vec3(0.0, -7.0, WRECKING_BALL_RADIUS + 0.5 * RAMP_THICKNESS)
         )
         velocities[example.box_count, :3] = wp.transform_vector(ramp_pose, wp.vec3(0.0, -ball_speed, 0.0))
         velocities[example.box_count, 3:] = (ball_speed / WRECKING_BALL_RADIUS, 0.0, 0.0)
         example.state_0.body_q.assign(poses)
         example.state_0.body_qd.assign(velocities)
 
-        num_frames = 250
+        num_frames = 160
         for frame in range(num_frames + 1):
             poses = example.state_0.body_q.numpy()[: example.box_count]
             bottom = min(
                 pose[2] - CUBE_HALF * np.abs(np.asarray(wp.quat_to_matrix(wp.quat(*pose[3:7]))).reshape(3, 3)[2]).sum()
                 for pose in poses
             )
-            test.assertGreater(bottom, -0.1, f"Frame {frame}: a cube penetrated the ground by {-bottom:.3f} m")
+            test.assertGreater(bottom, -0.05, f"Frame {frame}: a cube penetrated the ground by {-bottom:.3f} m")
             if frame < num_frames:
                 example.step()
         ball_y = example.state_0.body_q.numpy()[example.box_count, 1]
