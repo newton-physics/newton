@@ -247,7 +247,8 @@ jobs:
 
             Every inline comment costs the author attention. Report all P0 and
             P1 findings, but at most three separate P2 or nit findings; fold
-            any others into one `nit` finding that lists them.
+            any others into one finding that lists them, with severity `P2` if
+            any of them is substantive and `nit` only if all are cosmetic.
             Do not report formatting or lint issues that pre-commit enforces,
             preferences with no Newton precedent, or concerns you cannot
             support from the code. Only claim that sibling APIs follow a

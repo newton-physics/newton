@@ -89,12 +89,12 @@ def severity_label(finding: dict) -> str:
     return SEVERITY_LABELS.get(str(finding.get("severity")), SEVERITY_LABELS["nit"])
 
 
-def comment_body(finding: dict) -> str:
-    """Format a finding as an inline comment body."""
+def comment_body(finding: dict, with_suggestion: bool = True) -> str:
+    """Format a finding as an inline comment body, optionally without its suggestion block."""
     label = severity_label(finding)
     parts = [f"{label[0]} **{label[2:]}: {clip(finding.get('title'), 300)}**", "", clip(finding.get("body"))]
     suggestion = finding.get("suggestion")
-    if isinstance(suggestion, str) and suggestion.strip() and "```" not in suggestion:
+    if with_suggestion and isinstance(suggestion, str) and suggestion.strip() and "```" not in suggestion:
         parts += ["", "```suggestion", suggestion.rstrip("\n"), "```"]
     parts += ["", FINDING_MARKER.format(fingerprint(finding))]
     return "\n".join(parts)
@@ -117,8 +117,16 @@ def plan_comments(
         if len(inline) >= MAX_INLINE_COMMENTS or not isinstance(line, int) or line not in file_lines:
             elsewhere.append(finding)
             continue
-        comment = {"path": path, "line": line, "side": "RIGHT", "body": comment_body(finding)}
-        if isinstance(start, int) and start < line and all(n in file_lines for n in range(start, line + 1)):
+        has_range = isinstance(start, int) and start != line
+        keep_range = has_range and start < line and all(n in file_lines for n in range(start, line + 1))
+        # A suggestion replaces exactly the anchored lines, so drop it if its range cannot be anchored.
+        comment = {
+            "path": path,
+            "line": line,
+            "side": "RIGHT",
+            "body": comment_body(finding, with_suggestion=keep_range or not has_range),
+        }
+        if keep_range:
             comment.update(start_line=start, start_side="RIGHT")
         inline.append(comment)
         inline_findings.append(finding)
@@ -138,8 +146,8 @@ def count_line(inline_findings: list[dict]) -> str:
 
 
 def display_name(model_id: object) -> str:
-    """Turn a model ID such as ``claude-opus-4-8`` into a display name, without any provider prefix."""
-    match = re.fullmatch(r"claude-([a-z]+)-(\d+)(?:-(\d+))?", str(model_id).rsplit("/", 1)[-1])
+    """Turn a model ID such as ``claude-opus-4-8`` into a display name, without any provider prefix or date."""
+    match = re.fullmatch(r"claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?", str(model_id).rsplit("/", 1)[-1])
     if not match:
         return "another model"
     family, major, minor = match.groups()
