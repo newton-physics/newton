@@ -83,7 +83,6 @@ from .contact_reduction import (
 )
 from .support_function import (
     AcceleratedSupportMapDataProvider,
-    GeoTypeEx,
     closest_point_on_triangle,
     create_triangle_prism_penetration_refiner,
     extract_shape_data,
@@ -2403,8 +2402,7 @@ def mesh_triangle_contacts_to_reducer_kernel(
     support_lut: wp.array[int],
     support_vertex_offsets: wp.array[int],
     support_neighbors: wp.array[int],
-    shape_collision_aabb_lower: wp.array[wp.vec3],
-    shape_collision_aabb_upper: wp.array[wp.vec3],
+    shape_interior_point: wp.array[wp.vec3],
     shape_gap: wp.array[float],
     shape_heightfield_index: wp.array[wp.int32],
     heightfield_data: wp.array[HeightfieldData],
@@ -2459,8 +2457,9 @@ def mesh_triangle_contacts_to_reducer_kernel(
             shape_source,
         )
         if shape_data_b.shape_type == GeoType.CONVEX_MESH:
-            # Avoid rebuilding the convex AABB for every candidate triangle.
-            shape_data_b.center = 0.5 * (shape_collision_aabb_lower[shape_b] + shape_collision_aabb_upper[shape_b])
+            # MPR/GJK need an interior seed. A hull's AABB center can lie
+            # outside it and flip the contact against thin triangles.
+            shape_data_b.center = shape_interior_point[shape_b]
 
         # Triangle position is vertex A in world space.
         # For heightfield prisms, edges are in heightfield-local space
@@ -2472,14 +2471,9 @@ def mesh_triangle_contacts_to_reducer_kernel(
         else:
             quat_a = wp.quat_identity()
 
-        # Back-face culling: skip when the convex center is behind the
-        # triangle face. TRIANGLE_PRISM (heightfields) handles this
-        # through its extruded support function.
-        if shape_data_a.shape_type == int(GeoTypeEx.TRIANGLE):
-            face_normal = wp.cross(shape_data_a.scale, shape_data_a.auxiliary)
-            center_dist = wp.dot(face_normal, pos_b - pos_a)
-            if center_dist < 0.0:
-                continue
+        # Mesh triangles were back-face culled in the midphase against an
+        # interior point of the convex shape. TRIANGLE_PRISM (heightfields)
+        # stays one-sided through its extruded support function.
 
         # Extract margin offset for shape A (signed distance padding)
         margin_offset_a = shape_data[shape_a][3]

@@ -14295,6 +14295,41 @@ class ModelBuilder:
             m.heightfield_meshes = heightfield_meshes
             m._mesh_keep_alive = mesh_keep_alive
 
+            # Open-boundary bits for collision meshes queried with pseudo-normal
+            # signs, packed once per unique finalized mesh.
+            from ..geometry.sdf_contact import compute_mesh_boundary_flags  # noqa: PLC0415
+
+            finalized_meshes = {mesh.id: mesh for mesh in mesh_keep_alive}
+            boundary_chunks = []
+            boundary_offset = 0
+            boundary_starts = {}
+            shape_mesh_boundary_start = []
+            for shape_type, source, shape_flags, mesh_properties in zip(
+                self.shape_type, geo_sources, shape_flags_list, shape_mesh_properties, strict=True
+            ):
+                start = -1
+                if (
+                    shape_type == GeoType.MESH
+                    and source in finalized_meshes
+                    and shape_flags & ShapeFlags.COLLIDE_SHAPES
+                    and not mesh_properties & MeshProperties.WATERTIGHT
+                ):
+                    start = boundary_starts.get(source)
+                    if start is None:
+                        flags = compute_mesh_boundary_flags(finalized_meshes[source])
+                        start = boundary_starts[source] = boundary_offset
+                        boundary_chunks.append(flags)
+                        boundary_offset += len(flags)
+                shape_mesh_boundary_start.append(start)
+            m._mesh_boundary_flags = wp.array(
+                np.concatenate(boundary_chunks) if boundary_offset > 0 else np.zeros(1, dtype=np.uint8),
+                dtype=wp.uint8,
+                device=device,
+            )
+            m._shape_mesh_boundary_start = wp.array(
+                shape_mesh_boundary_start if shape_mesh_boundary_start else [-1], dtype=wp.int32, device=device
+            )
+
             # Compact convex support data (one copy per shared geometry).
             shape_support_data = []
             support_lut_chunks = []
@@ -14391,6 +14426,7 @@ class ModelBuilder:
             # Compute local AABBs and voxel resolutions for contact reduction
             local_aabb_lower = []
             local_aabb_upper = []
+            local_interior_point = []
             voxel_resolution = []
             from ..geometry.contact_reduction import NUM_VOXEL_DEPTH_SLOTS  # noqa: PLC0415
 
@@ -14448,8 +14484,11 @@ class ModelBuilder:
 
                 # Check cache first
                 if cache_key in shape_aabb_cache:
-                    aabb_lower, aabb_upper, nx, ny, nz = shape_aabb_cache[cache_key]
+                    aabb_lower, aabb_upper, interior_point, nx, ny, nz = shape_aabb_cache[cache_key]
                 else:
+                    # Primitive origins are interior. A hull's AABB center can lie
+                    # outside it, but its vertex mean cannot.
+                    interior_point = np.zeros(3)
                     # Compute AABB based on shape type
                     if shape_type == GeoType.MESH and shape_src is not None:
                         # Compute local AABB from mesh vertices
@@ -14464,6 +14503,7 @@ class ModelBuilder:
                     elif shape_type == GeoType.CONVEX_MESH and shape_src is not None:
                         lo = shape_src.vertices.min(axis=0) * np.array(shape_scale)
                         hi = shape_src.vertices.max(axis=0) * np.array(shape_scale)
+                        interior_point = shape_src.vertices.mean(axis=0) * np.array(shape_scale)
                         aabb_lower = np.minimum(lo, hi)
                         aabb_upper = np.maximum(lo, hi)
 
@@ -14536,14 +14576,16 @@ class ModelBuilder:
                         nx, ny, nz = 1, 1, 1
 
                     # Cache the result for reuse by identical shapes
-                    shape_aabb_cache[cache_key] = (aabb_lower, aabb_upper, nx, ny, nz)
+                    shape_aabb_cache[cache_key] = (aabb_lower, aabb_upper, interior_point, nx, ny, nz)
 
                 local_aabb_lower.append(aabb_lower)
                 local_aabb_upper.append(aabb_upper)
+                local_interior_point.append(interior_point)
                 voxel_resolution.append([nx, ny, nz])
 
             m.shape_collision_aabb_lower = wp.array(local_aabb_lower, dtype=wp.vec3, device=device)
             m.shape_collision_aabb_upper = wp.array(local_aabb_upper, dtype=wp.vec3, device=device)
+            m._shape_interior_point = wp.array(local_interior_point, dtype=wp.vec3, device=device)
             m._shape_voxel_resolution = wp.array(voxel_resolution, dtype=wp.vec3i, device=device)
 
             # ---------------------
