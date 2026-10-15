@@ -591,9 +591,8 @@ def parse_mjcf(
     explicit_pair_geom_names: set[str] = set()
     for contact in contact_sections:
         for pair in contact.findall("pair"):
-            pair_attrib = resolve_element_attrib(pair, "pair")
             for geom_key in ("geom1", "geom2"):
-                geom_name = pair_attrib.get(geom_key)
+                geom_name = pair.get(geom_key)
                 if geom_name:
                     explicit_pair_geom_names.add(geom_name)
 
@@ -615,7 +614,7 @@ def parse_mjcf(
                 if not os.path.isabs(fname):
                     fname = os.path.abspath(os.path.join(mjcf_dirname, fname))
                 name = mesh_name or ".".join(os.path.basename(fname).split(".")[:-1])
-                refpos, refquat = _parse_mesh_ref_pose(mesh_attrib, f"MJCF mesh {name!r}")
+                refpos, refquat = _parse_mesh_ref_pose(mesh.attrib, f"MJCF mesh {name!r}")
                 mesh_assets[name] = {
                     "file": fname,
                     "scale": mesh_scale,
@@ -681,7 +680,7 @@ def parse_mjcf(
                         )
                     texcoords = texcoords.reshape(-1, 2)
 
-                refpos, refquat = _parse_mesh_ref_pose(mesh_attrib, f"Inline MJCF mesh {name!r}")
+                refpos, refquat = _parse_mesh_ref_pose(mesh.attrib, f"Inline MJCF mesh {name!r}")
 
                 mesh_assets[name] = {
                     "vertices": vertices,
@@ -1956,7 +1955,7 @@ def parse_mjcf(
         # Infer if this is a root body by checking if parent matches the outer parent_body parameter
         # Root bodies are direct children of <worldbody>, where parent == parent_body (closure variable)
         is_mjcf_root = parent == parent_body
-        body_class = body.get("class") or body.get("childclass")
+        body_class = body.get("childclass")
         if body_class is None:
             body_class = childclass
             defaults = incoming_defaults
@@ -1964,7 +1963,7 @@ def parse_mjcf(
             if is_ignored_class(body_class):
                 return
             defaults = resolve_class_defaults(body_class, incoming_defaults)
-        body_attrib = merge_attrib(defaults.get("body", {}), body.attrib)
+        body_attrib = body.attrib
         body_name = body_attrib.get("name", f"body_{builder.body_count}")
         body_name = sanitize_name(body_name)
         has_inertial_definition = body.find("inertial") is not None
@@ -2907,8 +2906,8 @@ def parse_mjcf(
         pairs = (pair for contact in contact_sections for pair in contact.findall("pair"))
         for pair in pairs:
             merged_attrib = resolve_element_attrib(pair, "pair")
-            geom1_name = merged_attrib.get("geom1")
-            geom2_name = merged_attrib.get("geom2")
+            geom1_name = pair.get("geom1")
+            geom2_name = pair.get("geom2")
 
             if not geom1_name or not geom2_name:
                 if verbose:

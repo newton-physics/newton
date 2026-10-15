@@ -9,6 +9,8 @@ import time
 import unittest
 import warnings
 import xml.etree.ElementTree as ET
+from enum import IntFlag
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np  # For numerical operations and random values
@@ -35,7 +37,7 @@ from newton._src.solvers.mujoco.kernels import convert_solref
 from newton._src.solvers.mujoco.utils import MJC_OBJ_BODY, MJC_OBJ_JOINT, MjcEqualityTargetKind
 from newton.examples import get_asset
 from newton.solvers import SolverMuJoCo
-from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
+from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, patch_sys_module
 
 
 def _add_deprecated_mimic_constraint(
@@ -5662,6 +5664,32 @@ class TestMuJoCoContactForce(unittest.TestCase):
 
 class TestMuJoCoValidation(unittest.TestCase):
     """Test cases for SolverMuJoCo._validate_model_for_separate_worlds()."""
+
+    def test_import_rejects_overflow_bits_outside_reserved_range(self):
+        """Accept low upstream bits and reject future flags even when ALL omits them."""
+        try:
+            mujoco, mujoco_warp = SolverMuJoCo.import_mujoco()
+        except ImportError:
+            self.skipTest("MuJoCo Warp not installed")
+
+        low_bits = IntFlag("LowBits", {"NONE": 0, "LAST": 1 << 15, "ALL": 1 << 15})
+        future_bits = IntFlag("FutureBits", {"NONE": 0, "LOW": 1, "FUTURE": 1 << 16, "ALL": 1})
+        for overflow_type, incompatible in ((mujoco_warp.OverflowType, False), (low_bits, False), (future_bits, True)):
+            with (
+                self.subTest(overflow_type=overflow_type.__name__),
+                patch.object(SolverMuJoCo, "_mujoco", None),
+                patch.object(SolverMuJoCo, "_mujoco_warp", None),
+                patch.object(SolverMuJoCo, "_versions_checked", True),
+                patch_sys_module("mujoco", mujoco),
+                patch_sys_module("mujoco_warp", SimpleNamespace(OverflowType=overflow_type)),
+            ):
+                if incompatible:
+                    with self.assertRaisesRegex(RuntimeError, "OverflowType.*bits 0-15"):
+                        SolverMuJoCo.import_mujoco()
+                    self.assertIsNone(SolverMuJoCo._mujoco_warp)
+                else:
+                    _, backend = SolverMuJoCo.import_mujoco()
+                    self.assertIs(backend.OverflowType, overflow_type)
 
     def _create_homogeneous_model(self, world_count=2, with_ground_plane=True):
         """Create a valid homogeneous multi-world model for validation tests."""
@@ -13310,6 +13338,132 @@ class TestMuJoCoLinesearchBlockDim(unittest.TestCase):
             state_0, state_1 = state_1, state_0
         # Launch failures surface asynchronously, so force them to be raised here.
         wp.synchronize()
+
+
+class TestMuJoCoSolverOverflowObservable(unittest.TestCase):
+    """Tests for the ``OVERFLOW`` solver observable and the contact capacity checks."""
+
+    def setUp(self):
+        try:
+            _, self.mjw = SolverMuJoCo.import_mujoco()
+        except ImportError:
+            self.skipTest("MuJoCo Warp not installed")
+        if not wp.get_device().is_cuda:
+            self.skipTest("overflow observable requires CUDA")
+
+    def _make_scene(self, n_balls=4, nconmax=None, rigid_contact_max=None, **solver_kwargs):
+        """Build a ground plane + ``n_balls`` scene and a solver with the overflow observable allocated."""
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        for i in range(n_balls):
+            b = builder.add_body(xform=wp.transform((i * 0.1, 0.3, 0), wp.quat_identity()), mass=0.1)
+            builder.add_shape_sphere(b, radius=0.05)
+        model = builder.finalize()
+
+        solver_kwargs.setdefault("use_mujoco_contacts", False)
+        if nconmax is not None:
+            solver_kwargs["nconmax"] = nconmax
+        pipeline_kwargs = {}
+        if rigid_contact_max is not None:
+            pipeline_kwargs["rigid_contact_max"] = rigid_contact_max
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            solver = SolverMuJoCo(model, **solver_kwargs)
+        pipeline = newton.CollisionPipeline(model, **pipeline_kwargs)
+
+        state_0, state_1 = model.state(), model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+        contacts = pipeline.contacts()
+        observables = solver.observables({solver.ObservableKind.OVERFLOW})
+        return solver, pipeline, state_0, state_1, model.control(), contacts, observables
+
+    def test_overflow_lifecycle(self):
+        """The mask reports nconmax overflow, resets stale backend flags each step, and survives graph replay."""
+        solver, pipeline, s0, s1, ctrl, contacts, obs = self._make_scene(nconmax=1)
+        bits = solver.OverflowBits
+        dt = 1.0 / 60.0
+
+        pipeline.collide(s0, contacts)
+        self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), solver.mjw_data.naconmax)
+        solver.step(s0, s1, ctrl, contacts, dt, observables=obs)
+        self.assertTrue(int(obs.overflow.numpy()[0]) & bits.SOLVER_NCONMAX)
+
+        # A flag left in MuJoCo Warp's accumulator (bits 0-15, OR-ed in by the backend) must not leak into the next step.
+        stale = self.mjw.OverflowType.NEFC
+        solver.mjw_data.overflow.fill_(int(stale))
+        solver.step(s1, s0, ctrl, pipeline.contacts(), dt, observables=obs)
+        self.assertEqual(int(obs.overflow.numpy()[0]), 0)
+
+        # The graph replays the same computation, including the reset.
+        pipeline.collide(s0, contacts)
+        with wp.ScopedCapture() as capture:
+            solver.step(s0, s1, ctrl, contacts, dt, observables=obs)
+        obs.overflow.zero_()
+        wp.capture_launch(capture.graph)
+        self.assertTrue(int(obs.overflow.numpy()[0]) & bits.SOLVER_NCONMAX)
+
+    def test_pipeline_capacity_overflow(self):
+        """The pipeline bit fires when contacts exceed ``rigid_contact_max``, independently of nconmax."""
+        solver, pipeline, s0, s1, ctrl, contacts, obs = self._make_scene(n_balls=6, nconmax=9999, rigid_contact_max=1)
+        pipeline.collide(s0, contacts)
+        self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), contacts.rigid_contact_max)
+        solver.step(s0, s1, ctrl, contacts, 1.0 / 60.0, observables=obs)
+        mask = int(obs.overflow.numpy()[0])
+        self.assertTrue(mask & solver.OverflowBits.CONTACT_PIPELINE)
+        self.assertFalse(mask & solver.OverflowBits.SOLVER_NCONMAX)
+
+    def test_overflow_contact_source_modes(self):
+        """The Newton bits depend on where the contacts come from, backend bits always pass through, and missing required contacts raise."""
+        newton_bits = int(SolverMuJoCo.OverflowBits.CONTACT_PIPELINE | SolverMuJoCo.OverflowBits.SOLVER_NCONMAX)
+        dt = 1.0 / 60.0
+
+        with self.subTest(source="newton contacts, healthy capacity"):
+            solver, pipeline, s0, s1, ctrl, contacts, obs = self._make_scene(nconmax=9999)
+            pipeline.collide(s0, contacts)
+            solver.step(s0, s1, ctrl, contacts, dt, observables=obs)
+            self.assertEqual(int(obs.overflow.numpy()[0]), 0)
+
+        with self.subTest(source="mujoco contacts, contacts=None"):
+            solver, _, s0, s1, ctrl, _, obs = self._make_scene(nconmax=1, use_mujoco_contacts=True)
+            solver.step(s0, s1, ctrl, None, dt, observables=obs)
+            mask = int(obs.overflow.numpy()[0])
+            self.assertEqual(mask & newton_bits, 0)
+            # MuJoCo Warp's own broadphase overflow (bits 0-15) must reach the observable.
+            self.assertTrue(mask & int(self.mjw.OverflowType.BROADPHASE))
+
+        with self.subTest(source="newton contacts required, contacts=None"):
+            solver, _, s0, s1, ctrl, _, obs = self._make_scene()
+            with self.assertRaises(ValueError):
+                solver.step(s0, s1, ctrl, None, dt, observables=obs)
+
+    def test_cpu_backend_rejects_overflow(self):
+        """The native CPU backend does not populate overflow flags, so the request fails at allocation."""
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        b = builder.add_body(xform=wp.transform((0, 0.3, 0), wp.quat_identity()), mass=0.1)
+        builder.add_shape_sphere(b, radius=0.05)
+        model = builder.finalize(device="cpu")
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+        with self.assertRaises(ValueError):
+            solver.observables({solver.ObservableKind.OVERFLOW})
+
+    def test_strict_capacity(self):
+        """A ``rigid_contact_max``/``nconmax`` mismatch is silent by default and raises under ``strict_capacity``."""
+        for strict_capacity in (False, True):
+            with self.subTest(strict_capacity=strict_capacity):
+                solver, pipeline, s0, s1, ctrl, contacts, _ = self._make_scene(
+                    n_balls=1, nconmax=100, rigid_contact_max=5000, strict_capacity=strict_capacity
+                )
+                pipeline.collide(s0, contacts)
+                self.assertGreater(contacts.rigid_contact_max, solver.mjw_data.naconmax)
+                if strict_capacity:
+                    with self.assertRaises(RuntimeError):
+                        solver.step(s0, s1, ctrl, contacts, 1.0 / 60.0)
+                else:
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always")
+                        solver.step(s0, s1, ctrl, contacts, 1.0 / 60.0)
+                    self.assertEqual(caught, [])
 
 
 class TestActuatorTypes(unittest.TestCase):
