@@ -27,7 +27,7 @@ from __future__ import annotations
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal, overload
 
 import numpy as np
 
@@ -188,16 +188,32 @@ class CableEvaluator:
             [[loss.prepare(m) for m in v.masks] for v in g.views] for g in self.groups
         ]
 
-    def evaluate(self, candidates: Sequence[CableParameters]) -> list[float]:
+    @overload
+    def evaluate(
+        self, candidates: Sequence[CableParameters], *, return_poses: Literal[False] = False
+    ) -> list[float]: ...
+
+    @overload
+    def evaluate(
+        self, candidates: Sequence[CableParameters], *, return_poses: Literal[True]
+    ) -> tuple[list[float], list[np.ndarray]]: ...
+
+    def evaluate(self, candidates, *, return_poses=False):
         """Return the objective value of each candidate.
 
         Args:
             candidates: The :class:`CableParameters` population to score.
+            return_poses: Also return the body poses of every candidate at every
+                simulation frame of each recording.
 
         Returns:
             One objective value per candidate, in the order given. A candidate
             whose rollout failed (its cable state became non-finite) gets NaN.
-            An empty population gives an empty list.
+            An empty population gives an empty list. With ``return_poses``, a
+            tuple ``(losses, poses)``: ``poses[g]`` is the array of goal group
+            ``g`` (one recording), shape ``(candidates, frames, bodies, 7)``,
+            each pose ``(x, y, z, qx, qy, qz, qw)``. A candidate's bodies are in
+            the order of a one-world model of the same cable.
 
         Raises:
             ValueError: If :class:`~.model.CableSimulation` rejects the
@@ -205,19 +221,25 @@ class CableEvaluator:
                 ``angle_parametrization`` or a ``clamp_position`` outside the cable.
         """
         if not candidates:
-            return []
+            return ([], []) if return_poses else []
         n = len(candidates)
         totals = [0.0] * n
+        poses = []
 
         for gi, group in enumerate(self.groups):
-            world = self._build_simulation(group, candidates)
+            world = self.build_simulation(group, candidates)
             world.settle(self.settle_frames)
             reprs, crops, times = group.run_args(self.goal_reprs[gi])
-            losses, _, _ = world.run_sequence(group.num_frames, reprs, crops, self.loss, goal_times=times)
+            losses, _, _ = world.run_sequence(
+                group.num_frames, reprs, crops, self.loss, goal_times=times, record_poses=return_poses
+            )
             for weight, per_world in zip(group.weights, group.per_view(losses), strict=True):
                 for i, value in enumerate(per_world):
                     totals[i] += weight * value
-        return totals
+            if return_poses:
+                # (frames, candidates, bodies) of transforms -> (candidates, frames, bodies, 7)
+                poses.append(np.ascontiguousarray(world.last_poses.numpy().swapaxes(0, 1)))
+        return (totals, poses) if return_poses else totals
 
     def record(self, candidate: CableParameters, *, record_fps: float = math.inf) -> list[CableTraceView]:
         """Roll out one candidate and keep its frames and per-frame losses.
@@ -243,7 +265,7 @@ class CableEvaluator:
         """
         views = []
         for gi, group in enumerate(self.groups):
-            world = self._build_simulation(group, [candidate])
+            world = self.build_simulation(group, [candidate])
             world.settle(self.settle_frames)
             reprs, crops, times = group.run_args(self.goal_reprs[gi])
             losses, recorded, recorded_masks = world.run_sequence(
@@ -279,8 +301,13 @@ class CableEvaluator:
                 )
         return views
 
-    def _build_simulation(self, group: CableGoalGroup, candidates: Sequence[CableParameters]) -> CableSimulation:
-        """Build one :class:`~.model.CableSimulation` that holds the whole population."""
+    def build_simulation(self, group: CableGoalGroup, candidates: Sequence[CableParameters]) -> CableSimulation:
+        """Build one :class:`~.model.CableSimulation` that holds the whole population, not yet settled.
+
+        Args:
+            group: The goal group to simulate, one of :attr:`groups`.
+            candidates: The cable parameters, one world each.
+        """
         return CableSimulation(
             group.cable_start,
             [c.angles for c in candidates],

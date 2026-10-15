@@ -142,6 +142,18 @@ def _mark_failed_worlds_kernel(
         failed[w] = 1
 
 
+@wp.kernel
+def _record_poses_kernel(
+    body_q: wp.array[wp.transform],
+    bodies: wp.array2d[wp.int32],  # (n_worlds, bodies_per_world)
+    frame: int,
+    poses: wp.array3d[wp.transform],  # (num_frames, n_worlds, bodies_per_world)
+):
+    """Copy the pose of every body of every world into frame ``frame`` of ``poses``."""
+    w, i = wp.tid()
+    poses[frame, w, i] = body_q[bodies[w, i]]
+
+
 # The only supported rest-angle parametrization: a joint's (alpha, beta) pair is the
 # rotation vector (alpha, beta, 0), so a joint has no twist about the segment axis.
 ANGLE_PARAM_EXP = "exp_map"
@@ -745,6 +757,12 @@ class CableSimulation:
         """
         return [bool(v) for v in self._failed.numpy()]
 
+    def _world_bodies(self) -> wp.array2d[wp.int32]:
+        """Return the body indices of each world, in model order, shape ``(world_count, bodies_per_world)``."""
+        body_world = self.model.body_world.numpy()
+        per_world = [np.flatnonzero(body_world == w) for w in range(self.n)]
+        return wp.array(np.stack(per_world).astype(np.int32), dtype=wp.int32, device=self.model.device)
+
     def _step(self, frame_idx: int) -> None:
         """Advance one frame, with the drive at frame ``frame_idx``.
 
@@ -960,6 +978,7 @@ class CableSimulation:
         *,
         record_fps: float | None = None,
         goal_times: Sequence[float] | Sequence[Sequence[float]] | None = None,
+        record_poses: bool = False,
     ) -> tuple[list[Any], Any, Any]:
         """Run the frame sequence and score every world against the goal frames.
 
@@ -978,6 +997,12 @@ class CableSimulation:
         When ``record_fps`` is set, ``self.last_frame_losses`` holds the per-frame
         loss of world 0 for each view, as ``(time [s], loss)`` pairs.
 
+        When ``record_poses`` is set, ``self.last_poses`` holds the pose of every
+        body of every world at every frame, as a device array of shape
+        ``(num_frames, world_count, bodies_per_world)``. A world's bodies are in
+        model order, so a one-world model of the same cable takes them as its
+        ``body_q``.
+
         Args:
             num_frames: Number of simulation frames to run.
             goal_reprs: Goal representations from the loss's ``prepare()``, one per
@@ -994,6 +1019,7 @@ class CableSimulation:
                 of the sequence. Goal frame ``j`` is then scored against simulation
                 frame ``round(goal_times[j] * fps)``. ``None`` spaces the goal frames
                 evenly over the sequence by index.
+            record_poses: Keep the body poses of every frame in ``self.last_poses``.
 
         Returns:
             Tuple ``(losses, recorded_frames, recorded_masks)``. ``losses`` has one
@@ -1049,6 +1075,11 @@ class CableSimulation:
 
         render_at = set().union(*(m.keys() for m in sim_to_goal)) | record_indices
 
+        self.last_poses = None
+        if record_poses:
+            world_bodies = self._world_bodies()
+            self.last_poses = wp.empty((num_frames, *world_bodies.shape), dtype=wp.transform, device=self.model.device)
+
         # On-device scoring copies only the per-world totals to the host.
         accums = [None] * self.n_cameras
         device = self.model.device
@@ -1093,6 +1124,14 @@ class CableSimulation:
                         for i in range(self.n):
                             recorded_frames[c][i].append(frames[i])
                             recorded_masks[c][i].append(masks[i])
+            if record_poses:
+                wp.launch(
+                    _record_poses_kernel,
+                    dim=world_bodies.shape,
+                    inputs=[self.state_0.body_q, world_bodies, f],
+                    outputs=[self.last_poses],
+                    device=self.model.device,
+                )
             self._step(f)
 
         failed = self.failed_worlds()

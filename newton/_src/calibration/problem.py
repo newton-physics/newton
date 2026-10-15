@@ -12,7 +12,9 @@ import sys
 import uuid
 from collections.abc import Sequence
 from pathlib import Path
+from typing import Literal, overload
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -22,7 +24,7 @@ from .cable_setup import CableSetup
 from .evaluate import CableEvaluator, CableParameters, CableTraceView
 from .evidence import CableEvidenceBundle
 from .loss_chamfer import CHAMFER
-from .model import SETTLE_MODES
+from .model import SETTLE_MODES, CableSimulation
 from .optimizer import SearchOutcome
 from .rehydrate import bundle_to_goals
 from .result import STATUS_FAILED, STATUS_INTERRUPTED, STATUS_OK, CableCalibrationResult
@@ -125,14 +127,46 @@ class CableCalibrationProblem:
             )
         return self._evaluator
 
-    def evaluate(self, vectors: Sequence[Sequence[float]]) -> list[float]:
-        """Return the objective value of each decision vector."""
+    @overload
+    def evaluate(self, vectors: Sequence[Sequence[float]], *, return_poses: Literal[False] = False) -> list[float]: ...
+
+    @overload
+    def evaluate(
+        self, vectors: Sequence[Sequence[float]], *, return_poses: Literal[True]
+    ) -> tuple[list[float], list[np.ndarray]]: ...
+
+    def evaluate(self, vectors, *, return_poses=False):
+        """Return the objective value of each decision vector.
+
+        With ``return_poses``, also return the body poses of every candidate at
+        every frame of each recording; see :meth:`~.evaluate.CableEvaluator.evaluate`.
+        """
         candidates = [self.search_space.decode(x) for x in vectors]
-        return self._prepare_evaluator().evaluate(candidates)
+        return self._prepare_evaluator().evaluate(candidates, return_poses=return_poses)
 
     def candidate(self, vector: Sequence[float]) -> CableParameters:
         """Return the cable parameters that a decision vector describes."""
         return self.search_space.decode(vector)
+
+    def build_simulation(self, parameters: CableParameters, *, recording: int) -> CableSimulation:
+        """Build a simulation of one cable for one recorded motion, not settled.
+
+        Its model can show poses from :meth:`evaluate` with ``return_poses``,
+        for example in a viewer: assign a frame of one candidate to
+        ``state_0.body_q``.
+
+        Args:
+            parameters: The cable parameters to simulate.
+            recording: Index of the recorded motion, from 0. The camera views
+                of one motion share a recording.
+
+        Raises:
+            ValueError: If ``recording`` is out of range.
+        """
+        evaluator = self._prepare_evaluator()
+        if type(recording) is not int or not 0 <= recording < len(evaluator.groups):
+            raise ValueError(f"recording must be in [0, {len(evaluator.groups)}), got {recording!r}.")
+        return evaluator.build_simulation(evaluator.groups[recording], [parameters])
 
     def build_result(self, outcome: SearchOutcome, *, optimizer, artifacts: dict[str, str]) -> CableCalibrationResult:
         """Build the result of a search.

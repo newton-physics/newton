@@ -90,7 +90,9 @@ class OptimizerCMA:
 
         The search scores the start first, so the best vector is never worse
         than the start. After each iteration, the best loss and
-        ``space.describe(vector)`` are logged at ``INFO`` level. The stop
+        ``space.describe(vector)`` are logged at ``INFO`` level. The log record
+        also has the attributes ``iteration``, ``loss`` and ``vector`` (the best
+        decision vector so far), so a log handler can follow the search. The stop
         reason is the names of the CMA-ES stop criteria that were met.
 
         A candidate whose objective value is not finite is invalid: CMA-ES ranks
@@ -148,7 +150,15 @@ class OptimizerCMA:
         def record(n_invalid=0):
             history.append((best_loss, list(best_x)))
             note = f", {n_invalid} invalid" if n_invalid else ""
-            logger.info("iteration %d: loss %.6g, %s%s", len(history) - 1, best_loss, space.describe(best_x), note)
+            iteration = len(history) - 1
+            logger.info(
+                "iteration %d: loss %.6g, %s%s",
+                iteration,
+                best_loss,
+                space.describe(best_x),
+                note,
+                extra={"iteration": iteration, "loss": best_loss, "vector": list(best_x)},
+            )
 
         try:
             # CMA-ES samples around the start but does not score it.
