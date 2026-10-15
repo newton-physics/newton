@@ -4306,15 +4306,11 @@ class ModelBuilder:
         Parses a URDF file and adds the bodies and joints to the given ModelBuilder.
 
         Args:
-            source: The filename, local ``file:`` URI, ``package://`` or ``model://`` URI,
-                or XML string content of the URDF to parse.
-                File URIs must use an absolute local path, an empty or ``localhost`` authority,
-                and no query or fragment. Network share URIs are not supported.
-            package_dirs: Additional package search directories for source, mesh, and texture URIs.
-                For ``package://robot/meshes/link.stl``, supply the directory containing ``robot``.
-                These supplement the resolver's environment-based search paths, without guaranteed
-                precedence or restricting file access. Requires ``newton[importers]``.
-                Plain relative asset paths remain relative to the URDF file.
+            source: URDF filename, local ``file:`` URI, ``package://`` or ``model://`` URI, or XML content.
+            package_dirs: Extra package roots for source and asset URIs; for ``package://robot/...``,
+                supply the directory containing ``robot``. Requires ``newton[importers]``.
+                Roots supplement environment paths without guaranteed precedence or restricting access.
+                Plain relative paths use the URDF directory; file URIs require an absolute local path.
             xform: The transform to apply to the root body. If None, the transform is set to identity.
             override_root_xform: If ``True``, the articulation root's world-space
                 transform is replaced by ``xform`` instead of being composed with it,

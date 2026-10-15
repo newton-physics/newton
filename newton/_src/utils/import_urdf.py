@@ -47,12 +47,15 @@ def _resolve_urdf_uri(uri: str, package_dirs: list[str]) -> str:
     local_path = None
     if uri.lower().startswith("file:"):
         parsed = urlsplit(uri)
-        # The resolver discards the authority and would interpret remote URIs as local files.
-        if parsed.netloc.lower() not in ("", "localhost"):
-            raise ValueError(f'Unsupported file URI authority in "{uri}"; only local files are supported.')
-        path = unquote(parsed.path).replace("\\", "/")
-        if not path.startswith("/") or path.startswith("//") or parsed.query or parsed.fragment:
-            raise ValueError(f'Invalid local file URI "{uri}"; expected an absolute path without query or fragment.')
+        # The resolver ignores authorities, so reject remote hosts and network shares first.
+        if (
+            parsed.netloc.lower() not in ("", "localhost")
+            or not parsed.path.startswith("/")
+            or unquote(parsed.path).replace("\\", "/").startswith("//")
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(f'Invalid local file URI: "{uri}"')
         local_path = url2pathname(parsed.path)
         if not PurePath(local_path).is_absolute():
             raise ValueError(f'Invalid local file URI "{uri}"; expected an absolute filesystem path.')
@@ -117,15 +120,11 @@ def parse_urdf(
 
     Args:
         builder: The :class:`ModelBuilder` to add the bodies and joints to.
-        source: The filename, local ``file:`` URI, ``package://`` or ``model://`` URI,
-            or XML string content of the URDF to parse.
-            File URIs must use an absolute local path, an empty or ``localhost`` authority,
-            and no query or fragment. Network share URIs are not supported.
-        package_dirs: Additional package search directories for source, mesh, and texture URIs.
-            For ``package://robot/meshes/link.stl``, supply the directory containing ``robot``.
-            These supplement the resolver's environment-based search paths, without guaranteed
-            precedence or restricting file access. Requires ``newton[importers]``.
-            Plain relative asset paths remain relative to the URDF file.
+        source: URDF filename, local ``file:`` URI, ``package://`` or ``model://`` URI, or XML content.
+        package_dirs: Extra package roots for source and asset URIs; for ``package://robot/...``,
+            supply the directory containing ``robot``. Requires ``newton[importers]``.
+            Roots supplement environment paths without guaranteed precedence or restricting access.
+            Plain relative paths use the URDF directory; file URIs require an absolute local path.
         xform: The transform to apply to the root body. If None, the transform is set to identity.
         override_root_xform: If ``True``, the articulation root's world-space
             transform is replaced by ``xform`` instead of being composed with it,
@@ -259,13 +258,7 @@ def parse_urdf(
         )
 
     if source.startswith(("package://", "model://")) or source.lower().startswith("file:"):
-        try:
-            source = _resolve_urdf_uri(source, package_dirs)
-        except FileNotFoundError:
-            raise FileNotFoundError(
-                f'Could not resolve URDF source URI "{source}". '
-                "Check that the file exists and that package_dirs or the resolver's environment paths are set correctly."
-            ) from None
+        source = _resolve_urdf_uri(source, package_dirs)
 
     if os.path.isfile(source):
         file = ET.parse(source)
@@ -321,16 +314,8 @@ def parse_urdf(
                         )
                         asset_package_dirs.append(parent_urdf_folder)
                     filename = _resolve_urdf_uri(filename, asset_package_dirs)
-                except ImportError as exc:
-                    warnings.warn(str(exc), stacklevel=2)
-                    return None, None
-                except FileNotFoundError:
-                    warnings.warn(
-                        f'Warning: could not resolve URI "{filename}". '
-                        "Check that the file exists and that package_dirs or the resolver's environment paths are set correctly. "
-                        f"See https://github.com/ami-iit/resolve-robotics-uri-py for details.",
-                        stacklevel=2,
-                    )
+                except (ImportError, FileNotFoundError) as exc:
+                    warnings.warn(f"Warning: could not resolve URI: {exc}", stacklevel=2)
                     return None, None
             else:
                 if not os.path.isfile(source):
