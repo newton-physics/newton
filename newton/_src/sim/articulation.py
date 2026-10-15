@@ -1424,51 +1424,42 @@ def eval_articulation_mass_matrix(
     If ``joint_armature`` is provided, it is added to the diagonal.
     Output shape: (articulation_count, max_dofs, max_dofs)
     """
-    art_idx = wp.tid()
-
+    art_idx, dof_i, dof_j = wp.tid()
     if art_idx >= articulation_count:
         return
-
     if articulation_mask:
         if not articulation_mask[art_idx]:
             return
-
     joint_start = articulation_start[art_idx]
     joint_end = articulation_end[art_idx]
-    joint_count = joint_end - joint_start
+    dof_start = joint_qd_start[joint_start]
+    dof_count = joint_qd_start[joint_end] - dof_start
+    if dof_i >= dof_count or dof_j >= dof_count:
+        return
 
-    articulation_dof_start = joint_qd_start[joint_start]
-    articulation_dof_end = joint_qd_start[joint_end]
-    articulation_dof_count = articulation_dof_end - articulation_dof_start
-
-    # H = J^T * M * J
-    # M is block diagonal with 6x6 spatial inertia blocks
-    # We compute this as: for each link i, H += J_i^T * I_i * J_i
-
-    for link_idx in range(joint_count):
-        j = joint_start + link_idx
-        child = joint_child[j]
-        I_s = body_I_s[child]
-
-        row_start = link_idx * 6
-
-        # Compute contribution from this link: H += J_i^T * I_i * J_i
-        for dof_i in range(articulation_dof_count):
-            for dof_j in range(articulation_dof_count):
-                sum_val = float(0.0)
-
-                # J_i^T * I_i * J_j (for the 6 rows of this link)
-                for k in range(6):
-                    for l in range(6):
-                        J_ik = J[art_idx, row_start + k, dof_i]
-                        J_jl = J[art_idx, row_start + l, dof_j]
-                        sum_val += J_ik * I_s[k, l] * J_jl
-
-                H[art_idx, dof_i, dof_j] = H[art_idx, dof_i, dof_j] + sum_val
-
-    if joint_armature:
-        for dof in range(articulation_dof_count):
-            H[art_idx, dof, dof] = H[art_idx, dof, dof] + joint_armature[articulation_dof_start + dof]
+    value = H[art_idx, dof_i, dof_j]
+    for link in range(joint_end - joint_start):
+        inertia = body_I_s[joint_child[joint_start + link]]
+        row = link * 6
+        left = wp.spatial_vector(
+            J[art_idx, row, dof_i],
+            J[art_idx, row + 1, dof_i],
+            J[art_idx, row + 2, dof_i],
+            J[art_idx, row + 3, dof_i],
+            J[art_idx, row + 4, dof_i],
+            J[art_idx, row + 5, dof_i],
+        )
+        weighted = wp.spatial_vector(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+        for column in range(6):
+            for spatial_row in range(6):
+                weighted[column] += left[spatial_row] * inertia[spatial_row, column]
+        contribution = float(0.0)
+        for column in range(6):
+            contribution += weighted[column] * J[art_idx, row + column, dof_j]
+        value += contribution
+    if joint_armature and dof_i == dof_j:
+        value += joint_armature[dof_start + dof_i]
+    H[art_idx, dof_i, dof_j] = value
 
 
 @wp.kernel
@@ -1817,11 +1808,9 @@ def _eval_mass_matrix(
         )
         eval_jacobian(model, state, J, joint_S_s=joint_S_s, mask=mask)
 
-    from ..actuators import _g1_kernels  # noqa: PLC0415
-
-    _g1_kernels.launch_mass(
+    wp.launch(
         kernel=eval_articulation_mass_matrix,
-        dim=model.articulation_count,
+        dim=(model.articulation_count, H.shape[1], H.shape[2]),
         inputs=[
             model.articulation_start,
             model.articulation_end,

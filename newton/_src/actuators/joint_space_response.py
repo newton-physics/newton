@@ -24,7 +24,6 @@ import warp as wp
 from ..sim.articulation import eval_fk, eval_jacobian, eval_mass_matrix
 from ..sim.model import Model
 from ..sim.state import State
-from . import _g1_kernels
 
 __all__ = ["JointSpaceResponse"]
 
@@ -76,6 +75,68 @@ def _inverse_block_from_mass_matrix_kernel(
             for k in range(i + 1, n):
                 t -= L[a, k, i] * inv_block[a, k, c]
             inv_block[a, i, c] = t / L[a, i, i]
+
+
+_inverse_tiled_cache: dict[int, wp.Kernel] = {}
+
+
+def _build_inverse_tiled_kernel(max_dofs: int) -> tuple[wp.Kernel, int]:
+    """Build a block-parallel Cholesky inverse for the model's matrix width."""
+    block_dim = max(32, 1 << (max_dofs - 1).bit_length())
+    cached = _inverse_tiled_cache.get(max_dofs)
+    if cached is not None:
+        return cached, block_dim
+    vector_type = wp.types.vector(length=max_dofs, dtype=wp.float32)
+
+    @wp.kernel(enable_backward=False, module="unique")
+    def inverse(
+        H: wp.array3d[float],
+        counts: wp.array[wp.int32],
+        L: wp.array3d[float],
+        inv_block: wp.array3d[float],
+    ):
+        articulation, lane = wp.tid()
+        count = counts[articulation]
+        factor = wp.tile_zeros(
+            shape=(wp.static(block_dim), wp.static(block_dim + 1)), dtype=wp.float32, storage="shared"
+        )
+        for column in range(count):
+            value = float(0.0)
+            if lane >= column and lane < count:
+                value = H[articulation, lane, column]
+                for inner in range(column):
+                    value -= factor[lane, inner] * factor[column, inner]
+                if lane == column:
+                    value = wp.max(value, _FLOAT32_EPS * wp.max(wp.abs(H[articulation, column, column]), 1.0))
+                    value = wp.sqrt(value)
+            factor[lane, column] = value
+            root = factor[column, column]
+            if lane > column and lane < count:
+                value /= root
+            factor[lane, column] = value
+            if lane >= column and lane < count:
+                L[articulation, lane, column] = value
+        if lane < count:
+            solution = vector_type(0.0)
+            for row in range(count):
+                value = float(0.0)
+                if row == lane:
+                    value = 1.0
+                for inner in range(row):
+                    value -= factor[row, inner] * solution[inner]
+                solution[row] = value / factor[row, row]
+            for reverse in range(count):
+                row = count - 1 - reverse
+                value = solution[row]
+                for inner in range(row + 1, count):
+                    value -= factor[inner, row] * solution[inner]
+                solution[row] = value / factor[row, row]
+            for row in range(count):
+                inv_block[articulation, row, lane] = solution[row]
+
+    wp.set_module_options({"block_dim": block_dim}, module=inverse.module)
+    _inverse_tiled_cache[max_dofs] = inverse
+    return inverse, block_dim
 
 
 @wp.kernel(enable_backward=False)
@@ -174,6 +235,19 @@ class JointSpaceResponse:
         self._body_I_s = wp.zeros(model.body_count, dtype=wp.spatial_matrix, device=device)
         self._joint_S_s = wp.zeros(model.joint_dof_count, dtype=wp.spatial_vector, device=device)
         self._L = wp.zeros_like(self._H)
+        self._inverse_tiled_kernel = None
+        self._inverse_block_dim = None
+        warp_version = tuple(int(part) for part in wp.__version__.split(".")[:2])
+        block_dim = max(32, 1 << (max(1, max_dofs) - 1).bit_length())
+        shared_bytes = block_dim * (block_dim + 1) * 4
+        if (
+            device.is_cuda
+            and warp_version >= (1, 18)
+            and 0 < max_dofs <= 128
+            and shared_bytes <= device.max_shared_memory_per_block
+        ):
+            self._inverse_tiled_kernel, self._inverse_block_dim = _build_inverse_tiled_kernel(max_dofs)
+
         self._inv_block = wp.zeros_like(self._H)
 
         # Scratch so refresh() never writes to the caller's state.
@@ -316,12 +390,22 @@ class JointSpaceResponse:
             )
 
     def _invert_blocks(self) -> None:
-        """Invert the per-articulation blocks of ``self._H`` into :attr:`inverse_blocks`."""
+        """Invert each articulation's mass matrix into its joint-space response."""
         self._inv_block.zero_()
-        _g1_kernels.launch_inverse(
-            _inverse_block_from_mass_matrix_kernel,
-            dim=self.model.articulation_count,
-            inputs=[self._H, self._art_dof_count],
-            outputs=[self._L, self._inv_block],
-            device=self.model.device,
-        )
+        if self._inverse_tiled_kernel is not None:
+            wp.launch_tiled(
+                self._inverse_tiled_kernel,
+                dim=self.model.articulation_count,
+                inputs=[self._H, self._art_dof_count],
+                outputs=[self._L, self._inv_block],
+                device=self.model.device,
+                block_dim=self._inverse_block_dim,
+            )
+        else:
+            wp.launch(
+                _inverse_block_from_mass_matrix_kernel,
+                dim=self.model.articulation_count,
+                inputs=[self._H, self._art_dof_count],
+                outputs=[self._L, self._inv_block],
+                device=self.model.device,
+            )
