@@ -212,7 +212,7 @@ class TestImportMjcfBasic(unittest.TestCase):
                             self.assertIsNone(mesh.uvs)
 
     def test_mujoco_binary_msh_mesh_invalid_size(self):
-        """Reject short MSH headers, negative counts, and mismatched payload sizes."""
+        """Reject short MSH headers, invalid counts, and mismatched payload sizes."""
         header = np.array([4, 0, 0, 4], dtype=np.int32).tobytes()
         cases = {
             "short header": (header[:-1], "MuJoCo mesh file is too short"),
@@ -220,6 +220,18 @@ class TestImportMjcfBasic(unittest.TestCase):
             "truncated payload": (header + bytes(95), "Invalid MuJoCo mesh file"),
             "trailing payload": (header + bytes(97), "Invalid MuJoCo mesh file"),
         }
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+        faces = np.array([[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]], dtype=np.int32)
+        for nvert, nnormal, ntexcoord in ((3, 0, 0), (4, 1, 0), (4, 5, 0), (4, 0, 1), (4, 0, 5)):
+            nface = 1 if nvert == 3 else 4
+            payload = (
+                np.array([nvert, nnormal, ntexcoord, nface], dtype=np.int32).tobytes()
+                + vertices[:nvert].tobytes()
+                + np.tile(np.array([0, 0, 1], dtype=np.float32), (nnormal, 1)).tobytes()
+                + np.zeros((ntexcoord, 2), dtype=np.float32).tobytes()
+                + faces[:nface].tobytes()
+            )
+            cases[f"invalid counts {nvert}, {nnormal}, {ntexcoord}"] = (payload, "Invalid MuJoCo mesh file")
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "invalid.msh")
             mjcf = f"""

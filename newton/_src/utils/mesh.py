@@ -1152,7 +1152,13 @@ def _load_mujoco_msh(filename: str):
         raise ValueError(f"MuJoCo mesh file is too short: {filename}")
     nvert, nnormal, ntexcoord, nface = (int(v) for v in data[:16].view(np.int32))
     sizes = (3 * nvert * 4, 3 * nnormal * 4, 2 * ntexcoord * 4, 3 * nface * 4)
-    if min(nvert, nnormal, ntexcoord, nface) < 0 or data.size != 16 + sum(sizes):
+    if (
+        nvert < 4
+        or nnormal not in (0, nvert)
+        or ntexcoord not in (0, nvert)
+        or nface < 0
+        or data.size != 16 + sum(sizes)
+    ):
         raise ValueError(f"Invalid MuJoCo mesh file: {filename}")
     offset = 16
     arrays = []
