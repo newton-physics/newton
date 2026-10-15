@@ -16,6 +16,7 @@ import warp.examples
 
 import newton
 from newton import GeoType
+from newton._src.core import capture_release
 from newton._src.geometry import create_mesh_terrain
 from newton._src.geometry.flags import MeshProperties, MeshSignMethod, ParticleFlags, ShapeFlags
 from newton._src.geometry.kernels import (
@@ -501,6 +502,80 @@ add_function_test(
     TestCollisionPipeline,
     "test_collision_pipeline_first_call_capture",
     test_collision_pipeline_first_call_capture,
+    devices=get_cuda_test_devices(mode="basic"),
+)
+
+
+def test_sdf_pipeline_garbage_collected_during_capture(test, device):
+    """A dropped SDF model and pipeline finalized inside another graph capture leave the capture valid."""
+    mesh = newton.Mesh.create_box(
+        0.5, 0.5, 0.5, duplicate_vertices=False, compute_normals=False, compute_uvs=False, compute_inertia=False
+    )
+    mesh.build_sdf(max_resolution=32, device=device)
+    builder = newton.ModelBuilder()
+    for x in (-1.0, 1.0):
+        builder.add_shape_mesh(builder.add_body(xform=wp.transform(wp.vec3(x, 0.0, 0.0))), mesh=mesh)
+    model = builder.finalize(device=device)
+    pipeline = newton.CollisionPipeline(model)
+    pipeline.collide(model.state(), pipeline.contacts())
+    test.assertIsNotNone(pipeline._unit_scale_sdf_rescaled_host)
+    textures = [
+        texture
+        for texture in model._texture_sdf_coarse_textures + model._texture_sdf_subgrid_textures
+        if texture is not None
+    ]
+    texture_handles = {texture._tex_handle for texture in textures}
+    test.assertEqual(len(texture_handles), len(textures))
+    pinned_ptr = pipeline._unit_scale_sdf_rescaled_host.ptr
+    del textures
+
+    # Record the native releases of exactly these resources, and whether a capture was active at each.
+    native = wp._src.context.runtime.core
+    released = []
+
+    def recording(name):
+        original = getattr(native, name)
+
+        def release(*args):
+            handle = args[1] if name == "wp_texture_object_destroy_device" else args[0]
+            if handle in texture_handles or handle == pinned_ptr:
+                released.append((handle, wp.get_device(device).is_capturing))
+            return original(*args)
+
+        return mock.patch.object(native, name, release)
+
+    values = wp.zeros(1, dtype=wp.int32, device=device)
+    gc_was_enabled = gc.isenabled()
+    gc.disable()
+    try:
+        with recording("wp_texture_object_destroy_device"), recording("wp_free_pinned"):
+            # Only the cyclic collector can free the textures and pinned flag, and it runs inside the capture.
+            garbage = [mesh, model, pipeline]
+            garbage.append(garbage)
+            del mesh, builder, model, pipeline, garbage
+            with wp.ScopedCapture(device=device) as capture:
+                gc.collect()
+                test.assertGreater(len(capture_release._pending_releases), 0)
+                values.fill_(1)
+            test.assertEqual(released, [])
+
+            wp.capture_launch(capture.graph)
+            test.assertEqual(int(values.numpy()[0]), 1)
+            # The next collection outside a capture runs the deferred native releases, each once.
+            gc.collect()
+    finally:
+        if gc_was_enabled:
+            gc.enable()
+
+    test.assertEqual(len(capture_release._pending_releases), 0)
+    test.assertEqual(sorted(handle for handle, _ in released), sorted([*texture_handles, pinned_ptr]))
+    test.assertFalse(any(capturing for _, capturing in released))
+
+
+add_function_test(
+    TestCollisionPipeline,
+    "test_sdf_pipeline_garbage_collected_during_capture",
+    test_sdf_pipeline_garbage_collected_during_capture,
     devices=get_cuda_test_devices(mode="basic"),
 )
 

@@ -10,6 +10,7 @@ from typing import Literal
 import numpy as np
 import warp as wp
 
+from ..core.capture_release import make_pinned_release_capture_safe
 from ..core.reset import normalize_reset_world_mask
 from ..geometry.broad_phase_nxn import BroadPhaseAllPairs, BroadPhaseExplicit
 from ..geometry.broad_phase_sap import BroadPhaseSAP
@@ -2134,8 +2135,8 @@ class CollisionPipeline:
         if unit_scale_sdf_shapes is not None:
             self.narrow_phase._shape_unit_scale_sdf = self._shape_unit_scale_sdf
             self.narrow_phase._unit_scale_sdf_rescaled = self._unit_scale_sdf_rescaled
-            self._unit_scale_sdf_rescaled_host = wp.zeros(
-                1, dtype=wp.int32, device="cpu", pinned=wp.get_device(device).is_cuda
+            self._unit_scale_sdf_rescaled_host = make_pinned_release_capture_safe(
+                wp.zeros(1, dtype=wp.int32, device="cpu", pinned=wp.get_device(device).is_cuda)
             )
 
         # Analytic and convex manifolds use compact unique sub-keys even when

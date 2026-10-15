@@ -28,6 +28,7 @@ from collections.abc import Callable, Sequence
 import numpy as np
 import warp as wp
 
+from ..core.capture_release import CaptureSafeTexture3D, release_deferred
 from ..core.types import Axis
 from .kernels import sdf_box, sdf_capsule, sdf_cone, sdf_cylinder, sdf_ellipsoid, sdf_sphere
 from .sdf_mc import MC_EDGE_CLAMP_MAX, MC_EDGE_CLAMP_MIN, MC_EDGE_VAL_DIFF_EPS
@@ -2453,7 +2454,8 @@ def create_sparse_sdf_textures(
     # the stored values exactly, preserving the software interpolation path.
     coarse_data = _pack_sdf_x_pairs(sparse_data["coarse_sdf"]) if paired_samples else sparse_data["coarse_sdf"]
     subgrid_data = _pack_sdf_x_pairs(sparse_data["subgrid_data"]) if paired_samples else sparse_data["subgrid_data"]
-    coarse_tex = wp.Texture3D(
+    release_deferred()
+    coarse_tex = CaptureSafeTexture3D(
         coarse_data,
         filter_mode=wp.TextureFilterMode.LINEAR,
         address_mode=wp.TextureAddressMode.CLAMP,
@@ -2461,7 +2463,7 @@ def create_sparse_sdf_textures(
         device=device,
     )
 
-    subgrid_tex = wp.Texture3D(
+    subgrid_tex = CaptureSafeTexture3D(
         subgrid_data,
         filter_mode=wp.TextureFilterMode.LINEAR,
         address_mode=wp.TextureAddressMode.CLAMP,
