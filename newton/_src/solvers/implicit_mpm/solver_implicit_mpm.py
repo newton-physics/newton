@@ -59,11 +59,16 @@ from .implicit_mpm_solver_kernels import (
     fill_uniform_color_block_indices,
     free_velocity,
     init_particle_strains,
+    gimp_contact_weights,
+    gimp_domain_corners,
+    gimp_half_size,
+    gimp_store_point_stress,
     integrate_active_fraction,
     integrate_collider_fraction,
     integrate_collider_fraction_apic,
     integrate_elastic_parameters,
     integrate_fraction,
+    integrate_gimp_point_stress,
     integrate_mass,
     integrate_particle_stress,
     integrate_velocity,
@@ -71,6 +76,7 @@ from .implicit_mpm_solver_kernels import (
     integrate_yield_parameters,
     inverse_scale_sym_tensor,
     inverse_scale_vector,
+    invert_point_particle_indices,
     make_cell_color_kernel,
     make_dynamic_color_block_indices_kernel,
     make_inverse_rotate_vectors,
@@ -92,6 +98,7 @@ from .implicit_mpm_solver_kernels import (
     scatter_field_dof_values,
     strain_delta_form,
     strain_rhs,
+    transfer_gimp_impulses,
     update_particle_frames,
     update_particle_strains,
     voxel_coordinates,
@@ -212,7 +219,8 @@ def _make_pic_basis_space(pic: fem.PicQuadrature, basis_str: str):
     try:
         max_points_per_cell = int(basis_str[3:])
     except ValueError:
-        max_points_per_cell = -1
+        # All points may occupy one cell; this bound avoids a host read during capture.
+        max_points_per_cell = pic.evaluation_point_count()
 
     return fem.PointBasisSpace(pic, max_nodes_per_element=max_points_per_cell, use_evaluation_point_index=True)
 
@@ -252,6 +260,14 @@ def _resolve_solver_spec(
         return solver_name
 
     return tuple(resolve_auto(solver_name) for solver_name in solvers)
+
+
+class _MPMPicQuadrature(fem.PicQuadrature):
+    """Include domain argument types in point-basis cache names."""
+
+    @property
+    def name(self):
+        return f"{super().name}_{self.domain.name}"
 
 
 class ImplicitMPMScratchpad:
@@ -321,6 +337,7 @@ class ImplicitMPMScratchpad:
         max_cell_count: int,
         environment_first: bool,
         temporary_store: fem.TemporaryStore,
+        contact_pic: fem.PicQuadrature | None = None,
     ):
         """Define velocity and strain function spaces over the given geometry."""
 
@@ -360,7 +377,9 @@ class ImplicitMPMScratchpad:
         if use_pic_strain_basis:
             self._strain_basis = _make_pic_basis_space(pic, strain_basis_str)
         if use_pic_collider_basis:
-            self._collision_basis = _make_pic_basis_space(pic, collider_basis_str)
+            self._collision_basis = _make_pic_basis_space(
+                contact_pic if contact_pic is not None else pic, collider_basis_str
+            )
 
         self._create_velocity_function_space(temporary_store, max_cell_count, environment_first)
         self._create_collider_function_space(temporary_store, max_cell_count, environment_first)
@@ -925,7 +944,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         transfer_scheme: Literal["apic", "pic"] = "apic"
         """Transfer scheme to use for particle-grid transfers."""
         integration_scheme: Literal["pic", "gimp"] = "pic"
-        """Integration scheme controlling shape-function support."""
+        """Integration scheme controlling shape-function support.
+
+        GIMP integrates each particle's cube-shaped domain over its grid-cell
+        overlaps. The domain edge is capped at one voxel; all support cells
+        participate in transfers, contacts, and particle stress warmstarts.
+        """
 
         # material / background
         critical_fraction: float = 0.0
@@ -1514,6 +1538,17 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         self.coloring = any("gauss-seidel" in solver or "gs" in solver for solver in self.solver)
         self.apic = config.transfer_scheme == "apic"
         self.gimp = config.integration_scheme == "gimp"
+        self._gimp_corners = None
+        self._contact_pic = None
+        self._gimp_contact_triplets = None
+        self._gimp_point_stress = None
+        self._gimp_warmstart_state = None
+        if self.gimp:
+            self._gimp_point_stress = (
+                wp.zeros((model.particle_count, 8), dtype=wp.mat33, device=model.device),
+                wp.zeros((model.particle_count, 8), dtype=float, device=model.device),
+                wp.zeros((model.particle_count, 8), dtype=wp.vec3, device=model.device),
+            )
         self.collider_normal_from_sdf_gradient = config.collider_normal_from_sdf_gradient
         self.collider_basis = config.collider_basis
 
@@ -1805,6 +1840,22 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         world_mask: wp.array[wp.bool] | None,
         reset_partitions: tuple[fem.SpacePartition | None, fem.SpacePartition | None],
     ) -> None:
+        if self._gimp_point_stress is not None:
+            valid = self._gimp_point_stress[1]
+            if world_mask is None:
+                valid.zero_()
+            else:
+                wp.launch(
+                    reset_mpm_point_warmstart,
+                    dim=self.model.particle_count,
+                    inputs=[
+                        self.model.particle_world,
+                        world_mask,
+                        self._initial_world_count,
+                        valid.view(wp.types.vector(length=8, dtype=float)),
+                    ],
+                    device=self.model.device,
+                )
         for field, partition in zip(
             (self._last_step_data.ws_impulse_field, self._last_step_data.ws_stress_field),
             reset_partitions,
@@ -1957,10 +2008,14 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         model = self.model
 
         with wp.ScopedDevice(model.device):
+            if self._gimp_point_stress is not None and self._gimp_warmstart_state is not state_in:
+                self._gimp_point_stress[1].zero_()
             pic = self._particles_to_cells(state_in.particle_q)
             scratch = self._rebuild_scratchpad(pic)
             self._step_impl(state_in, state_out, dt, pic, scratch)
             scratch.release_temporaries()
+            if self.gimp:
+                self._gimp_warmstart_state = state_out
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
@@ -2459,6 +2514,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         voxel_size: float,
         temporary_store: fem.TemporaryStore,
         padding_voxels: int = 0,
+        *,
+        point_environment: wp.array | None = None,
+        particle_range_scale: int = 1,
     ):
         """Create a grid (sparse or dense) covering all particle positions.
 
@@ -2476,6 +2534,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         Returns:
             A geometry partition suitable for FEM field assembly.
         """
+        if point_environment is None:
+            point_environment = self._particle_environment
         with self._timer("Allocate grid"):
             if self.grid_type == "sparse":
                 if self._separate_worlds:
@@ -2483,7 +2543,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                         if self._grid_status is None:
                             self._grid_status = wp.zeros(1, dtype=wp.uint32, device=positions.device)
                             self._grid_accumulated_status = wp.zeros(1, dtype=wp.uint32, device=positions.device)
-                        point_mask = self._update_grid_point_mask(positions, self._mpm_model.particle_flags)
+                        point_mask = self._update_grid_point_mask(positions, particle_flags)
                         guard_cells = 3
                         capacity_kwargs = _rebuild_capacity(
                             positions,
@@ -2491,7 +2551,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                             16.0,
                             self.max_active_cell_count,
                             point_mask=point_mask,
-                            point_environment=self._particle_environment,
+                            point_environment=point_environment,
                             environment_count=self._environment_count,
                             guard_cells=guard_cells,
                             temporary_store=temporary_store,
@@ -2501,7 +2561,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                         )
                         grid = fem.Nanogrid.from_environment_voxels(
                             positions,
-                            self._particle_environment,
+                            point_environment,
                             self._environment_count,
                             point_mask=point_mask,
                             voxel_size=voxel_size,
@@ -2514,7 +2574,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                         self.check_sparse_grid_rebuild_status()
                     else:
                         cell_ijks = [
-                            voxel_coordinates(positions[begin:end], voxel_size, padding_voxels=padding_voxels)
+                            voxel_coordinates(
+                                positions[begin * particle_range_scale : end * particle_range_scale],
+                                voxel_size,
+                                padding_voxels=padding_voxels,
+                            )
                             if begin != end
                             else wp.empty(0, dtype=wp.vec3i, device=positions.device)
                             for begin, end in self._particle_world_ranges
@@ -2548,7 +2612,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                         if self._grid_status is None:
                             self._grid_status = wp.zeros(1, dtype=wp.uint32, device=positions.device)
                             self._grid_accumulated_status = wp.zeros(1, dtype=wp.uint32, device=positions.device)
-                        point_mask = self._update_grid_point_mask(positions, self._mpm_model.particle_flags)
+                        point_mask = self._update_grid_point_mask(positions, particle_flags)
                     volume = allocate_by_voxels(
                         positions,
                         voxel_size,
@@ -2634,7 +2698,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         return self._grid_point_mask
 
     def _create_geometry_partition(
-        self, grid: fem.Geometry, positions: wp.array, particle_flags: wp.array, max_cell_count: int
+        self,
+        grid: fem.Geometry,
+        positions: wp.array,
+        particle_flags: wp.array,
+        max_cell_count: int,
+        point_environment: wp.array | None = None,
     ):
         """Create a geometry partition for the given positions."""
 
@@ -2645,7 +2714,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             active_cell_values = {
                 "positions": positions,
                 "particle_flags": particle_flags,
-                "particle_environment": self._particle_environment,
+                "particle_environment": point_environment
+                if point_environment is not None
+                else self._particle_environment,
                 "active_cells": active_cells,
             }
         else:
@@ -2695,6 +2766,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 collider_basis_str=self.collider_basis,
                 max_cell_count=self.max_active_cell_count,
                 environment_first=self._separate_worlds,
+                contact_pic=self._contact_pic,
                 temporary_store=self.temporary_store,
             )
 
@@ -2714,6 +2786,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
     def _particles_to_cells(self, positions: wp.array) -> fem.PicQuadrature:
         """Rebuild the grid and grid partition around particles, then assign particles to grid cells."""
 
+        grid_positions, grid_flags, grid_environment, point_stride = self._grid_points(positions)
+
         # Rebuild grid
 
         # The fixed grid and the rebuildable sparse grid both persist across steps: the
@@ -2722,10 +2796,10 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         if self._scratchpad is not None and (self.grid_type == "fixed" or self._sparse_rebuildable):
             grid = self._scratchpad.grid
             if self._sparse_rebuildable:
-                point_mask = self._update_grid_point_mask(positions, self._mpm_model.particle_flags)
+                point_mask = self._update_grid_point_mask(grid_positions, grid_flags)
                 grid.rebuild(
-                    positions,
-                    point_envs=self._particle_environment,
+                    grid_positions,
+                    point_envs=grid_environment,
                     status=self._grid_status,
                     point_mask=point_mask,
                 )
@@ -2737,11 +2811,13 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 )
         else:
             grid = self._allocate_grid(
-                positions,
-                self._mpm_model.particle_flags,
+                grid_positions,
+                grid_flags,
                 voxel_size=self._mpm_model.voxel_size,
                 temporary_store=self.temporary_store,
                 padding_voxels=self.grid_padding,
+                point_environment=grid_environment,
+                particle_range_scale=point_stride,
             )
 
         # Build active partition. Plain sparse uses the whole grid; fixed and rebuildable
@@ -2754,7 +2830,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             else:
                 max_cell_count = self.max_active_cell_count
                 geo_partition = self._create_geometry_partition(
-                    grid, positions, self._mpm_model.particle_flags, max_cell_count
+                    grid, grid_positions, grid_flags, max_cell_count, grid_environment
                 )
 
         # Bin particles to grid cells
@@ -2770,17 +2846,32 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
             if self.gimp:
                 particle_locations = self._particle_grid_locations_gimp(
-                    domain, positions, self._mpm_model.particle_radius, self._particle_environment
+                    domain,
+                    positions,
+                    self._mpm_model.particle_volume,
+                    self._mpm_model.voxel_size,
+                    self._particle_environment,
                 )
-                pic = fem.PicQuadrature(
+                pic = _MPMPicQuadrature(
                     domain=domain,
                     positions=particle_locations,
                     measures=self._mpm_model.particle_volume,
                     temporary_store=self.temporary_store,
                     use_domain_element_indices=use_domain_element_indices,
                 )
+                self._gimp_pic = pic
+                self._gimp_cells = particle_locations[0]
+                if self.collider_basis[:3] == "pic":
+                    self._contact_pic = _MPMPicQuadrature(
+                        domain=domain,
+                        positions=positions,
+                        env_indices=self._particle_environment,
+                        measures=self._mpm_model.particle_volume,
+                        temporary_store=self.temporary_store,
+                        use_domain_element_indices=use_domain_element_indices,
+                    )
             else:
-                pic = fem.PicQuadrature(
+                pic = _MPMPicQuadrature(
                     domain=domain,
                     positions=positions,
                     env_indices=self._particle_environment,
@@ -2791,94 +2882,144 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         return pic
 
+    def _grid_points(self, positions: wp.array):
+        """Points whose cells are activated: particle centers, or the corners of the GIMP particle domains."""
+        flags = self._mpm_model.particle_flags
+        if not self.gimp:
+            return positions, flags, self._particle_environment, 1
+
+        count = positions.shape[0]
+        device = positions.device
+        if self._gimp_corners is None or self._gimp_corners.shape[0] != 8 * count:
+            self._gimp_corners = wp.empty(8 * count, dtype=wp.vec3, device=device)
+            self._gimp_corner_flags = wp.empty(8 * count, dtype=wp.int32, device=device)
+            self._gimp_corner_environment = (
+                None
+                if self._particle_environment is None
+                else wp.empty(8 * count, dtype=self._particle_environment.dtype, device=device)
+            )
+        wp.launch(
+            gimp_domain_corners,
+            dim=(count, 8),
+            inputs=[
+                positions,
+                self._mpm_model.particle_volume,
+                flags,
+                self._particle_environment,
+                self._mpm_model.voxel_size,
+            ],
+            outputs=[self._gimp_corners, self._gimp_corner_flags, self._gimp_corner_environment],
+            device=device,
+        )
+        return self._gimp_corners, self._gimp_corner_flags, self._gimp_corner_environment, 8
+
     def _particle_grid_locations_gimp(
         self,
         domain: fem.GeometryDomain,
         positions: wp.array,
-        radii: wp.array,
+        particle_volume: wp.array,
+        voxel_size: float,
         particle_environment: wp.array | None,
-    ) -> wp.array:
-        """Convert particle positions to grid locations."""
+    ):
+        """Split each particle's cubic domain over the cells it overlaps (uGIMP).
+
+        The domain is the cube with the particle volume, capped at half a voxel so that it spans at most two cells
+        per axis. Each overlapped cell receives the overlap volume fraction, with its quadrature point at the overlap
+        centroid, which integrates multilinear shape functions and their gradients exactly over the domain.
+        """
 
         cell_lookup = domain.element_partition_lookup
-        cell_closest_point = domain.element_closest_point
-
-        @wp.func
-        def add_cell(
-            particle_cell_indices: wp.array[fem.ElementIndex],
-            particle_cell_coords: wp.array[fem.Coords],
-            particle_cell_fractions: wp.array[float],
-            cell_index: int,
-            cell_coords: fem.Coords,
-            cell_weight: float,
-        ):
-            for i in range(8):
-                if particle_cell_indices[i] == fem.NULL_NODE_INDEX:
-                    particle_cell_indices[i] = cell_index
-                    particle_cell_coords[i] = cell_coords
-                    particle_cell_fractions[i] = cell_weight
-                    return
-
-                if particle_cell_indices[i] == cell_index:
-                    particle_cell_fractions[i] += cell_weight
-                    return
-
         separate_worlds = self._separate_worlds
+        grid_offset = 0.5 if self.grid_type == "sparse" else 0.0
 
-        @fem.cache.dynamic_kernel(suffix=f"{domain.name}_{'isolated' if separate_worlds else 'shared'}")
+        @fem.cache.dynamic_kernel(suffix=f"{domain.name}_{'isolated' if separate_worlds else 'shared'}_overlap")
         def particle_locations_gimp(
             cell_arg_value: domain.ElementArg,
             domain_index_arg_value: domain.ElementIndexArg,
             positions: wp.array[wp.vec3],
-            radii: wp.array[float],
+            particle_volume: wp.array[float],
             particle_environment: wp.array[int],
+            voxel_size: float,
             cell_index: wp.array2d[fem.ElementIndex],
             cell_coords: wp.array2d[fem.Coords],
             cell_fractions: wp.array2d[float],
         ):
             p = wp.tid()
             domain_arg = domain.DomainArg(cell_arg_value, domain_index_arg_value)
-
             center = positions[p]
-            radius = radii[p]
+
+            if wp.static(separate_worlds):
+                home = cell_lookup(domain_arg, center, int(particle_environment[p]))
+            else:
+                home = cell_lookup(domain_arg, center)
+            if home.element_index == fem.NULL_ELEMENT_INDEX:
+                return
+
+            uc = home.element_coords
+            size = 2.0 * gimp_half_size(particle_volume[p], voxel_size) / voxel_size
+            if size <= 0.0:
+                cell_index[p, 0] = domain.element_partition_index(domain_index_arg_value, home.element_index)
+                cell_coords[p, 0] = uc
+                cell_fractions[p, 0] = 1.0
+                return
+
+            # Per axis, the domain [lo, hi] (home-cell coordinates) splits at most once, at `split`:
+            # segment 0 is [lo, split] and segment 1 is [split, hi], one of them in a neighbor cell.
+            lo = uc - wp.vec3(0.5 * size)
+            hi = uc + wp.vec3(0.5 * size)
+            split = wp.vec3()
+            for a in range(3):
+                split[a] = wp.where(lo[a] < 0.0, 0.0, wp.where(hi[a] > 1.0, 1.0, hi[a]))
+
+            # Cell origins are integer grid coordinates; round away lookup roundoff.
+            origin = center / voxel_size - uc + wp.vec3(grid_offset)
+            home_ijk = wp.vec3i(int(wp.round(origin[0])), int(wp.round(origin[1])), int(wp.round(origin[2])))
 
             tot_weight = float(0.0)
+            for combo in range(8):
+                weight = float(1.0)
+                centroid = wp.vec3()
+                for a in range(3):
+                    if (combo >> a) & 1 == 0:
+                        weight *= (split[a] - lo[a]) / size
+                        centroid[a] = 0.5 * (lo[a] + split[a])
+                    else:
+                        weight *= (hi[a] - split[a]) / size
+                        centroid[a] = 0.5 * (split[a] + hi[a])
+                if weight <= 1.0e-6:
+                    continue
 
-            # Find cell containing each corner of the particle,
-            # merging repeated cell indices
-            for vtx in range(8):
-                i = (vtx & 4) >> 2
-                j = (vtx & 2) >> 1
-                k = vtx & 1
-
-                pos = center - wp.vec3(radius) + 2.0 * radius * wp.vec3(float(i), float(j), float(k))
+                # Grid cells are axis-aligned cubes of edge voxel_size
+                pos = center + voxel_size * (centroid - uc)
                 if wp.static(separate_worlds):
                     sample = cell_lookup(domain_arg, pos, int(particle_environment[p]))
                 else:
                     sample = cell_lookup(domain_arg, pos)
 
-                if sample.element_index == fem.NULL_ELEMENT_INDEX:
+                # Lookups outside the active cells snap onto a cell face; those parts are left out
+                coords = sample.element_coords
+                if sample.element_index == fem.NULL_ELEMENT_INDEX or wp.min(coords) <= 0.0 or wp.max(coords) >= 1.0:
                     continue
 
-                elem_index = domain.element_partition_index(domain_index_arg_value, sample.element_index)
-                cell_weight = wp.min(wp.min(sample.element_coords), 1.0 - wp.max(sample.element_coords))
+                # Slot = parity of the overlapped cell's index along each axis: distinct for the (at most two
+                # per axis) cells a domain overlaps, and unchanged while the particle keeps overlapping a cell.
+                # The cell is the home cell plus the exact segment offset, independent of centroid rounding.
+                ijk = home_ijk
+                for a in range(3):
+                    bit = (combo >> a) & 1
+                    if lo[a] < 0.0:
+                        ijk[a] = home_ijk[a] + bit - 1
+                    elif hi[a] > 1.0:
+                        ijk[a] = home_ijk[a] + bit
+                slot = ((ijk[0] & 1) << 2) | ((ijk[1] & 1) << 1) | (ijk[2] & 1)
+                cell_index[p, slot] = domain.element_partition_index(domain_index_arg_value, sample.element_index)
+                cell_coords[p, slot] = coords
+                cell_fractions[p, slot] = weight
+                tot_weight += weight
 
-                if cell_weight > 0.0:
-                    tot_weight += cell_weight
-                    cell_center_coords, _ = cell_closest_point(cell_arg_value, sample.element_index, center)
-                    add_cell(
-                        cell_index[p],
-                        cell_coords[p],
-                        cell_fractions[p],
-                        elem_index,
-                        cell_center_coords,
-                        cell_weight,
-                    )
-
-            # Normalize the weights over the cells
-            for vtx in range(8):
-                if cell_index[p, vtx] != fem.NULL_NODE_INDEX:
-                    cell_fractions[p, vtx] /= tot_weight
+            for k in range(8):
+                if cell_index[p, k] != fem.NULL_NODE_INDEX:
+                    cell_fractions[p, k] /= tot_weight
 
         device = positions.device
 
@@ -2895,8 +3036,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 domain.element_arg_value(device=device),
                 domain.element_index_arg_value(device=device),
                 positions,
-                radii,
+                particle_volume,
                 particle_environment,
+                voxel_size,
                 cell_indices,
                 cell_coords,
                 cell_fractions,
@@ -2905,6 +3047,57 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         )
 
         return cell_indices, cell_coords, cell_fractions
+
+    def _assemble_gimp_contact_matrix(self, scratch: ImplicitMPMScratchpad):
+        """Contact rows S_ip = sum_k f_k N_i(x_k): the GIMP weights that also advect the particle."""
+        particle_count = self._gimp_cells.shape[0]
+        max_nodes = scratch.velocity_field.space.topology.MAX_NODES_PER_ELEMENT
+        device = self._gimp_cells.device
+        if (
+            self._gimp_contact_triplets is None
+            or self._gimp_contact_triplets[0].shape[0] != particle_count * 8 * max_nodes
+        ):
+            capacity = particle_count * 8 * max_nodes
+            self._gimp_contact_triplets = (
+                wp.empty(capacity, dtype=int, device=device),
+                wp.empty(capacity, dtype=int, device=device),
+                wp.empty(capacity, dtype=float, device=device),
+                wp.empty(particle_count, dtype=int, device=device),
+            )
+        rows, cols, values, particle_contact_node = self._gimp_contact_triplets
+        rows.fill_(-1)
+        cols.fill_(-1)
+        values.zero_()
+        particle_contact_node.fill_(-1)
+        point_particle = self._contact_pic.cell_particle_indices
+        wp.launch(
+            invert_point_particle_indices,
+            dim=scratch.collider_normal_field.space_partition.node_count(),
+            inputs=[
+                point_particle,
+                scratch.collider_normal_field.space_partition.space_node_indices(),
+                scratch.collider_normal_field.dof_values,
+                particle_contact_node,
+            ],
+            device=device,
+        )
+        fem.interpolate(
+            gimp_contact_weights,
+            at=self._gimp_pic,
+            fields={"u": scratch.velocity_field},
+            values={
+                "particle_volume": self._mpm_model.particle_volume,
+                "gimp_cells": self._gimp_cells,
+                "particle_contact_node": particle_contact_node,
+                "contact_normal": scratch.collider_normal_field.dof_values,
+                "max_nodes": max_nodes,
+                "rows": rows,
+                "cols": cols,
+                "values": values,
+            },
+            temporary_store=self.temporary_store,
+        )
+        wps.bsr_set_from_triplets(scratch.collider_matrix, rows, cols, values)
 
     def _step_impl(
         self,
@@ -3105,17 +3298,20 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 wps.bsr_set_zero(
                     scratch.collider_matrix, rows_of_blocks=collider_node_count, cols_of_blocks=vel_node_count
                 )
-                fem.interpolate(
-                    collision_weight_field,
-                    dest=scratch.collider_matrix,
-                    dest_space=scratch.collider_fraction_test.space,
-                    at=scratch.collider_fraction_test.space_restriction,
-                    reduction="first",
-                    fields={"trial": scratch.fraction_trial, "normal": scratch.collider_normal_field},
-                    temporary_store=self.temporary_store,
-                    # Preserve first-sample arithmetic; older Warp falls back to triplets.
-                    bsr_options={"construction": "auto"} if self._use_local_contact_construction(scratch) else None,
-                )
+                if self.gimp and self._contact_pic is not None:
+                    self._assemble_gimp_contact_matrix(scratch)
+                else:
+                    fem.interpolate(
+                        collision_weight_field,
+                        dest=scratch.collider_matrix,
+                        dest_space=scratch.collider_fraction_test.space,
+                        at=scratch.collider_fraction_test.space_restriction,
+                        reduction="first",
+                        fields={"trial": scratch.fraction_trial, "normal": scratch.collider_normal_field},
+                        temporary_store=self.temporary_store,
+                        # Preserve first-sample arithmetic; older Warp falls back to triplets.
+                        bsr_options={"construction": "auto"} if self._use_local_contact_construction(scratch) else None,
+                    )
 
     def _use_local_contact_construction(self, scratch: ImplicitMPMScratchpad) -> bool:
         """Prefer row compression for validated CUDA contact-map layouts."""
@@ -3379,7 +3575,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         inv_cell_volume: float,
     ):
         if self.strain_basis[:3] == "pic":
-            scratch.strain_node_particle_volume.assign(self._mpm_model.material_particle_volume * inv_cell_volume)
+            if not self.gimp:
+                scratch.strain_node_particle_volume.assign(self._mpm_model.material_particle_volume * inv_cell_volume)
             return None, None
         nodes_per_element = scratch.divergence_test.space.topology.MAX_NODES_PER_ELEMENT
         if scratch.strain_basis_transform_field is None:
@@ -3719,7 +3916,39 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         with self._timer("Warmstart fields"):
             self._warmstart_fields(last_step_data, scratch, pic)
 
-            if self._stress_warmstart == "particles":
+            if (
+                self.gimp
+                and self._stress_warmstart
+                and (
+                    self._stress_warmstart == "particles"
+                    or isinstance(scratch.stress_field.space.basis, fem.PointBasisSpace)
+                )
+            ):
+                point_stress, point_valid, point_centers = self._gimp_point_stress
+                fem.integrate(
+                    integrate_gimp_point_stress,
+                    quadrature=pic,
+                    fields={"tau": scratch.sym_strain_test},
+                    values={
+                        "inv_cell_volume": inv_cell_volume,
+                        "gimp_cells": self._gimp_cells,
+                        "point_stress": point_stress,
+                        "point_valid": point_valid,
+                        "point_centers": point_centers,
+                        "voxel_size": self._mpm_model.voxel_size,
+                        "particle_stress": state_in.mpm.particle_stress,
+                        "particle_flags": self._mpm_model.material_particle_flags,
+                    },
+                    output=scratch.stress_field.dof_values,
+                    temporary_store=self.temporary_store,
+                )
+                if self._stress_warmstart != "particles":
+                    wp.launch(
+                        inverse_scale_sym_tensor,
+                        dim=scratch.strain_node_count,
+                        inputs=[scratch.strain_node_particle_volume, scratch.stress_field.dof_values],
+                    )
+            elif self._stress_warmstart == "particles":
                 fem.integrate(
                     integrate_particle_stress,
                     quadrature=pic,
@@ -3762,7 +3991,20 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         if isinstance(prev_impulse_field.space.basis, fem.PointBasisSpace):
             # point-based collisions, simply copy the previous impulses
-            scratch.impulse_field.dof_values.assign(prev_impulse_field.dof_values[pic.cell_particle_indices])
+            if self._contact_pic is not None:
+                scratch.impulse_field.dof_values.zero_()
+                wp.launch(
+                    transfer_gimp_impulses,
+                    dim=self.model.particle_count,
+                    inputs=[
+                        self._gimp_contact_triplets[3],
+                        prev_impulse_field.dof_values,
+                        scratch.impulse_field.dof_values,
+                        False,
+                    ],
+                )
+            else:
+                scratch.impulse_field.dof_values.assign(prev_impulse_field.dof_values[pic.cell_particle_indices])
         elif grid_to_grid_warmstart:
             # Interpolate previous impulse
             prev_impulse_field = fem.NonconformingField(
@@ -3780,7 +4022,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         # Interpolate previous stress
         if isinstance(prev_stress_field.space.basis, fem.PointBasisSpace):
-            scratch.stress_field.dof_values.assign(prev_stress_field.dof_values[pic.cell_particle_indices])
+            if self.gimp:
+                # GIMP has unused subpoint slots with particle index -1. Its
+                # point stresses are transferred through the per-overlap cache.
+                scratch.stress_field.dof_values.zero_()
+            else:
+                scratch.stress_field.dof_values.assign(prev_stress_field.dof_values[pic.cell_particle_indices])
         elif self._stress_warmstart in ("grid", "smoothed") and grid_to_grid_warmstart:
             prev_stress_field = fem.NonconformingField(
                 domain, prev_stress_field, background=scratch.background_stress_field
@@ -3802,13 +4049,48 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         self, scratch: ImplicitMPMScratchpad, pic: fem.PicQuadrature, last_step_data: LastStepData
     ):
         with self._timer("Save warmstart fields"):
+            if (
+                self.gimp
+                and self._stress_warmstart
+                and (
+                    self._stress_warmstart == "particles"
+                    or isinstance(scratch.stress_field.space.basis, fem.PointBasisSpace)
+                )
+            ):
+                point_stress, point_valid, point_centers = self._gimp_point_stress
+                point_valid.zero_()
+                fem.interpolate(
+                    gimp_store_point_stress,
+                    at=pic,
+                    fields={"stress": scratch.stress_field},
+                    values={
+                        "gimp_cells": self._gimp_cells,
+                        "point_stress": point_stress,
+                        "point_valid": point_valid,
+                        "point_centers": point_centers,
+                        "particle_flags": self._mpm_model.material_particle_flags,
+                    },
+                    temporary_store=self.temporary_store,
+                )
             last_step_data.rebind_collision_space_fields(scratch)
 
             if isinstance(last_step_data.ws_impulse_field.space.basis, fem.PointBasisSpace):
                 # point-based collisions, simply copy the previous impulses
-                last_step_data.ws_impulse_field.dof_values[pic.cell_particle_indices].assign(
-                    scratch.impulse_field.dof_values
-                )
+                if self._contact_pic is not None:
+                    wp.launch(
+                        transfer_gimp_impulses,
+                        dim=self.model.particle_count,
+                        inputs=[
+                            self._gimp_contact_triplets[3],
+                            last_step_data.ws_impulse_field.dof_values,
+                            scratch.impulse_field.dof_values,
+                            True,
+                        ],
+                    )
+                else:
+                    last_step_data.ws_impulse_field.dof_values[pic.cell_particle_indices].assign(
+                        scratch.impulse_field.dof_values
+                    )
             else:
                 last_step_data.ws_impulse_field.dof_values.zero_()
                 wp.launch(
@@ -3823,9 +4105,14 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
             last_step_data.rebind_strain_space_fields(scratch, smoothed=self._stress_warmstart == "smoothed")
             if isinstance(last_step_data.ws_stress_field.space.basis, fem.PointBasisSpace):
-                last_step_data.ws_stress_field.dof_values[pic.cell_particle_indices].assign(
-                    scratch.stress_field.dof_values
-                )
+                if self.gimp:
+                    # The per-overlap cache above replaces the particle-indexed
+                    # scatter, which cannot represent multiple GIMP subpoints.
+                    last_step_data.ws_stress_field.dof_values.zero_()
+                else:
+                    last_step_data.ws_stress_field.dof_values[pic.cell_particle_indices].assign(
+                        scratch.stress_field.dof_values
+                    )
             else:
                 last_step_data.ws_stress_field.dof_values.zero_()
 
