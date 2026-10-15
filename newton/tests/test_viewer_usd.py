@@ -665,6 +665,23 @@ class TestViewerUSD(unittest.TestCase):
         self.assertTrue(stage.GetPrimAtPath("/root/barrel").IsA(UsdGeom.Mesh))
         self.assertTrue(stage.GetPrimAtPath("/root/plane").IsA(UsdGeom.Mesh))
 
+    def test_log_geo_replaces_prototype_of_another_type(self):
+        """Re-log a name with a new type without stale children, and keep the unit ellipsoid default."""
+        viewer = self._make_viewer()
+        viewer.begin_frame(0.0)
+        stage = viewer.stage
+
+        viewer.log_geo("/shape", newton.GeoType.ELLIPSOID, (), 0.0, True)
+        bound = UsdGeom.Sphere.Get(stage, "/root/shape/geom").ComputeLocalBound(0, UsdGeom.Tokens.default_)
+        np.testing.assert_allclose(bound.ComputeAlignedRange().GetMax(), [1.0, 1.0, 1.0], rtol=1e-6)
+
+        viewer.log_geo("/shape", newton.GeoType.SPHERE, (0.5,), 0.0, True)
+        self.assertTrue(stage.GetPrimAtPath("/root/shape").IsA(UsdGeom.Sphere))
+        self.assertFalse(stage.GetPrimAtPath("/root/shape/geom"))
+
+        viewer.log_geo("/shape", newton.GeoType.PLANE, (1.0, 1.0), 0.0, True)
+        self.assertTrue(stage.GetPrimAtPath("/root/shape").IsA(UsdGeom.Mesh))
+
     def test_log_shapes_instances_gprim_prototypes(self):
         """Render Gprim instances with their color while prototypes stay hidden."""
         viewer = self._make_viewer()
