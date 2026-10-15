@@ -117,36 +117,63 @@ def test_nodal_rank_deficient_transform(test, device):
 def test_nodal_singular_completion(test, device):
     """Keep nodal completion directions independent of the supported mass eigenvectors."""
     for n in (4, 8):
-        null_direction = np.arange(1, n + 1, dtype=float)
-        null_direction /= np.linalg.norm(null_direction)
-        completion, _ = np.linalg.qr(null_direction[:, None], mode="complete")
-        frame = completion[:, 1:].T
-        for angle in (0.0, 0.37):
-            with test.subTest(n=n, angle=angle):
-                rotation = np.eye(n - 1)
-                rotation[:2, :2] = ((np.cos(angle), -np.sin(angle)), (np.sin(angle), np.cos(angle)))
-                spectrum = np.linspace(0.25, 0.9, n - 1) / n
-                mass = (frame.T @ rotation @ np.diag(spectrum) @ rotation.T @ frame).astype(np.float32)
-                r, t, diagonal, _mean = _diagonalize(mass, device)
-                active = np.linalg.norm(r, axis=1) > 0.0
-                eigenvalues, eigenvectors = np.linalg.eigh(mass.astype(float))
-                supported = eigenvalues > 1.0e-6
-                inverse_root = (eigenvectors[:, supported] / np.sqrt(n * eigenvalues[supported])) @ eigenvectors[
-                    :, supported
-                ].T
-                actual_frame = t[active] @ inverse_root
-                test.assertEqual(len(actual_frame), n - 1)
-                for actual, expected in zip(actual_frame, frame, strict=True):
-                    # The final pressure orientation may flip a row, but not rotate it.
-                    np.testing.assert_allclose(np.outer(actual, actual), np.outer(expected, expected), atol=3.0e-6)
-                np.testing.assert_allclose(r @ mass @ r.T, np.diag(active.astype(float)) / n, atol=2.0e-6)
-                np.testing.assert_allclose(t @ r.T, np.diag(active.astype(float)), atol=3.0e-6)
-                np.testing.assert_allclose(r @ mass, np.diag(diagonal) @ t, atol=2.0e-6)
+        rng = np.random.default_rng(n)
+        directions, _ = np.linalg.qr(rng.normal(size=(n, n)))
+        for rank in sorted({1, 2, 3, n - 1}):
+            frame = directions[:, :rank].T
+            reference_frame = None
+            for angle in (0.0, 1.0e-6, 0.37):
+                with test.subTest(n=n, rank=rank, angle=angle):
+                    rotation = np.eye(rank)
+                    if rank > 1:
+                        rotation[:2, :2] = ((np.cos(angle), -np.sin(angle)), (np.sin(angle), np.cos(angle)))
+                    spectrum = np.linspace(0.25, 0.9, rank) / n
+                    mass = (frame.T @ rotation @ np.diag(spectrum) @ rotation.T @ frame).astype(np.float32)
+                    r, t, diagonal, _mean = _diagonalize(mass, device)
+                    active = np.linalg.norm(r, axis=1) > 0.0
+                    eigenvalues, eigenvectors = np.linalg.eigh(mass.astype(float))
+                    supported = eigenvalues > 1.0e-6
+                    inverse_root = (eigenvectors[:, supported] / np.sqrt(n * eigenvalues[supported])) @ eigenvectors[
+                        :, supported
+                    ].T
+                    actual_frame = t[active] @ inverse_root
+                    test.assertEqual(len(actual_frame), rank)
+                    if reference_frame is None:
+                        reference_frame = actual_frame
+                    for actual, expected in zip(actual_frame, reference_frame, strict=True):
+                        # The final pressure orientation may flip a row, but not rotate it.
+                        np.testing.assert_allclose(np.outer(actual, actual), np.outer(expected, expected), atol=3.0e-6)
+                    np.testing.assert_allclose(r @ mass @ r.T, np.diag(active.astype(float)) / n, atol=2.0e-6)
+                    np.testing.assert_allclose(t @ r.T, np.diag(active.astype(float)), atol=3.0e-6)
+                    np.testing.assert_allclose(r @ mass, np.diag(diagonal) @ t, atol=2.0e-6)
+                    np.testing.assert_allclose(r.T @ t, frame.T @ frame, atol=3.0e-6)
 
         r, t, diagonal, _mean = _diagonalize(np.zeros((n, n), dtype=np.float32), device)
         np.testing.assert_array_equal(r, np.zeros((n, n)))
         np.testing.assert_array_equal(t, np.zeros((n, n)))
         np.testing.assert_array_equal(diagonal, np.ones(n))
+
+
+def test_nodal_singular_tied_pivots(test, device):
+    """Preserve a symmetric supported frame when equivalent nodal pivots differ only by roundoff."""
+    for n in (4, 8):
+        angles = 2.0 * np.pi * np.arange(n) / n + 0.17
+        frame = np.array((np.cos(angles), np.sin(angles))) * np.sqrt(2.0 / n)
+        reference_frame = None
+        for perturbation in (0.0, 1.0e-6, 1.0e-4, 0.1):
+            with test.subTest(n=n, perturbation=perturbation):
+                mass = (frame.T @ np.diag((0.02, 0.05 * (1.0 + perturbation))) @ frame).astype(np.float32)
+                _r, t, _diagonal, _mean = _diagonalize(mass, device)
+                eigenvalues, eigenvectors = np.linalg.eigh(mass.astype(float))
+                supported = eigenvalues > 1.0e-6
+                inverse_root = (eigenvectors[:, supported] / np.sqrt(n * eigenvalues[supported])) @ eigenvectors[
+                    :, supported
+                ].T
+                actual_frame = t[:2] @ inverse_root
+                if reference_frame is None:
+                    reference_frame = actual_frame
+                for actual, expected in zip(actual_frame, reference_frame, strict=True):
+                    np.testing.assert_allclose(np.outer(actual, actual), np.outer(expected, expected), atol=3.0e-6)
 
 
 def test_nodal_material_averaging(test, device):
@@ -369,6 +396,7 @@ for name, func in (
     ("test_nodal_full_rank_transform", test_nodal_full_rank_transform),
     ("test_nodal_rank_deficient_transform", test_nodal_rank_deficient_transform),
     ("test_nodal_singular_completion", test_nodal_singular_completion),
+    ("test_nodal_singular_tied_pivots", test_nodal_singular_tied_pivots),
     ("test_nodal_mean_orientation", test_nodal_mean_orientation),
     ("test_nodal_material_averaging", test_nodal_material_averaging),
     ("test_nodal_full_cell_solver", test_nodal_full_cell_solver),
