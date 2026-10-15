@@ -8705,7 +8705,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_ordering_cycle_raises(self):
-        """Topological sort errors (cycle/multi-root) must propagate instead of silently falling back."""
+        """Reject invalid joint graphs and propagate topological sort errors."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -8741,6 +8741,51 @@ def Xform "Articulation" (
             builder = newton.ModelBuilder()
             with self.assertRaises(ValueError):
                 builder.add_usd(stage, joint_ordering="dfs", load_visual_shapes=False, load_sites=False)
+
+        joint_x = UsdPhysics.FixedJoint.Define(stage, joint_x.GetPath())
+        frame0 = UsdGeom.Xform.Define(stage, "/World/Articulation/Base/Frame0")
+        frame1 = UsdGeom.Xform.Define(stage, "/World/Articulation/Base/Frame1")
+        for articulated in (True, False):
+            if not articulated:
+                articulation.GetPrim().RemoveAPI(UsdPhysics.ArticulationRootAPI)
+            for body0, body1 in ((base, base), (frame0, frame1)):
+                joint_x.CreateBody0Rel().SetTargets([body0.GetPath()])
+                joint_x.CreateBody1Rel().SetTargets([body1.GetPath()])
+                for joint_ordering in ("dfs", "bfs", None):
+                    for enabled, only_load_enabled in ((True, True), (False, False)):
+                        with self.subTest(
+                            articulated=articulated,
+                            body0=body0.GetPath(),
+                            body1=body1.GetPath(),
+                            joint_ordering=joint_ordering,
+                            enabled=enabled,
+                        ):
+                            joint_x.CreateJointEnabledAttr().Set(enabled)
+                            builder = newton.ModelBuilder()
+                            with self.assertRaisesRegex(
+                                ValueError,
+                                r"/World/Articulation/JointX.*same rigid body /World/Articulation/Base",
+                            ):
+                                builder.add_usd(
+                                    stage,
+                                    joint_ordering=joint_ordering,
+                                    only_load_enabled_joints=only_load_enabled,
+                                    load_visual_shapes=False,
+                                    load_sites=False,
+                                )
+
+            for enabled, ignore_paths in (
+                (False, []),
+                (True, ["/World/Articulation/Joint.*"]),
+                (True, ["/World/Articulation/Base.*"]),
+            ):
+                with self.subTest(articulated=articulated, enabled=enabled, ignore_paths=ignore_paths):
+                    joint_x.CreateJointEnabledAttr().Set(enabled)
+                    builder = newton.ModelBuilder()
+                    result = builder.add_usd(
+                        stage, ignore_paths=ignore_paths, load_visual_shapes=False, load_sites=False
+                    )
+                    self.assertNotIn(str(joint_x.GetPath()), result["path_joint_map"])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_scene_path(self):

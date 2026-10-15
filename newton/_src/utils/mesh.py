@@ -1368,6 +1368,10 @@ def load_meshes_from_file(
 
     meshes = []
     for tri_mesh in tri_meshes:
+        if len(tri_mesh.faces) == 0:
+            raise ValueError(
+                f"Mesh file '{filename}' contains no triangles; check its geometry and material references."
+            )
         vertices = np.array(tri_mesh.vertices, dtype=np.float32) * scale
         faces = np.array(tri_mesh.faces, dtype=np.int32)
         normals = np.array(tri_mesh.vertex_normals, dtype=np.float32) if tri_mesh.vertex_normals is not None else None

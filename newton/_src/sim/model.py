@@ -386,8 +386,10 @@ class Model:
         "_shape_support_data": AttributeSpec(AttributeFrequency.SHAPE, requires_empty_sentinel=True),
         "_shape_sdf_index": AttributeSpec(AttributeFrequency.SHAPE),
         "_shape_mesh_properties": AttributeSpec(AttributeFrequency.SHAPE),
+        "_shape_mesh_boundary_start": AttributeSpec(AttributeFrequency.SHAPE, requires_empty_sentinel=True),
         "shape_collision_aabb_lower": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_collision_aabb_upper": AttributeSpec(AttributeFrequency.SHAPE),
+        "_shape_interior_point": AttributeSpec(AttributeFrequency.SHAPE),
         "_shape_voxel_resolution": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_world_start": AttributeSpec(
             AttributeFrequency.SHAPE,
@@ -874,6 +876,12 @@ class Model:
         """Per-shape (start, count) into mesh edge arrays, shape [shape_count]. (-1,0) if no edges."""
         self._shape_mesh_properties: wp.array[wp.int32] | None = None
         """Per-shape mesh property bitfield used by collision kernels, shape [shape_count]."""
+        self._mesh_boundary_flags: wp.array[wp.uint8] | None = None
+        """Packed per-face open-boundary bits of non-watertight collision meshes, shape [face_count].
+
+        Bit ``i`` marks the edge opposite face vertex ``i`` and bit ``3 + i`` marks vertex ``i``."""
+        self._shape_mesh_boundary_start: wp.array[wp.int32] | None = None
+        """Per-shape start into :attr:`_mesh_boundary_flags`, or -1 without boundary bits, shape [shape_count]."""
 
         # SDF storage (compact table + per-shape index indirection).
         # All SDF arrays are private; the public attribute names are exposed
@@ -908,6 +916,9 @@ class Model:
         """Scaled local-space AABB upper bound [m] for each shape, shape [shape_count, 3], float.
         Includes shape scale but excludes margin and gap (those are applied at runtime).
         Used for broadphase AABB computation and voxel-based contact reduction."""
+        self._shape_interior_point: wp.array[wp.vec3] | None = None
+        """Scaled local-space point [m] inside each shape, shape [shape_count, 3], float.
+        Convex meshes use their vertex mean; other shapes use their origin."""
         self._shape_voxel_resolution: wp.array[wp.vec3i] | None = None
         """Voxel grid resolution (nx, ny, nz) for each shape, shape [shape_count, 3], int. Used for voxel-based contact reduction."""
 

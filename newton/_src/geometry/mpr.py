@@ -215,6 +215,28 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
     solve_sat = create_solve_box_penetration(certificate_support)
 
     @wp.func
+    def portal_retry_seed(v0: Any, v1: Vert, v2: Vert, v3: Vert, normal: wp.vec3, seed: wp.vec3) -> wp.vec3:
+        """Return an interior retry seed while preserving the first overlap ball."""
+        # Shrinking the radius on retries can make the portal degenerate.
+        radius = 2.0 * wp.length(seed)
+        if radius == 0.0:
+            radius = wp.abs(wp.dot(normal, v1.BtoA))
+            for edge in range(3):
+                edge_a = v1.BtoA
+                edge_b = v2.BtoA
+                if edge == 1:
+                    edge_a = v2.BtoA
+                    edge_b = v3.BtoA
+                elif edge == 2:
+                    edge_a = v3.BtoA
+                    edge_b = v1.BtoA
+                face = wp.cross(edge_a - v0.BtoA, edge_b - v0.BtoA)
+                face_length = wp.length(face)
+                if face_length > 0.0:
+                    radius = wp.min(radius, wp.abs(wp.dot(face, v0.BtoA)) / face_length)
+        return -normal * (0.5 * radius)
+
+    @wp.func
     def solve_mpr_portal(
         geom_a: Any,
         geom_b: Any,
@@ -225,6 +247,7 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
         seed: wp.vec3,
         MAX_ITER: int = 30,
         COLLIDE_EPSILON: float = 1e-5,
+        retry_depth: float = 1.0e30,
     ) -> tuple[bool, wp.vec3, wp.vec3, wp.vec3, float, wp.vec3, bool]:
         """
         Core MPR algorithm implementation.
@@ -425,29 +448,19 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
                         # The normal projection can lie outside an MPR portal.
                         # Restart along its normal from inside the enclosing tetrahedron.
                         # Reuse the first tetrahedron's inscribed ball on later retries.
-                        radius = 2.0 * wp.length(seed)
-                        if radius == 0.0:
-                            radius = wp.abs(wp.dot(normal, v1.BtoA))
-                            for edge in range(3):
-                                edge_a = v1.BtoA
-                                edge_b = v2.BtoA
-                                if edge == 1:
-                                    edge_a = v2.BtoA
-                                    edge_b = v3.BtoA
-                                elif edge == 2:
-                                    edge_a = v3.BtoA
-                                    edge_b = v1.BtoA
-                                face = wp.cross(edge_a - v0.BtoA, edge_b - v0.BtoA)
-                                face_length = wp.length(face)
-                                if face_length > 0.0:
-                                    radius = wp.min(radius, wp.abs(wp.dot(face, v0.BtoA)) / face_length)
-                        next_seed = -normal * (0.5 * radius)
+                        next_seed = portal_retry_seed(v0, v1, v2, v3, normal, seed)
                         return hit, point_a, point_b, normal, penetration, next_seed, False
 
                     # Positive barycentric weights alone do not certify a
                     # boundary face when refinement runs out of iterations.
                     if delta * delta > COLLIDE_EPSILON * COLLIDE_EPSILON * normal_sq:
                         return hit, point_a, point_b, normal, penetration, next_seed, False
+
+                    if penetration > retry_depth + COLLIDE_EPSILON:
+                        # A valid portal can still land on a deeper face than
+                        # the caller's bound. Reuse its interior ball to retry
+                        # along the bounded direction without losing witnesses.
+                        next_seed = portal_retry_seed(v0, v1, v2, v3, normal, seed)
 
                 return hit, point_a, point_b, normal, penetration, next_seed, valid
 
@@ -486,20 +499,22 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
         if wp.length_sq(direction) == 0.0:
             direction = wp.vec3(1.0, 0.0, 0.0)
 
-        # The support plane along the ray is the exact depth in that direction,
-        # so it is the fallback if every distance query fails. A support
-        # vertex's distance is not a depth: it can reach a far corner of the
-        # Minkowski difference. Never return extrapolated portal witnesses.
+        # The support plane bounds the depth along the initial ray. A
+        # support vertex's length is not a depth: it can reach a far corner
+        # of the Minkowski difference. Recover a contact pair within this
+        # bound rather than returning the unrelated support vertices.
         support = mpr_support(geom_a, geom_b, direction, orientation_b, position_b, 0.0, data_provider)
         point_a = vert_a(support)
         point_b = support.B
-        # Float32 resolution follows coordinate magnitude; scale absolute tolerances.
-        tolerance = wp.max(1.0, wp.max(wp.length(point_a), wp.length(point_b)))
+        # GJK uses corner supports, even when MPR selected a face center.
+        # Its roundoff follows those corner coordinates, not the much
+        # smaller centered witnesses (e.g. a tiny triangle on a wide box).
+        corner = _minkowski_support(geom_a, geom_b, direction, orientation_b, position_b, 0.0, data_provider)
+        tolerance = wp.max(1.0, wp.max(wp.length(vert_a(corner)), wp.length(corner.B)))
         normal = direction
         penetration = wp.dot(support.BtoA, direction) + extend
         resolved = bool(False)
-        # Manifolds anchor each body's contact plane at its witness, so keep
-        # the genuine support points; they span the depth along the normal.
+        # Provisional inflated points are replaced by resolved witnesses.
         point_a += normal * (0.5 * extend)
         point_b -= normal * (0.5 * extend)
 
@@ -544,6 +559,28 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
                     geom_a, geom_b, candidate, orientation_b, position_b, extend, data_provider
                 )
                 support_gap = wp.dot(certificate.BtoA, candidate) - depth
+                # Subtracting large support coordinates can leave a small
+                # tangential error in GJK's witnesses. At shallow penetration,
+                # normalizing that error tilts the normal enough to select a
+                # distant hull corner. The ray direction remains usable if
+                # its support plane certifies the depth and the witnesses
+                # agree tangentially within float32 roundoff.
+                ray_depth = wp.dot(physical_delta, direction)
+                tangent_error = physical_delta - ray_depth * direction
+                ray_certificate = certificate_support(
+                    geom_a, geom_b, direction, orientation_b, position_b, 0.0, data_provider
+                )
+                ray_gap = wp.dot(ray_certificate.BtoA, direction) - ray_depth
+                roundoff = 2.0e-7 * tolerance
+                if wp.length(tangent_error) <= roundoff and wp.abs(ray_gap) <= COLLIDE_EPSILON + roundoff:
+                    candidate = direction
+                    physical_depth = ray_depth
+                    physical_length = wp.abs(ray_depth)
+                    depth = ray_depth + extend
+                    support_gap = ray_gap
+                    center = 0.5 * (pa + pb)
+                    pa = center + 0.5 * ray_depth * direction
+                    pb = center - 0.5 * ray_depth * direction
                 # For physical witnesses inside the hulls, this sum of
                 # support deficits bounds each witness's surface error. The
                 # budget is the portal's contact tolerance scaled by
@@ -578,12 +615,41 @@ def create_solve_mpr(support_func: Any, _support_funcs: Any = None):
                 break
             direction = gradient
         if not resolved:
-            # Support witnesses alone do not establish overlap. Check the
-            # physical shapes before accepting a conservative positive depth.
-            physical_hit, _pa, _pb, _normal, _depth, _seed, _valid = solve_mpr_portal(
-                geom_a, geom_b, orientation_b, position_b, 0.0, data_provider, wp.vec3(0.0)
+            # An overlap test cannot turn unrelated support vertices into
+            # contact witnesses. Accept a physical portal only when it also
+            # supplies a valid pair; never emit the fallback support corners.
+            physical_hit, pa, pb, physical_normal, physical_depth, physical_seed, physical_valid = solve_mpr_portal(
+                geom_a,
+                geom_b,
+                orientation_b,
+                position_b,
+                0.0,
+                data_provider,
+                wp.vec3(0.0),
+                retry_depth=penetration - extend,
             )
-            resolved = physical_hit
+            for _physical_retry in range(8):
+                within_bound = physical_depth <= penetration - extend + COLLIDE_EPSILON * tolerance
+                if not physical_hit or (physical_valid and within_bound) or wp.length_sq(physical_seed) == 0.0:
+                    break
+                if physical_valid:
+                    physical_seed = -normal * wp.length(physical_seed)
+                physical_hit, pa, pb, physical_normal, physical_depth, physical_seed, physical_valid = solve_mpr_portal(
+                    geom_a,
+                    geom_b,
+                    orientation_b,
+                    position_b,
+                    0.0,
+                    data_provider,
+                    physical_seed,
+                    retry_depth=penetration - extend,
+                )
+            if physical_hit and physical_valid and physical_depth <= penetration - extend + COLLIDE_EPSILON * tolerance:
+                normal = physical_normal
+                point_a = pa + normal * (0.5 * extend)
+                point_b = pb - normal * (0.5 * extend)
+                penetration = physical_depth + extend
+                resolved = True
         return point_a, point_b, normal, penetration, resolved
 
     @wp.func

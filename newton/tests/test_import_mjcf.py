@@ -10,6 +10,7 @@ import tempfile
 import unittest
 import warnings
 import zlib
+from pathlib import Path
 from unittest import mock
 
 import numpy as np
@@ -394,14 +395,8 @@ class TestImportMjcfBasic(unittest.TestCase):
             builder.add_mjcf(mjcf_path, parse_meshes=True)
             model = builder.finalize()
 
-            # Check that meshes have correct maxhullvert values
-            # Note: This assumes meshes are added in order they appear in MJCF
-            meshes = [model.shape_source[i] for i in range(3) if hasattr(model.shape_source[i], "maxhullvert")]
-
-            if len(meshes) >= 3:
-                self.assertEqual(meshes[0].maxhullvert, 32)
-                self.assertEqual(meshes[1].maxhullvert, 128)
-                self.assertEqual(meshes[2].maxhullvert, 64)  # Default value
+            self.assertEqual(len(model.shape_source), 3)
+            self.assertEqual([mesh.maxhullvert for mesh in model.shape_source], [32, 128, 64])
 
     def test_mesh_geom_ignores_geom_size_length(self):
         obj = "\n".join(
@@ -475,21 +470,29 @@ class TestImportMjcfBasic(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Free joints must have the world body as parent"):
             parse_mjcf(builder, mjcf)
 
-    def test_inertial_requires_diaginertia_or_fullinertia(self):
-        mjcf = """
+    def test_inertial_omitted_tensor_defaults_to_zero(self):
+        """Keep omitted inertia zero despite attached geometry."""
+        for mass in (0.0, 1.0):
+            with self.subTest(mass=mass):
+                mjcf = f"""
 <mujoco>
     <worldbody>
-        <body name="body">
-            <inertial pos="0 0 0" mass="1.0"/>
-            <geom type="sphere" size="0.1"/>
+        <body name="attachment">
+            <inertial pos="0.1 0.2 0.3" mass="{mass}"/>
+            <geom type="sphere" size="0.1" mass="3"/>
+            <frame pos="0.5 0 0">
+                <geom type="box" size="0.1 0.1 0.1" mass="4"/>
+            </frame>
         </body>
     </worldbody>
 </mujoco>
 """
-        builder = newton.ModelBuilder()
-
-        with self.assertRaisesRegex(ValueError, "diaginertia or fullinertia"):
-            parse_mjcf(builder, mjcf)
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf)
+                self.assertEqual(builder.body_mass[0], mass)
+                np.testing.assert_allclose(builder.body_com[0], [0.1, 0.2, 0.3], atol=1e-7)
+                np.testing.assert_array_equal(builder.body_inertia[0], 0.0)
+                np.testing.assert_array_equal(builder.body_inv_inertia[0], 0.0)
 
     def test_inertial_diaginertia_requires_three_values(self):
         for diaginertia in ("1 2", "1 2 3 4"):
@@ -3259,12 +3262,12 @@ f 4 5 8
     <body name="root" pos="0 0 0">
       <geom type="box" size="0.1 0.1 0.1"/>
       <body name="link1" pos="0 -0.5 0">
-        <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <joint name="joint1" type="slide" axis="1 0 0" range="-50.5 50.5" limited="true"/>
         <geom type="cylinder" size="0.05 0.025"/>
         <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
       </body>
       <body name="link2" pos="0 -0.7 0">
-        <joint name="joint2" type="slide" axis="1 0 0" range="-50.5 50.5"/>
+        <joint name="joint2" type="slide" axis="1 0 0" range="-50.5 50.5" limited="true"/>
         <geom type="cylinder" size="0.05 0.025"/>
         <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
       </body>
@@ -3297,6 +3300,10 @@ f 4 5 8
         builder.add_world(individual_builder)
         model = builder.finalize()
         solver = SolverMuJoCo(model, iterations=10, ls_iterations=10)
+
+        mujoco = SolverMuJoCo.import_mujoco()[0]
+        native = mujoco.MjModel.from_xml_string(mjcf)
+        np.testing.assert_array_equal(solver.mj_model.jnt_limited, native.jnt_limited)
 
         # Tendon with explicit limited="true" -> limited=1
         self.assertEqual(
@@ -8061,6 +8068,26 @@ f 4 1 5 8
 class TestMjcfIncludeNested(unittest.TestCase):
     """Tests for nested includes and cycle detection."""
 
+    def test_repeated_includes(self):
+        """Expand shared geometry independently in sibling and nested includes."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            (root / "geom.xml").write_text('<mujoco><geom type="sphere" size="0.1"/></mujoco>')
+            for name in ("left.xml", "right.xml"):
+                (root / name).write_text('<mujoco><include file="geom.xml"/></mujoco>')
+            for left, right in (("geom.xml", "geom.xml"), ("left.xml", "right.xml")):
+                with self.subTest(left=left, right=right):
+                    source = root / "main.xml"
+                    source.write_text(
+                        f'<mujoco><worldbody><body name="left"><include file="{left}"/></body>'
+                        f'<body name="right"><include file="{right}"/></body></worldbody></mujoco>'
+                    )
+                    builder = newton.ModelBuilder()
+                    builder.add_mjcf(str(source))
+                    self.assertEqual(builder.body_count, 2)
+                    self.assertEqual(builder.shape_count, 2)
+                    self.assertEqual(len(set(builder.shape_body)), 2)
+
     def test_nested_includes(self):
         """Test that nested includes work correctly."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -8099,6 +8126,19 @@ class TestMjcfIncludeNested(unittest.TestCase):
             builder = newton.ModelBuilder()
             builder.add_mjcf(main_path)
             self.assertEqual(builder.body_count, 1)
+
+    def test_symlink_include_cycle(self):
+        """Detect cycles even when each include adds another symlink component."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            try:
+                (root / "alias").symlink_to(root, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"Cannot create symlinks: {exc}")
+            source = root / "main.xml"
+            source.write_text('<mujoco><include file="alias/main.xml"/></mujoco>')
+            with self.assertRaisesRegex(ValueError, "Circular include"):
+                newton.ModelBuilder().add_mjcf(str(source))
 
     def test_circular_include_detection(self):
         """Test that circular includes are detected and raise an error."""
@@ -8647,7 +8687,7 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
                      ctrllimited="true" forcelimited="true" ctrlrange="-2 2"
                      forcerange="-100 100" gear="2 0 0 0 0 0"
                      dynprm="0.5 0 0 0 0 0 0 0 0 0"
-                     actlimited="true" actrange="-1 1" actdim="2" actearly="true"/>
+                     actlimited="true" actrange="-1 1" actdim="1" actearly="true"/>
             <position kp="50"/>
             <default class="special">
                 <geom condim="6" solmix="5.0"
@@ -8798,7 +8838,7 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
         self.assertAlmostEqual(float(m.actuator_dynprm.numpy()[0, 0]), 0.5, places=4)
         self.assertEqual(m.actuator_actlimited.numpy()[0], 1)
         np.testing.assert_allclose(m.actuator_actrange.numpy()[0], [-1.0, 1.0], atol=1e-4)
-        self.assertEqual(m.actuator_actdim.numpy()[0], 2)
+        self.assertEqual(m.actuator_actdim.numpy()[0], 1)
         self.assertEqual(m.actuator_actearly.numpy()[0], 1)
 
         np.testing.assert_allclose(m.actuator_gainprm.numpy()[1, 0], 200.0, atol=1.0)
@@ -8812,6 +8852,9 @@ class TestMjcfDefaultCustomAttributes(unittest.TestCase):
 
         np.testing.assert_allclose(m.actuator_gainprm.numpy()[3, 0], 300.0, atol=1.0)
         np.testing.assert_allclose(m.actuator_biasprm.numpy()[3, :3], [0.0, -300.0, -30.0], atol=1.0)
+
+        solver = SolverMuJoCo(self.model)
+        self.assertEqual(solver.mj_model.actuator_actnum[0], 1)
 
     def test_position_actuator_defaults(self):
         """ACTUATOR (position): kp inherited from <position> defaults."""

@@ -251,7 +251,60 @@ def test_eval_mimic_selection(test, device):
 
 
 class TestSolverMimic(unittest.TestCase):
-    pass
+    def test_featherstone_mimic_requires_shared_articulation(self):
+        """Reject unsafe mimic ownership before Featherstone allocates articulation matrices."""
+        builder = newton.ModelBuilder()
+        bodies = [builder.add_link() for _ in range(4)]
+        joints = [builder.add_joint_revolute(-1, body) for body in bodies]
+        builder.add_articulation(joints[:2])
+        builder.set_joint_mimic(joints[1], joints[0])
+        reference, follower = joints[2:]
+        builder.set_joint_mimic(follower, reference)
+
+        def assert_rejected(follower, reference, **kwargs):
+            """Finalize a model and check the constructor's ownership diagnostic."""
+            model = builder.finalize(device="cpu", **kwargs)
+            with self.assertRaisesRegex(ValueError, "same articulation") as caught:
+                newton.solvers.SolverFeatherstone(model)
+            self.assertIn(
+                f"Follower joint {follower} belongs to articulation {builder.joint_articulation[follower]}",
+                str(caught.exception),
+            )
+            self.assertIn(
+                f"reference joint {reference} belongs to articulation {builder.joint_articulation[reference]}",
+                str(caught.exception),
+            )
+
+        with self.subTest(membership="neither"):
+            assert_rejected(follower, reference)
+        builder.add_articulation([reference])
+        with self.subTest(membership="reference"):
+            assert_rejected(follower, reference)
+        builder.set_joint_mimic(follower, None)
+        builder.set_joint_mimic(reference, follower)
+        with self.subTest(membership="follower"):
+            assert_rejected(reference, follower)
+        builder.set_joint_mimic(reference, None)
+        builder.set_joint_mimic(follower, reference)
+        builder.add_articulation([follower])
+        for kwargs in ({"skip_validation_joints": True}, {"skip_all_validations": True}):
+            with self.subTest(**kwargs):
+                assert_rejected(follower, reference, **kwargs)
+
+        builder.set_joint_mimic(follower, None)
+        fixed_reference = builder.add_joint_fixed(-1, builder.add_link())
+        fixed_follower = builder.add_joint_fixed(-1, builder.add_link())
+        # Once any supported mimic activates reduction, its kernels visit all
+        # metadata, including unsupported pairs supplied directly by callers.
+        builder.joint_mimic_joint[fixed_follower] = fixed_reference
+        with self.subTest(membership="supported_and_unsupported"):
+            with self.assertWarnsRegex(UserWarning, "unsupported follower joint indices"):
+                assert_rejected(fixed_follower, fixed_reference)
+        builder.set_joint_mimic(joints[1], None)
+        with self.subTest(membership="unsupported_only"):
+            model = builder.finalize(device="cpu")
+            with self.assertWarnsRegex(UserWarning, "unsupported follower joint indices"):
+                newton.solvers.SolverFeatherstone(model)
 
 
 devices = get_test_devices()
