@@ -483,7 +483,11 @@ def eval_body_joints(
             t_total += swing_err * joint_attach_ke + (w_err - qd * axis_p) * joint_attach_kd * angular_damping_scale
 
         if ang_axis_count == 2:
-            q_pc = wp.quat_inverse(q_p) * q_c
+            # rotate into the joint frame so the XYZ decomposition matches the joint axes
+            q_off = wp.quat_from_matrix(
+                wp.matrix_from_cols(joint_axis[i_0], joint_axis[i_1], wp.cross(joint_axis[i_0], joint_axis[i_1]))
+            )
+            q_pc = wp.quat_inverse(q_off) * wp.quat_inverse(q_p) * q_c * q_off
 
             # decompose to a compound rotation each axis
             angles = quat_decompose(q_pc)
