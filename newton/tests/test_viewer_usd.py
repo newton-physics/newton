@@ -640,50 +640,33 @@ class TestViewerUSD(unittest.TestCase):
         np.testing.assert_allclose(mesh.GetNormalsAttr().Get(1), [[0, 0, 1]] * 3)
 
     def test_log_geo_exports_gprims(self):
-        """Write analytic shapes as Gprims matching Newton's shape conventions."""
+        """Write analytic shapes as Gprims and keep meshes for the rest."""
         viewer = self._make_viewer()
         viewer.begin_frame(0.0)
         viewer.log_geo("/sphere", newton.GeoType.SPHERE, (0.5,), 0.0, True)
-        viewer.log_geo("/capsule", newton.GeoType.CAPSULE, (0.2, 0.3), 0.0, True)
-        viewer.log_geo("/cylinder", newton.GeoType.CYLINDER, (0.2, 0.3), 0.0, True)
-        viewer.log_geo("/cone", newton.GeoType.CONE, (0.2, 0.3), 0.0, True)
+        for geo_type in (newton.GeoType.CAPSULE, newton.GeoType.CYLINDER, newton.GeoType.CONE):
+            viewer.log_geo(f"/{geo_type.name.lower()}", geo_type, (0.2, 0.3), 0.0, True)
         viewer.log_geo("/box", newton.GeoType.BOX, (0.1, 0.2, 0.3), 0.0, True)
         viewer.log_geo("/ellipsoid", newton.GeoType.ELLIPSOID, (0.1, 0.2, 0.3), 0.0, True)
+        viewer.log_geo("/barrel", newton.GeoType.CYLINDER, (0.2, 0.3, 0.5), 0.0, True)
+        viewer.log_geo("/plane", newton.GeoType.PLANE, (1.0, 1.0), 0.0, True)
 
         stage = viewer.stage
         self.assertAlmostEqual(UsdGeom.Sphere.Get(stage, "/root/sphere").GetRadiusAttr().Get(), 0.5)
         for name, schema in (("capsule", UsdGeom.Capsule), ("cylinder", UsdGeom.Cylinder), ("cone", UsdGeom.Cone)):
             gprim = schema.Get(stage, f"/root/{name}")
-            self.assertTrue(gprim, name)
             self.assertAlmostEqual(gprim.GetRadiusAttr().Get(), 0.2, places=6)
             self.assertAlmostEqual(gprim.GetHeightAttr().Get(), 0.6, places=6)
             self.assertEqual(gprim.GetAxisAttr().Get(), UsdGeom.Tokens.z)
-
-        cube = UsdGeom.Cube.Get(stage, "/root/box/geom")
-        self.assertAlmostEqual(cube.GetSizeAttr().Get(), 2.0)
-        np.testing.assert_allclose(
-            cube.ComputeLocalBound(0, UsdGeom.Tokens.default_).ComputeAlignedRange().GetMax(), [0.1, 0.2, 0.3]
-        )
-        ellipsoid = UsdGeom.Sphere.Get(stage, "/root/ellipsoid/geom")
-        np.testing.assert_allclose(
-            ellipsoid.ComputeLocalBound(0, UsdGeom.Tokens.default_).ComputeAlignedRange().GetMax(),
-            [0.1, 0.2, 0.3],
-            rtol=1e-6,
-        )
-        self.assertFalse(any(prim.IsA(UsdGeom.Mesh) for prim in stage.Traverse()))
-
-    def test_log_geo_keeps_meshes_without_gprim_equivalent(self):
-        """Tessellate shapes that no Gprim can represent."""
-        viewer = self._make_viewer()
-        viewer.begin_frame(0.0)
-        viewer.log_geo("/barrel", newton.GeoType.CYLINDER, (0.2, 0.3, 0.5), 0.0, True)
-        viewer.log_geo("/plane", newton.GeoType.PLANE, (1.0, 1.0), 0.0, True)
-
-        self.assertTrue(viewer.stage.GetPrimAtPath("/root/barrel").IsA(UsdGeom.Mesh))
-        self.assertTrue(viewer.stage.GetPrimAtPath("/root/plane").IsA(UsdGeom.Mesh))
+        for name, schema in (("box", UsdGeom.Cube), ("ellipsoid", UsdGeom.Sphere)):
+            gprim = schema.Get(stage, f"/root/{name}/geom")
+            bound = gprim.ComputeLocalBound(0, UsdGeom.Tokens.default_).ComputeAlignedRange()
+            np.testing.assert_allclose(bound.GetMax(), [0.1, 0.2, 0.3], rtol=1e-6)
+        self.assertTrue(stage.GetPrimAtPath("/root/barrel").IsA(UsdGeom.Mesh))
+        self.assertTrue(stage.GetPrimAtPath("/root/plane").IsA(UsdGeom.Mesh))
 
     def test_log_shapes_instances_gprim_prototypes(self):
-        """Render Gprim instances while their prototypes stay hidden."""
+        """Render Gprim instances with their color while prototypes stay hidden."""
         viewer = self._make_viewer()
         xforms = wp.array([wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_identity())], dtype=wp.transform)
         colors = wp.array([wp.vec3(0.9, 0.1, 0.1)], dtype=wp.vec3)
@@ -693,20 +676,16 @@ class TestViewerUSD(unittest.TestCase):
         viewer.log_shapes("/boxes", newton.GeoType.BOX, (0.1, 0.2, 0.3), xforms, colors)
 
         sphere = viewer.stage.GetPrimAtPath("/root/spheres/instance_0")
-        self.assertTrue(sphere.IsA(UsdGeom.Sphere))
-        self.assertEqual(UsdGeom.Imageable(sphere).ComputeVisibility(0), UsdGeom.Tokens.inherited)
-        color = UsdGeom.PrimvarsAPI(sphere).FindPrimvarWithInheritance("displayColor").Get(0)
-        np.testing.assert_allclose(color, [[0.9, 0.1, 0.1]], rtol=1e-6)
-
         cube = viewer.stage.GetPrimAtPath("/root/boxes/instance_0/geom")
+        self.assertTrue(sphere.IsA(UsdGeom.Sphere))
         self.assertTrue(cube.IsA(UsdGeom.Cube))
-        self.assertEqual(UsdGeom.Imageable(cube).ComputeVisibility(0), UsdGeom.Tokens.inherited)
-        color = UsdGeom.PrimvarsAPI(cube).FindPrimvarWithInheritance("displayColor").Get(0)
-        np.testing.assert_allclose(color, [[0.9, 0.1, 0.1]], rtol=1e-6)
-        world_bound = UsdGeom.Imageable(cube).ComputeWorldBound(0, UsdGeom.Tokens.default_).ComputeAlignedRange()
-        np.testing.assert_allclose(world_bound.GetMin(), [0.9, 1.8, 2.7], rtol=1e-6)
-        np.testing.assert_allclose(world_bound.GetMax(), [1.1, 2.2, 3.3], rtol=1e-6)
-
+        for prim in (sphere, cube):
+            self.assertEqual(UsdGeom.Imageable(prim).ComputeVisibility(0), UsdGeom.Tokens.inherited)
+            color = UsdGeom.PrimvarsAPI(prim).FindPrimvarWithInheritance("displayColor").Get(0)
+            np.testing.assert_allclose(color, [[0.9, 0.1, 0.1]], rtol=1e-6)
+        bound = UsdGeom.Imageable(cube).ComputeWorldBound(0, UsdGeom.Tokens.default_).ComputeAlignedRange()
+        np.testing.assert_allclose(bound.GetMin(), [0.9, 1.8, 2.7], rtol=1e-6)
+        np.testing.assert_allclose(bound.GetMax(), [1.1, 2.2, 3.3], rtol=1e-6)
         for prototype in viewer.stage.GetPrimAtPath("/root/geometry").GetChildren():
             self.assertEqual(UsdGeom.Imageable(prototype).ComputeVisibility(0), UsdGeom.Tokens.invisible)
 

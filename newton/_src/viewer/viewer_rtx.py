@@ -163,7 +163,7 @@ class ViewerRTX(ViewerUSD):
     and custom mesh instances can also be added after rendering starts.
     """
 
-    # Runtime updates go through mesh prototypes; OVRTX Gprim support is untested.
+    # Runtime updates assume mesh prototypes.
     _export_gprims = False
     _PHASE_BUILD = 0
     _PHASE_RENDER = 1

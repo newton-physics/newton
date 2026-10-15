@@ -25,16 +25,6 @@ except ImportError:
 from .utils import promote_to_clamped_float_array
 from .viewer import _DEFAULT_LAYER_ID, ViewerBase
 
-if UsdGeom is not None:
-    _GPRIM_SCHEMAS = {
-        newton.GeoType.SPHERE: UsdGeom.Sphere,
-        newton.GeoType.CAPSULE: UsdGeom.Capsule,
-        newton.GeoType.CYLINDER: UsdGeom.Cylinder,
-        newton.GeoType.CONE: UsdGeom.Cone,
-        newton.GeoType.BOX: UsdGeom.Cube,
-        newton.GeoType.ELLIPSOID: UsdGeom.Sphere,
-    }
-
 
 # transforms a cylinder such that it connects the two points pos0, pos1
 def _compute_segment_xform(pos0, pos1):
@@ -436,13 +426,10 @@ class ViewerUSD(ViewerBase):
         hidden: bool = False,
     ):
         """
-        Create a geometry prototype, using a native USD Gprim where one exists.
+        Log a geometry prototype, as a native USD Gprim where one exists.
 
-        Spheres, capsules, cylinders, cones, boxes, and ellipsoids are written as
-        :class:`~pxr.UsdGeom.Sphere`, :class:`~pxr.UsdGeom.Capsule`,
-        :class:`~pxr.UsdGeom.Cylinder`, :class:`~pxr.UsdGeom.Cone`, and
-        :class:`~pxr.UsdGeom.Cube` prims. Other geometry types are tessellated
-        into meshes via :meth:`log_mesh`.
+        Spheres, capsules, cylinders, cones, boxes, and ellipsoids become
+        ``UsdGeom`` Gprims; other types are tessellated via :meth:`log_mesh`.
 
         Args:
             name: Unique path/name used to register the geometry.
@@ -450,46 +437,45 @@ class ViewerUSD(ViewerBase):
             geo_scale: Geometry scale tuple, interpreted per geometry type.
             geo_thickness: Shell thickness for non-solid mesh generation.
             geo_is_solid: Whether to render mesh geometry as a solid.
-            geo_src: Source :class:`newton.Mesh` or
-                :class:`newton.Heightfield` data when required
-                by ``geo_type``.
-            hidden: Whether the created geometry should be hidden.
+            geo_src: Source mesh or heightfield for mesh-based ``geo_type`` values.
+            hidden: Whether the geometry should be hidden.
         """
         if self._export_gprims and self._log_gprim(self._qualify(name), int(geo_type), geo_scale, hidden):
             return
         super().log_geo(name, geo_type, geo_scale, geo_thickness, geo_is_solid, geo_src=geo_src, hidden=hidden)
 
     def _log_gprim(self, name: str, geo_type: int, geo_scale: tuple[float, ...], hidden: bool) -> bool:
-        """Define a Gprim prototype for ``geo_type``; return False if it needs a mesh."""
-        geo_scale = [float(v) for v in geo_scale]
-        has_barrel = geo_type == newton.GeoType.CYLINDER and len(geo_scale) > 2 and geo_scale[2] != 0.0
-        if geo_type not in _GPRIM_SCHEMAS or has_barrel:
+        """Define a Gprim prototype; return False if ``geo_type`` needs a mesh."""
+        schema = {
+            newton.GeoType.SPHERE: UsdGeom.Sphere,
+            newton.GeoType.CAPSULE: UsdGeom.Capsule,
+            newton.GeoType.CYLINDER: UsdGeom.Cylinder,
+            newton.GeoType.CONE: UsdGeom.Cone,
+            newton.GeoType.BOX: UsdGeom.Cube,
+            newton.GeoType.ELLIPSOID: UsdGeom.Sphere,
+        }.get(geo_type)
+        scale = [float(v) for v in geo_scale]
+        if schema is None or (geo_type == newton.GeoType.CYLINDER and len(scale) > 2 and scale[2] != 0.0):
             return False
 
         path = self._get_path(name)
         self._ensure_scopes_for_path(self.stage, path)
         if geo_type in (newton.GeoType.BOX, newton.GeoType.ELLIPSOID):
-            # Instances override the prototype root's xformOps, so the
-            # non-uniform scale lives on a child Gprim.
+            # Instances override the prototype's xformOps, so scale a child
+            # Gprim whose schema fallbacks give it unit half-extents.
             root = UsdGeom.Xform.Define(self.stage, path)
-            gprim = _GPRIM_SCHEMAS[geo_type].Define(self.stage, f"{path}/geom")
-            if geo_type == newton.GeoType.BOX:
-                gprim.GetSizeAttr().Set(2.0)
-            else:
-                gprim.GetRadiusAttr().Set(1.0)
-            UsdGeom.XformCommonAPI(gprim).SetScale(Gf.Vec3f(*(geo_scale + [geo_scale[0]] * 3)[:3]))
+            gprim = schema.Define(self.stage, f"{path}/geom")
+            UsdGeom.XformCommonAPI(gprim).SetScale(Gf.Vec3f(*(scale + scale[:1] * 2)[:3]))
         else:
-            root = gprim = _GPRIM_SCHEMAS[geo_type].Define(self.stage, path)
-            gprim.GetRadiusAttr().Set(geo_scale[0])
+            # Schema fallback axis is Z, matching Newton's shape convention.
+            root = gprim = schema.Define(self.stage, path)
+            gprim.GetRadiusAttr().Set(scale[0])
             if geo_type != newton.GeoType.SPHERE:
-                gprim.GetHeightAttr().Set(2.0 * geo_scale[1])
-                gprim.GetAxisAttr().Set(UsdGeom.Tokens.z)
+                gprim.GetHeightAttr().Set(2.0 * scale[1])
 
         gprim.GetExtentAttr().Set(UsdGeom.Boundable.ComputeExtentFromPlugins(gprim, Usd.TimeCode.Default()))
         root.GetVisibilityAttr().Set("invisible" if hidden else "inherited", self._frame_index)
-
         self._meshes[name] = root
-        self._mesh_appearance.pop(name, None)
         return True
 
     def _resolve_texture_path(self, mesh_name: str, texture) -> str | None:
