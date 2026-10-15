@@ -6125,6 +6125,10 @@ def crba_fill_par_dof(
 
         for k in range(count):
             row_idx = dof_offset_local + k
+            # Both column threads of a multi-DOF joint reach each same-joint pair with
+            # differently rounded values; the row <= col thread alone stores it.
+            if curr == pivot_joint and row_idx > col_idx:
+                continue
 
             S_row = joint_S_s[q_start + k]
             val = wp.dot(S_row, F)

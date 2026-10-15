@@ -483,6 +483,8 @@ def torque_sweep_source(dofs):
                         float t2 = s_lam_dense[n + 2] * scale;
                         float delta1 = t1 - s_lam_dense[n + 1];
                         float delta2 = t2 - s_lam_dense[n + 2];
+                        // Every lane has read the tangent pair before lane 0 rescales it.
+                        __syncwarp();
                         if (delta1 != 0.0f || delta2 != 0.0f) {{
                             iteration_changed = 1;
                             if (lane == 0) {{
@@ -514,6 +516,8 @@ def torque_sweep_source(dofs):
                 float trial = diagonal > 0.0f ? old - omega * residual / diagonal : 0.0f;
                 float next = fminf(fmaxf(trial, -bound), bound);
                 float delta = next - old;
+                // Every lane has read the torsion impulse before lane 0 overwrites it.
+                __syncwarp();
                 if (delta != 0.0f) {{
                     iteration_changed = 1;
                     if (lane == 0) s_lam_dense[spin] = next;
