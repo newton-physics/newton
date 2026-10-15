@@ -667,8 +667,8 @@ def compute_nodal_diagonalization(
     """Orthogonalize supported nodal mass blocks without changing reference P1d/Q1d cells.
 
     Outputs the test transform R, its dual coefficient transform on the
-    supported subspace, and diagonal mass. Singular blocks use an orthogonal
-    completion of the nullspace to select nodal directions with equal mass.
+    supported subspace, and diagonal mass. Singular blocks orthogonalize
+    projected nodal axes to select supported directions with equal mass.
     """
     row = wp.tid()
     diag_index = wps.bsr_block_index(row, row, offsets, columns)
@@ -694,24 +694,35 @@ def compute_nodal_diagonalization(
         active_count = int(scales.length)
         test_scales = type(scales)(0.0)
         coefficient_scales = type(scales)(0.0)
-        nullspace = values.dtype(0.0)
-        null_count = int(0)
         for k in range(scales.length):
             if scales[k] > _EIGENVALUE_FLOOR:
                 test_scales[k] = wp.sqrt(reference_mass / scales[k])
                 coefficient_scales[k] = 1.0 / test_scales[k]
             else:
-                nullspace[:, null_count] = modes[k]
-                null_count += 1
-        active_count -= null_count
+                active_count -= 1
         completion = values.dtype(0.0)
         if not full_rank and active_count > 0:
-            # QR completes the nullspace with directions anchored to the nodal axes.
-            completion, _triangular = fem.linalg.householder_qr_decomposition(nullspace)
+            # The projector is independent of arbitrary rotations of null eigenvectors.
+            projector = values.dtype(0.0)
+            for k in range(scales.length):
+                if scales[k] > _EIGENVALUE_FLOOR:
+                    projector += wp.outer(modes[k], modes[k])
+            for i in range(active_count):
+                diagonal = wp.get_diag(projector)
+                pivot = int(wp.argmax(diagonal))
+                # Resolve roundoff-level pivot ties in nodal order.
+                pivot_tolerance = wp.static(32.0 * float(np.finfo(np.float32).eps)) * float(scales.length)
+                for j in range(pivot):
+                    if diagonal[j] >= diagonal[pivot] - pivot_tolerance:
+                        pivot = j
+                        break
+                direction = wp.normalize(projector[:, pivot])
+                completion[:, i] = direction
+                projector -= wp.outer(direction, direction)
         for i in range(active_count):
             coordinates = modes[:, i]
             if not full_rank:
-                coordinates = modes * completion[:, null_count + i]
+                coordinates = modes * completion[:, i]
             transform[i] = wp.cw_mul(coordinates, test_scales) * modes
             coefficient_transform[i] = wp.cw_mul(coordinates, coefficient_scales) * modes
 
