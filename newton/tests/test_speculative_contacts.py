@@ -1644,27 +1644,35 @@ def test_predictive_reducer_reclamation_storage_is_opt_in(test, device):
     """Avoid allocating predictive reservation storage in the default reducer."""
     reducer = GlobalContactReducer(capacity=32, device=device)
     test.assertEqual(reducer.reclaimed_contact_bits.shape[0], 0)
-    test.assertEqual(reducer.reclaimed_contact_cursor.shape[0], 0)
+    test.assertEqual(reducer.reclaimed_contact_count.shape[0], 0)
 
 
 def test_predictive_reducer_reclaims_ids_without_duplicates(test, device):
     """Allocate each concurrently reclaimed contact ID exactly once."""
-    capacity = 1024
+    # Enough threads to outlast one resident wave, so pops race later reclaims.
+    capacity = 1 << 17 if wp.get_device(device).is_cuda else 1024
+    trials = 4 if wp.get_device(device).is_cuda else 1
     reducer = _make_predictive_reducer(capacity, device, deterministic=False)
-    reducer.contact_count.fill_(capacity)
-    allocated_ids = wp.full(capacity, -1, dtype=wp.int32, device=device)
+    allocated_ids = wp.empty(capacity, dtype=wp.int32, device=device)
 
-    wp.launch(
-        _reclaim_and_allocate_contact_ids,
-        dim=capacity,
-        inputs=[reducer.get_data_struct(), allocated_ids],
-        device=device,
-    )
+    for trial in range(trials):
+        with test.subTest(trial=trial):
+            reducer.clear()
+            reducer.contact_count.fill_(capacity)
+            allocated_ids.fill_(-1)
+            wp.launch(
+                _reclaim_and_allocate_contact_ids,
+                dim=capacity,
+                inputs=[reducer.get_data_struct(), allocated_ids],
+                device=device,
+            )
 
-    ids = np.sort(allocated_ids.numpy())
-    np.testing.assert_array_equal(ids, np.arange(1, capacity + 1, dtype=np.int32))
-    test.assertEqual(int(reducer.contact_count.numpy()[0]), capacity)
-    test.assertEqual(int(np.count_nonzero(reducer.reclaimed_contact_bits.numpy())), 0)
+            ids = np.sort(allocated_ids.numpy())
+            np.testing.assert_array_equal(ids, np.arange(1, capacity + 1, dtype=np.int32))
+            test.assertEqual(int(reducer.contact_count.numpy()[0]), capacity)
+            test.assertEqual(int(reducer.buffer_overflows.numpy()[0]), 0)
+            test.assertEqual(int(np.count_nonzero(reducer.reclaimed_contact_bits.numpy())), 0)
+            test.assertEqual(int(reducer.reclaimed_contact_count.numpy()[0]), 0)
 
 
 class TestSpeculativeContacts(unittest.TestCase):
