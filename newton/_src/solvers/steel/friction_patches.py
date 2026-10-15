@@ -1184,7 +1184,7 @@ class _FrictionPatchState:
         self.body_radius = wp.zeros(model.body_count, dtype=float, device=device)
         self._refresh_body_radius(model)
         self._seen_geometry = [wp.clone(getattr(model, name)) for name in _GEOMETRY_FIELDS]
-        self._changed_shapes = wp.zeros(model.shape_count, dtype=int, device=device)
+        self._changed_shapes = wp.zeros(model.shape_body.shape[0], dtype=int, device=device)
         self._changed_bodies = wp.zeros(model.body_count, dtype=int, device=device)
         self.current = self._frame(capacity, device)
         self.previous = self._frame(capacity, device)
@@ -1200,12 +1200,13 @@ class _FrictionPatchState:
     def update_geometry(self, model):
         """Refresh body radii and retire history whose geometry changed, on the device."""
         self._refresh_body_radius(model)
-        if model.shape_count == 0:
+        shape_count = model.shape_body.shape[0]
+        if shape_count == 0:
             return
         self._changed_bodies.zero_()
         wp.launch(
             _mark_changed_geometry,
-            dim=model.shape_count,
+            dim=shape_count,
             inputs=[*(getattr(model, name) for name in _GEOMETRY_FIELDS), *self._seen_geometry],
             outputs=[self._changed_shapes, self._changed_bodies],
             device=model.device,
@@ -1220,10 +1221,10 @@ class _FrictionPatchState:
 
     def _refresh_body_radius(self, model):
         self.body_radius.zero_()
-        if model.shape_count:
+        if model.shape_body.shape[0]:
             wp.launch(
                 _accumulate_body_radius,
-                dim=model.shape_count,
+                dim=model.shape_body.shape[0],
                 inputs=[model.shape_body, model.shape_collision_radius, model.shape_transform],
                 outputs=[self.body_radius],
                 device=model.device,
