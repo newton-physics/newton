@@ -302,7 +302,7 @@ class TestCalibrationCableProblem(unittest.TestCase):
             def __init__(self, *args, **kwargs):
                 pass
 
-            def evaluate(self, candidates):
+            def evaluate(self, candidates, *, return_poses=False):
                 return [(np.log10(c.bend_stiffness) - 1.5) ** 2 for c in candidates]
 
         with tempfile.TemporaryDirectory() as tmp, patch("newton._src.calibration.problem.CableEvaluator", Evaluator):
@@ -353,7 +353,7 @@ class TestCalibrationCableProblem(unittest.TestCase):
             def __init__(self, *args, **kwargs):
                 pass
 
-            def evaluate(self, candidates):
+            def evaluate(self, candidates, *, return_poses=False):
                 return [(np.log10(c.bend_stiffness) - 1.5) ** 2 for c in candidates]
 
             def record(self, candidate):
@@ -384,7 +384,7 @@ class TestCalibrationCableProblem(unittest.TestCase):
             def __init__(self, *args, **kwargs):
                 self.calls = 0
 
-            def evaluate(self, candidates):
+            def evaluate(self, candidates, *, return_poses=False):
                 self.calls += 1
                 if self.calls == self.fail_on_call:
                     raise RuntimeError("simulation failed")

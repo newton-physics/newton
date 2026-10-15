@@ -82,6 +82,12 @@ _MATPLOTLIB_FONT_CACHE_OUTPUT_RE = r"Matplotlib is building the font cache; this
 _DIFFSIM_BALL_GRADIENT_OUTPUT_RE = r"(?:numeric grad: \[[^\n]+\]\nanalytic grad: \[[^\n]+\]\n?){2}"
 _DIFFSIM_DRONE_LOSS_LINE_RE = r"\[\s*\d{1,3}/360\] loss=-?\d+\.\d{8}\n?"
 _DIFFSIM_DRONE_LOSS_OUTPUT_RE = rf"(?:{_DIFFSIM_DRONE_LOSS_LINE_RE}){{10}}"
+# The test-mode search runs three iterations after scoring its start.
+_CABLE_CALIBRATION_OUTPUT_RE = (
+    r"(?:iteration \d: loss [^\n]+\n){4}"
+    r"search stopped: maxiter\n"
+    r"Fit status: ok \(maxiter\); objective: [^\n]+\n?"
+)
 _BASIC_PLOTTING_OUTPUT_RE = (
     r"(?:"
     r"Diagnostics plot saved to solver_convergence\.png\n?"
@@ -744,6 +750,18 @@ add_example_test(
     devices=cuda_test_devices,
     use_viewer=True,
     test_options={"num-frames": 20},
+)
+add_example_test(
+    TestCableExamples,
+    name="cable.example_cable_calibration",
+    devices=cuda_test_devices,
+    use_viewer=True,
+    # The demo bundle is in the repository until it moves to newton-assets.
+    test_options={
+        "num-frames": 60,
+        "bundle": os.path.join(newton.examples.get_source_directory(), "cable", "cable_calibration_demo"),
+    },
+    expect_output_regexes=[(_CABLE_CALIBRATION_OUTPUT_RE, "stdout")],
 )
 
 

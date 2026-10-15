@@ -1213,6 +1213,18 @@ class TestCalibrationRunSequence(unittest.TestCase):
             self.assertEqual(mask.shape, (24, 32))
             self.assertEqual(set(np.unique(mask)), {0, 255})
 
+    def test_poses_are_recorded_per_world_and_frame(self):
+        """Verify record_poses keeps each world's body poses at every frame, frame 0 being the state at the call."""
+        world = make_world(population=2)
+        before = world.state_0.body_q.numpy()
+        world.run_sequence(3, [1.0], SCENE_CROP, LossGoalValue(), record_poses=True)
+        poses = world.last_poses.numpy()
+        body_world = world.model.body_world.numpy()
+        self.assertEqual(poses.shape[:3], (3, 2, int(np.count_nonzero(body_world == 0))))
+        for w in range(2):
+            np.testing.assert_array_equal(poses[0, w], before[body_world == w])
+        self.assertFalse(np.array_equal(poses[0], poses[2]))
+
     def test_failed_world_scores_nan(self):
         """Verify a world whose cable state becomes non-finite gets NaN, and the other worlds keep their score."""
         world = make_world(population=2)
