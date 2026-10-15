@@ -2334,7 +2334,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         REVOLUTE joints and D6 joints with exactly one angular DOF additionally
         select the equivalent absolute angle nearest ``joint_angle_prev``.
-        Multi-angular-axis D6 joints retain the principal projected coordinates.
+        D6 joints with multiple angular DOFs measure absolute coordinates and need no offset.
 
         Only angular DOFs of REVOLUTE and D6 joints need nonzero entries. Linear DOFs
         (PRISMATIC, D6 linear) use absolute geometric measurements (``d_along``) and
@@ -2360,8 +2360,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     qd_start = int(jqd_start[j])
                     lin_count = int(jdof_dim[j, 0])
                     ang_count = int(jdof_dim[j, 1])
-                    for ai in range(ang_count):
-                        rest_angle_np[qd_start + lin_count + ai] = float(jq[q_start + lin_count + ai])
+                    if ang_count == 1:
+                        rest_angle_np[qd_start + lin_count] = float(jq[q_start + lin_count])
 
         return wp.array(rest_angle_np, dtype=float, device=self.device)
 
