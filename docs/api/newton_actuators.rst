@@ -76,4 +76,4 @@ construction.
    * - ``ControllerPID``
      - Deprecated in 1.6; use DrivePID instead.
    * - ``Delay``
-     - Deprecated in 1.7; use InputProcessorDelay instead.
+     - Deprecated in 1.8; use InputProcessorDelay instead.

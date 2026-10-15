@@ -25,16 +25,16 @@ if TYPE_CHECKING:
 
 _DEPRECATED_UNSET = object()
 _DELAY_KEYWORD_DEPRECATION_MSG = (
-    "Actuator(delay=...) is deprecated in Newton 1.7; use Actuator(input_processors=[delay]) instead."
+    "Actuator(delay=...) is deprecated in Newton 1.8; use Actuator(input_processors=[delay]) instead."
 )
-_DELAY_ATTRIBUTE_DEPRECATION_MSG = "Actuator.delay is deprecated in Newton 1.7; use Actuator.input_processors instead."
+_DELAY_ATTRIBUTE_DEPRECATION_MSG = "Actuator.delay is deprecated in Newton 1.8; use Actuator.input_processors instead."
 _DELAY_UPDATE_STATE_OVERRIDE_DEPRECATION_MSG = (
     "Overriding InputProcessorDelay.update_state with the (target_pos, target_vel, feedforward, pos_indices, "
-    "vel_indices, current_state, next_state) signature is deprecated in Newton 1.7; override "
+    "vel_indices, current_state, next_state) signature is deprecated in Newton 1.8; override "
     "update_state(inputs, current_state, next_state) instead."
 )
 _DELAY_STATE_DEPRECATION_MSG = (
-    "Actuator.State.delay_state is deprecated in Newton 1.7; use input_processor_states instead."
+    "Actuator.State.delay_state is deprecated in Newton 1.8; use input_processor_states instead."
 )
 _CONTROLLER_KEYWORD_DEPRECATION_MSG = (
     "Actuator(controller=...) is deprecated in Newton 1.6; use Actuator(drive=...) instead."
@@ -235,7 +235,7 @@ class Actuator:
             """Initialize composed actuator state.
 
             Args:
-                delay_state: Deprecated in Newton 1.7; use ``input_processor_states``.
+                delay_state: Deprecated in Newton 1.8; use ``input_processor_states``.
                 drive_state: Drive-specific state, or ``None`` if stateless.
                 input_processor_states: One state per input processor, in
                     processor order (``None`` for stateless processors).
@@ -259,7 +259,7 @@ class Actuator:
         def delay_state(self) -> InputProcessorDelay.State | None:
             """Deprecated alias for the first :class:`InputProcessorDelay` state in :attr:`input_processor_states`.
 
-            .. deprecated:: 1.7
+            .. deprecated:: 1.8
                 Use :attr:`input_processor_states` instead.
             """
             warnings.warn(_DELAY_STATE_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
@@ -367,7 +367,7 @@ class Actuator:
             indices: DOF indices into velocity-shaped arrays (velocities,
                 velocity targets, feedforward, effort output). Shape ``(N,)``.
             drive: Drive that computes raw effort.
-            delay: Deprecated in Newton 1.7; pass the delay in
+            delay: Deprecated in Newton 1.8; pass the delay in
                 ``input_processors`` instead.
             clamping: List of Clamping objects (post-drive effort bounds).
             pos_indices: Indices into coordinate-shaped arrays (positions =
@@ -548,7 +548,7 @@ class Actuator:
     def delay(self) -> InputProcessorDelay | None:
         """Deprecated alias for the first :class:`InputProcessorDelay` in :attr:`input_processors`.
 
-        .. deprecated:: 1.7
+        .. deprecated:: 1.8
             Use :attr:`input_processors` instead.
         """
         warnings.warn(_DELAY_ATTRIBUTE_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)

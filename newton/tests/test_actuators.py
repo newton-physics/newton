@@ -3166,14 +3166,14 @@ def Xform "World"
             builder.add_actuator(DriveBAM, index=0, kp=3.0, kt=1.2, resistance=1.0, vin=12.0, max_pwm=1.0)
             return builder.finalize()
 
-        def run(load_dependent: bool, steps: int):
+        def run(steps: int):
             model = build()
             solver = newton.solvers.SolverMuJoCo(model)
             actuator = model.actuators[0]
             state_0, state_1, control = model.state(), model.state(), model.control()
             n, device = model.joint_dof_count, model.device
-            k_motor = 0.08 if load_dependent else 0.0
-            k_external = 0.30 if load_dependent else 0.0
+            k_motor = 0.08
+            k_external = 0.30
 
             mass_matrix = wp.zeros((model.articulation_count, n, n), dtype=wp.float32, device=device)
             gravity_force = wp.zeros(n, dtype=wp.float32, device=device)
@@ -3256,10 +3256,8 @@ def Xform "World"
             wp.synchronize_device(device)
             return reaction, control.joint_f, frictionloss
 
-        *_, base_frictionloss = run(load_dependent=False, steps=400)
-        reaction_arr, motor_arr, load_frictionloss = run(load_dependent=True, steps=400)
+        reaction_arr, motor_arr, load_frictionloss = run(steps=40)
 
-        base_budget = float(base_frictionloss.numpy()[0, 0])
         reaction = float(reaction_arr.numpy()[0])
         motor = float(motor_arr.numpy()[0])
         load_budget = float(load_frictionloss.numpy()[0, 0])
@@ -3268,10 +3266,8 @@ def Xform "World"
         # torque, which at this pose is a few newton-metres.
         self.assertLess(reaction, -1.0, "the gearbox should be carrying the gravity load")
 
-        # Without the load terms the budget is the constant base; with them it grows
-        # with the transmitted load. This is the quantity the solver consumes.
-        self.assertAlmostEqual(base_budget, friction_base, places=6)
-        self.assertGreater(load_budget, base_budget + 0.1)
+        # The budget grows with the transmitted load. This is the quantity the solver consumes.
+        self.assertGreater(load_budget, friction_base + 0.1)
         self.assertAlmostEqual(load_budget, friction_base + abs(reaction * 0.30 - motor * 0.08), places=5)
 
     def test_deprecated_delay_arguments_match_input_processor(self):

@@ -88,7 +88,7 @@ Drives, clamping objects, and input processors are pluggable: implement the
 :class:`DriveBase`, :class:`ClampingBase`, or :class:`InputProcessorBase`
 class to add new models.
 
-.. deprecated:: 1.7
+.. deprecated:: 1.8
 
    ``Delay`` is renamed :class:`InputProcessorDelay`.  The ``delay``
    argument of :class:`Actuator`, the ``delay_steps`` argument of

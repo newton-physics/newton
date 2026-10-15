@@ -94,7 +94,7 @@ __deprecated_symbols__ = {
     "ControllerNeuralMLP": "Deprecated in 1.6; use DriveNeuralMLP instead.",
     "ControllerPD": "Deprecated in 1.6; use DrivePD instead.",
     "ControllerPID": "Deprecated in 1.6; use DrivePID instead.",
-    "Delay": "Deprecated in 1.7; use InputProcessorDelay instead.",
+    "Delay": "Deprecated in 1.8; use InputProcessorDelay instead.",
 }
 
 

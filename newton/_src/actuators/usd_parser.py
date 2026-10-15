@@ -23,7 +23,7 @@ _COMPONENT_KIND_CONTROLLER_DEPRECATION_MSG = (
     "ComponentKind.CONTROLLER is deprecated in Newton 1.6; use ComponentKind.DRIVE instead."
 )
 _COMPONENT_KIND_DELAY_DEPRECATION_MSG = (
-    "ComponentKind.DELAY is deprecated in Newton 1.7; use ComponentKind.INPUT_PROCESSOR instead."
+    "ComponentKind.DELAY is deprecated in Newton 1.8; use ComponentKind.INPUT_PROCESSOR instead."
 )
 _PARSED_CONTROLLER_CLASS_DEPRECATION_MSG = (
     "ActuatorParsed.controller_class is deprecated in Newton 1.6; use drive_class instead."

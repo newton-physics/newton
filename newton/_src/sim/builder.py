@@ -143,11 +143,12 @@ def _broadcast_triangle_opacities(value: Any, triangle_count: int) -> np.ndarray
 
 _DEPRECATED_ACTUATOR_DRIVE_UNSET = object()
 _ACTUATOR_DELAY_STEPS_DEPRECATION_MSG = (
-    "ModelBuilder.add_actuator(delay_steps=...) is deprecated in Newton 1.7; "
+    "ModelBuilder.add_actuator(delay_steps=...) is deprecated in Newton 1.8; "
     "use input_processors=[(InputProcessorDelay, {'delay_steps': ...})] instead."
 )
+_ACTUATOR_ENTRY_DELAY_ARGS_UNSET = object()
 _ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG = (
-    "ModelBuilder.ActuatorEntry.delay_args is deprecated in Newton 1.7; use input_processor_args instead."
+    "ModelBuilder.ActuatorEntry.delay_args is deprecated in Newton 1.8; use input_processor_args instead."
 )
 _ACTUATOR_CONTROLLER_CLASS_DEPRECATION_MSG = (
     "ModelBuilder.add_actuator(controller_class=...) is deprecated in Newton 1.6; use drive_class=... instead."
@@ -835,7 +836,7 @@ class ModelBuilder:
             rest_direction,
         )
 
-    @dataclass
+    @dataclass(init=False)
     class ActuatorEntry:
         """Stores accumulated specs for one group of compatible composed actuators.
 
@@ -858,11 +859,57 @@ class ModelBuilder:
         input_processor_shared_kwargs: tuple = ()  # Tuple of dicts: shared kwargs per input processor class
         input_processor_args: list[list[dict[str, Any]]] = field(default_factory=list)  # Per-actuator params
 
+        def __init__(
+            self,
+            drive_class: type,
+            clamping_classes: tuple,
+            clamping_shared_kwargs: tuple,
+            drive_shared_kwargs: dict,
+            indices: list[int],
+            pos_indices: list[int],
+            drive_args: list[dict[str, Any]],
+            delay_args: list[dict[str, Any]] | object = _ACTUATOR_ENTRY_DELAY_ARGS_UNSET,
+            clamping_args: list[list[dict[str, Any]]] | None = None,
+            input_processor_classes: tuple = (),
+            input_processor_shared_kwargs: tuple = (),
+            input_processor_args: list[list[dict[str, Any]]] | None = None,
+        ):
+            """Initialize an actuator entry.
+
+            Args:
+                delay_args: Deprecated in Newton 1.8; pass an
+                    :class:`~newton.actuators.InputProcessorDelay` in
+                    *input_processor_classes* and its per-actuator params in
+                    *input_processor_args* instead.
+            """
+            self.drive_class = drive_class
+            self.clamping_classes = clamping_classes
+            self.clamping_shared_kwargs = clamping_shared_kwargs
+            self.drive_shared_kwargs = drive_shared_kwargs
+            self.indices = indices
+            self.pos_indices = pos_indices
+            self.drive_args = drive_args
+            self.clamping_args = clamping_args if clamping_args is not None else []
+            self.input_processor_classes = input_processor_classes
+            self.input_processor_shared_kwargs = input_processor_shared_kwargs
+            self.input_processor_args = input_processor_args if input_processor_args is not None else []
+            if delay_args is _ACTUATOR_ENTRY_DELAY_ARGS_UNSET:
+                return
+            warnings.warn(_ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            if not delay_args:
+                return
+            from ..actuators.input_processors.input_processor_delay import InputProcessorDelay  # noqa: PLC0415
+
+            self.input_processor_classes = (InputProcessorDelay, *self.input_processor_classes)
+            self.input_processor_shared_kwargs = ({}, *self.input_processor_shared_kwargs)
+            others = self.input_processor_args or [[] for _ in delay_args]
+            self.input_processor_args = [[dict(delay), *rest] for delay, rest in zip(delay_args, others, strict=True)]
+
         @property
         def delay_args(self) -> list[dict[str, Any]]:
             """Deprecated alias for the delay entries of :attr:`input_processor_args`.
 
-            .. deprecated:: 1.7
+            .. deprecated:: 1.8
                 Use :attr:`input_processor_args` instead.
             """
             from ..actuators.input_processors.input_processor_delay import InputProcessorDelay  # noqa: PLC0415
@@ -3087,7 +3134,7 @@ class ModelBuilder:
                 velocity targets, feedforward, forces).
             clamping: Optional list of ``(ClampingClass, kwargs)`` tuples applied
                 post-drive. E.g. ``[(ClampingMaxEffort, {'max_effort': 50.0})]``.
-            delay_steps: Deprecated in Newton 1.7; use
+            delay_steps: Deprecated in Newton 1.8; use
                 ``input_processors=[(InputProcessorDelay, {"delay_steps": ...})]`` instead.
             pos_index: DOF index into ``joint_q``-shaped arrays (positions,
                 position targets). Defaults to *index*. Differs from

@@ -163,14 +163,14 @@ class TestActuatorDriveAPI(unittest.TestCase):
             kd=wp.array([0.0], dtype=wp.float32),
         )
         drive.custom_inputs = ("drive_input",)
-        delay = actuators.Delay(delay_steps=wp.array([0], dtype=wp.int32), max_delay=1)
+        delay = actuators.InputProcessorDelay(delay_steps=wp.array([0], dtype=wp.int32), max_delay=1)
         delay.custom_inputs = ("delay_input",)
         clamping = actuators.ClampingMaxEffort(max_effort=wp.array([1.0], dtype=wp.float32))
         clamping.custom_inputs = ("clamping_input",)
         actuator = actuators.Actuator(
             indices=wp.array([0], dtype=wp.uint32),
             drive=drive,
-            delay=delay,
+            input_processors=[delay],
             clamping=[clamping],
         )
         builder = newton.ModelBuilder()
