@@ -69,6 +69,7 @@
 - Add `joint_dof_mask` to `newton.ik.IKSolver` to keep selected joint DOFs fixed during LM optimization. (#3488)
 - Add `SolverMuJoCo(disable_sensors=True)` to skip MuJoCo sensor computation.
 - Add masked deformable reset to `SolverVBD.reset()`: `StateFlags.PARTICLE_Q` / `StateFlags.PARTICLE_QD` restore cloth and soft-body particle state per world selected by `world_mask`. (#3760; fixes #3400)
+- Add the `basic_reduced_elastic_cup_straw` example with a procedurally generated whole-cap POD basis, contact-driven straw insertion and stirring, and CPU/CUDA validation.
 
 ### Changed
 

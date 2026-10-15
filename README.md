@@ -384,6 +384,22 @@ If you run the examples from a source checkout with uv, use
     </td>
   </tr>
   <tr>
+    <td align="center" width="33%">
+      <a href="newton/examples/basic/example_basic_reduced_elastic_cup_straw.py">
+        <img width="320" height="320" src="docs/images/examples/example_basic_reduced_elastic_cup_straw.jpg" alt="Reduced Elastic Cup and Straw">
+      </a>
+    </td>
+    <td colspan="2"></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>uv run -m newton.examples basic_reduced_elastic_cup_straw</code><br>
+      Contact-driven insertion and stirring in one procedural four-mode cap.
+      Use <code>--motion insert</code> for straight insertion or <code>--view closeup</code> to inspect the slit.
+    </td>
+    <td colspan="2"></td>
+  </tr>
+  <tr>
     <td colspan="3"><h3>Robot Examples</h3></td>
   </tr>
   <tr>
