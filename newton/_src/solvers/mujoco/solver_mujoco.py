@@ -617,7 +617,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Standard and MuJoCo-specific observable arrays.
 
         The native CPU backend (``use_mujoco_cpu=True``) supports
-        ``BODY_QDD``, ``BODY_PARENT_F`` and ``QFRC_ACTUATOR``. MuJoCo Warp
+        ``BODY_QDD`` and ``BODY_PARENT_F`` with Euler, RK4, implicit, or
+        implicitfast integration, and ``QFRC_ACTUATOR`` with any integrator. MuJoCo Warp
         also supports the standard contact fields, including body fields when
         sensors are disabled. With native collision detection, contact storage must cover
         :meth:`SolverMuJoCo.get_max_contact_count`. External collision detection
@@ -678,12 +679,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         kinds = super().supported_observables
         if self.use_mujoco_cpu:
             # Contact forces and overflow flags are only exported from MuJoCo Warp data.
-            return kinds.difference(
+            kinds = kinds.difference(
                 {
                     SolverBase.ObservableKind.CONTACT_F,
                     self.ObservableKind.OVERFLOW,
                 }
             )
+            if self.mj_model.opt.integrator not in (
+                self._mujoco.mjtIntegrator.mjINT_EULER,
+                self._mujoco.mjtIntegrator.mjINT_RK4,
+                self._mujoco.mjtIntegrator.mjINT_IMPLICIT,
+                self._mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
+            ):
+                # Native body exports require a Python-accessible integrator.
+                return kinds.difference({SolverBase.ObservableKind.BODY_QDD, SolverBase.ObservableKind.BODY_PARENT_F})
         return kinds
 
     def observables(

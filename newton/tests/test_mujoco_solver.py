@@ -7754,7 +7754,7 @@ class TestMuJoCoOptions(unittest.TestCase):
         self.assertTrue(np.isfinite(observables.qfrc_actuator.numpy()).all())
 
     def test_native_cpu_observable_capabilities(self):
-        """Reject unsupported contact exports while retaining native body and actuator outputs."""
+        """Validate native observable support for each integrator family."""
         model = self._create_multiworld_model(world_count=1)
         solver = SolverMuJoCo(model, use_mujoco_cpu=True)
         for kind in (solver.ObservableKind.BODY_QDD, solver.ObservableKind.BODY_PARENT_F):
@@ -7776,6 +7776,25 @@ class TestMuJoCoOptions(unittest.TestCase):
         observables.qfrc_actuator.fill_(float("nan"))
         solver.mjw_data.qfrc_actuator.fill_(1234.0)
         solver.step(model.state(), model.state(), model.control(), None, 0.01, observables=observables)
+        np.testing.assert_allclose(observables.qfrc_actuator.numpy(), solver.mj_data.qfrc_actuator, atol=1e-6)
+
+        # Discrete stepping works, but its native integrator has no Python binding
+        # for inserting body exports before integration.
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True, integrator=int(solver._mujoco.mjtIntegrator.mjINT_DISCRETE))
+        self.assertEqual(solver.supported_observables, {flag})
+        for kind in (solver.ObservableKind.BODY_QDD, solver.ObservableKind.BODY_PARENT_F):
+            with self.subTest(integrator="discrete", kind=kind):
+                with self.assertRaisesRegex(ValueError, "does not support"):
+                    solver.observables({kind})
+        observables = solver.observables(solver.supported_observables)
+        state_out = model.state()
+        control = model.control()
+        control.joint_f.fill_(1.0)
+        solver.step(model.state(), state_out, control, None, 0.01, observables=observables)
+        self.assertEqual(solver.mj_data.time, 0.01)
+        np.testing.assert_allclose(state_out.joint_q.numpy(), solver.mj_data.qpos, atol=1e-6)
+        np.testing.assert_allclose(state_out.joint_qd.numpy(), solver.mj_data.qvel, atol=1e-6)
+        self.assertGreater(np.abs(state_out.joint_qd.numpy()).max(), 0.0)
         np.testing.assert_allclose(observables.qfrc_actuator.numpy(), solver.mj_data.qfrc_actuator, atol=1e-6)
 
     def _create_body_observable_builder(self):

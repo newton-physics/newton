@@ -152,7 +152,9 @@ The native MuJoCo CPU backend (``use_mujoco_cpu=True``) supports ``BODY_QDD``,
 ``BODY_PARENT_F``, and ``SolverMuJoCo.ObservableKind.QFRC_ACTUATOR``. It runs
 the post-constraint RNE stage for requested body observables before integration,
 using the step's input dynamics, including with RK4. Contact and overflow
-observable requests are rejected. MuJoCo Warp supports body
+observable requests are rejected. Native body observables require Euler, RK4,
+implicit, or implicitfast integration; discrete integration supports only
+``QFRC_ACTUATOR``. MuJoCo Warp supports body
 observables on both CPU and GPU.
 
 Kamino exports contact points in the step's input body frames and world-frame
