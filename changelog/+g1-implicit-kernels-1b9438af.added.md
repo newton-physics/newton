@@ -1,0 +1,1 @@
+Add experimental CUDA kernels for the 49-DOF G1 implicit-actuator path, enabled with `NEWTON_G1_KERNELS=1` on Warp 1.18 or later; retain scalar fallbacks for other layouts and drive/clamp combinations.

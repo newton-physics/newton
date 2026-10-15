@@ -425,6 +425,17 @@ the control law and so yields a smaller effort than would have been evaluated
 without the simplifications listed above. Second, kinematic loop closures are
 also ignored.
 
+
+.. note::
+
+   **Experimental G1 kernels.** Set ``NEWTON_G1_KERNELS=1`` before response
+   construction or CUDA graph capture to enable tiled kernels on Warp 1.18+.
+   The path specializes 49-DOF response blocks and 43-actuator PD groups with
+   one maximum-effort clamp. Mass assembly specializes one or two 44-link
+   articulations. Other layouts, drive/clamp combinations, CPU devices, and
+   older Warp versions retain the scalar path. Refresh frequency, armature,
+   torque clamps, and solver settings are unchanged.
+
 The approximations inherent in :meth:`JointSpaceResponse.refresh
 <newton.actuators.JointSpaceResponse.refresh>` may be avoided when working with a
 solver that is able to evaluate the inverse mass matrix more directly, with the

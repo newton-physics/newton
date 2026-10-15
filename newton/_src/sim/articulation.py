@@ -1817,7 +1817,9 @@ def _eval_mass_matrix(
         )
         eval_jacobian(model, state, J, joint_S_s=joint_S_s, mask=mask)
 
-    wp.launch(
+    from ..actuators import _g1_kernels  # noqa: PLC0415
+
+    _g1_kernels.launch_mass(
         kernel=eval_articulation_mass_matrix,
         dim=model.articulation_count,
         inputs=[

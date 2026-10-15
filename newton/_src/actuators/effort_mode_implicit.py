@@ -31,7 +31,10 @@ import numpy as np
 import warp as wp
 
 from ..sim import JointType
+from . import _g1_kernels
+from .clamping.clamping_max_effort import ClampingMaxEffort
 from .drives.base import DriveBase
+from .drives.drive_pd import DrivePD
 from .joint_space_response import JointSpaceResponse
 
 __all__ = ["ImplicitOptions", "JointSpaceResponse"]
@@ -394,6 +397,14 @@ class _EffortModeImplicit:
         self._init_solver(drive, clamping)
         # Up front: this reads to host and allocates, both illegal during graph capture.
         self._build_groups(vel_indices)
+        self._g1_kernel_compatible = (
+            type(drive) is DrivePD
+            and len(clamping or []) == 1
+            and type(clamping[0]) is ClampingMaxEffort
+            and response._H.shape[1:] == (49, 49)
+            and self._group_slot.shape[1] == 43
+            and self._num_groups * 43 == self._num_actuators
+        )
 
     def _resolve_force_law(self, drive):
         """Validate the drive's in-kernel force law and adopt its params.
@@ -614,7 +625,7 @@ class _EffortModeImplicit:
         inverse_blocks = self._response.inverse_blocks
 
         opts = self._options
-        wp.launch(
+        _g1_kernels.launch_coupled(
             self._kernel,
             dim=self._num_groups,
             inputs=[
@@ -648,5 +659,6 @@ class _EffortModeImplicit:
             ],
             outputs=[computed_forces, applied_forces],
             device=self._device,
+            compatible=self._g1_kernel_compatible,
         )
         return applied_forces

@@ -24,6 +24,7 @@ import warp as wp
 from ..sim.articulation import eval_fk, eval_jacobian, eval_mass_matrix
 from ..sim.model import Model
 from ..sim.state import State
+from . import _g1_kernels
 
 __all__ = ["JointSpaceResponse"]
 
@@ -317,7 +318,7 @@ class JointSpaceResponse:
     def _invert_blocks(self) -> None:
         """Invert the per-articulation blocks of ``self._H`` into :attr:`inverse_blocks`."""
         self._inv_block.zero_()
-        wp.launch(
+        _g1_kernels.launch_inverse(
             _inverse_block_from_mass_matrix_kernel,
             dim=self.model.articulation_count,
             inputs=[self._H, self._art_dof_count],
