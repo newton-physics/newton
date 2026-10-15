@@ -605,6 +605,10 @@ class Actuator:
                 implicit mode, where the predicted end-of-step velocity becomes
                 ``qd + A (p - dt bias_force)``. Explicit mode ignores it.
                 ``None`` (default) leaves the prediction ``qd + A p``.
+                For free and distance joints the entries are a wrench at the
+                child CoM in the world frame, like ``joint_f``. The step
+                rotates it into the joint's parent frame, the frame of ``A``,
+                using ``sim_state.body_q``.
         """
         if self.is_stateful() and (current_act_state is None or next_act_state is None):
             raise ValueError(

@@ -134,17 +134,48 @@ def _bias_velocity_kernel(
     slot_art: wp.array[wp.int32],
     slot_local: wp.array[wp.int32],
     art_base: wp.array[wp.int32],
-    art_ndof: wp.array[wp.int32],
+    articulation_start: wp.array[int],
+    articulation_end: wp.array[int],
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_qd_start: wp.array[int],
+    body_q: wp.array[wp.transform],
     bias_velocity: wp.array[wp.float64],
 ):
-    """Per-slot velocity change ``-h (A b)_i`` over the slot's whole articulation row."""
+    """Per-slot velocity change ``-h (A b)_i`` over the slot's whole articulation row.
+
+    Free and distance joints take ``joint_f`` as a world-frame wrench, but
+    ``A`` maps a wrench in the joint's parent frame, so their linear and
+    angular parts are rotated into it first.
+    """
     i = wp.tid()
     a = slot_art[i]
     li = slot_local[i]
     base = art_base[a]
     acc = wp.float64(0.0)
-    for j in range(art_ndof[a]):
-        acc += wp.float64(inverse_blocks[a, li, j]) * wp.float64(bias_force[base + j])
+    for joint_id in range(articulation_start[a], articulation_end[a]):
+        qd_start = joint_qd_start[joint_id]
+        jtype = joint_type[joint_id]
+        if jtype == JointType.FREE or jtype == JointType.DISTANCE:
+            X_wpj = joint_X_p[joint_id]
+            parent = joint_parent[joint_id]
+            if parent >= 0:
+                X_wpj = body_q[parent] * X_wpj
+            q_p = wp.transform_get_rotation(X_wpj)
+            f_lin = wp.quat_rotate_inv(
+                q_p, wp.vec3(bias_force[qd_start], bias_force[qd_start + 1], bias_force[qd_start + 2])
+            )
+            f_ang = wp.quat_rotate_inv(
+                q_p, wp.vec3(bias_force[qd_start + 3], bias_force[qd_start + 4], bias_force[qd_start + 5])
+            )
+            lj = qd_start - base
+            for k in range(3):
+                acc += wp.float64(inverse_blocks[a, li, lj + k]) * wp.float64(f_lin[k])
+                acc += wp.float64(inverse_blocks[a, li, lj + 3 + k]) * wp.float64(f_ang[k])
+        else:
+            for j in range(qd_start, joint_qd_start[joint_id + 1]):
+                acc += wp.float64(inverse_blocks[a, li, j - base]) * wp.float64(bias_force[j])
     bias_velocity[i] = -wp.float64(dt) * acc
 
 
@@ -581,7 +612,6 @@ class _EffortModeImplicit:
         self._slot_response = wp.zeros(self._num_actuators, dtype=float, device=device)
         self._num_groups = num_groups
         self._art_base = wp.array(np.asarray(art_base, dtype=np.int32), dtype=wp.int32, device=device)
-        self._art_ndof = wp.array(np.asarray(art_ndof, dtype=np.int32), dtype=wp.int32, device=device)
         self._bias_velocity = wp.zeros(self._num_actuators, dtype=wp.float64, device=device)
         self._joint_dof_count = int(model.joint_dof_count)
 
@@ -666,6 +696,7 @@ class _EffortModeImplicit:
                 )
             if bias_force.device != self._device:
                 raise ValueError(f"bias_force is on {bias_force.device}, but the actuator runs on {self._device}")
+            model = self._response.model
             bias_velocity = self._bias_velocity
             wp.launch(
                 _bias_velocity_kernel,
@@ -677,7 +708,13 @@ class _EffortModeImplicit:
                     self._slot_art,
                     self._slot_local,
                     self._art_base,
-                    self._art_ndof,
+                    model.articulation_start,
+                    model.articulation_end,
+                    model.joint_type,
+                    model.joint_parent,
+                    model.joint_X_p,
+                    model.joint_qd_start,
+                    sim_state.body_q,
                 ],
                 outputs=[bias_velocity],
                 device=self._device,

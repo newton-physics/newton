@@ -1472,11 +1472,11 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
         Both the linear and angular components must match: the angular
         bias is the gyroscopic ``omega x (I * omega)``, and the linear
         bias is zero under Newton's documented v_com convention. The
-        latter requires the bias output of Featherstone's spatial RNEA
-        to be corrected for the qdd convention mismatch (Featherstone's
-        ``a_F = 0`` means classical ``a_com = omega x v_com``, not zero),
-        so a residual ``omega x m * v_com`` is subtracted from F_linear
-        during the internal-to-public conversion.
+        latter requires Featherstone's spatial RNEA to be given the
+        internal acceleration ``-omega x v_com`` for the free joint, since
+        its spatial ``a_F = 0`` means classical ``a_com = omega x v_com``,
+        not zero. The output conversion then only shifts the wrench to the
+        CoM, rotates it to the world frame, and negates it.
         """
         identity_xform = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
 
@@ -1485,9 +1485,8 @@ class TestCoriolisCompForce(TestInverseDynamicsBase):
         # omega x (I * omega) is non-zero for a generic omega.
         I_diag = (2.0, 1.5, 1.0)
         I_body = wp.mat33(I_diag[0], 0.0, 0.0, 0.0, I_diag[1], 0.0, 0.0, 0.0, I_diag[2])
-        # Non-zero CoM offset so the conversion's angular correction
-        # ``m * r_com x (omega x v_com)`` is exercised in addition to the
-        # linear ``omega x m * v_com`` correction.
+        # Non-zero CoM offset so the internal acceleration ``-omega x v_com``
+        # and the wrench shift to the CoM both matter.
         r_com = wp.vec3(0.5, 0.2, -0.3)
 
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Z)

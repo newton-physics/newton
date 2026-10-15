@@ -3431,6 +3431,58 @@ class TestActuatorStep(unittest.TestCase):
             with self.assertRaises(ValueError):
                 actuator.step(state, control, dt=0.01, bias_force=bad)
 
+    def test_pipeline_pd_bias_force_free_base_implicit(self):
+        """Verify a free joint's world-frame bias force is rotated into its parent frame.
+
+        The base hangs from a rotated parent frame and falls freely, so gravity
+        does not move the driven hinge relative to it. Its bias force must then
+        leave the effort unchanged.
+        """
+        device = wp.get_device()
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+        inertia = wp.mat33(0.2, 0.01, 0.0, 0.01, 0.3, 0.02, 0.0, 0.02, 0.25)
+        base = builder.add_link(com=wp.vec3(0.1, -0.05, 0.08), inertia=inertia, mass=2.0)
+        parent_rot = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 0.3, 0.2)), 0.9)
+        root = builder.add_joint_free(
+            parent=-1, child=base, parent_xform=wp.transform(wp.vec3(0.3, -0.2, 0.5), parent_rot)
+        )
+        link = builder.add_link(com=wp.vec3(0.4, 0.0, 0.05), inertia=_POINT_MASS_INERTIA, mass=1.0)
+        hinge = builder.add_joint_revolute(
+            parent=base,
+            child=link,
+            axis=newton.Axis.Y,
+            parent_xform=wp.transform(wp.vec3(0.2, 0.0, 0.0), wp.quat_identity()),
+        )
+        builder.add_articulation([root, hinge])
+        builder.joint_q[7] = 0.6
+        model = builder.finalize(device=device)
+        n = model.joint_dof_count
+
+        response = JointSpaceResponse(model)
+        actuator = Actuator(
+            indices=wp.array([6], dtype=wp.uint32, device=device),
+            drive=DrivePD(
+                kp=wp.array([500.0], dtype=float, device=device), kd=wp.array([5.0], dtype=float, device=device)
+            ),
+            control_target_pos_attr="joint_target_q",
+            control_target_vel_attr="joint_target_qd",
+        )
+        actuator.set_effort_mode_implicit(response=response)
+
+        state = model.state()
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        response.refresh(state)
+        gravity_force = wp.zeros(n, dtype=float, device=device)
+        newton.eval_inverse_dynamics_passive(model, state, gravity_force=gravity_force)
+
+        efforts = []
+        for bias in (None, gravity_force):
+            control = model.control()
+            actuator.step(state, control, dt=0.01, bias_force=bias)
+            efforts.append(control.joint_f.numpy()[6])
+        self.assertGreater(abs(efforts[0]), 1.0)
+        np.testing.assert_allclose(efforts[1], efforts[0], rtol=1e-4)
+
     def test_pipeline_pd_partially_actuated_implicit(self):
         """Drive only the tip joint of the two-link chain."""
         self.run_test_actuator_pipeline(
