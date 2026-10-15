@@ -227,9 +227,8 @@ def test_nodal_material_averaging(test, device):
                 space = fem.make_collocated_function_space(basis, dtype=YieldParamVec)
                 field = fem.make_test(space, domain=domain)
                 n = space.topology.MAX_NODES_PER_ELEMENT
-                node_coords = basis.shape.make_node_coords_in_element()
                 transform = np.ones((n, n), dtype=np.float32)
-                transform[0] = [node_coords.func(j)[0] - 0.5 for j in range(n)]
+                transform[0] = basis.node_positions().numpy()[:, 0] - 0.5
                 transform[1] = 7.0 * transform[0]
                 transform[2] = -transform[0]
                 transform[3] = 0.0
