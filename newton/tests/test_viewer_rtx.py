@@ -661,7 +661,7 @@ class TestViewerRTXRendering(unittest.TestCase):
                         self.assertGreater(y * (columns.mean() - 32), 0)
 
                     target = wp.empty_like(frame)
-                    self.assertIs(viewer.get_frame(target_image=target), target)
+                    self.assertIs(viewer.get_frame(output=target), target)
                     np.testing.assert_array_equal(target.numpy(), rgb)
 
                 finally:

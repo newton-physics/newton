@@ -414,7 +414,8 @@ def eval_inverse_dynamics_passive(
     not computed. Callers allocate the requested output arrays:
 
     * ``mass_matrix`` ← the joint-space mass matrix ``M(q)`` [kg, kg·m, or
-      kg·m^2, depending on the joint types of the row/column DOFs];
+      kg·m^2, depending on the joint types of the row/column DOFs], with
+      :attr:`~newton.Model.joint_armature` added to the diagonal;
     * ``gravity_force`` ← the gravity force ``g(q) = ∂U/∂q`` [N or N·m,
       depending on joint type], where ``U(q)`` is the system's
       gravitational potential energy ``sum_i -m_i * g . x_com_i``. This is
@@ -435,9 +436,8 @@ def eval_inverse_dynamics_passive(
         loop-closure joints (``EqType.CONNECT``, ``EqType.WELD``, ``EqType.JOINT``)
         play no role in the inverse dynamics evaluation.
 
-        :attr:`~newton.JointType.ROD` joints are not supported because they
-        do not define generalized coordinates or a motion subspace for this
-        inverse-dynamics formulation.
+        :attr:`~newton.JointType.ROD` joints are not supported by the
+        inverse-dynamics pipeline.
 
     .. experimental::
 

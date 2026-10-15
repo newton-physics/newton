@@ -1864,7 +1864,7 @@ def accumulate_body_particle_attachment_force_and_hessian(
     particle_forces: wp.array[wp.vec3],
     particle_hessians: wp.array[wp.mat33],
 ):
-    """Accumulate body-particle attachment forces and Hessians on particles."""
+    """Accumulate particle-body attachment forces and Hessians on particles."""
     attachment = wp.tid()
     if not attachment_enabled[attachment]:
         return

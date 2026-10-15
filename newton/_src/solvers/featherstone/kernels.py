@@ -1642,7 +1642,7 @@ def dense_gemm(
 
 
 def create_inertia_matrix_kernel(num_joints, num_dofs):
-    @wp.kernel
+    @wp.kernel(module="unique")
     def eval_dense_gemm_tile(J_arr: wp.array3d[float], M_arr: wp.array3d[float], H_arr: wp.array3d[float]):
         articulation = wp.tid()
 
@@ -1674,7 +1674,7 @@ def create_inertia_matrix_kernel(num_joints, num_dofs):
 def create_batched_cholesky_kernel(num_dofs):
     assert num_dofs == 18
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def eval_tiled_dense_cholesky_batched(A: wp.array3d[float], R: wp.array2d[float], L: wp.array3d[float]):
         articulation = wp.tid()
 
@@ -1688,7 +1688,7 @@ def create_batched_cholesky_kernel(num_dofs):
 
 
 def create_inertia_matrix_cholesky_kernel(num_joints, num_dofs):
-    @wp.kernel
+    @wp.kernel(module="unique")
     def eval_dense_gemm_and_cholesky_tile(
         J_arr: wp.array3d[float],
         M_arr: wp.array3d[float],
@@ -2468,7 +2468,7 @@ def compute_body_parent_f(
     inbound joint, expressed in Featherstone's internal solve frame. For
     floating-root articulations this frame is translated to the root COM; for
     other roots it remains at the world origin. We translate it to the body's
-    COM (matching :class:`SolverMuJoCo` and the ``SolverObservables.body_parent_f``
+    COM (matching :class:`SolverMuJoCo` and the ``SolverBase.Observables.body_parent_f``
     convention -- linear ``[N]`` first, torque ``[N·m]`` referenced to the COM,
     both in world frame).
 

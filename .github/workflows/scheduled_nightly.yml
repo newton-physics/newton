@@ -110,6 +110,23 @@ jobs:
       - name: Dispatch and wait for g6e benchmark kernel cache fill
         run: uv run --no-project scripts/ci/dispatch_workflow_and_wait.py aws_gpu_benchmarks.yml -f "inputs[instance-type]=g6e.2xlarge" -f "inputs[trigger-category]=scheduled-nightly"
 
+      # Keep dispatches independent, then propagate test failures to the run.
+      - name: Report nightly test status
+        if: ${{ !cancelled() }}
+        env:
+          GPU_TESTS: ${{ steps.gpu-tests.outputs.conclusion }}
+          MINIMUM_DEPS_TESTS: ${{ steps.minimum-deps-tests.outputs.conclusion }}
+          WARP_NIGHTLY_TESTS: ${{ steps.warp-nightly-tests.outputs.conclusion }}
+        run: |
+          failed=0
+          for conclusion in "$GPU_TESTS" "$MINIMUM_DEPS_TESTS" "$WARP_NIGHTLY_TESTS"; do
+            if [[ -n "$conclusion" && "$conclusion" != success ]]; then
+              echo "::error::Nightly test suite did not pass: $conclusion"
+              failed=1
+            fi
+          done
+          exit "$failed"
+
   notify-on-failure:
     name: Notify on failure
     needs: [run-nightly-tests]
@@ -157,7 +174,7 @@ jobs:
             ];
 
             // Fetch recent run history to show pass/fail trend in the issue table
-            // (default branch only, excludes cancelled runs)
+            // (default branch only, includes cancelled runs)
             async function getHistory(workflowFile) {
               try {
                 const { data } = await github.rest.actions.listWorkflowRuns({
@@ -169,10 +186,12 @@ jobs:
                   status: 'completed',
                   exclude_pull_requests: true
                 });
-                const runs = data.workflow_runs
-                  .filter(r => r.conclusion !== 'cancelled')
-                  .slice(0, 5);
-                return runs.map(r => r.conclusion === 'success' ? '✅' : '❌').join('');
+                const runs = data.workflow_runs.slice(0, 5);
+                return runs.map(r => {
+                  if (r.conclusion === 'success') return '✅';
+                  if (r.conclusion === 'cancelled') return '⏹️';
+                  return '❌';
+                }).join('');
               } catch (error) {
                 core.warning(`Failed to fetch history for ${workflowFile}: ${error.message}`);
                 return '';
@@ -189,7 +208,13 @@ jobs:
               } else if (suite.conclusion === 'success') {
                 rows.push(`| ${suite.name} | ${recentCol} | ✅ Passed | [View logs](${suite.url}) |`);
               } else {
-                rows.push(`| ${suite.name} | ${recentCol} | ❌ Failed | [View logs](${suite.url}) |`);
+                const reasons = {
+                  timed_out: ' (timed out)',
+                  dispatch_error: ' (dispatch error)'
+                };
+                const reason = reasons[suite.conclusion] || (suite.conclusion === 'failure' ? '' : ` (${suite.conclusion})`);
+                const status = suite.conclusion === 'cancelled' ? '⏹️ Cancelled' : `❌ Failed${reason}`;
+                rows.push(`| ${suite.name} | ${recentCol} | ${status} | [View logs](${suite.url}) |`);
                 failed.push(suite.name);
               }
             }
@@ -198,9 +223,11 @@ jobs:
             const orchestratorUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const failedList = failed.join(', ');
             const table = [
-              '| Test Suite | Recent | Status | Logs |',
+              '| Test Suite | Recent (newest → oldest) | Status | Logs |',
               '|---|---|---|---|',
-              ...rows
+              ...rows,
+              '',
+              'History: ✅ Passed, ❌ Failed, ⏹️ Cancelled.'
             ].join('\n');
 
             // Search for an existing open nightly failure issue to update

@@ -36,8 +36,8 @@ dependencies = [
 # Core simulation dependencies
 sim = [
     # MuJoCo simulation
-    "mujoco-warp~=3.14.0",  # MuJoCo, warp-accelerated
-    "mujoco~=3.14.0",       # MuJoCo physics engine
+    "mujoco-warp~=3.15.0",  # MuJoCo, warp-accelerated
+    "mujoco~=3.15.0",       # MuJoCo physics engine
 ]
 
 # Optional ONNX policy inference for neural actuators and RL policy examples.
@@ -58,8 +58,9 @@ importers = [
     "trimesh>=4.6.8",              # for mesh operations and V-HACD
     "meshio>=5.3.5",               # alternative mesh file loader (fallback)
     "pycollada>=0.9",              # transitive dependency of trimesh for COLLADA (.dae) mesh support
+    "Pillow>=11.3.0",
     "resolve-robotics-uri-py>=0.4.0",  # for resolving ROS/Gazebo-style URIs (package://, model://)
-    "open3d>=0.19.0; python_version < '3.13' and (sys_platform != 'linux' or platform_machine != 'aarch64')",
+    "open3d>=0.20.0; sys_platform != 'darwin' or platform_machine == 'arm64'",  # no Intel macOS wheels
 
     # USD core libraries
     "usd-core>=25.5,<26.9 ; platform_machine != 'aarch64' and python_version < '3.14'",
@@ -71,7 +72,7 @@ importers = [
 
 # Remeshing dependencies (for SurfaceReconstructor)
 remesh = [
-    "open3d>=0.19.0; python_version < '3.13' and (sys_platform != 'linux' or platform_machine != 'aarch64')",
+    "open3d>=0.20.0; sys_platform != 'darwin' or platform_machine == 'arm64'",  # no Intel macOS wheels
     "pyfqmr>=0.5.0",               # for fast mesh simplification
 ]
 
@@ -85,7 +86,8 @@ examples = [
     "imgui_bundle>=1.92.0", # for viewer GUI
     "pyyaml>=6.0.2",
     "cbor2>=5.7.0",         # for binary recording format (.bin files) - more efficient than JSON
-    "Pillow>=11.3.0",
+    "matplotlib>=3.10.7",   # for plotting utilities and diagnostics
+    "networkx>=2.6",        # for articulation and graph coloring plots
 ]
 
 # OVRTX real-time ray tracing viewer
@@ -218,7 +220,7 @@ ignore = [
 
 [tool.ruff.lint.flake8-bugbear]
 # This helper returns dataclass field metadata, not a shared mutable default.
-extend-immutable-calls = ["newton.solvers.SolverObservables.field"]
+extend-immutable-calls = ["newton.solvers.SolverBase.Observables.field"]
 
 [tool.ruff.lint.per-file-ignores]
 "asv/benchmarks/**/*" = ["RUF012", "E402"]

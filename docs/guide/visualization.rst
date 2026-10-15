@@ -252,7 +252,7 @@ windowed mode:
     rgb = frame.numpy()  # NumPy uint8 array with shape (height, width, 3)
 
     # Reuse the output buffer after rendering subsequent frames.
-    viewer.get_frame(target_image=frame)
+    viewer.get_frame(output=frame)
 
 Use an image library to save the captured pixels, for example:
 
@@ -438,18 +438,16 @@ This installs ``ovrtx`` (the NVIDIA OVRTX renderer), ``ovstage`` for runtime sce
 
 ViewerRTX has been validated with the following renderer configurations:
 
-- ``ovrtx==0.3.0.312915`` (local compatibility testing)
-- ``ovrtx==0.5.0.377615`` with ``ovstage==0.2.0.377349`` (GPU CI)
+- ``ovrtx==0.3.0.312915`` with ``ovstage==0.1.1.355824`` (minimum-dependency CI)
+- ``ovrtx==0.5.1.385782`` with ``ovstage==0.2.1.385922`` (GPU CI)
 
 OVRTX 0.4 and newer select the same OVStage interface, but only the exact configurations above are part of
-Newton's validated matrix. The minimum-dependency CI workflow does not install the optional ``rtx`` dependency
-group and therefore does not exercise the OVRTX 0.3 integration.
+Newton's validated matrix. Upgrade ``ovrtx`` and ``ovstage`` together; OVRTX 0.5.1 fails to start with
+OVStage 0.2.0.
 
 .. warning::
-    With ``ovrtx==0.5.0.377615`` and ``ovstage==0.2.0.377349``, CUDA-backed runtime transform updates can leave
-    ViewerRTX showing a uniform gray image, commonly after switching examples in the same process. Until this is
-    resolved, use the validated OVRTX 0.3 configuration for reliable interactive switching. CPU staging avoids
-    the symptom but is not enabled because it introduces a per-frame GPU-to-CPU synchronization and copy. See
+    With ``ovstage==0.2.0.377349``, CUDA-backed runtime transform updates can leave ViewerRTX showing a uniform
+    gray image, commonly after switching examples in the same process. OVStage 0.2.1 no longer shows this. See
     `issue #4283 <https://github.com/newton-physics/newton/issues/4283>`__.
 
 .. code-block:: python
@@ -1057,7 +1055,7 @@ the range are clipped).
     # once and reuse it every frame; the RGBA conversion is a zero-copy view.
     camera = SensorCamera(model)
     view_count, width, height = 1, 16, 16
-    color_image = camera.create_color_image_output(view_count, width, height)
+    color_image = camera.allocate_image_color(view_count, width, height)
     # ... in a real pipeline, camera.update(...) fills color_image each frame.
     rgba = SensorCamera.Utils.to_rgba_from_color(color_image)
     viewer.log_image("camera", rgba)
@@ -1085,7 +1083,7 @@ frame capture where the image should replace the 3D scene:
     # once and reuse it every frame; the RGBA conversion is a zero-copy view.
     camera = SensorCamera(model)
     view_count, width, height = 1, 16, 16
-    color_image = camera.create_color_image_output(view_count, width, height)
+    color_image = camera.allocate_image_color(view_count, width, height)
     # ... in a real pipeline, camera.update(...) fills color_image each frame.
     rgba = SensorCamera.Utils.to_rgba_from_color(color_image)
     viewer.log_image("camera", rgba, fullscreen=True)

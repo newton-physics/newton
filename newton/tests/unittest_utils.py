@@ -784,14 +784,24 @@ def cleanup_test_allocations():
             wp.set_mempool_release_threshold(device_name, 0)
 
 
+@dataclasses.dataclass
+class _AllocationCleanupState:
+    tests_since_cleanup: int = 0
+
+
 class AllocationCleanupTestResultMixin:
-    """Amortize cleanup across tests and flush partial batches at suite boundaries."""
+    """Batch allocation cleanup across suites in a worker process."""
 
     _CLEANUP_INTERVAL = 8
+    _worker_cleanup_state: _AllocationCleanupState | None = None
+
+    @classmethod
+    def _start_worker(cls):
+        cls._worker_cleanup_state = _AllocationCleanupState()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._tests_since_cleanup = 0
+        self._cleanup_state = self._worker_cleanup_state or _AllocationCleanupState()
         self.cleanup_count = 0
         self.cleanup_seconds = 0.0
 
@@ -800,18 +810,19 @@ class AllocationCleanupTestResultMixin:
         cleanup_test_allocations()
         self.cleanup_seconds += time.perf_counter() - start
         self.cleanup_count += 1
-        self._tests_since_cleanup = 0
+        self._cleanup_state.tests_since_cleanup = 0
 
     def stopTest(self, test):
         super().stopTest(test)
         if is_statically_skipped_test(test):
             return
-        self._tests_since_cleanup += 1
-        if self._tests_since_cleanup >= self._CLEANUP_INTERVAL:
+        self._cleanup_state.tests_since_cleanup += 1
+        if self._cleanup_state.tests_since_cleanup >= self._CLEANUP_INTERVAL:
             self._cleanup_allocations()
 
     def stopTestRun(self):
-        if self._tests_since_cleanup:
+        # Worker exit releases remaining allocations; standalone runs must flush.
+        if self._cleanup_state is not self._worker_cleanup_state and self._cleanup_state.tests_since_cleanup:
             self._cleanup_allocations()
         super().stopTestRun()
 

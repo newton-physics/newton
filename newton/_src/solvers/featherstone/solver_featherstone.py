@@ -6,9 +6,8 @@ import warp as wp
 
 from ...core.types import override
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelFlags, State
-from ...sim.joint_mimic import eval_mimic_joints, has_supported_joint_mimics
+from ...sim.joint_mimic import eval_joint_mimic, has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
-from ..observables import SolverObservableFlags, SolverObservables
 from ..semi_implicit import kernels_contact, kernels_muscle, kernels_particle
 from ..semi_implicit.kernels_contact import (
     eval_body_contact,
@@ -106,8 +105,8 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         See :ref:`Joint feature support` for the full comparison across solvers.
 
     Solver observables:
-        :attr:`~newton.solvers.SolverObservables.body_parent_f` is populated when
-        :attr:`~newton.solvers.SolverObservableFlags.BODY_PARENT_F` is requested
+        :attr:`~newton.solvers.SolverBase.Observables.body_parent_f` is populated when
+        :attr:`~newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F` is requested
         from :meth:`~newton.solvers.SolverBase.observables`. The reported wrench is
         the per-body net spatial force from the RNEA backward pass
         translated to the body's COM (linear ``[N]`` first, torque ``[N·m]``
@@ -124,6 +123,10 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         ``v x* (I*v)`` term during tumbling) rather than a true joint
         reaction. Treat it as a diagnostic in that case.
 
+    Mimic reduction requires every mimic follower and reference to belong to
+    the same assigned articulation. Models with standalone or mixed-membership
+    mimic pairs may be used with maximal-coordinate solvers instead.
+
     Example
     -------
 
@@ -138,7 +141,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
 
     """
 
-    SUPPORTED_OBSERVABLE_FLAGS = frozenset({SolverObservableFlags.BODY_PARENT_F})
+    SUPPORTED_OBSERVABLES = frozenset({SolverBase.ObservableKind.BODY_PARENT_F})
 
     def __init__(
         self,
@@ -163,9 +166,34 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                 kernel modules. Pass a :class:`warp.DeterministicMode`, or
                 ``None`` (default) to inherit the current
                 ``wp.config.deterministic`` mode.
+
+        Raises:
+            ValueError: If ``model`` contains a :attr:`~newton.JointType.ROD`
+                joint, or active mimic reduction contains a pair outside the
+                same assigned articulation.
         """
+        if model._has_rod_joints and JointType.ROD in model.joint_type.numpy():  # pyright: ignore[reportPrivateUsage]
+            raise ValueError("SolverFeatherstone does not support JointType.ROD joints.")
+
         super().__init__(model)
         self._has_joint_mimics = has_supported_joint_mimics(model, "SolverFeatherstone")
+        if self._has_joint_mimics:
+            mimic_joints = model.joint_mimic_joint.numpy()
+            articulations = model.joint_articulation.numpy()
+            followers = np.flatnonzero(mimic_joints >= 0)
+            references = mimic_joints[followers]
+            invalid = np.flatnonzero(
+                (articulations[followers] < 0) | (articulations[followers] != articulations[references])
+            )
+            if len(invalid) > 0:
+                idx = int(invalid[0])
+                follower = int(followers[idx])
+                reference = int(references[idx])
+                raise ValueError(
+                    "SolverFeatherstone requires mimic joints to belong to the same articulation. "
+                    f"Follower joint {follower} belongs to articulation {articulations[follower]}; "
+                    f"reference joint {reference} belongs to articulation {articulations[reference]}."
+                )
         effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
         if model.joint_count > 0:
             self._set_module_options(
@@ -486,7 +514,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         contacts: Contacts,
         dt: float,
         *,
-        observables: SolverObservables | None = None,
+        observables: SolverBase.Observables | None = None,
     ) -> None:
         self._apply_module_options()
         self.validate_observables(observables)
@@ -502,7 +530,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         model = self.model
         body_parent_f = (
             observables.body_parent_f
-            if observables is not None and observables.is_requested(SolverObservableFlags.BODY_PARENT_F)
+            if observables is not None and observables.is_requested(SolverBase.ObservableKind.BODY_PARENT_F)
             else None
         )
         if body_parent_f is None:
@@ -518,7 +546,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             if model.joint_count:
                 if self._has_joint_mimics:
                     wp.launch(
-                        kernel=eval_mimic_joints,
+                        kernel=eval_joint_mimic,
                         dim=model.joint_count,
                         inputs=[
                             model.joint_mimic_joint,
@@ -1091,7 +1119,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
 
                 if self._has_joint_mimics:
                     wp.launch(
-                        kernel=eval_mimic_joints,
+                        kernel=eval_joint_mimic,
                         dim=model.joint_count,
                         inputs=[
                             model.joint_mimic_joint,

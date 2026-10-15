@@ -30,6 +30,7 @@ newton
    Axis
    BodyFlags
    CollisionPipeline
+   CollisionSubstepScheduler
    Contacts
    Control
    Gaussian
@@ -47,6 +48,9 @@ newton
    ShapeFlags
    State
    StateFlags
+   TendonGuide
+   TendonGuideFlags
+   TendonGuideType
    TetMesh
 
 .. rubric:: Functions
