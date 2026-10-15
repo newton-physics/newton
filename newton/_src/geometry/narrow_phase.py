@@ -16,6 +16,7 @@ from ..geometry.collision_core import (
     compute_bounding_sphere_from_aabb,
     compute_tight_aabb_from_support,
     convert_infinite_plane_to_cube,
+    convex_mesh_interior_point,
     create_compute_gjk_mpr_contacts,
     create_find_contacts,
     get_triangle_shape_from_mesh,
@@ -1708,6 +1709,27 @@ def narrow_phase_find_heightfield_triangle_overlaps_kernel(
 
 
 @wp.kernel(enable_backward=False)
+def compute_shape_interior_points_kernel(
+    shape_types: wp.array[int],
+    shape_data: wp.array[wp.vec4],
+    shape_source: wp.array[wp.uint64],
+    # outputs
+    shape_interior_point: wp.array[wp.vec3],
+):
+    """Store an interior point of each shape in its scaled local frame.
+
+    Primitive origins are interior. A convex hull's origin and AABB center can
+    both lie outside it, so hulls use their vertex mean instead.
+    """
+    shape = wp.tid()
+    point = wp.vec3(0.0, 0.0, 0.0)
+    if shape_types[shape] == GeoType.CONVEX_MESH:
+        data = shape_data[shape]
+        point = convex_mesh_interior_point(shape_source[shape], wp.vec3(data[0], data[1], data[2]))
+    shape_interior_point[shape] = point
+
+
+@wp.kernel(enable_backward=False)
 def narrow_phase_find_mesh_triangle_overlaps_kernel(
     shape_types: wp.array[int],
     shape_transform: wp.array[wp.transform],
@@ -1717,6 +1739,7 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
     shape_collision_radius: wp.array[float],
     shape_collision_aabb_lower: wp.array[wp.vec3],  # Local-space AABB lower bounds
     shape_collision_aabb_upper: wp.array[wp.vec3],  # Local-space AABB upper bounds
+    shape_interior_point: wp.array[wp.vec3],  # Local interior points for back-face culling
     shape_heightfield_index: wp.array[wp.int32],
     heightfield_data: wp.array[HeightfieldData],
     heightfield_elevations: wp.array[wp.float32],
@@ -1822,6 +1845,7 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
             shape_data,
             shape_source,
             contact_threshold,
+            shape_interior_point[non_mesh_shape],
             triangle_pairs,
             triangle_pairs_count,
         )
@@ -1851,8 +1875,7 @@ def create_narrow_phase_process_mesh_triangle_contacts_kernel(
         support_lut: wp.array[int],
         support_vertex_offsets: wp.array[int],
         support_neighbors: wp.array[int],
-        shape_collision_aabb_lower: wp.array[wp.vec3],
-        shape_collision_aabb_upper: wp.array[wp.vec3],
+        shape_interior_point: wp.array[wp.vec3],
         shape_gap: wp.array[float],  # Per-shape contact gaps
         shape_heightfield_index: wp.array[wp.int32],
         heightfield_data: wp.array[HeightfieldData],
@@ -1904,8 +1927,9 @@ def create_narrow_phase_process_mesh_triangle_contacts_kernel(
                 shape_source,
             )
             if shape_data_b.shape_type == GeoType.CONVEX_MESH:
-                # Avoid rebuilding the convex AABB for every candidate triangle.
-                shape_data_b.center = 0.5 * (shape_collision_aabb_lower[shape_b] + shape_collision_aabb_upper[shape_b])
+                # MPR/GJK need an interior seed. A hull's AABB center can lie
+                # outside it and flip the contact against thin triangles.
+                shape_data_b.center = shape_interior_point[shape_b]
 
             # Triangle position is vertex A in world space.
             # For heightfield prisms, edges are in heightfield-local space
@@ -2889,8 +2913,15 @@ class NarrowPhase:
             # Indexed by shape id; all-zero means "no watertight bit set" so the
             # sign method falls back to automatic selection (see resolve_mesh_sign_method).
             self._empty_mesh_properties = wp.zeros(max(num_shapes, 1), dtype=wp.int32, device=device)
+            # A -1 start keeps pseudo-normal signs when no boundary flags are given.
+            self._empty_mesh_boundary_flags = wp.zeros(1, dtype=wp.uint8, device=device)
+            self._empty_shape_mesh_boundary_start = wp.full(max(num_shapes, 1), -1, dtype=wp.int32, device=device)
 
             self._empty_shape_support_data = wp.full(max(num_shapes, 1), (-1, -1, -1, 0), dtype=wp.vec4i, device=device)
+            # Per-shape interior points for mesh/heightfield triangle culling and MPR seeds.
+            self._shape_interior_point = (
+                wp.zeros(max(num_shapes, 1), dtype=wp.vec3, device=device) if has_meshes or has_heightfields else None
+            )
             self._empty_support_lut = wp.zeros(1, dtype=wp.int32, device=device)
             self._empty_support_vertex_offsets = wp.zeros(1, dtype=wp.int32, device=device)
             self._empty_support_neighbors = wp.zeros(1, dtype=wp.int32, device=device)
@@ -2984,6 +3015,8 @@ class NarrowPhase:
         support_vertex_offsets: wp.array[wp.int32] | None = None,
         support_neighbors: wp.array[wp.int32] | None = None,
         shape_mesh_properties: wp.array[wp.int32] | None = None,  # Per-shape mesh property bitfield
+        mesh_boundary_flags: wp.array[wp.uint8] | None = None,  # Packed per-face open-boundary bits
+        shape_mesh_boundary_start: wp.array[wp.int32] | None = None,  # Per-shape start into the bits
         shape_sdf_index: wp.array[wp.int32],  # Per-shape index into texture_sdf_data (-1 for none)
         shape_gap: wp.array[wp.float32],  # per-shape contact gap (detection threshold)
         shape_base_gap: wp.array[wp.float32] | None = None,
@@ -2992,6 +3025,7 @@ class NarrowPhase:
         shape_collision_aabb_lower: wp.array[wp.vec3],  # Local-space AABB lower bounds
         shape_collision_aabb_upper: wp.array[wp.vec3],  # Local-space AABB upper bounds
         shape_voxel_resolution: wp.array[wp.vec3i],  # Voxel grid resolution per shape
+        shape_interior_point: wp.array[wp.vec3] | None = None,  # Local-space interior points
         texture_sdf_data: wp.array[TextureSDFData] | None = None,  # Compact texture SDF data table
         shape_heightfield_index: wp.array[wp.int32] | None = None,
         heightfield_data: wp.array[HeightfieldData] | None = None,
@@ -3032,6 +3066,11 @@ class NarrowPhase:
             support_neighbors: Optional packed CSR vertex-adjacency indices used by convex
                 support walks.
             shape_mesh_properties: Per-shape mesh property bitfield.
+            mesh_boundary_flags: Optional packed per-face bits marking open-boundary
+                edges and vertices of meshes queried with pseudo-normal signs.
+            shape_mesh_boundary_start: Optional per-shape offset into
+                ``mesh_boundary_flags``, or -1 for shapes without boundary bits.
+                Without both arrays, pseudo-normal signs extend past open boundaries.
             shape_sdf_index: Per-shape SDF table index (-1 for shapes without SDF)
             texture_sdf_data: Compact array of TextureSDFData structs
             shape_gap: Array of per-shape contact gaps (detection threshold) for each shape
@@ -3042,6 +3081,9 @@ class NarrowPhase:
             shape_collision_aabb_lower: Local-space AABB lower bounds for each shape (for voxel binning)
             shape_collision_aabb_upper: Local-space AABB upper bounds for each shape (for voxel binning)
             shape_voxel_resolution: Voxel grid resolution for each shape (for voxel binning)
+            shape_interior_point: Optional scaled local-space point inside each shape [m],
+                used to cull back-facing mesh triangles and seed triangle contacts. If
+                ``None``, convex-mesh vertex means are computed on each launch.
             mesh_edge_indices: Packed array of mesh edge vertex pairs for all shapes.
             mesh_edge_centers: Packed precomputed mesh edge centers (xyz) and radii (w) in
                 unscaled mesh coordinates [m]; the shape scale in ``shape_data`` is applied when read.
@@ -3062,6 +3104,9 @@ class NarrowPhase:
             device = self.device if self.device is not None else candidate_pair.device
         if shape_mesh_properties is None:
             shape_mesh_properties = self._empty_mesh_properties
+        if mesh_boundary_flags is None or shape_mesh_boundary_start is None:
+            mesh_boundary_flags = self._empty_mesh_boundary_flags
+            shape_mesh_boundary_start = self._empty_shape_mesh_boundary_start
         if shape_support_data is None:
             shape_support_data = self._empty_shape_support_data
         if support_lut is None:
@@ -3286,6 +3331,19 @@ class NarrowPhase:
                     record_tape=False,
                 )
 
+            if shape_interior_point is None:
+                if self._shape_interior_point.shape[0] < shape_types.shape[0]:
+                    self._shape_interior_point = wp.zeros(shape_types.shape[0], dtype=wp.vec3, device=device)
+                wp.launch(
+                    kernel=compute_shape_interior_points_kernel,
+                    dim=shape_types.shape[0],
+                    inputs=[shape_types, shape_data, shape_source],
+                    outputs=[self._shape_interior_point],
+                    device=device,
+                    record_tape=False,
+                )
+                shape_interior_point = self._shape_interior_point
+
             # Launch midphase: finds overlapping triangles for both mesh and heightfield pairs.
             # Heightfield-only scenes use scalar cell queries instead of tiled BVH traversal.
             if self._heightfield_packed_pairs:
@@ -3318,6 +3376,7 @@ class NarrowPhase:
                     shape_collision_radius,
                     shape_collision_aabb_lower,
                     shape_collision_aabb_upper,
+                    shape_interior_point,
                     shape_heightfield_index,
                     heightfield_data,
                     heightfield_elevations,
@@ -3394,8 +3453,7 @@ class NarrowPhase:
                         support_lut,
                         support_vertex_offsets,
                         support_neighbors,
-                        shape_collision_aabb_lower,
-                        shape_collision_aabb_upper,
+                        shape_interior_point,
                         shape_gap,
                         shape_heightfield_index,
                         heightfield_data,
@@ -3423,8 +3481,7 @@ class NarrowPhase:
                         support_lut,
                         support_vertex_offsets,
                         support_neighbors,
-                        shape_collision_aabb_lower,
-                        shape_collision_aabb_upper,
+                        shape_interior_point,
                         shape_gap,
                         shape_heightfield_index,
                         heightfield_data,
@@ -3530,6 +3587,8 @@ class NarrowPhase:
                             texture_sdf_data,
                             shape_sdf_index,
                             shape_mesh_properties,
+                            mesh_boundary_flags,
+                            shape_mesh_boundary_start,
                             shape_gap,
                             shape_base_gap,
                             shape_linear_velocity,
@@ -3568,6 +3627,8 @@ class NarrowPhase:
                             texture_sdf_data,
                             shape_sdf_index,
                             shape_mesh_properties,
+                            mesh_boundary_flags,
+                            shape_mesh_boundary_start,
                             shape_gap,
                             shape_base_gap,
                             shape_linear_velocity,
@@ -3717,6 +3778,8 @@ class NarrowPhase:
         support_vertex_offsets: wp.array[wp.int32] | None = None,
         support_neighbors: wp.array[wp.int32] | None = None,
         shape_mesh_properties: wp.array[wp.int32] | None = None,  # Per-shape mesh property bitfield
+        mesh_boundary_flags: wp.array[wp.uint8] | None = None,  # Packed per-face open-boundary bits
+        shape_mesh_boundary_start: wp.array[wp.int32] | None = None,  # Per-shape start into the bits
         shape_sdf_index: wp.array[wp.int32] | None = None,  # Per-shape index into texture_sdf_data (-1 for none)
         texture_sdf_data: wp.array[TextureSDFData] | None = None,  # Compact texture SDF data table
         shape_gap: wp.array[wp.float32],  # per-shape contact gap (detection threshold)
@@ -3726,6 +3789,7 @@ class NarrowPhase:
         shape_collision_aabb_lower: wp.array[wp.vec3] | None = None,  # Local-space AABB lower bounds
         shape_collision_aabb_upper: wp.array[wp.vec3] | None = None,  # Local-space AABB upper bounds
         shape_voxel_resolution: wp.array[wp.vec3i],  # Voxel grid resolution per shape
+        shape_interior_point: wp.array[wp.vec3] | None = None,  # Local-space interior points
         # Outputs
         contact_pair: wp.array[wp.vec2i],
         contact_position: wp.array[wp.vec3],
@@ -3763,6 +3827,11 @@ class NarrowPhase:
             support_neighbors: Optional packed CSR vertex-adjacency indices used by convex
                 support walks.
             shape_mesh_properties: Per-shape mesh property bitfield.
+            mesh_boundary_flags: Optional packed per-face bits marking open-boundary
+                edges and vertices of meshes queried with pseudo-normal signs.
+            shape_mesh_boundary_start: Optional per-shape offset into
+                ``mesh_boundary_flags``, or -1 for shapes without boundary bits.
+                Without both arrays, pseudo-normal signs extend past open boundaries.
             shape_sdf_index: Per-shape SDF table index (-1 for shapes without SDF)
             texture_sdf_data: Compact array of TextureSDFData structs
             shape_gap: Array of per-shape contact gaps (detection threshold) for each shape
@@ -3772,6 +3841,9 @@ class NarrowPhase:
             shape_collision_aabb_lower: Local-space AABB lower bounds for each shape (for voxel binning)
             shape_collision_aabb_upper: Local-space AABB upper bounds for each shape (for voxel binning)
             shape_voxel_resolution: Voxel grid resolution for each shape (for voxel binning)
+            shape_interior_point: Optional scaled local-space point inside each shape [m],
+                used to cull back-facing mesh triangles and seed triangle contacts. If
+                ``None``, convex-mesh vertex means are computed on each launch.
             contact_pair: Output array for contact shape pairs
             contact_position: Output array for contact positions (center point)
             contact_normal: Output array for contact normals
@@ -3877,6 +3949,8 @@ class NarrowPhase:
             support_vertex_offsets=support_vertex_offsets,
             support_neighbors=support_neighbors,
             shape_mesh_properties=shape_mesh_properties,
+            mesh_boundary_flags=mesh_boundary_flags,
+            shape_mesh_boundary_start=shape_mesh_boundary_start,
             shape_sdf_index=shape_sdf_index,
             texture_sdf_data=texture_sdf_data,
             shape_gap=shape_gap,
@@ -3885,6 +3959,7 @@ class NarrowPhase:
             shape_flags=shape_flags,
             shape_collision_aabb_lower=shape_collision_aabb_lower,
             shape_collision_aabb_upper=shape_collision_aabb_upper,
+            shape_interior_point=shape_interior_point,
             shape_voxel_resolution=shape_voxel_resolution,
             mesh_edge_indices=mesh_edge_indices,
             mesh_edge_centers=mesh_edge_centers,

@@ -85,7 +85,7 @@ class TestDeformableVisualGaussianBuilder(unittest.TestCase):
         visual = model.deformable_visual_gaussians[index]
         self.assertIsInstance(visual, newton.DeformableVisualGaussian)
         self.assertIs(visual.gaussian, gaussian)
-        self.assertEqual(visual.kind, newton.DeformableVisualBinding.Kind.TET)
+        self.assertEqual(visual.kind, newton.DeformableVisualMesh.Kind.TET)
         self.assertEqual(visual.count, 4)
         self.assertEqual(visual.label, "soft_splats")
         self.assertEqual(visual.index, index)

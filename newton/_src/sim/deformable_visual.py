@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
 """Visual payloads embedded in deformable bodies.
@@ -27,15 +27,21 @@ if TYPE_CHECKING:
     from .state import State
 
 
-class DeformableVisualBinding:
-    """Payload-neutral binding from visual points to simulation drivers.
+class DeformableVisualMesh:
+    """A textured visual mesh skinned from a deformable's simulation state.
 
-    The same binding structure drives visual meshes and Gaussian fields.
-    Gaussian fields currently support tetrahedral bindings only.
+    Instances are created by :meth:`newton.ModelBuilder.finalize` from meshes
+    registered with :meth:`newton.ModelBuilder.add_deformable_visual_mesh` and
+    stored in :attr:`newton.Model.deformable_visual_meshes`. Bind-pose vertices
+    and topology are immutable asset data. The :attr:`parent`, :attr:`weights`,
+    and :attr:`local_offsets` arrays describe how simulation elements move the
+    visual vertices.
+
+    Attributes are device :class:`warp.array` objects unless noted otherwise.
 
     .. experimental::
 
-        Deformable visual APIs may change without a formal deprecation cycle.
+        This API may change without a formal deprecation cycle.
     """
 
     class Kind(IntEnum):
@@ -65,58 +71,10 @@ class DeformableVisualBinding:
     def __init__(
         self,
         kind: Kind,
-        parent: wp.array[wp.int32],
-        weights: wp.array[wp.vec4] | wp.array[wp.vec3] | None = None,
-        local_offsets: wp.array[wp.vec3] | None = None,
-    ) -> None:
-        """Store a visual-to-simulation binding.
-
-        Args:
-            kind: Simulation element kind driving the visual points.
-            parent: Driver index for each visual point.
-            weights: Barycentric weights for triangle or tetrahedron bindings.
-            local_offsets: Body-local binding offsets [m].
-        """
-        self.kind = kind
-        """Embedding kind."""
-        self.parent = parent
-        """Per-visual-point driver index, shape [point_count]."""
-        self.weights = weights
-        """Barycentric weights for triangle or tet bindings, or ``None``."""
-        self.local_offsets = local_offsets
-        """Body-local offsets [m] for rigid body bindings, or ``None``."""
-
-
-class DeformableVisualMesh:
-    """A textured visual mesh skinned from a deformable's simulation state.
-
-    Instances are model output: they are created by
-    :meth:`newton.ModelBuilder.finalize` from bindings registered with
-    :meth:`newton.ModelBuilder.add_deformable_visual_mesh` (or by the USD
-    importer) and stored in :attr:`newton.Model.deformable_visual_meshes`. The
-    bind-pose vertices and topology are immutable asset data; the per-vertex
-    embedding is stored in :attr:`binding` and also exposed through the
-    compatibility attributes :attr:`parent`, :attr:`weights`, and
-    :attr:`local_offsets`. It references simulation elements so consumers can
-    evaluate the current surface from the state, and so future per-element
-    simulation fields can be projected onto the visual vertices.
-
-    Attributes are device :class:`warp.array` objects unless noted otherwise.
-
-    .. experimental::
-
-        Deformable visual APIs may change without a formal deprecation cycle.
-    """
-
-    Kind = DeformableVisualBinding.Kind
-    """Compatibility alias for :class:`DeformableVisualBinding.Kind`."""
-
-    def __init__(
-        self,
-        kind: Kind,
         rest_vertices: wp.array[wp.vec3],
         indices: wp.array[wp.int32],
         parent: wp.array[wp.int32],
+        *,
         weights: wp.array[wp.vec4] | wp.array[wp.vec3] | None = None,
         local_offsets: wp.array[wp.vec3] | None = None,
         uvs: wp.array[wp.vec2] | None = None,
@@ -128,28 +86,39 @@ class DeformableVisualMesh:
         sim_path: str | None = None,
         graphics_path: str | None = None,
     ) -> None:
-        self.kind = DeformableVisualBinding.Kind(kind)
-        """Embedding kind (see :class:`DeformableVisualBinding.Kind`)."""
+        """Store a visual mesh and its simulation binding.
+
+        Args:
+            kind: Simulation element kind driving the visual vertices.
+            rest_vertices: Bind-pose visual positions [m], shape [vertex_count, 3].
+            indices: Flattened triangle vertex indices.
+            parent: Simulation driver index for each visual vertex.
+            weights: Triangle or tetrahedron barycentric weights, when needed.
+            local_offsets: Body-local offsets [m] for body bindings.
+            uvs: Per-vertex texture coordinates, or ``None``.
+            texture: Albedo image array or image path, or ``None``.
+            world: Owning model world, or ``-1`` for global geometry.
+            label: Display label.
+            index: Index in :attr:`newton.Model.deformable_visual_meshes`.
+            body_path: Owning deformable body USD path, when imported.
+            sim_path: Driving simulation geometry USD path, when imported.
+            graphics_path: Visual mesh USD path, when imported.
+        """
+        self.kind = DeformableVisualMesh.Kind(kind)
+        """Embedding kind (see :class:`DeformableVisualMesh.Kind`)."""
         self.rest_vertices = rest_vertices
         """Bind-pose visual vertices [m], shape [vertex_count, 3]."""
         self.indices = indices
         """Flattened triangle indices into the visual vertices, shape [tri_count*3]."""
-        self.binding = DeformableVisualBinding(
-            kind=self.kind,
-            parent=parent,
-            weights=weights,
-            local_offsets=local_offsets,
-        )
-        """Binding from visual vertices to simulation drivers."""
         self.parent = parent
         """Per-visual-vertex driver index, shape [vertex_count]. A particle index
         for :attr:`Kind.PARTICLE`, a triangle index into
         :attr:`newton.Model.tri_indices` for :attr:`Kind.TRIANGLE`, a tetrahedron
         index into :attr:`newton.Model.tet_indices` for :attr:`Kind.TET`, and a
-        body index into ``State.body_q`` for :attr:`Kind.BODY`. After fixed-joint
-        collapse, ``-1`` denotes a world-fixed point whose offset is in world space."""
+        body index into ``State.body_q`` for :attr:`Kind.BODY`. A body parent
+        of ``-1`` fixes the vertex in world space after fixed-joint collapse."""
         self.weights = weights
-        """Barycentric weights: shape [vertex_count, 4] (vec4) for
+        """Barycentric weights, shape [vertex_count, 4] (vec4) for
         :attr:`Kind.TET`, shape [vertex_count, 3] (vec3) for
         :attr:`Kind.TRIANGLE`; ``None`` for other kinds."""
         self.local_offsets = local_offsets
@@ -182,7 +151,44 @@ class DeformableVisualMesh:
 
     @property
     def vertex_count(self) -> int:
+        """Number of visual mesh vertices."""
         return 0 if self.rest_vertices is None else len(self.rest_vertices)
+
+
+class DeformableVisualBinding:
+    """Payload-neutral binding from visual points to simulation drivers.
+
+    Gaussian fields currently support tetrahedral bindings only. Visual meshes
+    store their binding arrays directly on :class:`DeformableVisualMesh`.
+
+    .. experimental::
+
+        Deformable visual APIs may change without a formal deprecation cycle.
+    """
+
+    def __init__(
+        self,
+        kind: DeformableVisualMesh.Kind,
+        parent: wp.array[wp.int32],
+        weights: wp.array[wp.vec4] | wp.array[wp.vec3] | None = None,
+        local_offsets: wp.array[wp.vec3] | None = None,
+    ) -> None:
+        """Store a visual-to-simulation binding.
+
+        Args:
+            kind: Simulation element kind driving the visual points.
+            parent: Driver index for each visual point.
+            weights: Barycentric weights for triangle or tetrahedron bindings.
+            local_offsets: Body-local binding offsets [m].
+        """
+        self.kind = kind
+        """Embedding kind."""
+        self.parent = parent
+        """Per-visual-point driver index, shape [point_count]."""
+        self.weights = weights
+        """Barycentric weights for triangle or tet bindings, or ``None``."""
+        self.local_offsets = local_offsets
+        """Body-local offsets [m] for rigid body bindings, or ``None``."""
 
 
 class DeformableVisualGaussian:
@@ -232,7 +238,7 @@ class DeformableVisualGaussian:
         self.binding = binding
         """Binding from Gaussian centers to simulation drivers."""
         self.kind = binding.kind
-        """Embedding kind (see :class:`DeformableVisualBinding.Kind`)."""
+        """Embedding kind (see :class:`DeformableVisualMesh.Kind`)."""
         self.parent = binding.parent
         """Per-Gaussian simulation driver indices, shape [count]."""
         self.weights = binding.weights
@@ -276,6 +282,7 @@ class DeformableVisuals:
 
     Mesh output contains positions and normals. Gaussian output contains center
     transforms and axis scales; the rest opacity and appearance remain unchanged.
+    These output buffers do not support differentiation through skinning.
 
     .. experimental::
 
@@ -284,6 +291,11 @@ class DeformableVisuals:
     """
 
     def __init__(self, model: Model) -> None:
+        """Allocate fixed visual output buffers for a model.
+
+        Args:
+            model: Model whose visual meshes define the output layout.
+        """
         self._model = model
         self.device = model.device
         """Device containing :attr:`points` and :attr:`normals`."""
@@ -516,7 +528,7 @@ def skin_deformable_visual_gaussian(
     out_offset: int = 0,
 ) -> None:
     """Evaluate current transforms and scales for one Gaussian visual."""
-    if visual.kind != DeformableVisualBinding.Kind.TET:
+    if visual.kind != DeformableVisualMesh.Kind.TET:
         raise ValueError(f"Unsupported deformable Gaussian binding kind {visual.kind}")
     wp.launch(
         _skin_deformable_visual_gaussian_tet,

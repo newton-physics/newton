@@ -906,24 +906,13 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
                 attr: deserialize(value, callback, f"{_path}.{attr}" if _path else attr, format_type, cache)
                 for attr, value in data["attributes"].items()
             }
-            binding = attributes.get("binding")
-            parent = attributes.get("parent")
-            weights = attributes.get("weights")
-            local_offsets = attributes.get("local_offsets")
-            if isinstance(binding, DeformableVisualBinding):
-                if parent is None:
-                    parent = binding.parent
-                if weights is None:
-                    weights = binding.weights
-                if local_offsets is None:
-                    local_offsets = binding.local_offsets
             return DeformableVisualMesh(
                 kind=attributes["kind"],
                 rest_vertices=attributes["rest_vertices"],
                 indices=attributes["indices"],
-                parent=parent,
-                weights=weights,
-                local_offsets=local_offsets,
+                parent=attributes["parent"],
+                weights=attributes.get("weights"),
+                local_offsets=attributes.get("local_offsets"),
                 uvs=attributes.get("uvs"),
                 texture=attributes.get("texture"),
                 world=attributes.get("world", -1),

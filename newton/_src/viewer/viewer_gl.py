@@ -967,8 +967,13 @@ class ViewerGL(ViewerBase):
             opacity,
         )
 
-    def _log_deformable_visual_mesh(self, name, points, indices, **kwargs):
-        self._log_mesh(name, points, indices, reuse_texture=True, **kwargs)
+    def _log_deformable_visual_mesh(self, name, points, indices, *, hidden=False, **kwargs):
+        name = self._qualify(name)
+        existing = self.objects.get(name)
+        if hidden and existing is not None:
+            existing.hidden = True
+            return
+        self._log_mesh(name, points, indices, hidden=hidden, reuse_texture=True, **kwargs)
 
     def _log_mesh(
         self,
@@ -1044,11 +1049,10 @@ class ViewerGL(ViewerBase):
             )
         self.objects[name].hidden = hidden
         self.objects[name].backface_culling = backface_culling
-        # The shader samples the albedo map only when the material's texture flag is
-        # set; key it on the actually uploaded texture so a texture is never bound
-        # but silently unused.
-        r, m, c, _t = self.objects[name].material
-        self.objects[name].material = (r, m, c, 1.0 if self.objects[name].texture_id else 0.0)
+        if reuse_texture:
+            # Model-owned visuals opt in without changing ordinary log_mesh materials.
+            r, m, c, _t = self.objects[name].material
+            self.objects[name].material = (r, m, c, 1.0 if self.objects[name].texture_id else 0.0)
 
         if color is not None:
             self.objects[name].color = (float(color[0]), float(color[1]), float(color[2]))

@@ -3447,7 +3447,7 @@ class ViewerBase(ABC):
         """Skin and draw the visual meshes embedded in deformables.
 
         Skinning and normal recomputation run on-device through the shared
-        deformable-visual runtime (:mod:`newton._src.sim.deformable_visual`);
+        :meth:`newton.Model.update_deformable_visuals`;
         the deformed mesh is emitted through :meth:`log_mesh` so every backend
         renders it without backend-specific code. Skinned meshes draw in
         addition to the raw simulation triangles; toggle ``show_triangles`` and

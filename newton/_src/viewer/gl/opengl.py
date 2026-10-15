@@ -408,7 +408,7 @@ class MeshGL:
                 except Exception:
                     pass
                 self.texture_id = None
-            self._texture_source = None
+            self._texture_source = texture
             return
 
         if self.texture_id is not None:
@@ -418,7 +418,7 @@ class MeshGL:
                 pass
             self.texture_id = None
 
-        self._texture_source = None
+        self._texture_source = texture
         texture_id = _upload_texture_from_file(gl, texture_image)
         if not texture_id:
             return
