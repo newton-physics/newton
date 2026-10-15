@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+from itertools import pairwise
 
 import numpy as np
 import warp as wp
@@ -273,6 +274,11 @@ def test_nodal_material_averaging(test, device):
                 actual = parameters.numpy()
                 test.assertTrue(np.all(actual[:, 0] >= 0.0))
                 np.testing.assert_allclose(actual, expected, rtol=3.0e-5, atol=1.0e-4)
+                # Unit-shear dissipation must match direct particle quadrature.
+                shear_volume = psi[:, :4] ** 2 * volumes[:4]
+                np.testing.assert_allclose(
+                    actual[:, 5] * dt * shear_volume.sum(axis=1), shear_volume @ viscosity[:4], rtol=3.0e-5
+                )
                 np.testing.assert_allclose(actual[0], actual[1], rtol=3.0e-5, atol=1.0e-4)
                 np.testing.assert_allclose(actual[0, (2, 5)], actual[2, (2, 5)], rtol=3.0e-5)
                 test.assertGreater(actual[0, 0], actual[2, 0])
@@ -285,6 +291,7 @@ class _NodalSolver(SolverImplicitMPM):
         element = int(pic.cell_indices.numpy().reshape(-1)[0])
         n = transform.shape[1]
         self.test_transform = transform.numpy()[element].copy()
+        self.test_coefficient_transform = coefficient_transform.numpy()[element].copy()
         self.test_diagonal = scratch.strain_node_particle_volume.numpy().reshape(-1, n)[element].copy()
         return transform, coefficient_transform
 
@@ -344,6 +351,87 @@ def test_nodal_full_cell_solver(test, device):
                     test.assertTrue(np.isfinite(array.numpy()).all())
 
 
+def test_nodal_affine_stress_work(test, device):
+    """Preserve pressure work and viscous dissipation in full and partially filled cells."""
+    dt = 0.001
+    stress = np.array(((-2.0, 0.5, 0.0), (0.5, -2.0, 0.0), (0.0, 0.0, -2.0)))
+    gradients = (
+        -np.eye(3),
+        np.eye(3),
+        np.array(((0, 1, 0), (0, 0, 0), (0, 0, 0))),
+        np.array(((0, -1, 0), (1, 0, 0), (0, 0, 0))),
+    )
+    for basis in ("P1d", "Q1d"):
+        for count in (2, 8):
+            with test.subTest(basis=basis, active_particles=count):
+                solver, state = _make_solver(device, basis, active_particle_count=count, max_iterations=0)
+                solver.step(state, state, None, None, dt)
+                scratch = solver._scratchpad
+                space = scratch.velocity_field.space
+                ids = scratch.velocity_field.space_partition.space_node_indices().numpy()
+                nodes = space.basis.node_positions().numpy()[ids]
+                offsets, columns = scratch.strain_matrix.offsets.numpy(), scratch.strain_matrix.columns.numpy()
+                values = scratch.strain_matrix.values.numpy().reshape(-1, 3)
+                constant = solver.test_coefficient_transform @ np.ones(len(solver.test_diagonal))
+                volume = solver._mpm_model.material_particle_volume.numpy()[:count].sum()
+                viscosity = scratch.strain_yield_parameters_field.dof_values.numpy()[:, 5] * dt
+                for gradient in gradients:
+                    velocity = nodes @ gradient.T + 0.3
+                    moments = np.array([velocity[columns[a:b]].T @ values[a:b] for a, b in pairwise(offsets)]) / dt
+                    moments = 0.5 * (moments + moments.transpose(0, 2, 1))
+                    strain = 0.5 * (gradient + gradient.T)
+                    work = np.einsum("n,ij,nij->", constant, stress, moments)
+                    np.testing.assert_allclose(work, volume * np.sum(stress * strain), rtol=3.0e-6, atol=2.0e-6)
+                    deviator = moments - np.trace(moments, axis1=1, axis2=2)[:, None, None] * np.eye(3) / 3.0
+                    dissipation = 2.0 * np.sum(viscosity * np.sum(deviator**2, axis=(1, 2)) / solver.test_diagonal)
+                    shear = strain - np.trace(strain) * np.eye(3) / 3.0
+                    test.assertAlmostEqual(dissipation, 2.0 * 10.0 * volume * np.sum(shear**2), delta=2.0e-5)
+
+
+def test_nodal_particle_sampling_response(test, device):
+    """Keep yielding stresses stable under tiny volume changes and coincident particle splitting."""
+    for basis in ("P1d", "Q1d"):
+        results = []
+        for perturbation, copies in ((0.0, 1), (1.0e-6, 1), (0.0, 2)):
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            SolverImplicitMPM.register_custom_attributes(builder)
+            for i, position in enumerate(((0.22, 0.33, 0.41), (0.63, 0.74, 0.82))):
+                for _ in range(copies):
+                    builder.add_particle(
+                        pos=position,
+                        vel=(2.0 - 4.0 * i, 1.0 - 2.0 * i, 0.5),
+                        mass=1.0 / copies,
+                        radius=0.2 * (1.0 + perturbation * i) / copies ** (1.0 / 3.0),
+                        custom_attributes={
+                            "mpm:friction": 0.0,
+                            "mpm:yield_pressure": 1.0 + i,
+                            "mpm:tensile_yield_ratio": 0.3,
+                            "mpm:yield_stress": 0.1 + 0.1 * i,
+                            "mpm:young_modulus": 1000.0,
+                        },
+                    )
+            model = builder.finalize(device=device)
+            solver = SolverImplicitMPM(
+                model,
+                SolverImplicitMPM.Config(
+                    voxel_size=1.0,
+                    grid_type="fixed",
+                    strain_basis=basis,
+                    solver="gs",
+                    max_iterations=100,
+                    tolerance=1.0e-7,
+                    warmstart_mode="none",
+                ),
+            )
+            state = model.state()
+            solver.step(state, state, None, None, 0.1)
+            result = [array.numpy().reshape(2, copies, -1) for array in (state.particle_qd, state.mpm.particle_stress)]
+            results.append(result)
+            with test.subTest(basis=basis, perturbation=perturbation, copies=copies):
+                for actual, expected in zip(result, results[0], strict=True):
+                    np.testing.assert_allclose(actual, np.repeat(expected, copies, axis=1), rtol=2.0e-5, atol=2.0e-6)
+
+
 def test_nodal_higher_order_solver(test, device):
     """Use the same supported-subspace orthogonalization for higher-order strain bases."""
     for basis in ("P2d", "Q2d"):
@@ -400,6 +488,8 @@ for name, func in (
     ("test_nodal_mean_orientation", test_nodal_mean_orientation),
     ("test_nodal_material_averaging", test_nodal_material_averaging),
     ("test_nodal_full_cell_solver", test_nodal_full_cell_solver),
+    ("test_nodal_affine_stress_work", test_nodal_affine_stress_work),
+    ("test_nodal_particle_sampling_response", test_nodal_particle_sampling_response),
     ("test_nodal_higher_order_solver", test_nodal_higher_order_solver),
 ):
     add_function_test(TestImplicitMPMNodalDiagonalization, name, func, devices=get_test_devices(mode="basic"))
