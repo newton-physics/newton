@@ -8325,15 +8325,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
 
         tendon_name_mapping = dict(zip(selected_tendons, mjc_tendon_names, strict=True))
+        tendon_name_mapping[-1] = ""  # omitted tendon2
         for i in tendon_constraints:
-            t1_idx = int(eq_constraint_tendon1[i]) if eq_constraint_tendon1 is not None else -1
-            t2_idx = int(eq_constraint_tendon2[i]) if eq_constraint_tendon2 is not None else -1
-            t1_name = tendon_name_mapping.get(t1_idx)
-            t2_name = tendon_name_mapping.get(t2_idx) if t2_idx >= 0 else ""
-            if t1_name is None or t2_name is None:
+            t1_name = tendon_name_mapping.get(int(eq_constraint_tendon1[i]))
+            t2_name = tendon_name_mapping.get(int(eq_constraint_tendon2[i]))
+            if not t1_name or t2_name is None:
                 warnings.warn(
-                    f"Skipping tendon equality constraint {i}: tendon {t1_idx} or {t2_idx} "
-                    "is not present in the MuJoCo export.",
+                    f"Skipping tendon equality constraint {i}: its tendons are not in the MuJoCo export.",
                     stacklevel=2,
                 )
                 continue

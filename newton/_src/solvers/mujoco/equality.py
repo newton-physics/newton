@@ -253,31 +253,18 @@ def _register_equality_constraint_attributes(builder: ModelBuilder) -> None:
 
 def _register_equality_tendon_attributes(builder: ModelBuilder) -> None:
     """Declare the tendon-equality columns, which reference the ``mujoco:tendon`` frequency."""
-    ca = type(builder).CustomAttribute
-    eq_freq = "mujoco:equality_constraint"
-    model_assignment = Model.AttributeAssignment.MODEL
-    builder.add_custom_attribute(
-        ca(
-            name="equality_constraint_tendon1",
-            frequency=eq_freq,
-            assignment=model_assignment,
-            dtype=wp.int32,
-            default=-1,
-            references="mujoco:tendon",
-            namespace="mujoco",
+    for name in ("equality_constraint_tendon1", "equality_constraint_tendon2"):
+        builder.add_custom_attribute(
+            type(builder).CustomAttribute(
+                name=name,
+                frequency="mujoco:equality_constraint",
+                assignment=Model.AttributeAssignment.MODEL,
+                dtype=wp.int32,
+                default=-1,
+                references="mujoco:tendon",
+                namespace="mujoco",
+            )
         )
-    )
-    builder.add_custom_attribute(
-        ca(
-            name="equality_constraint_tendon2",
-            frequency=eq_freq,
-            assignment=model_assignment,
-            dtype=wp.int32,
-            default=-1,
-            references="mujoco:tendon",
-            namespace="mujoco",
-        )
-    )
 
 
 def _add_equality_constraint(
@@ -350,8 +337,7 @@ def _add_equality_constraint(
         "mujoco:equality_constraint_world": builder.current_world,
     }
     if constraint_type == EqType.TENDON:
-        # Only tendon rows carry these columns: they exist only with the tendon schema, and
-        # their ``mujoco:tendon`` reference is unresolvable when merging builders without tendons.
+        # Tendon columns exist only with the tendon schema and need tendons to resolve on merge.
         values["mujoco:equality_constraint_tendon1"] = tendon1
         values["mujoco:equality_constraint_tendon2"] = tendon2
     if validate_custom_attributes:
@@ -402,11 +388,14 @@ def _validate_tendon(builder: ModelBuilder, tendon: int, name: str) -> None:
     tendon_count = builder._custom_frequency_counts.get("mujoco:tendon", 0)
     if tendon < 0 or tendon >= tendon_count:
         raise IndexError(f"{name} index {tendon} is outside [0, {tendon_count}).")
-    world_attr = builder.custom_attributes.get("mujoco:tendon_world")
-    world_values = world_attr.values if world_attr is not None and world_attr.values else []
-    world = world_values[tendon] if tendon < len(world_values) else None
-    if world is not None:
-        _validate_world(builder, name, tendon, int(world))
+    _validate_world(builder, name, tendon, int(builder.custom_attributes["mujoco:tendon_world"].values[tendon]))
+
+
+def _polycoef(polycoef: Sequence[float]) -> list[float]:
+    coefficients = [float(value) for value in polycoef]
+    if len(coefficients) > 5:
+        raise ValueError(f"polycoef accepts at most 5 values, got {len(coefficients)}.")
+    return coefficients + [0.0] * (5 - len(coefficients))
 
 
 def _ensure_equality_attributes(builder: ModelBuilder) -> None:
@@ -579,16 +568,12 @@ def add_equality_joint(
     _validate_joint(builder, joint2, "joint2")
     if joint1 == joint2:
         raise ValueError("A joint equality requires two distinct joints.")
-    coefficients = [float(value) for value in polycoef]
-    if len(coefficients) > 5:
-        raise ValueError(f"polycoef accepts at most 5 values, got {len(coefficients)}.")
-    coefficients.extend([0.0] * (5 - len(coefficients)))
     return _add_equality_constraint(
         builder,
         EqType.JOINT,
         joint1=joint1,
         joint2=joint2,
-        polycoef=coefficients,
+        polycoef=_polycoef(polycoef),
         label=label,
         enabled=enabled,
         custom_attributes=_equality_custom_attributes(custom_attributes, solref, solimp),
@@ -631,23 +616,18 @@ def add_equality_tendon(
     """
     from ._authoring import _ensure_mujoco_attributes  # noqa: PLC0415
 
-    _ensure_equality_attributes(builder)
     _ensure_mujoco_attributes(builder, "mujoco:equality_constraint_tendon1")
     _validate_tendon(builder, tendon1, "tendon1")
     if tendon2 != -1:
         _validate_tendon(builder, tendon2, "tendon2")
     if tendon1 == tendon2:
         raise ValueError("A tendon equality requires two distinct tendons.")
-    coefficients = [float(value) for value in polycoef]
-    if len(coefficients) > 5:
-        raise ValueError(f"polycoef accepts at most 5 values, got {len(coefficients)}.")
-    coefficients.extend([0.0] * (5 - len(coefficients)))
     return _add_equality_constraint(
         builder,
         EqType.TENDON,
         tendon1=tendon1,
         tendon2=tendon2,
-        polycoef=coefficients,
+        polycoef=_polycoef(polycoef),
         label=label,
         enabled=enabled,
         custom_attributes=_equality_custom_attributes(custom_attributes, solref, solimp),

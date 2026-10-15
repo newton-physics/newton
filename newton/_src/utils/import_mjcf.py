@@ -2777,24 +2777,19 @@ def parse_mjcf(
         for tendon in equality.findall("tendon"):
             attribs = resolve_element_attrib(tendon, "equality")
             common = parse_common_attributes(attribs)
-            tendon1_name = attribs.get("tendon1")
-            tendon2_name = attribs.get("tendon2")
-            tendon1_idx = tendon_name_to_idx.get(sanitize_name(tendon1_name), -1) if tendon1_name else -1
-            tendon2_idx = tendon_name_to_idx.get(sanitize_name(tendon2_name), -1) if tendon2_name else -1
-            if tendon1_idx < 0 or (tendon2_name and tendon2_idx < 0):
-                warnings.warn(
-                    f"Tendon equality '{common['name']}' references unknown tendon "
-                    f"'{tendon1_name if tendon1_idx < 0 else tendon2_name}'. Skipping.",
-                    stacklevel=2,
-                )
+            tendon_indices = []
+            for key in ("tendon1", "tendon2"):
+                tendon_name = attribs.get(key)
+                tendon_indices.append(tendon_name_to_idx.get(sanitize_name(tendon_name)) if tendon_name else -1)
+            if None in tendon_indices or tendon_indices[0] < 0:
+                if verbose:
+                    print(f"Warning: Tendon equality '{common['name']}' references unknown tendons, skipping")
                 continue
-            if verbose:
-                print(f"Tendon constraint: {tendon1_name} coupled to {tendon2_name}")
             _add_equality_constraint(
                 builder,
                 constraint_type=EqType.TENDON,
-                tendon1=tendon1_idx,
-                tendon2=tendon2_idx,
+                tendon1=tendon_indices[0],
+                tendon2=tendon_indices[1],
                 polycoef=mjc_parse_polycoef(attribs.get("polycoef", "0 1 0 0 0")),
                 label=equality_label(common),
                 enabled=common["active"],
