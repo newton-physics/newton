@@ -10835,6 +10835,7 @@ class TestImportMjcfSensors(unittest.TestCase):
         builder = newton.ModelBuilder()
         builder.add_mjcf(self.XML)
         self.assertEqual(builder._custom_frequency_counts.get("mujoco:sensor", 0), 0)
+        self.assertNotIn("mujoco:sensor_label", builder.custom_attributes)
         builder = newton.ModelBuilder()
         builder.add_mjcf(self.XML, parse_sensors=True)
         model = builder.finalize(device="cpu")

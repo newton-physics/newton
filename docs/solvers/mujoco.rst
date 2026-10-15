@@ -1058,6 +1058,7 @@ The ``ModelBuilder.add_mjcf(parse_sensors=True)`` option preserves
 frequency. This parameter and the ``model.mujoco.sensor_*`` attributes are
 experimental and may change without the normal deprecation period.
 Parsing is disabled by default and requires imported sites (``parse_sites=True``).
+The sensor frequency and attributes are registered only when parsing is enabled.
 It does not enable MuJoCo sensor computation or construct Newton runtime sensors.
 
 Each supported declaration contributes one row, in source order:

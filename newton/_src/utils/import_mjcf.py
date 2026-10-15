@@ -3596,6 +3596,31 @@ def parse_mjcf(
         collapse_massless_fixed_root_joints(builder, joint_indices)
 
     if parse_sensors:
+        builder.add_custom_frequency(
+            ModelBuilder.CustomFrequency(name="sensor", namespace="mujoco", label_attribute="mujoco:sensor_label")
+        )
+        # MJCF sensor declarations are metadata only; no solver outputs are allocated.
+        for name, dtype, default, references in (
+            ("sensor_label", str, "", None),
+            ("sensor_type", str, "", None),
+            ("sensor_site", wp.int32, -1, "shape"),
+            ("sensor_world", wp.int32, -1, "world"),
+            ("sensor_noise", wp.float32, 0.0, None),
+            ("sensor_cutoff", wp.float32, 0.0, None),
+            ("sensor_user", str, "", None),
+        ):
+            builder.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name=name,
+                    frequency="mujoco:sensor",
+                    assignment=Model.AttributeAssignment.MODEL,
+                    dtype=dtype,
+                    default=default,
+                    namespace="mujoco",
+                    references=references,
+                )
+            )
+
         sensor_sections = root.findall("sensor")
         if sensor_sections:
             declared_sites = [
