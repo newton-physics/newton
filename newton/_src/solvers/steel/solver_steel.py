@@ -90,6 +90,7 @@ from .kernels import (
     compute_contact_spatial_force_from_impulses,
     compute_delta_and_accumulate,
     compute_dense_contact_bounds,
+    compute_free_root_rotation,
     compute_mf_body_Hinv,
     compute_mf_effective_mass_and_rhs,
     compute_mf_velocity_rhs,
@@ -122,6 +123,7 @@ from .kernels import (
     flatten_propagation_joint_S,
     flush_propagation_free_body_qd_to_vout,
     gather_contact_warmstart,
+    gather_free_root_anchors,
     gather_JY_to_world,
     gather_propagation_unit_meta,
     gather_tau_to_groups,
@@ -156,6 +158,9 @@ from .kernels import (
     remove_free_root_transport_from_qdd,
     reset_row_warmstart,
     rhs_accum_world_par_art,
+    rotate_mf_body_Hinv_to_free_root_anchor,
+    rotate_mf_rows_to_free_root_anchor,
+    rotate_propagation_rows_to_free_root_anchor,
     scale_array_inplace,
     scatter_augmented_drive_dof_K,
     scatter_qdd_from_groups,
@@ -2621,6 +2626,7 @@ class SolverSteel(SolverBase):
             self._refresh_shape_materials()
             self._check_restitution_support()
         if flags & ModelFlags.JOINT_PROPERTIES:
+            self._refresh_free_root_anchors()
             # Joint frames move the bodies the mass matrix is built from.
             self._mass_update_requested.fill_(1)
         if flags & ModelFlags.BODY_INERTIAL_PROPERTIES and self.model.body_count:
@@ -4543,6 +4549,7 @@ class SolverSteel(SolverBase):
             self._free_rigid_body_indices = None
             self._free_rigid_body_count = 0
             self._max_free_rigid_bodies_per_world = 0
+            self._free_root_anchor = None
             return
         if self._model_plan is None:
             raise RuntimeError("Steel model plan must be built before free-body classification")
@@ -4575,6 +4582,21 @@ class SolverSteel(SolverBase):
             self._max_free_rigid_bodies_per_world = int(np.max(np.bincount(np.maximum(worlds, 0))))
         else:
             self._max_free_rigid_bodies_per_world = 0
+        self._free_root_anchor = wp.empty(model.articulation_count, dtype=wp.quat, device=model.device)
+        self._free_root_rotation = wp.empty(max(self._free_root_joint_count, 1), dtype=wp.quat, device=model.device)
+        self._refresh_free_root_anchors()
+
+    def _refresh_free_root_anchors(self) -> None:
+        """Gather each free rigid body's FREE-joint parent-anchor rotation, the frame of its ``joint_qd``."""
+        if self._free_root_anchor is None:
+            return
+        wp.launch(
+            gather_free_root_anchors,
+            dim=self.model.articulation_count,
+            inputs=[self.model.articulation_start, self._is_free_rigid, self.model.joint_X_p],
+            outputs=[self._free_root_anchor],
+            device=self.model.device,
+        )
 
     def _compute_world_response_dof_mapping(self, model):
         """Build compact per-world response offsets and global-DOF indices."""
@@ -7879,6 +7901,19 @@ class SolverSteel(SolverBase):
             return
         if self._free_rigid_body_count:
             wp.launch(
+                compute_free_root_rotation,
+                dim=self._free_root_joint_count,
+                inputs=[
+                    self._free_root_joint_indices,
+                    model.joint_child,
+                    self._body_to_articulation,
+                    self._free_root_anchor,
+                    state_in.body_q,
+                ],
+                outputs=[self._free_root_rotation],
+                device=model.device,
+            )
+            wp.launch(
                 apply_free_root_velocity_corrections,
                 dim=self._free_root_joint_count,
                 inputs=[
@@ -7889,7 +7924,7 @@ class SolverSteel(SolverBase):
                     self._is_free_rigid,
                     self._art_group_idx,
                     self._kinematic_joint_mask,
-                    state_in.body_q,
+                    self._free_root_rotation,
                     model.body_inertia,
                     self._L_by_size[6],
                     stage3_qd,
@@ -8627,6 +8662,7 @@ class SolverSteel(SolverBase):
                     self._rigid_body_max_angular_velocity,
                     self._articulation_root_dof_start,
                     self._v_hat,
+                    self._free_root_anchor,
                     self._velocity_limit_activation_fraction,
                     self._free_body_constraint_max,
                     self._constraint_art_active,
@@ -8998,6 +9034,21 @@ class SolverSteel(SolverBase):
     def _mf_pgs_setup(self, state_aug: State, dt: float):
         """Compute free-body inverse inertias, row responses, effective masses and right-hand sides."""
         model = self.model
+        # Rows are built in world axes; express them in each free body's FREE-joint anchor frame.
+        wp.launch(
+            rotate_mf_rows_to_free_root_anchor,
+            dim=self._world_count * self._free_body_constraint_max,
+            inputs=[
+                self._mf_constraint_count,
+                self._free_body_constraint_max,
+                self._body_to_articulation,
+                self._free_root_anchor,
+                self._mf_body_a,
+                self._mf_body_b,
+            ],
+            outputs=[self._mf_J_a, self._mf_J_b],
+            device=model.device,
+        )
         wp.launch(
             compute_mf_body_Hinv,
             dim=self._free_rigid_body_count,
@@ -9009,6 +9060,21 @@ class SolverSteel(SolverBase):
                 model.body_flags,
                 self._articulation_dof_start,
                 self._joint_armature_device,
+            ],
+            outputs=[self._mf_body_Hinv],
+            device=model.device,
+        )
+        wp.launch(
+            rotate_mf_body_Hinv_to_free_root_anchor,
+            dim=self._free_rigid_body_count,
+            inputs=[
+                self._free_rigid_body_indices,
+                state_aug._body_I_s,
+                self._body_to_articulation,
+                model.body_flags,
+                self._articulation_dof_start,
+                self._joint_armature_device,
+                self._free_root_anchor,
             ],
             outputs=[self._mf_body_Hinv],
             device=model.device,
@@ -9658,6 +9724,22 @@ class SolverSteel(SolverBase):
         Runs after ``v_out`` holds the unconstrained velocity of the step.
         """
         model = self.model
+        if self._has_free_rigid_bodies:
+            # Free rigid bodies' rows are built in world axes; their velocity is in the FREE-joint anchor frame.
+            wp.launch(
+                rotate_propagation_rows_to_free_root_anchor,
+                dim=self._world_count * self._propagation_max_constraints,
+                inputs=[
+                    self._propagation_constraint_count,
+                    self._propagation_max_constraints,
+                    self._body_to_articulation,
+                    self._free_root_anchor,
+                    self._propagation_body_a,
+                    self._propagation_body_b,
+                ],
+                outputs=[self._propagation_J_a, self._propagation_J_b],
+                device=model.device,
+            )
         wp.launch(
             compute_propagation_body_com_rel,
             dim=model.body_count,
