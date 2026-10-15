@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import gc
+import itertools
 import unittest
 import warnings
 import weakref
@@ -22,7 +23,11 @@ from newton._src.geometry.kernels import (
     mesh_sdf,
     resolve_mesh_sign_method,
 )
-from newton._src.geometry.sdf_contact import sample_sdf_grad_using_mesh, sample_sdf_using_mesh
+from newton._src.geometry.sdf_contact import (
+    compute_mesh_boundary_flags,
+    sample_sdf_grad_using_mesh,
+    sample_sdf_using_mesh,
+)
 from newton._src.geometry.sdf_texture import TextureSDFData
 from newton._src.geometry.soft_contacts_sdf import (
     SDF_EDGE_ITERS,
@@ -984,13 +989,14 @@ def _sample_bounded_mesh_sdf(
     mesh: wp.uint64,
     points: wp.array[wp.vec3],
     sign_method: int,
+    boundary_flags: wp.array[wp.uint8],
     values: wp.array2d[float],
     gradients: wp.array[wp.vec3],
 ):
     """Sample finite-boundary mesh distances and gradients together."""
     i = wp.tid()
-    values[i, 0] = sample_sdf_using_mesh(mesh, points[i], 10.0, sign_method)
-    distance, gradient = sample_sdf_grad_using_mesh(mesh, points[i], 10.0, sign_method)
+    values[i, 0] = sample_sdf_using_mesh(mesh, points[i], 10.0, sign_method, boundary_flags, 0)
+    distance, gradient = sample_sdf_grad_using_mesh(mesh, points[i], 10.0, sign_method, boundary_flags, 0)
     values[i, 1] = distance
     gradients[i] = gradient
 
@@ -1326,6 +1332,7 @@ def test_bounded_mesh_sdf_sign(test, device):
                     mesh.id,
                     wp.array(rotated_points, dtype=wp.vec3, device=device),
                     int(sign_method),
+                    wp.array(compute_mesh_boundary_flags(mesh), dtype=wp.uint8, device=device),
                     values,
                     gradients,
                 ],
@@ -3590,6 +3597,56 @@ add_function_test(
     TestMeshConvexMidphase,
     "test_triangle_contact_independent_of_convex_origin",
     test_triangle_contact_independent_of_convex_origin,
+    devices=get_test_devices(),
+)
+
+
+def test_triangle_contact_with_hull_aabb_center_outside(test, device):
+    """Keep triangle contacts for hulls whose AABB center is not interior."""
+    rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.3, 0.4, 0.5)), 0.6)
+    pose = wp.transform(wp.vec3(1.0, -2.0, 3.0), rotation)
+    tetrahedron = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
+    wedge = np.array([[x, y, z] for y in (-0.5, 0.5) for x, z in ((0.0, 0.0), (1.0, 0.0), (0.0, 1.0))])
+    # The tetrahedron's AABB center lies outside its sloped face, and the
+    # wedge's lies on it. Each triangle faces the hull across that face.
+    cases = (
+        ("tetrahedron", tetrahedron, np.ones(3) / np.sqrt(3.0), 0.005, np.full(3, 1.0 / 3.0)),
+        ("wedge", wedge, np.array([1.0, 0.0, 1.0]) / np.sqrt(2.0), -0.002, np.array([0.5, 0.0, 0.5])),
+    )
+    for name, vertices, normal, distance, face_center in cases:
+        builder = newton.ModelBuilder()
+        cfg = builder.ShapeConfig(density=0.0, gap=0.02)
+        body = builder.add_body(xform=pose, mass=1.0, inertia=wp.mat33(np.eye(3)), lock_inertia=True)
+        tangent = np.cross(normal, [0.0, 1.0, 0.0] if abs(normal[1]) < 0.9 else [1.0, 0.0, 0.0])
+        tangent /= np.linalg.norm(tangent)
+        bitangent = np.cross(normal, tangent)
+        center = face_center + distance * normal
+        # Wind the triangle so its front face points back into the hull.
+        triangle = [center + 0.02 * tangent, center + 0.02 * bitangent, center - 0.02 * (tangent + bitangent)]
+        builder.add_shape_mesh(body, mesh=newton.Mesh(triangle, [0, 2, 1], compute_inertia=False), cfg=cfg)
+        hull = newton.Mesh(vertices, [0, 1, 2], compute_inertia=False).compute_convex_hull()
+        builder.add_shape_convex_hull(-1, mesh=hull, xform=pose, cfg=cfg)
+        model = builder.finalize(device=device)
+        state = model.state()
+        interior_point = model._shape_interior_point
+        # Cover both the finalized interior points and the narrow-phase fallback.
+        for reduction, precomputed in itertools.product((False, True), (True, False)):
+            with test.subTest(hull=name, reduce_contacts=reduction, precomputed=precomputed):
+                model._shape_interior_point = interior_point if precomputed else None
+                pipeline = newton.CollisionPipeline(model, reduce_contacts=reduction)
+                contacts = pipeline.contacts()
+                pipeline.collide(state, contacts)
+                count = int(contacts.rigid_contact_count.numpy()[0])
+                test.assertGreater(count, 0)
+                distances = wp.empty(contacts.rigid_contact_max, dtype=float, device=device)
+                newton.eval_rigid_contact_kinematics(model, state, contacts, out_distance=distances)
+                np.testing.assert_allclose(distances.numpy()[:count], distance, atol=1.0e-5)
+
+
+add_function_test(
+    TestMeshConvexMidphase,
+    "test_triangle_contact_with_hull_aabb_center_outside",
+    test_triangle_contact_with_hull_aabb_center_outside,
     devices=get_test_devices(),
 )
 
