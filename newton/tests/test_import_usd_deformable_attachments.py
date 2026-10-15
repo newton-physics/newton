@@ -178,7 +178,8 @@ class TestUSDDeformableAttachments(unittest.TestCase):
 
         # Only the cable's free root and rod joints exist; the compliant attachment created none.
         j0, j1 = group_range(builder, "cable", "/World/Cable", "joint")
-        self.assertEqual(builder.joint_count, j1 - j0 + 1)
+        self.assertEqual((j0, j1), (0, builder.joint_count))
+        self.assertEqual(result["path_cable_map"]["/World/Cable"][1], [1, 2])
         self.assertNotIn("/World/SoftAnchor", result["path_attachment_map"])
         attrs = result["path_attachment_attrs"]["/World/SoftAnchor"]
         self.assertEqual(attrs["stiffness"], 500.0)
@@ -290,6 +291,9 @@ class TestUSDDeformableAttachments(unittest.TestCase):
         joints = result["path_attachment_map"]["/World/AttachPoint"]
         self.assertEqual(len(joints), 1)
         j = joints[0]
+        # An independent attachment added after cable construction is outside its range.
+        self.assertEqual(group_range(builder, "cable", "/World/Cable", "joint"), (0, 3))
+        self.assertEqual(j, 3)
         self.assertEqual(builder.joint_type[j], newton.JointType.BALL)
         self.assertEqual(builder.joint_parent[j], rigid_body)
         self.assertIn(builder.joint_child[j], range(b0, b1))

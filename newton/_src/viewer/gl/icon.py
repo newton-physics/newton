@@ -1,15 +1,26 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-# generate_icons.py
+import os
 
-from PIL import Image, ImageDraw, ImageFont  # noqa: TID253
+ICON_SIZES = (16, 32, 64)
+
+
+def set_window_icon(window):
+    """Set the bundled Newton icon on a pyglet window."""
+    import pyglet
+
+    icon_dir = os.path.dirname(__file__)
+    icons = [pyglet.image.load(os.path.join(icon_dir, f"icon_{s}.png")) for s in ICON_SIZES]
+    window.set_icon(*icons)
 
 
 def create_and_save_emoji_png(character: str, size: int, filename: str):
     """
     Renders a Unicode character onto a transparent PNG and saves it.
     """
+    from PIL import Image, ImageDraw, ImageFont
+
     # Create a blank, transparent image
     image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(image)
@@ -43,8 +54,7 @@ def create_and_save_emoji_png(character: str, size: int, filename: str):
 
 if __name__ == "__main__":
     emoji_char = "🍏"
-    sizes = [16, 32, 64]
 
-    for s in sizes:
+    for s in ICON_SIZES:
         output_filename = f"icon_{s}.png"
         create_and_save_emoji_png(emoji_char, s, output_filename)

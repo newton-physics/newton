@@ -110,12 +110,10 @@ class Example:
         self.contacts = self.collision_pipeline.contacts()
 
         newton.examples.configure_coupled_view(self, args)
-        if hasattr(self.viewer, "show_particles"):
-            self.viewer.show_particles = False
-        if hasattr(self.viewer, "set_camera"):
-            self.viewer.set_camera(pos=wp.vec3(1.15, -1.65, 0.95), pitch=-22.0, yaw=128.0)
-            if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "look_at"):
-                self.viewer.camera.look_at(wp.vec3(0.0, 0.0, 0.32))
+        self.viewer.show_particles = False
+        self.viewer.set_camera(pos=wp.vec3(1.15, -1.65, 0.95), pitch=-22.0, yaw=128.0)
+        if hasattr(self.viewer, "camera"):
+            self.viewer.camera.look_at(wp.vec3(0.0, 0.0, 0.32))
 
         self.xpbd_particle_ids = wp.array(self.xpbd_particles, dtype=int, device=self.model.device)
         self.mpm_particle_ids = wp.array(self.mpm_particles, dtype=int, device=self.model.device)

@@ -146,7 +146,6 @@ class Example:
             twist_damping=self.TWIST_DAMPING,
             label="plectoneme",
             wrap_in_articulation=False,
-            body_frame_origin="com",
         )
         self.bodies = list(map(int, bodies))
         self.joints = list(map(int, joints))
@@ -169,7 +168,6 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
-            rigid_compliant_alm=True,
             rigid_contact_history=True,
             rigid_body_contact_buffer_size=1024,
         )
@@ -197,11 +195,10 @@ class Example:
         self.twist_angle = wp.array([0.0], dtype=wp.float32, device=self.model.device)
 
         self.viewer.set_model(self.model)
-        if hasattr(self.viewer, "set_camera"):
-            self.viewer.set_camera(pos=wp.vec3(0.0, -4.0, 1.30), pitch=1.4, yaw=90.0)
-            if hasattr(self.viewer, "camera"):
-                self.viewer.camera.look_at(wp.vec3(0.0, 0.0, 1.40))
-                self.viewer.camera.fov = 35.0
+        self.viewer.set_camera(pos=wp.vec3(0.0, -4.0, 1.30), pitch=1.4, yaw=90.0)
+        if hasattr(self.viewer, "camera"):
+            self.viewer.camera.look_at(wp.vec3(0.0, 0.0, 1.40))
+            self.viewer.camera.fov = 35.0
 
         self.graph = None
         self.capture()

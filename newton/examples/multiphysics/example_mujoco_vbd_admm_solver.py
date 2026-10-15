@@ -5,7 +5,7 @@
 # Example Rigid-VBD ADMM Coupled Solver
 #
 # A rigid ball is attached to the centre of a pinned VBD cloth sheet
-# through a model-level body-particle attachment annotation, while a separate
+# through a model-level particle-body attachment annotation, while a separate
 # rigid pendulum link carries a VBD rigid payload through a normal model ball
 # joint. SolverCoupledADMM converts both cross-solver couplings into ADMM
 # attachment constraints.
@@ -147,10 +147,9 @@ class Example:
         )
         self.ball_joint = builder.joint_count - 1
         builder.add_shape_sphere(self.ball_body, radius=ball_radius)
-        SolverCoupledADMM.add_body_particle_attachment(
-            builder,
-            self.ball_body,
+        builder.add_attachment_particle_body(
             self.center_particle,
+            self.ball_body,
             body_point=wp.vec3(0.0, 0.0, ball_radius),
             stiffness=1.0e3,
         )
@@ -213,7 +212,7 @@ class Example:
                 ),
                 SolverCoupled.Entry(
                     name="vbd",
-                    solver=lambda v: SolverVBD(model=v, iterations=8, rigid_compliant_alm=True),
+                    solver=lambda v: SolverVBD(model=v, iterations=8),
                     bodies=[self.payload_body],
                     joints=[self.payload_free_joint],
                     particles=list(range(self.model.particle_count)),
@@ -254,7 +253,7 @@ class Example:
             self.state_0.clear_forces()
             newton.examples.apply_coupled_viewer_forces(self, self.state_0)
             # ADMM builds this example's coupling from joints and
-            # body-particle attachments, so keep state_0/contacts empty here
+            # particle-body attachments, so keep state_0/contacts empty here
             # rather than asking collide() to add redundant constraints.
             # self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
@@ -275,7 +274,7 @@ class Example:
         assert np.all(np.isfinite(body_q))
         assert np.all(np.isfinite(particle_q))
         assert 1.0 < z < 2.0, f"rigid ball z={z:.3f}; expected a hanging motion below the cloth plane"
-        assert cloth_gap < 0.5, f"body-particle attachment drifted too far: gap={cloth_gap:.3f}"
+        assert cloth_gap < 0.5, f"particle-body attachment drifted too far: gap={cloth_gap:.3f}"
         assert pendulum_gap < 1.0, f"cross-solver pendulum joint drifted too far: gap={pendulum_gap:.3f}"
 
     def render(self):

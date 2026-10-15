@@ -363,6 +363,47 @@ def get_triangle_shape_from_heightfield(
     return shape_data, v0_world
 
 
+_NARROW_PHASE_CORE_RADIUS = 1.0e-4
+"""Core radius [m] that the narrow phase substitutes for spheres and capsules before adding their radius.
+
+Mirrors ``small_radius`` in ``collision_core.py`` and ``narrow_phase.py``; their contacts can reach this far beyond
+the query AABB. Keep the values in sync.
+"""
+
+_CELL_REJECT_SHELL_PADDING = wp.constant(2.0 * _NARROW_PHASE_CORE_RADIUS)
+"""Absolute cell-rejection padding [m] for the narrow-phase core shell: twice its radius, for margin."""
+
+_CELL_REJECT_ROUNDOFF = wp.constant(64.0 * 1.1920928955078125e-7)
+"""Relative cell-rejection padding for float32 roundoff, per unit of the summed coordinate scale (64 ulp)."""
+
+
+@wp.func
+def _abs_sum(value: wp.vec3) -> float:
+    return wp.abs(value[0]) + wp.abs(value[1]) + wp.abs(value[2])
+
+
+@wp.func
+def _heightfield_cell_below_query(
+    lower_z: float,
+    padding: float,
+    hfd: HeightfieldData,
+    elevations: wp.array[float],
+    row: int,
+    col: int,
+) -> bool:
+    """Reject only above every current corner; retain the entire downward prism."""
+    i = hfd.data_offset + row * hfd.ncol + col
+    height_range = hfd.max_z - hfd.min_z
+    z00 = hfd.min_z + elevations[i] * height_range
+    z10 = hfd.min_z + elevations[i + 1] * height_range
+    z01 = hfd.min_z + elevations[i + hfd.ncol] * height_range
+    z11 = hfd.min_z + elevations[i + hfd.ncol + 1] * height_range
+    if not (wp.isfinite(z00) and wp.isfinite(z10) and wp.isfinite(z01) and wp.isfinite(z11)):
+        return False
+    top = wp.max(wp.max(z00, z10), wp.max(z01, z11))
+    return lower_z > top + padding + (16.0 * 1.1920928955078125e-7) * wp.abs(top)
+
+
 @wp.func
 def heightfield_vs_convex_midphase(
     hfield_shape: int,
@@ -376,6 +417,7 @@ def heightfield_vs_convex_midphase(
     shape_gap: wp.array[float],
     triangle_pairs: wp.array[wp.vec3i],
     triangle_pairs_count: wp.array[int],
+    reject_cells: bool = True,
 ):
     """Find heightfield triangles that overlap with a convex shape's AABB.
 
@@ -405,6 +447,7 @@ def heightfield_vs_convex_midphase(
         shape_gap: Per-shape contact gaps.
         triangle_pairs: Output buffer for ``(hfield_shape, other_shape, tri_idx)`` triples.
         triangle_pairs_count: Atomic counter for emitted triangle pairs.
+        reject_cells: Disable for planes whose cached local AABB does not bound their surface.
     """
     X_hfield_ws = shape_transform[hfield_shape]
     X_other_ws = shape_transform[other_shape]
@@ -455,23 +498,31 @@ def heightfield_vs_convex_midphase(
     row_max = wp.min(wp.int32(wp.floor(row_max_f)), hfd.nrow - 2)
 
     cols = hfd.ncol - 1
-    base = hfd.data_offset
-    z_range = hfd.max_z - hfd.min_z
+    padding = float(0.0)
+    can_reject = bool(False)
+    if reject_cells:
+        # Retain the narrow-phase query shell, plus roundoff from world-coordinate
+        # cancellation, transformed extents and height reconstruction.
+        scale = (
+            1.0
+            + _abs_sum(wp.transform_get_translation(X_hfield_ws))
+            + _abs_sum(wp.transform_get_translation(X_other_ws))
+            + _abs_sum(local_center)
+            + _abs_sum(local_half)
+            + _abs_sum(center_in_hfield)
+            + _abs_sum(half_in_hfield)
+            + wp.abs(hfd.min_z)
+            + wp.abs(hfd.max_z - hfd.min_z)
+            + wp.abs(contact_threshold)
+        )
+        padding = _CELL_REJECT_SHELL_PADDING + _CELL_REJECT_ROUNDOFF * scale
+        can_reject = wp.isfinite(aabb_lower[2]) and wp.isfinite(padding)
     for r in range(row_min, row_max + 1):
         for c in range(col_min, col_max + 1):
-            # A piecewise-linear cell cannot reach above its highest vertex.
-            # The convex AABB already includes margins and contact gaps.
-            h00 = elevation_data[base + r * hfd.ncol + c]
-            h10 = elevation_data[base + r * hfd.ncol + c + 1]
-            h01 = elevation_data[base + (r + 1) * hfd.ncol + c]
-            h11 = elevation_data[base + (r + 1) * hfd.ncol + c + 1]
-            corner_sample = wp.max(wp.max(h00, h10), wp.max(h01, h11))
-            if z_range < 0.0:
-                corner_sample = wp.min(wp.min(h00, h10), wp.min(h01, h11))
-            cell_max_z = hfd.min_z + corner_sample * z_range
-            if aabb_lower[2] <= cell_max_z:
-                for tri_sub in range(2):
-                    tri_idx = (r * cols + c) * 2 + tri_sub
-                    out_idx = wp.atomic_add(triangle_pairs_count, 0, 1)
-                    if out_idx < triangle_pairs.shape[0]:
-                        triangle_pairs[out_idx] = wp.vec3i(hfield_shape, other_shape, tri_idx)
+            if can_reject and _heightfield_cell_below_query(aabb_lower[2], padding, hfd, elevation_data, r, c):
+                continue
+            for tri_sub in range(2):
+                tri_idx = (r * cols + c) * 2 + tri_sub
+                out_idx = wp.atomic_add(triangle_pairs_count, 0, 1)
+                if out_idx < triangle_pairs.shape[0]:
+                    triangle_pairs[out_idx] = wp.vec3i(hfield_shape, other_shape, tri_idx)

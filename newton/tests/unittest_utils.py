@@ -7,6 +7,7 @@ import ctypes.util
 import dataclasses
 import importlib.util
 import io
+import linecache
 import os
 import re
 import shlex
@@ -14,6 +15,7 @@ import sys
 import tempfile
 import time
 import unittest
+import warnings
 import xml.etree.ElementTree as ET
 from typing import Any
 
@@ -35,14 +37,75 @@ coverage_temp_dir = None
 coverage_branch = None
 
 # Set by the test runner from the --strict-warnings flag. When True, the example
-# subprocesses spawned by test_examples.py escalate DeprecationWarnings to errors
-# (the in-process tests additionally escalate any warning attributed to a newton.*
-# module). Off by default so verifying an installation does not fail on warnings
-# the user cannot act on.
+# subprocesses spawned by test_examples.py escalate non-allowlisted
+# DeprecationWarnings to errors (the in-process tests additionally escalate any
+# warning attributed to a newton.* module). Off by default so verifying an
+# installation does not fail on warnings the user cannot act on.
 strict_warnings = False
+# Literal message prefixes loaded from --deprecation-allowlist and applied to
+# in-process output validation and Python subprocess warning filters.
+allowed_deprecation_warnings: tuple[str, ...] = ()
+
+
+def get_strict_warning_args() -> list[str]:
+    """Return Python interpreter arguments for the active warning policy."""
+    if not strict_warnings:
+        return []
+
+    arguments = ["-W", "error::DeprecationWarning"]
+    for message in allowed_deprecation_warnings:
+        arguments.extend(("-W", f"default:{message}:DeprecationWarning"))
+    return arguments
+
+
+def _deprecation_warning_output_regexes(stderr: str, message_prefix: str):
+    """Match allowed warning records with source context verified at their locations."""
+
+    def source_end(filename, lineno, offset, indent):
+        source = linecache.getline(filename, int(lineno))
+        context = f"{indent}{source.strip()}\n"
+        return offset + len(context) if source and stderr.startswith(context, offset) else offset
+
+    warp_header = rf"(?m)^Warp DeprecationWarning: (?i:{re.escape(message_prefix)})[^\n]*\n"
+    for match in re.finditer(warp_header, stderr):
+        end = match.end()
+        if location := re.search(r" \((.+):(\d+)\)\n$", match.group()):
+            end = source_end(*location.groups(), end, "  ")
+        yield "^" + re.escape(stderr[match.start() : end])
+
+    # Formatted stderr cannot establish a custom category's inheritance.
+    header = rf"(?m)^([^\n]+):(\d+): DeprecationWarning: (?i:{re.escape(message_prefix)})[^\n]*\n"
+
+    for match in re.finditer(header, stderr):
+        end = source_end(*match.groups(), match.end(), "  ")
+        yield "^" + re.escape(stderr[match.start() : end])
+
 
 # Extra --warp-config KEY=VALUE entries forwarded to example subprocesses.
 warp_config_overrides: list[str] = []
+
+
+def _restore_warning_filters(saved: list) -> None:
+    warnings.filters[:] = saved
+
+
+def ignore_sensor_tiled_camera_deprecation() -> None:
+    """Silence the whole-class ``SensorTiledCamera`` deprecation warning.
+
+    ``SensorTiledCamera`` is deprecated in favor of ``newton.sensors.SensorCamera``.
+    The tests that still exercise it call this from ``setUpModule`` so its
+    construction warning does not escalate to an error under ``--strict-warnings``.
+
+    The suppression is scoped to the calling module: the previous global filter
+    state is restored after ``tearDownModule`` so it does not leak into later
+    test modules.
+    """
+    unittest.addModuleCleanup(_restore_warning_filters, warnings.filters[:])
+    warnings.filterwarnings(
+        "ignore",
+        message="SensorTiledCamera is deprecated",
+        category=DeprecationWarning,
+    )
 
 
 @contextlib.contextmanager
@@ -283,11 +346,13 @@ class _OutputRegex:
             ``"stderr"``, or ``"any"``.
         required: Whether the pattern must match (expected output) or is
             merely permitted (allowed output).
+        report: Whether to replay matching output after successful validation.
     """
 
     pattern: str
     stream: str
     required: bool
+    report: bool = False
 
 
 class _OutputCapture:
@@ -316,11 +381,11 @@ class _OutputCapture:
             raise
         self.active = True
 
-    def add_pattern(self, pattern: str, *, stream: str, required: bool):
+    def add_pattern(self, pattern: str, *, stream: str, required: bool, report: bool = False):
         if stream not in {"stdout", "stderr", "any"}:
             raise ValueError(f"Unknown stream {stream!r}; expected 'stdout', 'stderr', or 'any'")
 
-        self.patterns.append(_OutputRegex(pattern=pattern, stream=stream, required=required))
+        self.patterns.append(_OutputRegex(pattern=pattern, stream=stream, required=required, report=report))
 
     def record(self, stream: str, text: str | bytes | None):
         if text is None:
@@ -360,8 +425,22 @@ class _OutputCapture:
         output_by_stream = {stream: "".join(chunks) for stream, chunks in self.output.items()}
         unmatched_by_stream = output_by_stream.copy()
         missing = []
+        reported = []
 
-        for pattern in self.patterns:
+        patterns = list(self.patterns)
+        if strict_warnings:
+            regexes = {
+                regex
+                for message_prefix in allowed_deprecation_warnings
+                for regex in _deprecation_warning_output_regexes(output_by_stream["stderr"], message_prefix)
+            }
+            automatic_patterns = [
+                _OutputRegex(pattern=regex, stream="stderr", required=False, report=True)
+                for regex in sorted(regexes, key=len, reverse=True)
+            ]
+            patterns = automatic_patterns + patterns
+
+        for pattern in patterns:
             streams = ("stdout", "stderr") if pattern.stream == "any" else (pattern.stream,)
             matched = any(
                 re.search(pattern.pattern, output_by_stream[stream], flags=re.MULTILINE) for stream in streams
@@ -371,6 +450,11 @@ class _OutputCapture:
                 missing.append(pattern)
 
             for stream in streams:
+                if pattern.report:
+                    reported.extend(
+                        (stream, match.group())
+                        for match in re.finditer(pattern.pattern, unmatched_by_stream[stream], flags=re.MULTILINE)
+                    )
                 unmatched_by_stream[stream] = re.sub(
                     pattern.pattern,
                     "",
@@ -391,6 +475,9 @@ class _OutputCapture:
 
         if failures:
             return "\n\n".join(failures)
+
+        for stream, text in reported:
+            getattr(sys, stream).write(text)
 
         return None
 
@@ -697,28 +784,46 @@ def cleanup_test_allocations():
             wp.set_mempool_release_threshold(device_name, 0)
 
 
-class AllocationCleanupTestResultMixin:
-    """Bound cleanup overhead while retaining per-test CUDA memory release."""
+@dataclasses.dataclass
+class _AllocationCleanupState:
+    tests_since_cleanup: int = 0
 
-    _CPU_CLEANUP_INTERVAL = 8
+
+class AllocationCleanupTestResultMixin:
+    """Batch allocation cleanup across suites in a worker process."""
+
+    _CLEANUP_INTERVAL = 8
+    _worker_cleanup_state: _AllocationCleanupState | None = None
+
+    @classmethod
+    def _start_worker(cls):
+        cls._worker_cleanup_state = _AllocationCleanupState()
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._tests_since_cleanup = 0
+        self._cleanup_state = self._worker_cleanup_state or _AllocationCleanupState()
+        self.cleanup_count = 0
+        self.cleanup_seconds = 0.0
+
+    def _cleanup_allocations(self):
+        start = time.perf_counter()
+        cleanup_test_allocations()
+        self.cleanup_seconds += time.perf_counter() - start
+        self.cleanup_count += 1
+        self._cleanup_state.tests_since_cleanup = 0
 
     def stopTest(self, test):
         super().stopTest(test)
         if is_statically_skipped_test(test):
             return
-        self._tests_since_cleanup += 1
-        if wp.get_cuda_devices() or self._tests_since_cleanup >= self._CPU_CLEANUP_INTERVAL:
-            cleanup_test_allocations()
-            self._tests_since_cleanup = 0
+        self._cleanup_state.tests_since_cleanup += 1
+        if self._cleanup_state.tests_since_cleanup >= self._CLEANUP_INTERVAL:
+            self._cleanup_allocations()
 
     def stopTestRun(self):
-        if self._tests_since_cleanup:
-            cleanup_test_allocations()
-            self._tests_since_cleanup = 0
+        # Worker exit releases remaining allocations; standalone runs must flush.
+        if self._cleanup_state is not self._worker_cleanup_state and self._cleanup_state.tests_since_cleanup:
+            self._cleanup_allocations()
         super().stopTestRun()
 
 

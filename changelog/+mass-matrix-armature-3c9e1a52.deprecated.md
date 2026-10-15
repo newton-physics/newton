@@ -1,0 +1,1 @@
+Deprecate the `include_armature` argument of `newton.eval_mass_matrix()` and `ArticulationView.eval_mass_matrix()`. Passing `include_armature=False` emits a `DeprecationWarning` and will be removed in a future minor release. To get the rigid-body matrix, subtract `Model.joint_armature` from the diagonal of the result.

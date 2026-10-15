@@ -24,6 +24,7 @@ for debugging/introspection.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 import warp as wp
@@ -62,6 +63,58 @@ __all__ = ["LLTBlockedRCMSolver"]
 ###
 
 wp.set_module_options({"enable_backward": False})
+
+
+@wp.kernel
+def _mark_structural_tiles(
+    pair_world: wp.array[wp.int32],
+    pair_row: wp.array[wp.int32],
+    pair_col: wp.array[wp.int32],
+    dim: wp.array[wp.int32],
+    vio: wp.array[wp.int32],
+    tpo: wp.array[wp.int32],
+    inverse: wp.array[wp.int32],
+    block_size: wp.int32,
+    pattern: wp.array[wp.int32],
+):
+    pair = wp.tid()
+    world = pair_world[pair]
+    row = inverse[vio[world] + pair_row[pair]] / block_size
+    col = inverse[vio[world] + pair_col[pair]] / block_size
+    tiles = (dim[world] + block_size - 1) / block_size
+    wp.atomic_max(pattern, tpo[world] + wp.max(row, col) * tiles + wp.min(row, col), 1)
+
+
+@wp.kernel
+def _flag_failed_factors(
+    dim: wp.array[wp.int32],
+    ld: wp.array[wp.int32],
+    mio: wp.array[wp.int32],
+    L: wp.array[wp.float32],
+    retry_dim: wp.array[wp.int32],
+):
+    """Select blocks with a non-finite pivot for refactoring."""
+    world, row = wp.tid()
+    n = dim[world]
+    if row < n and not wp.isfinite(L[mio[world] + row * ld[world] + row]):
+        retry_dim[world] = n
+
+
+@wp.kernel
+def _shift_failed_factors(
+    ld: wp.array[wp.int32],
+    mio: wp.array[wp.int32],
+    retry_dim: wp.array[wp.int32],
+    shift: wp.float32,
+    A: wp.array[wp.float32],
+):
+    world, row = wp.tid()
+    if row < retry_dim[world]:
+        A[mio[world] + row * ld[world] + row] += shift
+
+
+PARALLEL_FACTORIZATION_MAX_BLOCKS_PER_SM = 2
+"""Batches with at least this many blocks per SM use the per-block factorization."""
 
 
 class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
@@ -111,6 +164,8 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         rcm_max_bfs_iters: int | None = None,
         reuse_permutation: bool = True,
         parallel_factorization: bool = False,
+        failed_pivot_shift: float = 0.0,
+        capacity_stride: bool = False,
         dtype: FloatType = wp.float32,
         device: wp.DeviceLike | None = None,
         **kwargs: dict[str, Any],
@@ -129,8 +184,16 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
             reuse_permutation: whether to compute RCM once and reuse that
                 permutation for later numeric factorizations. The numeric tile
                 pattern is still rebuilt each time. Defaults to ``True``.
+            failed_pivot_shift: diagonal shift added to blocks whose
+                factorization produced a non-finite pivot before they are
+                refactored. Zero disables the retry. Defaults to ``0.0``.
+            capacity_stride: whether each block is stored with its capacity
+                (maximum dimension) as row stride instead of its active
+                dimension. Capacities rounded up to ``block_size`` keep all
+                tile accesses aligned and in bounds. Defaults to ``False``.
             parallel_factorization: whether to solve off-diagonal tiles of
-                each Cholesky panel in parallel. Defaults to ``False``.
+                each Cholesky panel in parallel while the batch is too small
+                to fill the device. Defaults to ``False``.
         """
         # The underlying kernels (factorize / solve / permute / tile-pattern)
         # are hard-coded to wp.float32, so reject any other dtype up front
@@ -162,6 +225,9 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         self._permutation_initialized = False
         self._permutation_initialized_during_capture = False
         self._permutation_capture_id: int | None = None
+        self._structural_pairs: tuple[wp.array, wp.array, wp.array] | None = None
+        self._structural_pattern: wp.array[wp.int32] | None = None
+        self._structural_ready: wp.array[wp.int32] | None = None
 
         # Cache the fixed block/tile dimensions
         self._block_size: int = block_size
@@ -173,6 +239,8 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         self._rcm_max_bfs_iters = rcm_max_bfs_iters
         self._reuse_permutation = reuse_permutation
         self._parallel_factorization = parallel_factorization
+        self._failed_pivot_shift = failed_pivot_shift
+        self._capacity_stride = capacity_stride
 
         # Build kernels (cached by block_size / max_dim at allocate time).
         self._factorize_kernel = make_llt_blocked_rcm_factorize_kernel(block_size)
@@ -232,9 +300,107 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
             raise ValueError("Tile pattern array has not been allocated!")
         return self._tile_pattern
 
+    @property
+    def block_size(self) -> int:
+        """Side length of a factorization tile."""
+        return self._block_size
+
+    @property
+    def tile_pattern_offsets(self) -> wp.array:
+        """Offsets of the per-matrix tile masks in :attr:`tile_pattern`."""
+        if self._tpo is None:
+            raise ValueError("Tile pattern offsets have not been allocated!")
+        return self._tpo
+
+    def _stride(self) -> wp.array[wp.int32]:
+        """Per-block matrix row strides."""
+        return self._operator.info.maxdim if self._capacity_stride else self._operator.info.dim
+
     ###
     # Implementation
     ###
+
+    def configure_sparse_assembly(self, pair_world: wp.array, pair_row: wp.array, pair_col: wp.array) -> None:
+        """Cache a fixed structural superset for direct assembly in numerical RCM order.
+
+        Call outside capture, after allocation. Pairs describe all possible
+        off-diagonal entries, including currently cancelling contributions.
+        Changing this topology requires reconfiguration and graph recapture.
+        Numerical resets retain the topology but invalidate its ordered mask.
+        """
+        if self._device.is_capturing:
+            raise RuntimeError("Configure sparse assembly before graph capture.")
+        self._structural_pairs = None
+        self._structural_pattern = None
+        self._structural_ready = None
+        if not self._device.is_cuda or not wp.is_conditional_graph_supported():
+            return
+        if not self._reuse_permutation or self._reorder_tol != 0.0:
+            return
+        self._structural_pairs = (pair_world, pair_row, pair_col)
+        self._structural_pattern = wp.zeros_like(self._tile_pattern)
+        self._structural_ready = wp.zeros(1, dtype=wp.int32, device=self._device)
+
+    def compute_sparse(self, assemble: Callable[[wp.array, wp.array | None], None]) -> None:
+        """Assemble and factor, preserving first-use numerical ordering.
+
+        The callback receives a target matrix and an optional inverse row
+        permutation. Eager stepping uses the original asynchronous path;
+        captured stepping selects initialization entirely on the device.
+        """
+        if self._structural_ready is None or not self._device.is_capturing:
+            assemble(self._operator.mat, None)
+            self.compute(self._operator.mat)
+            return
+        wp.capture_if(
+            self._structural_ready,
+            on_true=self._compute_sparse_reuse,
+            on_false=self._compute_sparse_initialize,
+            assemble=assemble,
+        )
+
+    def _compute_sparse_initialize(self, assemble: Callable) -> None:
+        # Each captured initialization branch must include the device RCM
+        # validity check, even if an earlier graph initialized the host cache.
+        self._permutation_initialized = False
+        self._permutation_initialized_during_capture = False
+        self._permutation_capture_id = None
+        assemble(self._operator.mat, None)
+        self.compute(self._operator.mat)
+        self._structural_pattern.zero_()
+        info = self._operator.info
+        if self._structural_pairs[0].size:
+            wp.launch(
+                _mark_structural_tiles,
+                dim=self._structural_pairs[0].size,
+                inputs=[
+                    *self._structural_pairs,
+                    info.dim,
+                    info.vio,
+                    self._tpo,
+                    self._inv_P,
+                    self._block_size,
+                    self._structural_pattern,
+                ],
+                device=self._device,
+            )
+        llt_blocked_rcm_symbolic_fill_in(
+            kernel=self._symbolic_fill_in_kernel,
+            dim=info.dim,
+            tpo=self._tpo,
+            block_size=self._block_size,
+            tile_pattern=self._structural_pattern,
+            num_blocks=info.num_blocks,
+            device=self._device,
+        )
+        self._structural_ready.fill_(1)
+
+    def _compute_sparse_reuse(self, assemble: Callable) -> None:
+        assemble(self._A_hat, self._inv_P)
+        wp.copy(self._tile_pattern, self._structural_pattern)
+        # The structural pattern is fixed, so skipped tiles are already zero.
+        self._factorize_numeric(clear_skipped=False)
+        self._has_factors = True
 
     @override
     def _allocate_impl(self, A: DenseLinearOperatorData[wp.float32, wp.int32], **kwargs: dict[str, Any]) -> None:
@@ -250,6 +416,9 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         self._permutation_capture_id = None
         self._reorder_callback = None
         self._reorder_attached_to = None
+        self._structural_pairs = None
+        self._structural_pattern = None
+        self._structural_ready = None
 
         # Resolve auxiliary kernels now that max_dim is known.
         self._permute_vector_kernel = make_llt_blocked_rcm_permute_vector_kernel(self._max_dim)
@@ -285,6 +454,7 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
             # Tile-pattern flat storage + offsets.
             self._tile_pattern = wp.zeros(shape=(total_tp_size,), dtype=wp.int32)
             self._tpo = to_warp_int32_array(tp_offsets[:-1])
+            self._retry_dim = wp.zeros(info.num_blocks, dtype=wp.int32)
 
             # Batched-RCM scratch. Owning these here matches how the other
             # linalg solvers hold their buffers and keeps the recorded-launch
@@ -304,6 +474,8 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
 
     @override
     def _reset_impl(self) -> None:
+        if self._structural_ready is not None:
+            self._structural_ready.zero_()
         self._L.zero_()
         self._y.zero_()
         self._A_hat.zero_()
@@ -331,6 +503,7 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         info = self._operator.info
         with wp.ScopedDevice(self._device):
             self._reorder_callback = _rcm_batch.create_rcm_batch_launch(
+                ld=self._stride(),
                 A_flat=A,
                 perm_flat=self._P,
                 dims=info.dim,
@@ -349,6 +522,10 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
 
     @override
     def _factorize_impl(self, A: wp.array[Any]) -> None:
+        # Ordinary compute may change the numerical permutation or matrix
+        # dimensions, so the next sparse capture must rebuild its ordered mask.
+        if self._structural_ready is not None:
+            self._structural_ready.zero_()
         info = self._operator.info
         num_blocks = info.num_blocks
         is_capturing = bool(self._device.is_capturing)
@@ -372,7 +549,7 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
                 valid_dims = self._rcm_scratch["permutation_dim"].numpy()
                 self._permutation_initialized = all(
                     int(is_valid) != 0 and int(valid_dim) == expected_dim
-                    for is_valid, valid_dim, expected_dim in zip(valid, valid_dims, info.dimensions, strict=True)
+                    for is_valid, valid_dim, expected_dim in zip(valid, valid_dims, info.dim.numpy(), strict=True)
                 )
                 self._permutation_initialized_during_capture = False
                 self._permutation_capture_id = None
@@ -397,6 +574,7 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         #    bits are OR'd via atomic_max.
         self._tile_pattern.zero_()
         llt_blocked_rcm_fused_permute_and_tp(
+            ld=self._stride(),
             kernel=self._fused_permute_and_tp_kernel,
             dim=info.dim,
             mio=info.mio,
@@ -425,8 +603,18 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         )
 
         # 4. Numeric factorization with tile-pattern skips.
-        if self._parallel_factorization:
+        self._factorize_numeric()
+
+    def _factorize_numeric(self, clear_skipped: bool = True) -> None:
+        info = self._operator.info
+        num_blocks = info.num_blocks
+        # Panel parallelism only pays off while the batch cannot fill the device.
+        if (
+            self._parallel_factorization
+            and num_blocks < PARALLEL_FACTORIZATION_MAX_BLOCKS_PER_SM * self._device.sm_count
+        ):
             llt_blocked_rcm_factorize_parallel(
+                ld=self._stride(),
                 kernels=self._parallel_factorize_kernels,
                 dim=info.dim,
                 mio=info.mio,
@@ -438,11 +626,44 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
                 max_tiles=(self._max_dim + self._block_size - 1) // self._block_size,
                 block_dim=self._factorize_block_dim,
                 device=self._device,
+                clear_skipped=clear_skipped,
             )
         else:
             llt_blocked_rcm_factorize(
+                ld=self._stride(),
                 kernel=self._factorize_kernel,
                 dim=info.dim,
+                mio=info.mio,
+                tpo=self._tpo,
+                A=self._A_hat,
+                tile_pattern=self._tile_pattern,
+                L=self._L,
+                num_blocks=num_blocks,
+                block_dim=self._factorize_block_dim,
+                device=self._device,
+                clear_skipped=clear_skipped,
+            )
+        if self._failed_pivot_shift > 0.0:
+            # Round-off can break near-singular blocks; refactor only those,
+            # since the per-block kernel exits immediately for zero dimensions.
+            self._retry_dim.zero_()
+            retry_shape = (num_blocks, self._max_dim)
+            wp.launch(
+                _flag_failed_factors,
+                dim=retry_shape,
+                inputs=[info.dim, self._stride(), info.mio, self._L, self._retry_dim],
+                device=self._device,
+            )
+            wp.launch(
+                _shift_failed_factors,
+                dim=retry_shape,
+                inputs=[self._stride(), info.mio, self._retry_dim, self._failed_pivot_shift, self._A_hat],
+                device=self._device,
+            )
+            llt_blocked_rcm_factorize(
+                ld=self._stride(),
+                kernel=self._factorize_kernel,
+                dim=self._retry_dim,
                 mio=info.mio,
                 tpo=self._tpo,
                 A=self._A_hat,
@@ -464,6 +685,7 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
 
         # Solve L L^T x_hat = P b and scatter x_hat -> x.
         llt_blocked_rcm_solve(
+            ld=self._stride(),
             kernel=self._solve_kernel,
             dim=info.dim,
             mio=info.mio,
@@ -501,6 +723,7 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
 
         # In-place solve on x_hat (x_hat starts as the permuted RHS; y is scratch).
         llt_blocked_rcm_solve_inplace(
+            ld=self._stride(),
             kernel=self._solve_inplace_kernel,
             dim=info.dim,
             mio=info.mio,

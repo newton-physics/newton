@@ -20,7 +20,7 @@ General review concerns such as requirements fidelity, project fit,
 reviewability, and maintenance burden are covered by the
 :ref:`review-guidelines`.
 Release readiness is assessed by the
-`release-audit workflow <https://github.com/newton-physics/newton/tree/main/.claude/skills/release-audit>`__.
+`release-audit workflow <https://github.com/newton-physics/newton/tree/main/.agents/skills/release-audit>`__.
 
 In this document, *must* identifies a requirement, *should* identifies the
 normal choice from which a well-justified exception may be made, and *may*
@@ -281,6 +281,51 @@ Tests and repository conventions
   ``.github/workflows`` when applicable.
 - In SPDX copyright lines, use the year the file was first created. Do not use
   date ranges or update the year when modifying an existing file.
+
+.. _test-organization-and-runtime:
+
+Test organization and runtime
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Treat CI runtime and test setup/teardown overhead as part of the cost of every
+change. Preserve meaningful coverage while avoiding redundant test execution.
+
+- **Test real technical functionality.** Tests must exercise the actual
+  implementation and verify meaningful observable results, such as numerical
+  outputs, state changes, parsed data, or error handling. Do not replace the
+  functionality being tested with mocks or fake interfaces, or add tests that
+  only check that fake interfaces agree, expected calls occur, or canned
+  responses are returned. ``newton/tests/test_api.py`` may contain targeted
+  checks of actual API contracts, such as public signatures and argument
+  validation. This exception does not permit mock-only interface checks or
+  replace functional coverage.
+- **Reuse existing coverage first.** Before adding a test, contributors must
+  identify the coverage gap and inspect related tests. Extend an existing method
+  when its setup or simulation results can expose the defect. Each new test
+  method needs a distinct scenario or independent execution; each additional
+  simulation needs an explanation of why existing scenarios are insufficient.
+  Keep failures easy to diagnose and preserve existing coverage.
+- **Group tests by responsibility.** New solver-specific test modules must live
+  under ``newton/tests/<solver>/``. Extend existing flat solver modules in place;
+  defer moves to a planned migration. Group other tests by the feature or
+  subsystem they exercise. Related tests with compatible fixtures should share a
+  test class and module rather than being scattered across small files or
+  assigned a new class for each regression. Create a new class or module only
+  when a distinct responsibility or fixture lifecycle warrants it. Keep shared
+  and cross-solver tests in an appropriate common location. New test packages
+  must remain discoverable by the existing test runner.
+- **Reuse expensive setup safely.** The test runner defaults to class-level
+  parallelism. Reuse compatible fixtures and share expensive initialization at
+  class scope where safe to reduce repeated setup and teardown. Grouping tests
+  alone does not eliminate per-test setup costs. Reset mutable state as needed
+  so tests remain independent and do not depend on execution order.
+  Each class runs serially on one worker by default; keep independent expensive
+  scenarios in separate classes when they do not share setup.
+- **Bound execution cost.** Use the smallest reliable models, step counts, and
+  parameter combinations. Avoid repeated simulations and fixture builds that
+  add equivalent coverage. For new or expanded expensive scenarios, report
+  before/after runtime, including setup and teardown, and justify the added cost
+  in the PR. Assess cumulative cost rather than test count alone.
 
 Public API review checklist
 ---------------------------
