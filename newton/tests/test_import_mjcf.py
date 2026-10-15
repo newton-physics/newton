@@ -107,7 +107,6 @@ class TestImportMjcfBasic(unittest.TestCase):
             "damper",
             "clampctrl",
             "warmstart",
-            "filterparent",
             "actuation",
             "refsafe",
             "sensor",
@@ -137,9 +136,9 @@ class TestImportMjcfBasic(unittest.TestCase):
 
     def test_unknown_option_flag_warns(self):
         """Warn and ignore unsupported flags without breaking Warp model construction."""
-        for name in ("mysteryflag", "override", "fwdinv", "diagexact", "midphase", "autoreset"):
+        for name in ("mysteryflag", "filterparent", "override", "fwdinv", "diagexact", "midphase", "autoreset"):
             with self.subTest(flag=name):
-                value = "disable" if name in ("midphase", "autoreset") else "enable"
+                value = "disable" if name in ("filterparent", "midphase", "autoreset") else "enable"
                 mjcf = f"""
 <mujoco>
     <option><flag {name}="{value}"/></option>

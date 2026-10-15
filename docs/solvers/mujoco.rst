@@ -836,7 +836,7 @@ attributes, ``model.mujoco.flag_<name>``, with ``True`` meaning enabled.
 The same attributes can be authored on a USD PhysicsScene through
 ``MjcSceneAPI`` names ``mjc:flag:<name>``. Supported names are
 ``constraint``, ``equality``, ``frictionloss``, ``limit``, ``contact``,
-``spring``, ``damper``, ``clampctrl``, ``warmstart``, ``filterparent``,
+``spring``, ``damper``, ``clampctrl``, ``warmstart``,
 ``actuation``, ``refsafe``, ``sensor``, ``eulerdamp``, ``nativeccd``,
 ``island``, ``multiccd``, ``energy``, and ``invdiscrete``.
 
@@ -847,7 +847,9 @@ custom attributes, then Newton defaults. By default, ``multiccd``,
 are enabled. ``sleep`` uses the existing ``model.mujoco.enable_sleeping``
 attribute described below. Unknown flags and the Warp-unsupported
 ``override``, ``fwdinv``, ``diagexact``, ``midphase``, and ``autoreset``
-flags are warned about and ignored during MJCF import.
+flags are warned about and ignored during MJCF import. ``filterparent``
+is also warned about and ignored because imported parent-child collision
+filters are not controlled by this flag.
 
 ``gravity="disable"`` sets Newton's builder gravity to zero, affecting
 all solvers and content already added to the shared builder. Inside

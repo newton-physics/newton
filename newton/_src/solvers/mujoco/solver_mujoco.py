@@ -688,7 +688,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         JOINT_TARGET = 0
         CTRL_DIRECT = 1
 
-    # Only flags supported by MuJoCo Warp; gravity and sleep use existing Newton settings.
+    # Only flags supported by Newton conversion and MuJoCo Warp; gravity and sleep use existing settings.
     _DISABLE_FLAGS = (
         "constraint",
         "equality",
@@ -699,7 +699,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         "damper",
         "clampctrl",
         "warmstart",
-        "filterparent",
         "actuation",
         "refsafe",
         "sensor",
