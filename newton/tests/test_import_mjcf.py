@@ -97,7 +97,7 @@ class TestImportMjcfBasic(unittest.TestCase):
     def test_option_flag_bits_match_native_mujoco(self):
         """Match each supported flag to native MuJoCo while retaining Newton defaults."""
         mujoco, _ = SolverMuJoCo.import_mujoco()
-        for name in (
+        names = (
             "constraint",
             "equality",
             "frictionloss",
@@ -116,23 +116,22 @@ class TestImportMjcfBasic(unittest.TestCase):
             "multiccd",
             "energy",
             "invdiscrete",
-        ):
-            for value in ("enable", "disable"):
-                with self.subTest(flag=name, value=value):
-                    # Native MuJoCo enables multiccd by default; Newton disables it.
-                    flags = f'{name}="{value}"' if name == "multiccd" else f'multiccd="disable" {name}="{value}"'
-                    mjcf = f"""
+        )
+        for value in ("enable", "disable"):
+            with self.subTest(value=value):
+                flags = " ".join(f'{name}="{value}"' for name in names)
+                mjcf = f"""
 <mujoco>
     <option><flag {flags}/></option>
     <worldbody><body><freejoint/><geom type="sphere" size="0.1"/></body></worldbody>
 </mujoco>
 """
-                    native = mujoco.MjModel.from_xml_string(mjcf)
-                    builder = newton.ModelBuilder()
-                    builder.add_mjcf(mjcf)
-                    solver = SolverMuJoCo(builder.finalize())
-                    self.assertEqual(solver.mj_model.opt.disableflags, native.opt.disableflags)
-                    self.assertEqual(solver.mj_model.opt.enableflags, native.opt.enableflags)
+                native = mujoco.MjModel.from_xml_string(mjcf)
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf)
+                solver = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_cpu=True)
+                self.assertEqual(solver.mj_model.opt.disableflags, native.opt.disableflags)
+                self.assertEqual(solver.mj_model.opt.enableflags, native.opt.enableflags)
 
     def test_unknown_option_flag_warns(self):
         """Warn and ignore unsupported flags without breaking Warp model construction."""

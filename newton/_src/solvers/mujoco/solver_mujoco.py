@@ -4218,7 +4218,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             magnetic: Global magnetic flux vector (x, y, z). If None, uses model custom attribute or MuJoCo's default (0, -0.5, 0).
             use_mujoco_cpu: If True, use the MuJoCo-C CPU backend instead of `mujoco_warp`.
             enable_multiccd: If True, enable multi-CCD contact generation (up to 4 contact points per geom pair instead of 1). If False, disable it. If None, use the model custom attribute or disable it by default. Note: geom pairs where either geom has ``margin > 0`` always produce a single contact regardless of this flag.
-            enable_sleeping: Whether to enable MuJoCo Warp's sleeping optimization. If None, uses the model custom attribute or defaults to False. Sleeping requires the GPU backend, the Newton solver, MuJoCo contact handling, and a non-RK4 integrator.
+            enable_sleeping: Whether to enable MuJoCo Warp's sleeping optimization. If None, uses the model custom attribute or defaults to False. Sleeping requires the GPU backend, the Newton solver, MuJoCo contact handling, island detection, and a non-RK4 integrator.
             nvmax: Maximum number of active degrees of freedom per world when sleeping is enabled. Must accommodate every initially awake degree of freedom. If None, allocates space for every degree of freedom, which is safe but provides no compact-solver memory savings.
             sleep_tolerance: Sleep velocity tolerance. If None, uses model custom attribute or MuJoCo default (0.001).
             disable_contacts: If True, disable contact computation in MuJoCo. If False, enable it. If None, use the model custom attribute or enable it by default.
@@ -4463,6 +4463,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             else default
             for name, default in self._FLAG_DEFAULTS.items()
         }
+        if enable_sleeping and not flags["island"]:
+            raise ValueError("enable_sleeping=True requires island detection (island flag enabled).")
         if enable_multiccd is None:
             enable_multiccd = flags["multiccd"]
         if disable_contacts is None:

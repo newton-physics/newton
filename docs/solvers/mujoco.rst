@@ -845,7 +845,8 @@ to ``None``: explicit constructor arguments take precedence over model
 custom attributes, then Newton defaults. By default, ``multiccd``,
 ``energy``, and ``invdiscrete`` are disabled; the other listed features
 are enabled. ``sleep`` uses the existing ``model.mujoco.enable_sleeping``
-attribute described below. Unknown flags and the Warp-unsupported
+attribute described below and requires ``island`` to remain enabled.
+Unknown flags and the Warp-unsupported
 ``override``, ``fwdinv``, ``diagexact``, ``midphase``, and ``autoreset``
 flags are warned about and ignored during MJCF import. ``filterparent``
 is also warned about and ignored because imported parent-child collision
