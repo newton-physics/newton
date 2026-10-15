@@ -130,11 +130,11 @@ Standard observables
      - Solvers
    * - ``BODY_QDD`` / ``observables.body_qdd``
      - Rigid-body center-of-mass spatial accelerations in the world frame
-     - :class:`~newton.solvers.SolverMuJoCo` with MuJoCo Warp and
+     - :class:`~newton.solvers.SolverMuJoCo` with MuJoCo Warp or native MuJoCo CPU, and
        :class:`~newton.solvers.SolverKamino`
    * - ``BODY_PARENT_F`` / ``observables.body_parent_f``
      - Incoming parent-joint wrenches on rigid bodies
-     - :class:`~newton.solvers.SolverMuJoCo` with MuJoCo Warp,
+     - :class:`~newton.solvers.SolverMuJoCo` with MuJoCo Warp or native MuJoCo CPU,
        :class:`~newton.solvers.SolverFeatherstone`, and
        :class:`~newton.solvers.SolverXPBD`
    * - ``CONTACT_F`` / ``observables.contact_f``
