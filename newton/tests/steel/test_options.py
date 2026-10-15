@@ -1170,6 +1170,37 @@ class TestSteelPrivateApi(unittest.TestCase):
             with self.subTest(option=name):
                 self.assertIsInstance(getattr(SolverSteel, name), (property, _ConstructionOption))
 
+    def test_step_option_assignment_validates_like_the_constructor(self):
+        """Reject invalid step-option assignments, keep the previous value, and normalize valid ones."""
+        model, _ = _build_plane_model("cpu", separation=0.0, restitution=0.0)
+        solver = SolverSteel(model, solve_mode="split")
+        invalid = {
+            "velocity_drive_mode": "frozen",
+            "contact_warmstart_decay": -1.0,
+            "restitution_velocity_threshold": float("nan"),
+            "contact_speculative_scale": float("inf"),
+            "contact_gap_gate": -0.01,
+            "baumgarte": "stiff",
+            "relaxation": None,
+        }
+        for name, value in invalid.items():
+            with self.subTest(option=name, value=value):
+                before = getattr(solver, name)
+                with self.assertRaises((ValueError, TypeError)):
+                    setattr(solver, name, value)
+                self.assertEqual(getattr(solver, name), before)
+        solver.velocity_drive_mode = "active"
+        solver.contact_gap_gate = None
+        solver.contact_gap_gate = np.float32(0.02)
+        solver.baumgarte = np.float32(0.25)
+        solver.warn_constraint_overflow = 0
+        self.assertEqual(solver.velocity_drive_mode, "active")
+        self.assertIs(type(solver.contact_gap_gate), float)
+        self.assertIs(type(solver.baumgarte), float)
+        self.assertIs(solver.warn_constraint_overflow, False)
+        with self.assertRaisesRegex(ValueError, "velocity_drive_mode must be 'freeze' or 'active'"):
+            SolverSteel(model, solve_mode="split", velocity_drive_mode="frozen")
+
     def test_solver_reads_no_environment_variables(self):
         """Configure the solver only through its constructor; the environment only enables profiling ranges."""
         pattern = re.compile(r"\bos\.(environ|getenv)\b|STEEL_|IL_NEWTON")

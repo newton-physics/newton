@@ -261,6 +261,18 @@ def _finite_non_negative(name: str, value) -> float:
     return value
 
 
+def _optional_finite_non_negative(name: str, value) -> float | None:
+    """Return ``None`` unchanged, otherwise :func:`_finite_non_negative`."""
+    return None if value is None else _finite_non_negative(name, value)
+
+
+def _velocity_drive_mode(name: str, value) -> str:
+    """Return ``value``, raising :class:`ValueError` unless it is ``"freeze"`` or ``"active"``."""
+    if value not in ("freeze", "active"):
+        raise ValueError(f"{name} must be 'freeze' or 'active', got {value!r}")
+    return value
+
+
 def _validate_supported_model(model: Model) -> None:
     """Reject model features this solver does not simulate instead of ignoring them.
 
@@ -1095,7 +1107,13 @@ class _ConstructionOption:
 
 
 class _StepOption(_ConstructionOption):
-    """Constructor option that the solver reads at every step; a captured graph keeps its capture-time value."""
+    """Constructor option that the solver reads at every step; a captured graph keeps its capture-time value.
+
+    ``convert(name, value)`` validates and normalizes every assignment, including the constructor's.
+    """
+
+    def __init__(self, convert=None):
+        self._convert = convert
 
     def __set_name__(self, owner, name: str) -> None:
         super().__set_name__(owner, name)
@@ -1105,6 +1123,8 @@ class _StepOption(_ConstructionOption):
         )
 
     def __set__(self, instance, value) -> None:
+        if self._convert is not None:
+            value = self._convert(self._public_name, value)
         setattr(instance, self._private_name, value)
 
 
@@ -1337,9 +1357,9 @@ class SolverSteel(SolverBase):
     # Constructor options. Most are fixed at construction; the _StepOption ones are read at every step.
     solve_mode = _ConstructionOption()
     iterations = _ConstructionOption()
-    baumgarte = _StepOption()
+    baumgarte = _StepOption(lambda name, value: float(value))
     cfm = _ConstructionOption()
-    relaxation = _StepOption()
+    relaxation = _StepOption(lambda name, value: float(value))
     update_mass_matrix_interval = _ConstructionOption()
     enable_joint_limits = _ConstructionOption()
     joint_limit_activation_gap = _ConstructionOption()
@@ -1347,7 +1367,7 @@ class SolverSteel(SolverBase):
     velocity_limit_activation_fraction = _ConstructionOption()
     articulation_constraint_max = _ConstructionOption()
     free_body_constraint_max = _ConstructionOption()
-    warn_constraint_overflow = _StepOption()
+    warn_constraint_overflow = _StepOption(lambda name, value: bool(value))
     row_watermark = _ConstructionOption()
     drive_mode = _ConstructionOption()
     fuse_joint_velocity_limits = _ConstructionOption()
@@ -1359,15 +1379,15 @@ class SolverSteel(SolverBase):
     friction_anchor_beta = _ConstructionOption()
     contact_regularization = _ConstructionOption()
     velocity_iterations = _ConstructionOption()
-    velocity_drive_mode = _StepOption()
+    velocity_drive_mode = _StepOption(_velocity_drive_mode)
     row_schedule = _ConstructionOption()
     friction_mode = _ConstructionOption()
     contact_warmstart = _ConstructionOption()
-    contact_warmstart_decay = _StepOption()
+    contact_warmstart_decay = _StepOption(_finite_non_negative)
     enable_restitution = _ConstructionOption()
-    restitution_velocity_threshold = _StepOption()
-    contact_speculative_scale = _StepOption()
-    contact_gap_gate = _StepOption()
+    restitution_velocity_threshold = _StepOption(_finite_non_negative)
+    contact_speculative_scale = _StepOption(_finite_non_negative)
+    contact_gap_gate = _StepOption(_optional_finite_non_negative)
     contact_friction_scale = _ConstructionOption()
     contact_friction_position_iterations = _ConstructionOption()
     contact_friction_gap_max = _FrictionGapOption()
@@ -2008,9 +2028,9 @@ class SolverSteel(SolverBase):
         self._iterations = int(iterations)
         if self._iterations < 0:
             raise ValueError("iterations must be non-negative")
-        self._baumgarte = float(baumgarte)
+        self.baumgarte = baumgarte
         self._cfm = float(cfm)
-        self._relaxation = float(relaxation)
+        self.relaxation = relaxation
         self._enable_joint_limits = bool(enable_joint_limits)
         self._joint_limit_activation_gap = float(joint_limit_activation_gap)
         if np.isnan(self._joint_limit_activation_gap) or self._joint_limit_activation_gap < 0.0:
@@ -2030,7 +2050,7 @@ class SolverSteel(SolverBase):
         self._free_body_constraint_max = int(free_body_constraint_max)
         if self._free_body_constraint_max < 1:
             raise ValueError("free_body_constraint_max must be >= 1")
-        self._warn_constraint_overflow = bool(warn_constraint_overflow)
+        self.warn_constraint_overflow = warn_constraint_overflow
         self._row_watermark = bool(row_watermark)
         self._row_watermarks = (
             wp.zeros(ROW_WATERMARK_CONTACT_SLOT + 1, dtype=wp.int32, device=model.device)
@@ -2067,24 +2087,18 @@ class SolverSteel(SolverBase):
         self._velocity_iterations = int(velocity_iterations)
         if self._velocity_iterations < 0:
             raise ValueError("velocity_iterations must be non-negative")
-        if velocity_drive_mode not in ("freeze", "active"):
-            raise ValueError(f"velocity_drive_mode must be 'freeze' or 'active', got {velocity_drive_mode!r}")
-        self._velocity_drive_mode = velocity_drive_mode
+        self.velocity_drive_mode = velocity_drive_mode
         if row_schedule not in ("interleaved", "contact_then_internal", "phased"):
             raise ValueError(
                 f"row_schedule must be 'interleaved', 'contact_then_internal' or 'phased', got {row_schedule!r}"
             )
         self._row_schedule = row_schedule
         self._contact_warmstart = bool(contact_warmstart)
-        self._contact_warmstart_decay = _finite_non_negative("contact_warmstart_decay", contact_warmstart_decay)
+        self.contact_warmstart_decay = contact_warmstart_decay
         self._enable_restitution = bool(enable_restitution)
-        self._restitution_velocity_threshold = _finite_non_negative(
-            "restitution_velocity_threshold", restitution_velocity_threshold
-        )
-        self._contact_speculative_scale = _finite_non_negative("contact_speculative_scale", contact_speculative_scale)
-        self._contact_gap_gate = (
-            None if contact_gap_gate is None else _finite_non_negative("contact_gap_gate", contact_gap_gate)
-        )
+        self.restitution_velocity_threshold = restitution_velocity_threshold
+        self.contact_speculative_scale = contact_speculative_scale
+        self.contact_gap_gate = contact_gap_gate
         self._contact_friction_gap_max = None if contact_friction_gap_max is None else float(contact_friction_gap_max)
         if self._contact_friction_gap_max is not None and np.isnan(self._contact_friction_gap_max):
             raise ValueError("contact_friction_gap_max must not be NaN")
