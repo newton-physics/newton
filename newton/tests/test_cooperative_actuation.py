@@ -10,7 +10,6 @@ import warp as wp
 
 import newton
 from newton._src.actuators.effort_mode_implicit import (
-    _build_coupled_cooperative_kernel,
     _build_coupled_solve_kernel,
     _compose_clamps,
 )
@@ -78,7 +77,7 @@ class TestCooperativeActuation(unittest.TestCase):
                             *scratch,
                         ]
                         if tiled:
-                            kernel = _build_coupled_cooperative_kernel(DrivePD.evaluate_force, chain, key, width)
+                            kernel = _build_coupled_solve_kernel(DrivePD.evaluate_force, chain, (*key, width))
                             wp.launch(kernel, dim=128, inputs=inputs, outputs=out, device=device, block_dim=64)
                         else:
                             wp.launch(baseline_kernel, dim=2, inputs=inputs, outputs=out, device=device)
