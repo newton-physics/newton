@@ -2295,6 +2295,8 @@ def convert_geometries(
         params=model.shape_scale,
         offset=offset,
         material=geom_material,
+        torsional_friction=model.shape_material_mu_torsional,
+        rolling_friction=model.shape_material_mu_rolling,
         group=model.shape_collision_group,
         gap=model.shape_gap,
         margin=model.shape_margin,
