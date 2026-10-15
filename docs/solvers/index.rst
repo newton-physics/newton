@@ -307,14 +307,14 @@ constraints, with unified compliant ALM by default and a deprecated legacy AVBD 
      - |no|
      - |no|
      - |yes|
-     - |no|
+     - 🟨 :sup:`9`
      - |yes|
    * - :attr:`~newton.Model.joint_friction`
      - |no|
      - |no|
      - |no|
      - |yes|
-     - |no|
+     - |yes| :sup:`8`
      - |yes|
    * - :attr:`~newton.Model.joint_limit_lower` / :attr:`~newton.Model.joint_limit_upper`
      - |yes|
@@ -346,6 +346,35 @@ constraints, with unified compliant ALM by default and a deprecated legacy AVBD 
      - |no|
 
 | :sup:`2` Not enforced for BALL joints in SemiImplicit.
+| :sup:`8` With ``rigid_compliant_alm=True`` and ``rigid_articulation_solve="local"``, VBD supports per-DOF dry friction for REVOLUTE, PRISMATIC, D6, and BALL joints, with static sticking at convergence, including mimic-linked joints. D6 requires orthonormal axes within each axis group; BALL bounds act in the parent-anchor frame. Sparse mode and legacy AVBD retain regularized Coulomb friction, which allows slow creep. BALL friction is supported only under local compliant ALM.
+
+VBD also supports passive viscous :attr:`~newton.Model.joint_damping` for
+REVOLUTE, PRISMATIC, and D6 joints. Set ``damping`` when adding a joint, or
+on its :class:`~newton.ModelBuilder.JointDofConfig`. Each free coordinate
+receives a resisting force or torque ``-damping * qd``. This differs from
+``joint_target_kd``, which damps toward the drive's target velocity. Passive
+damping works with or without a drive and adds to Coulomb friction. On a mimic
+pair, damping on either joint resists the coupled motion. VBD includes both
+in its implicit body solve; no additional iteration setting is needed.
+Values in ``model.joint_damping`` can be changed without rebuilding the solver
+or recapturing a CUDA graph. Other VBD joint types currently ignore this property.
+
+VBD integrates rigid bodies with backward Euler (BDF1) by default. With
+``rigid_articulation_solve="block_sparse_joints"``, ``rigid_time_integration="bdf2"``
+selects the second-order BDF2 integrator, which damps motion much less than BDF1 at
+large time steps. A world takes BDF1 steps until it has a step history, that is after
+construction and after :meth:`~newton.solvers.SolverVBD.reset`, and, with the default
+``rigid_bdf2_theta_policy="event"``, around contact, joint-limit, force, velocity and pose-write
+events. BDF2 does not support joint mimics, particles or tendons. With either integrator,
+``rigid_axis_support_armature`` and ``rigid_limit_rho_floor`` keep joint limits from
+overshooting when a light link is driven through a large armature at large time steps,
+and ``rigid_external_force_mode="solve"`` applies ``State.body_f`` and the mapped
+``Control.joint_f`` inside the rigid solve instead of shifting the inertial target.
+These three options are off by default with BDF1 and on by default with BDF2.
+
+.. experimental::
+    ``rigid_time_integration="bdf2"``, ``rigid_bdf2_theta_policy``, ``rigid_axis_support_armature``,
+    ``rigid_limit_rho_floor`` and ``rigid_external_force_mode`` may change or be removed without prior notice.
 
 **Actuation and control**
 
@@ -421,11 +450,12 @@ constraints, with unified compliant ALM by default and a deprecated legacy AVBD 
 
 | :sup:`3` Featherstone eliminates follower degrees of freedom from its reduced dynamics and transfers follower forces and inertia to the reference joint.
 | :sup:`4` SemiImplicit enforces joint-owned mimic relationships with penalty springs configured by ``joint_mimic_ke`` and ``joint_mimic_kd``.
-| :sup:`5` XPBD and VBD enforce joint-owned mimic relationships through coupled maximal-coordinate corrections. Both apply one mimic correction per solver iteration.
+| :sup:`5` XPBD uses mass-weighted mimic corrections. VBD uses its assembled body Hessians and retains the mimic reaction forces within the timestep, so drives, friction, and contacts participate in the coupled solve. Both perform one mimic solve per solver iteration.
 | :sup:`6` MuJoCo lowers each joint-owned relationship to joint equality constraints. Multi-axis D6 relationships produce one equality constraint per axis.
 | :sup:`7` VBD interprets ``joint_target_kd`` and ``joint_limit_kd`` as absolute damping coefficients in physical units.
 | :sup:`8` See :ref:`Particle-body attachments` for authoring and semantics. Attachments spanning two
   solvers are coupled by :class:`~newton.solvers.experimental.coupled.SolverCoupledADMM` instead.
+| :sup:`9` VBD supports revolute-joint armature with the experimental ``block_sparse_joints`` articulation solve.
 
 .. _Particle-body attachments:
 

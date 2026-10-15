@@ -269,6 +269,135 @@ This reads the solved body configuration; it does not project the exact mimic
 formula onto it. Calling :func:`newton.eval_mimic` on the untouched joint
 arrays instead would use stale reference coordinates.
 
+Multi-turn motion in VBD
+^^^^^^^^^^^^^^^^^^^^^^^^
+
+VBD remembers the accumulated angle of every revolute joint and every angular
+D6 coordinate, whether or not the joint belongs to a mimic relationship.
+Drives and limits use these continuous angles, so a target of two revolutions
+means two revolutions, not zero. Friction, damping, and mimic relationships
+use the same coordinates. For example, if a prismatic follower moves 1 cm per revolution
+of a revolute reference joint, three revolutions move it 3 cm. Passing through
+a full turn does not send the follower back to its starting position. This
+also preserves fractional gear ratios between two angular joints.
+
+A body orientation alone cannot distinguish zero turns from one or more full
+turns. Before the first step, set ``state.joint_q`` to the intended initial
+coordinates, including any full turns. Use :func:`newton.eval_mimic` to set
+matching follower coordinates, then :func:`newton.eval_fk` to initialize body
+poses. VBD uses these coordinates to seed its internal turn history. After each
+step, it updates ``state.joint_q`` and ``state.joint_qd`` for revolute, prismatic,
+and D6 joints, including disabled joints. Use these outputs directly for
+continuous angle plots and feedback; a later call to :func:`newton.eval_ik`
+overwrites them with wrapped angles, without changing VBD's internal history.
+Quaternion-valued ball and free joints do not have independent scalar turn
+counts and retain their existing representation; VBD does not populate their
+joint-coordinate outputs.
+
+After teleporting or restarting a mechanism, call
+:meth:`newton.solvers.SolverVBD.reset`. The default reset restores model-default
+body poses and joint turn seeds. For a custom starting pose, use ``flags=0``,
+set ``state.joint_q`` and run forward kinematics before stepping. A masked reset
+only restarts turn tracking for the selected worlds.
+
+Turn tracking uses successive poses: each angular coordinate must move by less
+than half a revolution per solver timestep. Use more substeps for faster
+motion. This does not remove the existing Euler-coordinate singularities of
+three-axis D6 joints. This pose-based turn tracking is currently implemented
+only in VBD, not XPBD or SemiImplicit.
+
+Reporting joint forces in VBD
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. experimental::
+
+    :meth:`newton.solvers.SolverVBD.eval_joint_forces` is a VBD-only prototype.
+
+After a solver step, ``eval_joint_forces`` reconstructs the load transmitted
+from parent to child through each joint. The output has one six-component
+wrench per joint: three force components [N], then three torque components
+[N·m]. Both are expressed in the **child joint frame**, about that frame's
+origin, not the body's center of mass. A fixed joint can therefore act as a
+six-axis load cell. A revolute joint's axial torque can be obtained by
+projecting the last three components onto its axis expressed in this frame.
+
+The report includes joint constraints, drives, limits, commanded effort,
+Coulomb friction, viscous damping, and reactions on both sides of each mimic
+relationship. Contacts and gravity affect the solved joint reaction; they
+are not added a second time as joint forces. The net transmitted torque is
+not necessarily the motor command: friction and damping can oppose it, and
+mimic relationships transfer effort between joints.
+
+Allocate the output and previous-pose buffer once. In an ordinary stepping
+loop, with no edits to body poses between steps:
+
+.. code-block:: python
+
+    previous_body_q = wp.empty_like(state_in.body_q)
+    previous_joint_qd = wp.empty_like(state_in.joint_qd)
+    joint_wrench = wp.empty(model.joint_count, dtype=wp.spatial_vector, device=model.device)
+    joint_effort = wp.empty_like(state_in.joint_qd)
+
+    # Save before step(): VBD modifies its input poses and advances its history.
+    wp.copy(previous_body_q, state_in.body_q)
+    wp.copy(previous_joint_qd, state_in.joint_qd)
+    solver.step(state_in, state_out, control, contacts, dt)
+    solver.eval_joint_forces(
+        state_out,
+        joint_wrench,
+        body_q_prev=previous_body_q,
+        dt=dt,
+        control=control,
+        joint_effort=joint_effort,       # Optional motor-side estimate.
+        joint_qd_prev=previous_joint_qd,
+    )
+
+The call performs no device allocations or host readbacks and can be captured
+in a CUDA graph. It adds no work to steps where forces are not requested.
+Query before another step, reset, or edits to controls or model properties.
+For externally prescribed kinematic motion, preserve the effective previous
+poses from ``solver.body_q_prev`` instead; first/reset worlds use their input
+poses. This is the same previous-pose requirement as VBD contact-force reporting.
+
+This prototype evaluates the final-iterate force laws and retained reactions.
+Its accuracy depends on solver convergence; it is not an exact accumulated
+impulse divided by time, nor a peak impact load. It does not populate
+``state.body_parent_f``, which uses body indexing and a world-frame COM wrench.
+
+For motor sizing and effort analysis, the optional ``joint_effort`` output
+reports feedforward actuation plus the solved drive effort, with a
+``joint_armature * (qd - qd_prev) / dt`` correction for armature that is not
+simulated by the selected solve path. It is indexed like
+``joint_qd``, in N or N·m. Actuation is projected onto the joint's motion
+axes, including the moving axes of multi-axis D6 joints. Friction and
+viscous loss already affect the solved motor effort; adding them again would
+count those losses twice. Passive limit reactions are not motor effort.
+
+For a mimic relationship ``q_follower = offset + ratio * q_reference``,
+follower effort contributes ``ratio * effort_follower`` to the reference.
+Follower entries are zero in this reduced effort output, while their full
+transmitted wrench remains available in ``joint_wrench``. Consequently,
+follower armature contributes ``ratio**2 * armature_follower`` to the
+reference's equivalent inertia when motion follows the mimic relationship.
+If both joints have motors, this reports their combined effort, not how a
+controller should divide it between motors. Other independent joints keep
+their own effort entries. This estimate covers revolute, prismatic, and D6
+coordinates; unsupported and disabled entries are zero.
+
+The experimental block-sparse solve simulates revolute-joint armature inside
+its articulations. For those joints, the drive effort already accounts for
+that inertia, so no motor-side correction is added. The local solve and other
+joint types do not simulate armature: their correction estimates additional
+effort needed to reproduce the **observed motion** with joint-side reflected
+armature. It does not change the simulated reaction or predict the different
+trajectory of a simulation with that inertia added.
+Joint velocity/effort clamps remain unsupported. PhysX likewise distinguishes
+armature from joint-internal force mechanisms in its
+`incoming-joint force documentation <https://nvidia-omniverse.github.io/PhysX/physx/5.4.1/docs/Articulations.html#detail-on-included-forces>`_.
+
+Initializing body poses
+-----------------------
+
 When declaring an articulation using the :class:`~newton.ModelBuilder`, the rigid body poses (maximal coordinates :attr:`newton.State.body_q`) are initialized by the ``xform`` argument:
 
 .. testcode::
@@ -1195,11 +1324,11 @@ a USD asset can author a four-bar linkage or other parallel mechanism.
      ``control.joint_f``) and joint limits are applied alongside the
      loop-closure constraint, subject to each solver's general joint-feature
      support (see :ref:`Joint feature support`).
-     :class:`~newton.solvers.SolverVBD` and
-     :class:`~newton.solvers.SolverKamino` use the same flat per-joint
-     iteration but support a narrower set of joint types and features, so
-     the same loop-closure pattern works only within their respective
-     supported subsets.
+     :class:`~newton.solvers.SolverVBD` in local mode and
+     :class:`~newton.solvers.SolverKamino` use flat constraint iterations but
+     support a narrower set of joint types and features, so the same
+     loop-closure pattern works only within their respective supported
+     subsets. SolverVBD's block-sparse mode is described below.
 
    - **Generalized-coordinate solvers** carry only tree-joint coordinates in
      their state vector and must handle the loop closure separately.
@@ -1213,6 +1342,48 @@ a USD asset can author a four-bar linkage or other parallel mechanism.
    In all cases the loop-closing joint is invisible to :func:`newton.eval_fk`,
    :func:`newton.eval_ik`, and :class:`~newton.selection.ArticulationView` —
    those walk the articulation tree only.
+
+.. _Loop closure inside an articulation:
+
+Loop closures inside an articulation
+------------------------------------
+
+A maximal-coordinate solver that assembles and factorizes a whole articulation
+at once benefits from having the loop-closing joint inside the articulation
+range, so the closure is part of the same linear system as the tree joints. For
+that case :meth:`~newton.ModelBuilder.add_articulation` accepts
+``allow_closed_loops=True``, which relaxes the single-parent check and lets a
+body be the child of more than one joint in the range:
+
+.. code-block:: python
+
+   # Same four-bar as above, but the closure joint is declared as part of the
+   # articulation instead of being left outside it.
+   builder.add_articulation([j_root, j_a, j_b, j_loop], allow_closed_loops=True)
+
+:class:`~newton.solvers.SolverVBD` with
+``rigid_articulation_solve="block_sparse_joints"`` uses this to include the
+closure in the articulation's direct block solve.
+
+The sparse solve is deliberately articulation-centric: bodies outside every
+declared articulation continue through VBD's regular colored local solve.
+Joints between standalone bodies remain on that local path. A joint outside the
+articulation ranges may not touch an articulation body, so cross-articulation
+joints and omitted loop closures are rejected when the sparse solver is
+constructed. Put a loop-closing joint inside a single articulation to include
+it in the direct factorization, or use the local solve for models whose joints
+must cross articulation boundaries.
+
+.. warning::
+
+   An articulation built with ``allow_closed_loops=True`` is **not** a kinematic
+   tree, so routines that sweep an articulation range as a tree do not produce
+   meaningful results for it. In particular :func:`newton.eval_fk` will place a
+   body using whichever joint in the range it visits last, and
+   :class:`~newton.solvers.SolverFeatherstone` accepts the model without
+   reporting the topology. Use this option only for models driven by a solver
+   that consumes the articulation in maximal coordinates, and prefer the
+   omit-from-articulation pattern above otherwise.
 
 .. note::
 

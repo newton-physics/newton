@@ -1,0 +1,1 @@
+Add an experimental block-sparse direct articulation mode to `SolverVBD` that factorizes each articulation as one block system, with opt-in loop-closing joints through `ModelBuilder.add_articulation(..., allow_closed_loops=True)`, legacy and compliant-ALM joint state, diagonal contact Hessians, and coupled revolute-joint armature.

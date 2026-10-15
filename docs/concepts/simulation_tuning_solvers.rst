@@ -167,7 +167,9 @@ repository examples spend tuning effort, not a shared solver API.
        ``particle_rest_shape_contact_exclusion_radius``.
      - ``rigid_compliant_alm`` (default ``True``) selects the recommended unified
        finite-material compliant ALM formulation for rigid contacts, structural
-       joints, drives, and limits. Authored stiffness determines physical
+       joints, drives, and limits, and supports dry joint friction with static
+       sticking in ``rigid_articulation_solve="local"`` mode, including mimic-linked joints.
+       Authored stiffness determines physical
        compliance; :class:`~newton.solvers.SolverVBD` selects the numerical ALM
        conditioning parameters internally. Pass ``False`` to retain the
        deprecated legacy AVBD path during its migration window.

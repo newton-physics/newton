@@ -747,6 +747,21 @@ add_example_test(
 )
 
 
+add_basic_example_test(
+    name="vbd.example_vbd_joint_friction",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 60},
+)
+
+add_basic_example_test(
+    name="vbd.example_vbd_joint_friction_pendulum",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 480},
+)
+
+
 class TestTendonExamples(unittest.TestCase):
     """Exercise the experimental massless tendon examples."""
 
