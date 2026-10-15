@@ -1492,6 +1492,8 @@ def test_double_buffer_capture_sequences_match_single_buffer(test, device):
     model = _scene(device)
     for name, plan in _SEQUENCES.items():
         if any(operation == "capture_paused" for operation, *_ in plan) and not wp.is_conditional_graph_supported():
+            with test.subTest(sequence=name):
+                test.skipTest("requires conditional graph nodes")
             continue
         _, expected = _run_sequence(model, plan)
         for streams in (False, True):
