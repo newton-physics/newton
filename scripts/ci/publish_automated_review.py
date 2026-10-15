@@ -14,8 +14,14 @@ to lines in the diff are posted as one pull request review with inline
 comments; the rest are listed in a summary comment that is updated on each
 run. Findings already posted on earlier runs are skipped.
 
+Both name the reviewer and link the workflow run, and the summary states the
+model and effort level, including any fallback model recorded in the run's
+execution file. Only display names are published, never model IDs.
+
 Environment: ``REVIEW_OUTPUT``, ``GITHUB_REPOSITORY``, ``PR_NUMBER``,
-``HEAD_SHA``, and ``RUNNER_TEMP``. The diff is read from
+``HEAD_SHA``, ``RUNNER_TEMP``, ``REVIEW_MODEL_NAME``, ``REVIEW_EFFORT``,
+``EXECUTION_FILE`` (optional), and the default ``GITHUB_SERVER_URL``,
+``GITHUB_RUN_ID``, and ``GITHUB_RUN_ATTEMPT``. The diff is read from
 ``.pr-review/pr.diff``.
 """
 
@@ -35,7 +41,9 @@ FINDING_MARKER_RE = re.compile(r"newton-automated-review-finding:([0-9a-f]{16})"
 BOT_LOGIN = "github-actions[bot]"
 MAX_INLINE_COMMENTS = 15
 MAX_BODY_CHARS = 6000
-SEVERITY_ICONS = {"high": "🔴", "medium": "🟠", "low": "🔵", "nit": "⚪"}
+REVIEWER_NAME = "Claude Code Action review"
+WORKFLOW_PATH = ".github/workflows/claude_code_review.yml"
+SEVERITY_LABELS = {"P0": "🔴 P0", "P1": "🟠 P1", "P2": "🔵 P2", "nit": "⚪ Nit"}
 HUNK_RE = re.compile(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
@@ -77,13 +85,14 @@ def clip(text: object, limit: int = MAX_BODY_CHARS) -> str:
     return text if len(text) <= limit else text[: limit - 20].rstrip() + "\n\n*(truncated)*"
 
 
-def icon(finding: dict) -> str:
-    return SEVERITY_ICONS.get(str(finding.get("severity")), SEVERITY_ICONS["nit"])
+def severity_label(finding: dict) -> str:
+    return SEVERITY_LABELS.get(str(finding.get("severity")), SEVERITY_LABELS["nit"])
 
 
 def comment_body(finding: dict) -> str:
     """Format a finding as an inline comment body."""
-    parts = [f"{icon(finding)} **{clip(finding.get('title'), 300)}**", "", clip(finding.get("body"))]
+    label = severity_label(finding)
+    parts = [f"{label[0]} **{label[2:]}: {clip(finding.get('title'), 300)}**", "", clip(finding.get("body"))]
     suggestion = finding.get("suggestion")
     if isinstance(suggestion, str) and suggestion.strip() and "```" not in suggestion:
         parts += ["", "```suggestion", suggestion.rstrip("\n"), "```"]
@@ -93,9 +102,10 @@ def comment_body(finding: dict) -> str:
 
 def plan_comments(
     findings: list[dict], valid_lines: dict[str, set[int]], posted: set[str]
-) -> tuple[list[dict], list[dict], int]:
-    """Split findings into inline comments, findings for the summary, and the number already posted."""
+) -> tuple[list[dict], list[dict], list[dict], int]:
+    """Split findings into inline comments, the findings they come from, findings for the summary, and the number already posted."""
     inline: list[dict] = []
+    inline_findings: list[dict] = []
     elsewhere: list[dict] = []
     skipped = 0
     for finding in findings:
@@ -111,28 +121,88 @@ def plan_comments(
         if isinstance(start, int) and start < line and all(n in file_lines for n in range(start, line + 1)):
             comment.update(start_line=start, start_side="RIGHT")
         inline.append(comment)
-    return inline, elsewhere, skipped
+        inline_findings.append(finding)
+    return inline, inline_findings, elsewhere, skipped
 
 
-def summary_body(output: dict, elsewhere: list[dict], head_sha: str) -> str:
-    """Format the summary comment."""
-    summary = re.sub(r"^\s*#+\s*automated review\s*\n", "", str(output.get("summary", "")).strip(), flags=re.IGNORECASE)
-    lines = [SUMMARY_MARKER, "### Automated review", "", clip(summary, 20000)]
+def count_line(inline_findings: list[dict]) -> str:
+    """Summarize the inline comments by priority, for example "3 inline comments: 🔵 1 P2 · ⚪ 2 Nit"."""
+    if not inline_findings:
+        return ""
+    counts = dict.fromkeys(SEVERITY_LABELS.values(), 0)
+    for finding in inline_findings:
+        counts[severity_label(finding)] += 1
+    parts = [f"{label[0]} {n} {label[2:]}" for label, n in counts.items() if n]
+    noun = "comment" if len(inline_findings) == 1 else "comments"
+    return f"{len(inline_findings)} inline {noun}: " + " · ".join(parts)
+
+
+def display_name(model_id: object) -> str:
+    """Turn a model ID such as ``claude-opus-4-8`` into a display name, without any provider prefix."""
+    match = re.fullmatch(r"claude-([a-z]+)-(\d+)(?:-(\d+))?", str(model_id).rsplit("/", 1)[-1])
+    if not match:
+        return "another model"
+    family, major, minor = match.groups()
+    return f"Claude {family.capitalize()} {major}{'.' + minor if minor else ''}"
+
+
+def fallback_notes(execution_file: str | None, model_name: str) -> list[str]:
+    """Describe any model fallback recorded in Claude Code's execution file."""
+    try:
+        messages = json.loads(Path(execution_file).read_text(encoding="utf-8")) if execution_file else []
+    except (OSError, ValueError):
+        return []
+    notes = []
+    for message in messages if isinstance(messages, list) else []:
+        if isinstance(message, dict) and message.get("type") == "system":
+            fallback = display_name(message.get("fallback_model"))
+            if message.get("subtype") == "model_refusal_fallback":
+                notes.append(f"{model_name} declined a response, so Claude Code continued with {fallback}.")
+            elif message.get("subtype") == "model_fallback":
+                notes.append(f"{model_name} was unavailable, so Claude Code continued with {fallback}.")
+    return notes
+
+
+def run_details(execution_file: str | None) -> list[str]:
+    """Describe the reviewer, workflow run, model, and effort level without revealing model IDs."""
+    repo = os.environ["GITHUB_REPOSITORY"]
+    server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
+    run_url = f"{server}/{repo}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
+    attempt = os.environ.get("GITHUB_RUN_ATTEMPT", "1")
+    if attempt not in ("", "1"):
+        run_url += f"/attempts/{attempt}"
+    model_name = os.environ.get("REVIEW_MODEL_NAME", "Claude")
+    lines = [
+        f"Produced by [`{Path(WORKFLOW_PATH).name}`]({server}/{repo}/blob/main/{WORKFLOW_PATH}) in "
+        f"[this workflow run]({run_url}) with {model_name} at effort `{os.environ.get('REVIEW_EFFORT', 'default')}`."
+    ]
+    return lines + fallback_notes(execution_file, model_name)
+
+
+def summary_body(
+    output: dict, inline_findings: list[dict], elsewhere: list[dict], head_sha: str, details: list[str]
+) -> str:
+    """Format the summary comment: the assessment, a count of inline comments, and findings without a line."""
+    summary = re.sub(r"\A(\s*#{1,6}[^\n]*\n)+", "", str(output.get("summary", "")).strip() + "\n").strip()
+    lines = [SUMMARY_MARKER, f"### {REVIEWER_NAME}", "", clip(summary, 3000)]
+    if inline_findings:
+        lines += ["", count_line(inline_findings)]
     if elsewhere:
-        lines += ["", "**Findings without an inline comment**", ""]
+        lines += ["", "**Not attached to a line:**", ""]
         for finding in elsewhere:
             path, line = finding.get("path"), finding.get("line")
             location = f"`{path}:{line}`" if path and line else f"`{path}`" if path else "General"
             lines.append(
-                f"- {icon(finding)} {location}: **{clip(finding.get('title'), 300)}** {clip(finding.get('body'), 1500)}"
+                f"- {severity_label(finding)} {location}: **{clip(finding.get('title'), 300)}** "
+                f"{clip(finding.get('body'), 800)}"
             )
     if not output.get("complete", True):
         lines += [
             "",
             "> [!WARNING]",
-            "> This automated review is incomplete; see above for the parts it did not cover.",
+            "> This review did not cover the whole change.",
         ]
-    lines += ["", f"<sub>Reviewed commit {head_sha}.</sub>"]
+    lines += ["", f"<sub>Reviewed commit {head_sha}. {' '.join(details)}</sub>"]
     return "\n".join(lines) + "\n"
 
 
@@ -150,30 +220,31 @@ def main() -> int:
     pr = os.environ["PR_NUMBER"]
     head_sha = os.environ["HEAD_SHA"]
     findings = [f for f in output.get("findings", []) if isinstance(f, dict)]
+    details = run_details(os.environ.get("EXECUTION_FILE"))
 
     result = gh_api(
         "--paginate", f"repos/{repo}/pulls/{pr}/comments", "--jq", f'.[] | select(.user.login == "{BOT_LOGIN}") | .body'
     )
     posted = set(FINDING_MARKER_RE.findall(result.stdout))
     valid_lines = commentable_lines(Path(".pr-review/pr.diff").read_text(encoding="utf-8", errors="replace"))
-    inline, elsewhere, skipped = plan_comments(findings, valid_lines, posted)
+    inline, inline_findings, elsewhere, skipped = plan_comments(findings, valid_lines, posted)
 
     if inline:
         review = {
             "commit_id": head_sha,
             "event": "COMMENT",
-            "body": f"Automated review: {len(inline)} inline comment(s). The summary comment has the overview.",
+            "body": f"**{REVIEWER_NAME}**: {count_line(inline_findings)}. The summary comment has the overview.",
             "comments": inline,
         }
         result = gh_api("--method", "POST", f"repos/{repo}/pulls/{pr}/reviews", payload=review)
         if result.returncode != 0:
             print(f"::warning::Posting inline comments failed; listing them in the summary: {result.stderr[:500]}")
             elsewhere = [f for f in findings if fingerprint(f) not in posted]
-            inline = []
+            inline, inline_findings = [], []
     print(f"Inline comments: {len(inline)}; summary-only findings: {len(elsewhere)}; already posted: {skipped}")
 
     summary_path = Path(os.environ["RUNNER_TEMP"]) / "review-summary.md"
-    summary_path.write_text(summary_body(output, elsewhere, head_sha), encoding="utf-8")
+    summary_path.write_text(summary_body(output, inline_findings, elsewhere, head_sha, details), encoding="utf-8")
     result = gh_api(
         "--paginate",
         f"repos/{repo}/issues/{pr}/comments",
