@@ -1202,12 +1202,11 @@ def _pop_reclaimed_contact_id(reducer_data: GlobalContactReducerData, ticket: in
     A single bitmap pass can miss bits published behind it, so reserve against
     the count first; a successful reservation guarantees the scan finds a bit.
     """
-    if reducer_data.reclaimed_contact_bits.shape[0] == 0:
-        return 0
-
-    if wp.atomic_add(reducer_data.reclaimed_contact_count, 0, -1) <= 0:
-        wp.atomic_add(reducer_data.reclaimed_contact_count, 0, 1)
-        return 0
+    while wp.atomic_add(reducer_data.reclaimed_contact_count, 0, -1) <= 0:
+        # Other failed pops' transient debits can hide IDs; whoever undoes
+        # last sees the true count, so retry while it is positive.
+        if wp.atomic_add(reducer_data.reclaimed_contact_count, 0, 1) < 0:
+            return 0
 
     word_count = reducer_data.reclaimed_contact_bits.shape[0]
     word = ticket % word_count
@@ -1223,7 +1222,6 @@ def _pop_reclaimed_contact_id(reducer_data: GlobalContactReducerData, ticket: in
                     return word * 32 + bit
             bit += 1
         word = (word + 1) % word_count
-    return 0
 
 
 @wp.func
