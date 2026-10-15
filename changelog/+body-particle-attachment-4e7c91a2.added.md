@@ -1,4 +1,4 @@
-Add `ModelBuilder.add_attachment_body_particle()`, a compliant attachment between a
+Add `ModelBuilder.add_attachment_particle_body()`, a compliant attachment between a
 rigid body and a deformable particle:
 
   - `SolverVBD` applies the attachment whenever it integrates both endpoints, with

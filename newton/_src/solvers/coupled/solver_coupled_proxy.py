@@ -212,6 +212,32 @@ def _blend_aitken_forces_kernel(
     residual_previous[i] = residual
 
 
+# Overloads instantiated lazily on launch change the module hash, making the
+# compiled module depend on launch order; declare body and particle forces up front.
+for _dtype in (wp.vec3, wp.spatial_vector):
+    wp.overload(
+        _reset_proxy_values_masked_kernel,
+        {
+            "coupling_forces": wp.array[_dtype],
+            "coupling_forces_previous": wp.array[_dtype],
+            "aitken_residual_previous": wp.array[_dtype],
+            "proxy_qd_before": wp.array[_dtype],
+        },
+    )
+    wp.overload(
+        _accumulate_aitken_stats_kernel,
+        {
+            "force_previous": wp.array[_dtype],
+            "force_raw": wp.array[_dtype],
+            "residual_previous": wp.array[_dtype],
+        },
+    )
+    wp.overload(
+        _blend_aitken_forces_kernel,
+        {"force_previous": wp.array[_dtype], "residual_previous": wp.array[_dtype], "force": wp.array[_dtype]},
+    )
+
+
 class SolverCoupledProxy(SolverCoupled):
     """Couple two solvers with lagged-impulse virtual proxy bodies or particles."""
 
