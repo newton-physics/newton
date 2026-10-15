@@ -30,53 +30,6 @@ __all__ = ["JointSpaceResponse"]
 _FLOAT32_EPS = wp.constant(wp.float32(np.finfo(np.float32).eps))
 
 
-@wp.kernel(enable_backward=False)
-def _inverse_block_from_mass_matrix_kernel(
-    H: wp.array3d[float],
-    art_dof_count: wp.array[wp.int32],
-    L: wp.array3d[float],
-    inv_block: wp.array3d[float],
-):
-    """Write the full inverse block ``inv_block[a] = H_a^{-1}`` per articulation.
-
-    Cholesky ``H = L L^T``, then for each column c solve ``H x = e_c`` (forward
-    then backward substitution) and store x as column c of the inverse.
-    """
-    a = wp.tid()
-    n = art_dof_count[a]
-
-    for j in range(n):
-        s = H[a, j, j]
-        for k in range(j):
-            s -= L[a, j, k] * L[a, j, k]
-        # Keep the pivot above float32 cancellation noise and bound singular inverses.
-        s = wp.max(s, _FLOAT32_EPS * wp.max(wp.abs(H[a, j, j]), 1.0))
-        d = wp.sqrt(s)
-        L[a, j, j] = d
-        for i in range(j + 1, n):
-            t = H[a, i, j]
-            for k in range(j):
-                t -= L[a, i, k] * L[a, j, k]
-            L[a, i, j] = t / d
-
-    for c in range(n):
-        # forward: L y = e_c  (y accumulated into inv_block[:, c])
-        for i in range(n):
-            t = float(0.0)
-            if i == c:
-                t = 1.0
-            for k in range(i):
-                t -= L[a, i, k] * inv_block[a, k, c]
-            inv_block[a, i, c] = t / L[a, i, i]
-        # backward: L^T x = y  (overwrite in place)
-        for ii in range(n):
-            i = n - 1 - ii
-            t = inv_block[a, i, c]
-            for k in range(i + 1, n):
-                t -= L[a, k, i] * inv_block[a, k, c]
-            inv_block[a, i, c] = t / L[a, i, i]
-
-
 @wp.func
 def _compensated_divide(value: wp.float32, diagonal: wp.float32, reciprocal: wp.float32):
     estimate = value * reciprocal
@@ -441,7 +394,7 @@ class JointSpaceResponse:
                 block_dim=64,
                 device=self.model.device,
             )
-        elif self.model.device.is_cuda and width > 64:
+        else:
             wp.launch(
                 _factor_block_kernel,
                 dim=self.model.articulation_count,
@@ -452,13 +405,5 @@ class JointSpaceResponse:
                 _solve_inverse_columns_kernel,
                 dim=(self.model.articulation_count, width),
                 inputs=[self._art_dof_count, self._L, self._inv_block],
-                device=self.model.device,
-            )
-        else:
-            wp.launch(
-                _inverse_block_from_mass_matrix_kernel,
-                dim=self.model.articulation_count,
-                inputs=[self._H, self._art_dof_count],
-                outputs=[self._L, self._inv_block],
                 device=self.model.device,
             )
