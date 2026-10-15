@@ -1,1 +1,1 @@
-Resolve local file URIs in URDF sources, meshes, and textures using `resolve-robotics-uri-py>=0.5.1`, and allow additional package search directories through `ModelBuilder.add_urdf(package_dirs=...)`.
+Fix `ModelBuilder.add_urdf()` treating local `file://` URIs as XML sources or relative filenames, which left imported robots without meshes and textures. The `importers` extra now requires `resolve-robotics-uri-py>=0.5.1`.
