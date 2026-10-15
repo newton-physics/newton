@@ -250,6 +250,7 @@ class Example:
             enable_self_collisions=False,
             collapse_fixed_joints=True,
             force_show_colliders=False,
+            joint_damping_mode="passive",
         )
         builder.joint_q[:6] = [0.0, 0.0, 0.0, -1.59695, 0.0, 2.5307]
 
