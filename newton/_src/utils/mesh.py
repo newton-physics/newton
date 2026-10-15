@@ -1167,6 +1167,8 @@ def _load_mujoco_msh(filename: str):
         offset += size
     vertices = arrays[0].reshape(-1, 3)
     faces = arrays[3].reshape(-1, 3)
+    if np.any(faces < 0) or np.any(faces >= nvert):
+        raise ValueError(f"Invalid MuJoCo mesh file: {filename}")
     source_indices = slice(None)
     if nface == 0:
         # MuJoCo builds the convex hull of vertex-only meshes.
