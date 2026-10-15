@@ -10260,7 +10260,7 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             self.assertGreater(builder.shape_count, 0)
 
     def test_include_with_meshdir_nested_subdir(self):
-        """Prefer main-file assets while retaining included-file and custom resolution."""
+        """Search main-file, included-file, then included-asset-dir paths; custom resolvers are unchanged."""
         with tempfile.TemporaryDirectory() as tmpdir:
             # Structure: tmpdir/models/robot.xml with meshdir="meshes"
             #            tmpdir/models/meshes/cube.stl
@@ -10293,8 +10293,12 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             with open(main_path, "w") as f:
                 f.write(main_content)
 
-            with self.assertRaises(ValueError):
-                newton.ModelBuilder().add_mjcf(main_path)
+            legacy_mesh = os.path.join(meshes_dir, "cube.stl")
+            root, _ = _load_and_expand_mjcf(main_path)
+            self.assertEqual(root.find(".//mesh").get("file"), legacy_mesh)
+            builder = newton.ModelBuilder()
+            builder.add_mjcf(main_path)
+            self.assertEqual(builder.shape_count, 1)
 
             included_mesh = os.path.join(models_dir, "cube.stl")
             self._create_cube_stl(included_mesh)
@@ -10316,7 +10320,7 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
                 return os.path.abspath(os.path.join(base_dir, file_path))
 
             root, _ = _load_and_expand_mjcf(main_path, resolve)
-            self.assertEqual(root.find(".//mesh").get("file"), os.path.join(meshes_dir, "cube.stl"))
+            self.assertEqual(root.find(".//mesh").get("file"), legacy_mesh)
 
     def test_include_without_meshdir_still_works(self):
         """Test that includes without meshdir resolve relative to included file."""
