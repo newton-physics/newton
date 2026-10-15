@@ -83,7 +83,6 @@ from .contact_reduction import (
 )
 from .support_function import (
     AcceleratedSupportMapDataProvider,
-    GeoTypeEx,
     closest_point_on_triangle,
     create_triangle_prism_penetration_refiner,
     extract_shape_data,
@@ -754,6 +753,7 @@ class GlobalContactReducerData:
     ht_values: wp.array[wp.uint64]
     ht_active_slots: wp.array[wp.int32]
     ht_insert_failures: wp.array[wp.int32]
+    buffer_overflows: wp.array[wp.int32]
     ht_capacity: int
     ht_values_per_key: int
 
@@ -785,6 +785,7 @@ def _clear_active_kernel(
     reclaimed_contact_bits: wp.array[wp.uint32],
     reclaimed_contact_cursor: wp.array[wp.int32],
     ht_insert_failures: wp.array[wp.int32],
+    buffer_overflows: wp.array[wp.int32],
     ht_capacity: int,
     values_per_key: int,
     num_threads: int,
@@ -796,7 +797,7 @@ def _clear_active_kernel(
     write adjacent elements of each slot-major value array. The active count is
     shared by the launch, so every thread follows the same branch.
 
-    Thread 0 also zeros contact_count and ht_insert_failures (no other thread in this
+    Thread 0 also zeros contact_count, ht_insert_failures and buffer_overflows (no other thread in this
     kernel reads them, so there is no race). The active-slots count stored at
     ``ht_active_slots[ht_capacity]`` must NOT be reset here: every thread reads it
     at the top of the kernel and we have no cross-block barrier, so a follow-up
@@ -812,6 +813,7 @@ def _clear_active_kernel(
         if reclaimed_contact_cursor.shape[0] > 0:
             reclaimed_contact_cursor[0] = 0
         ht_insert_failures[0] = 0
+        buffer_overflows[0] = 0
 
     # Read count from GPU - stored at active_slots[capacity].
     # All threads read this before it is modified by the follow-up zeroing kernel.
@@ -1025,6 +1027,9 @@ class GlobalContactReducer:
             self.reclaimed_contact_cursor = wp.zeros(0, dtype=wp.int32, device=device)
         # Count failed hashtable inserts (e.g., table full)
         self.ht_insert_failures = wp.zeros(1, dtype=wp.int32, device=device)
+        # Count contacts dropped because the contact buffer was full. The reservation in
+        # export_contact_to_buffer is rolled back, so contact_count alone never shows the loss.
+        self.buffer_overflows = wp.zeros(1, dtype=wp.int32, device=device)
 
         # Hashtable sizing: keep the historical default at capacity / 4 for
         # memory compatibility, while exposing a factor for dense batched scenes.
@@ -1077,6 +1082,7 @@ class GlobalContactReducer:
         self.reclaimed_contact_bits.zero_()
         self.reclaimed_contact_cursor.zero_()
         self.ht_insert_failures.zero_()
+        self.buffer_overflows.zero_()
         self.hashtable.clear()
         self.ht_values.zero_()
 
@@ -1087,7 +1093,7 @@ class GlobalContactReducer:
 
         1. ``_clear_active_kernel`` clears hashtable keys, values, hydroelastic
            aggregates, and per-step counters (``contact_count``,
-           ``ht_insert_failures``).
+           ``ht_insert_failures``, ``buffer_overflows``).
         2. ``_zero_active_count_kernel`` zeroes ``ht_active_slots[ht_capacity]``.
 
         The second kernel is needed because every thread of the first kernel
@@ -1123,6 +1129,7 @@ class GlobalContactReducer:
                 self.reclaimed_contact_bits,
                 self.reclaimed_contact_cursor,
                 self.ht_insert_failures,
+                self.buffer_overflows,
                 self.hashtable.capacity,
                 self.values_per_key,
                 num_threads,
@@ -1168,6 +1175,7 @@ class GlobalContactReducer:
         data.ht_values = self.ht_values
         data.ht_active_slots = self.hashtable.active_slots
         data.ht_insert_failures = self.ht_insert_failures
+        data.buffer_overflows = self.buffer_overflows
         data.ht_capacity = self.hashtable.capacity
         data.ht_values_per_key = self.values_per_key
         data.deterministic = 1 if self.deterministic else 0
@@ -1246,6 +1254,7 @@ def export_contact_to_buffer(
         if contact_id == 0:
             # Undo the reservation because no buffer slot was available.
             wp.atomic_add(reducer_data.contact_count, 0, -1)
+            wp.atomic_add(reducer_data.buffer_overflows, 0, 1)
             return -1
         # A successful reuse is not a dropped contact.
         wp.atomic_add(reducer_data.contact_count, 0, -1)
@@ -2393,8 +2402,7 @@ def mesh_triangle_contacts_to_reducer_kernel(
     support_lut: wp.array[int],
     support_vertex_offsets: wp.array[int],
     support_neighbors: wp.array[int],
-    shape_collision_aabb_lower: wp.array[wp.vec3],
-    shape_collision_aabb_upper: wp.array[wp.vec3],
+    shape_interior_point: wp.array[wp.vec3],
     shape_gap: wp.array[float],
     shape_heightfield_index: wp.array[wp.int32],
     heightfield_data: wp.array[HeightfieldData],
@@ -2449,8 +2457,9 @@ def mesh_triangle_contacts_to_reducer_kernel(
             shape_source,
         )
         if shape_data_b.shape_type == GeoType.CONVEX_MESH:
-            # Avoid rebuilding the convex AABB for every candidate triangle.
-            shape_data_b.center = 0.5 * (shape_collision_aabb_lower[shape_b] + shape_collision_aabb_upper[shape_b])
+            # MPR/GJK need an interior seed. A hull's AABB center can lie
+            # outside it and flip the contact against thin triangles.
+            shape_data_b.center = shape_interior_point[shape_b]
 
         # Triangle position is vertex A in world space.
         # For heightfield prisms, edges are in heightfield-local space
@@ -2462,14 +2471,9 @@ def mesh_triangle_contacts_to_reducer_kernel(
         else:
             quat_a = wp.quat_identity()
 
-        # Back-face culling: skip when the convex center is behind the
-        # triangle face. TRIANGLE_PRISM (heightfields) handles this
-        # through its extruded support function.
-        if shape_data_a.shape_type == int(GeoTypeEx.TRIANGLE):
-            face_normal = wp.cross(shape_data_a.scale, shape_data_a.auxiliary)
-            center_dist = wp.dot(face_normal, pos_b - pos_a)
-            if center_dist < 0.0:
-                continue
+        # Mesh triangles were back-face culled in the midphase against an
+        # interior point of the convex shape. TRIANGLE_PRISM (heightfields)
+        # stays one-sided through its extruded support function.
 
         # Extract margin offset for shape A (signed distance padding)
         margin_offset_a = shape_data[shape_a][3]

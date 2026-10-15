@@ -4,11 +4,9 @@
 from __future__ import annotations
 
 import copy
-import inspect
 import itertools
 import logging
 import math
-import os
 import re
 import warnings
 from dataclasses import dataclass
@@ -27,6 +25,7 @@ import numpy as np
 import warp as wp
 
 from ..core import quat_between_axes
+from ..core._warnings import _external_warning_stacklevel
 from ..core.types import Axis, Transform
 from ..geometry import Mesh, ShapeFlags, compute_inertia_sphere
 from ..sim.builder import ModelBuilder
@@ -74,7 +73,6 @@ logger = logging.getLogger("newton")
 
 AttributeFrequency = Model.AttributeFrequency
 
-_NEWTON_SRC_DIR = os.path.normpath(os.path.join(os.path.dirname(__file__), os.pardir)) + os.sep
 
 # `UsdPreviewSurface`'s schema default for `diffuseColor`. A visual shape whose prim binds no
 # material is given this rather than left for ModelBuilder's per-shape debug palette, which
@@ -115,24 +113,8 @@ def _warn_mirrored_body_transform(usd_prim, key: str, xform_cache) -> None:
             "spurious rotation. Bake the reflection into the mesh geometry "
             "(negate vertices, flip triangle winding) and re-author the body "
             "with a proper transform before import.",
-            stacklevel=_external_stacklevel(),
+            stacklevel=_external_warning_stacklevel(),
         )
-
-
-def _external_stacklevel() -> int:
-    """Return a ``stacklevel`` that points past all ``newton._src`` frames."""
-    frame = inspect.currentframe()
-    if frame is None:
-        return 2
-    frame = frame.f_back
-    stacklevel = 1
-    try:
-        while frame is not None and os.path.normpath(frame.f_code.co_filename).startswith(_NEWTON_SRC_DIR):
-            frame = frame.f_back
-            stacklevel += 1
-        return stacklevel
-    finally:
-        del frame
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,7 +160,10 @@ def parse_usd(
     convert_mjc_equality_constraints: bool = True,
     override_root_xform: bool = False,
     legacy_margin_gap: bool = False,
+    legacy_angular_velocity_units: bool = False,
+    legacy_springref_units: bool = False,
     return_deformable_results: bool = False,
+    allow_unsafe_torch_checkpoints: bool = False,
 ) -> dict[str, Any]:
     """Parses a Universal Scene Description (USD) stage and adds rigid bodies, particles, soft bodies, shapes, and joints to the given ModelBuilder.
 
@@ -270,7 +255,9 @@ def parse_usd(
         collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
         enable_self_collisions: Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions``; if neither is authored, this value takes precedence.
         apply_up_axis_from_stage: If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
-        root_path: The USD path to import, defaults to "/".
+        root_path: The USD path to import, defaults to "/". Bound physics materials
+            outside this subtree are resolved without importing unrelated bodies
+            or shapes.
         joint_ordering: The ordering of the joints in the simulation. Can be either "bfs" or "dfs" for breadth-first or depth-first search, or ``None`` to keep joints in the order in which they appear in the USD. Default is "dfs".
         bodies_follow_joint_ordering: If True, the bodies are added to the builder in the same order as the joints (parent then child body). Otherwise, bodies are added in the order they appear in the USD. Default is True.
         skip_mesh_approximation: If True, mesh approximation is skipped. Otherwise, meshes are approximated according to the ``physics:approximation`` attribute defined on the UsdPhysicsMeshCollisionAPI (if it is defined), using the settings from :attr:`~newton.ModelBuilder.default_mesh_approximation_cfg`. Default is False.
@@ -313,11 +300,40 @@ def parse_usd(
             where ``shape_margin`` is computed as ``mjc_margin - mjc_gap``.
             Use for USD files authored against MuJoCo <= 3.8. Defaults to
             False (identity translation matching MuJoCo 3.9 semantics).
+        legacy_angular_velocity_units: If True, restore Newton 1.6 joint-state angular velocity handling:
+            resolved ``state:angular:physics:velocity``
+            and D6 ``state:rot*:physics:velocity`` values are copied into
+            ``joint_qd`` without converting degrees/s to radians/s. Applies
+            to revolute, native D6, and merged joints. Rigid-body velocities,
+            linear joint velocities, positions, and drive targets retain their
+            usual unit conversion. Defaults to False.
+
+            .. deprecated:: 1.7
+                This temporary flag will be removed in Newton 1.8. Enabling
+                it emits a :class:`DeprecationWarning`. Migrate authored
+                asset values to their documented units and leave it False.
+
+        legacy_springref_units: If True, restore Newton 1.6 handling of ``mjc:springref`` as an
+            already converted Newton value, ignoring
+            ``mjc:compiler:angle`` for spring references only. ``mjc:ref``
+            conversion is unchanged. Requires registered MuJoCo custom
+            attributes to load spring references. Defaults to False, which
+            interprets revolute spring references using the compiler's angle
+            units (degrees if unauthored) and converts them to radians.
+
+            .. deprecated:: 1.7
+                This temporary flag will be removed in Newton 1.8. Enabling
+                it emits a :class:`DeprecationWarning`. Migrate authored
+                asset values to their documented units and leave it False.
 
         return_deformable_results: If True, include the experimental deformable entries in the
             returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` /
             ``path_attachment_map`` and the matching ``path_*_attrs``). Off by default, so the
             default return shape carries no deformable additions.
+        allow_unsafe_torch_checkpoints: Allow USD neural actuators to reference
+            Torch checkpoints. Only use this for trusted USD assets and
+            checkpoints: loading a Torch checkpoint may execute code during
+            :meth:`newton.ModelBuilder.finalize`. Defaults to ``False``.
 
     Returns:
         .. experimental::
@@ -436,6 +452,18 @@ def parse_usd(
             * - ``"actuator_count"``
               - Number of external actuators parsed from the USD stage
     """
+    for name, enabled in (
+        ("legacy_angular_velocity_units", legacy_angular_velocity_units),
+        ("legacy_springref_units", legacy_springref_units),
+    ):
+        if enabled:
+            warnings.warn(
+                f"{name}=True is deprecated and will be removed in Newton 1.8. "
+                "Migrate authored asset values to their documented units and leave this option False.",
+                DeprecationWarning,
+                stacklevel=_external_warning_stacklevel(),
+            )
+
     # Early validation of base joint parameters
     builder._validate_base_joint_params(floating, base_joint, parent_body)
     first_imported_joint = builder.joint_count
@@ -562,27 +590,27 @@ def parse_usd(
             "different conversion paths: particles are converted to SI, while the legacy rigid/collider importer "
             "still expects unit stage metadata. Author mixed stages with both units set to 1.0 until rigid import "
             "gains complete unit conversion.",
-            stacklevel=_external_stacklevel(),
+            stacklevel=_external_warning_stacklevel(),
         )
     elif particle_prims and has_other_import_candidates and (has_nonunit_linear_units or has_nonunit_mass_units):
         warnings.warn(
             "Mixed particles and other imported USD content with non-unit metersPerUnit or kilogramsPerUnit may "
             "use different conversion paths: particles are converted to SI, while other import paths may still "
             "expect unit stage metadata. Author mixed stages with both units set to 1.0.",
-            stacklevel=_external_stacklevel(),
+            stacklevel=_external_warning_stacklevel(),
         )
     elif not particle_prims:
         if has_nonunit_mass_units:
             warnings.warn(
                 "USD stages with non-unit mass units are not supported. "
                 f"Set kilogramsPerUnit to 1.0 before import. Found kilogramsPerUnit={mass_unit}.",
-                stacklevel=_external_stacklevel(),
+                stacklevel=_external_warning_stacklevel(),
             )
         if has_nonunit_linear_units:
             warnings.warn(
                 "USD stages with non-unit linear units are not supported. "
                 f"Set metersPerUnit to 1.0 before import. Found metersPerUnit={linear_unit}.",
-                stacklevel=_external_stacklevel(),
+                stacklevel=_external_warning_stacklevel(),
             )
 
     # Initialize schema resolver according to precedence
@@ -611,6 +639,8 @@ def parse_usd(
         limit_gains_configured=default_joint_limit_gains_configured,
         mjc_resolver=mjc_resolver,
         verbose=verbose,
+        legacy_angular_velocity_units=legacy_angular_velocity_units,
+        legacy_springref_units=legacy_springref_units,
     )
     solreflimit_mode_key = "mujoco:solreflimit_mode"
     solreflimit_gain_baseline_key = "mujoco:solreflimit_gain_baseline"
@@ -1534,7 +1564,19 @@ def parse_usd(
         }:
             paths, joint_specs = value
             for path, joint_spec in zip(paths, joint_specs, strict=False):
-                joint_descriptions[str(path)] = joint_spec
+                joint_path = str(path)
+                body0_path = str(joint_spec.body0)
+                # USD has already resolved descendant targets to their rigid bodies.
+                if (
+                    joint_spec.body0 == joint_spec.body1
+                    and body0_path in body_specs
+                    and (joint_spec.jointEnabled or not only_load_enabled_joints)
+                    and not any(re.match(p, joint_path) for p in ignore_paths)
+                ):
+                    raise ValueError(
+                        f"Unable to parse joint {joint_path}: both endpoints resolve to the same rigid body {body0_path}"
+                    )
+                joint_descriptions[joint_path] = joint_spec
 
     mjc_equality_connect_paths: set[str] = set()
     mjc_equality_weld_paths: set[str] = set()
@@ -1617,6 +1659,7 @@ def parse_usd(
         stage=stage,
         root_prim=root_prim,
         resolver=R,
+        material_specs=material_specs,
         collect_schema_attrs=collect_schema_attrs,
         deformable_read=deformable_read,
         get_prim_world_mat=_get_prim_world_mat,
@@ -2019,6 +2062,10 @@ def parse_usd(
             elif not has_effective_mass:
                 i_diag_np = np.array(cmp_i_diag, dtype=np.float32)
                 principal_axes = cmp_principal_axes
+            elif builder.body_mass[body_id] == 0.0 and np.all(np.isfinite(cmp_i_diag)) and min(cmp_i_diag) > 0.0:
+                # No collider mass: use OpenUSD's small-sphere inertia, as PhysX does; its principal axes are undefined.
+                i_diag_np = np.array(cmp_i_diag, dtype=np.float32)
+                principal_axes = Gf.Quatf(1.0, 0.0, 0.0, 0.0)
             else:
                 # Mass authored, inertia not: keep accumulated inertia and scale
                 # to match authored mass in the mass block below.
@@ -2759,7 +2806,7 @@ def parse_usd(
         prim_path = str(prim.GetPath())
         if any(re.match(pattern, prim_path) for pattern in ignore_paths):
             continue
-        parsed = parse_actuator_prim(prim)
+        parsed = parse_actuator_prim(prim, allow_unsafe_torch_checkpoints=allow_unsafe_torch_checkpoints)
         if parsed is None:
             continue
         target_path = parsed.target_path

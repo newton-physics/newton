@@ -137,6 +137,8 @@ class _UsdJointProperties:
     """Whether the sampled limit gains differ from the builder's standard defaults."""
     mjc_resolver: SchemaResolver | None
     verbose: bool
+    legacy_angular_velocity_units: bool = False
+    legacy_springref_units: bool = False
 
     # Keep source tracking local until schema applicability and provenance are modeled globally (#3307).
     def _mjc_joint_limit_source(self, prim: Usd.Prim) -> Literal["mjc_authored", "mjc_default"] | None:
@@ -301,7 +303,7 @@ class _UsdJointProperties:
                 velocity_limit *= self.degrees_to_radian
             if initial_position is not None:
                 initial_position *= self.degrees_to_radian
-            if initial_velocity is not None:
+            if initial_velocity is not None and not self.legacy_angular_velocity_units:
                 initial_velocity *= self.degrees_to_radian
 
         return _DofParams(
@@ -453,7 +455,12 @@ def _resolve_shape_contact(
         if _r.name == "newton":
             break
     has_solref = mjc_has_priority and usd.get_attribute(prim, "mjc:solref") is not None
-    shape_contact = {}
+    shape_contact = {
+        "mu": material.dynamicFriction,
+        "restitution": material.restitution,
+        "mu_torsional": material.torsionalFriction,
+        "mu_rolling": material.rollingFriction,
+    }
     for _ck in ("ke", "kd", "kf", "ka"):
         per_shape_val = resolver.get_value(prim, prim_type=PrimType.SHAPE, key=_ck, verbose=verbose)
         has_shape = per_shape_val is not None and math.isfinite(float(per_shape_val))

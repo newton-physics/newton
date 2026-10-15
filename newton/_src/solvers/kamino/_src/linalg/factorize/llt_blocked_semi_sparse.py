@@ -173,7 +173,7 @@ def symbolic_cholesky_dense(M, tile_size):
 
 @cache
 def create_blocked_cholesky_kernel(block_size: int):
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def blocked_cholesky_kernel(
         A_batched: wp.array3d[float],
         L_batched: wp.array3d[float],
@@ -306,7 +306,7 @@ def create_blocked_cholesky_kernel(block_size: int):
 
 @cache
 def create_blocked_cholesky_solve_kernel(block_size: int):
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def blocked_cholesky_solve_kernel(
         L_batched: wp.array3d[float],
         L_tile_pattern_batched: wp.array3d[int],
