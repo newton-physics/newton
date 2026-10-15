@@ -4269,6 +4269,57 @@ class TestJointSpaceResponse(unittest.TestCase):
         np.testing.assert_allclose(_arm_values(model, control.joint_f)[:n], expected, rtol=1e-3, atol=1e-3)
         _assert_worlds_match(self, model, control.joint_f, rtol=1e-4, atol=1e-4)
 
+    def test_response_from_mujoco_free_and_ball_joints(self):
+        """Verify refresh_from_solve converts MuJoCo's free and ball joint coordinates.
+
+        The base hangs from a rotated parent frame with an offset CoM, so the
+        frame rotation and the origin-to-CoM shift both matter.
+        """
+        device = wp.get_device()
+        template = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+        base = template.add_link(
+            com=wp.vec3(0.3, -0.2, 0.25), inertia=wp.mat33(0.2, 0.01, 0.0, 0.01, 0.3, 0.02, 0.0, 0.02, 0.25), mass=2.0
+        )
+        parent_rot = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 0.3, 0.2)), 0.9)
+        root = template.add_joint_free(
+            parent=-1, child=base, parent_xform=wp.transform(wp.vec3(0.4, -0.7, 1.1), parent_rot)
+        )
+        arm = template.add_link(
+            com=wp.vec3(0.4, 0.0, 0.05), inertia=wp.mat33(0.05, 0.0, 0.0, 0.0, 0.06, 0.0, 0.0, 0.0, 0.04), mass=1.0
+        )
+        hinge = template.add_joint_revolute(
+            parent=base, child=arm, axis=newton.Axis.Y, parent_xform=wp.transform(wp.vec3(0.2, 0.0, 0.0))
+        )
+        tip = template.add_link(
+            com=wp.vec3(0.1, 0.2, 0.0), inertia=wp.mat33(0.03, 0.0, 0.0, 0.0, 0.02, 0.0, 0.0, 0.0, 0.04), mass=0.7
+        )
+        ball = template.add_joint_ball(
+            parent=arm,
+            child=tip,
+            parent_xform=wp.transform(wp.vec3(0.5, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5)),
+            child_xform=wp.transform(wp.vec3(), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.4)),
+        )
+        template.add_articulation([root, hinge, ball])
+        template.joint_q[3:7] = list(wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.2, 1.0, -0.4)), 0.7))
+        template.joint_q[7] = 0.6
+        template.joint_q[8:12] = list(wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.5, -0.3, 1.0)), 0.8))
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+        builder.replicate(template, 2)
+        model = builder.finalize(device=device)
+
+        state = model.state()
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        solver = _mujoco_solver(self, model)
+        solver.step(state, model.state(), model.control(), None, 1.0e-6)
+
+        response = JointSpaceResponse(model)
+        response.refresh_from_solve(_mujoco_solve(solver), dof_map=solver.mjc_dof_to_newton_dof, state=state)
+        reference = JointSpaceResponse(model)
+        reference.refresh(state)
+        np.testing.assert_allclose(
+            response.inverse_blocks.numpy(), reference.inverse_blocks.numpy(), rtol=1e-4, atol=1e-5
+        )
+
     def test_full_loop_response_from_mujoco_matches_refresh(self):
         """Closed-loop run with the coupled response from MuJoCo's inertia.
 

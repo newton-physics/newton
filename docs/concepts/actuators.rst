@@ -429,7 +429,13 @@ force is their sum. The function reads ``body_q``, which must match
    newton.eval_inverse_dynamics_passive(
        model, sim_state, gravity_force=gravity_force, coriolis_force=coriolis_force
    )
-   wp.launch(bias_force_kernel, dim=n, inputs=[gravity_force, coriolis_force], outputs=[bias_force])
+   wp.launch(
+       bias_force_kernel,
+       dim=n,
+       inputs=[gravity_force, coriolis_force],
+       outputs=[bias_force],
+       device=model.device,
+   )
    sim_control.joint_f.zero_()
    actuator.step(sim_state, sim_control, state_a, state_b, dt=dt, bias_force=bias_force)
    solver.step(sim_state, next_sim_state, sim_control, contacts, dt=dt)
@@ -476,7 +482,9 @@ exception of loop closure effects. To this end,
 <newton.actuators.JointSpaceResponse.refresh_from_solve>` takes a callable that
 computes ``x = M^-1 y``. The response recovers the matrix one column at a time,
 by passing unit vectors through that callable. MuJoCo is currently the only
-Newton solver that provides one.
+Newton solver that provides one. MuJoCo's free and ball joints use different
+coordinates from Newton's, so pass the state as well; the response then
+converts them at that pose.
 
 .. code-block:: python
 
@@ -485,7 +493,7 @@ Newton solver that provides one.
        mujoco_warp.solve_m(solver.mjw_model, solver.mjw_data, x, y)
 
    # Simulation loop, in place of response.refresh(sim_state)
-   response.refresh_from_solve(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof)
+   response.refresh_from_solve(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof, state=sim_state)
 
 Both refresh paths launch only kernels, so the actuator, the solver step and the
 response update can be captured in one CUDA graph.
