@@ -33,9 +33,14 @@ from ..math import normalize_with_norm, safe_div
 
 # Local type definitions for use within kernels
 _vec8f = wp.types.vector(8, wp.float32)
+_vec8i = wp.types.vector(8, wp.int32)
 _mat23f = wp.types.matrix((2, 3), wp.float32)
 _mat43f = wp.types.matrix((4, 3), wp.float32)
 _mat83f = wp.types.matrix((8, 3), wp.float32)
+# Box-box face clipping emits at most 16 edge clips plus 4 reference and 4 incident corners.
+_BOX_BOX_CANDIDATES = 24
+_vec24f = wp.types.vector(_BOX_BOX_CANDIDATES, wp.float32)
+_mat243f = wp.types.matrix((_BOX_BOX_CANDIDATES, 3), wp.float32)
 
 MINVAL = 1e-15
 
@@ -751,7 +756,6 @@ def collide_box_box(
         contact_dist[i] = MAXVAL
     contact_pos = _mat83f()
     contact_normals = _mat83f()
-    contact_count = 0
 
     # Compute transforms between box's frames
     pos21 = wp.transpose(box1_rot) @ (box2_pos - box1_pos)
@@ -770,6 +774,8 @@ def collide_box_box(
     s_sum_3 = 3.0 * (box1_size + box2_size)
     separation = wp.float32(margin + s_sum_3[0] + s_sum_3[1] + s_sum_3[2])
     axis_code = wp.int32(-1)
+    # An edge axis must beat the best face axis by more than float32 rounding at box scale.
+    edge_bias = 1.0e-5 * (s_sum_3[0] + s_sum_3[1] + s_sum_3[2]) / 3.0
 
     # First test: consider boxes' face normals
     for i in range(3):
@@ -826,7 +832,7 @@ def collide_box_box(
                 return contact_dist, contact_pos, contact_normals
 
             # Track minimum separation and which edge-edge pair it occurs on
-            if c3 < separation * (1.0 - 1e-12):
+            if c3 < separation - edge_bias:
                 separation = c3
                 # Determine which corners/edges are closest
                 cle1 = 0
@@ -847,8 +853,11 @@ def collide_box_box(
     if axis_code == -1:
         return contact_dist, contact_pos, contact_normals
 
-    points = _mat83f()
-    depth = _vec8f()
+    points = _mat243f()
+    depth = _vec24f()
+    # Face candidates are ordered edge clips, reference corners, incident corners.
+    num_edge_clips = wp.int32(0)
+    num_ref_corners = wp.int32(0)
     max_con_pair = 8
     # 8 contacts should suffice for most configurations
 
@@ -918,6 +927,7 @@ def collide_box_box(
                         points[n] = lav + c1 * lbv
                         n += 1
 
+        edge_clips_end = n
         if dirs == 2:
             ax = cn1[0]
             bx = cn2[0]
@@ -939,6 +949,7 @@ def collide_box_box(
                     points[n] = wp.vec3(llx, lly, lp[2] + u * cn1[2] + v * cn2[2])
                     n += 1
 
+        ref_corners_end = n
         for i in range(1 << dirs):
             tmpv = lp + wp.float32(i & 1) * cn1 + wp.float32((i & 2) != 0) * cn2
             if tmpv[0] > -lx and tmpv[0] < lx and tmpv[1] > -ly and tmpv[1] < ly:
@@ -951,6 +962,10 @@ def collide_box_box(
         for i in range(m):
             if points[i][2] > margin:
                 continue
+            if i < edge_clips_end:
+                num_edge_clips += 1
+            elif i < ref_corners_end:
+                num_ref_corners += 1
             if i != n:
                 points[n] = points[i]
 
@@ -1160,14 +1175,39 @@ def collide_box_box(
         pw = box1_pos
         normal = wp.where(inv, -1.0, 1.0) * rw @ rnorm
 
-    contact_count = n
+    # Past eight face candidates, keep distinct incident corners, then reference corners, then edge clips.
+    # Candidates of one corner differ by float32 rounding of box-scale coordinates; the tolerance stays at that scale.
+    order = _vec8i()
+    contact_count = wp.int32(n)
+    if n > 8:
+        dedup_tol = 1.0e-6 * wp.length(box1_size + box2_size)
+        contact_count = wp.int32(0)
+        ref_corners_start = num_edge_clips
+        incident_corners_start = num_edge_clips + num_ref_corners
+        for family in range(3):
+            start = wp.where(family == 0, incident_corners_start, wp.where(family == 1, ref_corners_start, 0))
+            end = wp.where(family == 0, n, wp.where(family == 1, incident_corners_start, ref_corners_start))
+            for i in range(start, end):
+                if contact_count < 8:
+                    distinct = wp.bool(True)
+                    for kept in range(contact_count):
+                        offset = points[i] - points[order[kept]]
+                        if wp.abs(offset[0]) < dedup_tol and wp.abs(offset[1]) < dedup_tol:
+                            distinct = False
+                    if distinct:
+                        order[contact_count] = i
+                        contact_count += 1
+    else:
+        for i in range(n):
+            order[i] = i
 
     # Copy contact data to output matrices
     for i in range(contact_count):
-        points[i, 2] += hz
-        pos = rw @ points[i] + pw
-        contact_dist[i] = depth[i]
-        contact_pos[i] = pos
+        src = order[i]
+        point = points[src]
+        point[2] += hz
+        contact_dist[i] = depth[src]
+        contact_pos[i] = rw @ point + pw
         contact_normals[i] = normal
 
     return contact_dist, contact_pos, contact_normals
