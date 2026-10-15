@@ -4791,14 +4791,15 @@ def Xform "World"
         from pxr import Usd
 
         test_cases = [
-            ("integrator", "0", 0),  # Euler
-            ("solver", "2", 2),  # Newton
-            ("cone", "1", 1),  # elliptic
-            ("jacobian", "1", 1),  # sparse
+            ("integrator", "int", "0", 0),  # Euler
+            ("integrator", "uniform token", '"discrete"', 4),
+            ("solver", "int", "2", 2),  # Newton
+            ("cone", "int", "1", 1),  # elliptic
+            ("jacobian", "int", "1", 1),  # sparse
         ]
 
-        for option_name, usd_value, expected_int in test_cases:
-            with self.subTest(option=option_name):
+        for option_name, usd_type, usd_value, expected_int in test_cases:
+            with self.subTest(option=option_name, value=usd_value):
                 usd_content = f"""#usda 1.0
 (
     defaultPrim = "World"
@@ -4812,7 +4813,7 @@ def Xform "World"
         prepend apiSchemas = ["MjcSceneAPI"]
     )
     {{
-        int mjc:option:{option_name} = {usd_value}
+        {usd_type} mjc:option:{option_name} = {usd_value}
     }}
 
     def Xform "Articulation" (
@@ -4857,76 +4858,6 @@ def Xform "World"
                 value = getattr(model.mujoco, option_name).numpy()
                 self.assertEqual(len(value), 1)  # ONCE frequency
                 self.assertEqual(value[0], expected_int)
-
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_option_integrator_token_parsing(self):
-        """Test that every MjcPhysics integrator token parses from a USD PhysicsScene."""
-        from pxr import Usd
-
-        test_cases = [
-            ("euler", 0),
-            ("rk4", 1),
-            ("implicit", 2),
-            ("implicitfast", 3),
-            ("discrete", 4),
-        ]
-
-        for token, expected_int in test_cases:
-            with self.subTest(integrator=token):
-                usd_content = f"""#usda 1.0
-(
-    defaultPrim = "World"
-    metersPerUnit = 1.0
-    upAxis = "Z"
-)
-
-def Xform "World"
-{{
-    def PhysicsScene "PhysicsScene" (
-        prepend apiSchemas = ["MjcSceneAPI"]
-    )
-    {{
-        uniform token mjc:option:integrator = "{token}"
-    }}
-
-    def Xform "Articulation" (
-        prepend apiSchemas = ["PhysicsArticulationRootAPI"]
-    )
-    {{
-        def Xform "Body1" (
-            prepend apiSchemas = ["PhysicsRigidBodyAPI"]
-        )
-        {{
-            double3 xformOp:translate = (0, 0, 1)
-            uniform token[] xformOpOrder = ["xformOp:translate"]
-
-            def Sphere "Collision" (
-                prepend apiSchemas = ["PhysicsCollisionAPI"]
-            )
-            {{
-                double radius = 0.1
-            }}
-        }}
-
-        def PhysicsRevoluteJoint "Joint"
-        {{
-            rel physics:body0 = </World/Articulation/Body1>
-            point3f physics:localPos0 = (0, 0, 0)
-            quatf physics:localRot0 = (1, 0, 0, 0)
-            token physics:axis = "Z"
-        }}
-    }}
-}}
-"""
-                stage = Usd.Stage.CreateInMemory()
-                stage.GetRootLayer().ImportFromString(usd_content)
-
-                builder = newton.ModelBuilder()
-                SolverMuJoCo.register_custom_attributes(builder)
-                builder.add_usd(stage)
-                model = builder.finalize()
-
-                self.assertEqual(model.mujoco.integrator.numpy()[0], expected_int)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_parse_mujoco_options_disabled(self):

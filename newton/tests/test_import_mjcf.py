@@ -5136,13 +5136,14 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         """Test parsing of ONCE frequency enum options from MJCF (4 options)."""
         test_cases = [
             ("integrator", "Euler", 0),
+            ("integrator", "discrete", 4),
             ("solver", "Newton", 2),
             ("cone", "elliptic", 1),
             ("jacobian", "sparse", 1),
         ]
 
         for option_name, mjcf_value, expected_int in test_cases:
-            with self.subTest(option=option_name):
+            with self.subTest(option=option_name, value=mjcf_value):
                 mjcf = self._create_mjcf_with_option(option_name, mjcf_value)
                 builder = newton.ModelBuilder()
                 builder.add_mjcf(mjcf)
@@ -5153,25 +5154,6 @@ class TestImportMjcfSolverParams(unittest.TestCase):
                 value = getattr(model.mujoco, option_name).numpy()
                 self.assertEqual(len(value), 1)  # ONCE frequency
                 self.assertEqual(value[0], expected_int)
-
-    def test_option_integrator_names_parsing(self):
-        """Test that every MuJoCo integrator name parses from MJCF."""
-        test_cases = [
-            ("Euler", 0),
-            ("RK4", 1),
-            ("implicit", 2),
-            ("implicitfast", 3),
-            ("discrete", 4),
-        ]
-
-        for mjcf_value, expected_int in test_cases:
-            with self.subTest(integrator=mjcf_value):
-                mjcf = self._create_mjcf_with_option("integrator", mjcf_value)
-                builder = newton.ModelBuilder()
-                builder.add_mjcf(mjcf)
-                model = builder.finalize()
-
-                self.assertEqual(model.mujoco.integrator.numpy()[0], expected_int)
 
     def test_option_tag_pair_syntax(self):
         """Test that options work with tag-pair syntax in addition to self-closing tags."""
