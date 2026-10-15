@@ -124,6 +124,13 @@ class RenderConfig:
     spheres.
     """
 
+    enable_simulation_triangles: bool = True
+    """Include coarse simulation surfaces. Set when constructing the sensor.
+
+    .. experimental::
+        This deformable-visual rendering option may change without a formal deprecation cycle.
+    """
+
     enable_backface_culling: bool = True
     """Cull back-facing triangles of rigid meshes and deformable surfaces.
 
