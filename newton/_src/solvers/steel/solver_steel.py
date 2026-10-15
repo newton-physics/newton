@@ -2519,6 +2519,8 @@ class SolverSteel(SolverBase):
             if enable_sleeping
             else None
         )
+        # Allocated after the step's buffers so it leaves their layout unchanged.
+        self._joint_friction_invalid = wp.zeros(int(model.world_count) + 1, dtype=wp.bool, device=model.device)
 
     def _refresh_shape_materials(self) -> None:
         """Copy the model's current friction and restitution coefficients into the solver's fixed buffers."""
@@ -2821,8 +2823,7 @@ class SolverSteel(SolverBase):
             )
 
     def _init_joint_friction_check(self, model) -> None:
-        """Allocate :attr:`joint_friction_invalid` and upload the per-DOF tables of the device check."""
-        self._joint_friction_invalid = wp.zeros(int(model.world_count) + 1, dtype=wp.bool, device=model.device)
+        """Upload the per-DOF tables of the device joint-friction check."""
         if not self._enable_joint_friction or model.joint_dof_count == 0:
             return
         supported, world = self._joint_friction_support(model)
@@ -3764,10 +3765,11 @@ class SolverSteel(SolverBase):
             if model.device.is_cuda and not model.requires_grad
             else {}
         )
-        # Joint types are fixed after finalize, so the DOFs that can carry friction rows are too.
-        self._friction_dof_eligible = wp.array(
-            (limit_q_index >= 0).astype(np.int32), dtype=wp.int32, device=model.device
-        )
+        if self._enable_joint_friction:
+            # Joint types are fixed after finalize, so the DOFs that can carry friction rows are too.
+            self._friction_dof_eligible = wp.array(
+                (limit_q_index >= 0).astype(np.int32), dtype=wp.int32, device=model.device
+            )
         self._joint_friction_warp_kernels = (
             {
                 size: _get_joint_friction_warp_kernel(
