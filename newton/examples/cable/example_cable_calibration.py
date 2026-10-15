@@ -18,8 +18,9 @@
 
 Without --bundle, the example downloads its bundle from newton-assets. Install
 newton[calibration]. The search runs in a child process, so the viewer stays
-responsive. With --output-dir, the result is written to result.json and the
-search history to history.json; --trace-every adds rendered rollouts.
+responsive. The example drives the search with ask() and tell(), so it can
+send the poses of each new best cable to the viewer. calibrate() runs the same
+loop in one call and writes the result to files.
 
 The setup, the searched parameters and the solver settings in make_problem()
 are illustrative; adapt them to your cable.
@@ -30,7 +31,6 @@ from __future__ import annotations
 import importlib
 import logging
 import logging.handlers
-import math
 import multiprocessing
 import queue
 import time
@@ -45,10 +45,9 @@ import newton.utils
 
 # The calibration module is private until its public PR; import it from _src for now.
 from newton._src.calibration.cable_setup import CableSetup
-from newton._src.calibration.calibrate import calibrate
 from newton._src.calibration.evaluate import CableParameters
 from newton._src.calibration.evidence import CableEvidenceBundle
-from newton._src.calibration.optimizer import OptimizerCMA
+from newton._src.calibration.optimizer import CMASettings
 from newton._src.calibration.problem import CableCalibrationProblem
 from newton._src.calibration.result import CableCalibrationResult
 from newton._src.calibration.search_space import CableSearchSpace
@@ -153,7 +152,7 @@ def _camera_view(goal) -> dict:
     }
 
 
-def fit(bundle_dir, device, warp_log_level, test, output_dir, trace_every, messages) -> None:
+def fit(bundle_dir, device, warp_log_level, test, messages) -> None:
     """Run the search and send its progress and its result to ``messages``.
 
     Runs in a child process, so it has its own CUDA context: the search captures
@@ -165,44 +164,26 @@ def fit(bundle_dir, device, warp_log_level, test, output_dir, trace_every, messa
         wp.set_device(device)
     try:
         problem = make_problem(bundle_dir)
-        problem.objective = _ObjectiveSendingBestPoses(problem, messages)
         progress = logging.getLogger("newton._src.calibration")
         progress.addHandler(logging.handlers.QueueHandler(messages))
         progress.setLevel(logging.INFO)
         progress.propagate = False
 
         # A short search in test mode keeps the example test fast.
-        optimizer = OptimizerCMA(seed=42, sigma0=0.1, maxiter=3 if test else 120, popsize=8 if test else 24)
-        result = calibrate(problem, optimizer=optimizer, output_dir=output_dir, trace_every=trace_every)
+        optimizer = CMASettings(seed=42, sigma0=0.1, maxiter=3 if test else 120, popsize=8 if test else 24)
+        search = optimizer.start(problem.search_space)
+        while search.stop_reason is None:
+            best_loss = search.best_loss
+            losses, poses = problem.evaluate(search.ask(), return_poses=True)
+            search.tell(losses)
+            # Send the poses of a new best candidate, one array per recorded motion.
+            if search.best_loss < best_loss:
+                best = losses.index(search.best_loss)
+                messages.put(("fit", search.iteration, search.best_loss, [recording[best] for recording in poses]))
+        result = problem.build_result(search.outcome(), optimizer=optimizer, artifacts={})
         messages.put(("result", result.to_dict()))
     except Exception as exc:
         messages.put(("error", f"{type(exc).__name__}: {exc}"))
-
-
-class _ObjectiveSendingBestPoses:
-    """The problem's objective, which also sends ``("fit", iteration, loss, poses)`` for each new best candidate.
-
-    ``poses`` holds one array per recorded motion, shape ``(frames, bodies, 7)``.
-    The search scores its start in the first call and one batch per iteration
-    after it, so the number of calls so far is the iteration.
-    """
-
-    def __init__(self, problem: CableCalibrationProblem, messages):
-        self.problem = problem
-        self.messages = messages
-        self.iteration = 0
-        self.best_loss = math.inf
-
-    def evaluate(self, vectors):
-        losses, poses = self.problem.evaluate(vectors, return_poses=True)
-        valid = [i for i, loss in enumerate(losses) if math.isfinite(loss)]
-        if valid:
-            best = min(valid, key=losses.__getitem__)
-            if losses[best] < self.best_loss:
-                self.best_loss = losses[best]
-                self.messages.put(("fit", self.iteration, losses[best], [recording[best] for recording in poses]))
-        self.iteration += 1
-        return losses
 
 
 class Example:
@@ -223,8 +204,6 @@ class Example:
                 args.device,
                 wp.config.log_level,
                 args.test,
-                args.output_dir,
-                args.trace_every,
                 self.messages,
             ),
             daemon=True,
@@ -437,18 +416,6 @@ class Example:
             type=Path,
             default=None,
             help="Local directory containing bundle.json. If omitted, the bundle is downloaded from newton-assets.",
-        )
-        parser.add_argument(
-            "--output-dir",
-            type=Path,
-            default=None,
-            help="Directory for result.json and history.json. It must be absent or empty. Default: write no files.",
-        )
-        parser.add_argument(
-            "--trace-every",
-            type=int,
-            default=0,
-            help="Render a rollout every N iterations into --output-dir/trace. 0 renders none.",
         )
         return parser
 
