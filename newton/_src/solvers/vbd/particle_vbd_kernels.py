@@ -1591,6 +1591,14 @@ def accumulate_self_contact_force_and_hessian(
         collision_buffer_counter = t_id_current_primitive
         collision_buffer_offset = collision_info.edge_colliding_edges_offsets[primitive_id]
         collision_count = get_edge_colliding_edges_count(collision_info, primitive_id)
+        # EE rows contribute only to their own endpoints. Keep the VT work below
+        # active even when this edge has no endpoint in the current color.
+        if collision_count > 0:
+            if (
+                particle_colors[edge_indices[e1_idx, 2]] != current_color
+                and particle_colors[edge_indices[e1_idx, 3]] != current_color
+            ):
+                collision_count = 0
         while collision_buffer_counter < collision_count:
             e2_idx = collision_info.edge_colliding_edges[2 * (collision_buffer_offset + collision_buffer_counter) + 1]
 

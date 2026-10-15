@@ -17,6 +17,7 @@ from newton._src.geometry.tri_mesh_collision import TriMeshCollisionInfo, build_
 from newton._src.solvers.vbd.particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
     TILE_SIZE_TRI_MESH_ELASTICITY_SOLVE,
+    accumulate_self_contact_force_and_hessian,
     apply_planar_truncation_parallel_by_collision,
     build_particle_body_contact_adjacency_active,
     create_edge_edge_division_plane_closest_pt,
@@ -3263,6 +3264,109 @@ def _self_contact_damping_uses_relative_gap_rate(test, device):
         np.testing.assert_allclose(hessians.numpy()[1], hessians.numpy()[0], rtol=1.0e-6, atol=1.0e-6)
 
 
+def _self_contact_force_color_partition(test, device):
+    """Preserve EE and VT force/Hessian contributions across particle colors."""
+    positions = wp.array(
+        [
+            [-1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [0.0, -1.0, 0.05],
+            [0.0, 1.0, 0.05],
+            [-1.0, 0.0, 2.0],
+            [1.0, 0.0, 2.0],
+            [-2.0, -1.0, -0.05],
+            [0.0, -1.0, -0.05],
+            [-1.0, 1.0, -0.05],
+        ],
+        dtype=wp.vec3,
+        device=device,
+    )
+    particle_count = len(positions)
+    triangles = wp.array([[6, 7, 8]], dtype=int, ndim=2, device=device)
+    edges = wp.array([[-1, -1, 0, 1], [-1, -1, 2, 3], [-1, -1, 4, 5]], dtype=int, ndim=2, device=device)
+    info = build_tri_mesh_collision_info(
+        particle_count=particle_count,
+        tri_count=1,
+        edge_count=3,
+        vertex_collision_buffer_pre_alloc=1,
+        edge_collision_buffer_pre_alloc=2,
+        device=device,
+    )
+    vertex_pairs = np.full((particle_count, 2), -1, dtype=np.int32)
+    vertex_pairs[0] = (0, 0)
+    vertex_counts = np.zeros(particle_count, dtype=np.int32)
+    vertex_counts[0] = 1
+    info.vertex_colliding_triangles.assign(vertex_pairs.ravel())
+    info.vertex_colliding_triangles_count.assign(vertex_counts)
+    edge_pairs = np.full((3, 2, 2), -1, dtype=np.int32)
+    edge_pairs[0, 0] = (0, 1)
+    edge_pairs[1, 0] = (1, 0)
+    info.edge_colliding_edges.assign(edge_pairs.ravel())
+    # Include capacity-clamped rows, invalid candidate sentinels, and an empty row.
+    info.edge_colliding_edges_count.assign(np.array([3, 3, 0], dtype=np.int32))
+    info_array = wp.array([info], dtype=TriMeshCollisionInfo, device=device)
+    colors = wp.zeros(particle_count, dtype=int, device=device)
+    forces = wp.zeros(particle_count, dtype=wp.vec3, device=device)
+    hessians = wp.zeros(particle_count, dtype=wp.mat33, device=device)
+
+    def launch(color):
+        forces.zero_()
+        hessians.zero_()
+        wp.launch(
+            accumulate_self_contact_force_and_hessian,
+            dim=particle_count * NUM_THREADS_PER_COLLISION_PRIMITIVE,
+            inputs=[
+                1.0 / 120.0,
+                color,
+                positions,
+                positions,
+                colors,
+                triangles,
+                edges,
+                info_array,
+                0.1,
+                100.0,
+                0.0,
+                0.0,
+                0.01,
+                1.0e-5,
+            ],
+            outputs=[forces, hessians],
+            device=device,
+        )
+
+    launch(0)
+    reference_force, reference_hessian = forces.numpy(), hessians.numpy()
+    test.assertTrue(np.all(np.linalg.norm(reference_force[:4], axis=1) > 0.0))
+    test.assertTrue(np.all(np.linalg.norm(reference_force[6:], axis=1) > 0.0))
+    np.testing.assert_array_equal(reference_force[4:6], 0.0)
+
+    colorings = ([0, 1, 2, 3, 6, 7, 4, 5, 6], [2, 2, 2, 2, 6, 7, 4, 5, 6])
+    for coloring in colorings:
+        colors.assign(np.array(coloring, dtype=np.int32))
+        for color in range(9):
+            with test.subTest(coloring=coloring, color=color):
+                launch(color)
+                mask = np.array(coloring) == color
+                np.testing.assert_allclose(forces.numpy(), reference_force * mask[:, None], rtol=1.0e-6, atol=1.0e-6)
+                np.testing.assert_allclose(
+                    hessians.numpy(), reference_hessian * mask[:, None, None], rtol=1.0e-6, atol=1.0e-6
+                )
+
+    if device.is_cuda:
+        # Primitive 0 has inactive EE endpoints for color 4 but a nonzero VT contribution.
+        colors.assign(np.array(colorings[0], dtype=np.int32))
+        with wp.ScopedCapture(device=device) as capture:
+            launch(4)
+        for _ in range(2):
+            wp.capture_launch(capture.graph)
+            mask = np.array(colorings[0]) == 4
+            np.testing.assert_allclose(forces.numpy(), reference_force * mask[:, None], rtol=1.0e-6, atol=1.0e-6)
+            np.testing.assert_allclose(
+                hessians.numpy(), reference_hessian * mask[:, None, None], rtol=1.0e-6, atol=1.0e-6
+            )
+
+
 def _d6_fully_free_structural_slots_are_inactive(test, device):
     """D6 structural slots should be inactive when all axes are free."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -6158,6 +6262,12 @@ add_function_test(
     TestSolverVBD,
     "test_self_contact_damping_uses_relative_gap_rate",
     _self_contact_damping_uses_relative_gap_rate,
+    devices=devices,
+)
+add_function_test(
+    TestSolverVBD,
+    "test_self_contact_force_color_partition",
+    _self_contact_force_color_partition,
     devices=devices,
 )
 add_function_test(
