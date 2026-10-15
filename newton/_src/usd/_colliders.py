@@ -22,6 +22,7 @@ from . import utils as usd
 from ._collision_filters import _collect_filtered_pairs
 from ._mass_properties import _is_enabled_collider
 from ._resolution_policy import (
+    _resolve_physics_material,
     _resolve_shape_contact,
     _resolve_shape_hydroelastic,
     _resolve_shape_offsets,
@@ -75,6 +76,33 @@ def _parse_colliders(
     """Add colliders in descriptor order using the importer's shared maps and helpers."""
     from pxr import UsdPhysics
 
+    def _get_physics_material(material_path: str) -> _PhysicsMaterial:
+        """Resolve and cache bound materials outside the selected import range."""
+        if material_path in material_specs:
+            return material_specs[material_path]
+
+        # Native collider descriptors retain binding targets outside root_path,
+        # but that range's material descriptors do not include those targets.
+        external = usd.load_physics_from_range(stage, [material_path])
+        paths, descriptors = external.get(UsdPhysics.ObjectType.RigidBodyMaterial, ((), ()))
+        for path, descriptor in zip(paths, descriptors, strict=False):
+            if str(path) != material_path or warn_invalid_desc(path, descriptor):
+                continue
+            material = _resolve_physics_material(
+                stage.GetPrimAtPath(path),
+                descriptor,
+                R,
+                builder.default_shape_cfg,
+                default_shape_density=default_shape_density,
+                verbose=verbose,
+            )
+            material_specs[material_path] = material
+            return material
+
+        raise ValueError(
+            f"Collider references physics material '{material_path}', but that target could not be parsed."
+        )
+
     # mapping from physics:approximation attribute (lower case) to remeshing method
     approximation_to_remeshing_method = {
         "convexdecomposition": "coacd",
@@ -124,7 +152,7 @@ def _parse_colliders(
                 if has_shape_material:
                     if len(shape_spec.materials) > 1 and verbose:
                         print(f"Warning: More than one material found on shape at '{path}'.\nUsing only the first one.")
-                    material = material_specs[str(shape_spec.materials[0])]
+                    material = _get_physics_material(str(shape_spec.materials[0]))
                     if verbose:
                         print(
                             f"\tMaterial of '{path}':\tfriction: {material.dynamicFriction},\ttorsional friction: {material.torsionalFriction},\trolling friction: {material.rollingFriction},\trestitution: {material.restitution},\tdensity: {material.density}"
@@ -181,10 +209,6 @@ def _parse_colliders(
                 )
 
                 shape_contact = _resolve_shape_contact(prim, R, material, builder.default_shape_cfg, verbose=verbose)
-                shape_ke = shape_contact["ke"]
-                shape_kd = shape_contact["kd"]
-                shape_kf = shape_contact["kf"]
-                shape_ka = shape_contact["ka"]
 
                 shape_color = material_props.get("color")
                 carries_texture = material_props.get("texture") is not None and key == UsdPhysics.ObjectType.MeshShape
@@ -228,16 +252,9 @@ def _parse_colliders(
                     "body": body_id,
                     "xform": shape_xform,
                     "cfg": ModelBuilder.ShapeConfig(
-                        ke=shape_ke,
-                        kd=shape_kd,
-                        kf=shape_kf,
-                        ka=shape_ka,
+                        **shape_contact,
                         margin=inertia_margin,
                         gap=gap_val,
-                        mu=material.dynamicFriction,
-                        restitution=material.restitution,
-                        mu_torsional=material.torsionalFriction,
-                        mu_rolling=material.rollingFriction,
                         density=shape_density,
                         collision_group=collision_group,
                         is_visible=collider_is_visible,

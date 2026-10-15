@@ -184,7 +184,7 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
             ff = wp.float64(feedforward[target_vel_indices[si]])
         return clamp_chain(evaluate_force(q_i, qd_i, tq, tqd, ff, params, si), q_i, qd_i, clamp_params, si)
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def solve(
         group_size: wp.array[wp.int32],
         group_art: wp.array[wp.int32],
@@ -567,6 +567,7 @@ class _EffortModeImplicit:
         applied_forces: wp.array[float],
         drive_state: Any,
         dt: float | None,
+        custom_inputs: dict[str, Any] | None = None,
         battery_kwargs: dict[str, Any] | None = None,
     ) -> wp.array[float]:
         """Solve implicit effort and return the applied-effort buffer.
@@ -574,6 +575,11 @@ class _EffortModeImplicit:
         The drive law at the final predicted state is written to
         *computed_forces*. Clamps are enforced inside the solve against that
         state, and the solved effort is written to *applied_forces*.
+
+        *custom_inputs* holds the arrays the drive named in
+        :attr:`~newton.actuators.DriveBase.custom_inputs`, and is forwarded to
+        :meth:`~newton.actuators.DriveBase.prepare_implicit` so the
+        linearization sees the same extra arrays the explicit path does.
         """
         if battery_kwargs is not None:
             raise NotImplementedError("Implicit actuation does not support a battery")
@@ -589,6 +595,12 @@ class _EffortModeImplicit:
                 outputs=[self._slot_response],
                 device=self._device,
             )
+            prepare_kwargs: dict[str, Any] = {
+                "inv_mass": self._slot_response,
+                "device": self._device,
+            }
+            if self._drive.custom_inputs:
+                prepare_kwargs["custom_inputs"] = custom_inputs
             self._drive.prepare_implicit(
                 positions,
                 velocities,
@@ -600,8 +612,7 @@ class _EffortModeImplicit:
                 target_vel_indices,
                 drive_state,
                 float(dt),
-                self._slot_response,
-                self._device,
+                **prepare_kwargs,
             )
         inverse_blocks = self._response.inverse_blocks
 

@@ -778,7 +778,8 @@ class TestGeometryContactConversions(unittest.TestCase):
         """
         builder = builder_fn()
         if with_force:
-            builder.request_contact_attributes("force")
+            with self.assertWarns(DeprecationWarning):
+                builder.request_contact_attributes("force")
         model = builder.finalize(self.default_device)
 
         state = model.state()
@@ -1245,13 +1246,15 @@ class TestGeometryContactConversions(unittest.TestCase):
         box_blueprint = build_two_box_stack_scene()  # two boxes, no ground
 
         scene = ModelBuilder()
-        scene.request_contact_attributes("force")
+        with self.assertWarns(DeprecationWarning):
+            scene.request_contact_attributes("force")
         scene.add_ground_plane()
         scene.add_world(nunchaku_blueprint, xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0)))
         scene.add_world(nunchaku_blueprint, xform=wp.transform(p=wp.vec3(5.0, 0.0, 0.0)))
         # Single-box blueprint: just take a fresh nunchaku-less box scene with one body.
         single_box = ModelBuilder()
-        single_box.request_contact_attributes("force")
+        with self.assertWarns(DeprecationWarning):
+            single_box.request_contact_attributes("force")
         b = single_box.add_link()
         no_gap = ModelBuilder.ShapeConfig(gap=0.0)
         single_box.add_shape_box(b, hx=0.25, hy=0.25, hz=0.25, cfg=no_gap)
@@ -1684,7 +1687,8 @@ class TestGeometryContactConversions(unittest.TestCase):
 
         # Box hovering within the detection gap -> every contact is speculative.
         scene = build_box_on_plane_scene(half_extent + 0.05, margin=0.0, gap=0.1, half_extent=half_extent)
-        scene.request_contact_attributes("force")
+        with self.assertWarns(DeprecationWarning):
+            scene.request_contact_attributes("force")
         model = scene.finalize(self.default_device)
         state = model.state()
         collision_pipeline = newton.CollisionPipeline(model, rigid_contact_max=_NEWTON_CONTACT_CAPACITY)

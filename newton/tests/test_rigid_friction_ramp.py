@@ -21,6 +21,7 @@ Two complementary tests share this file as the canonical friction benchmark:
 import math
 import time
 import unittest
+from functools import partial
 from typing import NamedTuple
 
 import numpy as np
@@ -370,6 +371,18 @@ def test_friction_stopping_distance(
 
 # --- Solver matrix ---
 
+
+def _make_kamino_dvi_solver(model, *, unilateral_solver, sparse):
+    """Exercise DVI friction through the public solver with Newton contacts."""
+    config = newton.solvers.SolverKamino.Config(
+        dynamics_solver="dvi",
+        sparse_jacobian=sparse,
+        sparse_dynamics=sparse,
+    )
+    config.dvi.unilateral_solver = unilateral_solver
+    return newton.solvers.SolverKamino(model, config=config)
+
+
 devices = get_test_devices()
 cuda_devices = get_selected_cuda_test_devices()
 
@@ -468,6 +481,14 @@ _SOLVERS = {
         "stopping_distance_rest_speed_max": STOPPING_REST_SPEED_MAX,
     },
 }
+
+for _backend in ("pgs", "apgd"):
+    for _sparse in (False, True):
+        _name = f"kamino_dvi_{_backend}_{'sparse' if _sparse else 'dense'}"
+        _SOLVERS[_name] = {
+            **_SOLVERS["kamino"],
+            "factory": partial(_make_kamino_dvi_solver, unilateral_solver=_backend, sparse=_sparse),
+        }
 
 
 class TestRigidFrictionRamp(unittest.TestCase):

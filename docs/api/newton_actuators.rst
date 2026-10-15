@@ -36,6 +36,7 @@ construction.
    ComponentKind
    DriveBAM
    DriveBase
+   DriveNeuralGRU
    DriveNeuralLSTM
    DriveNeuralMLP
    DrivePD

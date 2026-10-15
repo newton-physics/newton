@@ -4,7 +4,7 @@
 from .actuator import Actuator
 from .battery import Battery
 from .clamping import ClampingBase, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
-from .drives import DriveBAM, DriveBase, DriveNeuralLSTM, DriveNeuralMLP, DrivePD, DrivePID
+from .drives import DriveBAM, DriveBase, DriveNeuralGRU, DriveNeuralLSTM, DriveNeuralMLP, DrivePD, DrivePID
 from .input_processors import (
     InputProcessorBacklash,
     InputProcessorBase,
@@ -24,6 +24,7 @@ __all__ = [
     "ComponentKind",
     "DriveBAM",
     "DriveBase",
+    "DriveNeuralGRU",
     "DriveNeuralLSTM",
     "DriveNeuralMLP",
     "DrivePD",

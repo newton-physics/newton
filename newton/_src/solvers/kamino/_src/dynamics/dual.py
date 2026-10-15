@@ -61,7 +61,7 @@ import warp as wp
 from .....core.types import override
 from ...config import ConfigBase, ConstrainedDynamicsConfig, ConstraintStabilizationConfig
 from ..core.data import DataKamino
-from ..core.math import FLOAT32_EPS
+from ..core.math import FLOAT32_EPS, compute_gyroscopic_torque
 from ..core.model import ModelKamino
 from ..core.size import SizeKamino
 from ..core.types import vec6f
@@ -371,12 +371,12 @@ def gravity_plus_coriolis_wrench(
     m_i: wp.float32,
     I_i: wp.mat33f,
     omega_i: wp.vec3f,
+    dt: wp.float32,
 ) -> wp.spatial_vectorf:
     """
     Compute the gravitational + Coriolis wrench acting on a body.
     """
-    f_gi_i = m_i * g
-    tau_gi_i = -wp.skew(omega_i) @ (I_i @ omega_i)
+    f_gi_i, tau_gi_i = gravity_plus_coriolis_wrench_split(g, m_i, I_i, omega_i, dt)
     return wp.spatial_vectorf(*f_gi_i, *tau_gi_i)
 
 
@@ -386,12 +386,13 @@ def gravity_plus_coriolis_wrench_split(
     m_i: wp.float32,
     I_i: wp.mat33f,
     omega_i: wp.vec3f,
+    dt: wp.float32,
 ) -> tuple[wp.vec3f, wp.vec3f]:
     """
     Compute the gravitational+inertial wrench on a body.
     """
     f_gi_i = m_i * g
-    tau_gi_i = -wp.skew(omega_i) @ (I_i @ omega_i)
+    tau_gi_i = compute_gyroscopic_torque(dt, I_i, omega_i)
     return f_gi_i, tau_gi_i
 
 
@@ -485,7 +486,7 @@ def _build_nonlinear_generalized_force(
     omega_i = wp.spatial_bottom(u_i)
 
     # Compute the net external wrench on the body
-    h_i = w_e_i + w_a_i + gravity_plus_coriolis_wrench(g, m_i, I_i, omega_i)
+    h_i = w_e_i + w_a_i + gravity_plus_coriolis_wrench(g, m_i, I_i, omega_i, dt)
 
     # Store the generalized free-velocity vector
     problem_h[bid] = dt * h_i
@@ -529,7 +530,7 @@ def _build_generalized_free_velocity(
     omega_i = wp.spatial_bottom(u_i)
 
     # Compute the net external wrench on the body
-    h_i = w_e_i + w_a_i + gravity_plus_coriolis_wrench(g, m_i, I_i, omega_i)
+    h_i = w_e_i + w_a_i + gravity_plus_coriolis_wrench(g, m_i, I_i, omega_i, dt)
     f_h_i = wp.spatial_top(h_i)
     tau_h_i = wp.spatial_bottom(h_i)
 
