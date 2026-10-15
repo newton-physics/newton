@@ -9,7 +9,6 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.sim.articulation import eval_articulation_mass_matrix
 from newton._src.sim.articulation_mass import _assemble_mass_matrix
 from newton.tests.test_actuators import _build_two_link
 
@@ -45,16 +44,23 @@ class TestMassAssembly(unittest.TestCase):
                     wp.array(jac, device=device),
                     wp.full(batch * width, 0.2, device=device),
                 ]
-                expected = wp.full((batch, width, width), 0.5, device=device)
-                actual = wp.full(expected.shape, 0.5, device=device)
-                wp.launch(eval_articulation_mass_matrix, dim=batch, inputs=args, outputs=[expected], device=device)
+                expected = np.full((batch, width, width), 0.5, dtype=np.float64)
+                for art in range(batch):
+                    if not mask[art]:
+                        continue
+                    for link in range(links):
+                        block = jac[art, link * 6 : (link + 1) * 6].astype(np.float64)
+                        expected[art] += block.T @ inertia[art * links + link] @ block
+                    expected[art, np.arange(width), np.arange(width)] += 0.2
+                actual = wp.full((batch, width, width), 0.5, device=device)
                 _assemble_mass_matrix(args, actual)
-                np.testing.assert_allclose(actual.numpy(), expected.numpy(), rtol=2e-4, atol=5e-5)
+                np.testing.assert_allclose(actual.numpy(), expected, rtol=2e-4, atol=5e-5)
 
     def test_public_mass_gradient(self):
         """Differentiate the public mass assembly with respect to its supplied Jacobian."""
         device = wp.get_device()
         model = _build_two_link(device)
+        model.joint_armature = wp.array(model.joint_armature.numpy(), device=device, requires_grad=True)
         state = model.state()
         newton.eval_fk(model, state.joint_q, state.joint_qd, state)
         original = newton.eval_jacobian(model, state).numpy()
@@ -67,6 +73,7 @@ class TestMassAssembly(unittest.TestCase):
         with wp.Tape() as tape:
             newton.eval_mass_matrix(model, state, H=H, J=J)
         tape.backward(grads={H: wp.ones_like(H)})
+        np.testing.assert_allclose(model.joint_armature.grad.numpy(), 1.0, atol=1e-6)
         analytic = J.grad.numpy()
         index = np.unravel_index(np.argmax(np.abs(analytic)), analytic.shape)
         samples = []

@@ -1415,60 +1415,39 @@ def eval_articulation_mass_matrix(
     body_I_s: wp.array[wp.spatial_matrix],
     J: wp.array3d[float],
     joint_armature: wp.array[float],
-    # outputs
     H: wp.array3d[float],
 ):
-    """Compute generalized mass matrix H = J^T * M * J.
+    """Accumulate each link/entry contribution to H = J^T M J plus armature.
 
-    The mass matrix H relates joint accelerations to joint forces/torques.
-    If ``joint_armature`` is provided, it is added to the diagonal.
-    Output shape: (articulation_count, max_dofs, max_dofs)
+    Launch over (articulation, link, matrix entry). Atomic additions preserve
+    accumulation into H and support gradients on both CPU and CUDA.
     """
-    art_idx = wp.tid()
-
+    art_idx, link, element = wp.tid()
     if art_idx >= articulation_count:
         return
-
     if articulation_mask:
         if not articulation_mask[art_idx]:
             return
-
     joint_start = articulation_start[art_idx]
     joint_end = articulation_end[art_idx]
-    joint_count = joint_end - joint_start
-
-    articulation_dof_start = joint_qd_start[joint_start]
-    articulation_dof_end = joint_qd_start[joint_end]
-    articulation_dof_count = articulation_dof_end - articulation_dof_start
-
-    # H = J^T * M * J
-    # M is block diagonal with 6x6 spatial inertia blocks
-    # We compute this as: for each link i, H += J_i^T * I_i * J_i
-
-    for link_idx in range(joint_count):
-        j = joint_start + link_idx
-        child = joint_child[j]
-        I_s = body_I_s[child]
-
-        row_start = link_idx * 6
-
-        # Compute contribution from this link: H += J_i^T * I_i * J_i
-        for dof_i in range(articulation_dof_count):
-            for dof_j in range(articulation_dof_count):
-                sum_val = float(0.0)
-
-                # J_i^T * I_i * J_j (for the 6 rows of this link)
-                for k in range(6):
-                    for l in range(6):
-                        J_ik = J[art_idx, row_start + k, dof_i]
-                        J_jl = J[art_idx, row_start + l, dof_j]
-                        sum_val += J_ik * I_s[k, l] * J_jl
-
-                H[art_idx, dof_i, dof_j] = H[art_idx, dof_i, dof_j] + sum_val
-
-    if joint_armature:
-        for dof in range(articulation_dof_count):
-            H[art_idx, dof, dof] = H[art_idx, dof, dof] + joint_armature[articulation_dof_start + dof]
+    if link >= joint_end - joint_start:
+        return
+    dofs = H.shape[1]
+    row = element // dofs
+    column = element % dofs
+    active_dofs = joint_qd_start[joint_end] - joint_qd_start[joint_start]
+    if row >= active_dofs or column >= active_dofs:
+        return
+    inertia = body_I_s[joint_child[joint_start + link]]
+    subtotal = float(0.0)
+    for spatial_row in range(6):
+        for spatial_column in range(6):
+            left = J[art_idx, link * 6 + spatial_row, row]
+            right = J[art_idx, link * 6 + spatial_column, column]
+            subtotal += left * inertia[spatial_row, spatial_column] * right
+    if joint_armature and link == 0 and row == column:
+        subtotal += joint_armature[joint_qd_start[joint_start] + row]
+    wp.atomic_add(H, art_idx, row, column, subtotal)
 
 
 @wp.kernel
@@ -1836,7 +1815,7 @@ def _eval_mass_matrix(
     else:
         wp.launch(
             kernel=eval_articulation_mass_matrix,
-            dim=model.articulation_count,
+            dim=(model.articulation_count, J.shape[1] // 6, H.shape[1] * H.shape[1]),
             inputs=inputs,
             outputs=[H],
             device=model.device,

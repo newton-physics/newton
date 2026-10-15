@@ -5,6 +5,8 @@
 
 import warp as wp
 
+from .articulation import eval_articulation_mass_matrix
+
 Vector6 = wp.types.vector(length=6, dtype=wp.float32)
 
 
@@ -84,47 +86,6 @@ def _mass_matrix_compact(
             wp.atomic_add(accumulator, articulation, row, column, subtotal)
 
 
-@wp.kernel(enable_backward=False, module="unique")
-def _mass_matrix_atomic(
-    starts: wp.array[wp.int32],
-    ends: wp.array[wp.int32],
-    count: int,
-    mask: wp.array[wp.bool],
-    children: wp.array[wp.int32],
-    qstarts: wp.array[wp.int32],
-    inertia: wp.array[wp.spatial_matrix],
-    jacobian: wp.array3d[wp.float32],
-    armature: wp.array[wp.float32],
-    accumulator: wp.array3d[wp.float32],
-    dofs: int,
-):
-    articulation, link, element = wp.tid()
-    if articulation >= count:
-        return
-    if mask:
-        if not mask[articulation]:
-            return
-    joint_start = starts[articulation]
-    joint_end = ends[articulation]
-    if link >= joint_end - joint_start:
-        return
-    active_dofs = qstarts[joint_end] - qstarts[joint_start]
-    row = element // dofs
-    column = element % dofs
-    if row >= active_dofs or column >= active_dofs:
-        return
-    spatial_inertia = inertia[children[joint_start + link]]
-    subtotal = float(0.0)
-    for spatial_row in range(6):
-        for spatial_column in range(6):
-            left = jacobian[articulation, link * 6 + spatial_row, row]
-            right = jacobian[articulation, link * 6 + spatial_column, column]
-            subtotal += left * spatial_inertia[spatial_row, spatial_column] * right
-    if armature and link == 0 and row == column:
-        subtotal += armature[qstarts[joint_start] + row]
-    wp.atomic_add(accumulator, articulation, row, column, subtotal)
-
-
 def _assemble_mass_matrix(inputs, H):
     """Accumulate link contributions without allocating scratch or changing streams."""
     count = inputs[2]
@@ -144,9 +105,9 @@ def _assemble_mass_matrix(inputs, H):
         )
     else:
         wp.launch(
-            _mass_matrix_atomic,
+            eval_articulation_mass_matrix,
             dim=(count, links, dofs * dofs),
-            inputs=[*inputs, H, dofs],
+            inputs=[*inputs, H],
             block_dim=128,
             device=H.device,
         )
