@@ -1,0 +1,1 @@
+Resolve local file URIs in URDF sources, meshes, and textures using `resolve-robotics-uri-py>=0.5.1`, and allow additional package search directories through `ModelBuilder.add_urdf(package_dirs=...)`.

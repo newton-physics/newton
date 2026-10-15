@@ -4300,12 +4300,21 @@ class ModelBuilder:
         force_position_velocity_actuation: bool = False,
         override_root_xform: bool = False,
         joint_damping_mode: Literal["passive", "drive"] | None = None,
+        package_dirs: list[str] | None = None,
     ):
         """
         Parses a URDF file and adds the bodies and joints to the given ModelBuilder.
 
         Args:
-            source: The filename of the URDF file to parse, or the URDF XML string content.
+            source: The filename, local ``file:`` URI, ``package://`` or ``model://`` URI,
+                or XML string content of the URDF to parse.
+                File URIs must use an absolute local path, an empty or ``localhost`` authority,
+                and no query or fragment. Network share URIs are not supported.
+            package_dirs: Additional package search directories for source, mesh, and texture URIs.
+                For ``package://robot/meshes/link.stl``, supply the directory containing ``robot``.
+                These supplement the resolver's environment-based search paths, without guaranteed
+                precedence or restricting file access. Requires ``newton[importers]``.
+                Plain relative asset paths remain relative to the URDF file.
             xform: The transform to apply to the root body. If None, the transform is set to identity.
             override_root_xform: If ``True``, the articulation root's world-space
                 transform is replaced by ``xform`` instead of being composed with it,
@@ -4436,6 +4445,7 @@ class ModelBuilder:
             force_position_velocity_actuation=force_position_velocity_actuation,
             override_root_xform=override_root_xform,
             joint_damping_mode=joint_damping_mode,
+            package_dirs=package_dirs,
         )
 
     def add_usd(

@@ -3869,7 +3869,7 @@ requires-dist = [
     { name = "pyyaml", marker = "extra == 'examples'", specifier = ">=6.0.2" },
     { name = "requests", marker = "extra == 'importers'", specifier = ">=2.25.0" },
     { name = "rerun-sdk", extras = ["notebook"], marker = "python_full_version < '3.14' and extra == 'notebook'", specifier = ">=0.27.1" },
-    { name = "resolve-robotics-uri-py", marker = "extra == 'importers'", specifier = ">=0.4.0" },
+    { name = "resolve-robotics-uri-py", marker = "extra == 'importers'", specifier = ">=0.5.1" },
     { name = "scipy", marker = "extra == 'importers'", specifier = ">=1.11.0" },
     { name = "sphinx", marker = "extra == 'docs'", specifier = ">=7.4.7" },
     { name = "sphinx-copybutton", marker = "extra == 'docs'", specifier = ">=0.5.0" },

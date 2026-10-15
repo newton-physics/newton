@@ -42,6 +42,24 @@ except ImportError:
     resolve_robotics_uri = None
 
 
+def _resolve_urdf_uri(uri: str, package_dirs: list[str]) -> str:
+    if uri.lower().startswith("file:"):
+        parsed = urlsplit(uri)
+        # The resolver discards the authority and would interpret remote URIs as local files.
+        if parsed.netloc.lower() not in ("", "localhost"):
+            raise ValueError(f'Unsupported file URI authority in "{uri}"; only local files are supported.')
+        path = unquote(parsed.path).replace("\\", "/")
+        if not path.startswith("/") or path.startswith("//") or parsed.query or parsed.fragment:
+            raise ValueError(f'Invalid local file URI "{uri}"; expected an absolute path without query or fragment.')
+        uri = "file:" + uri[5:]
+    if resolve_robotics_uri is None:
+        raise ImportError(
+            f'Cannot resolve URI "{uri}" without resolve-robotics-uri-py. '
+            "Install it with: pip install 'newton[importers]'"
+        )
+    return os.fspath(resolve_robotics_uri(uri, package_dirs=package_dirs))
+
+
 def _download_file(dst, url: str) -> None:
     import requests
 
@@ -85,13 +103,22 @@ def parse_urdf(
     force_position_velocity_actuation: bool = False,
     override_root_xform: bool = False,
     joint_damping_mode: Literal["passive", "drive"] | None = None,
+    package_dirs: list[str] | None = None,
 ):
     """
     Parses a URDF file and adds the bodies and joints to the given ModelBuilder.
 
     Args:
         builder: The :class:`ModelBuilder` to add the bodies and joints to.
-        source: The filename of the URDF file to parse, or the URDF XML string content.
+        source: The filename, local ``file:`` URI, ``package://`` or ``model://`` URI,
+            or XML string content of the URDF to parse.
+            File URIs must use an absolute local path, an empty or ``localhost`` authority,
+            and no query or fragment. Network share URIs are not supported.
+        package_dirs: Additional package search directories for source, mesh, and texture URIs.
+            For ``package://robot/meshes/link.stl``, supply the directory containing ``robot``.
+            These supplement the resolver's environment-based search paths, without guaranteed
+            precedence or restricting file access. Requires ``newton[importers]``.
+            Plain relative asset paths remain relative to the URDF file.
         xform: The transform to apply to the root body. If None, the transform is set to identity.
         override_root_xform: If ``True``, the articulation root's world-space
             transform is replaced by ``xform`` instead of being composed with it,
@@ -218,23 +245,20 @@ def parse_urdf(
         xform = wp.transform(*xform) * axis_xform
 
     source = os.fspath(source) if hasattr(source, "__fspath__") else source
+    package_dirs = [os.fspath(path) for path in package_dirs] if package_dirs is not None else []
+    if package_dirs and resolve_robotics_uri is None:
+        raise ImportError(
+            "package_dirs requires resolve-robotics-uri-py. Install it with: pip install 'newton[importers]'"
+        )
 
-    if source.startswith(("package://", "model://")):
-        if resolve_robotics_uri is not None:
-            try:
-                source = resolve_robotics_uri(source)
-            except FileNotFoundError:
-                raise FileNotFoundError(
-                    f'Could not resolve URDF source URI "{source}". '
-                    f"Check that the package is installed and that relevant environment variables "
-                    f"(ROS_PACKAGE_PATH, AMENT_PREFIX_PATH, GZ_SIM_RESOURCE_PATH, etc.) are set correctly. "
-                    f"See https://github.com/ami-iit/resolve-robotics-uri-py for details."
-                ) from None
-        else:
-            raise ImportError(
-                f'Cannot resolve URDF source URI "{source}" without resolve-robotics-uri-py. '
-                f"Install it with: pip install resolve-robotics-uri-py"
-            )
+    if source.startswith(("package://", "model://")) or source.lower().startswith("file:"):
+        try:
+            source = _resolve_urdf_uri(source, package_dirs)
+        except FileNotFoundError:
+            raise FileNotFoundError(
+                f'Could not resolve URDF source URI "{source}". '
+                "Check that the file exists and that package_dirs or the resolver's environment paths are set correctly."
+            ) from None
 
     if os.path.isfile(source):
         file = ET.parse(source)
@@ -280,23 +304,23 @@ def parse_urdf(
             return None, None
 
         file_tmp = None
-        if filename.startswith(("package://", "model://")):
-            if resolve_robotics_uri is not None:
+        if filename.startswith(("package://", "model://")) or filename.lower().startswith("file:"):
+            if resolve_robotics_uri is not None or filename.lower().startswith("file:"):
                 try:
-                    if filename.startswith("package://"):
-                        fn = filename.replace("package://", "")
+                    asset_package_dirs = list(package_dirs)
+                    if filename.startswith("package://") and os.path.isfile(source):
                         parent_urdf_folder = os.path.abspath(
                             os.path.join(os.path.abspath(source), os.pardir, os.pardir, os.pardir)
                         )
-                        package_dirs = [parent_urdf_folder]
-                    else:
-                        package_dirs = []
-                    filename = resolve_robotics_uri(filename, package_dirs=package_dirs)
+                        asset_package_dirs.append(parent_urdf_folder)
+                    filename = _resolve_urdf_uri(filename, asset_package_dirs)
+                except ImportError as exc:
+                    warnings.warn(str(exc), stacklevel=2)
+                    return None, None
                 except FileNotFoundError:
                     warnings.warn(
                         f'Warning: could not resolve URI "{filename}". '
-                        f"Check that the package is installed and that relevant environment variables "
-                        f"(ROS_PACKAGE_PATH, AMENT_PREFIX_PATH, GZ_SIM_RESOURCE_PATH, etc.) are set correctly. "
+                        "Check that the file exists and that package_dirs or the resolver's environment paths are set correctly. "
                         f"See https://github.com/ami-iit/resolve-robotics-uri-py for details.",
                         stacklevel=2,
                     )
