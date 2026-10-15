@@ -145,7 +145,9 @@ jobs:
               Read large diffs in chunks with Read's offset and limit.
             - `.pr-review/api-changes.md` and `.pr-review/api-changes.json` list
               the public API symbols the change adds, removes, or modifies, with
-              their signatures before and after.
+              their signatures before and after. Each category lists at most 20
+              symbols; if the summary counts are higher, find the rest in the
+              diff, and mark the review incomplete if you could not check them.
             - `.pr-review/pr.json` holds the title, description, and
               conversation; `.pr-review/reviews.jsonl` and
               `.pr-review/review-comments.jsonl` hold existing reviews and
