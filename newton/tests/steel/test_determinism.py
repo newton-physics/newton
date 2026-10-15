@@ -48,6 +48,15 @@ TORSION_OPTIONS = {**MATRIX_FREE_OPTIONS, "contact_torsion_device": True, "artic
 # Warm-started impulses are matched through contact matching and carried across steps.
 WARMSTART_OPTIONS = {**MATRIX_FREE_OPTIONS, "contact_warmstart": True, "velocity_iterations": 2}
 
+# Ants alone select the sparse mass factors and their one-warp joint-limit builder.
+SPARSE_OPTIONS = {
+    "iterations": 8,
+    "enable_joint_limits": True,
+    "articulation_constraint_max": 256,
+    "friction_anchor_beta": 0.0,
+    "warn_constraint_overflow": False,
+}
+
 
 def test_crba_fill_par_dof_is_batch_invariant(test, device):
     """Give identical articulations bitwise-identical, exactly symmetric mass matrices on every launch."""
@@ -288,14 +297,17 @@ def test_deterministic_launches_replay_identically(test, device):
     """
     model = _build_contact_scene(device, worlds=8)
     torsion_model = _build_contact_scene(device, worlds=8, torsion_radius=0.02)
+    ant_model = _build_contact_scene(device, worlds=8, boxes=0)
     for name, scene, options in (
         ("matrix_free", model, MATRIX_FREE_OPTIONS),
         ("split", model, SPLIT_OPTIONS),
         ("torsion", torsion_model, TORSION_OPTIONS),
         ("warmstart", model, WARMSTART_OPTIONS),
+        ("sparse", ant_model, SPARSE_OPTIONS),
     ):
         with test.subTest(name):
             solver = SolverSteel(scene, deterministic=RUN_TO_RUN, **options)
+            test.assertEqual(solver._sparse_mass_matrix_size is not None, name == "sparse")
             pipeline = _make_pipeline(scene, options)
             contacts = pipeline.contacts()
             state_0, state_1, control = scene.state(), scene.state(), scene.control()
