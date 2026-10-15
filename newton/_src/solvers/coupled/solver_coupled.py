@@ -158,6 +158,14 @@ def _zero_reset_view_rows_kernel(
         values[local_id] = zero_value
 
 
+# Overloads instantiated lazily on launch change the module hash, making the
+# compiled module depend on launch order; declare the common dtypes up front.
+for _dtype in (wp.float32, wp.vec3, wp.mat33, wp.transform, wp.spatial_vector):
+    wp.overload(_copy_reset_view_rows_kernel, {"src": wp.array[_dtype], "dst": wp.array[_dtype]})
+    wp.overload(_scatter_reset_owned_rows_kernel, {"src": wp.array[_dtype], "dst": wp.array[_dtype]})
+    wp.overload(_zero_reset_view_rows_kernel, {"values": wp.array[_dtype], "zero_value": _dtype})
+
+
 def _identity_index_map(count: int, device) -> wp.array:
     """Return a dense local-to-global identity map."""
     return wp.array(list(range(count)), dtype=int, device=device)

@@ -812,7 +812,13 @@ class SensorCamera:
             xform=xform,
         )
 
-    def create_default_light(self, *, enable_shadows: bool = True, direction: wp.vec3f | None = None) -> None:
+    def create_default_light(
+        self,
+        *,
+        enable_shadows: bool = True,
+        direction: wp.vec3f | None = None,
+        color: Sequence[float] | wp.vec3f | None = None,
+    ) -> None:
         """Create a default directional light for the rendered scene.
 
         Args:
@@ -822,9 +828,32 @@ class SensorCamera:
                 ``render_config.enable_shadows=True`` (the latter defaults to
                 ``False``); both switches must be set.
             direction: Normalized light direction. If ``None``, defaults to
-                normalized ``(-1, 1, -1)``.
+                normalized ``(-1, 1, -1)`` for a Z-up model, rotated to the
+                model's up axis otherwise, so the light always points down.
+            color: Linear RGB radiance of the light. If ``None``, defaults to
+                white ``(1, 1, 1)``. Changing it does not recompile the render
+                kernel.
         """
-        self._render_context.create_default_light(enable_shadows=enable_shadows, direction=direction)
+        self._render_context.create_default_light(enable_shadows=enable_shadows, direction=direction, color=color)
+
+    def set_ambient_light(
+        self,
+        sky_color: Sequence[float] | wp.vec3f,
+        ground_color: Sequence[float] | wp.vec3f | None = None,
+    ) -> None:
+        """Set the hemispheric ambient light used when ambient lighting is enabled.
+
+        Surfaces facing the model's up axis receive *sky_color*, surfaces facing
+        away receive *ground_color*, and other orientations blend between the
+        two. The defaults are ``(0.2, 0.2, 0.225)`` and ``(0.05, 0.05, 0.06)``.
+        Changing the colors does not recompile the render kernel.
+
+        Args:
+            sky_color: Linear RGB ambient radiance from above.
+            ground_color: Linear RGB ambient radiance from below. If ``None``,
+                *sky_color* is used, which gives uniform ambient light.
+        """
+        self._render_context.set_ambient_light(sky_color, ground_color)
 
     def assign_checkerboard_material(
         self,
@@ -914,8 +943,9 @@ class SensorCamera:
                 ``render_config.anti_aliasing`` to be :attr:`AntiAliasing.SSAA`
                 or :attr:`AntiAliasing.MSAA`.
             color_image: Output RGBA color buffer (packed ``uint32``).
-            depth_image: Output depth buffer [m].
-            forward_depth_image: Output forward-depth buffer [m].
+            depth_image: Output ray-distance depth from each ray origin [m].
+            forward_depth_image: Output depth measured from the camera origin
+                along its forward axis [m], including per-ray origin offsets.
             shape_index_image: Output shape-index buffer.
             normal_image: Output world-space surface normals.
             albedo_image: Output albedo buffer (packed ``uint32``).

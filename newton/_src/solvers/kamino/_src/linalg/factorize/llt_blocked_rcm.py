@@ -94,7 +94,7 @@ def make_llt_blocked_rcm_permute_vector_kernel(max_dim: int):
     """
     del max_dim
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def permute_vector_kernel(
         dim: wp.array[wp.int32],
         vio: wp.array[wp.int32],
@@ -136,7 +136,7 @@ def make_llt_blocked_rcm_fused_permute_and_tp_kernel(block_size: int, max_dim: i
     """
     del max_dim
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def fused_permute_and_tp_kernel(
         dim: wp.array[wp.int32],
         ld: wp.array[wp.int32],
@@ -214,7 +214,7 @@ def make_llt_blocked_rcm_symbolic_fill_in_kernel(max_n_tiles: int):
     mask_type = wp.uint32 if mask_capacity <= 32 else wp.uint64
     mask_vector = wp.types.vector(length=mask_capacity, dtype=mask_type)
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def symbolic_fill_in_kernel(
         dim: wp.array[wp.int32],
         tpo: wp.array[wp.int32],
@@ -287,7 +287,7 @@ def make_llt_blocked_rcm_factorize_kernel(block_size: int):
     is zero. Skipped output tiles are cleared for dense factor consumers.
     """
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def llt_blocked_rcm_factorize_kernel(
         # Inputs:
         dim: wp.array[wp.int32],
@@ -421,7 +421,7 @@ def make_llt_blocked_rcm_parallel_factorize_kernels(block_size: int):
     """
 
     def make_kernel(diagonal_only: bool, fused: bool):
-        @wp.kernel(enable_backward=False)
+        @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
         def factorize_panel_kernel(
             tile_k: int,
             dim: wp.array[wp.int32],
@@ -543,7 +543,7 @@ def make_llt_blocked_rcm_solve_kernel(
     With ``backward_substitution=False``, only ``y`` is written.
     """
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def llt_blocked_rcm_solve_kernel(
         # Inputs:
         dim: wp.array[wp.int32],
@@ -666,7 +666,7 @@ def make_llt_blocked_rcm_solve_inplace_kernel(block_size: int):
     writes ``y``, backward substitution reads ``y`` and writes ``x``.
     """
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def llt_blocked_rcm_solve_inplace_kernel(
         # Inputs:
         dim: wp.array[wp.int32],
