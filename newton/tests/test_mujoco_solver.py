@@ -8920,7 +8920,7 @@ class TestMuJoCoSolverPairProperties(unittest.TestCase):
         )
 
     def test_pair_properties_shared_rows_reach_every_world(self):
-        """Rows authored once for the template apply to every world.
+        """Verify that pair rows authored once for the template reach every world.
 
         Regression test: the kernel advanced by ``total_rows // world_count``, so a
         shared row block gave world 1 world 2's settings and read past the end of
