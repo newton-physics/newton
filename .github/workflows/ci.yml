@@ -127,6 +127,25 @@ jobs:
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version-file: ".python-version"
+      # Warp names CPU objects after the host's ISA features (-march=native), which
+      # vary across hosted runners. If this private Warp API breaks, the empty
+      # target falls back to a shared key.
+      - name: Identify Warp CPU target
+        id: warp-cpu-target
+        continue-on-error: true
+        shell: bash
+        run: |
+          uv run --extra dev python - <<'EOF'
+          import os
+          import warp as wp
+          from warp._src.context import _get_cpu_target_hash
+
+          wp.init()
+          target = _get_cpu_target_hash("-march=native")
+          print(f"Warp CPU target: {target}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"target={target}\n")
+          EOF
       # Post-submit (push) runs start cold to catch stale-cache issues without
       # slowing the merge queue.
       - name: Restore Warp kernel cache
@@ -138,9 +157,9 @@ jobs:
             ~/.cache/warp
             ~/Library/Caches/warp
             ~\AppData\Local\NVIDIA\warp\Cache
-          key: warp-kernels-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
+          key: warp-kernels-${{ runner.os }}-${{ runner.arch }}-${{ steps.warp-cpu-target.outputs.target }}-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
           restore-keys: |
-            warp-kernels-${{ runner.os }}-${{ runner.arch }}-
+            warp-kernels-${{ runner.os }}-${{ runner.arch }}-${{ steps.warp-cpu-target.outputs.target }}-
       - name: Run Tests
         env:
           PYTHONFAULTHANDLER: "1"
@@ -172,7 +191,7 @@ jobs:
             ~/.cache/warp
             ~/Library/Caches/warp
             ~\AppData\Local\NVIDIA\warp\Cache
-          key: warp-kernels-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
+          key: warp-kernels-${{ runner.os }}-${{ runner.arch }}-${{ steps.warp-cpu-target.outputs.target }}-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
       - name: Test Summary
         uses: test-summary/action@37b508cfee6d4d080eedd00b5bb240a6a784a6a5  # v2.6
         with:
