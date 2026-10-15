@@ -470,21 +470,35 @@ class TestImportMjcfBasic(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Free joints must have the world body as parent"):
             parse_mjcf(builder, mjcf)
 
-    def test_inertial_requires_diaginertia_or_fullinertia(self):
-        mjcf = """
+    def test_inertial_omitted_tensor_defaults_to_zero(self):
+        """Preserve explicit mass and COM without inferring an omitted tensor from geoms."""
+        for mass in (0.0, 1.0):
+            with self.subTest(mass=mass):
+                mjcf = f"""
 <mujoco>
     <worldbody>
-        <body name="body">
-            <inertial pos="0 0 0" mass="1.0"/>
-            <geom type="sphere" size="0.1"/>
+        <body name="parent">
+            <freejoint/>
+            <geom type="sphere" size="0.1" mass="2"/>
+            <body name="attachment">
+                <inertial pos="0.1 0.2 0.3" mass="{mass}"/>
+                <geom type="sphere" size="0.1" mass="3"/>
+                <frame pos="0.5 0 0">
+                    <geom type="box" size="0.1 0.1 0.1" mass="4"/>
+                </frame>
+            </body>
         </body>
     </worldbody>
 </mujoco>
 """
-        builder = newton.ModelBuilder()
-
-        with self.assertRaisesRegex(ValueError, "diaginertia or fullinertia"):
-            parse_mjcf(builder, mjcf)
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf)
+                self.assertEqual(builder.body_count, 2)
+                self.assertEqual(builder.body_mass[0], 2.0)
+                self.assertEqual(builder.body_mass[1], mass)
+                np.testing.assert_allclose(builder.body_com[1], [0.1, 0.2, 0.3], atol=1e-7)
+                np.testing.assert_array_equal(np.asarray(builder.body_inertia[1]).reshape(3, 3), np.zeros((3, 3)))
+                np.testing.assert_array_equal(np.asarray(builder.body_inv_inertia[1]).reshape(3, 3), np.zeros((3, 3)))
 
     def test_inertial_diaginertia_requires_three_values(self):
         for diaginertia in ("1 2", "1 2 3 4"):

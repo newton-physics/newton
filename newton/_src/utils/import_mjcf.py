@@ -2404,12 +2404,7 @@ def parse_mjcf(
                 I_m[1, 1] = diaginertia[1] * scale**2
                 I_m[2, 2] = diaginertia[2] * scale**2
             else:
-                fullinertia = inertial_attrib.get("fullinertia")
-                if fullinertia is None:
-                    raise ValueError(
-                        f"MJCF inertial element for body '{body_label_path}' must define "
-                        "either diaginertia or fullinertia."
-                    )
+                fullinertia = inertial_attrib.get("fullinertia", "0 0 0 0 0 0")
                 fullinertia = np.array(fullinertia.split(), dtype=np.float32)
                 if fullinertia.shape[0] != 6:
                     raise ValueError(
