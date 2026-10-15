@@ -327,9 +327,9 @@ repository examples spend tuning effort, not a shared solver API.
        faster depends on the model. The propagation responses reject contact torsion,
        contact compliance, sleeping and loop-closing joints, and fall back from bilateral
        pre-elimination to iterative mimic rows with a warning.
-       ``use_parallel_streams`` and ``double_buffer`` overlap the work of
-       articulation-size groups and of consecutive steps without changing results;
-       measure the full step before relying on them.
+       ``use_parallel_streams`` overlaps the work of articulation-size groups and
+       ``double_buffer`` clears a step's buffers on a side stream, without changing
+       results; measure the full step before relying on them.
    * - :class:`~newton.solvers.SolverSemiImplicit`
      - ``angular_damping``, ``friction_smoothing``, ``joint_attach_ke``,
        ``joint_attach_kd``, ``enable_tri_contact``.

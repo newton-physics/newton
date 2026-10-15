@@ -1,0 +1,1 @@
+Fix `SolverSteel` with `double_buffer=True` failing with CUDA error 904 when a CUDA graph capture is paused between its steps, for example by a conditional node from `wp.capture_if`; each step now joins its buffer-clearing stream before it returns.
