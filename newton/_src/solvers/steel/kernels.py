@@ -101,6 +101,38 @@ def compute_com_transforms(
 
 
 @wp.kernel
+def compute_effective_joint_armature(
+    joint_armature: wp.array[float],
+    kinematic_dof_mask: wp.array[wp.int32],
+    # outputs
+    armature_effective: wp.array[float],
+):
+    dof = wp.tid()
+    # Kinematic DOFs take a large armature so the factorization ignores their dynamics.
+    if kinematic_dof_mask[dof] != 0:
+        armature_effective[dof] = 1.0e10
+    else:
+        armature_effective[dof] = joint_armature[dof]
+
+
+@wp.kernel
+def gather_group_armature(
+    group_to_art: wp.array[wp.int32],
+    articulation_dof_start: wp.array[wp.int32],
+    articulation_dof_count: wp.array[wp.int32],
+    armature_effective: wp.array[float],
+    # outputs
+    group_armature: wp.array2d[float],
+):
+    group, column = wp.tid()
+    art = group_to_art[group]
+    value = float(0.0)
+    if column < articulation_dof_count[art]:
+        value = armature_effective[articulation_dof_start[art] + column]
+    group_armature[group, column] = value
+
+
+@wp.kernel
 def prescale_joint_velocity_limits(
     articulation_start: wp.array[int],
     joint_type: wp.array[int],

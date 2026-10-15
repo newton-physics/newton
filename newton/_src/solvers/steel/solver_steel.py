@@ -90,6 +90,7 @@ from .kernels import (
     compute_contact_spatial_force_from_impulses,
     compute_delta_and_accumulate,
     compute_dense_contact_bounds,
+    compute_effective_joint_armature,
     compute_mf_body_Hinv,
     compute_mf_effective_mass_and_rhs,
     compute_mf_velocity_rhs,
@@ -122,6 +123,7 @@ from .kernels import (
     flatten_propagation_joint_S,
     flush_propagation_free_body_qd_to_vout,
     gather_contact_warmstart,
+    gather_group_armature,
     gather_JY_to_world,
     gather_propagation_unit_meta,
     gather_tau_to_groups,
@@ -2379,7 +2381,7 @@ class SolverSteel(SolverBase):
             if self._has_prescribed_response
             else wp.zeros((1, 1), dtype=wp.float32, device=model.device)
         )
-        self._scatter_armature_to_groups()
+        self._update_effective_armature()
         self._init_tiled_kernels(model)
         self._init_streams(model)
         # Free-body groups read their body inertia directly; every other responding
@@ -2540,9 +2542,8 @@ class SolverSteel(SolverBase):
         return self._namespaced_attribute("min_torsional_patch_radius")
 
     def _update_kinematic_state(self) -> None:
-        """Refresh cached kinematic flags and effective joint armature."""
+        """Refresh cached kinematic flags from the host copy of ``body_flags``."""
         model = self.model
-        armature = model.joint_armature.numpy().copy()
         joint_mask = np.zeros(model.joint_count, dtype=np.int32)
         dof_mask = np.zeros(model.joint_dof_count, dtype=np.int32)
 
@@ -2554,12 +2555,7 @@ class SolverSteel(SolverBase):
                 if not kinematic_bodies[joint_child[joint]]:
                     continue
                 joint_mask[joint] = 1
-                dof_start = joint_qd_start[joint]
-                dof_end = joint_qd_start[joint + 1]
-                if dof_end <= dof_start:
-                    continue
-                dof_mask[dof_start:dof_end] = 1
-                armature[dof_start:dof_end] = 1.0e10
+                dof_mask[joint_qd_start[joint] : joint_qd_start[joint + 1]] = 1
 
         self._validate_connect_parent_membership()
         if self._model_plan is not None:
@@ -2573,15 +2569,37 @@ class SolverSteel(SolverBase):
                         "reconstruct the solver and recapture its CUDA graph."
                     )
 
-        self._joint_armature_effective = armature
-        if armature.size:
-            self._joint_armature_device.assign(armature.astype(np.float32))
         self._kinematic_dof_mask_host = dof_mask.copy()
         self._kinematic_joint_mask.assign(joint_mask)
         self._kinematic_dof_mask.assign(dof_mask)
 
+    def _update_effective_armature(self) -> None:
+        """Rebuild the effective joint armature and its size-grouped copies on the device."""
+        model = self.model
+        if model.joint_dof_count:
+            wp.launch(
+                compute_effective_joint_armature,
+                model.joint_dof_count,
+                inputs=[model.joint_armature, self._kinematic_dof_mask],
+                outputs=[self._joint_armature_device],
+                device=model.device,
+            )
+        for size in self._size_groups:
+            wp.launch(
+                gather_group_armature,
+                (self._n_arts_by_size[size], size),
+                inputs=[
+                    self._group_to_art[size],
+                    self._articulation_dof_start,
+                    self._articulation_H_rows,
+                    self._joint_armature_device,
+                ],
+                outputs=[self._R_by_size[size]],
+                device=model.device,
+            )
+
     @override
-    def notify_model_changed(self, flags: ModelFlags | int) -> None:
+    def notify_model_changed(self, flags: ModelFlags | int, *, world_mask: "wp.array[wp.bool] | None" = None) -> None:
         """Refresh cached solver data after model changes.
 
         Joint (frames), joint DOF, DOF force (drive gains), DOF inertial (armature), body
@@ -2597,21 +2615,35 @@ class SolverSteel(SolverBase):
         :attr:`constraint_overflow` is not cleared, see :meth:`reset`.
 
         Body, inertial, joint DOF, DOF inertial and shape changes discard the warm-start
-        impulses. With friction patches, shape changes also discard the anchors of the
-        bodies whose collision geometry changed; this copies the shape geometry to the host,
-        so issue such notifications outside CUDA graph capture.
+        impulses of the worlds selected by ``world_mask``. With friction patches, shape changes
+        also discard the anchors of the bodies whose collision geometry changed, in every world.
+
+        Joint, joint DOF (including the DOF inertial and force flags), body inertial and shape
+        notifications run on the device without host synchronization, so they can be captured
+        in a CUDA graph and replayed after the model arrays are edited in place. A captured
+        notification reads the arrays it was captured with; after replacing a model array,
+        notify eagerly or recapture. Body notifications read ``body_flags`` on the host.
+        Sleeping, and the positive-restitution checks of the split solve and of sparse mass
+        factors (with restitution enabled), also read model data on the host, so issue those
+        notifications outside CUDA graph capture.
 
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` indicating which model properties changed.
+            world_mask: Optional boolean mask of shape ``(world_count + 1,)`` in the :meth:`reset`
+                layout, selecting the worlds whose model data changed. Only their warm-start
+                impulses are discarded; cached model data is refreshed for every world. ``None``
+                discards the warm-start impulses of every world.
         """
+        world_mask = self._normalize_reset_world_mask(world_mask)
         if flags & ModelFlags.CONSTRAINT_PROPERTIES:
             _validate_equality_constraints(self.model)
         if self._sleeping is not None:
             self._sleeping.notify(flags)
         dof_inertial = ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
-        if flags & (ModelFlags.BODY_PROPERTIES | dof_inertial):
+        if flags & ModelFlags.BODY_PROPERTIES:
             self._update_kinematic_state()
-            self._scatter_armature_to_groups()
+        if flags & (ModelFlags.BODY_PROPERTIES | dof_inertial):
+            self._update_effective_armature()
             self._mass_update_requested.fill_(1)
         if flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES):
             self._refresh_passive_joint_damping()
@@ -2658,7 +2690,7 @@ class SolverSteel(SolverBase):
             | dof_inertial
             | ModelFlags.SHAPE_PROPERTIES
         ):
-            self._clear_warmstart_history(None)
+            self._clear_warmstart_history(world_mask)
 
     def _clear_warmstart_history(self, world_mask: "wp.array[wp.bool] | None") -> None:
         """Discard the carried contact impulses of the selected worlds (all worlds for ``None``)."""
@@ -4920,29 +4952,6 @@ class SolverSteel(SolverBase):
         else:
             self._rigid_velocity_limit_slot = None
             self._rigid_velocity_limit_sign = None
-
-    def _scatter_armature_to_groups(self):
-        """Copy armature from model (DOF-ordered) to size-grouped storage."""
-        if not self._size_groups:
-            return
-
-        armature_np = self._joint_armature_effective
-        art_dof_start_np = self._model_plan.articulation_dof_start
-        art_H_rows_np = self._model_plan.articulation_dof_count
-
-        # R_by_size is sized to actual DOF count (matches H_by_size allocation)
-        for size in self._size_groups:
-            n_arts = self._n_arts_by_size[size]
-            R_np = np.zeros((n_arts, size), dtype=np.float32)
-
-            group_to_art_np = np.flatnonzero(self._model_plan.response_dof_count == size)
-            for group_idx in range(n_arts):
-                art_idx = group_to_art_np[group_idx]
-                dof_start = art_dof_start_np[art_idx]
-                dof_count = art_H_rows_np[art_idx]
-                R_np[group_idx, :dof_count] = armature_np[dof_start : dof_start + dof_count]
-
-            self._R_by_size[size].assign(R_np)
 
     def _init_tiled_kernels(self, model):
         """Resolve size-specialized Warp kernels once for this solver shape."""
