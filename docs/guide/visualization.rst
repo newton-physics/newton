@@ -963,6 +963,121 @@ This is particularly useful for:
 - Running simulations on headless servers
 - Batch processing of simulations
 
+Deformable Visual Meshes
+------------------------
+
+A deformable can use a separate visual mesh while physics runs on its particles
+or rigid segments. The visual mesh adds no mass or collision geometry.
+
+.. experimental::
+
+    Deformable visual bindings, model output, and viewer integration may change
+    without a formal deprecation cycle.
+
+Create the simulation geometry first. Then attach a visual mesh with
+:meth:`ModelBuilder.add_deformable_visual_mesh`. For example, this small mesh
+follows a cloth surface:
+
+.. testcode:: deformable-visual-mesh
+
+    import newton
+    import warp as wp
+
+    builder = newton.ModelBuilder()
+    builder.add_cloth_grid(
+        pos=(0.0, 0.0, 1.0),
+        rot=wp.quat_identity(),
+        vel=(0.0, 0.0, 0.0),
+        dim_x=2, dim_y=2,
+        cell_x=0.5, cell_y=0.5,
+        mass=0.1,
+    )
+    builder.add_deformable_visual_mesh(
+        vertices=[(0.1, 0.1, 1.0), (0.4, 0.1, 1.0), (0.1, 0.4, 1.0)],
+        indices=[0, 1, 2],
+        kind=newton.DeformableVisualMesh.Kind.TRIANGLE,
+        tri_range=(0, builder.tri_count),
+        label="cloth_skin",
+    )
+    model = builder.finalize()
+    state = model.state()
+
+Use ``PARTICLE`` to map visual vertices directly to simulation particles,
+``TRIANGLE`` for a surface, ``TET`` for a volume, or ``BODY`` for rigid segments
+such as cable links. Triangle and tetrahedron bindings store barycentric
+weights: each visual vertex follows a weighted sum of its driving vertices.
+Body bindings store an offset in the driving body's local frame.
+
+If a binding is already known, pass its ``parent`` and ``weights`` instead of
+running the search. For example, this can replace the attachment call above,
+before ``finalize()``. Each parent is a simulation triangle index, not an offset
+within ``tri_range``:
+
+.. testcode:: deformable-visual-mesh
+
+    import numpy as np
+
+    triangle_id = 0
+    weights = np.array([[0.6, 0.2, 0.2], [0.2, 0.6, 0.2], [0.2, 0.2, 0.6]])
+    corners = np.asarray(builder.particle_q)[np.asarray(builder.tri_indices)[triangle_id]]
+    mesh_index = builder.add_deformable_visual_mesh(
+        vertices=weights @ corners,
+        indices=[0, 1, 2],
+        kind="triangle",
+        tri_range=(0, builder.tri_count),
+        parent=[triangle_id, triangle_id, triangle_id],
+        weights=weights,
+    )
+
+Viewers evaluate these meshes during :meth:`~newton.viewer.ViewerBase.log_state`.
+The **Show Skinned Meshes** control is independent of **Show Cloth** and
+**Show Visual**. Hide the simulation triangles with ``viewer.show_triangles =
+False`` when they obscure the visual surface. Replicated meshes use separate
+simulation drivers; viewer world offsets only change their display positions.
+
+To share one evaluation between viewers or an external renderer, allocate the
+buffers once and update them after advancing the simulation:
+
+.. code-block:: python
+
+    visuals = model.deformable_visuals()
+    viewer.set_model(model)
+    viewer.set_deformable_visuals(visuals)
+
+    # Run after each simulation update, before logging the current state.
+    model.update_deformable_visuals(state, visuals)
+    viewer.begin_frame(sim_time)
+    viewer.log_state(state)
+    viewer.end_frame()
+
+:meth:`DeformableVisuals.get_points` and :meth:`DeformableVisuals.get_normals`
+return views of these buffers. Updating them does not allocate new output arrays
+and can run in a CUDA graph. A different consumer stream must call
+:meth:`DeformableVisuals.wait` before reading them. Allocate and warm up the
+buffers before capture. Explicit shared buffers must be updated whenever the
+state changes; passing ``None`` to ``set_deformable_visuals`` restores automatic
+viewer updates. Differentiating through these visual-output buffers is not
+supported by this API.
+
+Automatic binding uses CPU spatial queries within the supplied triangle or
+tetrahedron range. Outside-tet vertices still search all owning tet centroids.
+Pass precomputed ``parent`` and ``weights`` to skip this setup work.
+Triangle binding drops normal offsets. Vertices outside the owning tetrahedra
+are clamped with a warning. Body binding uses one segment per vertex, so seams
+can appear between segments. Finish topology changes, including fixed-joint
+collapse, before attaching visual meshes when possible. If fixed joints are
+collapsed afterward, body bindings follow the surviving body, or remain fixed
+in world space when the driver merges into the world. Precomputed barycentric
+weights must sum to one for each visual vertex.
+
+Textures are asset data. Replace the texture source to change it; do not edit
+image contents in place. GL reuses the upload while the mesh deforms and does
+not retry a failed texture path each frame. Viser currently rebuilds textured
+meshes on updates, so dense textured skins can be expensive in that viewer.
+Untextured skins use the viewer's default appearance; per-mesh color and opacity
+are not exposed here. This native workflow does not yet add USD visual import,
+camera support, or Gaussian skinning.
+
 .. _viewer-custom-visualization:
 
 Custom Visualization
