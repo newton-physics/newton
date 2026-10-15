@@ -3,6 +3,7 @@
 
 import hashlib
 import re
+import sys
 import unittest
 from unittest import mock
 
@@ -257,6 +258,37 @@ def test_deterministic_runs_are_bitwise_identical(test, device):
             test.assertTrue(all(finite for _, finite in first))
 
 
+def test_warm_started_full_reset_matches_fresh_solver(test, device):
+    """Replay a fresh warm-started solver's states and contact forces bit for bit after a full reset."""
+    model = _build_contact_scene(device, worlds=2, boxes=3, ants=1)
+
+    def simulate(solver, steps):
+        pipeline = newton.CollisionPipeline(model, contact_matching="latest")
+        contacts = pipeline.contacts()
+        observables = solver.observables({SolverSteel.ObservableKind.CONTACT_F}, contacts=contacts)
+        state_0, state_1, control = model.state(), model.state(), model.control()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+        _actuate(model, control)
+        for _ in range(steps):
+            state_0.clear_forces()
+            pipeline.collide(state_0, contacts)
+            solver.step(state_0, state_1, control, contacts, 0.005, observables=observables)
+            state_0, state_1 = state_1, state_0
+        return _sample(state_0), observables.contact_f.numpy()
+
+    # A refresh interval that does not divide the pre-reset step count exposes a stale step cadence.
+    options = {**WARMSTART_OPTIONS, "update_mass_matrix_interval": 3}
+    reused = SolverSteel(model, deterministic=RUN_TO_RUN, **options)
+    simulate(reused, 5)
+    reused.reset(model.state())
+    (state_hash, finite), contact_f = simulate(reused, 7)
+    (fresh_hash, _), fresh_contact_f = simulate(SolverSteel(model, deterministic=RUN_TO_RUN, **options), 7)
+    test.assertTrue(finite)
+    test.assertEqual(state_hash, fresh_hash)
+    test.assertGreater(np.abs(contact_f).max(), 0.0)
+    np.testing.assert_array_equal(contact_f, fresh_contact_f)
+
+
 def _struct_arrays(value):
     """Arrays passed directly or as fields of a Warp struct."""
     if isinstance(value, wp.array):
@@ -382,11 +414,14 @@ def test_overflow_warning_names_deterministic_mode(test, device):
         "While its contacts and joint rows are unchanged it drops the same contacts every step; otherwise it drops "
         "the tail of the new contact order.\n"
     )
+    # Warp CPU printf capture is unreliable on Windows; the overflow status and routing are still checked there.
+    check_output = not (wp.get_device(device).is_cpu and sys.platform == "win32")
     for deterministic in (wp.DeterministicMode.NOT_GUARANTEED, RUN_TO_RUN):
         with test.subTest(deterministic=deterministic.name):
             solver = SolverSteel(model, deterministic=deterministic, solve_mode="split", free_body_constraint_max=24)
             capture = StdOutCapture()
-            capture.begin()
+            if check_output:
+                capture.begin()
             try:
                 paths = []
                 for _ in range(2):
@@ -394,9 +429,10 @@ def test_overflow_warning_names_deterministic_mode(test, device):
                     paths.append(solver._contact_path.numpy())
                 wp.synchronize_device(device)
             finally:
-                output = capture.end()
-            test.assertEqual(len(re.findall(warning, output)), 1, output)
-            test.assertEqual(output.count(note), int(deterministic == RUN_TO_RUN), output)
+                output = capture.end() if check_output else ""
+            if check_output:
+                test.assertEqual(len(re.findall(warning, output)), 1, output)
+                test.assertEqual(output.count(note), int(deterministic == RUN_TO_RUN), output)
             test.assertTrue(solver.constraint_overflow.numpy()[: model.world_count].all())
             if deterministic == RUN_TO_RUN:
                 np.testing.assert_array_equal(paths[0], paths[1], err_msg="same contacts dropped differently")
@@ -475,7 +511,11 @@ add_function_test(
     devices=devices,
     check_output=False,
 )
-for _fn in (test_deterministic_launches_replay_identically, test_deterministic_joint_rows_follow_articulation_order):
+for _fn in (
+    test_warm_started_full_reset_matches_fresh_solver,
+    test_deterministic_launches_replay_identically,
+    test_deterministic_joint_rows_follow_articulation_order,
+):
     add_function_test(TestSteelDeterminism, _fn.__name__, _fn, devices=cuda_devices)
 
 
