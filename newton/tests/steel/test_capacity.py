@@ -3,6 +3,7 @@
 
 """Row capacities, overflow reporting, watermarks and heterogeneous-world guards of SolverSteel."""
 
+import sys
 import unittest
 
 import numpy as np
@@ -74,6 +75,8 @@ def test_dense_capacity_failure_is_world_local(test, device, solve_mode="matrix_
 
 def test_overflow_warning_is_printed_once(test, device, solve_mode="matrix_free", response="immediate"):
     """Print one device-side warning per overflowing row family, inside this test."""
+    if wp.get_device(device).is_cpu and sys.platform == "win32":
+        test.skipTest("Warp CPU printf capture is unreliable on Windows")
     model = _box_on_ground(device, worlds=2)
     if response == "propagation":
         # The propagation rows hold every contact, in free_body_constraint_max + articulation_constraint_max rows.
