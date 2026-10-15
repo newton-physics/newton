@@ -1112,12 +1112,12 @@ class TestSteelPrivateApi(unittest.TestCase):
     def test_global_physics_switches_default_to_the_model(self):
         """Keep physical behavior local to the model unless a solver-wide override is requested.
 
-        ``enable_joint_limits``, the experimental ``contact_compliance`` and the experimental
-        ``friction_mode`` are opt-in. The solver-wide damping, friction and restitution overrides
+        ``enable_joint_limits``, the experimental ``enable_joint_friction`` and ``contact_compliance``
+        and the experimental ``friction_mode`` are opt-in. The solver-wide damping, friction and restitution overrides
         default to the values that leave the model's per-body and per-shape properties in charge.
         """
         parameters = inspect.signature(SolverSteel.__init__).parameters
-        for opt_in in ("enable_joint_limits", "contact_compliance"):
+        for opt_in in ("enable_joint_limits", "enable_joint_friction", "contact_compliance"):
             with self.subTest(opt_in=opt_in):
                 self.assertIs(parameters[opt_in].default, False)
         self.assertEqual(parameters["friction_mode"].default, "fixed_normal")
