@@ -904,8 +904,6 @@ def collide_box_box(
         for attempt in range(2):
             n = wp.int32(0)
             overflow = wp.bool(False)
-            # The first attempt keeps duplicates.
-            attempt_tol = wp.where(attempt == 0, -1.0, dedup_tol)
             for f in range(3):
                 family = wp.where(attempt == 0, f, 2 - f)
                 if family == 0:
@@ -927,7 +925,9 @@ def collide_box_box(
                                         continue
 
                                     cand = lav + c1 * lbv
-                                    if cand[2] <= margin and _box_face_candidate_is_new(points, n, cand, attempt_tol):
+                                    if cand[2] <= margin and (
+                                        attempt == 0 or _box_face_candidate_is_new(points, n, cand, dedup_tol)
+                                    ):
                                         if n < 8:
                                             points[n] = cand
                                             n += 1
@@ -953,7 +953,9 @@ def collide_box_box(
 
                             if u > 0 and v > 0 and u < 1 and v < 1:
                                 cand = wp.vec3(llx, lly, lp[2] + u * cn1[2] + v * cn2[2])
-                                if cand[2] <= margin and _box_face_candidate_is_new(points, n, cand, attempt_tol):
+                                if cand[2] <= margin and (
+                                    attempt == 0 or _box_face_candidate_is_new(points, n, cand, dedup_tol)
+                                ):
                                     if n < 8:
                                         points[n] = cand
                                         n += 1
@@ -963,9 +965,12 @@ def collide_box_box(
                     for i in range(1 << dirs):
                         tmpv = lp + wp.float32(i & 1) * cn1 + wp.float32((i & 2) != 0) * cn2
                         if tmpv[0] > -lx and tmpv[0] < lx and tmpv[1] > -ly and tmpv[1] < ly:
-                            if tmpv[2] <= margin and _box_face_candidate_is_new(points, n, tmpv, attempt_tol):
+                            cand = tmpv
+                            if cand[2] <= margin and (
+                                attempt == 0 or _box_face_candidate_is_new(points, n, cand, dedup_tol)
+                            ):
                                 if n < 8:
-                                    points[n] = tmpv
+                                    points[n] = cand
                                     n += 1
                                 else:
                                     overflow = True
@@ -1193,11 +1198,7 @@ def collide_box_box(
 
 @wp.func
 def _box_face_candidate_is_new(points: _mat83f, count: int, candidate: wp.vec3, tol: float) -> bool:
-    """Return whether a face-clipping candidate is farther than ``tol`` in x or y from every kept candidate.
-
-    A negative ``tol`` accepts every candidate."""
-    if tol < 0.0:
-        return True
+    """Return whether a face-clipping candidate is farther than ``tol`` in x or y from every kept candidate."""
     for kept in range(count):
         offset = points[kept] - candidate
         if wp.abs(offset[0]) < tol and wp.abs(offset[1]) < tol:
