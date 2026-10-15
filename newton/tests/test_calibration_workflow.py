@@ -19,7 +19,7 @@ from newton._src.calibration.cable_setup import CableSetup
 from newton._src.calibration.calibrate import calibrate
 from newton._src.calibration.evaluate import CableParameters, CableTraceView
 from newton._src.calibration.evidence import CableEvidenceBundle, CableRecording
-from newton._src.calibration.optimizer import OptimizerCMA, SearchOutcome
+from newton._src.calibration.optimizer import CMASettings, SearchOutcome
 from newton._src.calibration.problem import CableCalibrationProblem
 from newton._src.calibration.result import STATUS_FAILED, STATUS_INTERRUPTED, STATUS_OK, CableCalibrationResult
 from newton._src.calibration.search_space import CableSearchSpace
@@ -165,8 +165,8 @@ class TestCalibrationSetupAndSearchSpace(unittest.TestCase):
         """Verify the CMA-ES settings are refused when out of range or of the wrong type."""
         for settings in ({"seed": True}, {"seed": 2**32}, {"sigma0": 0.0}, {"maxiter": 2.5}, {"popsize": 1}):
             with self.subTest(settings=settings), self.assertRaises(ValueError):
-                OptimizerCMA(**settings)
-        optimizer = OptimizerCMA(seed=5, popsize=8, maxiter=2)
+                CMASettings(**settings)
+        optimizer = CMASettings(seed=5, popsize=8, maxiter=2)
         self.assertEqual(optimizer.to_dict(), {"kind": "cma", "seed": 5, "sigma0": 0.1, "popsize": 8, "maxiter": 2})
 
 
@@ -195,7 +195,6 @@ class TestCalibrationOrchestration(unittest.TestCase):
 
         def __init__(self, start=(3.0, -2.0), lower=(-math.inf, -math.inf)):
             self.search_space = TestCalibrationOrchestration.Space(start, lower)
-            self.objective = self
             self.closed = False
             self.vectors = []
 
@@ -214,7 +213,7 @@ class TestCalibrationOrchestration(unittest.TestCase):
         outcomes = []
         for _ in range(2):
             problem = self.Problem()
-            result = calibrate(problem, optimizer=OptimizerCMA(seed=5, popsize=12, maxiter=80, sigma0=0.5))
+            result = calibrate(problem, optimizer=CMASettings(seed=5, popsize=12, maxiter=80, sigma0=0.5))
             self.assertTrue(problem.closed)
             self.assertLess(result.loss, 1e-8)
             self.assertEqual(result.history[0], (13.0, [3.0, -2.0]))
@@ -225,16 +224,31 @@ class TestCalibrationOrchestration(unittest.TestCase):
             outcomes.append(result)
         self.assertEqual(outcomes[0], outcomes[1])
 
+    def test_caller_drives_the_search(self):
+        """Verify the ask/tell loop scores the start first, can stop on the caller's criterion and refuses a tell without an ask."""
+        problem = self.Problem()
+        search = CMASettings(seed=1, popsize=4, maxiter=50, sigma0=1.0).start(problem.search_space)
+        with self.assertRaisesRegex(RuntimeError, "ask"):
+            search.tell([1.0])
+        self.assertEqual(search.ask(), [[3.0, -2.0]])
+        search.tell([13.0])
+        while search.stop_reason is None and search.best_loss > 1.0:
+            search.tell(problem.evaluate(search.ask()))
+        outcome = search.outcome()
+        self.assertEqual(outcome.stop_reason, "stopped by the caller")
+        self.assertLessEqual(outcome.loss, 1.0)
+        self.assertEqual(outcome.iterations, search.iteration)
+
     def test_search_stays_within_the_bounds(self):
         """Verify every evaluated vector respects a lower bound that excludes the unbounded minimum."""
         problem = self.Problem(lower=(1.0, -math.inf))
-        result = calibrate(problem, optimizer=OptimizerCMA(seed=2, popsize=8, maxiter=30, sigma0=1.0))
+        result = calibrate(problem, optimizer=CMASettings(seed=2, popsize=8, maxiter=30, sigma0=1.0))
         self.assertTrue(all(x[0] >= 1.0 for x in problem.vectors))
         self.assertAlmostEqual(result.vector[0], 1.0, places=3)
 
     def test_start_is_kept_when_no_sample_is_better(self):
         """Verify the search returns the start when it is already the minimum."""
-        result = calibrate(self.Problem(start=(0.0, 0.0)), optimizer=OptimizerCMA(seed=1, popsize=4, maxiter=2))
+        result = calibrate(self.Problem(start=(0.0, 0.0)), optimizer=CMASettings(seed=1, popsize=4, maxiter=2))
         self.assertEqual(result.vector, [0.0, 0.0])
         self.assertEqual(result.loss, 0.0)
         self.assertEqual(result.stop_reason, "maxiter")
@@ -244,7 +258,7 @@ class TestCalibrationOrchestration(unittest.TestCase):
         problem = self.Problem()
         problem.evaluate = lambda vectors: [math.nan] * len(vectors)
         with self.assertRaisesRegex(ValueError, "start is invalid"):
-            calibrate(problem, optimizer=OptimizerCMA(seed=1, popsize=4, maxiter=2))
+            calibrate(problem, optimizer=CMASettings(seed=1, popsize=4, maxiter=2))
         self.assertTrue(problem.closed)
 
     def test_invalid_candidates_are_ranked_last(self):
@@ -255,7 +269,7 @@ class TestCalibrationOrchestration(unittest.TestCase):
         problem.evaluate = lambda vectors: [
             v if x[0] >= 1.0 else math.nan for x, v in zip(vectors, evaluate(vectors), strict=True)
         ]
-        result = calibrate(problem, optimizer=OptimizerCMA(seed=2, popsize=8, maxiter=30, sigma0=1.0))
+        result = calibrate(problem, optimizer=CMASettings(seed=2, popsize=8, maxiter=30, sigma0=1.0))
         self.assertGreater(result.invalid, 0)
         self.assertLess(result.loss, 1.03)  # the best valid point is (1, 0), with loss 1
         self.assertTrue(all(math.isfinite(loss) and x[0] >= 1.0 for loss, x in result.history))
@@ -263,7 +277,7 @@ class TestCalibrationOrchestration(unittest.TestCase):
 
         problem = self.Problem()
         problem.evaluate = lambda vectors: [13.0 if list(x) == [3.0, -2.0] else math.nan for x in vectors]
-        result = calibrate(problem, optimizer=OptimizerCMA(seed=1, popsize=4, maxiter=5))
+        result = calibrate(problem, optimizer=CMASettings(seed=1, popsize=4, maxiter=5))
         self.assertEqual(result.stop_reason, "all candidates invalid")
         self.assertEqual((result.loss, result.vector, result.invalid), (13.0, [3.0, -2.0], 4))
 
@@ -279,7 +293,7 @@ class TestCalibrationOrchestration(unittest.TestCase):
             return evaluate(vectors)
 
         problem.evaluate = interrupt_third_batch
-        result = calibrate(problem, optimizer=OptimizerCMA(seed=1, popsize=4, maxiter=5))
+        result = calibrate(problem, optimizer=CMASettings(seed=1, popsize=4, maxiter=5))
         self.assertTrue(result.interrupted)
         self.assertEqual(result.stop_reason, "interrupted")
         self.assertEqual(result.iterations, 1)
@@ -313,7 +327,7 @@ class TestCalibrationCableProblem(unittest.TestCase):
             )
             space.start.bend_stiffness = 999.0
             out = directory / "result"
-            optimizer = OptimizerCMA(seed=3, sigma0=0.5, popsize=6, maxiter=40)
+            optimizer = CMASettings(seed=3, sigma0=0.5, popsize=6, maxiter=40)
             result = calibrate(problem, optimizer=optimizer, output_dir=out)
 
             self.assertEqual(result.status, STATUS_OK)
@@ -366,7 +380,7 @@ class TestCalibrationCableProblem(unittest.TestCase):
             )
             out = directory / "result"
             with self.assertRaisesRegex(RuntimeError, "render failed"):
-                calibrate(problem, optimizer=OptimizerCMA(seed=3, popsize=4, maxiter=2), output_dir=out, trace_every=1)
+                calibrate(problem, optimizer=CMASettings(seed=3, popsize=4, maxiter=2), output_dir=out, trace_every=1)
             for name in ("result.json", "history.json"):
                 self.assertTrue((out / name).exists(), name)
 
@@ -396,7 +410,7 @@ class TestCalibrationCableProblem(unittest.TestCase):
             out = directory / "result"
             problem = CableCalibrationProblem.from_bundle(bundle, directory, make_setup(), make_space(), **SIMULATION)
             with self.assertRaisesRegex(RuntimeError, "simulation failed"):
-                calibrate(problem, optimizer=OptimizerCMA(seed=3, popsize=4, maxiter=5), output_dir=out, trace_every=1)
+                calibrate(problem, optimizer=CMASettings(seed=3, popsize=4, maxiter=5), output_dir=out, trace_every=1)
             result = CableCalibrationResult.from_dict(json.loads((out / "result.json").read_text()))
             history = json.loads((out / "history.json").read_text())
             self.assertEqual(result.status, STATUS_FAILED)
@@ -410,7 +424,7 @@ class TestCalibrationCableProblem(unittest.TestCase):
             Evaluator.fail_on_call = 1
             problem = CableCalibrationProblem.from_bundle(bundle, directory, make_setup(), make_space(), **SIMULATION)
             with self.assertRaisesRegex(RuntimeError, "simulation failed"):
-                calibrate(problem, optimizer=OptimizerCMA(seed=3, popsize=4, maxiter=5), output_dir=directory / "early")
+                calibrate(problem, optimizer=CMASettings(seed=3, popsize=4, maxiter=5), output_dir=directory / "early")
             self.assertFalse((directory / "early").exists())
 
     def test_evaluator_receives_the_setup_and_simulation_settings(self):

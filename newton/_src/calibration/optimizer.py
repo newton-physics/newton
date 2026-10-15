@@ -38,7 +38,7 @@ class SearchOutcome:
 
     stop_reason: str
     """Why the search stopped, for example ``"maxiter"``, a convergence criterion, ``"interrupted"``,
-    ``"all candidates invalid"`` or ``"error"``."""
+    ``"all candidates invalid"``, ``"error"`` or ``"stopped by the caller"``."""
 
     invalid: int
     """Number of evaluated candidates whose objective value was not finite."""
@@ -48,8 +48,8 @@ class SearchOutcome:
     iterations completed before the error."""
 
 
-class OptimizerCMA:
-    """CMA-ES over the full decision vector.
+class CMASettings:
+    """Settings of a CMA-ES search over the full decision vector.
 
     Requires the ``cma`` package (``newton[calibration]``).
 
@@ -85,50 +85,25 @@ class OptimizerCMA:
         """Return the ``kind`` and the settings of the optimizer."""
         return {"kind": "cma", **vars(self)}
 
-    def minimize(self, objective, space) -> SearchOutcome:
-        """Search ``space`` and return the best decision vector found.
-
-        The search scores the start first, so the best vector is never worse
-        than the start. After each iteration, the best loss and
-        ``space.describe(vector)`` are logged at ``INFO`` level. The log record
-        also has the attributes ``iteration``, ``loss`` and ``vector`` (the best
-        decision vector so far), so a log handler can follow the search. The stop
-        reason is the names of the CMA-ES stop criteria that were met.
-
-        A candidate whose objective value is not finite is invalid: CMA-ES ranks
-        it below every valid candidate, and it is never the best. The search
-        stops with the stop reason ``"all candidates invalid"`` when a whole
-        iteration is invalid.
-
-        An error after the start is scored stops the search with the stop
-        reason ``"error"``. The outcome then holds the error and the best of the
-        iterations completed before it, so the caller can keep that progress and
-        raise the error.
+    def start(self, space) -> Search:
+        """Start a search of ``space``.
 
         Args:
-            objective: Object with ``evaluate(vectors)``, which returns one
-                value per decision vector. A value that is not finite marks an
-                invalid candidate.
-            space: Object with ``dim``, ``x0()``, the search start,
-                ``bounds()``, the lower and upper bound of each decision
-                variable (infinite for no bound), and ``describe(vector)``,
-                which returns the searched values as text. The search stays
-                within the bounds.
+            space: Object with ``x0()``, the search start, ``bounds()``, the
+                lower and upper bound of each decision variable (infinite for no
+                bound), and ``describe(vector)``, which returns the searched
+                values as text. The search stays within the bounds.
 
         Returns:
-            The search outcome.
+            The search. Drive it with :meth:`Search.ask` and :meth:`Search.tell`.
 
         Raises:
             ImportError: If the ``cma`` package is not installed.
-            ValueError: If the objective does not return one value per vector
-                for the start, or the start is invalid.
-            RuntimeError: If an interrupt stops the search before it scores the start.
-            Exception: Any error raised before the start is scored.
         """
         try:
             import cma  # noqa: PLC0415 -- optional dependency
         except ImportError as exc:
-            raise ImportError("OptimizerCMA requires the 'cma' package; install newton[calibration].") from exc
+            raise ImportError("CMASettings requires the 'cma' package; install newton[calibration].") from exc
 
         lower, upper = space.bounds()
         opts = {
@@ -142,73 +117,146 @@ class OptimizerCMA:
         }
         if self.seed is not None:
             opts["seed"] = self.seed
-        x0 = list(space.x0())
-        es = cma.CMAEvolutionStrategy(x0, self.sigma0, opts)
+        # The strategy object of the cma package has the ask(), tell() and stop() that Search needs.
+        return Search(cma.CMAEvolutionStrategy(list(space.x0()), self.sigma0, opts), space)
 
-        best_x, best_loss, history, interrupted, invalid, stop_reason, error = None, math.inf, [], False, 0, None, None
 
-        def record(n_invalid=0):
-            history.append((best_loss, list(best_x)))
-            note = f", {n_invalid} invalid" if n_invalid else ""
-            iteration = len(history) - 1
-            logger.info(
-                "iteration %d: loss %.6g, %s%s",
-                iteration,
-                best_loss,
-                space.describe(best_x),
-                note,
-                extra={"iteration": iteration, "loss": best_loss, "vector": list(best_x)},
-            )
+class Search:
+    """A running search, driven by the caller.
 
-        try:
-            # CMA-ES samples around the start but does not score it.
-            start_loss = float(_evaluate(objective, [x0])[0])
-            if not math.isfinite(start_loss):
+    Get the decision vectors with :meth:`ask`, evaluate them, and give the
+    values to :meth:`tell`. Repeat until :attr:`stop_reason` is not ``None``,
+    or stop earlier. Then get the result with :meth:`outcome`.
+
+    The first :meth:`ask` returns only the start, so the best vector is never
+    worse than the start. After each :meth:`tell`, the best loss and
+    ``space.describe(vector)`` are logged at ``INFO`` level. The log record also
+    has the attributes ``iteration``, ``loss`` and ``vector`` (the best decision
+    vector so far), so a log handler can follow the search.
+
+    A value that is not finite marks an invalid candidate: the engine gets an
+    infinite value for it, so it ranks below every valid candidate, and it is
+    never the best. The search stops with the stop reason
+    ``"all candidates invalid"`` when a whole iteration is invalid.
+
+    Create it with the ``start(space)`` of the optimizer settings, for example
+    :meth:`CMASettings.start`.
+
+    Args:
+        engine: The optimizer. It has ``ask()``, which returns the decision
+            vectors of the next iteration, ``tell(vectors, values)``, and
+            ``stop()``, which returns the names of the stop criteria that were
+            met, empty while the search runs. It must accept infinite values.
+        space: Object with ``x0()``, the search start, and ``describe(vector)``,
+            which returns the searched values as text.
+    """
+
+    def __init__(self, engine, space):
+        self._engine = engine
+        self._x0 = list(space.x0())
+        self._space = space
+        self._asked = None
+        self.history: list[tuple[float, list[float]]] = []
+        """The best ``(loss, vector)`` so far after each iteration. Entry 0 is the scored start."""
+        self.invalid = 0
+        """Number of evaluated candidates whose value was not finite."""
+        self.stop_reason: str | None = None
+        """Why the search stopped: the names of the engine's stop criteria that were met, or
+        ``"all candidates invalid"``. ``None`` while the search runs."""
+
+    @property
+    def iteration(self) -> int:
+        """Number of iterations told, not counting the start. -1 before the start is told."""
+        return len(self.history) - 1
+
+    @property
+    def best_loss(self) -> float:
+        """The lowest valid value told so far. Infinite before the start is told."""
+        return self.history[-1][0] if self.history else math.inf
+
+    def ask(self) -> list[list[float]]:
+        """Return the decision vectors to evaluate next.
+
+        Raises:
+            RuntimeError: If the search has stopped, or the values of the last
+                :meth:`ask` were not told.
+        """
+        if self.stop_reason is not None:
+            raise RuntimeError(f"the search has stopped: {self.stop_reason}.")
+        if self._asked is not None:
+            raise RuntimeError("tell() the values of the last ask() first.")
+        # The engine samples around the start but does not score it.
+        self._asked = [self._x0] if not self.history else [list(x) for x in self._engine.ask()]
+        return self._asked
+
+    def tell(self, values) -> None:
+        """Give the values of the vectors from the last :meth:`ask`, one per vector, in order.
+
+        Raises:
+            RuntimeError: If :meth:`ask` was not called first.
+            ValueError: If there is not one value per vector, or the start is invalid.
+        """
+        if self._asked is None:
+            raise RuntimeError("ask() for vectors before tell().")
+        values = np.asarray(values, dtype=float)
+        if values.shape != (len(self._asked),):
+            raise ValueError("tell() needs one value per decision vector.")
+        vectors, self._asked = self._asked, None
+        valid = np.isfinite(values)
+        n_invalid = int(np.count_nonzero(~valid))
+        if not self.history:
+            if n_invalid:
                 raise ValueError("the search start is invalid: its objective value is not finite.")
-            best_x, best_loss = x0, start_loss
-            record()
-            while not es.stop():
-                solutions = es.ask()
-                losses = _evaluate(objective, solutions)
-                valid = np.isfinite(losses)
-                n_invalid = int(np.count_nonzero(~valid))
-                invalid += n_invalid
-                if not valid.any():
-                    record(n_invalid)
-                    stop_reason = "all candidates invalid"
-                    break
-                # CMA-ES uses only the ranking, so an invalid candidate ranks below every valid one.
-                ranked = np.where(valid, losses, math.inf)
-                es.tell(solutions, ranked)
+            self._record(float(values[0]), vectors[0])
+        else:
+            self.invalid += n_invalid
+            loss, vector = self.history[-1]
+            if valid.any():
+                ranked = np.where(valid, values, math.inf)
+                self._engine.tell(vectors, ranked)
                 i = int(np.argmin(ranked))
-                if ranked[i] < best_loss:
-                    best_x, best_loss = list(solutions[i]), float(ranked[i])
-                record(n_invalid)
-        except KeyboardInterrupt:
-            interrupted = True
-        except Exception as exc:
-            if not history:
-                raise
-            error = exc
+                if ranked[i] < loss:
+                    loss, vector = float(ranked[i]), vectors[i]
+            self._record(loss, vector, n_invalid)
+            if not valid.any():
+                self.stop_reason = "all candidates invalid"
+        if self.stop_reason is None and self._engine.stop():
+            self.stop_reason = ", ".join(self._engine.stop())
 
-        if not history:
+    def _record(self, loss: float, vector: list[float], n_invalid: int = 0) -> None:
+        """Add the best so far to the history and log it."""
+        self.history.append((loss, list(vector)))
+        note = f", {n_invalid} invalid" if n_invalid else ""
+        logger.info(
+            "iteration %d: loss %.6g, %s%s",
+            self.iteration,
+            loss,
+            self._space.describe(vector),
+            note,
+            extra={"iteration": self.iteration, "loss": loss, "vector": list(vector)},
+        )
+
+    def outcome(self, *, interrupted: bool = False, error: Exception | None = None) -> SearchOutcome:
+        """Return the best vector found and log the stop reason.
+
+        Args:
+            interrupted: Whether an interrupt stopped the search.
+            error: The error that stopped the search, or ``None``. The outcome
+                then holds the best of the iterations completed before it.
+
+        Raises:
+            RuntimeError: If the start was not told.
+        """
+        if not self.history:
             raise RuntimeError("the search stopped before it scored the start.")
         if interrupted:
             stop_reason = "interrupted"
         elif error is not None:
             stop_reason = "error"
-        elif stop_reason is None:
-            stop_reason = ", ".join(es.stop())
+        else:
+            stop_reason = self.stop_reason or "stopped by the caller"
         logger.info("search stopped: %s", stop_reason if error is None else f"error ({type(error).__name__}: {error})")
-        best_loss, best_x = history[-1]
+        loss, vector = self.history[-1]
         return SearchOutcome(
-            list(best_x), best_loss, len(history) - 1, interrupted, history, stop_reason, invalid, error
+            list(vector), loss, self.iteration, interrupted, list(self.history), stop_reason, self.invalid, error
         )
-
-
-def _evaluate(objective, vectors) -> np.ndarray:
-    """Evaluate ``vectors`` and require one value per vector. A value may be non-finite."""
-    values = np.asarray(objective.evaluate(vectors), dtype=float)
-    if values.shape != (len(vectors),):
-        raise ValueError("objective must return one scalar per decision vector.")
-    return values

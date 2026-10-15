@@ -17,22 +17,25 @@ def calibrate(
 ):
     """Search a calibration problem and return its result.
 
-    The problem supplies ``search_space``, ``objective.evaluate(vectors)``,
+    This is the ask/tell loop of a :class:`~.optimizer.Search` with the output
+    added. To control the loop, for example to show progress or to
+    stop on a different criterion, drive the search directly.
+
+    The problem supplies ``search_space``, ``evaluate(vectors)``, which returns
+    one value per decision vector,
     ``build_result(outcome, optimizer=..., artifacts=...)``,
     ``create_writer(output_dir, trace_every=...)`` and ``close()``. The writer
     supplies ``artifacts(traces=...)``, ``write_result(result, history)`` and
     ``write_traces(history)``. This function does not depend on the model type.
 
     The optimizer supplies ``to_dict()``, which returns its ``kind`` and
-    settings, and ``minimize(objective, space)``, which returns a
-    :class:`~.optimizer.SearchOutcome`. See
-    :class:`~.optimizer.OptimizerCMA`. The optimizer settings, including the
-    seed, come only from ``optimizer``.
+    settings, and ``start(space)``, which returns a :class:`~.optimizer.Search`.
+    The optimizer settings, including the seed, come only from ``optimizer``.
 
     Args:
         problem: The calibration problem, for example a cable calibration
             problem.
-        optimizer: The search, for example :class:`~.optimizer.OptimizerCMA`.
+        optimizer: The optimizer settings, for example :class:`~.optimizer.CMASettings`.
         output_dir: Artifact directory. It must be absent or empty. The
             result and the search history are written to it before any trace.
             ``None`` writes no files.
@@ -53,8 +56,8 @@ def calibrate(
             of the completed iterations are written to ``output_dir`` first,
             without traces.
 
-    On ``KeyboardInterrupt`` after the start is scored, the optimizer returns
-    the best candidate so far and the result status is ``"interrupted"``. The
+    On ``KeyboardInterrupt`` after the start is scored, the result holds the
+    best candidate so far and the result status is ``"interrupted"``. The
     problem is closed when the search completes or fails.
     """
     writer = None
@@ -68,7 +71,18 @@ def calibrate(
         if output_dir is not None:
             writer = problem.create_writer(output_dir, trace_every=trace_every)
 
-        outcome = optimizer.minimize(problem.objective, problem.search_space)
+        search = optimizer.start(problem.search_space)
+        interrupted, error = False, None
+        try:
+            while search.stop_reason is None:
+                search.tell(problem.evaluate(search.ask()))
+        except KeyboardInterrupt:
+            interrupted = True
+        except Exception as exc:
+            if not search.history:
+                raise
+            error = exc
+        outcome = search.outcome(interrupted=interrupted, error=error)
         # After an error, no traces are rendered: they would run the simulation that failed.
         traces = outcome.error is None
         artifacts = writer.artifacts(traces=traces) if writer is not None else {}

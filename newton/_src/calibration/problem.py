@@ -35,7 +35,8 @@ class CableCalibrationProblem:
     """A cable experiment and the parameter space to search.
 
     Create the problem with :meth:`from_bundle` and give it to
-    :func:`~.calibrate.calibrate`. The objective is the Chamfer loss. Each
+    :func:`~.calibrate.calibrate`, or score the vectors of a search
+    (:class:`~.optimizer.Search`) with :meth:`evaluate`. The objective is the Chamfer loss. Each
     recording has unit weight, shared equally among its camera views.
 
     The problem keeps copies of the bundle, the setup and the search space, so
@@ -106,7 +107,6 @@ class CableCalibrationProblem:
             clamp_position=self.setup.clamp_position,
             cable_axis=self.setup.cable_axis,
         )
-        self.objective = self
         self._evaluator = None
         return self
 
