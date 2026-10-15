@@ -140,14 +140,17 @@ _tile_inverse_cache: dict[int, wp.Kernel] = {}
 _TILE_MAX_DOFS = 64
 """Largest padded articulation DOF count for the tile path; larger ones keep the per-thread kernel."""
 
+_TILE_BLOCK_DIM = 128
+"""Threads per block of the tile inverse kernel."""
 
-def _build_tile_inverse_kernel(tile: int, block_dim: int) -> wp.Kernel:
+
+def _build_tile_inverse_kernel(tile: int) -> wp.Kernel:
     """One thread block per articulation: ``H^-1`` of the padded block by tile Cholesky."""
     cached = _tile_inverse_cache.get(tile)
     if cached is not None:
         return cached
 
-    @wp.kernel(enable_backward=False, module="unique", module_options={"block_dim": block_dim})
+    @wp.kernel(enable_backward=False, module="unique", module_options={"block_dim": _TILE_BLOCK_DIM})
     def tile_inverse(
         H_pad: wp.array3d[float],
         eye: wp.array2d[float],
@@ -273,7 +276,7 @@ class JointSpaceResponse:
             self._H_pad = wp.zeros((art_count, tile, tile), dtype=float, device=device)
             self._L_pad = wp.zeros_like(self._H_pad)
             self._inv_pad = wp.zeros_like(self._H_pad)
-            self._tile_kernel = _build_tile_inverse_kernel(tile, block_dim=128)
+            self._tile_kernel = _build_tile_inverse_kernel(tile)
 
         # Scratch so refresh() never writes to the caller's state.
         self._fk_state = model.state()
@@ -416,44 +419,43 @@ class JointSpaceResponse:
 
     def _invert_blocks(self) -> None:
         """Invert the per-articulation blocks of ``self._H`` into :attr:`inverse_blocks`."""
-        model = self.model
-        if self._tile is None:
-            self._inv_block.zero_()
+        if self._tile is not None:
             wp.launch(
-                _inverse_block_from_mass_matrix_kernel,
-                dim=model.articulation_count,
-                inputs=[self._H, self._art_dof_count],
-                outputs=[self._L, self._inv_block],
-                device=model.device,
+                _pad_mass_matrix_kernel,
+                dim=self._H_pad.shape,
+                inputs=[self._art_dof_count, self._H],
+                outputs=[self._H_pad],
+                device=self.model.device,
+            )
+            wp.launch_tiled(
+                self._tile_kernel,
+                dim=[self.model.articulation_count],
+                inputs=[self._H_pad, self._eye],
+                outputs=[self._L_pad, self._inv_pad],
+                block_dim=_TILE_BLOCK_DIM,
+                device=self.model.device,
+            )
+            wp.launch(
+                _repair_tile_inverse_kernel,
+                dim=self.model.articulation_count,
+                inputs=[self._H_pad, self._art_dof_count],
+                outputs=[self._L_pad, self._inv_pad],
+                device=self.model.device,
+            )
+            wp.launch(
+                _copy_inverse_kernel,
+                dim=self._inv_block.shape,
+                inputs=[self._art_dof_count, self._inv_pad],
+                outputs=[self._inv_block],
+                device=self.model.device,
             )
             return
 
+        self._inv_block.zero_()
         wp.launch(
-            _pad_mass_matrix_kernel,
-            dim=self._H_pad.shape,
-            inputs=[self._art_dof_count, self._H],
-            outputs=[self._H_pad],
-            device=model.device,
-        )
-        wp.launch_tiled(
-            self._tile_kernel,
-            dim=[model.articulation_count],
-            inputs=[self._H_pad, self._eye],
-            outputs=[self._L_pad, self._inv_pad],
-            block_dim=128,
-            device=model.device,
-        )
-        wp.launch(
-            _repair_tile_inverse_kernel,
-            dim=model.articulation_count,
-            inputs=[self._H_pad, self._art_dof_count],
-            outputs=[self._L_pad, self._inv_pad],
-            device=model.device,
-        )
-        wp.launch(
-            _copy_inverse_kernel,
-            dim=self._inv_block.shape,
-            inputs=[self._art_dof_count, self._inv_pad],
-            outputs=[self._inv_block],
-            device=model.device,
+            _inverse_block_from_mass_matrix_kernel,
+            dim=self.model.articulation_count,
+            inputs=[self._H, self._art_dof_count],
+            outputs=[self._L, self._inv_block],
+            device=self.model.device,
         )

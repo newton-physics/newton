@@ -133,33 +133,6 @@ _BLOCK_SOLVE_MAX_ROWS = 64
 """Largest padded group size solved by one thread block; larger groups use one thread each."""
 
 
-def _build_row_func(evaluate_force: wp.Function, clamp_chain: wp.Function) -> wp.Function:
-    """Per-row residual ``p - h clamp(f)`` and its slope by one forward difference, for both solve kernels."""
-
-    @wp.func
-    def row(
-        p_i: wp.float64,
-        q_i: wp.float64,
-        qd_i: wp.float64,
-        tq: wp.float64,
-        tqd: wp.float64,
-        ff: wp.float64,
-        params: wp.array2d[float],
-        clamp_params: wp.array2d[float],
-        si: wp.int32,
-        hd: wp.float64,
-        fd_eps: wp.float64,
-    ) -> wp.vec2d:
-        fc = clamp_chain(evaluate_force(q_i, qd_i, tq, tqd, ff, params, si), q_i, qd_i, clamp_params, si)
-        eps = fd_eps * (wp.float64(1.0) + wp.abs(qd_i))
-        q_p = q_i + hd * eps
-        qd_p = qd_i + eps
-        fc_p = clamp_chain(evaluate_force(q_p, qd_p, tq, tqd, ff, params, si), q_p, qd_p, clamp_params, si)
-        return wp.vec2d(p_i - hd * fc, (fc_p - fc) / eps)
-
-    return row
-
-
 _LINE_SEARCH_STEPS = 8
 """Step lengths tried (halving each time) before the solve stops with the current impulse."""
 
@@ -176,8 +149,6 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
     cached = _coupled_kernel_cache.get(cache_key)
     if cached is not None:
         return cached
-
-    row = _build_row_func(evaluate_force, clamp_chain)
 
     @wp.func
     def predict_qd(
@@ -291,25 +262,36 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
                 si = group_slot[g, i]
                 qd_i = predict_qd(velocities, vel_indices, inverse_blocks, group_local, pbuf, art, g, i, ng, si)
                 q_i = wp.float64(positions[pos_indices[si]]) + hd * qd_i
-                ff = wp.float64(0.0)
-                if feedforward:
-                    ff = wp.float64(feedforward[target_vel_indices[si]])
-                res = row(
-                    pbuf[g, i],
+                f_i = force_at(
                     q_i,
                     qd_i,
-                    wp.float64(target_pos[target_pos_indices[si]]),
-                    wp.float64(target_vel[target_vel_indices[si]]),
-                    ff,
+                    target_pos,
+                    target_vel,
+                    feedforward,
+                    target_pos_indices,
+                    target_vel_indices,
                     params,
                     clamp_params,
                     si,
-                    hd,
-                    fd_eps,
                 )
-                rbuf[g, i] = res[0]
-                sbuf[g, i] = res[1]
-                rn += res[0] * res[0]
+                ri = pbuf[g, i] - hd * f_i
+                rbuf[g, i] = ri
+                rn += ri * ri
+
+                eps = fd_eps * (wp.float64(1.0) + wp.abs(qd_i))
+                f_p = force_at(
+                    q_i + hd * eps,
+                    qd_i + eps,
+                    target_pos,
+                    target_vel,
+                    feedforward,
+                    target_pos_indices,
+                    target_vel_indices,
+                    params,
+                    clamp_params,
+                    si,
+                )
+                sbuf[g, i] = (f_p - f_i) / eps
             # Always take one Newton step: the absolute tolerance would otherwise
             # accept the explicit warm start whenever the efforts are small.
             if it > 0 and rn < res_tol * res_tol:
@@ -326,7 +308,7 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
                         jij += wp.float64(1.0)
                     jbuf[g, i, c] = jij
 
-            # Dense Newton step: solve J dp = -r by Gauss elimination, update p.
+            # Dense Newton step: solve J dp = -r by Gauss elimination.
             for i in range(ng):
                 rbuf[g, i] = -rbuf[g, i]
             for k in range(ng):
@@ -359,23 +341,20 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
                     si = group_slot[g, i]
                     qd_i = predict_qd(velocities, vel_indices, inverse_blocks, group_local, vbuf, art, g, i, ng, si)
                     q_i = wp.float64(positions[pos_indices[si]]) + hd * qd_i
-                    ff = wp.float64(0.0)
-                    if feedforward:
-                        ff = wp.float64(feedforward[target_vel_indices[si]])
-                    res = row(
-                        vbuf[g, i],
+                    f_i = force_at(
                         q_i,
                         qd_i,
-                        wp.float64(target_pos[target_pos_indices[si]]),
-                        wp.float64(target_vel[target_vel_indices[si]]),
-                        ff,
+                        target_pos,
+                        target_vel,
+                        feedforward,
+                        target_pos_indices,
+                        target_vel_indices,
                         params,
                         clamp_params,
                         si,
-                        hd,
-                        fd_eps,
                     )
-                    rn_t += res[0] * res[0]
+                    ri = vbuf[g, i] - hd * f_i
+                    rn_t += ri * ri
                 if rn_t <= (wp.float64(1.0) - wp.float64(1.0e-4) * alpha) * rn:
                     accepted = 1
                     break
@@ -438,26 +417,18 @@ def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Funct
     if cached is not None:
         return cached
 
-    row = _build_row_func(evaluate_force, clamp_chain)
-
     @wp.func
     def force_at(
         q_i: wp.float64,
         qd_i: wp.float64,
-        target_pos: wp.array[float],
-        target_vel: wp.array[float],
-        feedforward: wp.array[float],
-        target_pos_indices: wp.array[wp.uint32],
-        target_vel_indices: wp.array[wp.uint32],
+        tq: wp.float64,
+        tqd: wp.float64,
+        ff: wp.float64,
         params: wp.array2d[float],
         clamp_params: wp.array2d[float],
         si: wp.int32,
     ) -> wp.float64:
-        tq = wp.float64(target_pos[target_pos_indices[si]])
-        tqd = wp.float64(target_vel[target_vel_indices[si]])
-        ff = wp.float64(0.0)
-        if feedforward:
-            ff = wp.float64(feedforward[target_vel_indices[si]])
+        """Clamped control law of row *i* at a predicted state."""
         return clamp_chain(evaluate_force(q_i, qd_i, tq, tqd, ff, params, si), q_i, qd_i, clamp_params, si)
 
     @wp.func
@@ -492,15 +463,16 @@ def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Funct
         cf = float(c)
         row = lane_row()
         for j in range(tile):
-            v = cf * A[j, lane]
+            v = cf * A[lane, j]
             if j == lane:
                 v += 1.0
             row[j] = v
         row[tile] = float(b)
         my_piv = float(1.0)
         for k in range(ng):
+            # The extract syncs the block before S is overwritten, so no lane still reads the previous pivot row.
+            piv = wp.tile_extract(wp.tile(row[k]), k)
             wp.tile_assign(S, wp.tile(row), offset=(0, 0))
-            piv = S[k, k]
             if wp.abs(piv) < dfloor:
                 piv = wp.where(piv < 0.0, -dfloor, dfloor)
             if lane == k:
@@ -567,43 +539,34 @@ def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Funct
         si = wp.int32(0)
         q0 = wp.float64(0.0)
         qd0 = wp.float64(0.0)
+        tq = wp.float64(0.0)
+        tqd = wp.float64(0.0)
+        ff = wp.float64(0.0)
         p = wp.float64(0.0)
         if active:
             si = group_slot[g, lane]
             q0 = wp.float64(positions[pos_indices[si]])
             qd0 = wp.float64(velocities[vel_indices[si]])
-            if warm_zero == 0:
-                p = hd * force_at(
-                    q0,
-                    qd0,
-                    target_pos,
-                    target_vel,
-                    feedforward,
-                    target_pos_indices,
-                    target_vel_indices,
-                    params,
-                    clamp_params,
-                    si,
-                )
-
-        ff = wp.float64(0.0)
-        tq = wp.float64(0.0)
-        tqd = wp.float64(0.0)
-        if active:
             tq = wp.float64(target_pos[target_pos_indices[si]])
             tqd = wp.float64(target_vel[target_vel_indices[si]])
             if feedforward:
                 ff = wp.float64(feedforward[target_vel_indices[si]])
+            if warm_zero == 0:
+                p = hd * force_at(q0, qd0, tq, tqd, ff, params, clamp_params, si)
 
         for it in range(max_iters):
             u = apply_response(A, p)
             r = wp.float64(0.0)
             c_lane = wp.float64(0.0)
             if active:
+                # Residual and the row slope s_i = h*df_i/dq + df_i/dqd by one forward difference.
                 qd_i = qd0 + u
-                res = row(p, q0 + hd * qd_i, qd_i, tq, tqd, ff, params, clamp_params, si, hd, fd_eps)
-                r = res[0]
-                c_lane = -hd * res[1]
+                q_i = q0 + hd * qd_i
+                f_i = force_at(q_i, qd_i, tq, tqd, ff, params, clamp_params, si)
+                r = p - hd * f_i
+                eps = fd_eps * (wp.float64(1.0) + wp.abs(qd_i))
+                f_p = force_at(q_i + hd * eps, qd_i + eps, tq, tqd, ff, params, clamp_params, si)
+                c_lane = -hd * (f_p - f_i) / eps
             rn = wp.tile_extract(wp.tile_sum(wp.tile(r * r)), 0)
             # Always take one Newton step: the absolute tolerance would otherwise
             # accept the explicit warm start whenever the efforts are small.
@@ -622,7 +585,7 @@ def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Funct
                 r_t = wp.float64(0.0)
                 if active:
                     qd_t = qd0 + u_t
-                    r_t = row(p_t, q0 + hd * qd_t, qd_t, tq, tqd, ff, params, clamp_params, si, hd, fd_eps)[0]
+                    r_t = p_t - hd * force_at(q0 + hd * qd_t, qd_t, tq, tqd, ff, params, clamp_params, si)
                 rn_t = wp.tile_extract(wp.tile_sum(wp.tile(r_t * r_t)), 0)
                 if rn_t <= (wp.float64(1.0) - wp.float64(1.0e-4) * alpha) * rn:
                     accepted = 1
@@ -640,11 +603,6 @@ def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Funct
         if active:
             qd_i = qd0 + u
             q_i = q0 + hd * qd_i
-            tq = wp.float64(target_pos[target_pos_indices[si]])
-            tqd = wp.float64(target_vel[target_vel_indices[si]])
-            ff = wp.float64(0.0)
-            if feedforward:
-                ff = wp.float64(feedforward[target_vel_indices[si]])
             computed_efforts[si] = wp.float32(evaluate_force(q_i, qd_i, tq, tqd, ff, params, si))
             applied_efforts[si] = wp.float32(clamp_chain(p / hd, q_i, qd_i, clamp_params, si))
 

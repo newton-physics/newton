@@ -1,0 +1,1 @@
+Speed up implicit actuation on CUDA: `newton.eval_jacobian()` and `newton.eval_mass_matrix()` run in parallel per link and per matrix entry, `JointSpaceResponse.refresh()` inverts each mass-matrix block with one thread block, and the implicit Newton solve uses one thread block per articulation.

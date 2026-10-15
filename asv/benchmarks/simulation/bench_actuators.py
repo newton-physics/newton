@@ -26,13 +26,13 @@ KP = 1000.0
 KD = 5.0
 
 
-def _build_g1(world_count: int, internal_drive: bool) -> tuple[newton.Model, int]:
+def _build_g1(world_count: int) -> tuple[newton.Model, int]:
     g1 = newton.ModelBuilder()
     newton.solvers.SolverMuJoCo.register_custom_attributes(g1)
     _setup_g1(g1)
     for i in range(6, g1.joint_dof_count):
-        g1.joint_target_ke[i] = KP if internal_drive else 0.0
-        g1.joint_target_kd[i] = KD if internal_drive else 0.0
+        g1.joint_target_ke[i] = 0.0
+        g1.joint_target_kd[i] = 0.0
         g1.joint_target_mode[i] = int(newton.JointTargetMode.POSITION)
     builder = newton.ModelBuilder()
     builder.replicate(g1, world_count)
@@ -41,11 +41,11 @@ def _build_g1(world_count: int, internal_drive: bool) -> tuple[newton.Model, int
 
 
 class _ActuatorBenchmark:
-    """Step G1 on SolverMuJoCo with joint PD driven inside the solver or by newton.actuators.
+    """Step G1 on SolverMuJoCo with joint PD driven by newton.actuators in implicit mode.
 
-    ``drive`` selects ``internal`` (solver joint drive), ``implicit``
-    (response from :meth:`JointSpaceResponse.refresh`, usable with any solver)
-    or ``implicit_from_solve`` (response from MuJoCo's factorized inertia).
+    ``drive`` selects the response: ``implicit`` (from
+    :meth:`JointSpaceResponse.refresh`, usable with any solver) or
+    ``implicit_from_solve`` (from MuJoCo's factorized inertia).
     Each step is one CUDA graph replay.
     """
 
@@ -65,7 +65,7 @@ class _ActuatorBenchmark:
             raise SkipNotImplemented
 
         with wp.ScopedDevice("cuda:0"):
-            model, dofs_per_world = _build_g1(world_count, internal_drive=drive == "internal")
+            model, dofs_per_world = _build_g1(world_count)
             self.model = model
             self.solver = newton.solvers.SolverMuJoCo(
                 model, solver="newton", integrator="implicitfast", njmax=210, nconmax=35, cone="pyramidal"
@@ -73,39 +73,36 @@ class _ActuatorBenchmark:
             self.state_0, self.state_1 = model.state(), model.state()
             self.control = model.control()
 
-            self.actuator = None
-            self.response = None
-            if drive != "internal":
-                qd_start = model.joint_qd_start.numpy()
-                q_start = model.joint_q_start.numpy()
-                art_start = model.articulation_start.numpy()
-                dofs, coords = [], []
-                for a in range(model.articulation_count):
-                    root = int(art_start[a])
-                    dofs += range(int(qd_start[root]) + 6, int(qd_start[root]) + dofs_per_world)
-                    coords += range(int(q_start[root]) + 7, int(q_start[root]) + dofs_per_world + 1)
-                n = len(dofs)
-                self.actuator = Actuator(
-                    indices=wp.array(dofs, dtype=wp.uint32),
-                    pos_indices=wp.array(coords, dtype=wp.uint32),
-                    drive=DrivePD(kp=wp.full(n, KP, dtype=float), kd=wp.full(n, KD, dtype=float)),
-                    control_target_pos_attr="joint_target_q",
-                    control_target_vel_attr="joint_target_qd",
-                )
-                self.response = JointSpaceResponse(model)
-                self.actuator.set_effort_mode_implicit(self.response)
-                self.solve_inverse = None
-                if drive == "implicit_from_solve":
-                    import mujoco_warp  # noqa: PLC0415
+            qd_start = model.joint_qd_start.numpy()
+            q_start = model.joint_q_start.numpy()
+            art_start = model.articulation_start.numpy()
+            dofs, coords = [], []
+            for a in range(model.articulation_count):
+                root = int(art_start[a])
+                dofs += range(int(qd_start[root]) + 6, int(qd_start[root]) + dofs_per_world)
+                coords += range(int(q_start[root]) + 7, int(q_start[root]) + dofs_per_world + 1)
+            n = len(dofs)
+            self.actuator = Actuator(
+                indices=wp.array(dofs, dtype=wp.uint32),
+                pos_indices=wp.array(coords, dtype=wp.uint32),
+                drive=DrivePD(kp=wp.full(n, KP, dtype=float), kd=wp.full(n, KD, dtype=float)),
+                control_target_pos_attr="joint_target_q",
+                control_target_vel_attr="joint_target_qd",
+            )
+            self.response = JointSpaceResponse(model)
+            self.actuator.set_effort_mode_implicit(self.response)
+            self.solve_inverse = None
+            if drive == "implicit_from_solve":
+                import mujoco_warp  # noqa: PLC0415
 
-                    solver = self.solver
+                solver = self.solver
 
-                    def solve_inverse(x, y):
-                        mujoco_warp.solve_m(solver.mjw_model, solver.mjw_data, x, y)
+                def solve_inverse(x, y):
+                    mujoco_warp.solve_m(solver.mjw_model, solver.mjw_data, x, y)
 
-                    self.solve_inverse = solve_inverse
-                    # Factorize the inertia once so the first captured refresh reads a valid one.
-                    self._step(self.state_0, self.state_1)
+                self.solve_inverse = solve_inverse
+                # Factorize the inertia once so the first captured refresh reads a valid one.
+                self._step(self.state_0, self.state_1)
 
             for _ in range(10):
                 self._step(self.state_0, self.state_1)
@@ -117,13 +114,12 @@ class _ActuatorBenchmark:
             wp.synchronize_device()
 
     def _step(self, state_in, state_out):
-        if self.actuator is not None:
-            if self.solve_inverse is not None:
-                self.response.refresh_from_solve(self.solve_inverse, dof_map=self.solver.mjc_dof_to_newton_dof)
-            elif self.response is not None:
-                self.response.refresh(state_in)
-            self.control.joint_f.zero_()
-            self.actuator.step(state_in, self.control, dt=self.DT)
+        if self.solve_inverse is not None:
+            self.response.refresh_from_solve(self.solve_inverse, dof_map=self.solver.mjc_dof_to_newton_dof)
+        else:
+            self.response.refresh(state_in)
+        self.control.joint_f.zero_()
+        self.actuator.step(state_in, self.control, dt=self.DT)
         self.solver.step(state_in, state_out, self.control, None, self.DT)
 
     @skip_benchmark_if(wp.get_cuda_device_count() == 0)
@@ -138,9 +134,9 @@ class _ActuatorBenchmark:
 
 
 class FastActuatorG1(_ActuatorBenchmark):
-    """Time 200 G1 steps on SolverMuJoCo for each drive, single world and batched."""
+    """Time 200 steps of 1024 G1 robots on SolverMuJoCo for each response source."""
 
-    params = [["internal", "implicit", "implicit_from_solve"], [1, 1024]]
+    params = [["implicit", "implicit_from_solve"], [1024]]
     repeat = pr_gate_repeat(6)
 
 

@@ -1184,24 +1184,33 @@ def eval_articulation_motion_subspace(
         if not articulation_mask[art_idx]:
             return
 
-    # parent anchor frame in world space
-    X_wpj = joint_X_p[j]
     parent = joint_parent[j]
-    if parent >= 0:
-        X_wpj = body_q[parent] * X_wpj
+    type = joint_type[j]
 
-    child = joint_child[j]
+    X_pj = joint_X_p[j]
+
+    # parent anchor frame in world space
+    X_wpj = X_pj
+    if parent >= 0:
+        X_wp = body_q[parent]
+        X_wpj = X_wp * X_pj
+
+    q_start = joint_q_start[j]
+    qd_start = joint_qd_start[j]
+    lin_axis_count = joint_dof_dim[j, 0]
+    ang_axis_count = joint_dof_dim[j, 1]
+
     jcalc_motion_subspace(
-        joint_type[j],
+        type,
         joint_axis,
         joint_q,
-        joint_dof_dim[j, 0],
-        joint_dof_dim[j, 1],
+        lin_axis_count,
+        ang_axis_count,
         X_wpj,
-        body_q[child],
-        body_com[child],
-        joint_q_start[j],
-        joint_qd_start[j],
+        body_q[joint_child[j]],
+        body_com[joint_child[j]],
+        q_start,
+        qd_start,
         joint_S_s,
     )
 
@@ -1225,27 +1234,31 @@ def eval_articulation_jacobian(
     The Jacobian J maps joint velocities to spatial velocities of each link.
     Output shape: (articulation_count, max_links*6, max_dofs)
     """
-    art_idx, link = wp.tid()
+    art_idx, i = wp.tid()
 
     if articulation_mask:
         if not articulation_mask[art_idx]:
             return
 
     joint_start = articulation_start[art_idx]
-    if link >= articulation_end[art_idx] - joint_start:
+    joint_end = articulation_end[art_idx]
+    joint_count = joint_end - joint_start
+    if i >= joint_count:
         return
 
     articulation_dof_start = joint_qd_start[joint_start]
-    row_start = link * 6
 
-    j = joint_start + link
+    row_start = i * 6
+
+    j = joint_start + i
     child = joint_child[j]
     x_com_world = wp.transform_point(body_q[child], body_com[child])
-
-    # Fill out the link's rows walking up the tree
     while j != -1:
         joint_dof_start = joint_qd_start[j]
-        joint_dof_count = joint_qd_start[j + 1] - joint_dof_start
+        joint_dof_end = joint_qd_start[j + 1]
+        joint_dof_count = joint_dof_end - joint_dof_start
+
+        # Fill out each row of the Jacobian walking up the tree
         for dof in range(joint_dof_count):
             col = (joint_dof_start - articulation_dof_start) + dof
             S = joint_S_s[joint_dof_start + dof]
