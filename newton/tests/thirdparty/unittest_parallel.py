@@ -374,8 +374,6 @@ def main(argv=None):
                 file=sys.stderr,
             )
 
-        # Workers that start suites of one module at the same time all compile the same kernels
-        # instead of loading them from the shared cache, so spread modules across the run.
         test_suites = _spread_by_module(test_suites)  # NVIDIA Modification
 
         # Don't use more processes than test suites
@@ -652,34 +650,22 @@ def _iter_class_suites(test_suite):
             yield from _iter_class_suites(suite)
 
 
-def _spread_by_module(test_suites):
-    """Order test suites so each package and module is spread evenly over the run.
+def _spread_by_module(test_suites, depth=0):
+    """Order suites so each package, and each module within it, is spread evenly over the run.
 
-    Applied recursively along the module path: every group gets evenly spaced positions in
-    proportion to its size, so consecutive suites, which run concurrently, rarely share a
-    module or package. Deterministic, and the relative order within each module is kept.
+    Concurrent suites of one module or package would compile the same kernels in several workers.
     NVIDIA Modification
     """
-
-    def spread(items, depth):
-        groups = {}
-        for path, suite in items:
-            groups.setdefault(path[depth] if depth < len(path) else None, []).append((path, suite))
-        if len(groups) == 1:
-            ((key, group),) = groups.items()
-            return [suite for _, suite in group] if key is None else spread(group, depth + 1)
-        positioned = []
-        for group_index, (key, group) in enumerate(groups.items()):
-            ordered = [suite for _, suite in group] if key is None else spread(group, depth + 1)
-            positioned.extend(((i + 0.5) / len(ordered), group_index, suite) for i, suite in enumerate(ordered))
-        positioned.sort(key=lambda item: item[:2])
-        return [suite for _, _, suite in positioned]
-
-    def module_path(suite):
+    groups = {}
+    for suite in test_suites:
         case = next(_iter_test_cases(suite), None)
-        return type(case).__module__.split(".") if case is not None else []
-
-    return spread([(module_path(suite), suite) for suite in test_suites], 0)
+        path = type(case).__module__.split(".") if case is not None else []
+        groups.setdefault(path[depth] if depth < len(path) else None, []).append(suite)
+    keyed = []
+    for index, (key, group) in enumerate(groups.items()):
+        ordered = group if key is None else _spread_by_module(group, depth + 1)
+        keyed += [((i + 0.5) / len(ordered), index, suite) for i, suite in enumerate(ordered)]
+    return [suite for *_, suite in sorted(keyed, key=lambda item: item[:2])]
 
 
 # Iterate test cases (methods)
