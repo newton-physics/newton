@@ -2479,13 +2479,18 @@ def parse_mjcf(
             infer_inertia_from_geoms=infer_body_inertia_from_geoms,
         )
 
-    def parse_equality_constraints(equality):
-        def parse_common_attributes(attribs):
-            return {
-                "name": attribs.get("name"),
-                "active": attribs.get("active", "true").lower() == "true",
-            }
+    def parse_common_attributes(attribs):
+        return {
+            "name": attribs.get("name"),
+            "active": attribs.get("active", "true").lower() == "true",
+        }
 
+    def equality_label(common: dict[str, Any]) -> str | None:
+        if articulation_label and common["name"]:
+            return f"{articulation_label}/{common['name']}"
+        return common["name"]
+
+    def parse_equality_constraints(equality):
         def get_site_body_and_anchor(site_name: str) -> tuple[int, wp.vec3] | None:
             """Look up a site by name and return its body index and position (anchor).
 
@@ -2506,11 +2511,6 @@ def parse_mjcf(
             site_xform = builder.shape_transform[site_idx]
             anchor = wp.vec3(site_xform[0], site_xform[1], site_xform[2])
             return (body_idx, anchor)
-
-        def equality_label(common: dict[str, Any]) -> str | None:
-            if articulation_label and common["name"]:
-                return f"{articulation_label}/{common['name']}"
-            return common["name"]
 
         def add_converted_loop_joint(
             eq_type: EqType,
@@ -2770,7 +2770,36 @@ def parse_mjcf(
                         custom_attributes=custom_attrs,
                     )
 
+        # Tendon equalities are parsed after tendons by parse_tendon_equality_constraints().
         # TODO: add support for equality constraint type "flex" once Newton supports it
+
+    def parse_tendon_equality_constraints(equality):
+        for tendon in equality.findall("tendon"):
+            attribs = resolve_element_attrib(tendon, "equality")
+            common = parse_common_attributes(attribs)
+            tendon1_name = attribs.get("tendon1")
+            tendon2_name = attribs.get("tendon2")
+            tendon1_idx = tendon_name_to_idx.get(sanitize_name(tendon1_name), -1) if tendon1_name else -1
+            tendon2_idx = tendon_name_to_idx.get(sanitize_name(tendon2_name), -1) if tendon2_name else -1
+            if tendon1_idx < 0 or (tendon2_name and tendon2_idx < 0):
+                warnings.warn(
+                    f"Tendon equality '{common['name']}' references unknown tendon "
+                    f"'{tendon1_name if tendon1_idx < 0 else tendon2_name}'. Skipping.",
+                    stacklevel=2,
+                )
+                continue
+            if verbose:
+                print(f"Tendon constraint: {tendon1_name} coupled to {tendon2_name}")
+            _add_equality_constraint(
+                builder,
+                constraint_type=EqType.TENDON,
+                tendon1=tendon1_idx,
+                tendon2=tendon2_idx,
+                polycoef=mjc_parse_polycoef(attribs.get("polycoef", "0 1 0 0 0")),
+                label=equality_label(common),
+                enabled=common["active"],
+                custom_attributes=parse_custom_attributes(attribs, builder_custom_attr_eq, parsing_mode="mjcf"),
+            )
 
     # -----------------
     # start articulation
@@ -3631,6 +3660,9 @@ def parse_mjcf(
         tendon_sections = root.findall(".//tendon")
         for tendon_section in tendon_sections:
             parse_tendons(tendon_section)
+        if not skip_equality_constraints:
+            for equality in root.findall("equality"):
+                parse_tendon_equality_constraints(equality)
 
     for actuator_section in root.findall("actuator"):
         parse_actuators(actuator_section)

@@ -3035,7 +3035,7 @@ def update_eq_data_and_active_kernel(
     and copies:
     - eq_data based on constraint type:
       - CONNECT: data[0:3] = anchor
-      - JOINT: data[0:5] = polycoef
+      - JOINT, TENDON: data[0:5] = polycoef
       - WELD: data[0:3] = anchor, data[3:6] = relpose translation, data[6:10] = relpose quaternion, data[10] = torquescale
     - eq_active from model.mujoco equality_constraint_enabled
     """
@@ -3056,8 +3056,8 @@ def update_eq_data_and_active_kernel(
         data[1] = anchor[1]
         data[2] = anchor[2]
 
-    elif constraint_type == EqType.JOINT:
-        # JOINT: data[0:5] = polycoef
+    elif constraint_type == EqType.JOINT or constraint_type == EqType.TENDON:
+        # JOINT/TENDON: data[0:5] = polycoef
         for i in range(5):
             data[i] = eq_constraint_polycoef[newton_eq, i]
 

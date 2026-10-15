@@ -530,6 +530,77 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
         np.testing.assert_allclose(model.mujoco.equality_constraint_anchor.numpy()[0], [0.1, 0.2, 0.3])
         np.testing.assert_allclose(model.mujoco.equality_constraint_polycoef.numpy()[2], [1.0, 2.0, 0.0, 0.0, 0.0])
 
+    def test_add_equality_tendon(self):
+        """Couple two fixed-tendon lengths in every replicated world."""
+        blueprint = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        joints = [_add_revolute(blueprint, f"hinge{i}")[1] for i in range(4)]
+        tendon0 = mujoco.add_tendon_fixed(blueprint, [(joints[0], 1.0), (joints[1], 1.0)])
+        tendon1 = mujoco.add_tendon_fixed(blueprint, [(joints[2], 1.0), (joints[3], 1.0)])
+        mujoco.add_equality_tendon(blueprint, tendon0, tendon1, polycoef=(0.0, 0.5), label="couple")
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        builder.replicate(blueprint, 2)
+        model = builder.finalize()
+
+        np.testing.assert_array_equal(model.mujoco.equality_constraint_tendon1.numpy(), [0, 2])
+        np.testing.assert_array_equal(model.mujoco.equality_constraint_tendon2.numpy(), [1, 3])
+        native = newton.solvers.SolverMuJoCo.import_mujoco()[0]
+        solver = newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True)
+        np.testing.assert_array_equal(solver.mj_model.eq_type, [native.mjtEq.mjEQ_TENDON])
+        np.testing.assert_array_equal(solver.mj_model.eq_obj1id, [0])
+        np.testing.assert_array_equal(solver.mj_model.eq_obj2id, [1])
+        np.testing.assert_allclose(solver.mj_model.eq_data[0, :5], [0.0, 0.5, 0.0, 0.0, 0.0])
+
+        state0, state1 = model.state(), model.state()
+        control = model.control()
+        control.joint_f.assign(np.tile([1.0, 0.0, 0.0, 0.0], 2).astype(np.float32))
+        for _ in range(200):
+            solver.step(state0, state1, control, None, 0.002)
+            state0, state1 = state1, state0
+        q = state0.joint_q.numpy().reshape(2, 4)
+        self.assertGreater(abs(q[0, 0]), 0.01)
+        np.testing.assert_allclose(q[:, 0] + q[:, 1], 0.5 * (q[:, 2] + q[:, 3]), atol=1e-4)
+
+    def test_notify_updates_tendon_equality_polycoef(self):
+        """Propagate runtime polycoef changes of tendon equalities to MuJoCo Warp."""
+        builder = newton.ModelBuilder()
+        joints = [_add_revolute(builder, f"hinge{i}")[1] for i in range(2)]
+        tendons = [mujoco.add_tendon_fixed(builder, [(joint, 1.0)]) for joint in joints]
+        mujoco.add_equality_tendon(builder, *tendons)
+        model = builder.finalize()
+        solver = newton.solvers.SolverMuJoCo(model, use_mujoco_cpu=False, disable_contacts=True)
+
+        model.mujoco.equality_constraint_polycoef.assign(np.array([[0.1, 2.0, 0.0, 0.0, 0.0]], dtype=np.float32))
+        solver.notify_model_changed(newton.ModelFlags.CONSTRAINT_PROPERTIES)
+        np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[0, 0, :5], [0.1, 2.0, 0.0, 0.0, 0.0])
+
+    def test_reject_invalid_tendon_equalities(self):
+        """Validate tendon operands before appending rows, preserving global references."""
+        builder = newton.ModelBuilder()
+        _, global_joint = _add_revolute(builder, "global")
+        global_tendon = mujoco.add_tendon_fixed(builder, [(global_joint, 1.0)])
+        builder.begin_world()
+        _, joint0 = _add_revolute(builder, "world0")
+        tendon0 = mujoco.add_tendon_fixed(builder, [(joint0, 1.0)])
+        builder.end_world()
+        builder.begin_world()
+        _, joint1 = _add_revolute(builder, "world1")
+        tendon1 = mujoco.add_tendon_fixed(builder, [(joint1, 1.0)])
+
+        for operands, error in (
+            ((tendon1, tendon0), "belongs to world 0"),
+            ((tendon0,), "belongs to world 0"),
+            ((tendon1, 5), "outside"),
+            ((-1,), "outside"),
+            ((tendon1, tendon1), "two distinct tendons"),
+        ):
+            with self.subTest(operands=operands), self.assertRaisesRegex((ValueError, IndexError), error):
+                mujoco.add_equality_tendon(builder, *operands)
+        self.assertEqual(builder._custom_frequency_counts.get("mujoco:equality_constraint", 0), 0)
+
+        self.assertEqual(mujoco.add_equality_tendon(builder, tendon1, global_tendon), 0)
+        self.assertEqual(mujoco.add_equality_tendon(builder, tendon1), 1)
+        builder.end_world()
+
     def test_reject_equalities_across_worlds(self):
         """Validate both equality operands before appending rows, preserving global references."""
         builder = newton.ModelBuilder()

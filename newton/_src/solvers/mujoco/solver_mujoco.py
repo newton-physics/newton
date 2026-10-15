@@ -60,7 +60,12 @@ from .constants import (
 )
 from .enums import EqType as _EqType
 from .enums import _ActuatorBiasType, _ActuatorDynamicsType, _ActuatorGainType
-from .equality import MJC_OBJ_BODY, MjcEqualityTargetKind, _register_equality_constraint_attributes
+from .equality import (
+    MJC_OBJ_BODY,
+    MjcEqualityTargetKind,
+    _register_equality_constraint_attributes,
+    _register_equality_tendon_attributes,
+)
 from .kernels import (
     _snapshot_nacon_count,
     apply_mjc_body_f_kernel,
@@ -3205,6 +3210,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 mjcf_attribute_name="coef",
             )
         )
+        _register_equality_tendon_attributes(builder)
         # endregion tendon attributes
 
         # --- Spatial tendon attributes ---
@@ -6819,6 +6825,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         eq_constraint_relpose = get_custom_attribute("equality_constraint_relpose")
         eq_constraint_joint1 = get_custom_attribute("equality_constraint_joint1")
         eq_constraint_joint2 = get_custom_attribute("equality_constraint_joint2")
+        eq_constraint_tendon1 = get_custom_attribute("equality_constraint_tendon1")
+        eq_constraint_tendon2 = get_custom_attribute("equality_constraint_tendon2")
         eq_constraint_polycoef = get_custom_attribute("equality_constraint_polycoef")
         eq_constraint_enabled = get_custom_attribute("equality_constraint_enabled")
         eq_constraint_world = get_custom_attribute("equality_constraint_world")
@@ -8060,6 +8068,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         mjc_eq_to_newton_eq_dict = {}
         converted_loop_joint_targets = set()
         converted_mimic_targets = set()
+        # Tendon equalities are added once the MuJoCo tendon names are known.
+        tendon_constraints = []
         for i in selected_constraints:
             constraint_type = eq_constraint_type[i]
             target_kind = get_eq_target_kind(i)
@@ -8111,6 +8121,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     eq.solref = eq_constraint_solref[i]
                 if eq_constraint_solimp is not None:
                     eq.solimp = eq_constraint_solimp[i]
+            elif constraint_type == _EqType.TENDON:
+                tendon_constraints.append(i)
+                continue
             else:
                 continue
 
@@ -8310,6 +8323,31 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         selected_tendons, mjc_tendon_names = self._init_tendons(
             model, spec, joint_mapping, shape_mapping, site_mapping, first_world
         )
+
+        tendon_name_mapping = dict(zip(selected_tendons, mjc_tendon_names, strict=True))
+        for i in tendon_constraints:
+            t1_idx = int(eq_constraint_tendon1[i]) if eq_constraint_tendon1 is not None else -1
+            t2_idx = int(eq_constraint_tendon2[i]) if eq_constraint_tendon2 is not None else -1
+            t1_name = tendon_name_mapping.get(t1_idx)
+            t2_name = tendon_name_mapping.get(t2_idx) if t2_idx >= 0 else ""
+            if t1_name is None or t2_name is None:
+                warnings.warn(
+                    f"Skipping tendon equality constraint {i}: tendon {t1_idx} or {t2_idx} "
+                    "is not present in the MuJoCo export.",
+                    stacklevel=2,
+                )
+                continue
+            eq = spec.add_equality()
+            eq.type = mujoco.mjtEq.mjEQ_TENDON
+            eq.active = eq_constraint_enabled[i]
+            eq.name1 = t1_name
+            eq.name2 = t2_name
+            eq.data[0:5] = eq_constraint_polycoef[i]
+            if eq_constraint_solref is not None:
+                eq.solref = eq_constraint_solref[i]
+            if eq_constraint_solimp is not None:
+                eq.solimp = eq_constraint_solimp[i]
+            mjc_eq_to_newton_eq_dict[eq.id] = i
 
         # Process MuJoCo general actuators (motor, general, etc.) from custom attributes
         actuator_count += self._init_actuators(

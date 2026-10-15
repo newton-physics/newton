@@ -13273,6 +13273,7 @@ class ModelBuilder:
 
         - Body references: shape_body, joint_parent, joint_child, equality_constraint_body1/2
         - Joint references: equality_constraint_joint1/2
+        - Tendon references: equality_constraint_tendon1/2
         - Particle references: spring, triangle, edge, and tetrahedron connectivity
         - Self-referential joints: joint_parent[i] != joint_child[i]
         - Start array monotonicity: joint_q_start, joint_qd_start, articulation_start, articulation_end
@@ -13416,6 +13417,19 @@ class ModelBuilder:
                     f"Invalid joint reference in equality_constraint_joint2: constraint {idx} ('{_eq_label(idx)}') references joint {eq_joint2[idx]}, "
                     f"but valid range is [-1, {joint_count - 1}] (joint_count={joint_count})."
                 )
+
+            tendon_count = self._custom_frequency_counts.get("mujoco:tendon", 0)
+            for name in ("equality_constraint_tendon1", "equality_constraint_tendon2"):
+                if f"mujoco:{name}" not in self.custom_attributes:
+                    continue
+                eq_tendon = _eq_index_array(name)
+                invalid_mask = (eq_tendon < -1) | (eq_tendon >= tendon_count)
+                if np.any(invalid_mask):
+                    idx = int(np.where(invalid_mask)[0][0])
+                    raise ValueError(
+                        f"Invalid tendon reference in {name}: constraint {idx} ('{_eq_label(idx)}') references tendon {eq_tendon[idx]}, "
+                        f"but valid range is [-1, {tendon_count - 1}] (tendon_count={tendon_count})."
+                    )
 
         # Validate start array monotonicity
         if joint_count > 0:
