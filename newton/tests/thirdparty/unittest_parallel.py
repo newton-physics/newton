@@ -653,7 +653,7 @@ def _iter_class_suites(test_suite):
 def _spread_by_module(test_suites, depth=0):
     """Order suites so each package, and each module within it, is spread evenly over the run.
 
-    Concurrent suites of one module or package would compile the same kernels in several workers.
+    Concurrent suites of one module or package can each compile the same uncached kernels.
     NVIDIA Modification
     """
     groups = {}
