@@ -1774,7 +1774,7 @@ class TestSteelFrictionGraspHistory(unittest.TestCase):
                             self.assertGreater(np.mean(retained), 0.8)
                             self.assertLess(drifts[-1], 1.0e-4)
                 with self.subTest(geometry=geometry):
-                    # Require at least half the anchor-free drift with anchoring.
+                    # Anchoring must at least halve the anchor-free drift.
                     self.assertGreater(drifts[0], 2 * drifts[1])
 
     def test_default_patch_friction_and_explicit_opt_out(self):
