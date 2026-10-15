@@ -752,6 +752,8 @@ The collected attributes are returned in the result dictionary and can be access
                armature_value = attrs["physxJoint:armature"]
                print(f"PhysX joint {prim_path} has armature: {armature_value}")
 
+.. _usd-mujoco-tendons:
+
 MuJoCo Tendons
 --------------
 

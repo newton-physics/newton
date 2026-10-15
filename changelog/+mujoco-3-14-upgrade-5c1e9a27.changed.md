@@ -1,1 +1,1 @@
-Require `mujoco~=3.14.0` and `mujoco-warp~=3.14.0` (previously `~=3.12.0`). `State.body_parent_f` from `SolverMuJoCo` now reports correct weld-constraint torques and includes spatial-tendon forces.
+Require `mujoco~=3.14.0` and `mujoco-warp~=3.14.0` (previously `~=3.12.0`). Parent-joint wrenches from `SolverMuJoCo` report correct weld-constraint torques and include spatial-tendon forces; request `solver.ObservableKind.BODY_PARENT_F` through `solver.observables(kinds=...)` and read `observables.body_parent_f` after stepping.

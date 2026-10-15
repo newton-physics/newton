@@ -3,11 +3,10 @@
 
 from __future__ import annotations
 
-import inspect
 import sys
 from typing import Any
 
-from sphinx.pycode import ModuleAnalyzer, PycodeError
+from sphinx.ext.autodoc import ClassDocumenter
 
 # NOTE: This file is *imported by Sphinx* when building the docs.
 # It must therefore avoid heavy third-party imports that might not be
@@ -18,28 +17,15 @@ from sphinx.pycode import ModuleAnalyzer, PycodeError
 # Skip handler implementation
 
 
-def _has_attribute_docstring(app: Any, name: str) -> bool:
-    """Find field documentation in source, including re-exported dataclasses."""
-    document = getattr(app.env, "current_document", None)
-    if document is not None:
-        module_name = document.autodoc_module
-        class_name = document.autodoc_class
-    else:  # Sphinx 7 stores this context in temp_data.
-        module_name = app.env.temp_data.get("autodoc:module", "")
-        class_name = app.env.temp_data.get("autodoc:class", "")
-    parent = sys.modules.get(module_name)
-    for part in class_name.split("."):
-        parent = getattr(parent, part, None)
-    if not isinstance(parent, type):
-        return False
-    for base in parent.__mro__:
-        if name in base.__dict__ or name in inspect.get_annotations(base):
-            try:
-                docs = ModuleAnalyzer.for_module(base.__module__).find_attr_docs()
-            except PycodeError:
-                return False
-            return bool(docs.get((base.__qualname__, name)))
-    return False
+class _ClassDocumenter(ClassDocumenter):
+    """Keep None-valued members only when their declarations are documented."""
+
+    def filter_members(self, members, want_all):
+        return [
+            (name, member, isattr)
+            for name, member, isattr in super().filter_members(members, want_all)
+            if member is not None or isattr
+        ]
 
 
 def _should_skip_member(
@@ -83,9 +69,8 @@ def _should_skip_member(
     doc = getattr(obj, "__doc__", None)
 
     if not doc:
-        # None-valued dataclass fields have no runtime __doc__, but can have
-        # a documented declaration immediately following the field in source.
-        if obj is None and what == "class" and _has_attribute_docstring(app, name):
+        # ClassDocumenter checks source documentation for None-valued fields.
+        if obj is None and what == "class":
             return None
 
         # Keep an undocumented callable **only** if it overrides a documented
@@ -121,6 +106,7 @@ def _should_skip_member(
 def setup(app):  # type: ignore[override]
     """Hook into the Sphinx build."""
 
+    app.add_autodocumenter(_ClassDocumenter, override=True)
     app.connect("autodoc-skip-member", _should_skip_member)
     # Tell Sphinx our extension is parallel-safe.
     return {

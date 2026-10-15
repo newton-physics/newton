@@ -137,7 +137,7 @@ class Example:
             self.collision_pipeline = newton.CollisionPipeline(self.model)
             self.contacts = self.collision_pipeline.contacts()
         self.solver_observables = (
-            self.solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+            self.solver.observables(contacts=self.contacts, kinds={self.solver.ObservableKind.CONTACT_F})
             if self.solver_type == "kamino"
             else None
         )

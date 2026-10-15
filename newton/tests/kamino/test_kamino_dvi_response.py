@@ -234,8 +234,8 @@ class TestSplitResponse(unittest.TestCase):
         if not device.is_cuda:
             self.skipTest("Captured split response requires CUDA")
         rng = np.random.default_rng(812)
-        ns = np.array([84, 32, 0], dtype=np.int32)
-        capacities = np.array([128, 128, 8], dtype=np.int32)
+        ns = np.array([84, 32, 0, 258], dtype=np.int32)
+        capacities = np.array([128, 128, 8, 512], dtype=np.int32)
         guard = 11
         sizes = ns * capacities
         offsets = np.concatenate(([guard], guard + np.cumsum(sizes + guard)[:-1])).astype(np.int32)
@@ -332,7 +332,7 @@ class TestSplitResponse(unittest.TestCase):
             with wp.ScopedCapture(device=device) as capture:
                 launch(index)
             graphs.append(capture.graph)
-        for nus in ([103, 64, 0], [104, 65, 1], [0, 0, 0], [125, 64, 0], [103, 65, 0]):
+        for nus in ([103, 64, 0, 129], [104, 65, 1, 257], [0, 0, 0, 128], [125, 64, 0, 0], [103, 65, 0, 364]):
             dim.assign(ns + np.asarray(nus, dtype=np.int32))
             rhs = np.full(total, -999.0, dtype=np.float32)
             references = []
