@@ -62,15 +62,19 @@ def _unconverged_distance_query(
     return True, wp.vec3(0.0), position_b, wp.normalize(position_b), wp.length(position_b)
 
 
-def _create_witness_kernel(distance_query=None):
+def _create_witness_kernel(distance_query=None, *, refinement_normal=None):
     if distance_query is not None:
         with patch("newton._src.geometry.simplex_solver.create_solve_closest_distance") as factory:
             factory.return_value.core = distance_query
-            solve = create_solve_mpr(support_map_lean).core
+            solver = create_solve_mpr(support_map_lean)
     else:
-        solve = create_solve_mpr(support_map_lean).core
+        solver = create_solve_mpr(support_map_lean)
+    solve = solver.core
+    refine = solver.refine_core
+    refine_only = refinement_normal is not None
+    ray_normal = wp.vec3(0.0) if refinement_normal is None else wp.vec3(refinement_normal)
 
-    @wp.kernel
+    @wp.kernel(module="unique", enable_backward=False)
     def kernel(
         mesh_a: wp.uint64,
         mesh_b: wp.uint64,
@@ -89,9 +93,31 @@ def _create_witness_kernel(distance_query=None):
         shape_a.auxiliary = pack_mesh_ptr(mesh_a)
         shape_b = shape_a
         shape_b.auxiliary = pack_mesh_ptr(mesh_b)
-        collision, pa, pb, normal, penetration = solve(
-            shape_a, shape_b, rotation, position, extend, SupportMapDataProvider(), max_iter
-        )
+        collision = False
+        pa = wp.vec3(0.0)
+        pb = wp.vec3(0.0)
+        normal = wp.vec3(0.0)
+        penetration = float(0.0)
+        if wp.static(refine_only):
+            pa, pb, normal, penetration, collision = refine(
+                shape_a,
+                shape_b,
+                rotation,
+                position,
+                extend,
+                SupportMapDataProvider(),
+                wp.vec3(0.0),
+                pa,
+                pb,
+                ray_normal,
+                penetration,
+                False,
+                max_iter,
+            )
+        else:
+            collision, pa, pb, normal, penetration = solve(
+                shape_a, shape_b, rotation, position, extend, SupportMapDataProvider(), max_iter
+            )
         hit[0] = int(collision)
         points[0] = pa - normal * (0.5 * extend)
         points[1] = pb + normal * (0.5 * extend)
@@ -140,6 +166,21 @@ def test_convex_contact_witness(test, device, *, swap=False, margin=0.0, capture
         (
             np.array([0.030662711709737778, 0.03921249508857727, 0.15601256489753723]),
             wp.quat(0.4862031936645508, 0.7860594987869263, -0.33473095297813416, 0.18349947035312653),
+        )
+    )
+
+    # Enclosing bounds select a shallower ray for these poses. A valid
+    # physical portal on the original ray must be retried within that bound.
+    poses.extend(
+        (
+            (
+                np.array([0.010880228478722428, 0.02087737096720656, 0.21295811649735993]),
+                wp.quat(0.5085845589637756, 0.6916812658309937, -0.4131048321723938, 0.3037484288215637),
+            ),
+            (
+                np.array([0.016810014320723553, 0.008978161068264006, 0.19417737245899222]),
+                wp.quat(0.43483766913414, 0.7028589844703674, -0.40168654918670654, 0.39440256357192993),
+            ),
         )
     )
 
@@ -254,8 +295,7 @@ def test_convex_contact_iteration_limit(test, device, *, distance_query=None):
             normal = witnesses[2]
             test.assertAlmostEqual(float(np.linalg.norm(normal)), 1.0, delta=1.0e-6)
             # Witnesses lie on both supporting planes of the reported normal,
-            # so the depth is the exact overlap along it. Without distance
-            # witnesses, this is the support plane along the refinement ray.
+            # so the depth is the exact overlap along it.
             test.assertAlmostEqual(
                 float(np.dot(witnesses[0], normal)), float(np.max(vertices[0] @ normal)), delta=1.0e-5
             )
@@ -264,22 +304,129 @@ def test_convex_contact_iteration_limit(test, device, *, distance_query=None):
             test.assertTrue(np.isfinite(depth))
             test.assertGreaterEqual(depth, 0.05254986867157328 - 1.0e-5)
             test.assertAlmostEqual(float(np.dot(witnesses[0] - witnesses[1], normal)), depth, delta=1.0e-6)
-            if distance_query is None:
-                # Certified distance witnesses also survive the writer's
-                # midpoint and normal/depth reconstruction.
-                center = 0.5 * (witnesses[0] + witnesses[1])
-                np.testing.assert_allclose(center + 0.5 * depth * normal, witnesses[0], atol=1.0e-6)
-                np.testing.assert_allclose(center - 0.5 * depth * normal, witnesses[1], atol=1.0e-6)
+            # Every fallback must survive the writer's midpoint and
+            # normal/depth reconstruction. Support-plane vertices alone
+            # satisfy the depth checks but need not share a contact location.
+            center = 0.5 * (witnesses[0] + witnesses[1])
+            np.testing.assert_allclose(center + 0.5 * depth * normal, witnesses[0], atol=1.0e-6)
+            np.testing.assert_allclose(center - 0.5 * depth * normal, witnesses[1], atol=1.0e-6)
 
 
 def test_convex_contact_failed_distance_query(test, device):
-    """Fall back to the refinement ray's support plane when the raycast encounters overlap."""
+    """Recover aligned portal witnesses when every raycast distance query fails."""
     test_convex_contact_iteration_limit(test, device, distance_query=_failed_distance_query)
 
 
 def test_convex_contact_unconverged_distance_query(test, device):
     """Reject interior witnesses even when the distance query reports separation."""
     test_convex_contact_iteration_limit(test, device, distance_query=_unconverged_distance_query)
+
+
+def test_convex_contact_sampled_line(test, device):
+    """Keep the deepest contact when sampled endpoints lie below the supporting plane."""
+    vertices = np.array([[-1, 0, 0], [1, 0, 0], [0, 0, 0.001], [0, -0.1, -0.1], [0, 0.1, -0.1]], dtype=np.float32)
+    indices = np.array([[0, 4, 3], [1, 3, 4], [0, 3, 2], [1, 2, 3], [0, 2, 4], [1, 4, 2]], dtype=np.int32)
+    mesh = newton.Mesh(vertices, indices.reshape(-1))
+    for swap in (False, True):
+        builder = newton.ModelBuilder()
+        cfg = builder.ShapeConfig(margin=0.0, gap=0.0)
+        hull_body = builder.add_body()
+        box_body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.1005), wp.quat_identity()))
+        if swap:
+            builder.add_shape_box(box_body, hx=2.0, hy=1.0, hz=0.1, cfg=cfg)
+        builder.add_shape_convex_hull(hull_body, mesh=mesh, cfg=cfg)
+        if not swap:
+            builder.add_shape_box(box_body, hx=2.0, hy=1.0, hz=0.1, cfg=cfg)
+        model = builder.finalize(device=device)
+        for split in (False, True) if device.is_cuda else (False,):
+            with test.subTest(swap=swap, split=split):
+                threshold = 0 if split else 1_000_000_000
+                with patch("newton._src.sim.collide._SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD", threshold):
+                    pipeline = newton.CollisionPipeline(model, broad_phase="explicit")
+                contacts = pipeline.contacts()
+                pipeline.collide(model.state(), contacts)
+                count = int(contacts.rigid_contact_count.numpy()[0])
+                test.assertEqual(count, 1)
+                shape0 = int(contacts.rigid_contact_shape0.numpy()[0])
+                points = [contacts.rigid_contact_point0.numpy()[0], contacts.rigid_contact_point1.numpy()[0]]
+                hull_point, box_point = points if shape0 == int(swap) else points[::-1]
+                np.testing.assert_allclose(hull_point, [0.0, 0.0, 0.001], atol=1.0e-5)
+                np.testing.assert_allclose(box_point, [0.0, 0.0, -0.1], atol=1.0e-5)
+                normal = contacts.rigid_contact_normal.numpy()[0]
+                test.assertAlmostEqual(float(np.linalg.norm(normal)), 1.0, delta=1.0e-6)
+                test.assertAlmostEqual(abs(float(normal[2])), 1.0, delta=1.0e-6)
+
+
+def test_convex_contact_bounded_refinement(test, device):
+    """Recover aligned surface witnesses when the physical portal exceeds the ray bound."""
+    with np.load(Path(__file__).parent / "assets" / "convex_contact_4414.npz", allow_pickle=False) as fixture:
+        vertices = [fixture[key + "_vertices"].copy() for key in ("torso", "elbow")]
+        indices = [fixture[key + "_indices"].astype(np.int32) for key in ("torso", "elbow")]
+    meshes = [
+        wp.Mesh(points=wp.array(v, dtype=wp.vec3, device=device), indices=wp.array(i, dtype=int, device=device))
+        for v, i in zip(vertices, indices, strict=True)
+    ]
+    # Independent FP64 Minkowski-hull calculations bound each true depth
+    # from below. The X support plane bounds each requested ray from above.
+    cases = (
+        (
+            (0.010880228478722428, 0.02087737096720656, 0.21295811649735993),
+            (0.5085845589637756, 0.6916812658309937, -0.4131048321723938, 0.3037484288215637),
+            -1.0,
+            0.0804324423,
+        ),
+        (
+            (0.016810014320723553, 0.008978161068264006, 0.19417737245899222),
+            (0.43483766913414, 0.7028589844703674, -0.40168654918670654, 0.39440256357192993),
+            -1.0,
+            0.0851601570,
+        ),
+        (
+            (0.012410598063660919, -0.0006894540418020088, 0.19210456231906392),
+            (0.5588102340698242, 0.6836485862731934, -0.41320106387138367, 0.22275672852993011),
+            -1.0,
+            0.0841541882,
+        ),
+        (
+            (0.038510859816656126, 0.01308306480048549, 0.20707485804747294),
+            (0.3907690644264221, 0.6945242881774902, -0.5259777903556824, 0.2971244156360626),
+            1.0,
+            0.0887766625,
+        ),
+    )
+    kernels = {sign: _create_witness_kernel(refinement_normal=(sign, 0.0, 0.0)) for sign in (-1.0, 1.0)}
+    hit = wp.zeros(1, dtype=int, device=device)
+    points = wp.zeros(3, dtype=wp.vec3, device=device)
+    penetration = wp.zeros(1, dtype=float, device=device)
+    for position_values, rotation_values, sign, minimum in cases:
+        position, rotation = wp.vec3(position_values), wp.quat(rotation_values)
+        world_b = np.array([wp.quat_rotate(rotation, wp.vec3(v)) + position for v in vertices[1]])
+        ray = np.array([sign, 0.0, 0.0])
+        bound = float(np.max(vertices[0] @ ray) - np.min(world_b @ ray))
+        for extend in (0.0, 0.0002):
+            with test.subTest(position=position, extend=extend):
+                wp.launch(
+                    kernels[sign],
+                    dim=1,
+                    inputs=[meshes[0].id, meshes[1].id, rotation, position, 30, extend],
+                    outputs=[hit, points, penetration],
+                    device=device,
+                )
+                test.assertEqual(int(hit.numpy()[0]), 1)
+                witnesses = points.numpy().astype(np.float64)
+                normal = witnesses[2]
+                depth = float(penetration.numpy()[0])
+                test.assertAlmostEqual(float(np.linalg.norm(normal)), 1.0, delta=1.0e-6)
+                test.assertGreaterEqual(depth, minimum - 1.0e-5)
+                test.assertLessEqual(depth, bound + 1.0e-5)
+                local_b = np.asarray(wp.quat_rotate_inv(rotation, wp.vec3(witnesses[1]) - position))
+                for side, point in enumerate((witnesses[0], local_b)):
+                    test.assertLessEqual(abs(_surface_error(vertices[side], indices[side], point)), 1.0e-5)
+                test.assertAlmostEqual(float(witnesses[0] @ normal), float(np.max(vertices[0] @ normal)), delta=1.0e-5)
+                test.assertAlmostEqual(float(witnesses[1] @ normal), float(np.min(world_b @ normal)), delta=1.0e-5)
+                center = 0.5 * (witnesses[0] + witnesses[1])
+                np.testing.assert_allclose(center + 0.5 * depth * normal, witnesses[0], atol=1.0e-6)
+                np.testing.assert_allclose(center - 0.5 * depth * normal, witnesses[1], atol=1.0e-6)
 
 
 def test_convex_contact_witness_margin(test, device):
@@ -304,13 +451,15 @@ for function in (
     test_convex_contact_iteration_limit,
     test_convex_contact_failed_distance_query,
     test_convex_contact_unconverged_distance_query,
+    test_convex_contact_bounded_refinement,
+    test_convex_contact_sampled_line,
     test_convex_contact_witness_margin,
     test_convex_contact_split_witness,
 ):
     add_function_test(TestConvexContactWitness, function.__name__, function, devices=get_test_devices())
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _resting_box_kernel(
     half_a: wp.vec3,
     half_b: wp.vec3,

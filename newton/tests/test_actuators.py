@@ -11,6 +11,7 @@ import shutil
 import tempfile
 import types
 import unittest
+import zipfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -3966,12 +3967,12 @@ class TestJointSpaceResponse(unittest.TestCase):
         with_armature = alpha_for(0.5)
         self.assertTrue(np.all(with_armature < bare))
 
-        # alpha must match a dense inverse of (H + diag(armature)).
+        # alpha must match a dense inverse of H, which already includes the armature.
         m = _two_link_builder(armature=0.5).finalize(device=device)
         st = m.state()
         st.joint_q.assign(q0)
         newton.eval_fk(m, st.joint_q, st.joint_qd, st)
-        H = newton.eval_mass_matrix(m, st).numpy()[0, :2, :2] + np.diag([0.5, 0.5])
+        H = newton.eval_mass_matrix(m, st).numpy()[0, :2, :2]
         np.testing.assert_allclose(with_armature, np.diag(np.linalg.inv(H)), rtol=1e-4)
 
     def test_refresh_does_not_mutate_state(self):
@@ -5276,7 +5277,7 @@ class TestDriveStateGraphCapture(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-@unittest.skipUnless(HAS_USD and _HAS_ONNX, "pxr or onnx not installed")
+@unittest.skipUnless(HAS_USD, "pxr not installed")
 class TestNeuralActuatorUsdParsing(unittest.TestCase):
     """Verify ``parse_actuator_prim`` correctly handles neural drive
     prims with asset-typed ``newton:modelPath`` attributes.
@@ -5360,6 +5361,7 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
 
         return stage
 
+    @unittest.skipUnless(_HAS_ONNX, "onnx not installed")
     def test_parse_mlp_from_usd(self):
         """parse_actuator_prim resolves Sdf.AssetPath for MLP checkpoint."""
         model_path = self._make_mlp_checkpoint(metadata={"model_type": "mlp"})
@@ -5377,6 +5379,7 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
         self.assertEqual(cls, ClampingDCMotor)
         self.assertAlmostEqual(kwargs["saturation_effort"], 100.0)
 
+    @unittest.skipUnless(_HAS_ONNX, "onnx not installed")
     def test_parse_lstm_from_usd(self):
         """parse_actuator_prim resolves Sdf.AssetPath for LSTM checkpoint."""
         model_path = self._make_lstm_checkpoint(metadata={"model_type": "lstm"})
@@ -5387,6 +5390,40 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
         self.assertIsNotNone(parsed)
         self.assertEqual(parsed.drive_class, DriveNeuralLSTM)
         self.assertEqual(parsed.drive_kwargs["model_path"], model_path)
+
+    def test_usd_torch_checkpoint_requires_opt_in(self):
+        """Require a valid model path and trust before importing a Torch checkpoint."""
+        from pxr import Sdf
+
+        model_path = os.path.join(self._tmp_dir, "mlp.pt2")
+        with zipfile.ZipFile(model_path, "w") as archive:
+            archive.writestr("archive/archive_format", "pt2")
+            archive.writestr("archive/extra/metadata.json", json.dumps({"model_type": "mlp"}))
+
+        stage_path = os.path.join(self._tmp_dir, "robot.usda")
+        stage = self._build_neural_stage("mlp.pt2")
+        stage.GetRootLayer().Export(stage_path)
+
+        with self.assertRaisesRegex(ValueError, "allow_unsafe_torch_checkpoints"):
+            newton.ModelBuilder().add_usd(stage_path)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage_path, allow_unsafe_torch_checkpoints=True)
+        self.assertEqual(result["actuator_count"], 1)
+        self.assertEqual(next(iter(builder.actuator_entries.values())).drive_shared_kwargs["model_path"], model_path)
+
+        prim = stage.GetPrimAtPath("/World/Robot/NeuralActuator")
+        prim.GetAttribute("newton:modelPath").Set(Sdf.AssetPath(""))
+        message = (
+            "Actuator prim '/World/Robot/NeuralActuator': "
+            "NewtonNeuralControlAPI requires a non-empty newton:modelPath attribute"
+        )
+        for allow_unsafe in (False, True):
+            with self.subTest(allow_unsafe_torch_checkpoints=allow_unsafe):
+                with self.assertRaisesRegex(ValueError, message):
+                    parse_actuator_prim(prim, allow_unsafe_torch_checkpoints=allow_unsafe)
+                with self.assertRaisesRegex(ValueError, message):
+                    newton.ModelBuilder().add_usd(stage, allow_unsafe_torch_checkpoints=allow_unsafe)
 
 
 # ---------------------------------------------------------------------------
