@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Any
 
 import warp as wp
 
-from .battery import Battery
 from .clamping.base import ClampingBase
 from .drives.base import DriveBase
 from .effort_mode_explicit import _EffortModeExplicit
@@ -673,8 +672,6 @@ class Actuator:
         current_act_state: Actuator.State | None = None,
         next_act_state: Actuator.State | None = None,
         dt: float | None = None,
-        *,
-        battery: Battery | None = None,
     ) -> None:
         """Execute one control step.
 
@@ -702,8 +699,6 @@ class Actuator:
             current_act_state: Current composed state (None if stateless).
             next_act_state: Next composed state (None if stateless).
             dt: Timestep [s].
-            battery: Optional :class:`Battery` for drives that use one (see
-                :meth:`DriveBase.uses_battery`). Other drives ignore it.
         """
         if self.is_stateful() and (current_act_state is None or next_act_state is None):
             raise ValueError(
@@ -754,9 +749,6 @@ class Actuator:
             inputs = processed
 
         # --- 2+3. Effort mode: compute raw effort and clamp ---
-        battery_kwargs = None
-        if battery is not None and self.drive.uses_battery():
-            battery_kwargs = {"battery": battery, "dof_indices": self.indices}
         drive_state = current_act_state.drive_state if current_act_state else None
         custom_inputs = _collect_custom_inputs(sim_control, self.drive.custom_inputs)
         output_forces = self._effort_mode.compute_force(
@@ -775,7 +767,6 @@ class Actuator:
             drive_state,
             dt,
             custom_inputs,
-            battery_kwargs=battery_kwargs,
         )
 
         # --- 4. Scatter-add to output ---

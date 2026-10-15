@@ -348,25 +348,21 @@ def _joint_reaction_kernel(
 
 @wp.kernel
 def _bam_friction_budget_kernel(
-    mjc_dof_to_newton_dof: wp.array2d[wp.int32],
     motor_torque: wp.array[float],
     reaction: wp.array[float],
     friction_base: float,
     load_friction_motor: float,
     load_friction_external: float,
-    frictionloss: wp.array2d[float],
+    joint_friction: wp.array[float],
 ):
-    """BAM's Coulomb friction budget, written in the solver's DOF order.
+    """BAM's Coulomb friction budget per DOF.
 
     Only this term depends on the load; BAM's viscous term is a fitted constant
     and is set once rather than per step.
     """
-    world, mjc_dof = wp.tid()
-    newton_dof = mjc_dof_to_newton_dof[world, mjc_dof]
-    if newton_dof < 0:
-        return
-    gearbox = wp.abs(reaction[newton_dof] * load_friction_external - motor_torque[newton_dof] * load_friction_motor)
-    frictionloss[world, mjc_dof] = friction_base + gearbox
+    i = wp.tid()
+    gearbox = wp.abs(reaction[i] * load_friction_external - motor_torque[i] * load_friction_motor)
+    joint_friction[i] = friction_base + gearbox
 
 
 def _delay_inputs(target_pos, target_vel, indices, feedforward=None):
@@ -2987,7 +2983,7 @@ def Xform "World"
         builder.replicate(template, 2)
         model = builder.finalize()
 
-        self.assertEqual(DriveBAM.SHARED_PARAMS, set())
+        self.assertEqual(DriveBAM.SHARED_PARAMS, {"supply_from_control"})
         self.assertEqual(len(model.actuators), 2)
 
         knee, backlash, ankle, toe = (
@@ -3052,7 +3048,14 @@ def Xform "World"
         )
         ankle = template.add_joint_revolute(parent=links[1], child=links[2], axis=newton.Axis.Z, label="ankle")
         template.add_articulation([knee, backlash, ankle])
-        bam = {"kp": kp, "kt": kt, "resistance": resistance, "vin": 5.0, "max_pwm": max_pwm}
+        bam = {
+            "kp": kp,
+            "kt": kt,
+            "resistance": resistance,
+            "vin": 5.0,
+            "max_pwm": max_pwm,
+            "supply_from_control": True,
+        }
         template.add_actuator(
             DriveBAM,
             index=template.joint_qd_start[knee],
@@ -3086,10 +3089,10 @@ def Xform "World"
         drawn = np.zeros(2)
         sagged = []
         for _ in range(4):
-            battery.refresh()
+            battery.refresh(control)
             control.joint_f.zero_()
             for actuator in model.actuators:
-                actuator.step(state, control, dt=dt, battery=battery)
+                actuator.step(state, control, dt=dt)
 
             voltage = np.maximum(nominal_voltage - sag_gain * drawn, min_voltage)
             sagged.append(nominal_voltage - sag_gain * drawn)
@@ -3148,9 +3151,10 @@ def Xform "World"
         3. the reaction follows from ``M(q) qdd + C(q, qd) qd + g(q) - tau_motor``
            plus the bias term, via :func:`newton.eval_inverse_dynamics_passive` and
            :func:`newton.eval_inverse_dynamics_force`.
-        4. the Coulomb budget ``frictionloss = base + |reaction*k_ext - motor*k_motor|``
-           is written into the solver's array. BAM's viscous term is a fitted
-           constant and is set once, outside the loop.
+        4. the Coulomb budget ``base + |reaction*k_ext - motor*k_motor|`` is
+           written into :attr:`Model.joint_friction` and published with
+           :attr:`ModelFlags.JOINT_DOF_FORCE_PROPERTIES`. BAM's viscous term is a
+           fitted constant and is set once, outside the loop.
         5. the solver applies it by clipping the stopping torque.
 
         The friction coefficients here are illustrative; a real set comes from a
@@ -3181,17 +3185,6 @@ def Xform "World"
             total_force = wp.zeros(n, dtype=wp.float32, device=device)
             joint_qdd = wp.zeros(n, dtype=wp.float32, device=device)
             reaction = wp.zeros(n, dtype=wp.float32, device=device)
-            # Workaround: writing the solver's own array instead of Model.joint_friction,
-            # because today the only route to it is notify_model_changed with
-            # JOINT_DOF_PROPERTIES, which re-syncs the whole model (~1060 us per step
-            # against ~3 us here) and raises during CUDA graph capture. This one line is
-            # what makes the loop MuJoCo-specific.
-            # PR #4380 adds ModelFlags.JOINT_DOF_FORCE_PROPERTIES, which publishes
-            # friction and damping alone: measured 76 us per step and capture-safe. Once
-            # it lands, replace this with Model.joint_friction plus that flag and drop
-            # the mjc_dof_to_newton_dof remapping, since Model.joint_friction is already
-            # in Newton DOF order.
-            frictionloss = solver.mjw_model.dof_frictionloss
 
             for _ in range(steps):
                 # 1. the drive writes the motor torque into control.joint_f
@@ -3234,33 +3227,26 @@ def Xform "World"
                     device=device,
                 )
 
-                # 4. turn it into BAM's friction budget, in the solver's DOF order
+                # 4. turn it into BAM's friction budget and publish it to the solver
                 wp.launch(
                     _bam_friction_budget_kernel,
-                    dim=frictionloss.shape,
-                    inputs=[
-                        solver.mjc_dof_to_newton_dof,
-                        control.joint_f,
-                        reaction,
-                        friction_base,
-                        k_motor,
-                        k_external,
-                    ],
-                    outputs=[frictionloss],
+                    dim=n,
+                    inputs=[control.joint_f, reaction, friction_base, k_motor, k_external],
+                    outputs=[model.joint_friction],
                     device=device,
                 )
+                solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
 
                 # 5. the solver applies it on the next step; swap states
                 state_0, state_1 = state_1, state_0
 
-            wp.synchronize_device(device)
-            return reaction, control.joint_f, frictionloss
+            return reaction, control.joint_f, model.joint_friction
 
         reaction_arr, motor_arr, load_frictionloss = run(steps=40)
 
         reaction = float(reaction_arr.numpy()[0])
         motor = float(motor_arr.numpy()[0])
-        load_budget = float(load_frictionloss.numpy()[0, 0])
+        load_budget = float(load_frictionloss.numpy()[0])
 
         # Holding the arm against gravity means the gearbox transmits the gravity
         # torque, which at this pose is a few newton-metres.

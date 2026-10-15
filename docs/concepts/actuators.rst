@@ -550,13 +550,16 @@ Battery
 ^^^^^^^
 
 * :class:`Battery` — supply shared by the actuators of one or more DOFs.  Its
-  voltage sags with the total motor torque drawn from it, down to a minimum.
-  Pass it to :meth:`Actuator.step` and call :meth:`Battery.refresh` once per
-  step before stepping the actuators.  Drives with
-  :meth:`DriveBase.uses_battery` (e.g. :class:`DriveBAM`) read its voltage and
-  add their motor torque; the sag of a step therefore comes from the previous
-  step's torque of all actuators on that battery, also across actuator
-  groups.  ``Battery.dof_battery`` maps each DOF to its battery.
+  voltage sags with the total effort in ``control.joint_f`` on its DOFs, down
+  to a minimum.  Call :meth:`Battery.refresh` once per step, before clearing
+  ``joint_f`` for the next actuator step: it computes the voltage from the
+  previous step's effort and writes it into ``control.supply_voltage``.
+  Drives that read the supply voltage, e.g. :class:`DriveBAM` with
+  ``supply_from_control=True``, declare ``supply_voltage`` as a custom input,
+  so :class:`~newton.ModelBuilder` registers it on :class:`~newton.Control`.
+  ``Battery.dof_battery`` maps each DOF to its battery, or ``-1`` for none;
+  a :class:`DriveBAM` on a DOF without a battery keeps
+  ``supply_from_control=False`` and uses ``vin``.
 
 One :class:`Battery` object holds every supply. Below, DOFs 0 and 1 share
 battery 0 and DOF 2 draws from battery 1:
@@ -581,6 +584,7 @@ battery 0 and DOF 2 draws from battery 1:
            resistance=2.0,
            vin=12.0,
            max_pwm=1.0,
+           supply_from_control=True,
        )
    model = builder.finalize()
 
@@ -598,10 +602,10 @@ battery 0 and DOF 2 draws from battery 1:
    dt = 0.01
 
    for _ in range(10):
-       battery.refresh()
+       battery.refresh(control)
        control.joint_f.zero_()
        for actuator in model.actuators:
-           actuator.step(state_0, control, dt=dt, battery=battery)
+           actuator.step(state_0, control, dt=dt)
        solver.step(state_0, state_1, control, None, dt)
        state_0, state_1 = state_1, state_0
 

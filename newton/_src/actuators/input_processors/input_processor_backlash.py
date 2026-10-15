@@ -6,7 +6,6 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import Any, ClassVar
 
-import numpy as np
 import warp as wp
 
 from .base import InputProcessorBase
@@ -26,8 +25,8 @@ def _backlash_read_kernel(
     out_vel: wp.array[float],
 ):
     i = wp.tid()
-    out_pos[i] = positions[pos_indices[i]] + sim_positions[backlash_pos_indices[i]]
-    out_vel[i] = velocities[vel_indices[i]] + sim_velocities[backlash_indices[i]]
+    out_pos[pos_indices[i]] = positions[pos_indices[i]] + sim_positions[backlash_pos_indices[i]]
+    out_vel[vel_indices[i]] = velocities[vel_indices[i]] + sim_velocities[backlash_indices[i]]
 
 
 class InputProcessorBacklash(InputProcessorBase):
@@ -45,6 +44,10 @@ class InputProcessorBacklash(InputProcessorBase):
         \\dot q = \\dot q_{\\text{actuated}} + \\dot q_{\\text{backlash}}
 
     instead of the actuated joint alone.
+
+    The sums are written into arrays shaped like the incoming positions and
+    velocities, at the actuated indices, so the index arrays stay valid for
+    other ``joint_qd``-shaped drive inputs.
     """
 
     JOINT_PARAMS: ClassVar[set[str]] = {"backlash_joint"}
@@ -90,9 +93,9 @@ class InputProcessorBacklash(InputProcessorBase):
             )
         self._num_actuators: int = 0
         self._device: wp.Device | None = None
+        self._requires_grad: bool = False
         self._out_pos: wp.array[float] | None = None
         self._out_vel: wp.array[float] | None = None
-        self._sequential_indices: wp.array[wp.uint32] | None = None
 
     def finalize(self, device: wp.Device, num_actuators: int, requires_grad: bool = False) -> None:
         if len(self.backlash_joint_indices) != num_actuators:
@@ -102,11 +105,16 @@ class InputProcessorBacklash(InputProcessorBase):
             )
         self._device = device
         self._num_actuators = num_actuators
-        self._out_pos = wp.zeros(num_actuators, dtype=wp.float32, device=device, requires_grad=requires_grad)
-        self._out_vel = wp.zeros(num_actuators, dtype=wp.float32, device=device, requires_grad=requires_grad)
-        self._sequential_indices = wp.array(np.arange(num_actuators, dtype=np.uint32), device=device)
+        self._requires_grad = requires_grad
+
+    def _output(self, out: wp.array[float] | None, source: wp.array[float]) -> wp.array[float]:
+        if out is None or out.shape != source.shape:
+            out = wp.zeros(source.shape, dtype=wp.float32, device=self._device, requires_grad=self._requires_grad)
+        return out
 
     def process(self, inputs: InputProcessorBase.Inputs, state: None, dt: float | None) -> InputProcessorBase.Inputs:
+        self._out_pos = self._output(self._out_pos, inputs.positions)
+        self._out_vel = self._output(self._out_vel, inputs.velocities)
         wp.launch(
             kernel=_backlash_read_kernel,
             dim=self._num_actuators,
@@ -123,10 +131,4 @@ class InputProcessorBacklash(InputProcessorBase):
             outputs=[self._out_pos, self._out_vel],
             device=self._device,
         )
-        return replace(
-            inputs,
-            positions=self._out_pos,
-            velocities=self._out_vel,
-            pos_indices=self._sequential_indices,
-            vel_indices=self._sequential_indices,
-        )
+        return replace(inputs, positions=self._out_pos, velocities=self._out_vel)

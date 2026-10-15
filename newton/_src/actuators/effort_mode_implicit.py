@@ -568,7 +568,6 @@ class _EffortModeImplicit:
         drive_state: Any,
         dt: float | None,
         custom_inputs: dict[str, Any] | None = None,
-        battery_kwargs: dict[str, Any] | None = None,
     ) -> wp.array[float]:
         """Solve implicit effort and return the applied-effort buffer.
 
@@ -581,8 +580,6 @@ class _EffortModeImplicit:
         :meth:`~newton.actuators.DriveBase.prepare_implicit` so the
         linearization sees the same extra arrays the explicit path does.
         """
-        if battery_kwargs is not None:
-            raise NotImplementedError("Implicit actuation does not support a battery")
         if dt is None:
             raise ValueError("Implicit actuation requires dt")
         if dt <= 0.0:

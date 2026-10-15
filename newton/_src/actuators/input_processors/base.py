@@ -43,8 +43,11 @@ class InputProcessorBase:
         Each actuator slot ``i`` reads ``positions[pos_indices[i]]``,
         ``velocities[vel_indices[i]]``, ``target_pos[target_pos_indices[i]]``,
         ``target_vel[target_vel_indices[i]]`` and
-        ``feedforward[target_vel_indices[i]]``. A processor that replaces an
-        array with one entry per slot also replaces its index array.
+        ``feedforward[target_vel_indices[i]]``. A processor that replaces a
+        target array with one entry per slot also replaces its index array.
+        A processor that replaces :attr:`positions` or :attr:`velocities`
+        keeps their shape and :attr:`pos_indices` / :attr:`vel_indices`:
+        drives also use those indices for ``joint_qd``-shaped custom inputs.
         """
 
         positions: wp.array[float]
