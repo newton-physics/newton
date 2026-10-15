@@ -198,12 +198,15 @@ def test_child_xform_moment_arm(test: TestControlForce, device, solver_fn):
     test.assertLess(body_qd[5], -0.001, "Expected angular velocity around Z due to child_xform offset")
 
 
-# Non-XYZ axis orders, as in the nv_humanoid.xml hips.
-D6_ANGULAR_AXES = ((newton.Axis.X, newton.Axis.Z, newton.Axis.Y), (newton.Axis.X, newton.Axis.Z))
-D6_ANGULAR_Q0 = np.array([0.5, -0.4, 0.7], dtype=np.float32)
+# Non-XYZ axis orders, as in the nv_humanoid.xml hips, and two-axis poses beyond a quarter turn of the second axis.
+D6_ANGULAR_POSES = (
+    ((newton.Axis.X, newton.Axis.Z, newton.Axis.Y), (0.5, -0.4, 0.7)),
+    ((newton.Axis.X, newton.Axis.Z), (0.5, 2.0)),
+    ((newton.Axis.X, newton.Axis.Z), (0.5, -2.0)),
+)
 
 
-def _build_d6_angular(device, axes, **dof_kwargs):
+def _build_d6_angular(device, axes, joint_q, **dof_kwargs):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_link(mass=1.0, inertia=wp.mat33(np.diag([0.1, 0.2, 0.15])))
     j = builder.add_joint_d6(
@@ -215,7 +218,7 @@ def _build_d6_angular(device, axes, **dof_kwargs):
     builder.color()
     model = builder.finalize(device=device)
     state = model.state()
-    state.joint_q.assign(D6_ANGULAR_Q0[: len(axes)])
+    state.joint_q.assign(np.array(joint_q, dtype=np.float32))
     newton.eval_fk(model, state.joint_q, state.joint_qd, state)
     return model, state
 
@@ -232,24 +235,31 @@ def _step_d6_angular(model, solver, state, control):
 
 def test_d6_angular_target_is_equilibrium(test: TestControlForce, device, solver_fn):
     """A body posed by eval_fk at its multi-angular D6 drive targets must stay at rest."""
-    for axes in D6_ANGULAR_AXES:
-        with test.subTest(axis_count=len(axes)):
-            model, state = _build_d6_angular(device, axes, target_ke=1000.0, target_kd=10.0)
+    for axes, joint_q in D6_ANGULAR_POSES:
+        with test.subTest(joint_q=joint_q):
+            model, state = _build_d6_angular(device, axes, joint_q, target_ke=1000.0, target_kd=10.0)
             control = model.control()
-            control.joint_target_q.assign(D6_ANGULAR_Q0[: len(axes)])
+            control.joint_target_q.assign(np.array(joint_q, dtype=np.float32))
             state = _step_d6_angular(model, solver_fn(model), state, control)
-            np.testing.assert_allclose(state.joint_q.numpy(), D6_ANGULAR_Q0[: len(axes)], atol=1.0e-4)
+            np.testing.assert_allclose(state.joint_q.numpy(), joint_q, atol=1.0e-4)
 
 
 def test_d6_angular_joint_f_matches_featherstone(test: TestControlForce, device, solver_fn):
     """joint_f on one multi-angular D6 coordinate must produce the generalized-coordinate response."""
-    joint_qd = []
-    for make_solver in (solvers["featherstone"], solver_fn):
-        model, state = _build_d6_angular(device, D6_ANGULAR_AXES[0])
-        control = model.control()
-        control.joint_f.assign(np.array([0.0, 0.0, 1.0], dtype=np.float32))
-        joint_qd.append(_step_d6_angular(model, make_solver(model), state, control).joint_qd.numpy())
-    np.testing.assert_allclose(joint_qd[1], joint_qd[0], atol=2.0e-3)
+    cases = (
+        (*D6_ANGULAR_POSES[0], (0.0, 0.0, 1.0)),
+        # the two joint axes stay independent where a three-axis chain would be in gimbal lock
+        ((newton.Axis.X, newton.Axis.Y), (0.0, 0.5 * np.pi), (1.0, 0.0)),
+    )
+    for axes, joint_q, joint_f in cases:
+        with test.subTest(axis_count=len(axes)):
+            joint_qd = []
+            for make_solver in (solvers["featherstone"], solver_fn):
+                model, state = _build_d6_angular(device, axes, joint_q)
+                control = model.control()
+                control.joint_f.assign(np.array(joint_f, dtype=np.float32))
+                joint_qd.append(_step_d6_angular(model, make_solver(model), state, control).joint_qd.numpy())
+            np.testing.assert_allclose(joint_qd[1], joint_qd[0], atol=2.0e-3)
 
 
 def test_featherstone_free_descendant_joint_f_world_wrench_preserves_public_frames(test: TestControlForce, device):

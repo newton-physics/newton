@@ -273,13 +273,14 @@ def test_d6_angular_state_matches_fk(test: TestBodyVelocity, device, solver_fn):
             state_0.joint_q.assign(q[:n])
             state_0.joint_qd.assign(qd[:n])
             newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
-            # a tiny but not vanishing step; constraint stabilization amplifies round-off as dt -> 0
-            solver_fn(model).step(state_0, state_1, None, None, 1.0e-5)
+            # not smaller: constraint stabilization turns float32 pose round-off into velocity errors ~ 1/dt
+            dt = 1.0e-4
+            solver_fn(model).step(state_0, state_1, None, None, dt)
 
             np.testing.assert_allclose(state_1.body_q.numpy(), state_0.body_q.numpy(), atol=1.0e-4)
             np.testing.assert_allclose(state_1.body_qd.numpy(), state_0.body_qd.numpy(), atol=1.0e-3)
             newton.eval_ik(model, state_1, state_1.joint_q, state_1.joint_qd)
-            np.testing.assert_allclose(state_1.joint_q.numpy(), q[:n], atol=1.0e-4)
+            np.testing.assert_allclose(state_1.joint_q.numpy(), q[:n] + dt * qd[:n], atol=1.0e-5)
             np.testing.assert_allclose(state_1.joint_qd.numpy(), qd[:n], atol=1.0e-3)
 
 

@@ -92,36 +92,12 @@ def invert_2d_rotational_dofs(
 ):
     """
     Computes generalized joint position and velocity coordinates for a 2D rotational joint given the joint axes, relative orientations and angular velocity differences between the two bodies the joint connects.
+
+    Decomposes in the order ``(axis_0, axis_0 x axis_1, axis_1)``, so the locked rotation is the middle angle
+    and both joint coordinates cover their full range.
     """
-    q_off = wp.quat_from_matrix(wp.matrix_from_cols(axis_0, axis_1, wp.cross(axis_0, axis_1)))
-    q_pc = wp.quat_inverse(q_off) * wp.quat_inverse(q_p) * q_c * q_off
-
-    # decompose to a compound rotation each axis
-    angles = quat_decompose(q_pc)
-
-    # find rotation axes
-    local_0 = wp.quat_rotate(q_off, wp.vec3(1.0, 0.0, 0.0))
-    local_1 = wp.quat_rotate(q_off, wp.vec3(0.0, 1.0, 0.0))
-    local_2 = wp.quat_rotate(q_off, wp.vec3(0.0, 0.0, 1.0))
-
-    axis_0 = local_0
-    q_0 = wp.quat_from_axis_angle(axis_0, angles[0])
-
-    axis_1 = wp.quat_rotate(q_0, local_1)
-    q_1 = wp.quat_from_axis_angle(axis_1, angles[1])
-
-    axis_2 = wp.quat_rotate(q_1 * q_0, local_2)
-
-    # convert angular velocity to local space
-    w_err_p = wp.quat_rotate_inv(q_p, w_err)
-
-    # given joint axes and angular velocity error, solve for joint velocities
-    c12 = wp.cross(axis_1, axis_2)
-    c02 = wp.cross(axis_0, axis_2)
-
-    vel = wp.vec2(wp.dot(w_err_p, c12) / wp.dot(axis_0, c12), wp.dot(w_err_p, c02) / wp.dot(axis_1, c02))
-
-    return wp.vec2(angles[0], angles[1]), vel
+    qs, qds = invert_3d_rotational_dofs(axis_0, wp.cross(axis_0, axis_1), axis_1, q_p, q_c, w_err)
+    return wp.vec2(qs[0], qs[2]), wp.vec2(qds[0], qds[2])
 
 
 @wp.func
@@ -247,11 +223,20 @@ def eval_angular_coordinates(
     axis_2 = wp.cross(axis_0, axis_1)
     if axis_count == 3:
         axis_2 = joint_axis[axis_start + 2]
+    else:
+        # as in invert_2d_rotational_dofs: the locked rotation is the middle angle
+        axis_2 = axis_1
+        axis_1 = wp.cross(axis_0, axis_2)
     coords, _vels = invert_3d_rotational_dofs(axis_0, axis_1, axis_2, q_p, q_c, wp.vec3(0.0))
     a0, a1, a2 = transform_3d_rotational_axes(axis_0, axis_1, axis_2, coords[0], coords[1])
     a0 = wp.quat_rotate(q_p, a0)
     a1 = wp.quat_rotate(q_p, a1)
     a2 = wp.quat_rotate(q_p, a2)
+    if axis_count == 2:
+        coords = wp.vec3(coords[0], coords[2], coords[1])
+        a_locked = a1
+        a1 = a2
+        a2 = a_locked
 
     # dual basis of the transported axes, bounded near gimbal lock
     det = wp.dot(a0, wp.cross(a1, a2))
