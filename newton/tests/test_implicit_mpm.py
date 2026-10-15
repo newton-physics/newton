@@ -2355,6 +2355,41 @@ def test_collision_sdf_sign_with_sliver_faces(test, device):
     test.assertLess(below_diagonal, -0.04)
 
 
+def test_collision_sdf_small_mesh_reindexing(test, device):
+    """Preserve inside and outside signs under cyclic face reindexing at different mesh scales."""
+    model = _make_mpm_particle_builder(gravity=(0.0, 0.0, 0.0)).finalize(device=device)
+    solver = SolverImplicitMPM(model, _make_mpm_config())
+    vertices = np.array(((0, 0, 0), (0.0005, 0, 0), (0, 0.0002, 0), (0, 0, 0.0008)), dtype=np.float32)
+    faces = np.array(((0, 2, 1), (0, 1, 3), (0, 3, 2), (1, 2, 3)), dtype=np.int32)
+    positions = np.array(
+        ((0.0001, 0.00004, -0.003), (0.0001, -0.003, 0.0001), (-0.003, 0.00004, 0.0001), vertices.mean(axis=0)),
+        dtype=np.float32,
+    )
+    state = model.state()
+    distances = wp.empty(len(positions), dtype=float, device=device)
+    for scale in (1.0, 100.0):
+        points = wp.array(scale * vertices, dtype=wp.vec3, device=device)
+        queries = wp.array(scale * positions, dtype=wp.vec3, device=device)
+        for rotations in product(range(3), repeat=len(faces)):
+            with test.subTest(scale=scale, rotations=rotations):
+                indices = np.array([np.roll(face, rotation) for face, rotation in zip(faces, rotations, strict=True)])
+                mesh = wp.Mesh(points, wp.array(indices.ravel(), dtype=int, device=device), wp.zeros_like(points))
+                solver.setup_collider(collider_meshes=[mesh])
+                collider = solver._mpm_model.collider
+                collider.query_max_dist = 1.0
+                collider.material_thickness.zero_()
+                wp.launch(
+                    _query_collision_distance,
+                    dim=len(positions),
+                    inputs=[queries, collider, state.body_q, state.body_qd, None],
+                    outputs=[distances],
+                    device=device,
+                )
+                actual = distances.numpy()
+                np.testing.assert_allclose(actual[:3], scale * 0.003, rtol=1.0e-5)
+                test.assertLess(actual[3], 0.0)
+
+
 def test_collision_sdf_funnel_outlet(test, device):
     """Keep points below an open funnel outside despite unequal wall and rim areas."""
     model = _make_mpm_particle_builder(gravity=(0.0, 0.0, 0.0)).finalize(device=device)
@@ -2909,6 +2944,12 @@ add_function_test(
     TestImplicitMPM,
     "test_collision_sdf_sign_with_sliver_faces",
     test_collision_sdf_sign_with_sliver_faces,
+    devices=devices,
+)
+add_function_test(
+    TestImplicitMPM,
+    "test_collision_sdf_small_mesh_reindexing",
+    test_collision_sdf_small_mesh_reindexing,
     devices=devices,
 )
 add_function_test(
