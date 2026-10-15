@@ -9481,7 +9481,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             return
 
         model = self.model
-        eq_attrs = model.mujoco if self.has_connect_constraints else None
         launch_args = {"dim": self.mjc_eq_to_newton_eq.shape, "device": model.device}
 
         if update_anchor_rel_xform_at_ref_pose:
@@ -9498,9 +9497,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 inputs=[
                     self.mjc_eq_to_newton_eq,
                     self.mjc_eq_to_newton_jnt,
-                    eq_attrs.equality_constraint_type if eq_attrs else None,
-                    eq_attrs.equality_constraint_body1 if eq_attrs else None,
-                    eq_attrs.equality_constraint_body2 if eq_attrs else None,
+                    model.mujoco.equality_constraint_type,
+                    model.mujoco.equality_constraint_body1,
+                    model.mujoco.equality_constraint_body2,
                     model.joint_parent,
                     model.joint_child,
                     ref_body_q,
@@ -9514,8 +9513,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             inputs=[
                 self.mjc_eq_to_newton_eq,
                 self.mjc_eq_to_newton_jnt,
-                eq_attrs.equality_constraint_type if eq_attrs else None,
-                eq_attrs.equality_constraint_anchor if eq_attrs else None,
+                model.mujoco.equality_constraint_type,
+                model.mujoco.equality_constraint_anchor,
                 self.jnt_connect_hinge_side,
                 model.joint_X_p,
                 model.joint_axis,

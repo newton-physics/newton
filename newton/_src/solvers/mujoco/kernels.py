@@ -1170,14 +1170,11 @@ def connect_row_source(
     eq_constraint_type: wp.array[wp.int32],
 ) -> wp.vec2i:
     """Return ``(newton_eq, newton_jnt)`` of a MuJoCo CONNECT row; both are ``-1`` for other rows."""
-    newton_jnt = mjc_eq_to_newton_jnt[world, mjc_eq]
-    newton_eq = int(-1)
-    if eq_constraint_type:
-        newton_eq = mjc_eq_to_newton_eq[world, mjc_eq]
-        if newton_eq >= 0:
-            if eq_constraint_type[newton_eq] != EqType.CONNECT:
-                newton_eq = -1
-    return wp.vec2i(newton_eq, newton_jnt)
+    newton_eq = mjc_eq_to_newton_eq[world, mjc_eq]
+    if newton_eq >= 0:
+        if eq_constraint_type[newton_eq] != EqType.CONNECT:
+            newton_eq = -1
+    return wp.vec2i(newton_eq, mjc_eq_to_newton_jnt[world, mjc_eq])
 
 
 @wp.func
@@ -1204,8 +1201,7 @@ def update_connect_constraint_rel_xform_at_qref_kernel(
 
     Rows stem from either a Newton CONNECT equality constraint or a loop joint
     (parent as body 1, child as body 2). Caching the relative pose lets anchor
-    updates skip forward kinematics. The ``eq_constraint_*`` arrays are null
-    when the model has no Newton CONNECT constraints.
+    updates skip forward kinematics.
 
     Args:
         X_rel_out: *(output)* Relative body pose per ``[world, eq]``,
