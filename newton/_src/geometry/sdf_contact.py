@@ -464,20 +464,21 @@ def get_mesh_edge_precomputed(
     mesh_edge_centers: wp.array[wp.vec4],
     mesh_edge_halves: wp.array[wp.vec4],
     edge_range: wp.vec2i,
+    mesh_scale: wp.vec3,
     X_mesh_ws: wp.transform,
     edge_idx: int,
 ) -> tuple[wp.vec3, wp.vec3, int]:
-    """Extract an edge and endpoint ownership from precomputed data.
+    """Extract an edge and endpoint ownership from precomputed unscaled data.
 
     A zero ownership code preserves legacy packed arrays by allowing both
     endpoints. Builder-generated codes use bits zero and one for the first and
     second endpoint, respectively, plus bit two to mark the encoding explicit.
     """
     packed_center = mesh_edge_centers[edge_range[0] + edge_idx]
-    center_local = wp.vec3(packed_center[0], packed_center[1], packed_center[2])
+    center_local = wp.cw_mul(wp.vec3(packed_center[0], packed_center[1], packed_center[2]), mesh_scale)
     center = wp.transform_point(X_mesh_ws, center_local)
     packed_half = mesh_edge_halves[edge_range[0] + edge_idx]
-    half_local = wp.vec3(packed_half[0], packed_half[1], packed_half[2])
+    half_local = wp.cw_mul(wp.vec3(packed_half[0], packed_half[1], packed_half[2]), mesh_scale)
     half = wp.transform_vector(X_mesh_ws, half_local)
     return center - half, center + half, int(packed_half[3])
 
@@ -497,7 +498,9 @@ def _create_mesh_edge_accessor_func(use_precomputed_edge_data: bool):
         edge_idx: int,
     ) -> tuple[wp.vec3, wp.vec3, int]:
         if wp.static(use_precomputed_edge_data):
-            return get_mesh_edge_precomputed(mesh_edge_centers, mesh_edge_halves, edge_range, X_mesh_ws, edge_idx)
+            return get_mesh_edge_precomputed(
+                mesh_edge_centers, mesh_edge_halves, edge_range, mesh_scale, X_mesh_ws, edge_idx
+            )
         v0, v1 = get_edge_from_mesh(mesh_id, mesh_edge_indices, edge_range, mesh_scale, X_mesh_ws, edge_idx)
         return v0, v1, 0
 
@@ -618,7 +621,7 @@ def _create_get_mesh_edge_bounding_sphere_func(use_precomputed_edge_data: bool):
     ) -> tuple[wp.vec3, float]:
         if wp.static(use_precomputed_edge_data):
             center_radius = mesh_edge_centers[edge_range[0] + edge_idx]
-            center_local = wp.vec3(center_radius[0], center_radius[1], center_radius[2])
+            center_local = wp.cw_mul(wp.vec3(center_radius[0], center_radius[1], center_radius[2]), mesh_scale)
             center_scaled = wp.transform_point(X_mesh_ws, center_local)
             center = wp.cw_mul(center_scaled, inv_sdf_scale)
             return center, center_radius[3] * radius_scale
@@ -1238,6 +1241,10 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                         wp.max(wp.abs(inv_sdf_scale[0]), wp.abs(inv_sdf_scale[1])), wp.abs(inv_sdf_scale[2])
                     )
 
+                # Precomputed edge radii are unscaled; max|scale| keeps their bounding spheres conservative.
+                edge_radius_scale *= wp.max(
+                    wp.max(wp.abs(mesh_scale_tri[0]), wp.abs(mesh_scale_tri[1])), wp.abs(mesh_scale_tri[2])
+                )
                 contact_threshold = gap_sum + triangle_mesh_margin + sdf_mesh_margin
                 contact_threshold_unscaled = contact_threshold / min_sdf_scale
                 use_texture_sdf_for_search = False
@@ -1695,6 +1702,10 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                         wp.max(wp.abs(inv_sdf_scale[0]), wp.abs(inv_sdf_scale[1])), wp.abs(inv_sdf_scale[2])
                     )
 
+                # Precomputed edge radii are unscaled; max|scale| keeps their bounding spheres conservative.
+                edge_radius_scale *= wp.max(
+                    wp.max(wp.abs(mesh_scale_tri[0]), wp.abs(mesh_scale_tri[1])), wp.abs(mesh_scale_tri[2])
+                )
                 contact_threshold = gap_sum + triangle_mesh_margin + sdf_mesh_margin
                 contact_threshold_unscaled = contact_threshold / min_sdf_scale
                 use_texture_sdf_for_search = False

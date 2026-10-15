@@ -174,7 +174,7 @@ jobs:
             ];
 
             // Fetch recent run history to show pass/fail trend in the issue table
-            // (default branch only, excludes cancelled runs)
+            // (default branch only, includes cancelled runs)
             async function getHistory(workflowFile) {
               try {
                 const { data } = await github.rest.actions.listWorkflowRuns({
@@ -186,10 +186,12 @@ jobs:
                   status: 'completed',
                   exclude_pull_requests: true
                 });
-                const runs = data.workflow_runs
-                  .filter(r => r.conclusion !== 'cancelled')
-                  .slice(0, 5);
-                return runs.map(r => r.conclusion === 'success' ? '✅' : '❌').join('');
+                const runs = data.workflow_runs.slice(0, 5);
+                return runs.map(r => {
+                  if (r.conclusion === 'success') return '✅';
+                  if (r.conclusion === 'cancelled') return '⏹️';
+                  return '❌';
+                }).join('');
               } catch (error) {
                 core.warning(`Failed to fetch history for ${workflowFile}: ${error.message}`);
                 return '';
@@ -208,11 +210,11 @@ jobs:
               } else {
                 const reasons = {
                   timed_out: ' (timed out)',
-                  cancelled: ' (cancelled)',
                   dispatch_error: ' (dispatch error)'
                 };
                 const reason = reasons[suite.conclusion] || (suite.conclusion === 'failure' ? '' : ` (${suite.conclusion})`);
-                rows.push(`| ${suite.name} | ${recentCol} | ❌ Failed${reason} | [View logs](${suite.url}) |`);
+                const status = suite.conclusion === 'cancelled' ? '⏹️ Cancelled' : `❌ Failed${reason}`;
+                rows.push(`| ${suite.name} | ${recentCol} | ${status} | [View logs](${suite.url}) |`);
                 failed.push(suite.name);
               }
             }
@@ -223,7 +225,9 @@ jobs:
             const table = [
               '| Test Suite | Recent (newest → oldest) | Status | Logs |',
               '|---|---|---|---|',
-              ...rows
+              ...rows,
+              '',
+              'History: ✅ Passed, ❌ Failed, ⏹️ Cancelled.'
             ].join('\n');
 
             // Search for an existing open nightly failure issue to update

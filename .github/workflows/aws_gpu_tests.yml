@@ -145,6 +145,9 @@ jobs:
       HOME: /actions-runner
       PYTHONFAULTHANDLER: "1" # Dump tracebacks on fatal signals (SIGSEGV, SIGABRT, etc.)
       OVRTX_SHADER_CACHE: /actions-runner/.cache/ovrtx-nv-shadercache
+      # Enable crash uploads for CI investigations.
+      OMNI_CRASH_REPORTER_DEV_INTERNAL: "1"
+      OMNI_CRASHREPORTER_URL: "https://services.nvidia.com/submit"
     steps:
       - name: Checkout repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
@@ -213,7 +216,7 @@ jobs:
           PYTHONFAULTHANDLER: "1"
           # sys.monitoring coverage core: avoids settrace overhead in unmeasured code
           COVERAGE_CORE: "sysmon"
-        run: uv run --extra dev --extra torch-cu13 --extra rtx -m newton.tests --strict-warnings --no-cache-clear --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
+        run: uv run --extra dev --extra torch-cu13 --extra rtx -m newton.tests --strict-warnings --parallel-timeout 4500 --no-cache-clear --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
 
       - name: Save OVRTX shader cache
         if: github.event_name != 'merge_group' && steps.restore-ovrtx-shader-cache.outputs.cache-hit != 'true'
