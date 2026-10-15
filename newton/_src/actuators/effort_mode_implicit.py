@@ -430,8 +430,8 @@ def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Funct
     """Build the block-parallel variant of the coupled solve.
 
     One thread block per group and one thread per row. The Newton system
-    ``J = I - h diag(s) A`` for any sign of ``s`` is row-equilibrated and solved
-    by Gauss-Jordan elimination with partial pivoting, one row per lane.
+    ``J = I - h diag(s) A`` is solved by Gauss elimination with floored pivots,
+    as in the per-thread kernel, one row per lane.
     """
     key = (*cache_key, "block", tile)
     cached = _coupled_kernel_cache.get(key)
@@ -473,75 +473,55 @@ def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Funct
     lane_row = wp.types.vector(length=tile_aug, dtype=wp.float32)
 
     @wp.func
-    def pivoted_solve(
+    def gauss_solve(
         A: Any,
         S: Any,
-        Sc: Any,
-        X: Any,
         lane: wp.int32,
         ng: wp.int32,
         c: wp.float64,
         b: wp.float64,
-        row_max: float,
         dfloor: float,
     ) -> wp.float64:
         """Solve ``(I + diag(c) A) x = b`` for the block's per-lane ``c``, ``b``; returns ``x_lane``.
 
-        Lane ``i`` keeps row ``i`` of the row-equilibrated matrix and its right-hand
-        side in registers. Each step publishes every row and pivot score to
-        shared memory, picks the largest remaining entry of column ``k``, and
-        eliminates that column from every other row (Gauss-Jordan), so no row is
-        swapped and no back substitution is needed.
+        Lane ``i`` keeps row ``i`` and its right-hand side in registers. Each
+        elimination step publishes the rows to shared memory so every lane below
+        the pivot can read the pivot row; back substitution broadcasts one
+        solved entry per step.
         """
         cf = float(c)
-        sig = float(1.0) / wp.max(float(1.0), wp.abs(cf) * row_max)
-        sc = sig * cf
         row = lane_row()
         for j in range(tile):
-            v = sc * A[j, lane]
+            v = cf * A[j, lane]
             if j == lane:
-                v += sig
+                v += 1.0
             row[j] = v
-        row[tile] = sig * float(b)
-        ck = row[0]
-        done = int(0)
-        if lane >= ng:
-            done = 1
-        my_col = lane
+        row[tile] = float(b)
         my_piv = float(1.0)
         for k in range(ng):
-            score = wp.abs(ck)
-            if done != 0:
-                score = -1.0
-            wp.tile_assign(Sc, wp.tile(score), offset=(0,))
-            p = int(0)
-            best = float(-2.0)
-            for i in range(tile):
-                si = Sc[i]
-                p = wp.where(si > best, i, p)
-                best = wp.max(si, best)
             wp.tile_assign(S, wp.tile(row), offset=(0, 0))
-            rowp = lane_row()
-            for j in range(tile_aug):
-                rowp[j] = S[j, p]
-            piv = S[k, p]
+            piv = S[k, k]
             if wp.abs(piv) < dfloor:
                 piv = wp.where(piv < 0.0, -dfloor, dfloor)
-            kn = wp.min(k + 1, tile - 1)
-            if lane == p:
-                done = 1
-                my_col = k
+            if lane == k:
                 my_piv = piv
-                ck = S[kn, lane]
-            else:
-                f = ck / piv
-                row = row - f * rowp
-                ck = S[kn, lane] - f * S[kn, p]
-        val = float(0.0)
-        if lane < ng:
-            val = row[tile] / my_piv
-        X[my_col] = val
-        return wp.float64(X[lane])
+            elif lane > k and lane < ng:
+                rowk = lane_row()
+                for j in range(tile_aug):
+                    rowk[j] = S[j, k]
+                row = row - (row[k] / piv) * rowk
+        rhs = row[tile]
+        x = float(0.0)
+        for kk in range(ng):
+            i = ng - 1 - kk
+            xi = float(0.0)
+            if lane == i:
+                xi = rhs / my_piv
+                x = xi
+            xi = wp.tile_extract(wp.tile(xi), i)
+            if lane < i:
+                rhs -= row[i] * xi
+        return wp.float64(x)
 
     @wp.kernel(
         enable_backward=False,
@@ -583,11 +563,6 @@ def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Funct
 
         A = wp.tile_load(group_response[g], shape=(tile, tile), storage="shared")
         S = wp.tile_zeros(shape=(tile_aug, tile), dtype=float, storage="shared")
-        Sc = wp.tile_zeros(shape=(tile,), dtype=float, storage="shared")
-        X = wp.tile_zeros(shape=(tile,), dtype=float, storage="shared")
-        row_max = float(0.0)
-        for j in range(ng):
-            row_max = wp.max(row_max, wp.abs(A[j, lane]))
 
         si = wp.int32(0)
         q0 = wp.float64(0.0)
@@ -620,10 +595,6 @@ def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Funct
             if feedforward:
                 ff = wp.float64(feedforward[target_vel_indices[si]])
 
-        a_ii = wp.float64(0.0)
-        if active:
-            a_ii = wp.float64(group_response[g, lane, lane])
-
         for it in range(max_iters):
             u = apply_response(A, p)
             r = wp.float64(0.0)
@@ -639,13 +610,7 @@ def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Funct
             if it > 0 and rn < res_tol * res_tol:
                 break
 
-            b = -r
-            step = pivoted_solve(A, S, Sc, X, lane, ng, c_lane, b, row_max, derivative_floor)
-            bad = float(0.0)
-            if not wp.isfinite(step):
-                bad = 1.0
-            if wp.tile_extract(wp.tile_sum(wp.tile(bad)), 0) > 0.0:
-                step = b / (wp.float64(1.0) + c_lane * a_ii)
+            step = gauss_solve(A, S, lane, ng, c_lane, -r, derivative_floor)
 
             # Backtrack until the residual drops (see the per-thread kernel).
             alpha = wp.float64(1.0)
