@@ -58,6 +58,7 @@ importers = [
     "trimesh>=4.6.8",              # for mesh operations and V-HACD
     "meshio>=5.3.5",               # alternative mesh file loader (fallback)
     "pycollada>=0.9",              # transitive dependency of trimesh for COLLADA (.dae) mesh support
+    "Pillow>=11.3.0",
     "resolve-robotics-uri-py>=0.5.1",  # for resolving file://, package://, and model:// URIs
     "open3d>=0.20.0; sys_platform != 'darwin' or platform_machine == 'arm64'",  # no Intel macOS wheels
 
@@ -85,7 +86,6 @@ examples = [
     "imgui_bundle>=1.92.0", # for viewer GUI
     "pyyaml>=6.0.2",
     "cbor2>=5.7.0",         # for binary recording format (.bin files) - more efficient than JSON
-    "Pillow>=11.3.0",
     "matplotlib>=3.10.7",   # for plotting utilities and diagnostics
     "networkx>=2.6",        # for articulation and graph coloring plots
 ]
