@@ -839,6 +839,7 @@ class _EffortModeImplicit:
         self._kernel = _build_coupled_solve_kernel(drive.evaluate_force, chain, key)
         self._kernel_key = key
         self._clamp_chain = chain
+        self._clamps_dissipative = all(getattr(c, "_implicit_dissipative", False) for c in clamping or [])
 
     def _build_groups(self, vel_indices) -> None:
         """Map actuator DOFs to (articulation, local index) and group by articulation."""
@@ -918,11 +919,6 @@ class _EffortModeImplicit:
         self._group_art = wp.array(art_id, dtype=wp.int32, device=device)
         self._group_slot = wp.array(slot, dtype=wp.int32, device=device)
         self._group_local = wp.array(local, dtype=wp.int32, device=device)
-        self._pbuf = wp.zeros((num_groups, max_ng), dtype=wp.float64, device=device)
-        self._rbuf = wp.zeros((num_groups, max_ng), dtype=wp.float64, device=device)
-        self._sbuf = wp.zeros((num_groups, max_ng), dtype=wp.float64, device=device)
-        self._vbuf = wp.zeros((num_groups, max_ng), dtype=wp.float64, device=device)
-        self._jbuf = wp.zeros((num_groups, max_ng, max_ng), dtype=wp.float64, device=device)
         slot_art = np.zeros(self._num_actuators, dtype=np.int32)
         slot_local = np.zeros(self._num_actuators, dtype=np.int32)
         for a in arts:
@@ -939,13 +935,19 @@ class _EffortModeImplicit:
         # full Newton system with pivoting. One thread per group otherwise.
         self._block_kernel = None
         tile = max(32, ((max_ng + 15) // 16) * 16)
-        dissipative = getattr(self._drive, "_implicit_dissipative", False)
+        dissipative = getattr(self._drive, "_implicit_dissipative", False) and self._clamps_dissipative
         if wp.get_device(device).is_cuda and tile <= _BLOCK_SOLVE_MAX_ROWS:
             self._block_tile = tile
             self._group_response = wp.zeros((num_groups, tile, tile), dtype=float, device=device)
             self._block_kernel = _build_block_solve_kernel(
                 self._drive.evaluate_force, self._clamp_chain, tile, self._kernel_key, pivoted=not dissipative
             )
+        else:
+            self._pbuf = wp.zeros((num_groups, max_ng), dtype=wp.float64, device=device)
+            self._rbuf = wp.zeros((num_groups, max_ng), dtype=wp.float64, device=device)
+            self._sbuf = wp.zeros((num_groups, max_ng), dtype=wp.float64, device=device)
+            self._vbuf = wp.zeros((num_groups, max_ng), dtype=wp.float64, device=device)
+            self._jbuf = wp.zeros((num_groups, max_ng, max_ng), dtype=wp.float64, device=device)
 
     def is_graphable(self) -> bool:
         return self._drive.is_graphable()

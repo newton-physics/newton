@@ -58,6 +58,7 @@ class ClampingMaxEffort(ClampingBase):
         self.max_effort = max_effort
 
     evaluate_clamp = _evaluate_max_effort_clamp
+    _implicit_dissipative = True
 
     def param_width(self) -> int:
         return 1

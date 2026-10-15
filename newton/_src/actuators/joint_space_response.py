@@ -288,7 +288,7 @@ class JointSpaceResponse:
         # Tile path: one thread block per articulation inverts its block.
         self._tile = None
         tile = ((max_dofs + 15) // 16) * 16
-        if wp.get_device(device).is_cuda and tile <= _TILE_MAX_DOFS:
+        if wp.get_device(device).is_cuda and 0 < tile <= _TILE_MAX_DOFS:
             self._tile = tile
             self._eye = wp.array(np.eye(tile, dtype=np.float32), dtype=float, device=device)
             self._H_pad = wp.zeros((art_count, tile, tile), dtype=float, device=device)
