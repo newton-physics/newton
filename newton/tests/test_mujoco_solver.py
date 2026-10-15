@@ -2809,9 +2809,7 @@ class TestImportedMocapBodies(unittest.TestCase):
 
     def test_imported_mocap_pose_updates_are_world_local(self):
         """Update imported mocap anchors without moving other targets or worlds."""
-        configurations = [("cpu", True, 1), ("cpu", False, 2)]
-        if wp.get_cuda_device_count():
-            configurations.append((wp.get_cuda_device(0), False, 2))
+        configurations = [("cpu", True, 1), (wp.get_device(), False, 2)]
         for device, use_mujoco_cpu, world_count in configurations:
             with self.subTest(device=device, use_mujoco_cpu=use_mujoco_cpu), wp.ScopedDevice(device):
                 template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -2851,9 +2849,7 @@ class TestImportedMocapBodies(unittest.TestCase):
     def test_imported_mocap_weld_matches_native(self):
         """Match native MuJoCo when an imported mocap target drives a welded payload."""
         mujoco, _ = SolverMuJoCo.import_mujoco()
-        configurations = [("cpu", True), ("cpu", False)]
-        if wp.get_cuda_device_count():
-            configurations.append((wp.get_cuda_device(0), False))
+        configurations = [("cpu", True), (wp.get_device(), False)]
         for device, use_mujoco_cpu in configurations:
             with self.subTest(device=device, use_mujoco_cpu=use_mujoco_cpu), wp.ScopedDevice(device):
                 native_model = mujoco.MjModel.from_xml_string(self.XML)
