@@ -9953,6 +9953,22 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             builder.add_mjcf(model_path, parse_visuals=True)
             self.assertEqual(builder.shape_count, 2)
 
+            models_dir = os.path.join(tmpdir, "models")
+            os.makedirs(models_dir)
+            os.rename(model_path, os.path.join(models_dir, "assets.xml"))
+            with open(os.path.join(models_dir, "robot.xml"), "w") as f:
+                f.write('<mujoco><include file="assets.xml"/></mujoco>')
+            for included_file in ("models/assets.xml", "models/robot.xml"):
+                with self.subTest(included_file=included_file):
+                    with open(model_path, "w") as f:
+                        f.write(f'<mujoco><include file="{included_file}"/></mujoco>')
+                    root, _ = _load_and_expand_mjcf(model_path)
+                    for tag, filename in (("mesh", "cube.stl"), ("texture", "checker.png"), ("hfield", "terrain.bin")):
+                        self.assertEqual(root.find(f".//{tag}").get("file"), os.path.join(assets_dir, filename))
+                    builder = newton.ModelBuilder()
+                    builder.add_mjcf(model_path, parse_visuals=True)
+                    self.assertEqual(builder.shape_count, 2)
+
     def test_assetdir_uses_custom_resolver_for_xml_string(self):
         """Resolve a relative assetdir through a custom resolver without a base path."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -10203,7 +10219,7 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             self.assertGreater(builder.shape_count, 0)
 
     def test_include_with_meshdir_nested_subdir(self):
-        """Test meshdir with included file in a subdirectory."""
+        """Prefer main-file assets while retaining included-file and custom resolution."""
         with tempfile.TemporaryDirectory() as tmpdir:
             # Structure: tmpdir/models/robot.xml with meshdir="meshes"
             #            tmpdir/models/meshes/cube.stl
@@ -10239,6 +10255,19 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             builder = newton.ModelBuilder()
             builder.add_mjcf(main_path)
             self.assertEqual(builder.body_count, 1)
+
+            main_meshes = os.path.join(tmpdir, "meshes")
+            os.makedirs(main_meshes)
+            main_mesh = os.path.join(main_meshes, "cube.stl")
+            self._create_cube_stl(main_mesh)
+            root, _ = _load_and_expand_mjcf(main_path)
+            self.assertEqual(root.find(".//mesh").get("file"), main_mesh)
+
+            def resolve(base_dir, file_path):
+                return os.path.abspath(os.path.join(base_dir, file_path))
+
+            root, _ = _load_and_expand_mjcf(main_path, resolve)
+            self.assertEqual(root.find(".//mesh").get("file"), os.path.join(meshes_dir, "cube.stl"))
 
     def test_include_without_meshdir_still_works(self):
         """Test that includes without meshdir resolve relative to included file."""

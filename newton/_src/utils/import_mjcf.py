@@ -122,6 +122,7 @@ def _load_and_expand_mjcf(
     source: str,
     path_resolver: Callable[[str | None, str], str] = _default_path_resolver,
     included_files: set[str] | None = None,
+    main_dir: str | None = None,
 ) -> tuple[ET.Element, str | None]:
     """Load MJCF source and recursively expand <include> elements.
 
@@ -132,6 +133,7 @@ def _load_and_expand_mjcf(
             - For asset elements (mesh, texture, etc.): must return an absolute file path
             Default resolver joins paths and returns absolute file paths.
         included_files: Set of already-included file paths for cycle detection
+        main_dir: Main model directory for default asset lookup
 
     Returns:
         Tuple of (root element, base directory or None for XML string input)
@@ -150,6 +152,9 @@ def _load_and_expand_mjcf(
         # Treat as file path
         base_dir = os.path.dirname(source) or "."
         root = ET.parse(source).getroot()
+
+    if main_dir is None:
+        main_dir = base_dir
 
     # Extract this file's own asset directories BEFORE expanding
     # includes, so nested-include compilers cannot shadow it.
@@ -197,7 +202,7 @@ def _load_and_expand_mjcf(
 
         # Recursive call - each included file extracts its own compiler and
         # resolves its own asset paths before returning.
-        included_root, _ = _load_and_expand_mjcf(resolved, path_resolver, included_files)
+        included_root, _ = _load_and_expand_mjcf(resolved, path_resolver, included_files, main_dir)
 
         # Replace include element with children of included root
         idx = list(parent).index(include)
@@ -213,10 +218,15 @@ def _load_and_expand_mjcf(
             file_attr = os.path.basename(file_attr.replace("\\", "/"))
         asset_dir = asset_dir_by_tag[elem.tag]
         resolved_path = os.path.join(asset_dir, file_attr) if asset_dir != "." else file_attr
-        if base_dir is None and path_resolver is _default_path_resolver and not os.path.isabs(resolved_path):
+        asset_base_dir = base_dir
+        if path_resolver is _default_path_resolver and main_dir is not None:
+            # MuJoCo prefers assets beside the main model over included-file paths.
+            if os.path.isfile(os.path.join(main_dir, resolved_path)):
+                asset_base_dir = main_dir
+        if asset_base_dir is None and path_resolver is _default_path_resolver and not os.path.isabs(resolved_path):
             elem.set("file", resolved_path)
         else:
-            elem.set("file", path_resolver(base_dir, resolved_path))
+            elem.set("file", path_resolver(asset_base_dir, resolved_path))
 
     return root, base_dir
 
@@ -374,7 +384,7 @@ def parse_mjcf(
             See :ref:`custom_attributes` for details on custom attributes. If False (default), position/velocity
             actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode where control comes
             from :attr:`newton.Control.joint_target_q` and :attr:`newton.Control.joint_target_qd`.
-        path_resolver: Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
+        path_resolver: Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. By default, assets are searched relative to the main model first, then the file defining them.
         legacy_margin_gap: If True, restore pre-MuJoCo-3.9 import behavior
             where ``shape_margin`` is computed as ``mj_margin - mj_gap``.
             Use for MJCF files authored against MuJoCo <= 3.8. Defaults
