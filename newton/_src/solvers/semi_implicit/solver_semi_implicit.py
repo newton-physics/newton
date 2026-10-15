@@ -6,7 +6,7 @@ import math
 import warp as wp
 
 from ...core.types import override
-from ...sim import Contacts, Control, Model, State
+from ...sim import Contacts, Control, JointType, Model, State
 from ...sim.joint_mimic import has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
@@ -104,7 +104,13 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
                 kernel modules. Pass a :class:`warp.DeterministicMode`, or
                 ``None`` (default) to inherit the current
                 ``wp.config.deterministic`` mode.
+
+        Raises:
+            ValueError: If ``model`` contains a :attr:`~newton.JointType.ROD` joint.
         """
+        if model._has_rod_joints and JointType.ROD in model.joint_type.numpy():  # pyright: ignore[reportPrivateUsage]
+            raise ValueError("SolverSemiImplicit does not support JointType.ROD joints.")
+
         super().__init__(model=model)
         effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
         deterministic_modules = []
@@ -146,6 +152,8 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
         control: Control | None,
         contacts: Contacts | None,
         dt: float,
+        *,
+        observables: SolverBase.Observables | None = None,
     ) -> None:
         """
         Simulate the model for a given time step using the given control input.
@@ -159,12 +167,16 @@ class SolverSemiImplicit(SolverBase, CouplingInterface):
             contacts: The contact information.
                 Defaults to `None` which means no contacts are used.
             dt: The time step (typically in seconds).
+            observables: Optional solver observable arrays allocated by :meth:`observables`.
+                This solver declares no supported observables, so only an empty
+                container is accepted.
 
         .. warning::
             The ``eval_particle_contact`` kernel for particle-particle contact handling may corrupt the gradient computation
             for simulations involving particle collisions.
             To disable it, set :attr:`newton.Model.particle_grid` to `None` prior to calling :meth:`step`.
         """
+        self.validate_observables(observables, contacts)
         self._apply_module_options()
         with wp.ScopedTimer("simulate", False):
             particle_f = None

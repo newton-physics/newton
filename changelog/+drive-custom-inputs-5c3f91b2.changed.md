@@ -1,0 +1,1 @@
+Add a `custom_inputs` parameter to `DriveBase.compute()` and `DriveBase.prepare_implicit()`. A drive that overrides either method and declares `DriveBase.custom_inputs` must accept `custom_inputs` as a keyword-only optional argument; `Actuator` passes it by keyword when the drive declares custom inputs.

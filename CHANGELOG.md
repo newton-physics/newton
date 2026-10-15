@@ -4,6 +4,29 @@
 
 <!-- towncrier release notes start -->
 
+## [1.6.1] - 2026-10-05
+
+### Added
+
+- Add optional `SolverCoupledADMM.Config.contact_max_triangle_pairs` and `contact_reduction_hashtable_size_factor` controls for internal collision storage, preserving default allocations and validating the matching-dependent capacity limit.
+
+### Changed
+
+- Speed up `SolverVBD` rigid-soft contact and deformable elasticity on CUDA, most in scenes with many contacts or worlds. Exact values can shift within floating-point tolerance relative to earlier releases. Re-test numerical baselines and use appropriate floating-point tolerances. Rebuild the CUDA tiled solver after changing triangle or edge stiffness so its material specialization is refreshed. ([#4141](https://github.com/newton-physics/newton/issues/4141))
+- Sort soft-contact candidate pairs by shape on every device. Results can shift within floating-point tolerance, and when contact capacity overflows the retained subset can differ. Faster on scenes with many shapes or worlds; slightly slower on small dense-contact scenes. Re-test contact-dependent baselines and increase contact capacity if overflow affects the required contacts. ([#4141](https://github.com/newton-physics/newton/issues/4141))
+- Speed up `ModelBuilder.replicate()` and `ModelBuilder.finalize()` for many-world scenes. Public list-valued builder attributes retain their normal list interface. `ModelBuilder.replicate()` may replace an attribute's backing list, so reacquire any retained list reference from the builder after replication before reading or mutating it. Replication, finalization, and list materialization temporarily pause Python's cyclic garbage collector and always restore its previous state, including on errors.
+- Allow `usd-core` 26.08, and allow `usd-exchange` 3.x on aarch64 while keeping 2.3.0 installable, which extends USD support to Python 3.13 on aarch64.
+- Update `ViewerRTX` to use the supported OVStage runtime scene interface with OVRTX 0.4 and newer without deprecation warnings while retaining compatibility with OVRTX 0.3.
+
+### Fixed
+
+- Fix `ViewerRTX` debug markers and custom mesh instances created after the first frame, including changing instance counts, colors, and visibility. Render `log_arrows()` with cylinder shafts and cone heads, and update runtime lines without rebuilding their geometry on every frame. ([#4048](https://github.com/newton-physics/newton/issues/4048))
+- Raise a `ValueError` from `SolverMuJoCo.step()` on the MuJoCo Warp backend when `disable_sensors=True` and the output state requests `body_qdd` or `body_parent_f`, instead of publishing stale values. ([#4109](https://github.com/newton-physics/newton/issues/4109))
+- Avoid materializing same-body and static-static collision pairs during model replication, preventing unnecessary memory growth with large shape counts and many worlds. When body metadata is supplied, built-in broad phases always reject these pairs, including static-static pairs when `include_static_kinematic_pairs=True`. Expert callers that need unfiltered pairs can omit `shape_body` when calling the broad phase directly. ([#4217](https://github.com/newton-physics/newton/issues/4217))
+- Speed up collision pipeline initialization with the explicit broad phase, especially for large explicit pair sets. ([#4220](https://github.com/newton-physics/newton/issues/4220))
+- Fix overly dark textured meshes in `ViewerViser` by using an untinted, nonmetallic material. ([#4221](https://github.com/newton-physics/newton/issues/4221))
+
+
 ## [1.6.0] - 2026-09-10
 
 ### Added

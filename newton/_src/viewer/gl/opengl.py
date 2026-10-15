@@ -1486,6 +1486,8 @@ class RendererGL:
         texture_id: int | None,
         texture_width: int = 0,
         texture_height: int = 0,
+        *,
+        flip_y: bool = True,
     ):
         """Draw a texture to the frame buffer without rendering the 3D scene.
 
@@ -1493,6 +1495,7 @@ class RendererGL:
             texture_id: OpenGL texture id to draw, or ``None`` to only clear.
             texture_width: Source texture width in pixels.
             texture_height: Source texture height in pixels.
+            flip_y: Whether the source stores its top row first.
         """
         gl = RendererGL.gl
         self._make_current()
@@ -1525,7 +1528,7 @@ class RendererGL:
             gl.glActiveTexture(gl.GL_TEXTURE0)
             gl.glBindTexture(gl.GL_TEXTURE_2D, int(texture_id))
             with self._frame_shader:
-                self._frame_shader.update(0, flip_y=True)
+                self._frame_shader.update(0, flip_y=flip_y)
                 gl.glBindVertexArray(self._frame_vao)
                 gl.glDrawElements(gl.GL_TRIANGLES, len(self._frame_indices), gl.GL_UNSIGNED_INT, None)
                 gl.glBindVertexArray(0)

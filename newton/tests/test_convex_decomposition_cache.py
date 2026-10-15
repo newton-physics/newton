@@ -205,7 +205,8 @@ class TestConvexDecompositionCache(unittest.TestCase):
             builder.add_shape_mesh(-1, mesh=mesh)
         builder.approximate_meshes(method="coacd", cache_dir=self.cache_dir, raise_on_failure=True)
         self.assertEqual(self.coacd.call_count, 2)
-        self.assertEqual([call.kwargs["max_convex_hull"] for call in self.coacd.call_args_list], [32, 64])
+        self.assertTrue(all("max_convex_hull" not in call.kwargs for call in self.coacd.call_args_list))
+        self.assertEqual(len(list(self.cache_dir.glob("*.npz"))), 2)
 
     def test_cache_hit_preserves_shape_settings_and_filters(self):
         """Apply current shape settings and collision filters to every cached convex part."""

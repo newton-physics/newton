@@ -10,9 +10,11 @@ import warp as wp
 
 from newton._src.solvers.kamino._src.solvers.dvi.kernels import _compute_dvi_status_residuals
 from newton._src.solvers.kamino._src.solvers.dvi.sparse_kernels import (
+    _apply_small_bilateral_inverse,
     _assemble_compact_unilateral_schur_blocked,
-    _solve_dvi_compact_schur_pgs_cooperative,
+    _invert_small_bilateral_block,
     _solve_dvi_sparse_inequalities_pgs_cooperative,
+    make_compact_schur_pgs_kernel,
 )
 from newton._src.solvers.kamino._src.solvers.dvi.sparse_kernels import (
     _prepare_full_sparse_unilateral_schur as kernel,
@@ -72,8 +74,28 @@ class TestKaminoCompactSchur(unittest.TestCase):
     def test_pipelined_sweeps_match_general_kernel(self):
         """Preserve mixed-constraint updates and reversed schedules through 128 compact rows."""
         rng = np.random.default_rng(28932)
-        for nb, nl, nc in ((0, 0, 1), (2, 2, 3), (31, 1, 32), (0, 0, 42), (7, 0, 2)):
-            with self.subTest(bounded=nb, limits=nl, contacts=nc):
+        cases = (
+            (0, 0, 1, False),
+            (2, 2, 3, False),
+            # Exercise partially active vectors around each 32-row boundary.
+            (28, 0, 1, False),
+            (29, 0, 1, False),
+            (30, 0, 1, False),
+            (60, 0, 1, False),
+            (61, 0, 1, False),
+            (62, 0, 1, False),
+            (92, 0, 1, False),
+            (93, 0, 1, False),
+            (94, 0, 1, False),
+            (31, 1, 32, False),
+            (0, 0, 42, False),
+            (7, 0, 2, False),
+            (125, 0, 1, False),
+            (2, 2, 3, True),
+            (0, 1, 1, True),
+        )
+        for nb, nl, nc, unmapped in cases:
+            with self.subTest(bounded=nb, limits=nl, contacts=nc, unmapped=unmapped):
                 nu = nb + nl + 3 * nc
                 n = max(32, nu)
                 slots = nb + nl + nc
@@ -95,14 +117,19 @@ class TestKaminoCompactSchur(unittest.TestCase):
                 config.regularization = 0.001
                 config.omega = 0.8
                 config.tolerance = 1e-5
+                limits = np.arange(nl, dtype=np.int32)
+                contacts = np.arange(nc, dtype=np.int32)
+                if unmapped:
+                    limits[0] = -1
+                    contacts[0] = -1
                 data = {
                     "problem_nbc": self.ints([nb]),
                     "problem_nl": self.ints([nl]),
                     "problem_nc": self.ints([nc]),
                     "problem_njc": self.ints([n]),
                     "problem_bcio": self.ints([0]),
-                    "problem_lio": self.ints([0]),
-                    "problem_cio": self.ints([0]),
+                    "problem_lio": self.ints([2]),
+                    "problem_cio": self.ints([3]),
                     "problem_uio": self.ints([0]),
                     "problem_bcgo": self.ints([n]),
                     "problem_lcgo": self.ints([n + nb]),
@@ -111,13 +138,13 @@ class TestKaminoCompactSchur(unittest.TestCase):
                     "bilateral_vio": self.ints([0]),
                     "response_mio": self.ints([0]),
                     "response_stride": self.ints([nu]),
-                    "limit_indices": self.ints(list(range(nl))),
-                    "contact_indices": self.ints(list(range(nc))),
-                    "problem_mu": self.floats(np.full(nc, 0.6)),
+                    "limit_indices": self.ints(np.pad(limits, (2, 0), constant_values=999)),
+                    "contact_indices": self.ints(np.pad(contacts, (3, 0), constant_values=999)),
+                    "problem_mu": self.floats(np.pad(np.full(nc, 0.6), (3, 0), constant_values=999)),
                     "problem_bound_lower": self.floats(np.full(nb, -0.3)),
                     "problem_bound_upper": self.floats(np.full(nb, 0.7)),
-                    "problem_P": self.floats(np.ones(n + nu)),
-                    "problem_v_b": self.floats(np.zeros(n + nu)),
+                    "problem_P": self.floats(rng.uniform(0.5, 1.5, n + nu)),
+                    "problem_v_b": self.floats(rng.normal(0.0, 0.05, n + nu)),
                     "problem_diag": self.floats(np.concatenate([np.ones(n), operator.diagonal()])),
                     "projected_diag": self.floats(np.concatenate([np.ones(n), operator.diagonal()])),
                     "compact_schur": self.floats(-operator.T),
@@ -130,26 +157,97 @@ class TestKaminoCompactSchur(unittest.TestCase):
                     "block_iteration": 0,
                 }
                 results = []
-                for kernel in (
-                    _solve_dvi_sparse_inequalities_pgs_cooperative,
-                    _solve_dvi_compact_schur_pgs_cooperative,
+                for kernels in (
+                    (_solve_dvi_sparse_inequalities_pgs_cooperative,),
+                    (make_compact_schur_pgs_kernel(64), make_compact_schur_pgs_kernel(128)),
                 ):
                     data["compact_q"] = self.floats(np.concatenate([np.zeros(n), q0]))
                     data["solution_lambdas"] = self.floats(initial)
                     data["solver_status"] = wp.zeros(1, dtype=DVIStatus, device=self.device)
-                    inputs = []
-                    for arg in kernel.adj.args:
-                        if arg.label in data:
-                            inputs.append(data[arg.label])
-                        else:
-                            # Full compact sweeps never read sparse body-space inputs.
-                            shape = (1, 2) if arg.type.ndim == 2 else 1
-                            inputs.append(wp.zeros(shape, dtype=arg.type.dtype, device=self.device))
-                    wp.launch(kernel, dim=32, inputs=inputs, device=self.device, block_dim=32)
+                    for index, kernel in enumerate(kernels):
+                        before = data["solution_lambdas"].numpy(), data["compact_q"].numpy()
+                        inputs = []
+                        for arg in kernel.adj.args:
+                            if arg.label in data:
+                                inputs.append(data[arg.label])
+                            else:
+                                # Full compact sweeps never read sparse body-space inputs.
+                                shape = (1, 2) if arg.type.ndim == 2 else 1
+                                inputs.append(wp.zeros(shape, dtype=arg.type.dtype, device=self.device))
+                        wp.launch(kernel, dim=32, inputs=inputs, device=self.device, block_dim=32)
+                        # Each world must be updated by exactly one specialization,
+                        # including the partially filled vectors at 63/64/65 rows.
+                        if len(kernels) == 2 and (nu > 64 if index == 0 else nu <= 64):
+                            np.testing.assert_array_equal(data["solution_lambdas"].numpy(), before[0])
+                            np.testing.assert_array_equal(data["compact_q"].numpy(), before[1])
                     results.append((data["solution_lambdas"].numpy(), data["compact_q"].numpy()))
                 np.testing.assert_array_equal(results[1][0][:n], initial[:n])
                 np.testing.assert_allclose(results[0][0], results[1][0], atol=3e-6, rtol=3e-6)
                 np.testing.assert_allclose(results[0][1], results[1][1], atol=3e-6, rtol=3e-6)
+                if unmapped:
+                    inactive = [n + nb, *range(n + nb + nl, n + nb + nl + 3)]
+                    np.testing.assert_array_equal(results[1][0][inactive], initial[inactive])
+
+
+class TestKaminoSmallBilateralInverse(unittest.TestCase):
+    def test_matches_dense_solve(self):
+        """Invert partial-tile blocks and apply them, keeping the old solution for inactive worlds."""
+        if not wp.get_cuda_device_count():
+            self.skipTest("Tile inversion requires CUDA")
+        device = wp.get_cuda_devices()[0]
+        rng = np.random.default_rng(4127)
+        dims = [1, 33, 70, 128]
+        mio = np.concatenate(([0], np.cumsum(np.square(dims))[:-1]))
+        vio = np.concatenate(([0], np.cumsum(dims)[:-1]))
+        factors, matrices = [], []
+        for n in dims:
+            basis = rng.normal(size=(n, n))
+            matrix = basis @ basis.T / n + np.eye(n)
+            matrices.append(matrix)
+            # Garbage above the diagonal must not leak into the inverse.
+            factors.append(np.linalg.cholesky(matrix) + np.triu(rng.normal(size=(n, n)), 1))
+        L = wp.array(np.concatenate([f.ravel() for f in factors]), dtype=wp.float32, device=device)
+        dim = wp.array(dims, dtype=wp.int32, device=device)
+        mio_wp = wp.array(mio, dtype=wp.int32, device=device)
+        vio_wp = wp.array(vio, dtype=wp.int32, device=device)
+        lower_inverse = wp.zeros(L.size, dtype=wp.float32, device=device)
+        inverse = wp.zeros(L.size, dtype=wp.float32, device=device)
+        wp.launch_tiled(
+            _invert_small_bilateral_block,
+            dim=len(dims),
+            inputs=[dim, mio_wp, L, lower_inverse, inverse],
+            block_dim=128,
+            device=device,
+        )
+        rhs = rng.normal(size=sum(dims))
+        previous = rng.normal(size=sum(dims))
+        scale = rng.uniform(0.5, 2.0, size=sum(dims))
+        solution = wp.array(previous, dtype=wp.float32, device=device)
+        lambdas = wp.zeros(sum(dims), dtype=wp.float32, device=device)
+        active = [1, 33, 0, 128]
+        wp.launch(
+            _apply_small_bilateral_inverse,
+            dim=(len(dims), max(dims)),
+            inputs=[
+                wp.array(active, dtype=wp.int32, device=device),
+                mio_wp,
+                vio_wp,
+                inverse,
+                wp.array(rhs, dtype=wp.float32, device=device),
+                vio_wp,
+                dim,
+                wp.array(scale, dtype=wp.float32, device=device),
+                solution,
+                lambdas,
+            ],
+            device=device,
+        )
+        expected = previous.copy()
+        for n, matrix, start, used in zip(dims, matrices, vio, active, strict=True):
+            if used:
+                expected[start : start + n] = np.linalg.solve(matrix, rhs[start : start + n])
+        np.testing.assert_allclose(solution.numpy(), expected, rtol=1e-4, atol=1e-4)
+        np.testing.assert_allclose(lambdas.numpy(), scale * expected, rtol=1e-4, atol=1e-4)
 
 
 class TestKaminoFullSchurAssembly(unittest.TestCase):
@@ -164,7 +262,6 @@ class TestKaminoFullSchurAssembly(unittest.TestCase):
             (600, 513, 0, 0, 600),
             (2, 1, 1, 2, 2),
             (33, 0, 0, 0, 8),
-            (33, 3, 2, 2, 16),
         ]
         data = {
             name: []
@@ -196,14 +293,13 @@ class TestKaminoFullSchurAssembly(unittest.TestCase):
                 "response_stride",
                 "compact_schur",
                 "compact_q",
-                "solver_config",
                 "body_space",
                 "solution_lambdas",
             )
         }
         expected_s, expected_q = [], []
 
-        for wid, (n, nb, nl, nc, stride) in enumerate(cases):
+        for n, nb, nl, nc, stride in cases:
             nu = nb + nl + 3 * nc
             weighted = np.zeros((nu, 12))
             jacobian = np.zeros((nu, 12))
@@ -256,7 +352,7 @@ class TestKaminoFullSchurAssembly(unittest.TestCase):
             body = rng.normal(size=12).astype(np.float32)
             schur = rng.normal(size=n * stride).astype(np.float32)
             expected_matrix, expected_velocity = schur.copy(), q.copy()
-            if wid != len(cases) - 1 and 0 < nu <= 512 and nu * nu <= n * stride:
+            if 0 < nu <= 512 and nu * nu <= n * stride:
                 operator = (weighted @ jacobian.T) * p[None, n:] + np.diag(eta[n:])
                 expected_matrix[: nu * nu] -= operator.T.ravel()
                 expected_velocity[n:] = weighted @ body + eta[n:] * lambdas[n:] + vf[n:]
@@ -272,20 +368,13 @@ class TestKaminoFullSchurAssembly(unittest.TestCase):
                 ("compact_schur", schur),
             ):
                 data[name].extend(values)
-            config = DVIConfigStruct()
-            config.max_alternating_iterations = 0 if wid == len(cases) - 1 else 8
-            data["solver_config"].append(config)
 
         for device in wp.get_devices():
             arrays = {}
             for arg in kernel.adj.args:
                 name = arg.label
-                if name == "enable_compact_schur":
-                    arrays[name] = True
-                elif name == "workers_per_world":
+                if name == "workers_per_world":
                     arrays[name] = 128
-                elif name == "block_iteration":
-                    arrays[name] = 0
                 else:
                     arrays[name] = wp.array(data[name], dtype=arg.type.dtype, device=device)
             reference_s = None
@@ -370,7 +459,7 @@ class TestDVIResiduals(unittest.TestCase):
                 wp.launch(
                     _compute_dvi_status_residuals,
                     dim=len(counts) * workers,
-                    inputs=[*inputs, floats(velocities), floats(impulses), status, workers],
+                    inputs=[*inputs, floats(velocities), floats(impulses), status, workers, 1],
                     block_dim=128,
                     device=device,
                 )

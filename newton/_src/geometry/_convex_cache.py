@@ -27,7 +27,7 @@ import numpy as np
 
 from .types import Mesh
 
-CACHE_FORMAT_VERSION = 1
+CACHE_FORMAT_VERSION = 2
 logger = logging.getLogger(__name__)
 
 
@@ -46,6 +46,7 @@ def hash_inputs(mesh: Mesh, method: str, settings: dict[str, Any]) -> str | None
             {
                 "format": CACHE_FORMAT_VERSION,
                 "method": method,
+                "maxhullvert": mesh.maxhullvert,
                 "versions": {package: importlib.metadata.version(package) for package in packages},
                 "settings": settings,
             },

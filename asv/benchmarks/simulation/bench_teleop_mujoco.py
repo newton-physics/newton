@@ -126,6 +126,7 @@ class _TeleopLoop:
     linear_speed = 0.5
     sweep_half_period = 1.6
     arm_joint_indices = (*range(15, 22), *range(29, 36))
+    _robot: ClassVar[newton.ModelBuilder | None] = None
 
     def __init__(self, mode: _TeleopMode, stats_window: int):
         self.device = wp.get_device(mode.device)
@@ -137,7 +138,7 @@ class _TeleopLoop:
         self.frame_index = 0
         self.stats = _WindowStats(stats_window)
 
-        robot = self._build_robot()
+        robot = self._robot_builder()
         self.model_ik = copy.deepcopy(robot).finalize()
 
         scene = newton.ModelBuilder()
@@ -204,7 +205,16 @@ class _TeleopLoop:
                 self._simulate()
             self.graph_sim = capture.graph
 
-    def _build_robot(self) -> newton.ModelBuilder:
+    @classmethod
+    def _robot_builder(cls) -> newton.ModelBuilder:
+        """Return a copy of the robot, imported once per process."""
+        # The USD import dominates setup, which ASV repeats before every sample.
+        if cls._robot is None:
+            cls._robot = cls._build_robot()
+        return copy.deepcopy(cls._robot)
+
+    @classmethod
+    def _build_robot(cls) -> newton.ModelBuilder:
         robot = newton.ModelBuilder()
         newton.solvers.SolverMuJoCo.register_custom_attributes(robot)
         robot.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1, friction=1.0e-5)
@@ -223,10 +233,10 @@ class _TeleopLoop:
         robot.approximate_meshes("bounding_box")
 
         for i in range(robot.joint_dof_count):
-            robot.joint_target_ke[i] = 2500.0 if i in self.arm_joint_indices else 500.0
-            robot.joint_target_kd[i] = 120.0 if i in self.arm_joint_indices else 20.0
+            robot.joint_target_ke[i] = 2500.0 if i in cls.arm_joint_indices else 500.0
+            robot.joint_target_kd[i] = 120.0 if i in cls.arm_joint_indices else 20.0
             robot.joint_target_mode[i] = int(JointTargetMode.POSITION_VELOCITY)
-        for i in self.arm_joint_indices:
+        for i in cls.arm_joint_indices:
             robot.joint_effort_limit[i] = 200.0
         return robot
 

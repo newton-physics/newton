@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+import warnings
+
 import warp as wp
 
 from ..math import quat_decompose, transform_twist, velocity_at_point
@@ -267,7 +269,7 @@ def eval_joint_motion(
             wp.vec3(joint_qd[qd_start], joint_qd[qd_start + 1], joint_qd[qd_start + 2]),
         )
 
-    if type == JointType.FREE or type == JointType.DISTANCE:
+    if type == JointType.FREE or type == JointType.DISTANCE or type == JointType.ROD:
         X_j = wp.transform(
             wp.vec3(joint_q[q_start], joint_q[q_start + 1], joint_q[q_start + 2]),
             wp.quat(
@@ -366,7 +368,7 @@ def eval_joint_child_state(
 
     linear_joint_world = wp.transform_vector(X_wpj, wp.spatial_top(v_j))
     angular_joint_world = wp.transform_vector(X_wpj, wp.spatial_bottom(v_j))
-    if type == JointType.FREE or type == JointType.DISTANCE:
+    if type == JointType.FREE or type == JointType.DISTANCE or type == JointType.ROD:
         # These joint velocities are COM-referenced, while the tree recurrence is origin-referenced.
         v_joint_origin = com_twist_to_origin_twist(
             wp.spatial_vector(linear_joint_world, angular_joint_world),
@@ -418,9 +420,6 @@ def eval_single_articulation_fk(
 
         # compute transform across the joint
         type = joint_type[i]
-        if type == JointType.ROD:
-            # ROD joints are skipped by generic forward kinematics.
-            continue
 
         X_pj = joint_X_p[i]
         X_cj = joint_X_c[i]
@@ -551,11 +550,8 @@ def eval_fk(
     The written :attr:`State.body_qd` values use Newton's public body-twist
     convention ``(v_com_world, omega_world)``.
 
-    .. note::
-
-        :attr:`~newton.JointType.ROD` body transforms are not changed by
-        :func:`newton.eval_fk`; they are advanced directly by
-        :class:`newton.solvers.SolverVBD`.
+    Stale joint coordinates can overwrite simulated body state. Use
+    :func:`eval_ik` to refresh the input arrays from body state when needed.
 
     Args:
         model: The model to evaluate.
@@ -600,7 +596,6 @@ def eval_fk(
             kernel = create_eval_articulation_fk_tile(
                 model._fk_level_capacity,
                 body_flag_filter == BodyFlags.ALL,
-                model._has_rod_joints,
             )
             inputs = [
                 model._fk_articulation_level_start,
@@ -875,7 +870,7 @@ def eval_articulation_ik(
     if type == JointType.FIXED:
         return
 
-    if type == JointType.FREE or type == JointType.DISTANCE:
+    if type == JointType.FREE or type == JointType.DISTANCE or type == JointType.ROD:
         q_pc = wp.quat_inverse(q_p) * q_c
 
         x_err_c = wp.quat_rotate_inv(q_p, x_err)
@@ -968,7 +963,7 @@ def eval_ik(
     Evaluates the model's inverse kinematics given the state's body information (:attr:`State.body_q` and :attr:`State.body_qd`) and updates the generalized joint coordinates `joint_q` and `joint_qd`.
 
     The input :attr:`State.body_qd` is interpreted using Newton's public body-twist
-    convention ``(v_com_world, omega_world)``. For FREE and DISTANCE joints,
+    convention ``(v_com_world, omega_world)``. For FREE, DISTANCE, and ROD joints,
     the recovered ``joint_qd`` linear entries are referenced at the child COM
     and expressed in the joint parent frame.
 
@@ -1034,7 +1029,7 @@ def write_free_distance_motion_subspace(
     # outputs
     joint_S_s: wp.array[wp.spatial_vector],
 ):
-    """Write the 6 motion-subspace columns for a FREE/DISTANCE joint.
+    """Write the 6 motion-subspace columns for a FREE/DISTANCE/ROD joint.
 
     Linear DOFs follow the parent-anchor axes. Angular columns describe
     rotations about ``pivot_world`` as world-origin spatial twists.
@@ -1043,7 +1038,7 @@ def write_free_distance_motion_subspace(
         X_pa_world: Parent-anchor world transform (``X_wp * joint_X_p``) used
             to rotate the joint's parent-anchor axes into the world frame.
             This is *not* the classical Featherstone ``X_sc`` (spatial-to-
-            child); Newton's FREE/DISTANCE joint coordinates live in the
+            child); Newton's FREE/DISTANCE/ROD joint coordinates live in the
             parent-anchor basis.
         pivot_world: World-space point about which angular columns rotate.
         qd_start: Starting velocity-DOF index for this joint.
@@ -1100,10 +1095,6 @@ def jcalc_motion_subspace(
         :func:`compute_2d_rotational_dofs` / :func:`compute_3d_rotational_dofs` in
         FK so that ``J @ joint_qd`` agrees with ``state.body_qd`` at non-identity
         configurations.
-
-        ROD joints are not currently supported because their material slots do
-        not define generalized-coordinate motion subspaces. Their Jacobian
-        columns remain zero.
     """
     if joint_type_value == JointType.PRISMATIC:
         axis = joint_axis[qd_start]
@@ -1157,7 +1148,11 @@ def jcalc_motion_subspace(
         joint_S_s[qd_start + 1] = S_1
         joint_S_s[qd_start + 2] = S_2
 
-    elif joint_type_value == JointType.FREE or joint_type_value == JointType.DISTANCE:
+    elif (
+        joint_type_value == JointType.FREE
+        or joint_type_value == JointType.DISTANCE
+        or joint_type_value == JointType.ROD
+    ):
         x_child_com_world = wp.transform_point(X_wc, body_com_child)
         write_free_distance_motion_subspace(X_pa_world, x_child_com_world, qd_start, joint_S_s)
 
@@ -1419,12 +1414,14 @@ def eval_articulation_mass_matrix(
     joint_qd_start: wp.array[int],
     body_I_s: wp.array[wp.spatial_matrix],
     J: wp.array3d[float],
+    joint_armature: wp.array[float],
     # outputs
     H: wp.array3d[float],
 ):
     """Compute generalized mass matrix H = J^T * M * J.
 
     The mass matrix H relates joint accelerations to joint forces/torques.
+    If ``joint_armature`` is provided, it is added to the diagonal.
     Output shape: (articulation_count, max_dofs, max_dofs)
     """
     art_idx = wp.tid()
@@ -1468,6 +1465,10 @@ def eval_articulation_mass_matrix(
                         sum_val += J_ik * I_s[k, l] * J_jl
 
                 H[art_idx, dof_i, dof_j] = H[art_idx, dof_i, dof_j] + sum_val
+
+    if joint_armature:
+        for dof in range(articulation_dof_count):
+            H[art_idx, dof, dof] = H[art_idx, dof, dof] + joint_armature[articulation_dof_start + dof]
 
 
 @wp.kernel
@@ -1594,9 +1595,8 @@ def eval_inverse_dynamics_force(
     ``state.body_q`` for the parent-frame-in-world rotation) before the sum, so
     ``joint_f`` is entirely in that world convention.
 
-    :attr:`~newton.JointType.ROD` joints are not supported because their material
-    slots are constraints rather than generalized coordinates for this
-    inverse-dynamics formulation.
+    :attr:`~newton.JointType.ROD` joints are not supported by the
+    inverse-dynamics pipeline.
 
     .. experimental::
 
@@ -1684,6 +1684,13 @@ def eval_inverse_dynamics_force(
     )
 
 
+_INCLUDE_ARMATURE_DEPRECATION_MSG = (
+    "The include_armature argument of {name} is deprecated in Newton 1.8 and will be removed. "
+    "Model.joint_armature is now always added to the mass matrix by default. "
+    "To get the rigid-body matrix, subtract Model.joint_armature from the diagonal."
+)
+
+
 def eval_mass_matrix(
     model: Model,
     state: State,
@@ -1692,6 +1699,8 @@ def eval_mass_matrix(
     body_I_s: wp.array | None = None,
     joint_S_s: wp.array | None = None,
     mask: wp.array[bool] | None = None,
+    *,
+    include_armature: bool = True,
 ) -> wp.array | None:
     """Evaluate generalized mass matrix for articulations.
 
@@ -1699,6 +1708,14 @@ def eval_mass_matrix(
     Jacobian and M is the block-diagonal spatial mass matrix. The mass matrix
     relates joint accelerations to joint forces/torques and is consistent with
     kinetic energy computed from COM-referenced body twists.
+
+    :attr:`~newton.Model.joint_armature` is added to the diagonal, so H is the
+    joint-space inertia that solvers supporting armature
+    (:class:`~newton.solvers.SolverMuJoCo`,
+    :class:`~newton.solvers.SolverFeatherstone` and
+    :class:`~newton.solvers.SolverKamino`) integrate. Solver-specific
+    overrides, such as the large armature some solvers assign to kinematic
+    bodies, are not included.
 
     Args:
         model: The model containing articulation definitions.
@@ -1714,10 +1731,45 @@ def eval_mass_matrix(
         mask: Optional one-dimensional mask of shape (articulation_count,) selecting
               which articulations to compute. If None, computes for all articulations.
               Two-dimensional per-world masks are not supported.
+        include_armature: Deprecated in Newton 1.8. If True (default), add
+              :attr:`~newton.Model.joint_armature` to the diagonal. Passing
+              False returns the rigid-body matrix and emits a
+              :class:`DeprecationWarning`. This argument will be removed in a
+              future minor release.
 
     Returns:
         The mass matrix array H, or None if the model has no articulations.
     """
+    if not include_armature:
+        warnings.warn(
+            _INCLUDE_ARMATURE_DEPRECATION_MSG.format(name="eval_mass_matrix()"),
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    return _eval_mass_matrix(
+        model,
+        state,
+        H,
+        J=J,
+        body_I_s=body_I_s,
+        joint_S_s=joint_S_s,
+        mask=mask,
+        include_armature=include_armature,
+    )
+
+
+def _eval_mass_matrix(
+    model: Model,
+    state: State,
+    H: wp.array | None = None,
+    J: wp.array | None = None,
+    body_I_s: wp.array | None = None,
+    joint_S_s: wp.array | None = None,
+    mask: wp.array[bool] | None = None,
+    *,
+    include_armature: bool = True,
+) -> wp.array | None:
+    """Implement :func:`eval_mass_matrix` without the deprecation warning."""
     if model.articulation_count == 0:
         return None
 
@@ -1777,6 +1829,7 @@ def eval_mass_matrix(
             model.joint_qd_start,
             body_I_s,
             J,
+            model.joint_armature if include_armature else None,
         ],
         outputs=[H],
         device=model.device,

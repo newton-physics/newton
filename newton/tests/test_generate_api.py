@@ -1,13 +1,16 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import sys
 import tempfile
 import unittest
 import warnings
+from io import StringIO
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest import mock
+
+from newton.solvers import SolverBase
+from newton.tests.unittest_utils import patch_sys_module
 
 try:
     from docs import generate_api
@@ -19,6 +22,61 @@ except ModuleNotFoundError as exc:
     if exc.name != "docs":
         raise
     generate_api = None
+
+try:
+    from sphinx.application import Sphinx
+
+    from docs._ext import autodoc_filter
+except ModuleNotFoundError as exc:
+    if exc.name not in ("docs", "sphinx"):
+        raise
+    autodoc_filter = None
+
+
+@unittest.skipUnless(autodoc_filter is not None, "requires a source checkout and the docs extra")
+class TestObservableFieldDocs(unittest.TestCase):
+    """Keep source-documented None defaults visible in the generated API."""
+
+    def test_nested_observable_fields_render(self):
+        """Keep array fields in the API when autodoc traverses the enclosing solver."""
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            mock.patch.object(SolverBase.Observables, "undocumented", None, create=True),
+        ):
+            root = Path(tmp)
+            source = root / "source"
+            source.mkdir()
+            (source / "conf.py").write_text(
+                "extensions = ['sphinx.ext.autodoc', 'sphinx.ext.napoleon', "
+                "'docs._ext.autodoc_filter', 'docs._ext.experimental']\n"
+                "autodoc_default_options = {'members': True, 'undoc-members': True}\n",
+                encoding="utf-8",
+            )
+            (source / "index.rst").write_text(
+                "Solver API\n==========\n\n.. autoclass:: newton.solvers.SolverBase\n",
+                encoding="utf-8",
+            )
+            app = Sphinx(
+                str(source),
+                str(source),
+                str(root / "output"),
+                str(root / "doctrees"),
+                "dummy",
+                status=StringIO(),
+                warning=StringIO(),
+                freshenv=True,
+            )
+            app.build()
+            objects = app.env.domains["py"].objects
+            for name in ("body_qdd", "body_parent_f", "contact_f"):
+                with self.subTest(name=name):
+                    self.assertIn(f"newton.solvers.SolverBase.Observables.{name}", objects)
+            for name in ("BODY_QDD", "BODY_PARENT_F", "CONTACT_F"):
+                with self.subTest(kind=name):
+                    self.assertIn(f"newton.solvers.SolverBase.ObservableKind.{name}", objects)
+            for name in ("undocumented", "_solver"):
+                with self.subTest(hidden=name):
+                    self.assertNotIn(f"newton.solvers.SolverBase.Observables.{name}", objects)
 
 
 @unittest.skipUnless(generate_api is not None, "requires the docs/ package (source checkout only)")
@@ -41,6 +99,27 @@ class TestGenerateApiPublicSymbols(unittest.TestCase):
             r"newton\.invalid_all_entry\.__all__ must contain only strings; got 1",
         ):
             generate_api.public_symbols(module)
+
+
+@unittest.skipUnless(generate_api is not None, "requires the docs/ package (source checkout only)")
+class TestGenerateApiSolverSubmodules(unittest.TestCase):
+    def test_style3d_helpers_use_public_documentation_paths(self):
+        """Register Style3D helpers under their canonical public paths."""
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "api"
+            with (
+                mock.patch.object(generate_api, "OUTPUT_DIR", output_dir),
+                mock.patch.object(generate_api, "REPO_ROOT", output_dir.parent),
+            ):
+                generate_api.write_module_page("newton.solvers.style3d", api_toctree_modules=set())
+
+            page = (output_dir / "newton_solvers_style3d.rst").read_text(encoding="utf-8")
+
+        self.assertIn(".. py:module:: newton.solvers.style3d", page)
+        self.assertIn(".. currentmodule:: newton.solvers.style3d", page)
+        self.assertIn(".. autofunction:: add_cloth_grid", page)
+        self.assertIn(".. autofunction:: add_cloth_mesh", page)
+        self.assertNotIn("newton._src", page)
 
 
 @unittest.skipUnless(generate_api is not None, "requires the docs/ package (source checkout only)")
@@ -122,7 +201,7 @@ class TestGenerateApiDeprecatedSymbols(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp)
             with (
-                mock.patch.dict(sys.modules, {mod_name: fake_module}),
+                patch_sys_module(mod_name, fake_module),
                 mock.patch.object(generate_api, "OUTPUT_DIR", output_dir),
                 mock.patch.object(generate_api, "REPO_ROOT", output_dir.parent),
                 warnings.catch_warnings(),

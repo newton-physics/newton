@@ -1,0 +1,1 @@
+Raise the Viser requirement from `viser==1.0.26` to `viser>=1.1.1` for the live viewer and notebook playback, and include it in the development test dependencies. Install `viser>=1.1.1` when using the viewer outside the notebook, documentation, or development extras.

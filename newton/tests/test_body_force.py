@@ -353,179 +353,113 @@ for device in devices:
 # has a non-zero center of mass offset.
 
 
-def test_force_no_rotation(
-    test: TestBodyForce,
-    device,
-    solver_fn,
-    com_offset: tuple[float, float, float],
-    force_direction: tuple[float, float, float],
-    use_control: bool = False,
-):
-    """Test that a force applied at the CoM causes linear acceleration without rotation.
-
-    When a body has a non-zero CoM offset and we apply a pure force (no torque),
-    the force acts at the CoM, so the body should accelerate linearly without
-    rotating.
-
-    Args:
-        test: Test case instance
-        device: Compute device
-        solver_fn: Function that creates a solver given a model
-        com_offset: Center of mass offset in body frame (x, y, z)
-        force_direction: Direction of applied force (fx, fy, fz)
-        use_control: Apply forces via control.joint_f instead of state.body_f
-    """
+def test_force_no_rotation(test, device, solver_fn, use_control=False):
+    """Check pure-force acceleration without rotation for all CoM offsets and axes."""
+    cases = [(offset, direction) for offset in com_offsets for direction in force_directions]
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-
-    initial_pos = wp.vec3(0.0, 0.0, 1.0)
-    # use non-identity rotation to test that the wrench is applied correctly in world frame
+    # Independent cases share one world and must not collide.
+    shape_cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=False)
     rot = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5)
-    body_index = builder.add_body(xform=wp.transform(initial_pos, rot))
-    builder.add_shape_box(body_index, hx=0.1, hy=0.1, hz=0.1)
-    builder.body_com[body_index] = wp.vec3(*com_offset)
+    for offset, _direction in cases:
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), rot))
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1, cfg=shape_cfg)
+        builder.body_com[body] = wp.vec3(*offset)
 
     model = builder.finalize(device=device)
     solver = solver_fn(model)
-
-    state_0 = model.state()
-    state_1 = model.state()
+    state_0, state_1 = model.state(), model.state()
     control = model.control() if use_control else None
-
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
-    # Apply pure force (no torque)
     force_magnitude = 10.0
-    wrench = np.array(
-        [
-            force_direction[0] * force_magnitude,
-            force_direction[1] * force_magnitude,
-            force_direction[2] * force_magnitude,
-            0.0,
-            0.0,
-            0.0,
-        ],
+    wrenches = np.array(
+        [[*(component * force_magnitude for component in direction), 0.0, 0.0, 0.0] for _offset, direction in cases],
         dtype=np.float32,
     )
     if use_control:
-        control.joint_f.assign(wrench)
+        control.joint_f.assign(wrenches.reshape(-1))
     else:
-        state_0.body_f.assign(wrench)
-        state_1.body_f.assign(wrench)
+        state_0.body_f.assign(wrenches)
+        state_1.body_f.assign(wrenches)
 
-    # Step simulation
     sim_dt = 0.01
     num_steps = 5
-
-    mass = model.body_mass.numpy()[body_index]
-    expected_velocity = force_magnitude / mass * sim_dt * num_steps
-    abs_tol_expected_velocity = 5e-2 * abs(expected_velocity)
-    abs_tol_zero_velocity = 1e-3  # for testing zero velocities
-
     for _ in range(num_steps):
         solver.step(state_0, state_1, control, None, sim_dt)
         state_0, state_1 = state_1, state_0
-        # Re-apply force for next step
         if not use_control:
-            state_0.body_f.assign(wrench)
-            state_1.body_f.assign(wrench)
+            state_0.body_f.assign(wrenches)
+            state_1.body_f.assign(wrenches)
 
-    # Body rotation should NOT have accelerated - expect zero velocity for angular components
-    body_qd = state_0.body_qd.numpy()[body_index]
-    test.assertAlmostEqual(body_qd[3], 0.0, delta=abs_tol_zero_velocity)
-    test.assertAlmostEqual(body_qd[4], 0.0, delta=abs_tol_zero_velocity)
-    test.assertAlmostEqual(body_qd[5], 0.0, delta=abs_tol_zero_velocity)
+    masses = model.body_mass.numpy()
+    velocities = state_0.body_qd.numpy()
+    for body, (offset, direction) in enumerate(cases):
+        with test.subTest(com_offset=offset, force_direction=direction):
+            expected_velocity = force_magnitude / masses[body] * sim_dt * num_steps
+            abs_tol_expected_velocity = 5e-2 * abs(expected_velocity)
+            body_qd = velocities[body]
+            test.assertAlmostEqual(body_qd[3], 0.0, delta=1e-3)
+            test.assertAlmostEqual(body_qd[4], 0.0, delta=1e-3)
+            test.assertAlmostEqual(body_qd[5], 0.0, delta=1e-3)
+            force_dir = np.array(direction, dtype=np.float32)
+            test.assertAlmostEqual(np.linalg.norm(force_dir), 1.0, delta=1e-6)
+            projected_velocity = float(np.dot(force_dir, body_qd[:3]))
+            test.assertAlmostEqual(projected_velocity, expected_velocity, delta=abs_tol_expected_velocity)
 
-    # project linear velocity onto force direction and test against expected velocity
-    force_dir = np.array(force_direction, dtype=np.float32)
-    force_dir_norm = np.linalg.norm(force_dir)
-    test.assertAlmostEqual(force_dir_norm, 1.0, delta=1e-6)
-    linear_velocity = body_qd[:3]
-    projected_velocity = float(np.dot(force_dir, linear_velocity))
-    test.assertAlmostEqual(projected_velocity, expected_velocity, delta=abs_tol_expected_velocity)
 
-
-def test_combined_force_torque(
-    test: TestBodyForce,
-    device,
-    solver_fn,
-    com_offset: tuple[float, float, float],
-    use_control: bool = False,
-):
-    """Test combined force and torque with non-zero CoM offset.
-
-    When both force and torque are applied, the CoM should translate according
-    to the force while the body rotates due to the torque.
-
-    Args:
-        test: Test case instance
-        device: Compute device
-        solver_fn: Function that creates a solver given a model
-        com_offset: Center of mass offset in body frame (x, y, z)
-        use_control: Apply forces via control.joint_f instead of state.body_f
-    """
+def test_combined_force_torque(test, device, solver_fn, use_control=False):
+    """Check combined force and torque for every CoM offset."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-
-    initial_pos = wp.vec3(0.0, 0.0, 1.0)
-    # use non-identity rotation to test that the wrench is applied correctly in world frame
+    shape_cfg = newton.ModelBuilder.ShapeConfig(has_shape_collision=False)
     rot = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), wp.pi * 0.5)
-    body_index = builder.add_body(xform=wp.transform(initial_pos, rot))
-    builder.add_shape_box(body_index, hx=0.1, hy=0.1, hz=0.1)
-    builder.body_com[body_index] = wp.vec3(*com_offset)
+    for offset in com_offsets:
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 1.0), rot))
+        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1, cfg=shape_cfg)
+        builder.body_com[body] = wp.vec3(*offset)
 
     model = builder.finalize(device=device)
     solver = solver_fn(model)
-
-    state_0 = model.state()
-    state_1 = model.state()
+    state_0, state_1 = model.state(), model.state()
     control = model.control() if use_control else None
-
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
 
-    # Apply both force and torque
     force_magnitude = 10.0
     torque_magnitude = 10.0
-    wrench = np.array(
-        [force_magnitude, 0.0, 0.0, 0.0, 0.0, torque_magnitude],  # Force in X, torque about Z
-        dtype=np.float32,
+    wrenches = np.tile(
+        np.array([force_magnitude, 0.0, 0.0, 0.0, 0.0, torque_magnitude], dtype=np.float32),
+        (model.body_count, 1),
     )
     if use_control:
-        control.joint_f.assign(wrench)
+        control.joint_f.assign(wrenches.reshape(-1))
     else:
-        state_0.body_f.assign(wrench)
-        state_1.body_f.assign(wrench)
+        state_0.body_f.assign(wrenches)
+        state_1.body_f.assign(wrenches)
 
     sim_dt = 0.01
     num_steps = 10
-    mass = model.body_mass.numpy()[body_index]
-    expected_velocity = force_magnitude / mass * sim_dt * num_steps
-    abs_tol_expected_velocity = 5e-2 * (1 + abs(expected_velocity))
-
-    expected_angular_velocity = torque_magnitude / model.body_inertia.numpy()[body_index][2, 2] * sim_dt * num_steps
-    abs_tol_expected_angular_velocity = 5e-2 * (1 + abs(expected_angular_velocity))
-
-    abs_tol_zero_velocities = 1e-3  # for testing zero velocities
-
     for _ in range(num_steps):
         solver.step(state_0, state_1, control, None, sim_dt)
         state_0, state_1 = state_1, state_0
-        # Re-apply force for next step
         if not use_control:
-            state_0.body_f.assign(wrench)
-            state_1.body_f.assign(wrench)
+            state_0.body_f.assign(wrenches)
+            state_1.body_f.assign(wrenches)
 
-    # Get final body twist
-    body_qd = state_0.body_qd.numpy()[body_index]
-
-    linear_velocity = body_qd[:3]
-    test.assertAlmostEqual(linear_velocity[0], expected_velocity, delta=abs_tol_expected_velocity)
-    test.assertAlmostEqual(linear_velocity[1], 0.0, delta=abs_tol_zero_velocities)
-    test.assertAlmostEqual(linear_velocity[2], 0.0, delta=abs_tol_zero_velocities)
-
-    # Test angular velocity
-    angular_velocity = body_qd[3:6]
-    test.assertAlmostEqual(angular_velocity[0], 0.0, delta=abs_tol_zero_velocities)
-    test.assertAlmostEqual(angular_velocity[1], 0.0, delta=abs_tol_zero_velocities)
-    test.assertAlmostEqual(angular_velocity[2], expected_angular_velocity, delta=abs_tol_expected_angular_velocity)
+    masses = model.body_mass.numpy()
+    inertias = model.body_inertia.numpy()
+    velocities = state_0.body_qd.numpy()
+    for body, offset in enumerate(com_offsets):
+        with test.subTest(com_offset=offset):
+            expected_velocity = force_magnitude / masses[body] * sim_dt * num_steps
+            abs_tol_expected_velocity = 5e-2 * (1 + abs(expected_velocity))
+            expected_angular_velocity = torque_magnitude / inertias[body, 2, 2] * sim_dt * num_steps
+            abs_tol_expected_angular_velocity = 5e-2 * (1 + abs(expected_angular_velocity))
+            body_qd = velocities[body]
+            test.assertAlmostEqual(body_qd[0], expected_velocity, delta=abs_tol_expected_velocity)
+            test.assertAlmostEqual(body_qd[1], 0.0, delta=1e-3)
+            test.assertAlmostEqual(body_qd[2], 0.0, delta=1e-3)
+            test.assertAlmostEqual(body_qd[3], 0.0, delta=1e-3)
+            test.assertAlmostEqual(body_qd[4], 0.0, delta=1e-3)
+            test.assertAlmostEqual(body_qd[5], expected_angular_velocity, delta=abs_tol_expected_angular_velocity)
 
 
 # Solvers for non-zero CoM tests
@@ -584,52 +518,24 @@ for device in devices:
         if device.is_cuda and solver_name == "mujoco_cpu":
             continue
 
-        # Test force with CoM offset (no rotation)
-        # This should work for all solvers since forces act at the CoM
-        for i, com_offset in enumerate(com_offsets):
-            for j, force_dir in enumerate(force_directions):
+        for use_control in (False, True):
+            suffix = f"joint_f_{solver_name}" if use_control else solver_name
+            add_function_test(
+                TestBodyForce,
+                f"test_force_no_rotation_{suffix}",
+                test_force_no_rotation,
+                devices=[device],
+                solver_fn=solver_fn,
+                use_control=use_control,
+            )
+            if supports_torque_com:
                 add_function_test(
                     TestBodyForce,
-                    f"test_force_no_rotation_{solver_name}_com{i}_force{j}",
-                    test_force_no_rotation,
-                    devices=[device],
-                    solver_fn=solver_fn,
-                    com_offset=com_offset,
-                    force_direction=force_dir,
-                    use_control=False,
-                )
-                add_function_test(
-                    TestBodyForce,
-                    f"test_force_no_rotation_joint_f_{solver_name}_com{i}_force{j}",
-                    test_force_no_rotation,
-                    devices=[device],
-                    solver_fn=solver_fn,
-                    com_offset=com_offset,
-                    force_direction=force_dir,
-                    use_control=True,
-                )
-
-        # Test combined force and torque with CoM offset
-        # Only for solvers that correctly handle torque with CoM offset
-        if supports_torque_com:
-            for i, com_offset in enumerate(com_offsets):
-                add_function_test(
-                    TestBodyForce,
-                    f"test_combined_force_torque_{solver_name}_com{i}",
+                    f"test_combined_force_torque_{suffix}",
                     test_combined_force_torque,
                     devices=[device],
                     solver_fn=solver_fn,
-                    com_offset=com_offset,
-                    use_control=False,
-                )
-                add_function_test(
-                    TestBodyForce,
-                    f"test_combined_force_torque_joint_f_{solver_name}_com{i}",
-                    test_combined_force_torque,
-                    devices=[device],
-                    solver_fn=solver_fn,
-                    com_offset=com_offset,
-                    use_control=True,
+                    use_control=use_control,
                 )
 
 for device in devices:
