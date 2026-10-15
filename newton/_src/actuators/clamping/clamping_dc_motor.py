@@ -186,7 +186,6 @@ class ClampingDCMotor(ClampingBase):
         return corner
 
     evaluate_clamp = _evaluate_dc_motor_clamp
-    _implicit_dissipative = True
 
     def param_width(self) -> int:
         return 3

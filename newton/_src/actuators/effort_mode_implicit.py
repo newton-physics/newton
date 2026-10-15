@@ -426,20 +426,14 @@ def _gather_group_response_kernel(
     group_response[g, i, j] = v
 
 
-def _build_block_solve_kernel(
-    evaluate_force: wp.Function, clamp_chain: wp.Function, tile: int, cache_key: tuple, pivoted: bool = False
-):
+def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Function, tile: int, cache_key: tuple):
     """Build the block-parallel variant of the coupled solve.
 
-    One thread block per group and one thread per row. Without *pivoted*, the
-    Newton system ``(I + h D A) dp = -r`` with ``D = -diag(s) >= 0`` is solved
-    for ``dp`` directly through the SPD system ``(1/(h D) + A)`` on the rows
-    with a slope, as MuJoCo does with ``M + J^T D J``; positive slopes are left
-    out (quasi-Newton). With *pivoted*, the full ``J = I - h diag(s) A`` for any
-    sign of ``s`` is row-equilibrated and solved by Gauss-Jordan elimination with
-    partial pivoting, one row per lane.
+    One thread block per group and one thread per row. The Newton system
+    ``J = I - h diag(s) A`` for any sign of ``s`` is row-equilibrated and solved
+    by Gauss-Jordan elimination with partial pivoting, one row per lane.
     """
-    key = (*cache_key, "block", tile, pivoted)
+    key = (*cache_key, "block", tile)
     cached = _coupled_kernel_cache.get(key)
     if cached is not None:
         return cached
@@ -552,7 +546,7 @@ def _build_block_solve_kernel(
     @wp.kernel(
         enable_backward=False,
         module="unique",
-        module_options={"block_dim": tile, "max_unroll": tile_aug if pivoted else 16},
+        module_options={"block_dim": tile, "max_unroll": tile_aug},
     )
     def solve(
         group_size: wp.array[wp.int32],
@@ -588,13 +582,12 @@ def _build_block_solve_kernel(
         upd_tol = wp.float64(update_tol)
 
         A = wp.tile_load(group_response[g], shape=(tile, tile), storage="shared")
+        S = wp.tile_zeros(shape=(tile_aug, tile), dtype=float, storage="shared")
+        Sc = wp.tile_zeros(shape=(tile,), dtype=float, storage="shared")
+        X = wp.tile_zeros(shape=(tile,), dtype=float, storage="shared")
         row_max = float(0.0)
-        if wp.static(pivoted):
-            S = wp.tile_zeros(shape=(tile_aug, tile), dtype=float, storage="shared")
-            Sc = wp.tile_zeros(shape=(tile,), dtype=float, storage="shared")
-            X = wp.tile_zeros(shape=(tile,), dtype=float, storage="shared")
-            for j in range(ng):
-                row_max = wp.max(row_max, wp.abs(A[j, lane]))
+        for j in range(ng):
+            row_max = wp.max(row_max, wp.abs(A[j, lane]))
 
         si = wp.int32(0)
         q0 = wp.float64(0.0)
@@ -634,57 +627,25 @@ def _build_block_solve_kernel(
         for it in range(max_iters):
             u = apply_response(A, p)
             r = wp.float64(0.0)
-            kd_eff = wp.float64(0.0)
             c_lane = wp.float64(0.0)
             if active:
                 qd_i = qd0 + u
                 res = row(p, q0 + hd * qd_i, qd_i, tq, tqd, ff, params, clamp_params, si, hd, fd_eps)
                 r = res[0]
                 c_lane = -hd * res[1]
-                # Positive slopes stay out of the factored matrix (quasi-Newton) so it stays SPD.
-                kd_eff = hd * wp.max(-res[1], wp.float64(0.0))
             rn = wp.tile_extract(wp.tile_sum(wp.tile(r * r)), 0)
             # Always take one Newton step: the absolute tolerance would otherwise
             # accept the explicit warm start whenever the efforts are small.
             if it > 0 and rn < res_tol * res_tol:
                 break
 
-            if wp.static(pivoted):
-                b = -r
-                step = pivoted_solve(A, S, Sc, X, lane, ng, c_lane, b, row_max, derivative_floor)
-                bad = float(0.0)
-                if not wp.isfinite(step):
-                    bad = 1.0
-                if wp.tile_extract(wp.tile_sum(wp.tile(bad)), 0) > 0.0:
-                    step = b / (wp.float64(1.0) + c_lane * a_ii)
-            else:
-                # Newton step (I + h D A) dp = b, solved for dp directly. Rows with a
-                # slope (F) solve (1/(h d) + A_FF) dp_F = b_F/(h d) - A_FZ b_Z; the
-                # others (Z) keep dp_Z = b_Z. No term cancels however stiff the drive.
-                b = -r
-                free = wp.float64(0.0)
-                inv_kd = wp.float64(0.0)
-                if kd_eff * a_ii > wp.float64(1.0e-6):
-                    free = wp.float64(1.0)
-                    inv_kd = wp.float64(1.0) / kd_eff
-                ft = wp.tile(float(free))
-                K = wp.tile_map(
-                    wp.mul,
-                    wp.tile_matmul(wp.tile_reshape(ft, shape=(tile, 1)), wp.tile_reshape(ft, shape=(1, tile))),
-                    A,
-                )
-                K = wp.tile_diag_add(K, wp.tile(float(free * inv_kd + (wp.float64(1.0) - free))))
-                L = wp.tile_cholesky(K)
-                Az = apply_response(A, (wp.float64(1.0) - free) * b)
-                rhs = free * (inv_kd * b - Az) + (wp.float64(1.0) - free) * b
-                step = wp.float64(wp.untile(wp.tile_cholesky_solve(L, wp.tile(float(rhs)))))
-                # float32 Cholesky has no pivot floor; if an ill-conditioned K breaks
-                # it, fall back to the diagonal of the same Newton system.
-                bad = float(0.0)
-                if not wp.isfinite(step):
-                    bad = 1.0
-                if wp.tile_extract(wp.tile_sum(wp.tile(bad)), 0) > 0.0:
-                    step = b / (wp.float64(1.0) + kd_eff * a_ii)
+            b = -r
+            step = pivoted_solve(A, S, Sc, X, lane, ng, c_lane, b, row_max, derivative_floor)
+            bad = float(0.0)
+            if not wp.isfinite(step):
+                bad = 1.0
+            if wp.tile_extract(wp.tile_sum(wp.tile(bad)), 0) > 0.0:
+                step = b / (wp.float64(1.0) + c_lane * a_ii)
 
             # Backtrack until the residual drops (see the per-thread kernel).
             alpha = wp.float64(1.0)
@@ -839,7 +800,6 @@ class _EffortModeImplicit:
         self._kernel = _build_coupled_solve_kernel(drive.evaluate_force, chain, key)
         self._kernel_key = key
         self._clamp_chain = chain
-        self._clamps_dissipative = all(getattr(c, "_implicit_dissipative", False) for c in clamping or [])
 
     def _build_groups(self, vel_indices) -> None:
         """Map actuator DOFs to (articulation, local index) and group by articulation."""
@@ -930,17 +890,15 @@ class _EffortModeImplicit:
         self._slot_response = wp.zeros(self._num_actuators, dtype=float, device=device)
         self._num_groups = num_groups
 
-        # One thread block per group on CUDA when the group fits a tile. Drives whose
-        # slope is never positive factor an SPD system by Cholesky; others solve the
-        # full Newton system with pivoting. One thread per group otherwise.
+        # One thread block per group on CUDA when the group fits a tile, one
+        # thread per group otherwise.
         self._block_kernel = None
         tile = max(32, ((max_ng + 15) // 16) * 16)
-        dissipative = getattr(self._drive, "_implicit_dissipative", False) and self._clamps_dissipative
         if wp.get_device(device).is_cuda and tile <= _BLOCK_SOLVE_MAX_ROWS:
             self._block_tile = tile
             self._group_response = wp.zeros((num_groups, tile, tile), dtype=float, device=device)
             self._block_kernel = _build_block_solve_kernel(
-                self._drive.evaluate_force, self._clamp_chain, tile, self._kernel_key, pivoted=not dissipative
+                self._drive.evaluate_force, self._clamp_chain, tile, self._kernel_key
             )
         else:
             self._pbuf = wp.zeros((num_groups, max_ng), dtype=wp.float64, device=device)

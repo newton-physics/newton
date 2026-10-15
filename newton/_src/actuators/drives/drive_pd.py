@@ -106,7 +106,6 @@ class DrivePD(DriveBase):
         self._param_pack: wp.array2d[float] | None = None
 
     evaluate_force = _pd_evaluate_force
-    _implicit_dissipative = True
 
     def bind_params(self) -> wp.array2d[float]:
         # Same pack every time: a new one would detach later writes from the solve.
