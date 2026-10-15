@@ -46,6 +46,188 @@ _CONTACT_END_GAP_SLOP = wp.constant(1.0e-6)
 # Warm-start history generation of a step without a contact set; no contact set has it.
 CONTACT_GENERATION_NONE = wp.constant(GENERATION_SENTINEL)
 
+# Row-slot reservation modes of the joint-row families. ATOMIC reserves from the per-world counter, so a
+# family's rows land in thread-scheduling order. COUNT and WRITE run a family twice around
+# :func:`scan_world_row_requests`, so each element's rows land in world-element order.
+ROW_SLOTS_ATOMIC = wp.constant(0)
+ROW_SLOTS_COUNT = wp.constant(1)
+ROW_SLOTS_WRITE = wp.constant(2)
+# Slot returned by a COUNT pass: past every row capacity, so callers skip their row writes.
+ROW_SLOT_COUNT_PASS = wp.constant(1 << 30)
+
+
+@wp.func
+def reserve_world_rows(
+    mode: int,
+    world_slot_counter: wp.array[int],
+    world: int,
+    count: int,
+    element_row_cursor: wp.array[int],
+    element: int,
+) -> int:
+    """Reserve ``count`` consecutive rows of ``world`` for ``element`` and return the first slot."""
+    if mode == ROW_SLOTS_ATOMIC:
+        return wp.atomic_add(world_slot_counter, world, count)
+    # One thread owns each element, so its cursor needs no atomics.
+    first = element_row_cursor[element]
+    element_row_cursor[element] = first + count
+    if mode == ROW_SLOTS_COUNT:
+        return ROW_SLOT_COUNT_PASS
+    return first
+
+
+@wp.kernel
+def scan_world_row_requests(
+    world_element_start: wp.array[int],
+    world_elements: wp.array[int],
+    # in/out
+    world_slot_counter: wp.array[int],
+    element_row_cursor: wp.array[int],
+):
+    """Turn per-element row counts into first slots, in world-element order, and advance the world counters.
+
+    Runs between the COUNT and WRITE passes of one row family.
+    """
+    world = wp.tid()
+    slot = world_slot_counter[world]
+    for i in range(world_element_start[world], world_element_start[world + 1]):
+        element = world_elements[i]
+        count = element_row_cursor[element]
+        element_row_cursor[element] = slot
+        slot += count
+    world_slot_counter[world] = slot
+
+
+@wp.kernel
+def fill_contact_world_sort_keys(
+    contact_count: wp.array[int],
+    contact_path: wp.array[int],
+    contact_world: wp.array[int],
+    world_count: int,
+    # outputs
+    keys: wp.array[int],
+    values: wp.array[int],
+):
+    """Key every contact by its solve world; contacts without rows sort last."""
+    c = wp.tid()
+    key = world_count
+    if c < contact_count[0] and contact_path[c] >= 0:
+        key = contact_world[c]
+    keys[c] = key
+    values[c] = c
+
+
+@wp.kernel
+def find_contact_world_segments(
+    keys: wp.array[int],
+    count: int,
+    world_count: int,
+    # outputs
+    world_contact_start: wp.array[int],
+    world_contact_end: wp.array[int],
+):
+    """Record each world's segment of the world-sorted contacts; untouched worlds keep an empty segment."""
+    i = wp.tid()
+    key = keys[i]
+    if key >= world_count:
+        return
+    if i == 0 or keys[i - 1] != key:
+        world_contact_start[key] = i
+    if i == count - 1 or keys[i + 1] != key:
+        world_contact_end[key] = i + 1
+
+
+@wp.kernel
+def assign_world_contact_slots(
+    world_contact_start: wp.array[int],
+    world_contact_end: wp.array[int],
+    sorted_contacts: wp.array[int],
+    contact_slots_needed: wp.array[int],
+    max_constraints: int,
+    mf_max_constraints: int,
+    propagation_max_constraints: int,
+    # in/out
+    contact_path: wp.array[int],
+    world_slot_counter: wp.array[int],
+    mf_slot_counter: wp.array[int],
+    propagation_slot_counter: wp.array[int],
+    # outputs
+    contact_slot: wp.array[int],
+    dense_contact_world_flag: wp.array[int],
+    dense_dropped_contact_rows: wp.array[int],
+    mf_dropped_contact_rows: wp.array[int],
+    propagation_dropped_contact_rows: wp.array[int],
+    dense_first_rejected_slot: wp.array[int],
+    mf_first_rejected_slot: wp.array[int],
+    propagation_first_rejected_slot: wp.array[int],
+):
+    """Give a world's routed contacts their row slots in contact-index order.
+
+    Follows the reservation rules of :func:`allocate_world_contact_slots`: a contact that does not fit is
+    dropped and every later contact of its row family in that world is dropped with it.
+    """
+    world = wp.tid()
+    start = world_contact_start[world]
+    end = world_contact_end[world]
+    if start >= end:
+        return
+    dense_slot = world_slot_counter[world]
+    mf_slot = mf_slot_counter[world]
+    propagation_slot = propagation_slot_counter[world]
+    dense_dropped = int(0)
+    mf_dropped = int(0)
+    propagation_dropped = int(0)
+    dense_rejected = dense_first_rejected_slot[world]
+    mf_rejected = mf_first_rejected_slot[world]
+    propagation_rejected = propagation_first_rejected_slot[world]
+    has_dense = int(0)
+    for i in range(start, end):
+        c = sorted_contacts[i]
+        path = contact_path[c]
+        needed = contact_slots_needed[c]
+        slot = int(0)
+        if path == 1:
+            slot = mf_slot
+            mf_slot += needed
+            if slot + needed > mf_max_constraints:
+                mf_rejected = wp.min(mf_rejected, slot)
+                mf_dropped += needed
+                slot = -1
+        elif path == 2:
+            slot = propagation_slot
+            propagation_slot += needed
+            if slot + needed > propagation_max_constraints:
+                propagation_rejected = wp.min(propagation_rejected, slot)
+                propagation_dropped += needed
+                slot = -1
+        else:
+            slot = dense_slot
+            dense_slot += needed
+            if slot + needed > max_constraints:
+                dense_rejected = wp.min(dense_rejected, slot)
+                dense_dropped += needed
+                slot = -1
+            else:
+                has_dense = 1
+        contact_slot[c] = slot
+        if slot < 0:
+            contact_path[c] = -1
+    world_slot_counter[world] = dense_slot
+    mf_slot_counter[world] = mf_slot
+    propagation_slot_counter[world] = propagation_slot
+    dense_first_rejected_slot[world] = dense_rejected
+    mf_first_rejected_slot[world] = mf_rejected
+    propagation_first_rejected_slot[world] = propagation_rejected
+    if dense_dropped > 0:
+        dense_dropped_contact_rows[world] += dense_dropped
+    if mf_dropped > 0:
+        mf_dropped_contact_rows[world] += mf_dropped
+    if propagation_dropped > 0:
+        propagation_dropped_contact_rows[world] += propagation_dropped
+    if has_dense != 0:
+        dense_contact_world_flag[world] = 1
+
+
 # Keep launch-geometry-specific dynamics kernels out of the large general
 # kernel module. Warp compiles one whole module variant per block dimension.
 _KINEMATICS_KERNEL_MODULE = wp.Module(f"{__name__}.kinematics")
@@ -2324,13 +2506,18 @@ def _reserve_bilateral_rows(
     world_slot_counter: wp.array[int],
     first_rejected_slot: wp.array[int],
     dropped_rows: wp.array[int],
+    row_slot_mode: int,
+    element_row_cursor: wp.array[int],
+    element: int,
 ) -> int:
     """Reserve ``row_count`` consecutive rows of a world, or reject the whole group.
 
     A rejected group records its first slot so the row count is truncated before it,
     and counts its rows as dropped; the raised slot counter latches the overflow status.
     """
-    slot = wp.atomic_add(world_slot_counter, world, row_count)
+    slot = reserve_world_rows(row_slot_mode, world_slot_counter, world, row_count, element_row_cursor, element)
+    if row_slot_mode == ROW_SLOTS_COUNT:
+        return -1
     if slot + row_count <= max_constraints:
         return slot
     wp.atomic_min(first_rejected_slot, world, slot)
@@ -2349,6 +2536,8 @@ def allocate_mimic_slots(
     world_slot_counter: wp.array[int],
     first_rejected_slot: wp.array[int],
     dropped_rows: wp.array[int],
+    row_slot_mode: int,
+    element_row_cursor: wp.array[int],
 ):
     """Allocate one dense row per enabled mimic row.
 
@@ -2363,7 +2552,15 @@ def allocate_mimic_slots(
         if not mimic_enabled[legacy]:
             return
     mimic_slot[k] = _reserve_bilateral_rows(
-        mimic_world[k], 1, max_constraints, world_slot_counter, first_rejected_slot, dropped_rows
+        mimic_world[k],
+        1,
+        max_constraints,
+        world_slot_counter,
+        first_rejected_slot,
+        dropped_rows,
+        row_slot_mode,
+        element_row_cursor,
+        k,
     )
 
 
@@ -2443,6 +2640,8 @@ def allocate_connect_slots(
     world_slot_counter: wp.array[int],
     first_rejected_slot: wp.array[int],
     dropped_rows: wp.array[int],
+    row_slot_mode: int,
+    element_row_cursor: wp.array[int],
 ):
     """Allocate three consecutive dense rows per loop closure enabled in ``Model.joint_enabled``.
 
@@ -2454,7 +2653,15 @@ def allocate_connect_slots(
     if not joint_enabled[connect_joint[k]]:
         return
     connect_slot[k] = _reserve_bilateral_rows(
-        connect_world[k], 3, max_constraints, world_slot_counter, first_rejected_slot, dropped_rows
+        connect_world[k],
+        3,
+        max_constraints,
+        world_slot_counter,
+        first_rejected_slot,
+        dropped_rows,
+        row_slot_mode,
+        element_row_cursor,
+        k,
     )
 
 
@@ -2895,11 +3102,13 @@ def allocate_joint_velocity_limit_slots(
     velocity_limit_slot: wp.array[int],
     velocity_limit_sign: wp.array[float],
     world_slot_counter: wp.array[int],
+    row_slot_mode: int,
+    element_row_cursor: wp.array[int],
 ):
     """Allocate lower/upper velocity-limit rows for every finitely limited DOF.
 
     For each non-locked DOF of a PRISMATIC / REVOLUTE / D6 joint
-    with ``joint_velocity_limit[i] > 0``, two slots are atomically reserved in
+    with ``joint_velocity_limit[i] > 0``, two slots are reserved in
     the per-world counter. The sign encodes which side of the bilateral box
     ``[-qdot_max, +qdot_max]`` each row enforces:
 
@@ -2986,12 +3195,12 @@ def allocate_joint_velocity_limit_slots(
             lower_idx = 2 * dof
             upper_idx = lower_idx + 1
 
-            lower_slot = wp.atomic_add(world_slot_counter, world, 1)
+            lower_slot = reserve_world_rows(row_slot_mode, world_slot_counter, world, 1, element_row_cursor, art)
             if lower_slot < max_constraints:
                 velocity_limit_slot[lower_idx] = lower_slot
                 velocity_limit_sign[lower_idx] = 1.0
 
-            upper_slot = wp.atomic_add(world_slot_counter, world, 1)
+            upper_slot = reserve_world_rows(row_slot_mode, world_slot_counter, world, 1, element_row_cursor, art)
             if upper_slot < max_constraints:
                 velocity_limit_slot[upper_idx] = upper_slot
                 velocity_limit_sign[upper_idx] = -1.0
@@ -3083,6 +3292,8 @@ def allocate_physx_drive_slots(
     # outputs
     drive_slot: wp.array[int],
     world_slot_counter: wp.array[int],
+    row_slot_mode: int,
+    element_row_cursor: wp.array[int],
 ):
     """Reserve one dense PGS drive row for every driven PRISMATIC, REVOLUTE or D6 DOF.
 
@@ -3108,7 +3319,7 @@ def allocate_physx_drive_slots(
             dof = qd_start + axis
             if joint_target_ke[dof] <= 0.0 and joint_target_kd[dof] <= 0.0:
                 continue
-            slot = wp.atomic_add(world_slot_counter, world, 1)
+            slot = reserve_world_rows(row_slot_mode, world_slot_counter, world, 1, element_row_cursor, art)
             if slot < max_constraints:
                 drive_slot[dof] = slot
 
@@ -3332,6 +3543,7 @@ def _allocate_world_contact_slot(
     contact_gap_limit: float,
     contact_friction_gap_limit: float,
     friction_patches: FrictionPatches,
+    classify_only: int,
     # outputs
     contact_world: wp.array[int],
     contact_slot: wp.array[int],
@@ -3484,6 +3696,20 @@ def _allocate_world_contact_slot(
         slots_needed = 3
     contact_slots_needed[c] = slots_needed
 
+    if classify_only != 0:
+        # assign_world_contact_slots reserves the rows after the contacts are sorted by world.
+        contact_world[c] = world
+        contact_slot[c] = -1
+        contact_art_a[c] = art_a
+        contact_art_b[c] = art_b
+        if is_mf:
+            contact_path[c] = 1
+        elif is_propagation:
+            contact_path[c] = 2
+        else:
+            contact_path[c] = 0
+        return
+
     # A reservation that does not fit records its slot instead of rolling the counter
     # back, so the finalize kernels truncate every world's row count there.
     if is_mf:
@@ -3550,6 +3776,7 @@ def allocate_world_contact_slots(
     contact_gap_limit: float,
     contact_friction_gap_limit: float,
     friction_patches: FrictionPatches,
+    classify_only: int,
     # outputs
     contact_world: wp.array[int],
     contact_slot: wp.array[int],
@@ -3575,6 +3802,9 @@ def allocate_world_contact_slots(
     capacity, so a count above the buffer size does not describe a fully
     materialized prefix: such a frame routes no contact (and is reported through
     the solver's capacity status).
+
+    With ``classify_only`` the kernel routes contacts and counts their rows only;
+    :func:`assign_world_contact_slots` reserves them in contact order.
     """
     thread = wp.tid()
     total_contacts = contact_count[0]
@@ -3615,6 +3845,7 @@ def allocate_world_contact_slots(
             contact_gap_limit,
             contact_friction_gap_limit,
             friction_patches,
+            classify_only,
             contact_world,
             contact_slot,
             contact_art_a,
@@ -5367,6 +5598,8 @@ def allocate_rigid_velocity_limit_slots(
     rigid_velocity_limit_slot: wp.array[int],
     rigid_velocity_limit_sign: wp.array[float],
     mf_slot_counter: wp.array[int],
+    row_slot_mode: int,
+    element_row_cursor: wp.array[int],
 ):
     """Allocate two signed MF velocity-limit rows per limited rigid velocity axis.
 
@@ -5429,12 +5662,12 @@ def allocate_rigid_velocity_limit_slots(
         lower_idx = base + 2 * axis
         upper_idx = lower_idx + 1
 
-        lower_slot = wp.atomic_add(mf_slot_counter, world, 1)
+        lower_slot = reserve_world_rows(row_slot_mode, mf_slot_counter, world, 1, element_row_cursor, candidate)
         if lower_slot < mf_max_constraints:
             rigid_velocity_limit_slot[lower_idx] = lower_slot
             rigid_velocity_limit_sign[lower_idx] = 1.0
 
-        upper_slot = wp.atomic_add(mf_slot_counter, world, 1)
+        upper_slot = reserve_world_rows(row_slot_mode, mf_slot_counter, world, 1, element_row_cursor, candidate)
         if upper_slot < mf_max_constraints:
             rigid_velocity_limit_slot[upper_idx] = upper_slot
             rigid_velocity_limit_sign[upper_idx] = -1.0
@@ -6364,6 +6597,8 @@ def build_joint_limit_rows(
     world_row_mu: wp.array2d[float],
     world_phi: wp.array2d[float],
     world_target_velocity: wp.array2d[float],
+    row_slot_mode: int,
+    element_row_cursor: wp.array[int],
 ):
     """Allocate and fill the active joint-limit rows of one articulation per thread.
 
@@ -6392,7 +6627,7 @@ def build_joint_limit_rows(
                 sign = -1.0
             if not active:
                 continue
-            slot = wp.atomic_add(world_slot_counter, world, 1)
+            slot = reserve_world_rows(row_slot_mode, world_slot_counter, world, 1, element_row_cursor, art)
             if slot >= max_constraints:
                 continue
             J_group[group_idx, slot, local_dof] = sign
@@ -6465,6 +6700,35 @@ def rhs_accum_world_par_art(
         for d in range(n_dofs):
             jv += J_group[idx, c, d] * velocity[dof_start + d]
         wp.atomic_add(world_rhs, world, c, jv)
+
+
+@wp.kernel
+def rhs_accum_world_par_row(
+    world_constraint_count: wp.array[int],
+    world_group_start: wp.array[int],
+    world_groups: wp.array[int],
+    group_to_art: wp.array[int],
+    art_dof_start: wp.array[int],
+    velocity: wp.array[float],
+    J_group: wp.array3d[float],
+    n_dofs: int,
+    max_constraints: int,
+    # outputs
+    world_rhs: wp.array2d[float],
+):
+    """Add one size group's ``J v`` to the dense right-hand side, summing a world's articulations in a fixed order."""
+    tid = wp.tid()
+    world = tid // max_constraints
+    c = tid - world * max_constraints
+    if c >= world_constraint_count[world]:
+        return
+    jv = float(0.0)
+    for i in range(world_group_start[world], world_group_start[world + 1]):
+        group_idx = world_groups[i]
+        dof_start = art_dof_start[group_to_art[group_idx]]
+        for d in range(n_dofs):
+            jv += J_group[group_idx, c, d] * velocity[dof_start + d]
+    world_rhs[world, c] = world_rhs[world, c] + jv
 
 
 @wp.kernel

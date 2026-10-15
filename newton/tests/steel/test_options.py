@@ -1170,6 +1170,33 @@ class TestSteelPrivateApi(unittest.TestCase):
             with self.subTest(option=name):
                 self.assertIsInstance(getattr(SolverSteel, name), (property, _ConstructionOption))
 
+    def test_deterministic_option_follows_the_warp_mode(self):
+        """Inherit ``wp.config.deterministic`` by default and reject modes the solver cannot honor."""
+        model, _ = _build_plane_model("cpu", separation=0.0, restitution=0.0)
+        saved = wp.config.deterministic
+        try:
+            self.assertEqual(SolverSteel(model, solve_mode="split").deterministic, wp.DeterministicMode.NOT_GUARANTEED)
+            wp.config.deterministic = wp.DeterministicMode.RUN_TO_RUN
+            self.assertEqual(SolverSteel(model, solve_mode="split").deterministic, wp.DeterministicMode.RUN_TO_RUN)
+            self.assertEqual(
+                SolverSteel(model, solve_mode="split", deterministic=wp.DeterministicMode.NOT_GUARANTEED).deterministic,
+                wp.DeterministicMode.NOT_GUARANTEED,
+            )
+        finally:
+            wp.config.deterministic = saved
+        with self.assertRaisesRegex(ValueError, "GPU_TO_GPU"):
+            SolverSteel(model, solve_mode="split", deterministic=wp.DeterministicMode.GPU_TO_GPU)
+        with self.assertRaises(TypeError):
+            SolverSteel(model, solve_mode="split", deterministic=True)
+        if wp.is_cuda_available():
+            cuda_model, _ = _build_plane_model("cuda:0", separation=0.0, restitution=0.0)
+            with self.assertRaisesRegex(ValueError, "requires articulated_contact_response='immediate'"):
+                SolverSteel(
+                    cuda_model,
+                    deterministic=wp.DeterministicMode.RUN_TO_RUN,
+                    articulated_contact_response="propagation",
+                )
+
     def test_step_option_assignment_validates_like_the_constructor(self):
         """Reject invalid step-option assignments, keep the previous value, and normalize valid ones."""
         model, _ = _build_plane_model("cpu", separation=0.0, restitution=0.0)

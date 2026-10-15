@@ -47,6 +47,9 @@ from .kernels import (
     PROPAGATION_COLOR_TAIL,
     PROPAGATION_UNIT_META,
     PROPAGATION_UNIT_RING,
+    ROW_SLOTS_ATOMIC,
+    ROW_SLOTS_COUNT,
+    ROW_SLOTS_WRITE,
     ROW_WATERMARK_CONTACT_SLOT,
     ROW_WATERMARK_FAMILY_STRIDE,
     _compute_body_net_wrench,
@@ -72,6 +75,7 @@ from .kernels import (
     apply_sparse_diagonal_contact_restitution,
     apply_world_contact_restitution,
     apply_world_impulses_to_velocity,
+    assign_world_contact_slots,
     build_joint_limit_rows,
     build_mass_update_mask,
     build_mf_body_map,
@@ -116,9 +120,11 @@ from .kernels import (
     eval_rigid_tau_and_augmented_drives,
     factor_diagonal_mass,
     factor_propagation_tree_for_size,
+    fill_contact_world_sort_keys,
     finalize_mf_constraint_counts,
     finalize_world_constraint_counts,
     finalize_world_diag_cfm,
+    find_contact_world_segments,
     flatten_propagation_joint_S,
     flush_propagation_free_body_qd_to_vout,
     gather_contact_warmstart,
@@ -156,7 +162,9 @@ from .kernels import (
     remove_free_root_transport_from_qdd,
     reset_row_warmstart,
     rhs_accum_world_par_art,
+    rhs_accum_world_par_row,
     scale_array_inplace,
+    scan_world_row_requests,
     scatter_augmented_drive_dof_K,
     scatter_qdd_from_groups,
     snapshot_contact_warmstart,
@@ -530,6 +538,15 @@ def _flag_disabled_tree_joints(
     disabled_tree_joint[world] = True
 
 
+@wp.func
+def _print_deterministic_overflow_note():
+    wp.printf(
+        "Steel deterministic mode: each world keeps the rows of its earliest contacts in contact-buffer order. "
+        "While its contacts and joint rows are unchanged it drops the same contacts every step; otherwise it drops "
+        "the tail of the new contact order.\n"
+    )
+
+
 @wp.kernel
 def _warn_constraint_row_overflow(
     dense_raw_counts: wp.array[wp.int32],
@@ -544,6 +561,7 @@ def _warn_constraint_row_overflow(
     propagation_capacity: int,
     propagation_active: int,
     cross_world_contacts: wp.array[wp.int32],
+    deterministic: int,
     warning_emitted: wp.array[wp.int32],
 ):
     """Emit one device-side warning per overflowing Steel row family."""
@@ -569,6 +587,8 @@ def _warn_constraint_row_overflow(
             dense_capacity,
             dense_dropped,
         )
+        if deterministic != 0:
+            _print_deterministic_overflow_note()
 
     if mf_active != 0:
         mf_dropped = mf_dropped_contact_rows[world]
@@ -582,6 +602,8 @@ def _warn_constraint_row_overflow(
                 mf_capacity,
                 mf_dropped,
             )
+            if deterministic != 0:
+                _print_deterministic_overflow_note()
 
     if propagation_active != 0:
         propagation_dropped = propagation_dropped_contact_rows[world]
@@ -596,6 +618,8 @@ def _warn_constraint_row_overflow(
                 propagation_capacity,
                 propagation_dropped,
             )
+            if deterministic != 0:
+                _print_deterministic_overflow_note()
 
 
 @wp.kernel
@@ -1404,6 +1428,7 @@ class SolverSteel(SolverBase):
     propagation_same_articulation_rows = _ConstructionOption()
     propagation_cached_response = _ConstructionOption()
     propagation_cached_response_body_max = _ConstructionOption()
+    deterministic = _ConstructionOption()
 
     @classmethod
     def register_custom_attributes(cls, builder: ModelBuilder) -> None:
@@ -1555,6 +1580,7 @@ class SolverSteel(SolverBase):
         propagation_same_articulation_rows: bool = False,
         propagation_cached_response: bool = True,
         propagation_cached_response_body_max: int = 8,
+        deterministic: wp.DeterministicMode | None = None,
     ):
         """Create a Steel solver for a finalized model.
 
@@ -1945,6 +1971,20 @@ class SolverSteel(SolverBase):
             propagation_cached_response_body_max: Capacity of the cached responses in
                 contact-active bodies of cache-eligible articulations per world; free bodies
                 do not count. At least 1.
+            deterministic: Run-to-run determinism of the solve. Pass a :class:`warp.DeterministicMode`, or
+                ``None`` (default) to inherit ``wp.config.deterministic``, which defaults to
+                ``NOT_GUARANTEED``. With ``RUN_TO_RUN`` the solver reserves its constraint rows in a fixed
+                order instead of the order in which GPU threads reach the per-world row counters: joint
+                rows in articulation order, contact rows in contact-buffer order within each world. The
+                split solve also sums its right-hand sides in a fixed order. Given identical inputs,
+                including identically ordered contacts, repeated runs are then bitwise identical on the
+                same GPU model, driver and Warp build, eagerly and under CUDA graph replay; combine it with
+                ``CollisionPipeline(deterministic=True)`` for a reproducible contact order (see
+                :ref:`Deterministic Contacts`). A world that overflows a row capacity keeps the rows of its
+                earliest contacts and drops the rest, so unchanged inputs drop the same contacts every step;
+                overflowed steps remain flagged in :attr:`constraint_overflow`. The mode adds a per-step
+                sort of the contacts by world and 16 bytes of storage per contact slot.
+                Requires ``articulated_contact_response="immediate"``. ``GPU_TO_GPU`` is not supported.
         """
         self._kernel_overrides = current_kernel_overrides()
         if contact_compliance:
@@ -2164,6 +2204,19 @@ class SolverSteel(SolverBase):
                 f"got {articulated_contact_response!r}"
             )
         self._articulated_contact_response = articulated_contact_response
+        if deterministic is None:
+            deterministic = wp.config.deterministic
+        if not isinstance(deterministic, wp.DeterministicMode):
+            raise TypeError(f"deterministic must be a warp.DeterministicMode or None, got {deterministic!r}")
+        if deterministic == wp.DeterministicMode.GPU_TO_GPU:
+            raise ValueError("SolverSteel supports deterministic=RUN_TO_RUN or NOT_GUARANTEED, not GPU_TO_GPU")
+        self._deterministic = deterministic
+        self._ordered_rows = deterministic == wp.DeterministicMode.RUN_TO_RUN
+        if self._ordered_rows and articulated_contact_response != "immediate":
+            raise ValueError(
+                "deterministic=RUN_TO_RUN requires articulated_contact_response='immediate', "
+                f"got {articulated_contact_response!r}"
+            )
         self._propagation_same_articulation_rows = bool(propagation_same_articulation_rows)
         self._propagation_cached_response = bool(propagation_cached_response)
         self._propagation_cached_response_body_max = int(propagation_cached_response_body_max)
@@ -2399,6 +2452,7 @@ class SolverSteel(SolverBase):
         self._dummy_is_free_rigid = wp.zeros((1,), dtype=wp.int32, device=model.device)
         self._dummy_mf_slot_counter = wp.zeros((self._world_count,), dtype=wp.int32, device=model.device)
         self._dummy_contact_count = wp.zeros((1,), dtype=wp.int32, device=model.device)
+        self._init_ordered_rows(model)
 
         # Capacity status is allocated before any CUDA graph capture.
         self._row_overflow_warning_emitted = wp.zeros(4, dtype=wp.int32, device=model.device)
@@ -3217,18 +3271,24 @@ class SolverSteel(SolverBase):
         model = self.model
         max_constraints = self._articulation_constraint_max
         if self._mimic_count:
-            wp.launch(
-                allocate_mimic_slots,
-                dim=self._mimic_count,
-                inputs=[self._mimic_legacy, self._mimic_enabled, self._mimic_world, max_constraints],
-                outputs=[
-                    self._mimic_slot,
-                    self._slot_counter,
-                    self._dense_first_rejected_slot,
-                    self._row_dropped_dense,
-                ],
-                device=model.device,
-            )
+
+            def launch_mimic(mode):
+                wp.launch(
+                    allocate_mimic_slots,
+                    dim=self._mimic_count,
+                    inputs=[self._mimic_legacy, self._mimic_enabled, self._mimic_world, max_constraints],
+                    outputs=[
+                        self._mimic_slot,
+                        self._slot_counter,
+                        self._dense_first_rejected_slot,
+                        self._row_dropped_dense,
+                        mode,
+                        self._row_cursor,
+                    ],
+                    device=model.device,
+                )
+
+            self._reserve_rows(self._mimic_world_index, self._slot_counter, launch_mimic)
             for size in self._size_groups:
                 if size not in self._mimic_sizes:
                     continue
@@ -3264,18 +3324,24 @@ class SolverSteel(SolverBase):
                     device=model.device,
                 )
         if self._connect_count:
-            wp.launch(
-                allocate_connect_slots,
-                dim=self._connect_count,
-                inputs=[self._connect_joint, model.joint_enabled, self._connect_world, max_constraints],
-                outputs=[
-                    self._connect_slot,
-                    self._slot_counter,
-                    self._dense_first_rejected_slot,
-                    self._row_dropped_dense,
-                ],
-                device=model.device,
-            )
+
+            def launch_connect(mode):
+                wp.launch(
+                    allocate_connect_slots,
+                    dim=self._connect_count,
+                    inputs=[self._connect_joint, model.joint_enabled, self._connect_world, max_constraints],
+                    outputs=[
+                        self._connect_slot,
+                        self._slot_counter,
+                        self._dense_first_rejected_slot,
+                        self._row_dropped_dense,
+                        mode,
+                        self._row_cursor,
+                    ],
+                    device=model.device,
+                )
+
+            self._reserve_rows(self._connect_world_index, self._slot_counter, launch_connect)
             for size in self._connect_sizes:
                 wp.launch(
                     populate_connect_J_for_size,
@@ -6851,6 +6917,26 @@ class SolverSteel(SolverBase):
 
     def _accumulate_dense_rhs(self, size: int, velocity: wp.array) -> None:
         """Add one size group's ``J velocity`` to the dense right-hand side."""
+        if self._ordered_rows:
+            world_group_start, world_groups = self._world_groups_by_size[size]
+            wp.launch(
+                rhs_accum_world_par_row,
+                dim=self._rhs.shape[0] * self._rhs.shape[1],
+                inputs=[
+                    self._constraint_count,
+                    world_group_start,
+                    world_groups,
+                    self._group_to_art[size],
+                    self._articulation_dof_start,
+                    velocity,
+                    self._J_by_size[size],
+                    size,
+                    self._rhs.shape[1],
+                ],
+                outputs=[self._rhs],
+                device=self.model.device,
+            )
+            return
         wp.launch(
             rhs_accum_world_par_art,
             dim=self._n_arts_by_size[size],
@@ -8012,6 +8098,121 @@ class SolverSteel(SolverBase):
             device=self.model.device,
         )
 
+    def _init_ordered_rows(self, model: Model) -> None:
+        """Build the per-world element lists that order row reservations with ``deterministic=RUN_TO_RUN``."""
+        device = model.device
+        self._row_cursor = wp.zeros(1, dtype=wp.int32, device=device)
+        self._articulation_world_index = None
+        self._mimic_world_index = None
+        self._connect_world_index = None
+        self._rigid_velocity_limit_world_index = None
+        self._world_groups_by_size = {}
+        if not self._ordered_rows or self._art_to_world is None:
+            return
+
+        def world_index(element_world):
+            element_world = np.asarray(element_world, dtype=np.int64)
+            listed = np.flatnonzero(element_world >= 0)
+            elements = listed[np.argsort(element_world[listed], kind="stable")]
+            counts = np.bincount(element_world[listed], minlength=self._world_count)
+            start = np.concatenate(([0], np.cumsum(counts))).astype(np.int32)
+            return (
+                wp.array(start, dtype=wp.int32, device=device),
+                wp.array(elements.astype(np.int32), dtype=wp.int32, device=device),
+            )
+
+        art_world = self._art_to_world.numpy()
+        self._articulation_world_index = world_index(art_world)
+        cursor_size = max(len(art_world), self._mimic_count, self._connect_count, 1)
+        if self._mimic_count:
+            self._mimic_world_index = world_index(self._mimic_world.numpy())
+        if self._connect_count:
+            self._connect_world_index = world_index(self._connect_world.numpy())
+        if self._free_rigid_body_count:
+            body_art = self._body_to_articulation.numpy()[self._free_rigid_body_indices.numpy()]
+            self._rigid_velocity_limit_world_index = world_index(
+                np.where(body_art >= 0, art_world[np.maximum(body_art, 0)], -1)
+            )
+            cursor_size = max(cursor_size, self._free_rigid_body_count)
+        self._row_cursor = wp.zeros(cursor_size, dtype=wp.int32, device=device)
+        for size in self._size_groups:
+            self._world_groups_by_size[size] = world_index(art_world[self._group_to_art[size].numpy()])
+
+        sort_capacity = 2 * self._max_contacts_alloc
+        self._contact_sort_keys = wp.zeros(sort_capacity, dtype=wp.int32, device=device)
+        self._contact_sort_values = wp.zeros(sort_capacity, dtype=wp.int32, device=device)
+        self._world_contact_segments = wp.zeros((2, self._world_count), dtype=wp.int32, device=device)
+        self._contact_sort_end_bit = max(int(self._world_count).bit_length(), 1)
+
+    def _reserve_rows(self, world_index, world_slot_counter: wp.array, launch) -> None:
+        """Run one row family's reservation launches; ``launch(mode)`` issues them with a row-slot mode."""
+        if not self._ordered_rows:
+            launch(ROW_SLOTS_ATOMIC)
+            return
+        self._row_cursor.zero_()
+        launch(ROW_SLOTS_COUNT)
+        wp.launch(
+            scan_world_row_requests,
+            dim=self._world_count,
+            inputs=[world_index[0], world_index[1]],
+            outputs=[world_slot_counter, self._row_cursor],
+            device=self.model.device,
+        )
+        launch(ROW_SLOTS_WRITE)
+
+    def _assign_contact_slots_by_world(
+        self, contacts: Contacts, mf_slot_counter: wp.array, mf_first_rejected_slot: wp.array
+    ) -> None:
+        """Sort the classified contacts by world and reserve their rows in contact order."""
+        device = self.model.device
+        count = contacts.rigid_contact_max
+        wp.launch(
+            fill_contact_world_sort_keys,
+            dim=count,
+            inputs=[contacts.rigid_contact_count, self._contact_path, self._contact_world, self._world_count],
+            outputs=[self._contact_sort_keys, self._contact_sort_values],
+            device=device,
+        )
+        wp.utils.radix_sort_pairs(
+            self._contact_sort_keys, self._contact_sort_values, count, end_bit=self._contact_sort_end_bit
+        )
+        self._world_contact_segments.zero_()
+        wp.launch(
+            find_contact_world_segments,
+            dim=count,
+            inputs=[self._contact_sort_keys, count, self._world_count],
+            outputs=[self._world_contact_segments[0], self._world_contact_segments[1]],
+            device=device,
+        )
+        wp.launch(
+            assign_world_contact_slots,
+            dim=self._world_count,
+            inputs=[
+                self._world_contact_segments[0],
+                self._world_contact_segments[1],
+                self._contact_sort_values,
+                self._contact_slots_needed,
+                self._articulation_constraint_max,
+                self._free_body_constraint_max,
+                self._propagation_max_constraints,
+            ],
+            outputs=[
+                self._contact_path,
+                self._slot_counter,
+                mf_slot_counter,
+                self._propagation_slot_counter,
+                self._contact_slot,
+                self._dense_contact_world_flag,
+                self._row_dropped_dense,
+                self._row_dropped_mf,
+                self._row_dropped_propagation,
+                self._dense_first_rejected_slot,
+                mf_first_rejected_slot,
+                self._propagation_first_rejected_slot,
+            ],
+            device=device,
+        )
+
     def _begin_dense_rows(self) -> None:
         """Start the step's dense row allocation and reserve the drive rows first.
 
@@ -8028,24 +8229,28 @@ class SolverSteel(SolverBase):
         self._propagation_clear_rows()
         self._dense_first_rejected_slot.fill_(_ROW_SLOT_UNBOUNDED)
         if self._has_drive_rows:
-            wp.launch(
-                allocate_physx_drive_slots,
-                dim=model.articulation_count,
-                inputs=[
-                    model.articulation_start,
-                    self._articulation_dof_start,
-                    self._articulation_H_rows,
-                    model.joint_type,
-                    model.joint_qd_start,
-                    model.joint_dof_dim,
-                    model.joint_target_ke,
-                    model.joint_target_kd,
-                    self._art_to_world,
-                    self._articulation_constraint_max,
-                ],
-                outputs=[self._drive_slot, self._slot_counter],
-                device=model.device,
-            )
+
+            def launch_drives(mode):
+                wp.launch(
+                    allocate_physx_drive_slots,
+                    dim=model.articulation_count,
+                    inputs=[
+                        model.articulation_start,
+                        self._articulation_dof_start,
+                        self._articulation_H_rows,
+                        model.joint_type,
+                        model.joint_qd_start,
+                        model.joint_dof_dim,
+                        model.joint_target_ke,
+                        model.joint_target_kd,
+                        self._art_to_world,
+                        self._articulation_constraint_max,
+                    ],
+                    outputs=[self._drive_slot, self._slot_counter, mode, self._row_cursor],
+                    device=model.device,
+                )
+
+            self._reserve_rows(self._articulation_world_index, self._slot_counter, launch_drives)
 
     def _stage4_build_rows(
         self, state_in: State, state_aug: State, control: Control, contacts: Contacts | None, dt: float
@@ -8167,60 +8372,93 @@ class SolverSteel(SolverBase):
                 ],
                 device=model.device,
             )
-        for size in limit_sizes:
-            n_arts = self._n_arts_by_size[size]
-            if size == sparse_size:
-                indices = self._sparse_mass_matrix_indices
-                wp.launch(
-                    build_sparse_joint_limit_rows,
-                    dim=n_arts * 32,
+
+        def launch_limits(mode):
+            for size in limit_sizes:
+                n_arts = self._n_arts_by_size[size]
+                if size == sparse_size:
+                    indices = self._sparse_mass_matrix_indices
+                    wp.launch(
+                        build_sparse_joint_limit_rows,
+                        dim=n_arts * 32,
+                        inputs=[
+                            self._group_to_art[size],
+                            self._art_to_world,
+                            self._articulation_world_dof_offset,
+                            self._articulation_dof_start,
+                            limit_q_index,
+                            model.joint_limit_lower,
+                            model.joint_limit_upper,
+                            state_in.joint_q,
+                            self._joint_limit_activation_gap,
+                            indices.ancestor_mask,
+                            indices.inverse_permutation,
+                            indices.lookup,
+                            self._sparse_Linv,
+                            self._v_hat,
+                        ],
+                        outputs=[
+                            self._slot_counter,
+                            self._row_type,
+                            self._row_parent,
+                            self._row_mu,
+                            self._phi,
+                            self._target_velocity,
+                            self._sparse_row_dof,
+                            self._sparse_row_factor,
+                            self._sparse_row_incident,
+                            self._diag,
+                            mode,
+                            self._row_cursor,
+                        ],
+                        block_dim=128,
+                        device=model.device,
+                    )
+                    continue
+                if size not in self._joint_limit_warp_kernels:
+                    wp.launch(
+                        build_joint_limit_rows,
+                        dim=n_arts,
+                        inputs=[
+                            self._articulation_dof_start,
+                            self._art_to_world,
+                            self._group_to_art[size],
+                            self._joint_limit_q_index,
+                            model.joint_limit_lower,
+                            model.joint_limit_upper,
+                            state_in.joint_q,
+                            self._joint_limit_activation_gap,
+                            max_constraints,
+                            size,
+                        ],
+                        outputs=[
+                            self._slot_counter,
+                            self._J_by_size[size],
+                            self._row_type,
+                            self._row_parent,
+                            self._row_mu,
+                            self._phi,
+                            self._target_velocity,
+                            mode,
+                            self._row_cursor,
+                        ],
+                        device=model.device,
+                    )
+                    continue
+                wp.launch_tiled(
+                    self._joint_limit_warp_kernels[size],
+                    dim=[(n_arts + _JOINT_LIMIT_WARPS_PER_BLOCK - 1) // _JOINT_LIMIT_WARPS_PER_BLOCK],
                     inputs=[
-                        self._group_to_art[size],
-                        self._art_to_world,
-                        self._articulation_world_dof_offset,
+                        n_arts,
                         self._articulation_dof_start,
+                        self._art_to_world,
+                        self._group_to_art[size],
                         limit_q_index,
                         model.joint_limit_lower,
                         model.joint_limit_upper,
                         state_in.joint_q,
                         self._joint_limit_activation_gap,
-                        indices.ancestor_mask,
-                        indices.inverse_permutation,
-                        indices.lookup,
-                        self._sparse_Linv,
-                        self._v_hat,
-                    ],
-                    outputs=[
-                        self._slot_counter,
-                        self._row_type,
-                        self._row_parent,
-                        self._row_mu,
-                        self._phi,
-                        self._target_velocity,
-                        self._sparse_row_dof,
-                        self._sparse_row_factor,
-                        self._sparse_row_incident,
-                        self._diag,
-                    ],
-                    block_dim=128,
-                    device=model.device,
-                )
-                continue
-            if size not in self._joint_limit_warp_kernels:
-                wp.launch(
-                    build_joint_limit_rows,
-                    dim=n_arts,
-                    inputs=[
-                        self._articulation_dof_start,
-                        self._art_to_world,
-                        self._group_to_art[size],
-                        self._joint_limit_q_index,
-                        model.joint_limit_lower,
-                        model.joint_limit_upper,
-                        state_in.joint_q,
-                        self._joint_limit_activation_gap,
                         max_constraints,
-                        size,
                     ],
                     outputs=[
                         self._slot_counter,
@@ -8230,61 +8468,49 @@ class SolverSteel(SolverBase):
                         self._row_mu,
                         self._phi,
                         self._target_velocity,
+                        mode,
+                        self._row_cursor,
+                    ],
+                    block_dim=32 * _JOINT_LIMIT_WARPS_PER_BLOCK,
+                    device=model.device,
+                )
+
+        if limit_sizes:
+            self._reserve_rows(self._articulation_world_index, self._slot_counter, launch_limits)
+
+        if self._velocity_limit_slot is not None:
+
+            def launch_velocity_limits(mode):
+                wp.launch(
+                    allocate_joint_velocity_limit_slots,
+                    dim=model.articulation_count,
+                    inputs=[
+                        model.articulation_start,
+                        self._articulation_dof_start,
+                        self._articulation_H_rows,
+                        model.joint_type,
+                        model.joint_qd_start,
+                        model.joint_dof_dim,
+                        model.joint_velocity_limit,
+                        self._v_hat,
+                        self._velocity_limit_activation_fraction,
+                        self._drive_slot,
+                        int(self._velocity_limits_fused),
+                        self._art_to_world,
+                        max_constraints,
+                        self._constraint_art_active,
+                    ],
+                    outputs=[
+                        self._velocity_limit_slot,
+                        self._velocity_limit_sign,
+                        self._slot_counter,
+                        mode,
+                        self._row_cursor,
                     ],
                     device=model.device,
                 )
-                continue
-            wp.launch_tiled(
-                self._joint_limit_warp_kernels[size],
-                dim=[(n_arts + _JOINT_LIMIT_WARPS_PER_BLOCK - 1) // _JOINT_LIMIT_WARPS_PER_BLOCK],
-                inputs=[
-                    n_arts,
-                    self._articulation_dof_start,
-                    self._art_to_world,
-                    self._group_to_art[size],
-                    limit_q_index,
-                    model.joint_limit_lower,
-                    model.joint_limit_upper,
-                    state_in.joint_q,
-                    self._joint_limit_activation_gap,
-                    max_constraints,
-                ],
-                outputs=[
-                    self._slot_counter,
-                    self._J_by_size[size],
-                    self._row_type,
-                    self._row_parent,
-                    self._row_mu,
-                    self._phi,
-                    self._target_velocity,
-                ],
-                block_dim=32 * _JOINT_LIMIT_WARPS_PER_BLOCK,
-                device=model.device,
-            )
 
-        if self._velocity_limit_slot is not None:
-            wp.launch(
-                allocate_joint_velocity_limit_slots,
-                dim=model.articulation_count,
-                inputs=[
-                    model.articulation_start,
-                    self._articulation_dof_start,
-                    self._articulation_H_rows,
-                    model.joint_type,
-                    model.joint_qd_start,
-                    model.joint_dof_dim,
-                    model.joint_velocity_limit,
-                    self._v_hat,
-                    self._velocity_limit_activation_fraction,
-                    self._drive_slot,
-                    int(self._velocity_limits_fused),
-                    self._art_to_world,
-                    max_constraints,
-                    self._constraint_art_active,
-                ],
-                outputs=[self._velocity_limit_slot, self._velocity_limit_sign, self._slot_counter],
-                device=model.device,
-            )
+            self._reserve_rows(self._articulation_world_index, self._slot_counter, launch_velocity_limits)
             for size in self._size_groups:
                 wp.launch(
                     populate_joint_velocity_limit_J_for_size,
@@ -8382,6 +8608,7 @@ class SolverSteel(SolverBase):
                     self._contact_gap_limit,
                     self._friction_gap,
                     self._friction_patches.view,
+                    int(self._ordered_rows),
                 ],
                 outputs=[
                     self._contact_world,
@@ -8404,6 +8631,8 @@ class SolverSteel(SolverBase):
                 ],
                 device=model.device,
             )
+            if self._ordered_rows:
+                self._assign_contact_slots_by_world(contacts, mf_slot_counter, mf_first_rejected_slot)
             wp.launch(
                 prepare_world_contact_rows,
                 dim=contact_build_threads,
@@ -8625,25 +8854,37 @@ class SolverSteel(SolverBase):
             # Contact rows precede the free-body velocity-limit rows in each world.
             wp.copy(self._mf_contact_rows_end, self._mf_slot_counter)
         if mf_active and self._rigid_velocity_limit_slot is not None:
-            wp.launch(
-                allocate_rigid_velocity_limit_slots,
-                dim=self._free_rigid_body_count,
-                inputs=[
-                    self._free_rigid_body_indices,
-                    self._body_to_articulation,
-                    self._art_to_world,
-                    is_free_rigid,
-                    model.body_flags,
-                    self._rigid_body_max_linear_velocity,
-                    self._rigid_body_max_angular_velocity,
-                    self._articulation_root_dof_start,
-                    self._v_hat,
-                    self._velocity_limit_activation_fraction,
-                    self._free_body_constraint_max,
-                    self._constraint_art_active,
-                ],
-                outputs=[self._rigid_velocity_limit_slot, self._rigid_velocity_limit_sign, self._mf_slot_counter],
-                device=model.device,
+
+            def launch_rigid_velocity_limits(mode):
+                wp.launch(
+                    allocate_rigid_velocity_limit_slots,
+                    dim=self._free_rigid_body_count,
+                    inputs=[
+                        self._free_rigid_body_indices,
+                        self._body_to_articulation,
+                        self._art_to_world,
+                        is_free_rigid,
+                        model.body_flags,
+                        self._rigid_body_max_linear_velocity,
+                        self._rigid_body_max_angular_velocity,
+                        self._articulation_root_dof_start,
+                        self._v_hat,
+                        self._velocity_limit_activation_fraction,
+                        self._free_body_constraint_max,
+                        self._constraint_art_active,
+                    ],
+                    outputs=[
+                        self._rigid_velocity_limit_slot,
+                        self._rigid_velocity_limit_sign,
+                        self._mf_slot_counter,
+                        mode,
+                        self._row_cursor,
+                    ],
+                    device=model.device,
+                )
+
+            self._reserve_rows(
+                self._rigid_velocity_limit_world_index, self._mf_slot_counter, launch_rigid_velocity_limits
             )
             wp.launch(
                 populate_rigid_velocity_limit_rows,
@@ -8738,6 +8979,7 @@ class SolverSteel(SolverBase):
                     self._propagation_max_constraints,
                     int(self._propagation_active),
                     self._cross_world_contacts,
+                    int(self._ordered_rows),
                     self._row_overflow_warning_emitted,
                 ],
                 device=model.device,
@@ -10578,8 +10820,16 @@ def _get_joint_limit_warp_kernel(size: int, device_arch: str, warps_per_block: i
         const unsigned active_mask = __ballot_sync(MASK, active != 0);
         const int active_count = __popc(active_mask);
         int first_slot = 0;
-        if (lane == 0 && active_count != 0)
-            first_slot = atomicAdd(&world_slot_counter.data[world], active_count);
+        if (lane == 0 && active_count != 0) {{
+            if (row_slot_mode == 0) {{
+                first_slot = atomicAdd(&world_slot_counter.data[world], active_count);
+            }} else {{
+                // One warp owns the articulation; see scan_world_row_requests.
+                first_slot = element_row_cursor.data[articulation];
+                element_row_cursor.data[articulation] = first_slot + active_count;
+                if (row_slot_mode == 1) first_slot = 1 << 30;
+            }}
+        }}
         first_slot = __shfl_sync(MASK, first_slot, 0);
         if (active != 0) {{
             const unsigned lower_lanes = lane == 0 ? 0u : ((1u << lane) - 1u);
@@ -10618,6 +10868,8 @@ def _get_joint_limit_warp_kernel(size: int, device_arch: str, warps_per_block: i
         world_row_mu: wp.array2d[float],
         world_phi: wp.array2d[float],
         world_target_velocity: wp.array2d[float],
+        row_slot_mode: int,
+        element_row_cursor: wp.array[int],
     ): ...
 
     def joint_limit_warp_template(  # pragma: no cover - compiled by wp.kernel
@@ -10638,6 +10890,8 @@ def _get_joint_limit_warp_kernel(size: int, device_arch: str, warps_per_block: i
         world_row_mu: wp.array2d[float],
         world_phi: wp.array2d[float],
         world_target_velocity: wp.array2d[float],
+        row_slot_mode: int,
+        element_row_cursor: wp.array[int],
     ):
         block, _lane = wp.tid()
         joint_limit_warp_native(
@@ -10659,6 +10913,8 @@ def _get_joint_limit_warp_kernel(size: int, device_arch: str, warps_per_block: i
             world_row_mu,
             world_phi,
             world_target_velocity,
+            row_slot_mode,
+            element_row_cursor,
         )
 
     name = f"build_joint_limit_rows_warp_{size}_{warps_per_block}"
