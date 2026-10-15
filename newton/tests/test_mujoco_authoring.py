@@ -554,6 +554,26 @@ class TestMuJoCoEntityAuthoring(unittest.TestCase):
         solver.notify_model_changed(newton.ModelFlags.CONSTRAINT_PROPERTIES)
         np.testing.assert_allclose(solver.mjw_model.eq_data.numpy()[:, 0, :5], polycoef)
 
+    def test_reject_heterogeneous_tendon_equality_targets(self):
+        """Reject separate worlds whose tendon equalities target different world-relative tendons."""
+        for swap_world1, error in ((False, None), (True, "tendon1 mismatch at position 0")):
+            builder = newton.ModelBuilder()
+            for world in range(2):
+                builder.begin_world()
+                tendons = [
+                    mujoco.add_tendon_fixed(builder, [(_add_revolute(builder, f"w{world}_hinge{i}")[1], 1.0)])
+                    for i in range(2)
+                ]
+                mujoco.add_equality_tendon(builder, *(tendons[::-1] if swap_world1 and world == 1 else tendons))
+                builder.end_world()
+            model = builder.finalize()
+            with self.subTest(swap_world1=swap_world1):
+                if error is None:
+                    newton.solvers.SolverMuJoCo(model, disable_contacts=True)
+                else:
+                    with self.assertRaisesRegex(ValueError, error):
+                        newton.solvers.SolverMuJoCo(model, disable_contacts=True)
+
     def test_reject_invalid_tendon_equalities(self):
         """Validate tendon operands before appending rows, preserving global references."""
         builder = newton.ModelBuilder()
