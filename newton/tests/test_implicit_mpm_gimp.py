@@ -101,7 +101,7 @@ def test_gimp_particle_contact_weights(test, device):
             sp.bsr_mv(scratch.collider_matrix, wp.array(velocity, dtype=float, device=device), result)
             indices = scratch.impulse_field.space_partition.space_node_indices().numpy()
             valid = (indices >= 0) & (np.linalg.norm(scratch.collider_normal_field.dof_values.numpy(), axis=1) > 0.0)
-            particles = solver._contact_pic.cell_particle_indices.numpy()[indices[valid]]
+            particles = solver._scratchpad.contact_pic.cell_particle_indices.numpy()[indices[valid]]
             expected = np.zeros(len(indices))
             expected[valid] = np.array((0.875, 0.6, 0.8))[particles]
             np.testing.assert_allclose(result.numpy(), expected, atol=2.0e-6)
@@ -125,7 +125,7 @@ def test_gimp_stress_roundtrip(test, device):
         expected = np.array((pressure, 15.0 / 7.0))[:, None, None] * np.eye(3)
         np.testing.assert_allclose(state.mpm.particle_stress.numpy(), expected, atol=5.0e-6)
     solver.reset(state)
-    np.testing.assert_array_equal(solver._gimp_point_stress[1].numpy(), 0.0)
+    np.testing.assert_array_equal(solver._last_step_data.gimp_stress[1].numpy(), 0.0)
 
 
 def test_gimp_uniform_stress(test, device):
@@ -139,12 +139,14 @@ def test_gimp_uniform_stress(test, device):
     ):
         with test.subTest(strain_basis=basis, warmstart_mode=mode):
             solver, state = _make_solver(device, strain_basis=basis, warmstart_mode=mode)
+            if basis == "pic":
+                test.assertEqual(solver._scratchpad._strain_basis.topology.MAX_NODES_PER_ELEMENT, 1)
             state.mpm.particle_stress.fill_(wp.mat33(2.0 * np.eye(3)))
             for _ in range(2):
                 target = solver.model.state()
                 solver.step(state, target, None, None, 0.001)
                 state = target
-                stress, valid, _ = solver._gimp_point_stress
+                stress, valid, _ = solver._last_step_data.gimp_stress
                 active = valid.numpy() > 0.0
                 test.assertTrue(np.any(active))
                 expected = np.broadcast_to(2.0 * np.eye(3), stress.numpy()[active].shape)
@@ -156,10 +158,20 @@ def test_gimp_uniform_stress(test, device):
 def test_gimp_sparse_graph_rebuild(test, device):
     """Match eager GIMP contact transfers while a captured sparse grid follows moving particle domains."""
     solver, state = _make_solver(
-        device, grid_type="sparse", positions=((0.4, -0.1, 0.4),), contact=True, solver_class=SolverImplicitMPM
+        device,
+        grid_type="sparse",
+        positions=((0.4, -0.1, 0.4),),
+        contact=True,
+        collider_basis="pic27",
+        solver_class=SolverImplicitMPM,
     )
     reference_solver, reference = _make_solver(
-        device, grid_type="sparse", positions=((0.4, -0.1, 0.4),), contact=True, solver_class=SolverImplicitMPM
+        device,
+        grid_type="sparse",
+        positions=((0.4, -0.1, 0.4),),
+        contact=True,
+        collider_basis="pic27",
+        solver_class=SolverImplicitMPM,
     )
     state.particle_qd.fill_(wp.vec3(1.0, 0.0, 0.0))
     reference.particle_qd.fill_(wp.vec3(1.0, 0.0, 0.0))
@@ -205,7 +217,7 @@ def test_gimp_masked_reset(test, device):
     state = model.state()
     state.mpm.particle_stress.assign(np.array((2.0, 4.0))[:, None, None] * np.eye(3))
     solver.step(state, state, None, None, 0.001)
-    valid = solver._gimp_point_stress[1]
+    valid = solver._last_step_data.gimp_stress[1]
     before = valid.numpy().copy()
     test.assertTrue(np.any(before[0]) and np.any(before[1]))
     solver.reset(state, world_mask=wp.array((True, False, False), dtype=wp.bool, device=device))
@@ -215,6 +227,15 @@ def test_gimp_masked_reset(test, device):
     np.testing.assert_allclose(
         state.mpm.particle_stress.numpy(), np.array((0.0, 4.0))[:, None, None] * np.eye(3), atol=5.0e-6
     )
+
+
+def test_gimp_uncapped_capture(test, device):
+    """Reject uncapped point bases during graph capture rather than using a global point bound."""
+    solver, state = _make_solver(device, contact=True)
+    solver.step(state, state, None, None, 0.001)
+    with test.assertRaisesRegex(RuntimeError, "explicit 'picN' limit"):
+        with wp.ScopedCapture(device=device):
+            solver.step(state, state, None, None, 0.001)
 
 
 class TestImplicitMPMGimp(unittest.TestCase):
@@ -229,12 +250,11 @@ for name, func in (
     ("test_gimp_masked_reset", test_gimp_masked_reset),
 ):
     add_function_test(TestImplicitMPMGimp, name, func, devices=get_test_devices(mode="basic"))
-add_function_test(
-    TestImplicitMPMGimp,
-    "test_gimp_sparse_graph_rebuild",
-    test_gimp_sparse_graph_rebuild,
-    devices=get_cuda_test_devices(mode="basic"),
-)
+for name, func in (
+    ("test_gimp_sparse_graph_rebuild", test_gimp_sparse_graph_rebuild),
+    ("test_gimp_uncapped_capture", test_gimp_uncapped_capture),
+):
+    add_function_test(TestImplicitMPMGimp, name, func, devices=get_cuda_test_devices(mode="basic"))
 
 if __name__ == "__main__":
     unittest.main()

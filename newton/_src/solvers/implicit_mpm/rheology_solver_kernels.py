@@ -14,10 +14,11 @@ _DELASSUS_PROXIMAL_REG = wp.constant(1.0e-6)
 _SLIDING_NEWTON_TOL = wp.constant(1.0e-7)
 """Tolerance for the Newton method to solve for the sliding velocity"""
 
-_INCLUDE_LEFTOVER_STRAIN = wp.constant(False)
+_INCLUDE_LEFTOVER_STRAIN = wp.constant(True)
 """Whether to include leftover strain (due to not fully-converged implicit solve) in the elastic strain.
 
-More accurate, but less stable for stiff materials. Development toggle for experimentation."""
+Enabled by default to preserve the kinematic strain increment when the implicit solve has not fully converged.
+Development toggle for experimentation."""
 
 _USE_CAM_CLAY = wp.constant(False)
 """Use Modified Cam-Clay flow rule instead of the piecewise-linear anisotropic one. Development toggle for experimentation."""

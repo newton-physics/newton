@@ -696,11 +696,17 @@ class _GaussSeidelSolver(_RheologySolver):
 
         self.color_count = self.rheology.color_offsets.shape[0] - 1
 
+        color_block_dim = 64
         if self.device.is_cuda:
             color_block_count = self.device.sm_count * 2
+            # Spread small color batches across SMs instead of packing them into
+            # one or two blocks. Use the capacity bound without a device read.
+            threads_per_block = max(
+                1, math.ceil(self.rheology.color_blocks.shape[1] / (self.color_count * color_block_count))
+            )
+            color_block_dim = min(64, 1 << (threads_per_block - 1).bit_length())
         else:
             color_block_count = 1
-        color_block_dim = 64
         color_launch_dim = color_block_count * color_block_dim
 
         self.apply_stress_launch = wp.launch(
