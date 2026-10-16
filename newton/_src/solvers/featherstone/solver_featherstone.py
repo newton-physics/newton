@@ -212,7 +212,11 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                 tile_kernel = self.eval_inertia_matrix_kernel
 
             # Ensure the generated tile-kernel module is loaded before graph capture.
-            wp.load_module(module=tile_kernel.module, device=model.device)
+            wp.load_module(
+                module=tile_kernel.module,
+                device=model.device,
+                block_dim=64 if self.fuse_cholesky and not self._has_joint_mimics else 256,
+            )
 
     def _update_kinematic_state(self):
         """Recompute cached solver flags and effective joint armature."""
