@@ -1030,7 +1030,9 @@ class ArticulationView:
             irregular layouts, and make frequencies whose layout differs between matches unavailable.
         allow_partial_layouts: Deprecated; use ``homogeneous=False`` instead. If True,
             construct the view when only some selected data has a common layout. Access
-            to data without a common layout raises :class:`AttributeError`.
+            to data without a common layout raises :class:`AttributeError`. If given, it overrides
+            ``homogeneous`` with ``not allow_partial_layouts``; combining ``allow_partial_layouts=False`` with
+            ``homogeneous=False`` raises :class:`ValueError`.
         verbose: If True, prints selection summary.
 
     .. deprecated:: 1.8

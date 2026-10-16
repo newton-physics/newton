@@ -1929,6 +1929,10 @@ def test_allow_partial_layouts_deprecated(test, device):
         with test.assertWarnsRegex(DeprecationWarning, "allow_partial_layouts"):
             view = ArticulationView(model, "robot_a", allow_partial_layouts=True, verbose=False)
         test.assertTrue(view.is_sparse)
+    with test.subTest(allow_partial_layouts=True, homogeneous=True):
+        with test.assertWarnsRegex(DeprecationWarning, "allow_partial_layouts"):
+            view = ArticulationView(model, "robot_a", allow_partial_layouts=True, homogeneous=True, verbose=False)
+        test.assertTrue(view.is_sparse)
     with test.subTest(allow_partial_layouts=False):
         with test.assertWarnsRegex(DeprecationWarning, "allow_partial_layouts"):
             with test.assertRaisesRegex(ValueError, "does not match articulations in every world"):
