@@ -10722,9 +10722,58 @@ class TestActuatorDampratio(unittest.TestCase):
         np.testing.assert_allclose(bp[2], 0.0, atol=1e-6)
 
     def test_dampratio_matches_native_compile(self):
+        """Match native damping on both compiled backends."""
         expected = self.native_model.actuator_biasprm[0, :3]
         np.testing.assert_allclose(self.solver.mj_model.actuator_biasprm[0, :3], expected, atol=1e-6)
         np.testing.assert_allclose(self.solver.mjw_model.actuator_biasprm.numpy()[0, 0, :3], expected, atol=1e-6)
+
+    def test_joint_target_dampratio(self):
+        """Retain imported damping, joint-target control, and explicit gain updates."""
+        # Default control combines position actuators on one DOF, so retain one position drive.
+        xml = self.MJCF.replace('<position name="pos_kv" joint="j1" kp="100" kv="5"/>', "")
+        mujoco = self.solver._mujoco
+        native = mujoco.MjModel.from_xml_string(xml)
+        expected = native.actuator_biasprm[0, 2]
+        for cpu in (True, False):
+            with self.subTest(cpu=cpu), tempfile.TemporaryDirectory() as tmp:
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(xml)
+                builder.joint_qd[-1] = 0.1
+                model = builder.finalize(device="cpu" if cpu else self.model.device)
+                exported = os.path.join(tmp, "model.xml")
+                solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True, save_to_mjcf=exported)
+                self.assertEqual(solver.mjc_actuator_ctrl_source.numpy()[0], SolverMuJoCo.CtrlSource.JOINT_TARGET)
+                self.assertAlmostEqual(solver.mj_model.actuator_biasprm[0, 2], expected, places=5)
+                self.assertAlmostEqual(solver.mjw_model.actuator_biasprm.numpy()[0, 0, 2], expected, places=5)
+                self.assertAlmostEqual(model.joint_target_kd.numpy()[-1], -expected, places=5)
+                self.assertAlmostEqual(
+                    mujoco.MjModel.from_xml_path(exported).actuator_biasprm[0, 2], expected, places=5
+                )
+
+                control = model.control()
+                target = control.joint_target_q.numpy()
+                target[-1] = 0.2
+                control.joint_target_q.assign(target)
+                state = model.state()
+                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+                solver.step(state, model.state(), control, None, 0.001)
+                native_data = mujoco.MjData(native)
+                native_data.qvel[-1] = 0.1
+                native_data.ctrl[0] = 0.2
+                mujoco.mj_forward(native, native_data)
+                force = solver.mj_data.actuator_force if cpu else solver.mjw_data.actuator_force.numpy()[0]
+                np.testing.assert_allclose(force, native_data.actuator_force, atol=1e-5)
+
+                # Re-publishing unchanged gains must not discard the resolved damping.
+                solver.notify_model_changed(ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+                actual = solver.mj_model.actuator_biasprm if cpu else solver.mjw_model.actuator_biasprm.numpy()[0]
+                self.assertAlmostEqual(actual[0, 2], expected, places=5)
+                for kd in (3.0, 0.0):
+                    model.joint_target_ke.fill_(50.0)
+                    model.joint_target_kd.fill_(kd)
+                    solver.notify_model_changed(ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+                    actual = solver.mj_model.actuator_biasprm if cpu else solver.mjw_model.actuator_biasprm.numpy()[0]
+                    np.testing.assert_allclose(actual[0, :3], [0.0, -50.0, -kd], atol=1e-6)
 
     def test_dampratio_custom_attribute_parsed(self):
         """dampratio should be encoded as unresolved biasprm[2] > 0."""
@@ -10994,6 +11043,7 @@ class TestActuatorDampratioMultiWorldRuntime(unittest.TestCase):
         cls.solver = SolverMuJoCo(cls.model)
 
     def test_per_world_acc0_and_dampratio(self):
+        """Resolve direct-actuator damping after changing each world's inertia."""
         masses = self.model.body_mass.numpy()
         inertias = self.model.body_inertia.numpy()
         bodies_per_world = self.model.body_count // self.model.world_count
@@ -11020,6 +11070,34 @@ class TestActuatorDampratioMultiWorldRuntime(unittest.TestCase):
         self.assertNotAlmostEqual(float(biasprm[0, 0, 2]), float(biasprm[1, 0, 2]), places=6)
         self.assertEqual(meaninertia.shape, (self.model.world_count,))
         np.testing.assert_allclose(meaninertia[1], 2.0 * meaninertia[0], rtol=1e-5)
+
+    def test_joint_target_initial_damping(self):
+        """Resolve joint-target damping using each world's gains and armature."""
+        template = newton.ModelBuilder()
+        template.add_mjcf(self.MJCF)
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 3)
+        builder.joint_armature[1] = 0.3
+        builder.joint_target_ke[1] = 25.0
+        builder.joint_target_kd[2] = 5.0
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, disable_contacts=True)
+
+        mujoco = solver._mujoco
+        native = mujoco.MjModel.from_xml_string(self.MJCF)
+        modified = mujoco.MjModel.from_xml_string(
+            self.MJCF.replace('type="hinge"', 'type="hinge" armature="0.3"').replace('kp="100"', 'kp="25"')
+        )
+        expected = [native.actuator_biasprm[0, 2], modified.actuator_biasprm[0, 2], -5.0]
+        np.testing.assert_allclose(solver.mjw_model.actuator_biasprm.numpy()[:, 0, 2], expected, rtol=1e-5)
+        np.testing.assert_allclose(model.joint_target_kd.numpy(), -np.array(expected), rtol=1e-5)
+        # Reuse the published coefficients without another damping-ratio resolution.
+        solver.notify_model_changed(ModelFlags.JOINT_DOF_FORCE_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES)
+        np.testing.assert_allclose(solver.mjw_model.actuator_biasprm.numpy()[:, 0, 2], expected, rtol=1e-5)
+        # Rebuilding the solver must preserve an explicit zero after resolving the import.
+        model.joint_target_kd.zero_()
+        rebuilt = SolverMuJoCo(model, disable_contacts=True)
+        np.testing.assert_array_equal(rebuilt.mjw_model.actuator_biasprm.numpy()[:, 0, 2], 0.0)
 
 
 class TestActuatorInheritrange(unittest.TestCase):

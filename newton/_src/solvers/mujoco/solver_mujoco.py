@@ -8869,6 +8869,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # each world infers its own pose from its synchronized qpos0.
                 self._update_eq_properties(preserve_inferred_poses=False)
             self.notify_model_changed(ModelFlags.ALL)
+            self._resolve_joint_target_damping(spec)
             if not self.use_mujoco_cpu:
                 # Keep the host template coherent after construction. Runtime
                 # GPU notifications intentionally update only device arrays.
@@ -10406,6 +10407,61 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self.mj_model.tendon_margin[:] = self.mjw_model.tendon_margin.numpy()[0]
             self.mj_model.tendon_solimp_lim[:] = self.mjw_model.tendon_solimp_lim.numpy()[0]
             self.mj_model.tendon_armature[:] = self.mjw_model.tendon_armature.numpy()[0]
+
+    def _resolve_joint_target_damping(self, spec: Any) -> None:
+        """Resolve imported damping once, after publishing each world's inertia and gains."""
+        attrs = getattr(self.model, "mujoco", None)
+        if attrs is None or self.mjc_actuator_to_newton_actuator_idx is None:
+            return
+        biasprm = attrs.actuator_biasprm.numpy()
+        if not np.any(biasprm[:, 2] > 0.0):
+            return
+
+        source_rows = self.mjc_actuator_to_newton_actuator_idx.numpy()
+        dofs = self.mjc_actuator_to_newton_idx.numpy()
+        sources = self.mjc_actuator_ctrl_source.numpy()
+        nworld = self.mjw_data.nworld
+        dofs_per_world = self.model.joint_dof_count // nworld
+        biasprm = biasprm.reshape(nworld, -1, 10)
+        kd = self.model.joint_target_kd.numpy().reshape(nworld, dofs_per_world)
+        modes = self.model.joint_target_mode.numpy()
+        damping = []
+        for actuator, row in enumerate(source_rows):
+            dof = int(dofs[actuator])
+            if sources[actuator] != SolverMuJoCo.CtrlSource.JOINT_TARGET or row < 0 or dof < 0:
+                continue
+            if modes[dof] != JointTargetMode.POSITION:
+                continue
+            for world in range(nworld):
+                ratio = biasprm[world, row, 2]
+                if ratio > 0.0:
+                    damping.append((world, actuator, dof, ratio))
+        if not damping:
+            return
+
+        compiled_bias = self.mjw_model.actuator_biasprm.numpy()
+        for world, actuator, dof, ratio in damping:
+            if kd[world, dof] == 0.0:
+                compiled_bias[world, actuator, 2] = ratio
+        self.mjw_model.actuator_biasprm.assign(compiled_bias)
+        if self.use_mujoco_cpu:
+            self.mj_model.actuator_biasprm[:] = compiled_bias[0]
+        # Let MuJoCo resolve reflected inertia, including coupled joints and armature.
+        self.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
+        if self.use_mujoco_cpu:
+            compiled_bias[0] = self.mj_model.actuator_biasprm
+            self.mjw_model.actuator_biasprm.assign(compiled_bias)
+        else:
+            compiled_bias = self.mjw_model.actuator_biasprm.numpy()
+            self.mj_model.actuator_biasprm[:] = compiled_bias[0]
+        for world, actuator, dof, _ in damping:
+            kd[world, dof] = -compiled_bias[world, actuator, 2]
+            # Consume the placeholder so rebuilding a solver respects later kd edits, including zero.
+            biasprm[world, source_rows[actuator], 2] = compiled_bias[world, actuator, 2]
+            if world == 0:
+                spec.actuators[actuator].biasprm[2] = compiled_bias[world, actuator, 2]
+        self.model.joint_target_kd.assign(kd.reshape(-1))
+        attrs.actuator_biasprm.assign(biasprm.reshape(-1, 10))
 
     def _update_actuator_properties(self):
         """Update actuator properties in the MuJoCo model.

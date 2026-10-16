@@ -417,6 +417,14 @@ Newton's per-DOF :attr:`~newton.Model.joint_target_mode` creates MuJoCo general 
 :attr:`~newton.Model.joint_effort_limit` is forwarded as ``actfrcrange`` on the joint
 (prismatic, revolute, and D6) or as ``forcerange`` on the actuator (ball).
 
+For MJCF position-only drives with ``dampratio`` and the default joint-target
+control mapping, solver construction resolves damping using each world's
+initial inertia and position gain. It replaces the imported damping-ratio
+placeholder with the resulting coefficient and initializes zero entries in
+:attr:`~newton.Model.joint_target_kd`; nonzero explicit damping is preserved.
+Subsequent gain edits use the joint-target arrays and
+:attr:`~newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES` as usual.
+
 The full MuJoCo general-actuator model (arbitrary gain/bias/dynamics types
 and parameters, explicit transmission targets, ctrl/force/act ranges) is
 only reachable through the ``mujoco`` :ref:`custom-attribute namespace <mujoco-custom-attributes>`.
