@@ -6,7 +6,7 @@ import unittest
 import warp as wp
 
 import newton
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 
 
 class TestFeatherstoneTileGemm(unittest.TestCase):
@@ -45,9 +45,6 @@ def _build_18_dof_chain(device):
 
 def test_tile_gemm_loads_generated_module(test: TestFeatherstoneTileGemm, device):
     """Verify tile-GEMM construction loads the generated kernel module on the model device."""
-    if not device.is_cuda:
-        return
-
     model = _build_18_dof_chain(device)
     with wp.ScopedDevice("cpu"):
         for fuse_cholesky in (False, True):
@@ -60,7 +57,7 @@ def test_tile_gemm_loads_generated_module(test: TestFeatherstoneTileGemm, device
                 test.assertTrue(solver.use_tile_gemm)
 
 
-devices = get_test_devices()
+devices = get_cuda_test_devices()
 add_function_test(
     TestFeatherstoneTileGemm,
     "test_tile_gemm_loads_generated_module",
