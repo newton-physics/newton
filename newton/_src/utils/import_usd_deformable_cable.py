@@ -1077,6 +1077,7 @@ def _deformable_prepare_cable_topology(
             warnings.warn(
                 f"cable graph '{cid}': welded curves author differing newton:selfCollisionEnabled values; "
                 "self-collision is disabled for the whole graph.",
+                NewtonWarning,
                 stacklevel=2,
             )
         if authored_self_collisions:
