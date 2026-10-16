@@ -115,6 +115,128 @@ def test_ray_intersect_box(test: TestRaycast, device: str):
             test.assertAlmostEqual(out_t.numpy()[0], expected, delta=1e-5)
 
 
+def test_ray_intersect_box_normals(test: TestRaycast, device: str):
+    """Preserve face normals for small ray components and tied intersections."""
+    out_t = wp.zeros(1, dtype=float, device=device)
+    out_n = wp.zeros(1, dtype=wp.vec3, device=device)
+    for axis in range(3):
+        for sign in (-1.0, 1.0):
+            for exponent in (-22, -18):
+                for inside in (False, True):
+                    origin = np.zeros(3)
+                    direction = np.zeros(3)
+                    expected_normal = np.zeros(3)
+                    step = 2.0**exponent
+                    origin[axis] = sign * (1.0 + (-0.5 if inside else 0.5) * step)
+                    direction[axis] = sign * step * (1.0 if inside else -1.0)
+                    direction[(axis + 1) % 3] = 1.0
+                    expected_normal[axis] = sign
+                    with test.subTest(axis=axis, sign=sign, exponent=exponent, inside=inside):
+                        wp.launch(
+                            kernel_test_geom,
+                            dim=1,
+                            inputs=[
+                                out_t,
+                                out_n,
+                                wp.transform_identity(),
+                                wp.vec3(1.0),
+                                GeoType.BOX,
+                                wp.vec3(*origin),
+                                wp.vec3(*direction),
+                                0,
+                            ],
+                            device=device,
+                        )
+                        test.assertEqual(out_t.numpy()[0], 0.5)
+                        np.testing.assert_allclose(out_n.numpy()[0], expected_normal, atol=1e-6)
+
+            for count in (2, 3):
+                for inside in (False, True):
+                    origin = np.zeros(3) if inside else np.full(3, 2.0 * sign)
+                    direction = np.zeros(3)
+                    origin[count:] = 0.0
+                    direction[:count] = sign if inside else -sign
+                    expected_normal = np.zeros(3)
+                    expected_normal[:count] = sign / np.sqrt(count)
+                    origin = np.roll(origin, axis)
+                    direction = np.roll(direction, axis)
+                    expected_normal = np.roll(expected_normal, axis)
+                    with test.subTest(axis=axis, sign=sign, count=count, inside=inside):
+                        wp.launch(
+                            kernel_test_geom,
+                            dim=1,
+                            inputs=[
+                                out_t,
+                                out_n,
+                                wp.transform_identity(),
+                                wp.vec3(1.0),
+                                GeoType.BOX,
+                                wp.vec3(*origin),
+                                wp.vec3(*direction),
+                                0,
+                            ],
+                            device=device,
+                        )
+                        test.assertEqual(out_t.numpy()[0], 1.0)
+                        np.testing.assert_allclose(out_n.numpy()[0], expected_normal, atol=1e-6)
+
+    for count in (2, 3):
+        origin = np.zeros(3)
+        direction = np.zeros(3)
+        origin[0] = 1.0 + 2.0**-23
+        direction[0] = -(2.0**-22)
+        origin[1:count] = 0.5
+        direction[1:count] = 1.0
+        expected_normal = np.zeros(3)
+        expected_normal[:count] = 1.0 / np.sqrt(count)
+        with test.subTest(small_component_tie=count):
+            wp.launch(
+                kernel_test_geom,
+                dim=1,
+                inputs=[
+                    out_t,
+                    out_n,
+                    wp.transform_identity(),
+                    wp.vec3(1.0),
+                    GeoType.BOX,
+                    wp.vec3(*origin),
+                    wp.vec3(*direction),
+                    0,
+                ],
+                device=device,
+            )
+            test.assertEqual(out_t.numpy()[0], 0.5)
+            np.testing.assert_allclose(out_n.numpy()[0], expected_normal, atol=1e-6)
+
+
+def test_intersect_ray_box_small_direction(test: TestRaycast, device: str):
+    """Return the box face normal through the public ray query."""
+    builder = newton.ModelBuilder()
+    builder.add_shape_box(body=-1, hx=1.0, hy=1.0, hz=1.0)
+    model = builder.finalize(device=device)
+    origins = wp.array([[1.0 + 2.0**-23, 0.0, 0.0]], dtype=wp.vec3, device=device)
+    directions = wp.array([[-(2.0**-22), 1.0, 0.0]], dtype=wp.vec3, device=device)
+    worlds = wp.array([-1], dtype=wp.int32, device=device)
+    out_t = wp.empty(1, dtype=float, device=device)
+    out_n = wp.empty(1, dtype=wp.vec3, device=device)
+    out_shape = wp.empty(1, dtype=wp.int32, device=device)
+    for fast_math in (False, True):
+        with test.subTest(fast_math=fast_math):
+            newton.intersect_ray(
+                model,
+                ray_origins=origins,
+                ray_directions=directions,
+                ray_worlds=worlds,
+                out_dist=out_t,
+                out_normal=out_n,
+                out_shape_id=out_shape,
+                fast_math=fast_math,
+            )
+            test.assertEqual(out_t.numpy()[0], 0.5)
+            test.assertEqual(out_shape.numpy()[0], 0)
+            np.testing.assert_allclose(out_n.numpy()[0], [1.0, 0.0, 0.0], atol=1e-6)
+
+
 def test_ray_intersect_capsule(test: TestRaycast, device: str):
     out_t = wp.zeros(1, dtype=float, device=device)
     out_n = wp.zeros(1, dtype=wp.vec3, device=device)
@@ -872,6 +994,10 @@ devices = get_test_devices()
 add_function_test(TestRaycast, "test_ray_intersect_plane", test_ray_intersect_plane, devices=devices)
 add_function_test(TestRaycast, "test_ray_intersect_sphere", test_ray_intersect_sphere, devices=devices)
 add_function_test(TestRaycast, "test_ray_intersect_box", test_ray_intersect_box, devices=devices)
+add_function_test(TestRaycast, "test_ray_intersect_box_normals", test_ray_intersect_box_normals, devices=devices)
+add_function_test(
+    TestRaycast, "test_intersect_ray_box_small_direction", test_intersect_ray_box_small_direction, devices=devices
+)
 add_function_test(TestRaycast, "test_ray_intersect_capsule", test_ray_intersect_capsule, devices=devices)
 add_function_test(TestRaycast, "test_ray_intersect_cylinder", test_ray_intersect_cylinder, devices=devices)
 add_function_test(
