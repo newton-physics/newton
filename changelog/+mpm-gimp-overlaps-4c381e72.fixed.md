@@ -1,1 +1,1 @@
-Fix `SolverImplicitMPM` GIMP particle-domain integration and support-cell activation, including sparse grids with zero padding. Use matching GIMP weights for particle contacts and preserve subpoint stress warmstarts across cell crossings.
+Fix `SolverImplicitMPM` GIMP particle-domain integration and support-cell activation, including sparse grids with zero padding. Preserve subpoint stress warmstarts across cell crossings.

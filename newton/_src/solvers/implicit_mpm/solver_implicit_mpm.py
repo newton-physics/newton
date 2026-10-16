@@ -58,7 +58,6 @@ from .implicit_mpm_solver_kernels import (
     compute_unilateral_strain_offset,
     fill_uniform_color_block_indices,
     free_velocity,
-    gimp_contact_weights,
     gimp_domain_corners,
     gimp_half_size,
     gimp_store_point_stress,
@@ -77,6 +76,7 @@ from .implicit_mpm_solver_kernels import (
     inverse_scale_vector,
     invert_point_particle_indices,
     make_cell_color_kernel,
+    make_contact_cell_keys_kernel,
     make_dynamic_color_block_indices_kernel,
     make_inverse_rotate_vectors,
     make_rotate_vectors,
@@ -268,10 +268,9 @@ class ImplicitMPMScratchpad:
 
     def __init__(self):
         self.grid = None
-        self.gimp_pic = None
         self.gimp_cells = None
         self.contact_pic = None
-        self.gimp_contact_triplets = None
+        self.gimp_particle_contact_nodes = None
         self.gimp_domain_corners = None
 
         self.velocity_test = None
@@ -691,13 +690,8 @@ class ImplicitMPMScratchpad:
             self.color_offsets = fem.borrow_temporary(temporary_store, shape=max_colors + 1, dtype=int)
 
         if self.gimp_cells is not None and self.contact_pic is not None:
-            particle_count = self.gimp_cells.shape[0]
-            capacity = particle_count * 8 * self.velocity_nodes_per_element
-            self.gimp_contact_triplets = (
-                fem.borrow_temporary(temporary_store, shape=capacity, dtype=int),
-                fem.borrow_temporary(temporary_store, shape=capacity, dtype=int),
-                fem.borrow_temporary(temporary_store, shape=capacity, dtype=float),
-                fem.borrow_temporary(temporary_store, shape=particle_count, dtype=int),
+            self.gimp_particle_contact_nodes = fem.borrow_temporary(
+                temporary_store, shape=self.gimp_cells.shape[0], dtype=int
             )
 
     def release_temporaries(self):
@@ -723,9 +717,8 @@ class ImplicitMPMScratchpad:
 
         if self.gimp_cells is not None:
             self.gimp_cells.release()
-        if self.gimp_contact_triplets is not None:
-            for array in self.gimp_contact_triplets:
-                array.release()
+        if self.gimp_particle_contact_nodes is not None:
+            self.gimp_particle_contact_nodes.release()
         if self.gimp_domain_corners is not None:
             for array in self.gimp_domain_corners:
                 if array is not None:
@@ -977,7 +970,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         GIMP integrates each particle's cube-shaped domain over its grid-cell
         overlaps. The domain edge is capped at one voxel; all support cells
-        participate in transfers, contacts, and particle stress warmstarts.
+        participate in transfers and particle stress warmstarts. Particle contacts
+        sample velocity at particle centers with the velocity basis weights.
         """
 
         # material / background
@@ -987,6 +981,21 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         """Numerical drag for the background air."""
 
         # experimental
+        gs_colored_contacts: bool | None = None
+        """Solve particle contacts inside the strain-cell Gauss-Seidel color loop.
+
+        Requires discontinuous grid strain, particle contacts, and GS or GS-SOA.
+        By default (``None``), enable this for supported configurations and use
+        the existing contact solver otherwise. Set ``False`` to opt out.
+        Reuses the strain-cell coloring for the selected
+        velocity basis. With GIMP, contacts remain at particle centers and use
+        velocity-basis weights; material transfers still integrate particle-cell overlaps.
+        Dynamic collider velocities are updated once after each full color sweep.
+
+        .. experimental::
+
+            Cell-local contact solver ordering may change.
+        """
         collider_normal_from_sdf_gradient: bool = False
         """Compute collider normals from sdf gradient rather than closest point"""
         collider_basis: _MPMColliderBasisName = "S2"
@@ -996,7 +1005,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         ``"pic"``, ``"pic8"``, ``"pic27"``
         (particle-based with optional max points per cell). Any ``"picN"``
         form with integer ``N`` is accepted. Particle bases require an explicit
-        per-cell limit for graph capture (``"picN"``)."""
+        per-cell limit for graph capture (``"picN"``).
+
+        Particle contacts activate within 0.25 voxels of the surface. Activated
+        contacts allow a normal approach speed up to the positive gap divided
+        by the timestep, so material can reach the surface without early stopping.
+        """
         strain_basis: _MPMStrainBasisName = "P0"
         """Strain basis function. Common values are ``"P0"``, ``"P1d"``,
         ``"Q1"``, ``"Q1d"``, or particle-based ``"pic"``, ``"pic8"``,
@@ -1571,6 +1585,17 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         self.gimp = config.integration_scheme == "gimp"
         self.collider_normal_from_sdf_gradient = config.collider_normal_from_sdf_gradient
         self.collider_basis = config.collider_basis
+        supports_colored_contacts = (
+            not self.strain_basis.startswith("pic")
+            and _parse_grid_basis_name(self.strain_basis)[2]
+            and self.collider_basis.startswith("pic")
+            and self.solver in (("gs",), ("gauss-seidel",), ("gs-soa",), ("gauss-seidel-soa",))
+        )
+        self.gs_colored_contacts = (
+            supports_colored_contacts if config.gs_colored_contacts is None else bool(config.gs_colored_contacts)
+        )
+        if self.gs_colored_contacts and not supports_colored_contacts:
+            raise ValueError("Colored contacts require discontinuous grid strain, particle contacts, and GS or GS-SOA")
 
         if config.collider_velocity_mode not in ("forward", "backward"):
             raise ValueError(f"Invalid collider velocity mode: {config.collider_velocity_mode}")
@@ -1886,10 +1911,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             if world_mask is None:
                 field.dof_values.zero_()
             elif self._initial_particle_count > 0 and isinstance(field.space.basis, fem.PointBasisSpace):
+                point_values = field.dof_values
                 wp.launch(
                     reset_mpm_point_warmstart,
                     dim=self._initial_particle_count,
-                    inputs=[self.model.particle_world, world_mask, self._initial_world_count, field.dof_values],
+                    inputs=[self.model.particle_world, world_mask, self._initial_world_count, point_values],
                     device=self.model.device,
                 )
             elif partition is not None and partition.node_count() > 0:
@@ -2877,7 +2903,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     temporary_store=self.temporary_store,
                     use_domain_element_indices=use_domain_element_indices,
                 )
-                self._scratchpad.gimp_pic = pic
                 self._scratchpad.gimp_cells = particle_locations[0]
                 if self.collider_basis[:3] == "pic":
                     self._scratchpad.contact_pic = fem.PicQuadrature(
@@ -2941,7 +2966,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
     ):
         """Split each particle's cubic domain over the cells it overlaps (uGIMP).
 
-        The domain is the cube with the particle volume, capped at half a voxel so that it spans at most two cells
+        The domain is the cube with the particle diameter, capped at one voxel so that it spans at most two cells
         per axis. Each overlapped cell receives the overlap volume fraction, with its quadrature point at the overlap
         centroid, which integrates multilinear shape functions and their gradients exactly over the domain.
         """
@@ -3065,45 +3090,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         )
 
         return cell_indices, cell_coords, cell_fractions
-
-    def _assemble_gimp_contact_matrix(self, scratch: ImplicitMPMScratchpad):
-        """Contact rows S_ip = sum_k f_k N_i(x_k): the GIMP weights that also advect the particle."""
-        max_nodes = scratch.velocity_field.space.topology.MAX_NODES_PER_ELEMENT
-        device = scratch.gimp_cells.device
-        rows, cols, values, particle_contact_node = scratch.gimp_contact_triplets
-        rows.fill_(-1)
-        cols.fill_(-1)
-        values.zero_()
-        particle_contact_node.fill_(-1)
-        point_particle = scratch.contact_pic.cell_particle_indices
-        wp.launch(
-            invert_point_particle_indices,
-            dim=scratch.collider_normal_field.space_partition.node_count(),
-            inputs=[
-                point_particle,
-                scratch.collider_normal_field.space_partition.space_node_indices(),
-                scratch.collider_normal_field.dof_values,
-                particle_contact_node,
-            ],
-            device=device,
-        )
-        fem.interpolate(
-            gimp_contact_weights,
-            at=scratch.gimp_pic,
-            fields={"u": scratch.velocity_field},
-            values={
-                "particle_volume": self._mpm_model.particle_volume,
-                "gimp_cells": scratch.gimp_cells,
-                "particle_contact_node": particle_contact_node,
-                "contact_normal": scratch.collider_normal_field.dof_values,
-                "max_nodes": max_nodes,
-                "rows": rows,
-                "cols": cols,
-                "values": values,
-            },
-            temporary_store=self.temporary_store,
-        )
-        wps.bsr_set_from_triplets(scratch.collider_matrix, rows, cols, values)
 
     def _step_impl(
         self,
@@ -3296,6 +3282,23 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     scratch.collider_distance_field,
                     scratch.collider_normal_field,
                     temporary_store=self.temporary_store,
+                    collider_velocity=scratch.collider_velocity,
+                    dt=dt,
+                )
+
+            contact_nodes = scratch.gimp_particle_contact_nodes
+            if contact_nodes is not None:
+                contact_nodes.fill_(-1)
+                wp.launch(
+                    invert_point_particle_indices,
+                    dim=scratch.collider_normal_field.space_partition.node_count(),
+                    inputs=[
+                        scratch.contact_pic.cell_particle_indices,
+                        scratch.collider_normal_field.space_partition.space_node_indices(),
+                        scratch.collider_normal_field.dof_values,
+                        contact_nodes,
+                    ],
+                    device=self.model.device,
                 )
 
             # Subgrid collisions
@@ -3304,20 +3307,17 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 wps.bsr_set_zero(
                     scratch.collider_matrix, rows_of_blocks=collider_node_count, cols_of_blocks=vel_node_count
                 )
-                if self.gimp and scratch.contact_pic is not None:
-                    self._assemble_gimp_contact_matrix(scratch)
-                else:
-                    fem.interpolate(
-                        collision_weight_field,
-                        dest=scratch.collider_matrix,
-                        dest_space=scratch.collider_fraction_test.space,
-                        at=scratch.collider_fraction_test.space_restriction,
-                        reduction="first",
-                        fields={"trial": scratch.fraction_trial, "normal": scratch.collider_normal_field},
-                        temporary_store=self.temporary_store,
-                        # Preserve first-sample arithmetic; older Warp falls back to triplets.
-                        bsr_options={"construction": "auto"} if self._use_local_contact_construction(scratch) else None,
-                    )
+                fem.interpolate(
+                    collision_weight_field,
+                    dest=scratch.collider_matrix,
+                    dest_space=scratch.collider_fraction_test.space,
+                    at=scratch.collider_fraction_test.space_restriction,
+                    reduction="first",
+                    fields={"trial": scratch.fraction_trial, "normal": scratch.collider_normal_field},
+                    temporary_store=self.temporary_store,
+                    # Preserve first-sample arithmetic; older Warp falls back to triplets.
+                    bsr_options={"construction": "auto"} if self._use_local_contact_construction(scratch) else None,
+                )
 
     def _use_local_contact_construction(self, scratch: ImplicitMPMScratchpad) -> bool:
         """Prefer row compression for validated CUDA contact-map layouts."""
@@ -3745,7 +3745,48 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 has_viscosity=self._mpm_model.has_viscosity,
                 has_dilatancy=self._mpm_model.has_dilatancy,
                 strain_velocity_node_count=-1 if self._separate_worlds else self._velocity_nodes_per_strain_sample,
+                strain_nodes_per_cell=(
+                    scratch.strain_nodes_per_element
+                    if not self.strain_basis.startswith("pic") and _parse_grid_basis_name(self.strain_basis)[2]
+                    else 0
+                ),
             )
+            contact_temporaries = []
+            contact_cell_offsets = None
+            contact_cell_rows = None
+            if self.gs_colored_contacts:
+                contact_pic = scratch._collision_basis._quadrature
+                partition = scratch._strain_space_restriction.space_partition
+                cell_count = partition.node_count() // scratch.strain_nodes_per_element
+                node_count = scratch.collider_node_count
+                contact_cell_offsets = fem.borrow_temporary(self.temporary_store, shape=cell_count + 1, dtype=int)
+                keys = fem.borrow_temporary(self.temporary_store, shape=2 * node_count, dtype=int)
+                contact_cell_rows = fem.borrow_temporary(self.temporary_store, shape=2 * node_count, dtype=int)
+                contact_temporaries = [contact_cell_offsets, keys, contact_cell_rows]
+                contact_cell_offsets.zero_()
+                wp.launch(
+                    make_contact_cell_keys_kernel(
+                        contact_pic.domain,
+                        partition,
+                        scratch.strain_nodes_per_element,
+                        contact_pic._use_domain_element_indices,
+                    ),
+                    dim=node_count,
+                    inputs=[
+                        contact_pic.domain.element_index_arg_value(device=self.model.device),
+                        partition.partition_arg_value(device=self.model.device),
+                        scratch._collision_space_restriction.space_partition.space_node_indices(),
+                        contact_pic.cell_particle_indices,
+                        contact_pic.cell_indices,
+                        scratch.collider_matrix.offsets,
+                        keys,
+                        contact_cell_rows,
+                        contact_cell_offsets,
+                    ],
+                    device=self.model.device,
+                )
+                wp.utils.radix_sort_pairs(keys=keys, values=contact_cell_rows, count=node_count)
+                wp.utils.array_scan(contact_cell_offsets, contact_cell_offsets, inclusive=True)
             collision_data = CollisionData(
                 collider_mat=scratch.collider_matrix,
                 transposed_collider_mat=scratch.transposed_collider_matrix,
@@ -3756,6 +3797,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 rigidity_operator=rigidity_operator,
                 collider_impulse=scratch.impulse_field.dof_values,
                 has_colliders=self._mpm_model.collider.collider_mesh.shape[0] > 0,
+                colored_cell_offsets=contact_cell_offsets,
+                colored_cell_rows=contact_cell_rows,
+                colored_velocity_nodes_per_cell=scratch.velocity_nodes_per_element,
             )
 
             # Retain graph to avoid immediate CPU sync
@@ -3771,6 +3815,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 verbose=self.verbose,
             )
 
+        for temporary in contact_temporaries:
+            temporary.release()
         self._unapply_strain_basis_transform(scratch, basis_transform)
 
         return solve_graph
@@ -3998,7 +4044,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     transfer_gimp_impulses,
                     dim=self.model.particle_count,
                     inputs=[
-                        scratch.gimp_contact_triplets[3],
+                        scratch.gimp_particle_contact_nodes,
                         prev_impulse_field.dof_values,
                         scratch.impulse_field.dof_values,
                         False,
@@ -4082,7 +4128,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                         transfer_gimp_impulses,
                         dim=self.model.particle_count,
                         inputs=[
-                            scratch.gimp_contact_triplets[3],
+                            scratch.gimp_particle_contact_nodes,
                             last_step_data.ws_impulse_field.dof_values,
                             scratch.impulse_field.dof_values,
                             True,

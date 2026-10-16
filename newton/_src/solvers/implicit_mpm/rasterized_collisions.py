@@ -18,7 +18,9 @@ __all__ = [
 ]
 
 _COLLIDER_ACTIVATION_DISTANCE = wp.constant(0.5)
-"""Distance below which to activate the collider"""
+"""Grid contact activation distance in voxel units, divided by the basis degree."""
+_PIC_COLLIDER_ACTIVATION_DISTANCE = wp.constant(0.25)
+"""Particle contact activation distance in voxel units."""
 
 _INFINITY = wp.constant(1.0e12)
 """Threshold over which values are considered infinite"""
@@ -508,7 +510,7 @@ def rasterize_collider_kernel(
         node_environment_offsets: Packed node offsets by world, or null to query every collider.
         node_volumes: Per-node integration volumes.
         collider_sdf: Output signed distance per node.
-        collider_velocity: Output collider velocity per node.
+        collider_velocity: Output collider velocity, offset to allow closing a positive gap within the step.
         collider_normals: Output contact normals per node.
         collider_friction: Output friction coefficient per node, or -1 if inactive.
         collider_adhesion: Output scaled adhesion per node.
@@ -545,6 +547,9 @@ def rasterize_collider_kernel(
     collider_friction[i] = collider.material_friction[material_id]
     collider_adhesion[i] = collider.material_adhesion[material_id] * dt * node_volumes[i] / voxel_size
 
+    # Allow approach until the end-of-step gap closes; do not recover penetration.
+    if dt > 0.0:
+        sdf_vel -= (wp.max(sdf, 0.0) / dt) * sdf_gradient
     collider_velocity[i] = sdf_vel
 
 
@@ -706,9 +711,16 @@ def collider_gradient_field(s: fem.Sample, domain: fem.Domain, distance: fem.Fie
 def normalize_gradient(
     gradient: wp.array[wp.vec3],
     normal: wp.array[wp.vec3],
+    sdf: wp.array[float],
+    velocity: wp.array[wp.vec3],
+    dt: float,
 ):
     i = wp.tid()
-    normal[i] = wp.normalize(gradient[i])
+    previous_normal = normal[i]
+    corrected_normal = wp.normalize(gradient[i])
+    if wp.length_sq(previous_normal) > 0.0 and dt > 0.0:
+        velocity[i] += (wp.max(sdf[i], 0.0) / dt) * (previous_normal - corrected_normal)
+    normal[i] = corrected_normal
 
 
 def rasterize_collider(
@@ -748,7 +760,7 @@ def rasterize_collider(
         collider_position_field: Output world-space node positions.
         collider_distance_field: Output signed-distance values per node.
         collider_normal_field: Output outward normals per node.
-        collider_velocity: Output collider velocity per node [m/s].
+        collider_velocity: Output collider velocity with speculative normal offset [m/s].
         collider_friction: Output Coulomb friction coefficient per node.
         collider_adhesion: Output adhesion per node [Pa].
         collider_ids: Output collider index per node, or ``_NULL_COLLIDER_ID``.
@@ -768,7 +780,9 @@ def rasterize_collider(
     )
 
     activation_distance = (
-        0.0 if collider_position_field.degree == 0 else _COLLIDER_ACTIVATION_DISTANCE / collider_position_field.degree
+        _PIC_COLLIDER_ACTIVATION_DISTANCE
+        if collider_position_field.degree == 0
+        else _COLLIDER_ACTIVATION_DISTANCE / collider_position_field.degree
     )
 
     wp.launch(
@@ -800,6 +814,9 @@ def interpolate_collider_normals(
     collider_distance_field: fem.DiscreteField,
     collider_normal_field: fem.DiscreteField,
     temporary_store: fem.TemporaryStore,
+    *,
+    collider_velocity: wp.array[wp.vec3],
+    dt: float,
 ):
     """Smooth collider normals by computing the gradient of the distance field.
 
@@ -812,6 +829,8 @@ def interpolate_collider_normals(
         collider_distance_field: Per-node signed-distance field.
         collider_normal_field: Per-node normal field (updated in place).
         temporary_store: Temporary storage for intermediate buffers.
+        collider_velocity: Collider constraint velocities, updated for the corrected normals [m/s].
+        dt: Timestep length [s].
     """
     corrected_normal = wp.empty_like(collider_normal_field.dof_values)
     fem.interpolate(
@@ -827,7 +846,13 @@ def interpolate_collider_normals(
     wp.launch(
         normalize_gradient,
         dim=collider_normal_field.dof_values.shape,
-        inputs=[corrected_normal, collider_normal_field.dof_values],
+        inputs=[
+            corrected_normal,
+            collider_normal_field.dof_values,
+            collider_distance_field.dof_values,
+            collider_velocity,
+            dt,
+        ],
     )
 
 

@@ -6,13 +6,15 @@
 GIMP uses Q1 velocity, P1d strain, and pic27 contacts by default. Two kinematic
 pads close, lift the object 50 mm, carry it 100 mm, then lower it to the ground
 before opening. Test mode checks grip retention and release on the ground.
-No external assets are required.
+Uses two substeps with up to 100 GS iterations each. No external assets are required.
 
 Run ``--viewer null --num-frames 480 --test`` for the full eight-second
 sequence at the default 60 frames per second.
 """
 
 from __future__ import annotations
+
+import argparse
 
 import numpy as np
 import warp as wp
@@ -28,13 +30,13 @@ PAD_HALF_EXTENTS = (0.009, 0.005, 0.009)
 # Each phase moves linearly from the previous phase's end values to its own.
 PHASES = (
     ("settle", 0.5, 1.4, 0.0, 0.0),
-    ("close", 1.0, 0.7, 0.0, 0.0),
-    ("hold", 0.5, 0.7, 0.0, 0.0),
-    ("lift", 1.0, 0.7, 0.05, 0.0),
-    ("hold high", 0.5, 0.7, 0.05, 0.0),
-    ("carry", 2.0, 0.7, 0.05, 0.1),
-    ("hold carried", 0.5, 0.7, 0.05, 0.1),
-    ("lower", 1.0, 0.7, 0.0, 0.1),
+    ("close", 1.0, 0.9, 0.0, 0.0),
+    ("hold", 0.5, 0.9, 0.0, 0.0),
+    ("lift", 1.0, 0.9, 0.05, 0.0),
+    ("hold high", 0.5, 0.9, 0.05, 0.0),
+    ("carry", 2.0, 0.9, 0.05, 0.1),
+    ("hold carried", 0.5, 0.9, 0.05, 0.1),
+    ("lower", 1.0, 0.9, 0.0, 0.1),
     ("release", 0.5, 1.4, 0.0, 0.1),
     ("settle released", 0.5, 1.4, 0.0, 0.1),
 )
@@ -141,6 +143,7 @@ class Example:
         config.collider_basis = args.collider_basis
         config.collider_velocity_mode = args.collider_velocity_mode
         config.solver = args.solver
+        config.gs_colored_contacts = args.gs_colored_contacts
         self.solver = SolverImplicitMPM(self.model, config)
         if args.pad_adhesion > 0.0:
             # Ground plane (body -1) keeps default material; pads get adhesion [Pa].
@@ -168,7 +171,10 @@ class Example:
 
         self.viewer.set_model(self.model)
         self.viewer.show_particles = True
-        self.viewer.set_camera(pos=wp.vec3(0.05, -0.25, 0.12), pitch=-20.0, yaw=90.0)
+        # View across the grip and center the full lift/carry path.
+        camera_target = center + 0.5 * max(phase[4] for phase in PHASES) * np.asarray(axis)
+        camera_target[2] = 0.5 * (center[2] + max(phase[3] for phase in PHASES) + PAD_HALF_EXTENTS[2])
+        self.viewer.set_camera(pos=wp.vec3(*camera_target) + wp.vec3(0.12, -0.03, 0.06), pitch=-26.0, yaw=166.0)
 
         self.graph = None
         if wp.get_device().is_cuda and not args.no_graph:
@@ -347,8 +353,20 @@ class Example:
         parser.add_argument("--max-active-cells", type=int, default=4096)
         parser.add_argument("--strain-basis", "-sb", type=str, default="P1d")
         parser.add_argument("--collider-basis", type=str, default="pic27")
-        parser.add_argument("--max-iterations", "-it", type=int, default=50)
+        parser.add_argument("--max-iterations", "-it", type=int, default=100)
         parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-5)
+        parser.add_argument(
+            "--gs-colored-contacts",
+            action=argparse.BooleanOptionalAction,
+            default=None,
+            help="Solve contacts inside the strain-cell color loop (automatic for supported configurations).",
+        )
+        parser.add_argument(
+            "--contact-particle-centers",
+            action="store_true",
+            default=True,
+            help="Use particle-center contacts with velocity-basis weights (the only particle-contact mode).",
+        )
         parser.add_argument("--solver", "-s", type=str, default="gs")
         return parser
 
