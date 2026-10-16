@@ -8437,6 +8437,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if not t1_name or t2_name is None:
                 warnings.warn(
                     f"Skipping tendon equality constraint {i}: its tendons are not in the MuJoCo export.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
                 continue

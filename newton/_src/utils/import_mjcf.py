@@ -2820,7 +2820,7 @@ def parse_mjcf(
                 tendon_indices.append(tendon_name_to_idx.get(sanitize_name(tendon_name)) if tendon_name else -1)
             if None in tendon_indices or tendon_indices[0] < 0:
                 if verbose:
-                    print(f"Warning: Tendon equality '{common['name']}' references unknown tendons, skipping")
+                    logger.warning("Tendon equality '%s' references unknown tendons, skipping", common["name"])
                 continue
             _add_equality_constraint(
                 builder,
