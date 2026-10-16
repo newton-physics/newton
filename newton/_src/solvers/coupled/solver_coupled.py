@@ -3164,7 +3164,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     entry.view.zero_particle_mass(entry.particle_dynamics_disabled_local_indices)
                     entry.view.disable_particles(entry.particle_dynamics_disabled_local_indices)
                 entry.view.mark_proxy_particles(entry.proxy_particle_local_indices)
-            if flags & int(ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES):
+            if flags & int(
+                ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+            ):
                 entry.view.disable_joints(entry.joint_dynamics_disabled_local_indices)
 
             if flags & int(ModelFlags.SHAPE_PROPERTIES):
