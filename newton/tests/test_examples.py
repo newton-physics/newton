@@ -1219,6 +1219,14 @@ add_example_test(
 )
 add_example_test(
     TestSelectionAPIExamples,
+    name="selection.example_selection_deformables",
+    devices=test_devices,
+    test_options={"num-frames": 100},
+    test_options_cpu={"num-frames": 10},
+    use_viewer=True,
+)
+add_example_test(
+    TestSelectionAPIExamples,
     name="selection.example_selection_multiple",
     devices=cuda_test_devices,
     test_options={"num-frames": 100, "world-count": 2, "solver": "kamino"},

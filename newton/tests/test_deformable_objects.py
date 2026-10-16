@@ -211,8 +211,8 @@ class TestDeformableObjects(unittest.TestCase):
         self.assertEqual((builder.surface_label, builder.surface_world), (["cloth"], [0]))
         self.assertEqual((builder.volume_label, builder.volume_world), (["global_toy"], [-1]))
 
-    def test_fixed_joint_collapse_drops_or_preserves_complete_curves(self):
-        """Keep collapse label-neutral and retain an anchored curve only when its joint is kept."""
+    def test_fixed_joint_collapse_retains_remaining_curve_parts(self):
+        """Retain the surviving rod parts, or all parts when the anchor is kept."""
         for label in (None, "anchored"):
             for keep in (False, True):
                 with self.subTest(label=label, keep=keep):
@@ -228,19 +228,17 @@ class TestDeformableObjects(unittest.TestCase):
                     if keep:
                         builder.collapse_fixed_joints(joints_to_keep=["anchor"])
                     else:
-                        with self.assertWarnsRegex(UserWarning, "joints_to_keep"):
-                            builder.collapse_fixed_joints()
+                        builder.collapse_fixed_joints()
                     model = builder.finalize(device="cpu")
+                    self.assertEqual(builder.curve_label, [label or "curve_0"])
+                    self.assertEqual(_ranges(builder, "curve", "joint"), [(0, 1)])
                     if keep:
                         self.assertEqual((model.body_count, model.joint_count), (2, 2))
-                        self.assertEqual(builder.curve_label, [label or "curve_0"])
                         self.assertEqual(_ranges(builder, "curve", "body"), [(0, 2)])
-                        self.assertEqual(_ranges(builder, "curve", "joint"), [(0, 1)])
                     else:
                         self.assertEqual((model.body_count, model.joint_count), (1, 1))
-                        self.assertEqual(builder.curve_label, [])
-                        self.assertEqual(_ranges(builder, "curve", "body"), [])
-                        self.assertEqual(_ranges(builder, "curve", "joint"), [])
+                        self.assertEqual(_ranges(builder, "curve", "body"), [(0, 1)])
+                        self.assertEqual(builder.joint_type, [newton.JointType.ROD])
 
     def test_curve_removal_warning_leaves_collapse_complete(self):
         """Finish collapse even when a removed-curve warning is treated as an exception."""
@@ -249,7 +247,7 @@ class TestDeformableObjects(unittest.TestCase):
                 builder = newton.ModelBuilder()
                 for label in ("anchored_0", "anchored_1"):
                     bodies, joints = builder.add_rod(
-                        rod=newton.Rod([(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)], radius=0.02),
+                        rod=newton.Rod([(0.0, 0.0, 1.0), (0.1, 0.0, 1.0)], radius=0.02),
                         label=label,
                         wrap_in_articulation=False,
                         body_frame_origin="com",
@@ -269,13 +267,13 @@ class TestDeformableObjects(unittest.TestCase):
                         for warning, label in zip(caught, ("anchored_0", "anchored_1"), strict=True):
                             self.assertIn(label, str(warning.message))
 
-                self.assertEqual((builder.body_count, builder.joint_count), (5, 5))
-                self.assertEqual(builder.joint_parent, [-1, -1, -1, 2, 3])
-                self.assertEqual(builder.joint_child, [0, 1, 2, 3, 4])
+                self.assertEqual((builder.body_count, builder.joint_count), (3, 3))
+                self.assertEqual(builder.joint_parent, [-1, 0, 1])
+                self.assertEqual(builder.joint_child, [0, 1, 2])
                 self.assertEqual((builder.curve_label, builder.curve_world), (["free_cable"], [-1]))
                 model = builder.finalize(device="cpu")
-                self.assertEqual((model.body_count, model.joint_count, model.articulation_count), (5, 5, 3))
-                np.testing.assert_array_equal(model.joint_child.numpy(), [0, 1, 2, 3, 4])
+                self.assertEqual((model.body_count, model.joint_count, model.articulation_count), (3, 3, 1))
+                np.testing.assert_array_equal(model.joint_child.numpy(), [0, 1, 2])
 
     def test_empty_curve_joint_ranges_follow_retained_joints(self):
         """Remap empty curve ranges before, between, and after retained joints in each world."""

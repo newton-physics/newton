@@ -2119,6 +2119,50 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         self.assertFalse(hasattr(model, "test"))
         self.assertEqual(model.get_custom_frequency_count("test:empty"), 0)
 
+    def test_merge_empty_reference_frequency(self):
+        """Keep empty reference declarations without adding rows or losing populated defaults."""
+        sources = []
+        for tags in ((), (10, 20)):
+            source = ModelBuilder()
+            source.add_body(mass=1.0)
+            source.add_custom_frequency(ModelBuilder.CustomFrequency(name="sensor"))
+            source.add_custom_attribute(
+                ModelBuilder.CustomAttribute(name="sensor_tag", frequency="sensor", dtype=wp.int32)
+            )
+            for tag in tags:
+                source.add_custom_values(sensor_tag=tag)
+            # Both sources have no explicit references; only one has sensor rows.
+            source.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name="sensor_body",
+                    frequency="sensor",
+                    dtype=wp.int32,
+                    references=AttributeFrequency.BODY,
+                    default=0,
+                )
+            )
+            sources.append(source)
+        empty, populated = sources
+
+        for method in ("add_builder", "replicate"):
+            with self.subTest(method=method):
+                builder = ModelBuilder()
+                for source in (empty, populated, empty, populated):
+                    if method == "add_builder":
+                        builder.add_builder(source)
+                    else:
+                        builder.replicate(source, 1)
+                    self.assertIn("sensor", builder.custom_frequencies)
+                    self.assertIn("sensor_body", builder.custom_attributes)
+                    if builder.body_count == 1:
+                        self.assertEqual(builder.custom_attributes["sensor_body"].values, [])
+                model = builder.finalize(device=self.device)
+                self.assertEqual(model.get_custom_frequency_count("sensor"), 4)
+                np.testing.assert_array_equal(model.sensor_tag.numpy(), [10, 20, 10, 20])
+                np.testing.assert_array_equal(model.sensor_body.numpy(), [1, 1, 3, 3])
+        for source in sources:
+            self.assertEqual(source.custom_attributes["sensor_body"].values, [])
+
     def test_custom_frequency_unknown_raises_keyerror(self):
         """Test that get_custom_frequency_count raises KeyError for unknown frequencies."""
         builder = ModelBuilder()
@@ -2380,7 +2424,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
             main.add_builder(sub)
 
     def test_transform_value_list_and_sentinel_shape_refs(self):
-        """Test that transform_value handles lists with negative sentinel values correctly."""
+        """Preserve negative shape references across supported integer-vector inputs."""
         main = ModelBuilder()
 
         # Register custom frequency before adding attributes
@@ -2412,8 +2456,8 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         )
         body = sub.add_body(mass=1.0)
         sub.add_shape_sphere(body, radius=0.1)  # shape 0
-        # Add pair with value [0, -1] where -1 is sentinel for "no geom"
-        sub.add_custom_values(**{"test:pair_geoms": [0, -1]})
+        for value in ([0, -1], (0, -1), wp.vec2i(0, -1), np.array([0, -1], dtype=np.int32)):
+            sub.add_custom_values(**{"test:pair_geoms": value})
 
         # Add main's own shape first
         main_body = main.add_body(mass=1.0)
@@ -2425,11 +2469,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         model = main.finalize(device=self.device)
         arr = model.test.pair_geoms.numpy()
 
-        # Should have 1 pair entry
-        self.assertEqual(len(arr), 1)
-        # First element should be offset by 1 (shape_offset), second (-1) preserved
-        self.assertEqual(arr[0][0], 1)  # 0 + 1 = 1
-        self.assertEqual(arr[0][1], -1)  # sentinel preserved
+        np.testing.assert_array_equal(arr, [[1, -1], [1, -1], [1, -1], [1, -1]])
 
     def test_merge_custom_attribute_default_only_no_crash(self):
         """Test add_builder does not crash when sub-builder has default-only attribute (no overrides)."""
