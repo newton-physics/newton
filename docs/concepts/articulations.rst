@@ -770,22 +770,50 @@ Construct a view by matching articulation keys with a pattern and optional filte
     assert scalar_view.get_dof_positions(state).shape == (1, 2, 1)
 
 Use views to read/write batched state slices (joint positions/velocities, root transforms,
-link transforms) without manual index bookkeeping.
+link transforms) without manual index bookkeeping. Getters may return a copy instead of a
+view of the source array, for example when a joint or link filter leaves gaps in the
+selection. Write changes back with the matching setter.
 
 Selections with structural differences
 """"""""""""""""""""""""""""""""""""""
 
-By default, every match must have the same joint, link, and shape layout. If some
-kinds of data differ, pass ``allow_partial_layouts=True`` to retain access to the
-layouts that still match:
+By default, :class:`~newton.selection.ArticulationView` requires homogeneous worlds:
+every world contains the same number of matches, every match has the same joint,
+coordinate, DOF, link, shape, and custom-frequency layout, and the matches repeat at a
+fixed stride within and between worlds, such as after replicating a builder into a
+builder that has no worlds yet (global shapes are permitted).
 
 .. code-block:: python
 
-    view = newton.selection.ArticulationView(
-        model,
-        pattern="robot*",
-        allow_partial_layouts=True,
-    )
+    robot = newton.ModelBuilder()
+    robot.add_usd("robot.usd")
+    scene = newton.ModelBuilder()
+    scene.replicate(robot, world_count=1024)
+    model = scene.finalize()
+
+    view = newton.selection.ArticulationView(model, pattern="robot*")  # homogeneous=True
+
+Construction raises ``ValueError`` when the selection is not homogeneous. Pass
+``homogeneous=False`` to relax these requirements:
+
+- **Irregular layouts.** Worlds may differ outside the selected articulations, for
+  example by holding additional bodies or articulations, so the selected rows are not
+  evenly spaced between worlds. Such layouts are addressed through explicit model
+  indices (:attr:`~newton.selection.ArticulationView.uses_explicit_model_indices`).
+- **Sparse views.** Matches may cover only some worlds. Worlds without matches are
+  excluded from the leading dimension of all returned arrays, and
+  :attr:`~newton.selection.ArticulationView.is_sparse` is ``True``.
+  :attr:`~newton.selection.ArticulationView.world_ids` maps each view world to its
+  model world. Every world with matches must hold the same number of them.
+- **Unavailable frequencies.** Selected articulations may differ in structure.
+  Frequencies whose layout differs between them are unavailable, and their counts and
+  names are ``None``.
+  For example, articulations that share a joint topology but differ in their shapes
+  still provide joint and link data:
+
+.. code-block:: python
+
+    view = newton.selection.ArticulationView(model, pattern="robot*", homogeneous=False)
 
     try:
         shape_margin = view.get_attribute("shape_margin", model)
@@ -805,7 +833,7 @@ shapes attached to each selected link; display and collision shapes are not
 distinguished. Counts and names are ``None`` only when counts differ. Relationship
 metadata such as ``joint_dof_counts`` and ``link_shapes`` is available only when both
 participating layouts are available. Custom frequencies with articulation ownership
-follow the same partial-layout behavior.
+follow the same rules.
 
 Move articulations in world space
 """""""""""""""""""""""""""""""""
