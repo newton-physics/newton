@@ -4791,14 +4791,15 @@ def Xform "World"
         from pxr import Usd
 
         test_cases = [
-            ("integrator", "0", 0),  # Euler
-            ("solver", "2", 2),  # Newton
-            ("cone", "1", 1),  # elliptic
-            ("jacobian", "1", 1),  # sparse
+            ("integrator", "int", "0", 0),  # Euler
+            ("integrator", "uniform token", '"discrete"', 4),
+            ("solver", "int", "2", 2),  # Newton
+            ("cone", "int", "1", 1),  # elliptic
+            ("jacobian", "int", "1", 1),  # sparse
         ]
 
-        for option_name, usd_value, expected_int in test_cases:
-            with self.subTest(option=option_name):
+        for option_name, usd_type, usd_value, expected_int in test_cases:
+            with self.subTest(option=option_name, value=usd_value):
                 usd_content = f"""#usda 1.0
 (
     defaultPrim = "World"
@@ -4812,7 +4813,7 @@ def Xform "World"
         prepend apiSchemas = ["MjcSceneAPI"]
     )
     {{
-        int mjc:option:{option_name} = {usd_value}
+        {usd_type} mjc:option:{option_name} = {usd_value}
     }}
 
     def Xform "Articulation" (

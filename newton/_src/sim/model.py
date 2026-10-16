@@ -1297,7 +1297,6 @@ class Model:
         self._rigid_contact_max: int | None = None
         self._soft_contact_max: int | None = None
         self._contact_capacity_initialized = False
-        self._solver_observable_contact_capacity: tuple[int, int] | None = None
 
         self.up_axis: int = 2
         """Up axis: 0 for x, 1 for y, 2 for z."""
@@ -2035,9 +2034,8 @@ class Model:
     def rigid_contact_max(self) -> int | None:
         """Rigid contact buffer capacity, or ``None`` before collision setup.
 
-        :class:`CollisionPipeline` publishes its resolved capacity. Zero is a
-        valid capacity. Contact-indexed solver observables freeze both capacities
-        for the lifetime of this model.
+        :class:`CollisionPipeline` publishes its resolved capacity, which later
+        pipelines reuse as their default. Zero is a valid capacity.
         """
         return self._rigid_contact_max
 
@@ -2065,20 +2063,16 @@ class Model:
         self._soft_contact_max = value
 
     def _validate_contact_capacity(self, rigid_max: int | None, soft_max: int | None) -> None:
-        """Reject invalid capacities or changes that invalidate solver observables."""
+        """Reject negative capacities."""
         if (rigid_max is not None and rigid_max < 0) or (soft_max is not None and soft_max < 0):
             raise ValueError("Contact capacities must be nonnegative or None.")
-        frozen = self._solver_observable_contact_capacity
-        if frozen is not None and (rigid_max, soft_max) != frozen:
-            raise ValueError(
-                f"Contact capacities are frozen at {frozen} by allocated solver observables; "
-                "create a new model and solver observables to change capacities."
-            )
 
     def _get_contact_capacity(self) -> tuple[int, int]:
         """Return capacities published by a successfully initialized pipeline."""
         if not self._contact_capacity_initialized or self.rigid_contact_max is None or self.soft_contact_max is None:
-            raise RuntimeError("Create CollisionPipeline(model) before requesting contact-indexed solver observables.")
+            raise RuntimeError(
+                "Create CollisionPipeline(model) to publish contact capacities before resolving contact frequencies."
+            )
         return self.rigid_contact_max, self.soft_contact_max
 
     def _init_collision_pipeline(self, enable_rigid_soft_full_surface_contact: bool = False):

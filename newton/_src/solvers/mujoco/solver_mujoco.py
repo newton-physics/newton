@@ -700,28 +700,34 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     ) -> SolverMuJoCo.Observables:
         """Allocate solver observables with a compatible native contact export budget.
 
-        Supply ``contacts`` when requesting contact-indexed fields; the factory
-        validates and binds that storage for subsequent steps and consumers.
+        Supply ``contacts`` when requesting contact-indexed fields; their
+        capacities size the contact arrays.
 
         See :meth:`SolverBase.observables` for the shared allocation contract and
         errors, and :ref:`solver_observables` for usage and native collision setup.
 
         Raises:
             ValueError: If the native contact export capacity exceeds the
-                :class:`~newton.CollisionPipeline` rigid contact capacity.
+                rigid contact capacity of ``contacts``.
         """
         with self._create_observables(kinds, contacts=contacts, requires_grad=requires_grad) as observables:
-            if (
-                observables.is_requested(SolverBase.ObservableKind.CONTACT_F)
-                and self.mjw_model.opt.run_collision_detection
-                and self.mjw_data.naconmax > self.model.rigid_contact_max
-            ):
-                raise ValueError(
-                    f"MuJoCo contact capacity ({self.mjw_data.naconmax}) exceeds CollisionPipeline capacity "
-                    f"({self.model.rigid_contact_max}). Construct CollisionPipeline with "
-                    "rigid_contact_max=solver.get_max_contact_count() before requesting contact observables."
-                )
+            if observables.contacts is not None:
+                self._validate_native_contact_export(observables, observables.contacts)
             return observables
+
+    @override
+    def _validate_native_contact_export(self, observables: SolverBase.Observables, contacts: Contacts) -> None:
+        if (
+            observables.is_requested(SolverBase.ObservableKind.CONTACT_F)
+            and not self.use_mujoco_cpu
+            and self.mjw_model.opt.run_collision_detection
+            and self.mjw_data.naconmax > contacts.rigid_contact_max
+        ):
+            raise ValueError(
+                f"MuJoCo contact capacity ({self.mjw_data.naconmax}) exceeds Contacts capacity "
+                f"({contacts.rigid_contact_max}). Construct CollisionPipeline with "
+                "rigid_contact_max=solver.get_max_contact_count() before requesting contact observables."
+            )
 
     EqType = _EqType
     """MuJoCo equality constraint type."""
@@ -863,8 +869,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
     @staticmethod
     def _parse_integrator(value: str | int, context: dict[str, Any] | None = None) -> int:
-        """Parse integrator option: Euler=0, RK4=1, implicit=2, implicitfast=3."""
-        return SolverMuJoCo._parse_named_int(value, {"euler": 0, "rk4": 1, "implicit": 2, "implicitfast": 3})
+        """Parse integrator option: Euler=0, RK4=1, implicit=2, implicitfast=3, discrete=4."""
+        return SolverMuJoCo._parse_named_int(
+            value, {"euler": 0, "rk4": 1, "implicit": 2, "implicitfast": 3, "discrete": 4}
+        )
 
     @staticmethod
     def _parse_solver(value: str | int, context: dict[str, Any] | None = None) -> int:
@@ -4249,7 +4257,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             sdf_iterations: Maximum SDF iterations. If None, uses model custom attribute or MuJoCo's default (10).
             sdf_initpoints: Number of SDF initialization points. If None, uses model custom attribute or MuJoCo's default (40).
             solver: Solver type. Can be "cg" or "newton", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or Newton's default ("newton").
-            integrator: Integrator type. Can be "euler", "rk4", or "implicitfast", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or Newton's default ("implicitfast").
+            integrator: Integrator type. Can be "euler", "rk4", "implicit", "implicitfast", or "discrete", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or Newton's default ("implicitfast").
             cone: The type of contact friction cone. Can be "pyramidal", "elliptic", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or Newton's default ("pyramidal").
             jacobian: Jacobian computation method. Can be "dense", "sparse", or "auto", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or MuJoCo's default ("auto").
             impratio: Frictional-to-normal constraint impedance ratio. If None, uses model custom attribute or MuJoCo's default (1.0).
@@ -4911,7 +4919,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         observable_contacts.force is not None
                         and observable_contacts.force.ptr != observables.contact_f.ptr
                     ):
-                        observable_contacts.force.assign(observables.contact_f)
+                        wp.copy(
+                            observable_contacts.force,
+                            observables.contact_f,
+                            count=observable_contacts.force.shape[0],
+                        )
         self._step += 1
 
     @override
@@ -6477,7 +6489,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             nconmax: Maximum number of contacts.
             nvmax: Maximum number of active degrees of freedom per world.
             solver: Constraint solver type ("cg" or "newton"). If None, uses model custom attribute or Newton's default ("newton").
-            integrator: Integration method ("euler", "rk4", "implicit", "implicitfast"). If None, uses model custom attribute or Newton's default ("implicitfast").
+            integrator: Integration method ("euler", "rk4", "implicit", "implicitfast", "discrete"). If None, uses model custom attribute or Newton's default ("implicitfast").
             enableflags: MuJoCo enable flags bitmask.
             disableflags: MuJoCo disable flags bitmask.
             disable_contacts: If True, disable contact computation.

@@ -1069,6 +1069,194 @@ def test_free_body_impact_shares_armature_momentum(test, device, solve_mode="mat
     test.assertAlmostEqual(float(10.0 * qd[0] + qd[6]), 10.0, delta=1.0e-3)
 
 
+ANCHOR_ROTATION = wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.3, 1.0, 0.2)), 0.25 * np.pi)
+
+
+def _anchored_sphere(device, anchor_rotation, gravity=None, inertia=(0.003, 0.004, 0.006), max_speed=None):
+    """An offset-COM sphere on the ground whose FREE joint has the given parent-anchor rotation."""
+    builder = newton.ModelBuilder() if gravity is None else newton.ModelBuilder(gravity=gravity)
+    SolverSteel.register_custom_attributes(builder)
+    pose = wp.transform(wp.vec3(0.0, 0.0, 0.0999), wp.quat_identity())
+    limits = {}
+    if max_speed is not None:
+        limits = {
+            "steel:rigid_body_max_linear_velocity": max_speed[0],
+            "steel:rigid_body_max_angular_velocity": max_speed[1],
+        }
+    body = builder.add_link(
+        xform=pose,
+        mass=1.0,
+        com=wp.vec3(0.03, -0.02, 0.01),
+        inertia=wp.mat33(np.diag(inertia)),
+        custom_attributes=limits,
+    )
+    builder.add_articulation([builder.add_joint_free(body, parent_xform=wp.transform_identity())])
+    builder.add_shape_sphere(body, radius=0.1, cfg=newton.ModelBuilder.ShapeConfig(density=0.0, mu=0.5))
+    builder.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.5))
+    model = builder.finalize(device=device)
+    _set_free_anchor(model, anchor_rotation, (0.0,) * 6)
+    return model
+
+
+def _set_free_anchor(model, anchor_rotation, world_twist):
+    """Move the FREE joint's parent anchor, keeping the body's world pose and giving it ``world_twist``."""
+    pose = wp.transform(*model.body_q.numpy()[0])
+    anchor = wp.transform(wp.vec3(0.2, -0.1, 0.3), anchor_rotation)
+    joint_X_p = model.joint_X_p.numpy()
+    joint_X_p[0] = [*anchor.p, *anchor.q]
+    model.joint_X_p.assign(joint_X_p)
+    local = wp.transform_inverse(anchor) * pose
+    joint_q = model.joint_q.numpy()
+    joint_q[:7] = [*local.p, *local.q]
+    model.joint_q.assign(joint_q)
+    # FREE joint velocities are expressed in the parent anchor frame.
+    to_anchor = np.array(wp.quat_to_matrix(anchor_rotation)).reshape(3, 3).T
+    joint_qd = model.joint_qd.numpy()
+    joint_qd[:3] = to_anchor @ np.asarray(world_twist[:3])
+    joint_qd[3:6] = to_anchor @ np.asarray(world_twist[3:])
+    model.joint_qd.assign(joint_qd)
+
+
+def _run_anchored_sphere(model, solver, steps, dt):
+    """Step from the model's joint state and return the body's world twist."""
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    state_0, state_1 = model.state(), model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+    for _ in range(steps):
+        pipeline.collide(state_0, contacts)
+        solver.step(state_0, state_1, model.control(), contacts, dt)
+        state_0, state_1 = state_1, state_0
+    return state_0.body_qd.numpy()[0]
+
+
+def _anchored_sphere_cases():
+    """An oblique frictional impact, the body rolling off its offset COM under gravity, and velocity limits."""
+    anisotropic, isotropic = (0.003, 0.004, 0.006), (0.004, 0.004, 0.004)
+    return {
+        "impact": ((0.3, -0.2, -1.0, 0.4, 0.5, -0.3), wp.vec3(0.0), 1, 0.01, None, anisotropic),
+        "gravity": ((0.0,) * 6, None, 60, DT, None, anisotropic),
+        # Box velocity limits act on world axes, and so does their activation gate.
+        "velocity_limits": ((0.3, -0.2, -1.0, 0.4, 0.5, -0.3), wp.vec3(0.0), 3, 0.01, (0.35, 0.3), isotropic),
+    }
+
+
+def test_rotated_anchor_free_body_matches_world_aligned(test, device, solve_mode="matrix_free", response="immediate"):
+    """Give a FREE body the same world motion whatever the rotation of its parent anchor."""
+    for case, (world_twist, gravity, steps, dt, max_speed, inertia) in _anchored_sphere_cases().items():
+        twists = []
+        for rotation in (wp.quat_identity(), ANCHOR_ROTATION):
+            model = _anchored_sphere(device, rotation, gravity, inertia, max_speed)
+            _set_free_anchor(model, rotation, world_twist)
+            solver = SolverSteel(
+                model,
+                solve_mode=solve_mode,
+                cfm=0.0,
+                iterations=64,
+                articulated_contact_response=response,
+                velocity_limit_activation_fraction=0.5,
+            )
+            twists.append(_run_anchored_sphere(model, solver, steps, dt))
+        with test.subTest(case=case):
+            np.testing.assert_allclose(twists[1], twists[0], rtol=0.0, atol=2.0e-4)
+
+
+def test_rotated_anchor_free_body_on_articulation_matches_world_aligned(
+    test, device, solve_mode="matrix_free", response="immediate"
+):
+    """Give a FREE body rolling on a driven articulated plate the same world motion whatever its anchor rotation."""
+    twists = []
+    for rotation in (wp.quat_identity(), ANCHOR_ROTATION):
+        builder = newton.ModelBuilder()
+        plate = builder.add_link(xform=wp.transform(wp.vec3(0.0, 0.0, 0.05), wp.quat_identity()), mass=5.0)
+        builder.add_shape_box(plate, hx=0.5, hy=0.5, hz=0.05)
+        hinge = builder.add_joint_revolute(
+            parent=-1,
+            child=plate,
+            axis=(1.0, 0.0, 0.0),
+            parent_xform=wp.transform(wp.vec3(0.0, 0.0, 0.05), wp.quat_identity()),
+            target_ke=2.0e3,
+            target_kd=50.0,
+        )
+        builder.add_articulation([hinge])
+        pose = wp.transform(wp.vec3(0.1, 0.0, 0.1999), wp.quat_identity())
+        ball = builder.add_link(
+            xform=pose, mass=1.0, com=wp.vec3(0.03, -0.02, 0.01), inertia=wp.mat33(np.diag([0.003, 0.004, 0.006]))
+        )
+        builder.add_shape_sphere(ball, radius=0.1)
+        anchor = wp.transform(wp.vec3(0.2, -0.1, 0.3), rotation)
+        builder.add_articulation([builder.add_joint_free(ball, parent_xform=anchor)])
+        builder.add_ground_plane()
+        model = builder.finalize(device=device)
+        local = wp.transform_inverse(anchor) * pose
+        joint_q = model.joint_q.numpy()
+        joint_q[1:8] = [*local.p, *local.q]
+        model.joint_q.assign(joint_q)
+        to_anchor = np.array(wp.quat_to_matrix(rotation)).reshape(3, 3).T
+        joint_qd = model.joint_qd.numpy()
+        joint_qd[1:4] = to_anchor @ np.array([0.4, 0.2, -0.3])
+        joint_qd[4:7] = to_anchor @ np.array([1.0, -2.0, 0.5])
+        model.joint_qd.assign(joint_qd)
+        solver = SolverSteel(model, solve_mode=solve_mode, iterations=64, articulated_contact_response=response)
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        state_0, state_1 = model.state(), model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+        for _ in range(60):
+            pipeline.collide(state_0, contacts)
+            solver.step(state_0, state_1, model.control(), contacts, DT)
+            state_0, state_1 = state_1, state_0
+        twists.append(state_0.body_qd.numpy())
+    np.testing.assert_allclose(twists[1], twists[0], rtol=0.0, atol=1.0e-4)
+
+
+def test_free_anchor_rotated_after_construction(test, device, solve_mode="matrix_free", response="immediate"):
+    """Follow a FREE body's parent anchor rotated after construction, eagerly and in a replayed graph."""
+    world_twist, gravity, steps, dt, _, _ = _anchored_sphere_cases()["gravity"]
+    rotation = ANCHOR_ROTATION
+    # The world-aligned anchor gives the expected world motion.
+    model = _anchored_sphere(device, wp.quat_identity(), gravity)
+    solver = SolverSteel(model, solve_mode=solve_mode, iterations=64, articulated_contact_response=response)
+    expected = _run_anchored_sphere(model, solver, steps, dt)
+
+    model = _anchored_sphere(device, wp.quat_identity(), gravity)
+    solver = SolverSteel(model, solve_mode=solve_mode, iterations=64, articulated_contact_response=response)
+    _run_anchored_sphere(model, solver, 1, dt)
+    _set_free_anchor(model, rotation, world_twist)
+    solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+    np.testing.assert_allclose(_run_anchored_sphere(model, solver, steps, dt), expected, rtol=0.0, atol=2.0e-4)
+
+    if not wp.get_device(device).is_cuda:
+        return
+    model = _anchored_sphere(device, wp.quat_identity(), gravity)
+    solver = SolverSteel(model, solve_mode=solve_mode, iterations=64, articulated_contact_response=response)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    state_0, state_1 = model.state(), model.state()
+    control = model.control()
+
+    def step_pair():
+        for _ in range(2):
+            pipeline.collide(state_0, contacts)
+            solver.step(state_0, state_1, control, contacts, dt)
+            state_0.assign(state_1)
+
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+    step_pair()
+    with wp.ScopedCapture(device) as capture:
+        step_pair()
+    _set_free_anchor(model, rotation, world_twist)
+    state_0.joint_q.assign(model.joint_q)
+    state_0.joint_qd.assign(model.joint_qd)
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+    with wp.ScopedCapture(device) as notify:
+        solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+    wp.capture_launch(notify.graph)
+    for _ in range(steps // 2):
+        wp.capture_launch(capture.graph)
+    np.testing.assert_allclose(state_0.body_qd.numpy()[0], expected, rtol=0.0, atol=2.0e-4)
+
+
 class TestSteelContactForce(unittest.TestCase):
     pass
 
@@ -1082,6 +1270,9 @@ for _name in (
     "test_friction_slides_at_the_coulomb_bound",
     "test_free_body_contact_response_includes_armature",
     "test_free_body_impact_shares_armature_momentum",
+    "test_rotated_anchor_free_body_matches_world_aligned",
+    "test_rotated_anchor_free_body_on_articulation_matches_world_aligned",
+    "test_free_anchor_rotated_after_construction",
 ):
     add_function_test(TestSteelContactForce, _name, globals()[_name], devices=devices)
     add_function_test(
@@ -1091,6 +1282,27 @@ for _name in (
     add_function_test(
         TestSteelContactForce, f"{_name}_propagation", globals()[_name], devices=devices, response="propagation"
     )
+
+
+# Colored and fused propagation build the same body-space rows as propagation and solve them differently.
+for _name in (
+    "test_rotated_anchor_free_body_matches_world_aligned",
+    "test_rotated_anchor_free_body_on_articulation_matches_world_aligned",
+):
+    add_function_test(
+        TestSteelContactForce,
+        f"{_name}_propagation_colored",
+        globals()[_name],
+        devices=devices,
+        response="propagation_colored",
+    )
+add_function_test(
+    TestSteelContactForce,
+    "test_rotated_anchor_free_body_on_articulation_matches_world_aligned_propagation_fused",
+    test_rotated_anchor_free_body_on_articulation_matches_world_aligned,
+    devices=devices,
+    response="propagation_fused",
+)
 
 
 # The fused response only differs from the immediate one with an articulated (dense-path) body.

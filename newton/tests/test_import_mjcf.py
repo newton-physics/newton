@@ -5145,13 +5145,14 @@ class TestImportMjcfSolverParams(unittest.TestCase):
         """Test parsing of ONCE frequency enum options from MJCF (4 options)."""
         test_cases = [
             ("integrator", "Euler", 0),
+            ("integrator", "discrete", 4),
             ("solver", "Newton", 2),
             ("cone", "elliptic", 1),
             ("jacobian", "sparse", 1),
         ]
 
         for option_name, mjcf_value, expected_int in test_cases:
-            with self.subTest(option=option_name):
+            with self.subTest(option=option_name, value=mjcf_value):
                 mjcf = self._create_mjcf_with_option(option_name, mjcf_value)
                 builder = newton.ModelBuilder()
                 builder.add_mjcf(mjcf)

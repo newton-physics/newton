@@ -1041,33 +1041,36 @@ class SolverKamino(SolverBase, CouplingInterface):
     ) -> SolverBase.Observables:
         """Allocate solver observables and the input poses needed for contact export.
 
-        Supply ``contacts`` when requesting contact-indexed fields; the factory
-        validates and binds that storage for subsequent steps and consumers.
+        Supply ``contacts`` when requesting contact-indexed fields; their
+        capacities size the contact arrays.
 
         See :meth:`SolverBase.observables` for the shared allocation contract and
         errors, and :ref:`solver_observables` for usage and native collision setup.
 
         Raises:
             ValueError: If the native contact export capacity exceeds the
-                :class:`~newton.CollisionPipeline` rigid contact capacity.
+                rigid contact capacity of ``contacts``.
         """
         with self._create_observables(kinds, contacts=contacts, requires_grad=requires_grad) as observables:
             if observables.is_requested(SolverBase.ObservableKind.CONTACT_F):
-                if self._collision_detector_kamino is not None:
-                    native_max = (
-                        self._contacts_kamino.model_max_contacts_host if self._contacts_kamino is not None else 0
-                    )
-                    if native_max > self.model.rigid_contact_max:
-                        raise ValueError(
-                            f"Kamino contact capacity ({native_max}) exceeds CollisionPipeline capacity "
-                            f"({self.model.rigid_contact_max}). Increase rigid_contact_max before requesting contact observables."
-                        )
+                self._validate_native_contact_export(observables, observables.contacts)
                 if self._contact_observable_state is None:
                     # Preserve input poses for in-place steps; publish scratch only after allocation succeeds.
                     state = State()
                     state.body_q = wp.empty(self.model.body_count, dtype=wp.transform, device=self.device)
                     self._contact_observable_state = state
             return observables
+
+    @override
+    def _validate_native_contact_export(self, observables: SolverBase.Observables, contacts: Contacts) -> None:
+        if not observables.is_requested(SolverBase.ObservableKind.CONTACT_F) or self._collision_detector_kamino is None:
+            return
+        native_max = self._contacts_kamino.model_max_contacts_host if self._contacts_kamino is not None else 0
+        if native_max > contacts.rigid_contact_max:
+            raise ValueError(
+                f"Kamino contact capacity ({native_max}) exceeds Contacts capacity "
+                f"({contacts.rigid_contact_max}). Increase rigid_contact_max before requesting contact observables."
+            )
 
     @override
     def step(
@@ -1203,7 +1206,7 @@ class SolverKamino(SolverBase, CouplingInterface):
                 observable_contacts, self._contact_observable_state, observables.contact_f
             )
             if observable_contacts.force is not None and observable_contacts.force.ptr != observables.contact_f.ptr:
-                observable_contacts.force.assign(observables.contact_f)
+                wp.copy(observable_contacts.force, observables.contact_f, count=observable_contacts.force.shape[0])
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:

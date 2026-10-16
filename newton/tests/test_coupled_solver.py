@@ -4125,5 +4125,62 @@ add_function_test(
 )
 
 
+class TestSolverCoupledProxyPipelineCapacity(unittest.TestCase):
+    """Keep parent contact observables independent of proxy-local collision pipelines."""
+
+    def test_proxy_pipeline_keeps_parent_observables(self):
+        """Step parent-model contact observables beside a larger proxy-local pipeline."""
+        _ContactRecordingBodyHarvestSolver.instances.clear()
+        builder = newton.ModelBuilder()
+        ground = builder.add_ground_plane()
+        src_body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.09), wp.quat_identity()))
+        builder.add_shape_sphere(src_body, radius=0.1)
+        dst_body = builder.add_body(xform=wp.transform(wp.vec3(1.0, 0.0, 0.09), wp.quat_identity()))
+        dst_shape = builder.add_shape_sphere(dst_body, radius=0.1)
+        model = builder.finalize(device="cpu")
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=16, soft_contact_max=0)
+        contacts = pipeline.contacts()
+        solver = SolverXPBD(model)
+        observables = solver.observables({SolverBase.ObservableKind.CONTACT_F}, contacts=contacts)
+
+        coupled = SolverCoupledProxy(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(name="src", solver=_StepCountingCopySolver, bodies=[src_body]),
+                SolverCoupled.Entry(
+                    name="dst",
+                    solver=_ContactRecordingBodyHarvestSolver,
+                    bodies=[dst_body],
+                    shapes=[ground, dst_shape],
+                ),
+            ],
+            coupling=SolverCoupledProxy.Config(
+                proxies=[
+                    SolverCoupledProxy.Proxy(
+                        source="src",
+                        destination="dst",
+                        bodies=[src_body],
+                        collision_pipeline=lambda view: newton.CollisionPipeline(
+                            view, rigid_contact_max=128, soft_contact_max=0
+                        ),
+                    ),
+                ],
+            ),
+        )
+        self.assertEqual((model.rigid_contact_max, model.soft_contact_max), (16, 0))
+
+        state_in = model.state()
+        pipeline.collide(state_in, contacts)
+        coupled.step(state_in, model.state(), None, contacts, 1.0 / 60.0)
+        proxy_contacts = _ContactRecordingBodyHarvestSolver.instances["dst"].step_contacts[0]
+        self.assertEqual(proxy_contacts.rigid_contact_max, 128)
+        solver.step(state_in, model.state(), None, contacts, 1.0 / 60.0, observables=observables)
+        self.assertIs(observables.contacts, contacts)
+        self.assertEqual(observables.contact_f.shape, (16,))
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        self.assertGreater(count, 0)
+        self.assertTrue(np.any(observables.contact_f.numpy()[:count, 2] != 0.0))
+
+
 if __name__ == "__main__":
     unittest.main()
