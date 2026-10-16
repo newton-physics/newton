@@ -1650,9 +1650,11 @@ class TestMenagerieBase(unittest.TestCase):
         # Note: put_model creates arrays with nworld=1, expansion happens in _ensure_models
         mjw_model = _mujoco_warp.put_model(mj_model)
 
-        mjw_data = _mujoco_warp.put_data(
-            mj_model, mj_data, nworld=self.num_worlds, njmax=self.njmax, nconmax=self.nconmax
-        )
+        # Unallocated efm_* arrays are uninitialized memory; see SolverMuJoCo.
+        with np.errstate(over="ignore"):
+            mjw_data = _mujoco_warp.put_data(
+                mj_model, mj_data, nworld=self.num_worlds, njmax=self.njmax, nconmax=self.nconmax
+            )
 
         return mj_model, mj_data, mjw_model, mjw_data
 

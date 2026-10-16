@@ -72,8 +72,10 @@ from .graph_coloring import (
     combine_independent_coloring_plan,
     construct_particle_graph,
 )
+from .joint_mimic import _SUPPORTED_JOINT_TYPES
 from .model import Model, _pack_shape_pair_codes
 from .rod import Rod
+from .tendon import TendonGuide, TendonGuideFlags, TendonGuideType
 
 if TYPE_CHECKING:
     from pxr import Usd
@@ -903,6 +905,10 @@ class ModelBuilder:
 
         :class:`~newton.solvers.SolverXPBD` requires ``enable_restitution=True``
         on the solver constructor for this field to take effect.
+        :class:`~newton.solvers.SolverSteel` uses the arithmetic mean of the
+        two shapes' coefficients, each clamped to ``[0, 1]`` (non-finite values
+        count as zero), for contacts whose incident normal speed exceeds its
+        ``restitution_velocity_threshold``.
         """
         mu_torsional: float = 0.005
         """The coefficient of torsional friction [m] (resistance to spinning at contact point)."""
@@ -1269,7 +1275,8 @@ class ModelBuilder:
 
         Built-in entity types (values are offset by entity count):
             - ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``, ``"joint_coord"``, ``"articulation"``,
-              ``"constraint_mimic"``, ``"particle"``, ``"edge"``, ``"triangle"``, ``"tetrahedron"``, ``"spring"``
+              ``"constraint_mimic"``, ``"particle"``, ``"edge"``, ``"triangle"``, ``"tetrahedron"``, ``"spring"``,
+              ``"tendon"``, ``"tendon_guide"``, ``"tendon_segment"``
 
         Special handling:
             - ``"world"``: Missing custom-frequency row values are initialized from
@@ -1340,6 +1347,7 @@ class ModelBuilder:
           entities. Keys are ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``,
           ``"joint_coord"``, ``"joint_constraint"``, ``"articulation"``, ``"particle"``,
           ``"edge"``, ``"triangle"``, ``"tetrahedron"``, ``"spring"``,
+          ``"tendon"``, ``"tendon_guide"``, ``"tendon_segment"``,
           ``"constraint_mimic"``, and ``"attachment_particle_body"``.
         - ``"custom_frequency_offsets"`` (``dict[str, int]``): Destination row counts
           before this copy's custom attributes are merged, keyed by full frequency name
@@ -1856,6 +1864,36 @@ class ModelBuilder:
         self.spring_control: list[float] = []
         """Spring control activations accumulated for :attr:`Model.spring_control`."""
 
+        # tendons (cable-driven mechanisms)
+        self.tendon_label: list[str] = []
+        """Names of authored tendon routes."""
+        self.tendon_world: list[int] = []
+        """Owning world of each tendon route."""
+        self.tendon_start: list[int] = []
+        """Start index into guide arrays for each tendon."""
+        self.tendon_guide_body: list[int] = []
+        """Body index for each tendon guide."""
+        self.tendon_guide_type: list[int] = []
+        """Guide type (TendonGuideType enum) for each tendon guide."""
+        self.tendon_guide_radius: list[float] = []
+        """Contact radius [m] for each tendon guide."""
+        self.tendon_guide_orientation: list[int] = []
+        """Winding direction (+1/-1) for each tendon guide."""
+        self.tendon_guide_mu: list[float] = []
+        """Friction coefficient at each tendon guide."""
+        self.tendon_guide_flags: list[int] = []
+        """Routing flags for each tendon guide."""
+        self.tendon_guide_offset: list[tuple[float, float, float]] = []
+        """Local-frame offset of the cable plane center on each body [m]."""
+        self.tendon_guide_axis: list[tuple[float, float, float]] = []
+        """Local-frame normal of the cable plane on each body."""
+        self.tendon_segment_compliance: list[float] = []
+        """Compliance [m/N] for each tendon segment."""
+        self.tendon_segment_damping: list[float] = []
+        """Damping coefficient [N·s/m] for each tendon segment."""
+        self.tendon_segment_rest_length: list[float] = []
+        """Initial rest length [m] for each tendon segment."""
+
         # triangles
         self.tri_indices: list[tuple[int, int, int]] = []
         """Triangle connectivity accumulated for :attr:`Model.tri_indices`."""
@@ -2279,6 +2317,21 @@ class ModelBuilder:
     def _equality_constraint_count(self) -> int:
         """Number of equality constraints added to this builder (from the ``mujoco:equality_constraint`` counter)."""
         return self._custom_frequency_counts.get("mujoco:equality_constraint", 0)
+
+    @property
+    def tendon_count(self) -> int:
+        """Number of authored tendon routes."""
+        return len(self.tendon_start)
+
+    @property
+    def tendon_guide_count(self) -> int:
+        """Number of guides across all tendon routes."""
+        return len(self.tendon_guide_body)
+
+    @property
+    def tendon_segment_count(self) -> int:
+        """Number of incoming straight spans across all tendon routes."""
+        return len(self.tendon_segment_rest_length)
 
     @property
     def shape_collision_filter_pairs(self) -> list[tuple[int, int]]:
@@ -4424,6 +4477,7 @@ class ModelBuilder:
         legacy_angular_velocity_units: bool = False,
         legacy_springref_units: bool = False,
         return_deformable_results: bool = False,
+        allow_unsafe_torch_checkpoints: bool = False,
     ) -> dict[str, Any]:
         """Parses a Universal Scene Description (USD) stage and adds rigid bodies, particles, soft bodies, shapes, and joints to the given ModelBuilder.
 
@@ -4589,6 +4643,10 @@ class ModelBuilder:
                 returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` /
                 ``path_attachment_map`` and the matching ``path_*_attrs``). Off by default, so the
                 default return shape carries no deformable additions.
+            allow_unsafe_torch_checkpoints: Allow USD neural actuators to reference
+                Torch checkpoints. Only use this for trusted USD assets and
+                checkpoints: loading a Torch checkpoint may execute code during
+                :meth:`newton.ModelBuilder.finalize`. Defaults to ``False``.
 
         Returns:
             .. experimental::
@@ -4743,6 +4801,7 @@ class ModelBuilder:
             legacy_angular_velocity_units=legacy_angular_velocity_units,
             legacy_springref_units=legacy_springref_units,
             return_deformable_results=return_deformable_results,
+            allow_unsafe_torch_checkpoints=allow_unsafe_torch_checkpoints,
         )
 
     def add_mjcf(
@@ -4876,6 +4935,7 @@ class ModelBuilder:
             collider_classes: A list of regular expressions. Collision geometries with a class matching one of the regular expressions will be parsed.
             no_class_as_colliders: If True, geometries without a class are parsed as collision geometries. If False, geometries without a class are parsed as visual geometries.
             force_show_colliders: If True, the collision shapes are always shown, even if there are visual shapes.
+                Collider planes in MJCF groups 0-2 remain visible even when this is False.
             enable_self_collisions: If True, self-collisions are enabled.
             ignore_inertial_definitions: If True, the inertial parameters defined in the MJCF are ignored and the inertia is calculated from the shape geometry.
             collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged.
@@ -6639,6 +6699,173 @@ class ModelBuilder:
             **kwargs,
         )
 
+    def add_tendon(
+        self, route: Sequence[TendonGuide], *, label: str | None = None, custom_attributes: dict[str, Any] | None = None
+    ) -> int:
+        """Add a complete experimental massless routed tendon atomically.
+
+        Each guide after the first owns the incoming span's material parameters.
+        All guides must reference bodies in one world. Roller guides may be
+        dynamic only when internal and not adjacent to another dynamic guide.
+        The route is validated and copied before any tendon arrays are changed.
+
+        .. experimental::
+
+            This API represents an open, ordered route; it does not infer closed
+            loops or change the guide order during simulation.
+
+        Args:
+            route: At least two ordered route guides.
+            label: Tendon name; defaults to ``tendon_{index}``.
+            custom_attributes: Values of declared ``TENDON``-frequency attributes.
+                Guide and incoming-span attributes are supplied on each :class:`TendonGuide`.
+
+        Returns:
+            Tendon index. Its flattened guide range begins at
+            ``tendon_start[index]`` and contains ``len(route)`` guides.
+
+        Raises:
+            TypeError: If a route entry is not a :class:`~newton.TendonGuide`.
+            ValueError: If geometry, material parameters, body references, or
+                dynamic-routing topology are invalid.
+        """
+        route = tuple(route)
+        if len(route) < 2:
+            raise ValueError("A tendon requires at least two route guides")
+
+        # Validate every custom-attribute batch before mutating the builder.
+        batches = [(self.tendon_count, dict(custom_attributes or {}), Model.AttributeFrequency.TENDON)]
+        for index, guide in enumerate(route):
+            if not isinstance(guide, TendonGuide):
+                raise TypeError("Each tendon route entry must be a TendonGuide")
+            batches.append(
+                (
+                    self.tendon_guide_count + index,
+                    dict(guide.custom_attributes or {}),
+                    Model.AttributeFrequency.TENDON_GUIDE,
+                )
+            )
+            if index == 0 and guide.segment_custom_attributes:
+                raise ValueError("The first tendon guide has no incoming segment for custom attributes")
+            if index:
+                batches.append(
+                    (
+                        self.tendon_segment_count + index - 1,
+                        dict(guide.segment_custom_attributes or {}),
+                        Model.AttributeFrequency.TENDON_SEGMENT,
+                    )
+                )
+        for _, attributes, frequency in batches:
+            for name in attributes:
+                attribute = self.custom_attributes.get(name)
+                if attribute is None:
+                    raise AttributeError(
+                        f"Custom attribute '{name}' is not defined; declare it with add_custom_attribute()"
+                    )
+                if attribute.frequency != frequency:
+                    raise ValueError(
+                        f"Custom attribute '{name}' has frequency {attribute.frequency}, expected {frequency}"
+                    )
+        normalized = []
+        tendon_world = None
+        previous_dynamic = False
+        for index, guide in enumerate(route):
+            body = guide.body
+            if not self._is_integer_scalar(body) or body < 0 or body >= self.body_count:
+                raise ValueError(f"Tendon guide body index {body} is out of range")
+            body = int(body)
+            world = self.body_world[body]
+            if tendon_world is not None and world != tendon_world:
+                raise ValueError("All guides in a tendon must belong to the same world")
+            tendon_world = world
+            try:
+                guide_type = TendonGuideType(guide.guide_type)
+            except (TypeError, ValueError) as error:
+                raise ValueError(f"Invalid tendon guide type: {guide.guide_type}") from error
+            if guide.orientation not in (-1, 1):
+                raise ValueError("Tendon guide orientation must be -1 or 1")
+
+            values = {}
+            for name, raw_value in (
+                ("radius", guide.radius),
+                ("friction coefficient", guide.mu),
+                ("compliance", guide.compliance),
+                ("damping", guide.damping),
+                ("rest length", guide.rest_length),
+            ):
+                try:
+                    value = float(raw_value)
+                except (TypeError, ValueError, OverflowError) as error:
+                    raise ValueError(f"Tendon {name} must be finite") from error
+                if not math.isfinite(value) or (name != "rest length" and value < 0.0):
+                    raise ValueError(f"Tendon {name} must be finite and non-negative")
+                values[name] = value
+            if guide_type == TendonGuideType.ROLLER and values["radius"] == 0.0:
+                raise ValueError("ROLLER tendon guides require a positive radius")
+            if index == 0 and (
+                values["compliance"] != 0.0 or values["damping"] != 0.0 or values["rest length"] != -1.0
+            ):
+                raise ValueError(
+                    "The first tendon guide has no incoming segment; leave its material parameters at defaults"
+                )
+            try:
+                offset = tuple(float(value) for value in guide.offset)
+                axis = tuple(float(value) for value in guide.axis)
+            except (TypeError, ValueError, OverflowError) as error:
+                raise ValueError("Tendon guide offset and axis must contain three finite values") from error
+            if len(offset) != 3 or len(axis) != 3:
+                raise ValueError("Tendon guide offset and axis must each contain three values")
+            if not all(math.isfinite(value) for value in (*offset, *axis)):
+                raise ValueError("Tendon guide offset and axis must be finite")
+            axis_length = math.hypot(*axis)
+            if axis_length == 0.0 or not math.isfinite(axis_length):
+                raise ValueError("Tendon guide axis must be non-zero and have finite length")
+            axis = tuple(value / axis_length for value in axis)
+
+            if guide.dynamic and guide_type != TendonGuideType.ROLLER:
+                raise ValueError("dynamic routing is only supported for ROLLER tendon guides")
+            if guide.dynamic and index in (0, len(route) - 1):
+                raise ValueError("A dynamic ROLLER tendon guide must have guides on both sides")
+            if guide.dynamic and previous_dynamic:
+                raise ValueError("Consecutive dynamic ROLLER tendon guides are not supported")
+            previous_dynamic = guide.dynamic
+            normalized.append(
+                TendonGuide(
+                    body=body,
+                    guide_type=guide_type,
+                    radius=values["radius"],
+                    orientation=guide.orientation,
+                    mu=values["friction coefficient"],
+                    dynamic=guide.dynamic,
+                    offset=offset,
+                    axis=axis,
+                    compliance=values["compliance"],
+                    damping=values["damping"],
+                    rest_length=values["rest length"],
+                )
+            )
+
+        tendon_idx = len(self.tendon_start)
+        self.tendon_label.append(label or f"tendon_{tendon_idx}")
+        self.tendon_world.append(tendon_world)
+        self.tendon_start.append(len(self.tendon_guide_body))
+        for index, guide in enumerate(normalized):
+            self.tendon_guide_body.append(guide.body)
+            self.tendon_guide_type.append(int(guide.guide_type))
+            self.tendon_guide_radius.append(guide.radius)
+            self.tendon_guide_orientation.append(guide.orientation)
+            self.tendon_guide_mu.append(guide.mu)
+            self.tendon_guide_flags.append(int(TendonGuideFlags.DYNAMIC) if guide.dynamic else 0)
+            self.tendon_guide_offset.append(guide.offset)
+            self.tendon_guide_axis.append(guide.axis)
+            if index > 0:
+                self.tendon_segment_compliance.append(guide.compliance)
+                self.tendon_segment_damping.append(guide.damping)
+                self.tendon_segment_rest_length.append(guide.rest_length)
+        for index, attributes, frequency in batches:
+            self._process_custom_attributes(index, attributes, frequency)
+        return tendon_idx
+
     def _set_joint_rod_material_gains(
         self,
         joint: int,
@@ -6793,7 +7020,7 @@ class ModelBuilder:
         *,
         coeffs: Vec2 = (0.0, 1.0),
     ) -> None:
-        """Configure a joint to mimic another joint with matching dimensions.
+        """Configure a PRISMATIC, REVOLUTE, or D6 joint to mimic another with matching dimensions.
 
         The relationship is applied componentwise to every position and
         velocity coordinate. The follower coordinates are defined by
@@ -6801,8 +7028,15 @@ class ModelBuilder:
         ``qd[joint] = coeffs[1] * qd[reference_joint]``. Passing ``None`` as
         ``reference_joint`` clears the relationship.
 
+        Quaternion joints (BALL, FREE, DISTANCE, and ROD) cannot be followers
+        or references because the componentwise relationship does not preserve
+        unit quaternions. FIXED joints have no coordinates to mimic and are also
+        not supported.
+
         Mimic chains are not supported: the reference joint must be independent,
         and a joint referenced by another mimic joint cannot become a follower.
+        When both joints belong to articulations, they must share an articulation.
+        This is checked again during finalization after articulation assignment.
 
         Args:
             joint: Index of the follower joint.
@@ -6812,7 +7046,8 @@ class ModelBuilder:
                 coordinates [m or rad, dimensionless].
 
         Raises:
-            ValueError: If an index is invalid, the joint dimensions differ, the
+            ValueError: If an index is invalid, either joint type is unsupported,
+                the joint dimensions differ, the
                 joints belong to different worlds or articulations, the
                 coefficients are not finite, or the relationship creates a mimic
                 chain.
@@ -6830,6 +7065,17 @@ class ModelBuilder:
             raise ValueError(f"Invalid reference joint index {reference_joint}; expected 0..{joint_count - 1}")
         if joint == reference_joint:
             raise ValueError(f"Joint {joint} cannot mimic itself")
+
+        if (
+            self.joint_type[joint] not in _SUPPORTED_JOINT_TYPES
+            or self.joint_type[reference_joint] not in _SUPPORTED_JOINT_TYPES
+        ):
+            supported_types = ", ".join(JointType(joint_type).name for joint_type in sorted(_SUPPORTED_JOINT_TYPES))
+            raise ValueError(
+                f"Mimic followers and references only support {supported_types} joints. "
+                f"Follower joint {joint} has type {self.joint_type[joint].name}; "
+                f"reference joint {reference_joint} has type {self.joint_type[reference_joint].name}."
+            )
 
         follower_dimensions = self.joint_type[joint].dof_count(sum(self.joint_dof_dim[joint]))
         reference_dimensions = self.joint_type[reference_joint].dof_count(sum(self.joint_dof_dim[reference_joint]))
@@ -7199,23 +7445,23 @@ class ModelBuilder:
         for children in body_children.values():
             children.sort(key=lambda x: body_data[x]["original_id"])
 
-        # Find bodies referenced in equality constraints that shouldn't be merged into world
-        bodies_in_constraints = set()
+        # Preserve body frames needed by equality constraints and tendon guides when collapsing into world.
+        bodies_requiring_body_frame = set(self.tendon_guide_body)
         for body1, body2 in zip(
             self._eq_list("equality_constraint_body1"),
             self._eq_list("equality_constraint_body2"),
             strict=False,
         ):
             if body1 >= 0:
-                bodies_in_constraints.add(body1)
+                bodies_requiring_body_frame.add(body1)
             if body2 >= 0:
-                bodies_in_constraints.add(body2)
+                bodies_requiring_body_frame.add(body2)
 
         # A particle-body attachment needs a surviving body to anchor to and to receive the
         # reaction force, so its body must not be merged into the world.
         for body in self.attachment_particle_body_body:
             if body >= 0:
-                bodies_in_constraints.add(body)
+                bodies_requiring_body_frame.add(body)
 
         retained_joints = []
         retained_bodies = []
@@ -7258,21 +7504,20 @@ class ModelBuilder:
             entry_xform = incoming_xform
             entry_last_dynamic_body = last_dynamic_body
             joint = joint_data[(parent_body, child_body)][0]
-            # Don't merge fixed joints if the child body is referenced in an equality constraint
-            # and would be merged into world (last_dynamic_body == -1)
-            should_skip_merge = child_body in bodies_in_constraints and last_dynamic_body == -1
+            # Local frames referenced by constraints or tendons cannot be remapped onto body -1.
+            should_skip_merge = child_body in bodies_requiring_body_frame and last_dynamic_body == -1
 
             # Don't merge fixed joints listed in joints_to_keep list
             joint_in_keep_list = joint["label"] in joints_to_keep or joint["original_id"] in joints_to_keep
 
             if should_skip_merge and joint["type"] == JointType.FIXED:
-                # Skip merging this fixed joint because the body is referenced in an equality constraint
+                # Keep a body frame required by a constraint or tendon instead of merging it into world.
                 if verbose:
                     parent_lbl = self.body_label[parent_body] if parent_body > -1 else "world"
                     child_lbl = self.body_label[child_body]
                     print(
                         f"Skipping collapse of fixed joint {joint['label']} between {parent_lbl} and {child_lbl}: "
-                        f"{child_lbl} is referenced in an equality constraint and cannot be merged into world"
+                        f"{child_lbl} is referenced by a constraint or tendon and cannot be merged into world"
                     )
 
             if joint_in_keep_list and joint["type"] == JointType.FIXED:
@@ -7727,6 +7972,22 @@ class ModelBuilder:
 
         # Reset the constraint count based on the retained joints
         self.joint_constraint_count = len(self.joint_cts)
+
+        # Keep tendon contact geometry in the same world frame when its body is merged.
+        for guide_idx, old_body in enumerate(self.tendon_guide_body):
+            if old_body in body_remap:
+                self.tendon_guide_body[guide_idx] = body_remap[old_body]
+                continue
+
+            merged_parent = body_merged_parent[old_body]
+            merge_xform = body_merged_transform[old_body]
+            self.tendon_guide_body[guide_idx] = body_remap[merged_parent]
+            self.tendon_guide_offset[guide_idx] = wp.transform_point(
+                merge_xform, axis_to_vec3(self.tendon_guide_offset[guide_idx])
+            )
+            self.tendon_guide_axis[guide_idx] = wp.transform_vector(
+                merge_xform, axis_to_vec3(self.tendon_guide_axis[guide_idx])
+            )
 
         # Remap equality constraint body/joint indices and transform anchors for merged bodies.
         # Import locally to avoid a cycle while the public simulation package initializes.
@@ -12661,11 +12922,26 @@ class ModelBuilder:
                 else:
                     self.particle_color_groups = []
 
-        # Also color rigid bodies based on joint connectivity
+        tendon_edges = []
+        for tendon_idx, guide_start in enumerate(self.tendon_start):
+            guide_end = (
+                self.tendon_start[tendon_idx + 1]
+                if tendon_idx + 1 < len(self.tendon_start)
+                else len(self.tendon_guide_body)
+            )
+            for guide_idx in range(guide_start, guide_end - 1):
+                tendon_edges.append((self.tendon_guide_body[guide_idx], self.tendon_guide_body[guide_idx + 1]))
+            # An inactive dynamic roller replaces its two authored spans with a direct bypass span.
+            for guide_idx in range(guide_start + 1, guide_end - 1):
+                if (self.tendon_guide_flags[guide_idx] & int(TendonGuideFlags.DYNAMIC)) != 0:
+                    tendon_edges.append((self.tendon_guide_body[guide_idx - 1], self.tendon_guide_body[guide_idx + 1]))
+
+        # Also color rigid bodies based on joint and tendon connectivity.
         self.body_color_groups = color_rigid_bodies(
             self.body_count,
             self.joint_parent,
             self.joint_child,
+            additional_edges=tendon_edges,
             algorithm=coloring_algorithm,
             balance_colors=balance_colors,
             target_max_min_color_ratio=target_max_min_color_ratio,
@@ -12795,12 +13071,30 @@ class ModelBuilder:
 
         with self._raw_array_access():
             joint_articulation = np.asarray(self.joint_articulation)
+            joint_mimic_joint = np.asarray(self.joint_mimic_joint)
             joint_parent = np.asarray(self.joint_parent)
             joint_child = np.asarray(self.joint_child)
             body_count = self.body_count
 
         articulated = joint_articulation >= 0
         self._validate_articulation_connections(joint_articulation, joint_parent, joint_child, articulated, body_count)
+        followers = np.flatnonzero(joint_mimic_joint >= 0)
+        follower_articulations = joint_articulation[followers]
+        reference_articulations = joint_articulation[joint_mimic_joint[followers]]
+        invalid_mimics = np.flatnonzero(
+            (follower_articulations >= 0)
+            & (reference_articulations >= 0)
+            & (follower_articulations != reference_articulations)
+        )
+        if len(invalid_mimics) > 0:
+            idx = int(invalid_mimics[0])
+            follower = int(followers[idx])
+            reference = int(joint_mimic_joint[follower])
+            raise ValueError(
+                "Mimic joints must belong to the same articulation. "
+                f"Follower joint {follower} belongs to articulation {follower_articulations[idx]}; "
+                f"reference joint {reference} belongs to articulation {reference_articulations[idx]}."
+            )
         if np.all(articulated):
             return
 
@@ -13910,6 +14204,41 @@ class ModelBuilder:
             m.heightfield_meshes = heightfield_meshes
             m._mesh_keep_alive = mesh_keep_alive
 
+            # Open-boundary bits for collision meshes queried with pseudo-normal
+            # signs, packed once per unique finalized mesh.
+            from ..geometry.sdf_contact import compute_mesh_boundary_flags  # noqa: PLC0415
+
+            finalized_meshes = {mesh.id: mesh for mesh in mesh_keep_alive}
+            boundary_chunks = []
+            boundary_offset = 0
+            boundary_starts = {}
+            shape_mesh_boundary_start = []
+            for shape_type, source, shape_flags, mesh_properties in zip(
+                self.shape_type, geo_sources, shape_flags_list, shape_mesh_properties, strict=True
+            ):
+                start = -1
+                if (
+                    shape_type == GeoType.MESH
+                    and source in finalized_meshes
+                    and shape_flags & ShapeFlags.COLLIDE_SHAPES
+                    and not mesh_properties & MeshProperties.WATERTIGHT
+                ):
+                    start = boundary_starts.get(source)
+                    if start is None:
+                        flags = compute_mesh_boundary_flags(finalized_meshes[source])
+                        start = boundary_starts[source] = boundary_offset
+                        boundary_chunks.append(flags)
+                        boundary_offset += len(flags)
+                shape_mesh_boundary_start.append(start)
+            m._mesh_boundary_flags = wp.array(
+                np.concatenate(boundary_chunks) if boundary_offset > 0 else np.zeros(1, dtype=np.uint8),
+                dtype=wp.uint8,
+                device=device,
+            )
+            m._shape_mesh_boundary_start = wp.array(
+                shape_mesh_boundary_start if shape_mesh_boundary_start else [-1], dtype=wp.int32, device=device
+            )
+
             # Compact convex support data (one copy per shared geometry).
             shape_support_data = []
             support_lut_chunks = []
@@ -14006,6 +14335,7 @@ class ModelBuilder:
             # Compute local AABBs and voxel resolutions for contact reduction
             local_aabb_lower = []
             local_aabb_upper = []
+            local_interior_point = []
             voxel_resolution = []
             from ..geometry.contact_reduction import NUM_VOXEL_DEPTH_SLOTS  # noqa: PLC0415
 
@@ -14063,8 +14393,11 @@ class ModelBuilder:
 
                 # Check cache first
                 if cache_key in shape_aabb_cache:
-                    aabb_lower, aabb_upper, nx, ny, nz = shape_aabb_cache[cache_key]
+                    aabb_lower, aabb_upper, interior_point, nx, ny, nz = shape_aabb_cache[cache_key]
                 else:
+                    # Primitive origins are interior. A hull's AABB center can lie
+                    # outside it, but its vertex mean cannot.
+                    interior_point = np.zeros(3)
                     # Compute AABB based on shape type
                     if shape_type == GeoType.MESH and shape_src is not None:
                         # Compute local AABB from mesh vertices
@@ -14079,6 +14412,7 @@ class ModelBuilder:
                     elif shape_type == GeoType.CONVEX_MESH and shape_src is not None:
                         lo = shape_src.vertices.min(axis=0) * np.array(shape_scale)
                         hi = shape_src.vertices.max(axis=0) * np.array(shape_scale)
+                        interior_point = shape_src.vertices.mean(axis=0) * np.array(shape_scale)
                         aabb_lower = np.minimum(lo, hi)
                         aabb_upper = np.maximum(lo, hi)
 
@@ -14151,14 +14485,16 @@ class ModelBuilder:
                         nx, ny, nz = 1, 1, 1
 
                     # Cache the result for reuse by identical shapes
-                    shape_aabb_cache[cache_key] = (aabb_lower, aabb_upper, nx, ny, nz)
+                    shape_aabb_cache[cache_key] = (aabb_lower, aabb_upper, interior_point, nx, ny, nz)
 
                 local_aabb_lower.append(aabb_lower)
                 local_aabb_upper.append(aabb_upper)
+                local_interior_point.append(interior_point)
                 voxel_resolution.append([nx, ny, nz])
 
             m.shape_collision_aabb_lower = wp.array(local_aabb_lower, dtype=wp.vec3, device=device)
             m.shape_collision_aabb_upper = wp.array(local_aabb_upper, dtype=wp.vec3, device=device)
+            m._shape_interior_point = wp.array(local_interior_point, dtype=wp.vec3, device=device)
             m._shape_voxel_resolution = wp.array(voxel_resolution, dtype=wp.vec3i, device=device)
 
             # ---------------------
@@ -14621,6 +14957,49 @@ class ModelBuilder:
             m.spring_stiffness = _to_wp_array(self.spring_stiffness, wp.float32, requires_grad=requires_grad)
             m.spring_damping = _to_wp_array(self.spring_damping, wp.float32, requires_grad=requires_grad)
             m.spring_control = _to_wp_array(self.spring_control, wp.float32, requires_grad=requires_grad)
+
+            # ---------------------
+            # tendons
+
+            tendon_count = len(self.tendon_start)
+            m.tendon_label = list(self.tendon_label)
+            m.tendon_world = wp.array(self.tendon_world, dtype=int)
+            guide_count = len(self.tendon_guide_body)
+            seg_count = len(self.tendon_segment_rest_length)
+
+            if tendon_count > 0:
+                tendon_end = [*self.tendon_start[1:], guide_count]
+                for tendon_idx, (start, end) in enumerate(zip(self.tendon_start, tendon_end, strict=True)):
+                    if end - start < 2:
+                        raise ValueError(f"Tendon {tendon_idx} must contain at least two guides")
+                    if (self.tendon_guide_flags[end - 1] & int(TendonGuideFlags.DYNAMIC)) != 0:
+                        raise ValueError("A dynamic ROLLER tendon guide must have guides on both sides")
+
+                tendon_start = [*self.tendon_start, guide_count]
+                m.tendon_start = wp.array(tendon_start, dtype=wp.int32)
+                m.tendon_guide_body = wp.array(self.tendon_guide_body, dtype=wp.int32)
+                m.tendon_guide_type = wp.array(self.tendon_guide_type, dtype=wp.int32)
+                m.tendon_guide_radius = wp.array(
+                    self.tendon_guide_radius, dtype=wp.float32, requires_grad=requires_grad
+                )
+                m.tendon_guide_orientation = wp.array(self.tendon_guide_orientation, dtype=wp.int32)
+                m.tendon_guide_mu = wp.array(self.tendon_guide_mu, dtype=wp.float32, requires_grad=requires_grad)
+                m.tendon_guide_flags = wp.array(self.tendon_guide_flags, dtype=wp.int32)
+                m.tendon_guide_offset = wp.array(self.tendon_guide_offset, dtype=wp.vec3)
+                m.tendon_guide_axis = wp.array(self.tendon_guide_axis, dtype=wp.vec3)
+                m.tendon_segment_compliance = wp.array(
+                    self.tendon_segment_compliance, dtype=wp.float32, requires_grad=requires_grad
+                )
+                m.tendon_segment_damping = wp.array(
+                    self.tendon_segment_damping, dtype=wp.float32, requires_grad=requires_grad
+                )
+                m.tendon_segment_rest_length = wp.array(
+                    self.tendon_segment_rest_length, dtype=wp.float32, requires_grad=requires_grad
+                )
+
+            m.tendon_count = tendon_count
+            m.tendon_guide_count = guide_count
+            m.tendon_segment_count = seg_count
 
             # ---------------------
             # particle-body attachments

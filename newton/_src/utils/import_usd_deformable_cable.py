@@ -16,6 +16,7 @@ import math
 import warnings
 from dataclasses import dataclass, replace
 from functools import partial
+from itertools import pairwise
 from typing import TYPE_CHECKING
 
 import warp as wp
@@ -54,7 +55,6 @@ from .import_usd_deformable_utils import (
     _warn_dropped_velocities,
     _warn_geometry_authored_material_attrs,
     _warn_subset_material_bindings,
-    _warn_unsupported_rest_fields,
 )
 
 
@@ -257,49 +257,130 @@ def _read_validated_curve_topology(curves, path: str, *, warn: bool = True):
     return points, counts
 
 
-def _read_cable_rest_shape_points(prim, path: str, point_count: int, deformable_read):
-    """Read count-matched cable ``restShapePoints``."""
-    rest_shape_points = deformable_read(prim, "restShapePoints")
-    if rest_shape_points is None:
+def _validate_cable_point_array(values, path: str, name: str, point_count: int):
+    """Check numeric triples before splitting values among curves."""
+    if values is None:
         return None
-    if len(rest_shape_points) != point_count:
+    try:
+        valid = len(values) == point_count and all(len(value) == 3 for value in values)
+        if valid:
+            for value in values:
+                wp.vec3(*value)
+    except (TypeError, ValueError, OverflowError):
+        valid = False
+    if not valid:
         warnings.warn(
-            f"{path}: restShapePoints length {len(rest_shape_points)} != points {point_count}; "
-            f"ignoring rest shape (rest length taken from the imported points).",
+            f"{path}: {name} must contain one 3D value per point ({point_count}); ignoring {name}.",
             stacklevel=2,
         )
         return None
-    return rest_shape_points
+    return values
 
 
-def _cable_rest_segment_lengths(rest_points, world_mat, path: str, *, closed: bool) -> list[float] | None:
-    """World-space rest segment lengths, or ``None`` (with a warning) if any segment is invalid.
+def _read_cable_shape_arrays(curves, path: str, point_count: int, deformable_read):
+    """Read default-time normals and rest arrays, checking their per-point layout."""
+    from pxr import UsdGeom
 
-    Applies the full affine so lengths stay exact under reflection / shear (translation cancels in
-    the segment differences). Rejecting the whole curve, rather than the offending segment, keeps
-    an invalid rest shape from mixing rest and current lengths along one cable.
-    """
-    points = _bake_world_points(rest_points, world_mat)
-    if closed:
-        points = [*points, points[0]]
-    lengths = [float(wp.length(points[i + 1] - points[i])) for i in range(len(points) - 1)]
-    if not lengths or any(not math.isfinite(length) or length <= 1.0e-8 for length in lengths):
-        warnings.warn(
-            f"{path}: restShapePoints has a non-finite or zero-length segment; ignoring rest shape "
-            f"(rest length taken from the imported points).",
-            stacklevel=2,
-        )
-        return None
-    return lengths
-
-
-def _warn_cable_rest_shape_effect(path: str) -> None:
-    """Report the intentionally limited effect of a valid cable rest shape."""
-    warnings.warn(
-        f"{path}: restShapePoints does not establish the simulated rest state; it is used only for "
-        f"material-gain discretization when stiffness or damping is available.",
-        stacklevel=2,
+    prim = curves.GetPrim()
+    rest_points = _validate_cable_point_array(
+        deformable_read(prim, "restShapePoints"), path, "restShapePoints", point_count
     )
+    rest_normals = _validate_cable_point_array(deformable_read(prim, "restNormals"), path, "restNormals", point_count)
+    primvar = UsdGeom.PrimvarsAPI(prim).GetPrimvar("normals")
+    if primvar.HasValue():
+        normals = primvar.ComputeFlattened()
+        interpolation = primvar.GetInterpolation()
+    else:
+        normals = curves.GetNormalsAttr().Get()
+        interpolation = curves.GetNormalsInterpolation()
+    if normals is not None and interpolation not in (UsdGeom.Tokens.vertex, UsdGeom.Tokens.varying):
+        warnings.warn(
+            f"{path}: normals interpolation '{interpolation}' is not per-point (vertex/varying); ignoring normals.",
+            stacklevel=2,
+        )
+        normals = None
+    normals = _validate_cable_point_array(normals, path, "normals", point_count)
+    return normals, rest_points, rest_normals
+
+
+def _cable_frames_from_normals(positions, normals, world_mat, path: str, name: str, *, reject_curve: bool = True):
+    """Build frames, preserving per-segment initial fallbacks or rejecting bad rest directors."""
+    if normals is None:
+        return None
+    # Material directors follow the linear map, not the surface-normal inverse transpose.
+    transformed = [wp.transform_vector(world_mat, wp.vec3(*normal)) for normal in normals[: len(positions) - 1]]
+    for i, normal in enumerate(transformed):
+        tangent = wp.normalize(positions[i + 1] - positions[i])
+        perpendicular = normal - wp.dot(normal, tangent) * tangent
+        normal_length = float(wp.length(normal))
+        perpendicular_length = float(wp.length(perpendicular))
+        if (
+            not math.isfinite(normal_length)
+            or not math.isfinite(perpendicular_length)
+            or perpendicular_length <= 1.0e-8
+        ):
+            if reject_curve:
+                warnings.warn(
+                    f"{path}: {name} cannot define a rest frame at segment {i} "
+                    "(non-finite, zero, or tangent-parallel normal); using fallback frames for this curve.",
+                    stacklevel=2,
+                )
+                return None
+            # Initial normals historically fall back per segment. Keep all other authored frames.
+            transformed[i] = wp.vec3(0.0)
+    return _cable_segment_quaternions(positions, transformed)
+
+
+def _cable_rest_geometry(positions, rest_points, normals, rest_normals, world_mat, path: str, *, closed: bool):
+    """Resolve optional rest data; None reuses the initial geometry or native frame transport."""
+    rest_positions = rest_lengths = None
+    if rest_points is not None:
+        candidate = _bake_world_points(rest_points, world_mat)
+        if closed:
+            candidate = [*candidate, candidate[0]]
+        lengths = [float(wp.length(b - a)) for a, b in pairwise(candidate)]
+        if any(not math.isfinite(length) or length <= 1.0e-8 for length in lengths):
+            warnings.warn(
+                f"{path}: restShapePoints has a non-finite or zero-length segment; "
+                "ignoring rest shape and using the initial points.",
+                stacklevel=2,
+            )
+        else:
+            rest_positions = candidate
+            rest_lengths = lengths
+    if rest_positions is None and rest_normals is None:
+        return None, None, None
+    frame_positions = positions if rest_positions is None else rest_positions
+    rest_frames = _cable_frames_from_normals(frame_positions, rest_normals, world_mat, path, "restNormals")
+    if rest_frames is None:
+        # USD falls back to the initial normal values, interpreted against the rest tangents.
+        rest_frames = _cable_frames_from_normals(frame_positions, normals, world_mat, path, "normals")
+    return rest_positions, rest_frames, rest_lengths
+
+
+def _join_cable_rest_points(
+    node_count: int, edges: list[tuple[int, int]], rest_vectors: list[wp.vec3]
+) -> list[wp.vec3]:
+    """Join rest edge vectors in a connected, acyclic cable graph.
+
+    Source curves can have separate rest origins. Starting from one shared origin
+    preserves their segment lengths and directions at welded nodes.
+    """
+    neighbors: list[list[tuple[int, wp.vec3]]] = [[] for _ in range(node_count)]
+    for (u, v), vector in zip(edges, rest_vectors, strict=True):
+        neighbors[u].append((v, vector))
+        neighbors[v].append((u, -vector))
+    positions = [wp.vec3(0.0) for _ in range(node_count)]
+    visited = {0}
+    pending = [0]
+    while pending:
+        u = pending.pop()
+        for v, vector in neighbors[u]:
+            if v not in visited:
+                positions[v] = positions[u] + vector
+                visited.add(v)
+                pending.append(v)
+    return positions
 
 
 def _warn_geometry_authored_newton_curve_damping_attrs(prim, path: str) -> None:
@@ -619,6 +700,8 @@ def _deformable_prepare_cable_topology(
         wmat = get_prim_world_mat(prim, None, incoming_world_xform)
         # Apply the full world affine so non-uniform scale, shear, and reflections are exact.
         positions = _bake_world_points(pts, wmat)
+        if any(not math.isfinite(float(component)) for point in positions for component in point):
+            continue  # The per-curve pass warns and skips invalid source geometry.
         mat = usd._get_curve_deformable_material(prim, deformable_read)
         radius = _cable_radius_from_material(mat, linear_unit)
         closed = curves.GetWrapAttr().Get() == UsdGeom.Tokens.periodic
@@ -833,42 +916,45 @@ def _deformable_prepare_cable_topology(
         # duplicate or collapsed points. Reject the component with a warning instead, leaving its curves
         # to the per-curve pass (which warns and skips any individually-degenerate curve).
         edge_lengths = [float(wp.length(node_positions[v] - node_positions[u])) for u, v in edges]
-        if min(edge_lengths, default=0.0) <= 1.0e-8:
+        if any(not math.isfinite(length) or length <= 1.0e-8 for length in edge_lengths):
             warnings.warn(
-                f"cable graph '{cid}': a welded curve has a zero-length segment (duplicate or collapsed "
+                f"cable graph '{cid}': a welded curve has a non-finite or zero-length segment (duplicate or collapsed "
                 f"points); skipping the welded component so its curves import individually.",
                 stacklevel=2,
             )
             return False
 
-        # Rest lengths drive material-gain discretization; edge_lengths stays current for the anchor map below.
-        material_edge_lengths = edge_lengths.copy()
-        rest_lengths_by_curve: dict[str, list[float]] = {}
+        frames_by_curve = {}
+        rest_vectors = []
+        material_edge_lengths = []
+        has_rest_points = False
         for key in comp_paths:
             rec = curve_recs[key]
-            rest_shape_points = _read_cable_rest_shape_points(rec.prim, key, len(rec.positions), deformable_read)
-            if rest_shape_points is None:
-                continue
+            count = len(rec.positions)
+            curves = UsdGeom.BasisCurves(rec.prim)
+            normals, rest_points, rest_normals = _read_cable_shape_arrays(curves, key, count, deformable_read)
             wmat = get_prim_world_mat(rec.prim, None, incoming_world_xform)
-            rest_lengths = _cable_rest_segment_lengths(rest_shape_points, wmat, key, closed=rec.closed)
-            if rest_lengths is not None:
-                rest_lengths_by_curve[key] = rest_lengths
-        for edge_index, (key, segment_index) in enumerate(edge_owner):
-            if key in rest_lengths_by_curve:
-                material_edge_lengths[edge_index] = rest_lengths_by_curve[key][segment_index]
+            # Near-coincident welds can move endpoints; frames must follow the merged tangents.
+            merged_positions = [node_positions[global_node((key, point))] for point in range(count)]
+            initial_frames = _cable_frames_from_normals(
+                merged_positions, normals, wmat, key, "normals", reject_curve=False
+            )
+            rest_positions, rest_frames, rest_lengths = _cable_rest_geometry(
+                merged_positions, rest_points, normals, rest_normals, wmat, key, closed=False
+            )
+            frames_by_curve[key] = (initial_frames, rest_frames)
+            edge_start = len(material_edge_lengths)
+            material_edge_lengths.extend(
+                edge_lengths[edge_start : edge_start + count - 1] if rest_lengths is None else rest_lengths
+            )
+            has_rest_points |= rest_positions is not None
+            if rest_positions is None:
+                rest_positions = merged_positions
+            rest_vectors.extend(b - a for a, b in pairwise(rest_positions))
 
-        # Rod graph construction auto-orients segments, so authored cross-section frames cannot be honored.
-        for key in comp_paths:
-            kprim = curve_recs[key].prim
-            normals_attr = UsdGeom.BasisCurves(kprim).GetNormalsAttr()
-            if UsdGeom.PrimvarsAPI(kprim).GetPrimvar("normals").HasValue() or (
-                normals_attr and normals_attr.Get() is not None
-            ):
-                warnings.warn(
-                    f"{key}: per-point normals are dropped for a welded cable graph; its Rod segments use "
-                    "auto-oriented frames instead of the authored cross-section frame.",
-                    stacklevel=2,
-                )
+        rest_node_positions = (
+            _join_cable_rest_points(len(node_positions), edges, rest_vectors) if has_rest_points else None
+        )
 
         rep = curve_recs[comp_paths[0]]
         contact_properties = {p: _resolve_cable_contact(ctx, curve_recs[p].prim) for p in comp_paths}
@@ -927,7 +1013,27 @@ def _deformable_prepare_cable_topology(
         )
         # Record the whole graph through the native path; source-curve lookup stays
         # in the per-prim import maps below.
-        rod = Rod(node_positions, edges=edges, radius=radius)
+        rod = Rod(node_positions, edges=edges, radius=radius, rest_points=rest_node_positions)
+        rest_quaternions = [] if any(rest_frames is not None for _, rest_frames in frames_by_curve.values()) else None
+        for edge_index, ((u, v), (key, segment)) in enumerate(zip(edges, edge_owner, strict=True)):
+            frames, rest_frames = frames_by_curve[key]
+            if frames is not None:
+                rod.quaternions[edge_index] = list(frames[segment])
+            if rest_quaternions is None:
+                continue
+            if rest_frames is not None:
+                rest_quaternions.append(rest_frames[segment])
+            else:
+                rest_quaternions.append(
+                    builder._transport_rod_frame(
+                        "USD cable graph",
+                        f"{key}: segment {segment}",
+                        rod.quaternions[edge_index],
+                        wp.normalize(node_positions[v] - node_positions[u]),
+                        wp.normalize(rest_vectors[edge_index]),
+                    )
+                )
+        rod.rest_quaternions = rest_quaternions
         body_ids, graph_joint_ids = builder.add_rod(
             rod=rod,
             cfg=cfg,
@@ -958,15 +1064,13 @@ def _deformable_prepare_cable_topology(
             graph_joint_radii,
             linear_unit,
         )
-        for key in rest_lengths_by_curve:
-            _warn_cable_rest_shape_effect(key)
 
         # Partition graph bodies back to their owning curve, and rebuild the per-prim anchor
         # maps the curve-to-xform attachment pass reads (point index / segment index -> body).
         per_prim_segments: dict[str, dict[int, tuple[int, float]]] = {}
         per_prim_bodies: dict[str, list[int]] = {}
         for ge, (key, seg) in enumerate(edge_owner):
-            length = edge_lengths[ge]
+            length = material_edge_lengths[ge]
             per_prim_segments.setdefault(key, {})[seg] = (body_ids[ge], length)
             per_prim_bodies.setdefault(key, []).append(body_ids[ge])
 
@@ -1131,52 +1235,13 @@ def _deformable_import_cable(
             continue
         points, vertex_counts = topo
         closed = curves.GetWrapAttr().Get() == UsdGeom.Tokens.periodic
-        # Rest centerline used for the rest length below (one point per vertex); restNormals
-        # and rest bend angles are not imported yet.
-        rest_shape_points = _read_cable_rest_shape_points(prim, path, len(points), deformable_read)
-        _warn_unsupported_rest_fields(prim, path, ("restNormals",), deformable_read)
+        normals, rest_shape_points, rest_normals = _read_cable_shape_arrays(curves, path, len(points), deformable_read)
         _warn_dropped_velocities(prim, path)
         _warn_geometry_authored_material_attrs(prim, path, "PhysicsCurvesDeformableMaterialAPI", deformable_read)
         _warn_geometry_authored_newton_curve_damping_attrs(prim, path)
         _warn_subset_material_bindings(prim, path)
 
         world_mat = get_prim_world_mat(prim, None, incoming_world_xform)
-        # Centerline and rest points use the full affine (below) so reflections / shears are exact.
-        # The curve normal is a material-frame director, not a surface normal: it co-deforms with
-        # the segment tangent, so it transforms by the full linear block M like the points, not by
-        # the covector rule M^-T. Recover the linear block from basis images (its columns).
-        _o = wp.transform_point(world_mat, wp.vec3(0.0, 0.0, 0.0))
-        _cx = wp.transform_point(world_mat, wp.vec3(1.0, 0.0, 0.0)) - _o
-        _cy = wp.transform_point(world_mat, wp.vec3(0.0, 1.0, 0.0)) - _o
-        _cz = wp.transform_point(world_mat, wp.vec3(0.0, 0.0, 1.0)) - _o
-        normal_linear = wp.mat33(_cx[0], _cy[0], _cz[0], _cx[1], _cy[1], _cz[1], _cx[2], _cy[2], _cz[2])
-
-        # Per-point normals give each segment's cross-section frame (twist).
-        # ``primvars:normals`` takes precedence over the schema ``normals`` attribute and
-        # may be indexed (flattened here); either way the normals are honored only when
-        # authored per point: interpolation must be vertex/varying (one normal per control
-        # point) and the count must match the points.
-        normals_primvar = UsdGeom.PrimvarsAPI(prim).GetPrimvar("normals")
-        if normals_primvar.HasValue():
-            normals = normals_primvar.ComputeFlattened()
-            normals_interp = normals_primvar.GetInterpolation()
-        else:
-            normals = curves.GetNormalsAttr().Get()
-            normals_interp = curves.GetNormalsInterpolation()
-        if normals is not None and normals_interp not in (UsdGeom.Tokens.vertex, UsdGeom.Tokens.varying):
-            warnings.warn(
-                f"{path}: normals interpolation '{normals_interp}' is not per-point (vertex/varying); "
-                f"ignoring normals.",
-                stacklevel=2,
-            )
-            normals = None
-        if normals is not None and len(normals) != len(points):
-            warnings.warn(
-                f"{path}: normals length {len(normals)} != points {len(points)}; ignoring normals.",
-                stacklevel=2,
-            )
-            normals = None
-
         # The current proposal authors structural stiffnesses (EA, kGA, EI, GJ); missing modes
         # derive from E, nu, and the physical curve thickness. Newton damping stays independently
         # optional per mode. Each resolved gain is divided by the joint-local dual rest length
@@ -1229,7 +1294,6 @@ def _deformable_import_cable(
         # flat segment index -> (segment body, segment length)
         cable_segments: dict[int, tuple[int, float]] = {}
         cable_mass_runs: list[_CableMassRun] = []
-        has_valid_rest_shape = False
         offset = 0
         flat_segment_index = 0
         for ci, vertex_count in enumerate(vertex_counts):
@@ -1258,34 +1322,29 @@ def _deformable_import_cable(
             # A zero-length segment (duplicate consecutive points) can't be oriented or
             # sized; warn and skip just this curve rather than aborting the whole import.
             seg_lengths = [float(wp.length(positions[i + 1] - positions[i])) for i in range(num_seg)]
-            if min(seg_lengths, default=0.0) <= 1.0e-8:
+            if any(not math.isfinite(length) or length <= 1.0e-8 for length in seg_lengths):
                 warnings.warn(
-                    f"{path}: curve {ci} has duplicate consecutive points (zero-length segment); skipping that curve.",
+                    f"{path}: curve {ci} has non-finite points or duplicate consecutive points (zero-length segment); skipping that curve.",
                     stacklevel=2,
                 )
                 flat_segment_index += curve_segment_count
                 continue
-            # Authored normals set each segment's cross-section twist; map them to world via
-            # the full linear block computed above. A singular block can only degenerate a
-            # normal to (near-)zero, which ``_cable_segment_quaternions`` already falls back
-            # from (roll-free frame), so no special-casing here.
-            quaternions = None
-            if normals is not None:
-                seg_normals = [
-                    wp.mul(normal_linear, wp.vec3(float(nv[0]), float(nv[1]), float(nv[2])))
-                    for nv in normals[start : start + n]
-                ]
-                quaternions = _cable_segment_quaternions(positions, seg_normals)
-            # Use the rest centerline when authored (else the imported points), so each joint's dual
-            # length follows the authored rest geometry.
-            material_seg_lengths = seg_lengths
-            rest_seg_lengths = None
-            if rest_shape_points is not None:
-                rest_seg_lengths = _cable_rest_segment_lengths(
-                    rest_shape_points[start : start + n], world_mat, path, closed=closed
-                )
-                if rest_seg_lengths is not None:
-                    material_seg_lengths = rest_seg_lengths
+            curve_path = path if len(vertex_counts) == 1 else f"{path}: curve {ci}"
+            curve_normals = None if normals is None else normals[start : start + n]
+            quaternions = _cable_frames_from_normals(
+                positions, curve_normals, world_mat, curve_path, "normals", reject_curve=False
+            )
+            rest_positions, rest_quaternions, material_seg_lengths = _cable_rest_geometry(
+                positions,
+                None if rest_shape_points is None else rest_shape_points[start : start + n],
+                curve_normals,
+                None if rest_normals is None else rest_normals[start : start + n],
+                world_mat,
+                curve_path,
+                closed=closed,
+            )
+            if material_seg_lengths is None:
+                material_seg_lengths = seg_lengths
             label = path if len(vertex_counts) == 1 else f"{path}_curve{ci}"
             curve_radii = segment_radii[flat_segment_index : flat_segment_index + num_seg]
             curve_point_radii = point_radii[start : start + n]
@@ -1297,6 +1356,8 @@ def _deformable_import_cable(
                 rod = Rod(
                     positions,
                     quaternions=quaternions,
+                    rest_points=rest_positions,
+                    rest_quaternions=rest_quaternions,
                     radius=curve_radii[0],
                     closed=closed,
                 )
@@ -1314,6 +1375,8 @@ def _deformable_import_cable(
 
                 bodies, joints = builder._add_rod_graph(
                     node_positions=positions,
+                    rest_node_positions=rest_positions,
+                    rest_quaternions=rest_quaternions,
                     edges=[(index, index + 1) for index in range(num_seg)],
                     quaternions=quaternions,
                     radius=curve_radii[0],
@@ -1352,7 +1415,6 @@ def _deformable_import_cable(
                 curve_joint_radii,
                 linear_unit,
             )
-            has_valid_rest_shape |= rest_seg_lengths is not None
             cable_bodies.extend(bodies)
             cable_joints.extend(joints)
             cable_mass_runs.append(
@@ -1364,7 +1426,7 @@ def _deformable_import_cable(
                     body_ids=tuple(bodies),
                     element_volumes=tuple(
                         math.pi * segment_radius**2 * segment_length
-                        for segment_radius, segment_length in zip(curve_radii, seg_lengths, strict=True)
+                        for segment_radius, segment_length in zip(curve_radii, material_seg_lengths, strict=True)
                     ),
                     closed=closed,
                 )
@@ -1372,7 +1434,7 @@ def _deformable_import_cable(
 
             for si, body in enumerate(bodies):
                 seg_index = flat_segment_index + si
-                cable_segments[seg_index] = (body, seg_lengths[si])
+                cable_segments[seg_index] = (body, material_seg_lengths[si])
 
             for pi in range(n):
                 point_index = start + pi
@@ -1386,14 +1448,12 @@ def _deformable_import_cable(
                 else:
                     incident = (pi - 1, pi)
                 for si in incident:
-                    z = -0.5 * seg_lengths[si] if si == pi else 0.5 * seg_lengths[si]
+                    z = -0.5 * material_seg_lengths[si] if si == pi else 0.5 * material_seg_lengths[si]
                     anchors.append((bodies[si], wp.vec3(0.0, 0.0, z)))
 
             flat_segment_index += curve_segment_count
 
         if cable_bodies:
-            if has_valid_rest_shape:
-                _warn_cable_rest_shape_effect(path)
             authored_masses = _apply_cable_masses(
                 builder,
                 prim,

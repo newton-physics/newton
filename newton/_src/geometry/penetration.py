@@ -7,7 +7,7 @@ from typing import Any
 
 import warp as wp
 
-from .support_function import _has_verified_hull, unpack_mesh_ptr
+from .support_function import GeoTypeEx, _has_verified_hull, unpack_mesh_ptr
 from .types import GeoType
 
 # Tangent offset [unitless] of the tilted certificate normals, about 2 degrees.
@@ -19,8 +19,15 @@ def box_polyhedron_pair(a: Any, b: Any) -> bool:
     """Select box pairs whose portal normal needs a minimum-depth certificate."""
     return (
         a.shape_type == int(GeoType.BOX)
-        and (b.shape_type == int(GeoType.BOX) or b.shape_type == int(GeoType.CONVEX_MESH))
-    ) or (a.shape_type == int(GeoType.CONVEX_MESH) and b.shape_type == int(GeoType.BOX))
+        and (
+            b.shape_type == int(GeoType.BOX)
+            or b.shape_type == int(GeoType.CONVEX_MESH)
+            or b.shape_type == int(GeoTypeEx.TRIANGLE)
+        )
+    ) or (
+        (a.shape_type == int(GeoType.CONVEX_MESH) or a.shape_type == int(GeoTypeEx.TRIANGLE))
+        and b.shape_type == int(GeoType.BOX)
+    )
 
 
 @wp.func
@@ -76,6 +83,26 @@ def _box_triangle_depth(half: wp.vec3, first: wp.vec3, second: wp.vec3, third: w
 
 
 @wp.func
+def _box_face_depth(half_a: wp.vec3, half_b: wp.vec3, rotation: wp.quat, position: wp.vec3) -> tuple[wp.vec3, float]:
+    """Bound separation depth along the face normals of two enclosing boxes."""
+    axes_b = wp.quat_to_matrix(rotation)
+    normal = wp.vec3(1.0, 0.0, 0.0)
+    depth = float(1.0e30)
+    for index in range(3):
+        overlap_a = half_a[index] + wp.dot(wp.abs(axes_b[index]), half_b) - wp.abs(position[index])
+        if overlap_a < depth:
+            depth = overlap_a
+            normal = _axis(index) if position[index] >= 0.0 else -_axis(index)
+        axis_b = axes_b * _axis(index)
+        offset_b = wp.dot(axis_b, position)
+        overlap_b = half_b[index] + wp.dot(wp.abs(axis_b), half_a) - wp.abs(offset_b)
+        if overlap_b < depth:
+            depth = overlap_b
+            normal = axis_b if offset_b >= 0.0 else -axis_b
+    return normal, depth
+
+
+@wp.func
 def _box_box_depth(half_a: wp.vec3, half_b: wp.vec3, rotation: wp.quat, position: wp.vec3) -> tuple[wp.vec3, float]:
     """Return the minimum-depth normal and depth of two boxes in A's frame.
 
@@ -108,13 +135,13 @@ def _box_box_depth(half_a: wp.vec3, half_b: wp.vec3, rotation: wp.quat, position
 
 
 def create_solve_box_penetration(support: Any):
-    """Find minimum depth for a box against a box or convex mesh.
+    """Find minimum depth for a box against a box, triangle, or convex mesh.
 
-    Box pairs use the closed-form separating-axis test. For convex meshes,
-    cheap certificates come first: a box plus a triangle of genuine partner
-    points is an inner Minkowski body, so its depth bounds the minimum from
-    below, and a support plane bounds it from above. Only pairs neither
-    certificate resolves stream the complete separating-axis basis: face
+    Box and triangle pairs use the closed-form separating-axis test. For
+    convex meshes, cheap certificates come first: a box plus a triangle of
+    genuine partner points is an inner Minkowski body, so its depth bounds
+    the minimum from below, and a support plane bounds it from above. Only
+    pairs neither certificate resolves stream the complete separating-axis basis: face
     normals and edge cross products include every Minkowski facet normal of
     a hull triangulation. Storage is constant and no expanding polytope is
     constructed.
@@ -336,6 +363,20 @@ def create_solve_box_penetration(support: Any):
         a: Any, b: Any, rotation: wp.quat, position: wp.vec3, provider: Any, hint: wp.vec3
     ) -> tuple[wp.vec3, float, bool]:
         """Return a depth candidate and whether its minimum is certified."""
+        if a.shape_type == int(GeoTypeEx.TRIANGLE) and b.shape_type == int(GeoType.BOX):
+            # Triangle support vertices are (0, scale, auxiliary) in A's frame.
+            # Compute the SAT depth in the box frame, then orient A toward B.
+            p0 = wp.quat_rotate_inv(rotation, -position)
+            p1 = wp.quat_rotate_inv(rotation, a.scale - position)
+            p2 = wp.quat_rotate_inv(rotation, a.auxiliary - position)
+            depth, normal = _box_triangle_depth(b.scale, p0, p1, p2)
+            return -wp.quat_rotate(rotation, normal), depth, True
+        if b.shape_type == int(GeoTypeEx.TRIANGLE) and a.shape_type == int(GeoType.BOX):
+            p0 = position
+            p1 = position + wp.quat_rotate(rotation, b.scale)
+            p2 = position + wp.quat_rotate(rotation, b.auxiliary)
+            depth, normal = _box_triangle_depth(a.scale, p0, p1, p2)
+            return normal, depth, True
         if a.shape_type == int(GeoType.BOX) and b.shape_type == int(GeoType.BOX):
             normal, depth = _box_box_depth(a.scale, b.scale, rotation, position)
             return normal, depth, True
