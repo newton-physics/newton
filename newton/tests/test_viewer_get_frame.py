@@ -382,13 +382,13 @@ class TestViewerGLGetFrame(unittest.TestCase):
                     return wp.quat_rotate(rotation, wp.vec3(point))
 
                 builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-                # Keep this receiver local; oversized triangles can disappear on
-                # software rasterizers, and the large-quad case is covered above.
+                # Keep the receiver inside the view: clipped triangles can vanish
+                # on software rasterizers. The large-quad test covers clipping.
                 builder.add_shape_box(
                     -1,
                     xform=wp.transform(rotate((0.0, 0.0, -0.005)), rotation),
-                    hx=0.6,
-                    hy=0.6,
+                    hx=0.12,
+                    hy=0.12,
                     hz=0.005,
                     color=(0.2, 0.5, 0.8),
                 )
