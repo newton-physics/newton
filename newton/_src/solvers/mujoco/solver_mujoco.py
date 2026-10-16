@@ -10411,9 +10411,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     def _resolve_joint_target_damping(self, spec: Any) -> None:
         """Resolve imported damping once, after publishing each world's inertia and gains."""
         attrs = getattr(self.model, "mujoco", None)
-        if attrs is None or self.mjc_actuator_to_newton_actuator_idx is None:
+        actuator_biasprm = getattr(attrs, "actuator_biasprm", None)
+        if actuator_biasprm is None or self.mjc_actuator_to_newton_actuator_idx is None:
             return
-        biasprm = attrs.actuator_biasprm.numpy()
+        biasprm = actuator_biasprm.numpy()
         if not np.any(biasprm[:, 2] > 0.0):
             return
 
@@ -10461,7 +10462,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if world == 0:
                 spec.actuators[actuator].biasprm[2] = compiled_bias[world, actuator, 2]
         self.model.joint_target_kd.assign(kd.reshape(-1))
-        attrs.actuator_biasprm.assign(biasprm.reshape(-1, 10))
+        actuator_biasprm.assign(biasprm.reshape(-1, 10))
 
     def _update_actuator_properties(self):
         """Update actuator properties in the MuJoCo model.
