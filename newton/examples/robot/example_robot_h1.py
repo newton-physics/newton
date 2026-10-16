@@ -22,7 +22,6 @@ from newton import JointTargetMode, JointType
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
 

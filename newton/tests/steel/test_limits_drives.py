@@ -632,6 +632,7 @@ def _allocated_rigid_velocity_slots(device, qd6, *, fraction: float, lin_limit: 
             wp.array([ang_limit], dtype=wp.float32, device=device),
             wp.array([0], dtype=wp.int32, device=device),
             wp.array(list(qd6), dtype=wp.float32, device=device),
+            wp.array([wp.quat_identity()], dtype=wp.quat, device=device),
             fraction,
             64,
             wp.ones(1, dtype=wp.int32, device=device),
