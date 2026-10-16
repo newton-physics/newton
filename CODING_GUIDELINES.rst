@@ -112,7 +112,9 @@ Document the supported subset and limitations.
 
 Reuse standard OpenUSD schemas or AOUSD proposals already supported by Newton;
 extend Newton-owned schemas when needed, with compatible schema-package
-versions. The normal path should require no Omniverse or vendor schema packages.
+versions. Existing solver-native schemas such as ``mjc:*`` are also supported
+when parsed through OpenUSD without an Omniverse dependency. The normal path
+should require no Omniverse or additional vendor schema packages.
 
 Each feature must state its disposition: supported; deferred with explicit
 review acceptance, reason, issue, owner, and target milestone; or not applicable
