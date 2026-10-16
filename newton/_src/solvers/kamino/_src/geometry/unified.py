@@ -464,6 +464,7 @@ class CollisionPipelineUnifiedKamino:
                     per_world_pairs += (n * (n - 1)) // 2
             self._max_shape_pairs: int = int(per_world_pairs)
         else:
+            wid_np = None
             self._max_shape_pairs: int = (self._num_geoms * (self._num_geoms - 1)) // 2
         self._max_contacts: int = self._max_shape_pairs * self._max_contacts_per_pair
 
@@ -542,6 +543,11 @@ class CollisionPipelineUnifiedKamino:
                 self.sap_broadphase = BroadPhaseSAP(self.geom_wid, shape_flags=self.shape_flags, device=self._device)
             case "explicit":
                 self.explicit_broadphase = BroadPhaseExplicit()
+                self.explicit_broadphase._warn_large_pair_count(
+                    self.shape_pairs_filtered,
+                    wid_np,
+                    self._model.size.num_worlds,
+                )
             case _:
                 raise ValueError(f"Unsupported broad phase mode: {self._broadphase}")
 
@@ -785,6 +791,9 @@ class CollisionPipelineUnifiedKamino:
             shape_collision_aabb_lower=self.collision_aabb_lower,
             shape_collision_aabb_upper=self.collision_aabb_upper,
             shape_voxel_resolution=self.voxel_resolution,
+            shape_interior_point=self._model.geoms.interior_point,
+            mesh_boundary_flags=self._model.geoms.mesh_boundary_flags,
+            shape_mesh_boundary_start=self._model.geoms.mesh_boundary_start,
             shape_heightfield_index=self.heightfield_index,
             heightfield_data=self.heightfield_data,
             heightfield_elevations=self.heightfield_elevations,

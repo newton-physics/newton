@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import ctypes
+import logging
 import os
 import sys
 import warnings
@@ -11,6 +12,7 @@ import warp as wp
 
 from newton import Mesh
 
+from ...exceptions import NewtonWarning
 from ...utils.mesh import compute_vertex_normals
 from ...utils.texture import normalize_texture
 from ..utils import OPAQUE_OPACITY_THRESHOLD
@@ -25,6 +27,8 @@ from .shaders import (
     ShaderSky,
     ShadowShader,
 )
+
+logger = logging.getLogger(__name__)
 
 ENABLE_GL_CHECKS = False
 _CUDA_INTEROP_WARNINGS: set[str] = set()
@@ -71,8 +75,7 @@ def check_gl_error():
         import traceback  # noqa: PLC0415
 
         stack = traceback.format_stack()
-        print(f"OpenGL error: {error_name} ({error:#x})")
-        print(f"Called from: {''.join(stack[-2:-1])}")
+        logger.error("OpenGL error: %s (%#x)\nCalled from: %s", error_name, error, "".join(stack[-2:-1]))
 
 
 def _upload_texture_from_file(gl, texture_image: np.ndarray) -> int:
@@ -209,6 +212,7 @@ class MeshGL:
         self.indices = None
         self.normals = None  # scratch buffer used during normal recomputation
         self.texture_id = None
+        self._texture_file_signature: tuple[str, int, int] | None = None
         self.opacity = 1.0
 
         # Set up vertex attributes in the packed format the shaders expect
@@ -390,6 +394,20 @@ class MeshGL:
         )
 
     def update_texture(self, texture=None):
+        """Reuse unchanged local image files; upload array inputs on every update."""
+        signature = None
+        if isinstance(texture, (str, os.PathLike)):
+            path = os.path.abspath(os.fspath(texture))
+            try:
+                stat = os.stat(path)
+                signature = (path, stat.st_mtime_ns, stat.st_size)
+            except OSError:
+                # URLs, USD package paths and missing files still use the texture loader.
+                pass
+        if signature is not None and self.texture_id is not None and signature == self._texture_file_signature:
+            return
+
+        self._texture_file_signature = None
         gl = RendererGL.gl
         texture_image = None
         if texture is not None:
@@ -417,6 +435,7 @@ class MeshGL:
         if not texture_id:
             return
         self.texture_id = texture_id
+        self._texture_file_signature = signature
 
     def render(self):
         if not self.hidden:
@@ -1202,7 +1221,7 @@ class RendererGL:
             # remember sample count for later (e.g., resolving FBO)
             self.msaa_samples = 4
         except pyglet.window.NoSuchConfigException:
-            print("Warning: Could not get MSAA config, falling back to non-AA.")
+            logger.warning("Could not get MSAA config, falling back to non-AA.")
             self.window = pyglet.window.Window(
                 width=screen_width,
                 height=screen_height,
@@ -1231,6 +1250,8 @@ class RendererGL:
         else:
             self.headless = headless
         self.app = pyglet.app
+        # Closing the last window sets pyglet's process-wide exit flag.
+        self.app.event_loop.has_exit = False
 
         # making window current opengl rendering context
         self._make_current()
@@ -1855,7 +1876,7 @@ class RendererGL:
             )
 
             if gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER) != gl.GL_FRAMEBUFFER_COMPLETE:
-                print("Framebuffer is not complete!", flush=True)
+                logger.error("Framebuffer is not complete!")
                 gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
                 sys.exit(1)
 
@@ -1912,7 +1933,7 @@ class RendererGL:
             )
 
             if gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER) != gl.GL_FRAMEBUFFER_COMPLETE:
-                print("Warning: MSAA framebuffer incomplete, disabling MSAA.")
+                logger.warning("MSAA framebuffer incomplete, disabling MSAA.")
                 self.msaa_samples = 0
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
 
@@ -1942,6 +1963,7 @@ class RendererGL:
                 "ViewerGL: weighted order-independent transparency is unavailable on this GL context "
                 "(requires independent blending and a float OIT framebuffer). Falling back to unsorted "
                 "alpha blending, so overlapping transparent surfaces may blend in the wrong order.",
+                NewtonWarning,
                 stacklevel=2,
             )
         return self._oit_supported
@@ -2159,7 +2181,6 @@ class RendererGL:
             diffuse_scale=self.diffuse_scale,
             specular_scale=self.specular_scale,
             spotlight_enabled=self.spotlight_enabled,
-            shadow_extents=self.shadow_extents,
             exposure=self.exposure,
             oit_depth_reference=self.camera.pivot_distance,
         )

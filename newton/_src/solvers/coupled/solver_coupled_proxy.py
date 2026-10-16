@@ -927,11 +927,7 @@ class SolverCoupledProxy(SolverCoupled):
         joint_type = model.joint_type.numpy()
         joint_qd_start = model.joint_qd_start.numpy()
         joint_target_q_start = model.joint_target_q_start.numpy()
-        target_q_global_to_local = (
-            dst.joint_coord_global_to_local.numpy()
-            if bool(model.use_coord_layout_targets)
-            else dst.joint_dof_global_to_local.numpy()
-        )
+        target_q_global_to_local = dst.joint_coord_global_to_local.numpy()
         dst_qd_global_to_local = dst.joint_dof_global_to_local.numpy()
 
         source_target_q_indices_global: list[int] = []

@@ -8,6 +8,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock
 
+import numpy as np
+import warp as wp
+
 import newton
 from newton.solvers import SolverBase, SolverXPBD
 from newton.viewer import ViewerNull
@@ -70,11 +73,11 @@ class TestSolverObservableConsumers(unittest.TestCase):
         viewer.show_contacts = True
         viewer.log_contacts(contacts, model.state(), observables=observables)
         self.assertIs(observables.contacts, contacts)
-        with self.assertRaisesRegex(ValueError, "Contacts instance"):
+        with self.assertRaisesRegex(ValueError, "different Contacts"):
             viewer.log_contacts(pipeline.contacts(), model.state(), observables=observables)
 
     def test_kamino_does_not_require_export_capacity_without_request(self):
-        """Allow a native solver with a smaller unrelated pipeline until forces are requested."""
+        """Allow a native solver with smaller unrelated contacts until forces are requested."""
         builder = newton.ModelBuilder()
         builder.begin_world()
         body = builder.add_body(mass=1.0)
@@ -86,8 +89,33 @@ class TestSolverObservableConsumers(unittest.TestCase):
         config = newton.solvers.SolverKamino.Config(use_collision_detector=True)
         solver = newton.solvers.SolverKamino(model, config=config)
         solver.step(model.state(), model.state(), model.control(), None, 0.001)
-        with self.assertRaisesRegex(ValueError, "exceeds CollisionPipeline capacity"):
+        with self.assertRaisesRegex(ValueError, "exceeds Contacts capacity"):
             solver.observables(contacts=contacts, kinds={SolverBase.ObservableKind.CONTACT_F})
+
+    def test_kamino_rejects_small_export_buffer_before_stepping(self):
+        """Reject a step buffer below the native export capacity before writing any output."""
+        builder = newton.ModelBuilder()
+        builder.begin_world()
+        body = builder.add_body(mass=1.0, xform=wp.transform(wp.vec3(0.0, 0.0, 0.09), wp.quat_identity()))
+        builder.add_shape_sphere(body, radius=0.1)
+        builder.add_ground_plane()
+        builder.end_world()
+        model = builder.finalize(device="cpu")
+        config = newton.solvers.SolverKamino.Config(use_collision_detector=True)
+        solver = newton.solvers.SolverKamino(model, config=config)
+        capacity = solver._contacts_kamino.model_max_contacts_host
+        large = newton.Contacts(capacity, 0, device=model.device)
+        small = newton.Contacts(capacity - 1, 0, device=model.device)
+        observables = solver.observables(contacts=large, kinds={SolverBase.ObservableKind.CONTACT_F})
+        state_in, state_out = model.state(), model.state()
+        state_out.body_q.fill_(wp.transform(wp.vec3(7.0), wp.quat_identity()))
+        before = state_out.body_q.numpy()
+        with self.assertRaisesRegex(ValueError, "exceeds Contacts capacity"):
+            solver.step(state_in, state_out, model.control(), small, 0.001, observables=observables)
+        np.testing.assert_array_equal(state_out.body_q.numpy(), before)
+        self.assertIs(observables.contacts, large)
+        solver.step(state_in, state_out, model.control(), large, 0.001, observables=observables)
+        self.assertIs(observables.contacts, large)
 
 
 if __name__ == "__main__":
