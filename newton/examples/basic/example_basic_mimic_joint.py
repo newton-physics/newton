@@ -35,7 +35,6 @@ class Example:
 
     def __init__(self, viewer, args):
         """Build and actuate a lead screw with a joint-owned mimic relationship."""
-        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.solver_name = args.solver
         self.frame_dt = 1.0 / self.FPS

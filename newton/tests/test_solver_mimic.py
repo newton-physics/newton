@@ -7,7 +7,8 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton._src.sim.joint_mimic import eval_joint_mimic_coordinate, eval_joint_mimic_velocity
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
 def _build_mimic_model(device, vectorized, *, kinematic_reference=False, small_mismatch=False):
@@ -98,6 +99,9 @@ def _test_solver_mimic(test, device, solver_name):
                         joint_mimic_kd=3.0,
                     )
                 generalized = False
+            elif solver_name == "steel":
+                solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free")
+                generalized = True
             elif solver_name == "vbd":
                 solver = newton.solvers.SolverVBD(
                     model,
@@ -108,8 +112,9 @@ def _test_solver_mimic(test, device, solver_name):
             else:
                 raise ValueError(f"Unknown solver {solver_name}")
 
-            step_count = 240 if solver_name == "semi_implicit" else 1
-            dt = 1.0 / 240.0 if solver_name == "semi_implicit" else 1.0 / 60.0
+            # Penalty and Baumgarte-stabilized mimics converge over many steps.
+            step_count = 240 if solver_name in ("semi_implicit", "steel") else 1
+            dt = 1.0 / 240.0 if solver_name in ("semi_implicit", "steel") else 1.0 / 60.0
             for _ in range(step_count):
                 solver.step(state_in, state_out, None, None, dt)
                 state_in, state_out = state_out, state_in
@@ -182,9 +187,94 @@ def test_semi_implicit_mimic_validates_gains(test, device):
                     newton.solvers.SolverSemiImplicit(model, **{name: value})
 
 
+def test_steel_mimic(test, device):
+    """Enforce scalar and vectorized mimic relationships in Steel."""
+    _test_solver_mimic(test, device, "steel")
+
+
 def test_vbd_mimic(test, device):
     """Enforce scalar and vectorized mimic relationships in VBD."""
     _test_solver_mimic(test, device, "vbd")
+
+
+@wp.kernel
+def _eval_mimic_coordinates(
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_qd_start: wp.array[int],
+    joint_dof_dim: wp.array2d[int],
+    joint_axis: wp.array[wp.vec3],
+    coordinates: wp.array[float],
+    velocities: wp.array[float],
+):
+    k = wp.tid()
+    q, gradient_p, gradient_c = eval_joint_mimic_coordinate(
+        0,
+        k,
+        body_q,
+        body_com,
+        joint_type,
+        joint_parent,
+        joint_child,
+        joint_X_p,
+        joint_X_c,
+        joint_qd_start,
+        joint_dof_dim,
+        joint_axis,
+    )
+    coordinates[k] = q
+    velocities[k] = eval_joint_mimic_velocity(joint_parent[0], joint_child[0], gradient_p, gradient_c, body_qd)
+
+
+def test_mimic_compound_d6_coordinate_gradients(test, device):
+    """Mimic gradients of multi-angular D6 coordinates must map body velocities to eval_fk joint velocities."""
+    q = np.array([0.5, -0.4, 0.7], dtype=np.float32)
+    qd = np.array([0.9, -0.6, 0.3], dtype=np.float32)
+    # non-XYZ axis orders, as in the nv_humanoid.xml hips
+    for axes in ((newton.Axis.X, newton.Axis.Z, newton.Axis.Y), (newton.Axis.X, newton.Axis.Z)):
+        with test.subTest(axis_count=len(axes)):
+            n = len(axes)
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            joint = builder.add_joint_d6(
+                -1, body, angular_axes=[newton.ModelBuilder.JointDofConfig(axis=axis) for axis in axes]
+            )
+            builder.add_articulation([joint])
+            model = builder.finalize(device=device)
+            state = model.state()
+            state.joint_q.assign(q[:n])
+            state.joint_qd.assign(qd[:n])
+            newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+            coordinates = wp.zeros(n, dtype=float, device=device)
+            velocities = wp.zeros(n, dtype=float, device=device)
+            wp.launch(
+                _eval_mimic_coordinates,
+                dim=n,
+                inputs=[
+                    state.body_q,
+                    state.body_qd,
+                    model.body_com,
+                    model.joint_type,
+                    model.joint_parent,
+                    model.joint_child,
+                    model.joint_X_p,
+                    model.joint_X_c,
+                    model.joint_qd_start,
+                    model.joint_dof_dim,
+                    model.joint_axis,
+                ],
+                outputs=[coordinates, velocities],
+                device=device,
+            )
+            np.testing.assert_allclose(coordinates.numpy(), q[:n], atol=1.0e-5)
+            np.testing.assert_allclose(velocities.numpy(), qd[:n], atol=1.0e-5)
 
 
 def test_eval_mimic_selection(test, device):
@@ -315,6 +405,15 @@ add_function_test(
     devices=devices,
 )
 add_function_test(TestSolverMimic, "test_vbd_mimic", test_vbd_mimic, devices=devices)
+add_function_test(
+    TestSolverMimic,
+    "test_mimic_compound_d6_coordinate_gradients",
+    test_mimic_compound_d6_coordinate_gradients,
+    devices=devices,
+)
+# Steel mimic rows need the CUDA-only matrix-free solve; its split solve rejects them.
+for device in get_cuda_test_devices():
+    add_function_test(TestSolverMimic, "test_steel_mimic", test_steel_mimic, devices=[device])
 
 
 if __name__ == "__main__":

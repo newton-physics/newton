@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import math
 import unittest
 from itertools import product
 from types import SimpleNamespace
@@ -330,7 +329,7 @@ def _status_iteration_budget(solver: DVISolver, wid: int) -> int:
     config = solver.config[wid]
     if config.unilateral_solver == "apgd":
         phases = (
-            1 if config.use_schur_complement or solver._bilateral_solver is None else config.max_alternating_iterations
+            1 if solver._use_schur_complement or solver._bilateral_solver is None else config.max_alternating_iterations
         )
         return phases * config.apgd.max_nonlinear_corrections * config.apgd.max_iterations
     return config.max_alternating_iterations * config.inequality_sweeps_per_iteration
@@ -439,7 +438,7 @@ class TestDVISolver(unittest.TestCase):
         self.assertEqual(default_config.dvi.omega, 1.0)
         self.assertEqual(default_config.dvi.max_alternating_iterations, 24)
         self.assertEqual(default_config.dvi.inequality_sweeps_per_iteration, 2)
-        self.assertFalse(default_config.dvi.use_schur_complement)
+        self.assertIsNone(default_config.dvi.use_schur_complement)
         self.assertEqual(default_config.dvi.tangential_warmstart_scale, 0.97)
         self.assertEqual(default_config.dvi.bilateral_solve_interval, 1)
         self.assertEqual(default_config.dvi.bilateral_solver_type, "LLTB")
@@ -3307,11 +3306,6 @@ class TestDVISolver(unittest.TestCase):
             world_count=1,
             use_kamino_contacts=True,
             dynamics_solver="dvi",
-            # Turning off effort limits isolates DVI contact creep; effort-limit rows have
-            # dedicated coverage in test_kamino_solver_joint_effort_limit.
-            # TODO: Re-enable effort limits once DVI solves their constraints
-            # accurately enough for this contact regression.
-            joint_effort_limit=math.inf,
         )
         example = Example(ViewerNull(num_frames=1), args)
 
@@ -3363,11 +3357,6 @@ class TestDVISolver(unittest.TestCase):
             world_count=1,
             use_kamino_contacts=True,
             dynamics_solver="dvi",
-            # Turning off effort limits isolates DVI contact support; effort-limit rows have
-            # dedicated coverage in test_kamino_solver_joint_effort_limit.
-            # TODO: Re-enable effort limits once DVI solves their constraints
-            # accurately enough for this contact regression.
-            joint_effort_limit=math.inf,
         )
         example = Example(ViewerNull(num_frames=1), args)
 

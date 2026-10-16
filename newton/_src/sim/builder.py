@@ -9,6 +9,7 @@ import copy
 import ctypes
 import functools
 import gc
+import logging
 import math
 import warnings
 import weakref
@@ -39,6 +40,7 @@ from ..core.types import (
     axis_to_vec3,
     flag_to_int,
 )
+from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..geometry import (
     Gaussian,
     GeoType,
@@ -75,6 +77,7 @@ from .graph_coloring import (
 from .joint_mimic import _SUPPORTED_JOINT_TYPES
 from .model import Model, _pack_shape_pair_codes
 from .rod import Rod
+from .shape_contact_pairs import _ShapeContactPairs
 from .tendon import TendonGuide, TendonGuideFlags, TendonGuideType
 
 if TYPE_CHECKING:
@@ -87,6 +90,8 @@ if TYPE_CHECKING:
     UsdStage = Usd.Stage
 else:
     UsdStage = Any
+
+logger = logging.getLogger(__name__)
 
 
 def _validate_opacity(value: Any, value_name: str) -> float:
@@ -729,7 +734,7 @@ class ModelBuilder:
     _BASE_ATTRIBUTES: ClassVar[frozenset[str] | None] = None
     _BASE_LIST_ATTRIBUTES: ClassVar[frozenset[str] | None] = None
     # Per-class merge schema cache; see _builder_merge_attribute_specs().
-    _MERGE_ATTRIBUTE_SPEC_CACHE: ClassVar[dict[bool, dict[str, Model.AttributeSpec]]]
+    _MERGE_ATTRIBUTE_SPEC_CACHE: ClassVar[dict[str, Model.AttributeSpec]]
 
     @staticmethod
     def _shape_palette_color(index: int) -> tuple[float, float, float]:
@@ -905,6 +910,10 @@ class ModelBuilder:
 
         :class:`~newton.solvers.SolverXPBD` requires ``enable_restitution=True``
         on the solver constructor for this field to take effect.
+        :class:`~newton.solvers.SolverSteel` uses the arithmetic mean of the
+        two shapes' coefficients, each clamped to ``[0, 1]`` (non-finite values
+        count as zero), for contacts whose incident normal speed exceeds its
+        ``restitution_velocity_threshold``.
         """
         mu_torsional: float = 0.005
         """The coefficient of torsional friction [m] (resistance to spinning at contact point)."""
@@ -3073,7 +3082,7 @@ class ModelBuilder:
         if controller_class is not _DEPRECATED_ACTUATOR_DRIVE_UNSET:
             if drive_class is not None:
                 raise TypeError("Specify only one of 'drive_class' and deprecated 'controller_class'.")
-            warnings.warn(_ACTUATOR_CONTROLLER_CLASS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            warnings.warn(_ACTUATOR_CONTROLLER_CLASS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
             drive_class = controller_class
         if drive_class is None:
             raise TypeError("add_actuator() requires 'drive_class'")
@@ -3090,6 +3099,7 @@ class ModelBuilder:
             warnings.warn(
                 f"add_actuator: {drive_class.__name__} ignoring "
                 f"unrecognized parameter(s): {', '.join(sorted(unrecognized))}",
+                NewtonWarning,
                 stacklevel=2,
             )
         drive_shared_names = getattr(drive_class, "SHARED_PARAMS", set())
@@ -3374,7 +3384,7 @@ class ModelBuilder:
         .. deprecated:: 1.7
             Limit joint rotations with the per-DOF limits of :class:`JointDofConfig` instead.
         """
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         if self._deprecated_joint_twist_lower is None:
             self._deprecated_joint_twist_lower = []
         return self._deprecated_joint_twist_lower
@@ -3382,7 +3392,7 @@ class ModelBuilder:
     @joint_twist_lower.setter
     def joint_twist_lower(self, value: list[float]) -> None:
         # stacklevel skips ModelBuilder.__setattr__ to report the caller.
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=3)
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=3)
         self._deprecated_joint_twist_lower = value
 
     @property
@@ -3392,7 +3402,7 @@ class ModelBuilder:
         .. deprecated:: 1.7
             Limit joint rotations with the per-DOF limits of :class:`JointDofConfig` instead.
         """
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         if self._deprecated_joint_twist_upper is None:
             self._deprecated_joint_twist_upper = []
         return self._deprecated_joint_twist_upper
@@ -3400,53 +3410,14 @@ class ModelBuilder:
     @joint_twist_upper.setter
     def joint_twist_upper(self, value: list[float]) -> None:
         # stacklevel skips ModelBuilder.__setattr__ to report the caller.
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=3)
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=3)
         self._deprecated_joint_twist_upper = value
-
-    def _project_target_q_to_dof(self) -> list[float] | np.ndarray:
-        """Drop the quat-w padding slot for FREE/BALL/DISTANCE/ROD joints to turn
-        the coord-sized :attr:`joint_target_q` buffer into a DOF-shaped one.
-
-        Under :data:`newton.use_coord_layout_targets` ``False`` the builder
-        stores raw per-axis angles (extrinsic ZYX) in the first 3 quat slots
-        and a placeholder ``1.0`` in the 4th — this method just slices the
-        placeholder off to produce the legacy DOF-shaped ``Model.joint_target_q``.
-        """
-        if isinstance(self.joint_target_q, np.ndarray):
-            joint_types = np.asarray(self.joint_type, dtype=np.int32)
-            ball_mask = joint_types == int(JointType.BALL)
-            padding_mask = (
-                ball_mask
-                | (joint_types == int(JointType.FREE))
-                | (joint_types == int(JointType.DISTANCE))
-                | (joint_types == int(JointType.ROD))
-            )
-            padding_indices = np.asarray(self.joint_q_start, dtype=np.int64)[padding_mask]
-            padding_indices += np.where(ball_mask[padding_mask], 3, 6)
-            keep = np.ones(len(self.joint_target_q), dtype=np.bool_)
-            keep[padding_indices] = False
-            return self.joint_target_q[keep]
-
-        result: list[float] = []
-        for j, jtype in enumerate(self.joint_type):
-            q_start = self.joint_q_start[j]
-            if jtype == JointType.BALL:
-                result.extend(self.joint_target_q[q_start : q_start + 3])
-            elif jtype == JointType.FREE or jtype == JointType.DISTANCE or jtype == JointType.ROD:
-                result.extend(self.joint_target_q[q_start : q_start + 6])
-            elif jtype == JointType.FIXED:
-                pass
-            else:
-                num_lin, num_ang = self.joint_dof_dim[j]
-                result.extend(self.joint_target_q[q_start : q_start + num_lin + num_ang])
-        return result
 
     @staticmethod
     def _quat_from_axis_targets(t_x: float, t_y: float, t_z: float) -> tuple[float, float, float, float]:
         """Compose per-axis angles into a unit quaternion using extrinsic ZYX
         (yaw-pitch-roll) — equivalent to
-        ``wp.quat_from_euler(wp.vec3(t_x, t_y, t_z), 2, 1, 0)``. Matches
-        Kamino's ``target_dofs_to_coords_conversion_kernel`` convention.
+        ``wp.quat_from_euler(wp.vec3(t_x, t_y, t_z), 2, 1, 0)``.
 
         Args:
             t_x: Rotation around X [rad].
@@ -3966,34 +3937,22 @@ class ModelBuilder:
 
     @classmethod
     def _builder_merge_attribute_specs(cls) -> dict[str, Model.AttributeSpec]:
-        import newton  # noqa: PLC0415
-
-        use_coord_layout_targets = bool(newton.use_coord_layout_targets)
         # Stored in cls.__dict__ (not functools.cache) so dynamically created
         # subclasses stay collectable.
-        cache = cls.__dict__.get("_MERGE_ATTRIBUTE_SPEC_CACHE")
-        if cache is None:
-            cache = {}
-            cls._MERGE_ATTRIBUTE_SPEC_CACHE = cache
-        specs = cache.get(use_coord_layout_targets)
+        specs = cls.__dict__.get("_MERGE_ATTRIBUTE_SPEC_CACHE")
         if specs is None:
-            specs = cache[use_coord_layout_targets] = cls._build_builder_merge_attribute_specs(use_coord_layout_targets)
+            specs = cls._MERGE_ATTRIBUTE_SPEC_CACHE = cls._build_builder_merge_attribute_specs()
         # Copy: the merge pops entries it handles manually.
         return dict(specs)
 
     @classmethod
-    def _build_builder_merge_attribute_specs(cls, use_coord_layout_targets: bool) -> dict[str, Model.AttributeSpec]:
+    def _build_builder_merge_attribute_specs(cls) -> dict[str, Model.AttributeSpec]:
         """Build and validate the merge schema from class-level constants; cached
-        per (class, target layout) by :meth:`_builder_merge_attribute_specs`."""
+        per class by :meth:`_builder_merge_attribute_specs`."""
         base_attributes, list_attributes = cls._base_builder_attributes()
         specs = {name: spec for name, spec in Model._CORE_ATTRIBUTE_SPECS.items() if name in list_attributes}
         specs.update(cls._BUILDER_ATTRIBUTE_SPECS)
         declared_builder_attributes = set(cls._BUILDER_ATTRIBUTE_SPECS)
-
-        target_q_frequency = (
-            Model.AttributeFrequency.JOINT_COORD if use_coord_layout_targets else Model.AttributeFrequency.JOINT_DOF
-        )
-        specs["joint_target_q"] = Model.AttributeSpec(target_q_frequency)
 
         for group, references in cls._BUILDER_GROUP_REFERENCES.items():
             specs[f"{group}_label"] = Model.AttributeSpec(group)
@@ -4559,7 +4518,7 @@ class ModelBuilder:
             only_load_enabled_rigid_bodies: If True, only rigid bodies which do not have `physics:rigidBodyEnabled` set to False are loaded.
             only_load_enabled_joints: If True, only joints which do not have `physics:jointEnabled` set to False are loaded.
             joint_drive_gains_scaling: The default scaling of the PD control gains (stiffness and damping), if not set in the PhysicsScene with as "newton:joint_drive_gains_scaling".
-            verbose: If True, print additional information about the parsed USD file. Default is False.
+            verbose: If True, log additional information about the parsed USD file. Default is False.
             ignore_paths: A list of regular expressions matching prim paths to ignore.
             collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
             enable_self_collisions: Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions``; if neither is authored, this value takes precedence.
@@ -4936,7 +4895,7 @@ class ModelBuilder:
             ignore_inertial_definitions: If True, the inertial parameters defined in the MJCF are ignored and the inertia is calculated from the shape geometry.
             collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged.
             collapse_massless_fixed_root: If True, collapse only the massless fixed-joint chain below an imported free root body. Ignored when ``collapse_fixed_joints`` is True.
-            verbose: If True, print additional information about parsing the MJCF.
+            verbose: If True, log additional information about parsing the MJCF.
             skip_equality_constraints: Whether <equality> tags should be parsed. If True, equality constraints are ignored.
             convert_mjc_equality_constraints: Whether MuJoCo equality constraints should be converted to Newton loop
                 joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
@@ -5801,7 +5760,7 @@ class ModelBuilder:
                     f"child {child} (label: {self.body_label[child]!r}), but another joint already connects these "
                     f"bodies. A FREE joint parallel to another joint is inconsistent. Use add_link() "
                     f"with the appropriate joint type instead of add_body().",
-                    UserWarning,
+                    NewtonWarning,
                     stacklevel=_external_warning_stacklevel(),
                 )
             else:
@@ -5810,7 +5769,7 @@ class ModelBuilder:
                     f"child {child} (label: {self.body_label[child]!r}), but another joint already connects these "
                     f"bodies. Parallel joints between the same pair of bodies have undefined semantics and may not "
                     f"behave as expected.",
-                    UserWarning,
+                    NewtonWarning,
                     stacklevel=_external_warning_stacklevel(),
                 )
 
@@ -5915,22 +5874,15 @@ class ModelBuilder:
                     self.joint_target_q[target_q_offset + i] = dim.target_pos
                 quat_offset = target_q_offset + 3
 
-            import newton  # noqa: PLC0415
-
-            if newton.use_coord_layout_targets:
-                qx, qy, qz, qw = self._quat_from_axis_targets(
-                    angular_axes[0].target_pos,
-                    angular_axes[1].target_pos,
-                    angular_axes[2].target_pos,
-                )
-                self.joint_target_q[quat_offset + 0] = qx
-                self.joint_target_q[quat_offset + 1] = qy
-                self.joint_target_q[quat_offset + 2] = qz
-                self.joint_target_q[quat_offset + 3] = qw
-            else:
-                for i, dim in enumerate(angular_axes):
-                    self.joint_target_q[quat_offset + i] = dim.target_pos
-                self.joint_target_q[quat_offset + 3] = 1.0
+            qx, qy, qz, qw = self._quat_from_axis_targets(
+                angular_axes[0].target_pos,
+                angular_axes[1].target_pos,
+                angular_axes[2].target_pos,
+            )
+            self.joint_target_q[quat_offset + 0] = qx
+            self.joint_target_q[quat_offset + 1] = qy
+            self.joint_target_q[quat_offset + 2] = qz
+            self.joint_target_q[quat_offset + 3] = qw
         elif joint_type != JointType.FIXED:
             for i, dim in enumerate(linear_axes):
                 self.joint_target_q[target_q_offset + i] = dim.target_pos
@@ -6632,15 +6584,8 @@ class ModelBuilder:
         q_start = self.joint_q_start[joint_id]
         if rest_rotation_value is None:
             rest_rotation_value = wp.quat(*self.joint_q[q_start + 3 : q_start + 7])
-        import newton  # noqa: PLC0415
-
         self.joint_target_q[q_start : q_start + 3] = [0.0, 0.0, 0.0]
-        if newton.use_coord_layout_targets:
-            self.joint_target_q[q_start + 3 : q_start + 7] = list(rest_rotation_value)
-        else:
-            angles = wp.quat_to_euler(rest_rotation_value, 2, 1, 0)
-            self.joint_target_q[q_start + 3 : q_start + 6] = list(angles)
-            self.joint_target_q[q_start + 6] = 1.0
+        self.joint_target_q[q_start + 3 : q_start + 7] = list(rest_rotation_value)
         return joint_id
 
     @deprecate_nonkeyword_arguments
@@ -6672,7 +6617,7 @@ class ModelBuilder:
         """
         warnings.warn(
             "ModelBuilder.add_joint_cable() is deprecated in Newton 1.6; use add_joint_rod() instead.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=_external_warning_stacklevel(),
         )
         return self.add_joint_rod(
@@ -7155,7 +7100,7 @@ class ModelBuilder:
         warnings.warn(
             "ModelBuilder.add_constraint_mimic() is deprecated in Newton 1.7; "
             "use set_joint_mimic() for joints with matching dimensions instead.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=_external_warning_stacklevel(),
         )
         joint_count = self.joint_count
@@ -7338,7 +7283,7 @@ class ModelBuilder:
         """Removes fixed joints from the model and merges the bodies they connect. This is useful for simplifying the model for faster and more stable simulation.
 
         Args:
-            verbose: If True, print additional information about the collapsed joints.
+            verbose: If True, log additional information about the collapsed joints.
             joints_to_keep: An optional sequence of joint labels or original joint indices to be excluded from
                 the collapse process.
 
@@ -7511,9 +7456,13 @@ class ModelBuilder:
                 if verbose:
                     parent_lbl = self.body_label[parent_body] if parent_body > -1 else "world"
                     child_lbl = self.body_label[child_body]
-                    print(
-                        f"Skipping collapse of fixed joint {joint['label']} between {parent_lbl} and {child_lbl}: "
-                        f"{child_lbl} is referenced by a constraint or tendon and cannot be merged into world"
+                    logger.info(
+                        "Skipping collapse of fixed joint %s between %s and %s: %s is referenced by a "
+                        "constraint or tendon and cannot be merged into world",
+                        joint["label"],
+                        parent_lbl,
+                        child_lbl,
+                        child_lbl,
                     )
 
             if joint_in_keep_list and joint["type"] == JointType.FIXED:
@@ -7521,16 +7470,20 @@ class ModelBuilder:
                 parent_lbl = self.body_label[parent_body] if parent_body > -1 else "world"
                 child_lbl = self.body_label[child_body]
                 if verbose:
-                    print(
-                        f"Skipping collapse of joint {joint['label']} between {parent_lbl} and {child_lbl}: "
-                        f"{child_lbl} is listed in joints_to_keep and this fixed joint will be preserved"
+                    logger.info(
+                        "Skipping collapse of joint %s between %s and %s: %s is listed in joints_to_keep "
+                        "and this fixed joint will be preserved",
+                        joint["label"],
+                        parent_lbl,
+                        child_lbl,
+                        child_lbl,
                     )
                 # Warn if the child_body of skipped joint has zero or negative mass
                 if body_data[child_body]["mass"] <= 0:
                     warnings.warn(
                         f"Skipped joint {joint['label']} has a child {child_lbl} with zero or negative mass ({body_data[child_body]['mass']}). "
                         f"This may cause unexpected behavior.",
-                        UserWarning,
+                        NewtonWarning,
                         stacklevel=3,
                     )
 
@@ -7541,9 +7494,13 @@ class ModelBuilder:
                 child_lbl = self.body_label[child_body]
                 last_dynamic_body_label = self.body_label[last_dynamic_body] if last_dynamic_body > -1 else "world"
                 if verbose:
-                    print(
-                        f"Remove fixed joint {joint['label']} between {parent_lbl} and {child_lbl}, "
-                        f"merging {child_lbl} into {last_dynamic_body_label}"
+                    logger.info(
+                        "Remove fixed joint %s between %s and %s, merging %s into %s",
+                        joint["label"],
+                        parent_lbl,
+                        child_lbl,
+                        child_lbl,
+                        last_dynamic_body_label,
                     )
                 child_id = body_data[child_body]["original_id"]
                 relative_xform = incoming_xform
@@ -7557,8 +7514,11 @@ class ModelBuilder:
                     shape_tf = self.shape_transform[shape]
                     self.shape_transform[shape] = incoming_xform * shape_tf
                     if verbose:
-                        print(
-                            f"  Shape {shape} moved to body {last_dynamic_body_label} with transform {self.shape_transform[shape]}"
+                        logger.info(
+                            "  Shape %s moved to body %s with transform %s",
+                            shape,
+                            last_dynamic_body_label,
+                            self.shape_transform[shape],
                         )
                     if last_dynamic_body > -1:
                         self.shape_body[shape] = body_data[last_dynamic_body]["id"]
@@ -8064,14 +8024,14 @@ class ModelBuilder:
 
             if old_joint1 != -1 and old_joint1 not in joint_remap:
                 if verbose:
-                    print(f"Warning: Equality constraint references removed joint {old_joint1}, disabling constraint")
+                    logger.warning("Equality constraint references removed joint %s, disabling constraint", old_joint1)
                 while len(enabled_values) <= i:
                     enabled_values.append(None)
                 enabled_values[i] = False
 
             if old_joint2 != -1 and old_joint2 not in joint_remap:
                 if verbose:
-                    print(f"Warning: Equality constraint references removed joint {old_joint2}, disabling constraint")
+                    logger.warning("Equality constraint references removed joint %s, disabling constraint", old_joint2)
                 while len(enabled_values) <= i:
                     enabled_values.append(None)
                 enabled_values[i] = False
@@ -8085,14 +8045,14 @@ class ModelBuilder:
                 self.constraint_mimic_joint0[i] = joint_remap[old_joint0]
             elif old_joint0 != -1:
                 if verbose:
-                    print(f"Warning: Mimic constraint references removed joint {old_joint0}, disabling constraint")
+                    logger.warning("Mimic constraint references removed joint %s, disabling constraint", old_joint0)
                 self.constraint_mimic_enabled[i] = False
 
             if old_joint1 in joint_remap:
                 self.constraint_mimic_joint1[i] = joint_remap[old_joint1]
             elif old_joint1 != -1:
                 if verbose:
-                    print(f"Warning: Mimic constraint references removed joint {old_joint1}, disabling constraint")
+                    logger.warning("Mimic constraint references removed joint %s, disabling constraint", old_joint1)
                 self.constraint_mimic_enabled[i] = False
 
         target_kind_attr = self.custom_attributes.get("mujoco:equality_constraint_target_kind")
@@ -8201,7 +8161,7 @@ class ModelBuilder:
                 f"Deformable curve '{label}' is unavailable after collapse_fixed_joints because one or more "
                 "of its segment bodies or joints were removed; pass the relevant fixed joint through "
                 "joints_to_keep to preserve the complete deformable object.",
-                UserWarning,
+                NewtonWarning,
                 stacklevel=2,
             )
 
@@ -9442,6 +9402,7 @@ class ModelBuilder:
                         warnings.warn(
                             f"Remeshing with method '{method}' failed for shape {shape}: the backend returned no "
                             "convex parts. Falling back to convex_hull.",
+                            NewtonWarning,
                             stacklevel=2,
                         )
                         decomposition_failed = True
@@ -9510,7 +9471,9 @@ class ModelBuilder:
                     raise RuntimeError(f"Remeshing with method '{method}' failed.") from e
                 else:
                     warnings.warn(
-                        f"Remeshing with method '{method}' failed: {e}. Falling back to convex_hull.", stacklevel=2
+                        f"Remeshing with method '{method}' failed: {e}. Falling back to convex_hull.",
+                        NewtonWarning,
+                        stacklevel=2,
                     )
                     method = "convex_hull"
                     # kwargs were addressed to the failed decomposition method
@@ -9546,6 +9509,7 @@ class ModelBuilder:
                         else:
                             warnings.warn(
                                 f"Remeshing with method '{method}' failed for shape {shape}: {e}. Falling back to bounding_box.",
+                                NewtonWarning,
                                 stacklevel=2,
                             )
                             remesh_failed = True
@@ -9878,7 +9842,7 @@ class ModelBuilder:
                     "add_rod: wrap_in_articulation=False requires the caller to wrap joints via add_articulation() "
                     "before finalize; closed=True also adds a loop-closing joint that must remain outside any "
                     "articulation.",
-                    UserWarning,
+                    NewtonWarning,
                     stacklevel=_external_warning_stacklevel(),
                 )
 
@@ -9961,8 +9925,7 @@ class ModelBuilder:
                 link_joints.append(j_loop)
 
         if rest_straight:
-            # Builder targets are coordinate-sized. [0, 0, 0, 1] is the identity quaternion in the
-            # coordinate layout and zero Euler angles plus the padding slot in the legacy layout.
+            # Straight rest uses the identity quaternion in each joint's target coordinates.
             for joint in link_joints:
                 q_start = self.joint_q_start[joint]
                 self.joint_target_q[q_start + 3 : q_start + 7] = [0.0, 0.0, 0.0, 1.0]
@@ -10172,7 +10135,7 @@ class ModelBuilder:
         assert positions is not None
         warnings.warn(
             _ADD_ROD_POSITIONS_DEPRECATION_MSG,
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=_external_warning_stacklevel(),
         )
         result = self._add_rod_chain(
@@ -10300,7 +10263,7 @@ class ModelBuilder:
         start_joint = self.joint_count
         warnings.warn(
             _ADD_ROD_GRAPH_DEPRECATION_MSG,
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=_external_warning_stacklevel(),
         )
         result = self._add_rod_graph(
@@ -10740,7 +10703,7 @@ class ModelBuilder:
                             "With wrap_in_articulation=True, joints are built as a tree/forest, so "
                             "cycles are not closed. Use wrap_in_articulation=False to retain every "
                             "cycle adjacency joint.",
-                            UserWarning,
+                            NewtonWarning,
                             stacklevel=_external_warning_stacklevel(),
                         )
 
@@ -11115,7 +11078,7 @@ class ModelBuilder:
         area = np.linalg.det(D) / 2.0
 
         if area <= 0.0:
-            print("inverted or degenerate triangle element")
+            logger.warning("inverted or degenerate triangle element")
             return 0.0
         else:
             inv_D = np.linalg.inv(D)
@@ -11208,7 +11171,7 @@ class ModelBuilder:
         areas[areas < 0.0] = 0.0
         valid_inds = (areas > 0.0).nonzero()[0]
         if len(valid_inds) < len(areas):
-            print("inverted or degenerate triangle elements")
+            logger.warning("inverted or degenerate triangle elements")
 
         filtered_custom_attributes = None
         if custom_attributes:
@@ -11322,7 +11285,7 @@ class ModelBuilder:
         volume = np.linalg.det(Dm) / 6.0
 
         if volume <= 0.0:
-            print("inverted tetrahedral element")
+            logger.warning("inverted tetrahedral element")
         else:
             inv_Dm = np.linalg.inv(Dm)
 
@@ -12453,7 +12416,7 @@ class ModelBuilder:
             warnings.warn(
                 f"parent_body {parent_body} has zero or negative mass ({self.body_mass[parent_body]}). "
                 f"This may cause unexpected behavior.",
-                UserWarning,
+                NewtonWarning,
                 stacklevel=3,
             )
 
@@ -12527,7 +12490,7 @@ class ModelBuilder:
                 warnings.warn(
                     f"Body {body_id} is a parent in multiple articulations {parent_articulations}. "
                     f"Using articulation {result}. This may indicate an unusual model structure.",
-                    UserWarning,
+                    NewtonWarning,
                     stacklevel=3,
                 )
             return result
@@ -12789,7 +12752,7 @@ class ModelBuilder:
         warnings.warn(
             "ModelBuilder.request_contact_attributes() is deprecated in Newton 1.7; "
             "request SolverBase.Observables from the solver instead.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         Contacts.validate_extended_attributes(attributes)
@@ -12814,7 +12777,7 @@ class ModelBuilder:
         warnings.warn(
             "ModelBuilder.request_state_attributes() is deprecated in Newton 1.7; "
             "request SolverBase.Observables from the solver instead.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         State.validate_extended_attributes(attributes)
@@ -12894,13 +12857,21 @@ class ModelBuilder:
                 # Active if either stiffness or damping is non-zero
                 bending_edge_active_mask = (bending_edge_props[:, 0] != 0.0) | (bending_edge_props[:, 1] != 0.0)
 
+            # Match SolverVBD: an element is active if either Lame parameter is non-zero.
+            tri_active_mask = (
+                (tri_materials[:, 0] != 0.0) | (tri_materials[:, 1] != 0.0) if len(tri_materials) else None
+            )
+            tet_active_mask = (
+                (tet_materials[:, 0] != 0.0) | (tet_materials[:, 1] != 0.0) if len(tet_materials) else None
+            )
+
             graph_edge_indices = construct_particle_graph(
                 tri_indices,
-                tri_materials[:, 0] * tri_materials[:, 1] if len(tri_materials) else None,
+                tri_active_mask,
                 bending_edge_indices,
                 bending_edge_active_mask,
                 tet_indices,
-                tet_materials[:, 0] * tet_materials[:, 1] if len(tet_materials) else None,
+                tet_active_mask,
             )
 
             if len(graph_edge_indices) > 0:
@@ -13261,6 +13232,7 @@ class ModelBuilder:
                 f"This can cause missed collisions in broad phase because effective expansion uses margin + gap. "
                 f"Set gap >= 0 for each shape. "
                 f"Affected shapes: {example_shapes}" + ("..." if len(shapes_with_bad_gap) > 5 else ""),
+                NewtonWarning,
                 stacklevel=2,
             )
         return len(shapes_with_bad_gap) == 0
@@ -13671,6 +13643,7 @@ class ModelBuilder:
                         f"Joints in articulation '{art_key}' (id={art_id}) are not in DFS topological order. "
                         f"This may cause issues with some solvers (e.g., MuJoCo). "
                         f"Current order: {list(art_joints)}, expected: {joint_order}.",
+                        NewtonWarning,
                         stacklevel=2,
                     )
                     all_ordered = False
@@ -13683,6 +13656,7 @@ class ModelBuilder:
                 )
                 warnings.warn(
                     f"Failed to validate joint ordering for articulation '{art_key}' (id={art_id}): {e}",
+                    NewtonWarning,
                     stacklevel=2,
                 )
                 all_ordered = False
@@ -14702,6 +14676,7 @@ class ModelBuilder:
                                 warnings.warn(
                                     f"Texture SDF construction failed for shape {i} "
                                     f"(type={shape_type}): {e}. Falling back to BVH.",
+                                    NewtonWarning,
                                     stacklevel=3,
                                 )
                                 tex_data = create_empty_texture_sdf_data()
@@ -14771,6 +14746,7 @@ class ModelBuilder:
                         warnings.warn(
                             f"Full-surface SDF construction failed for mesh shape {i} ({e}); it falls "
                             "back to the legacy per-particle soft-contact path.",
+                            NewtonWarning,
                             stacklevel=3,
                         )
                         continue
@@ -14802,6 +14778,7 @@ class ModelBuilder:
                 warnings.warn(
                     "Heightfield-vs-heightfield collision is not supported; "
                     "contacts between heightfield pairs will be skipped.",
+                    NewtonWarning,
                     stacklevel=3,
                 )
             from ..utils.heightfield import HeightfieldData, create_empty_heightfield_data  # noqa: PLC0415
@@ -15145,6 +15122,7 @@ class ModelBuilder:
                     warnings.warn(
                         f"Inertia validation corrected {num_corrections} bodies. "
                         f"Set validate_inertia_detailed=True for detailed per-body warnings.",
+                        NewtonWarning,
                         stacklevel=3,
                     )
 
@@ -15193,24 +15171,7 @@ class ModelBuilder:
             m.joint_target_ke = wp.array(self.joint_target_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_kd = wp.array(self.joint_target_kd, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_damping = wp.array(self.joint_damping, dtype=wp.float32, requires_grad=requires_grad)
-            import newton  # noqa: PLC0415
-
-            if newton.use_coord_layout_targets:
-                target_q_values = self.joint_target_q
-            else:
-                if self.joint_coord_count != self.joint_dof_count:
-                    warnings.warn(
-                        "The legacy DOF-shaped joint_target_q layout is deprecated for models "
-                        "whose joint coordinate and DOF counts differ (free/ball/distance/rod "
-                        "joints). In a future release joint_target_q will always use the "
-                        "coordinate layout (matching joint_q) and newton.use_coord_layout_targets "
-                        "will be removed. Set newton.use_coord_layout_targets = True before "
-                        "building models and index targets via Model.joint_target_q_start.",
-                        DeprecationWarning,
-                        stacklevel=3,
-                    )
-                target_q_values = self._project_target_q_to_dof()
-            m.joint_target_q = wp.array(target_q_values, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_target_q = wp.array(self.joint_target_q, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_qd = wp.array(self.joint_target_qd, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_f = wp.array(self.joint_f, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_act = wp.array(self.joint_act, dtype=wp.float32, requires_grad=requires_grad)
@@ -15328,7 +15289,18 @@ class ModelBuilder:
             m.mujoco.equality_constraint_world_start = wp.array(self._equality_constraint_world_start, dtype=wp.int32)
             m.constraint_mimic_count = len(self.constraint_mimic_joint0)
 
-            self._find_shape_contact_pairs(m)
+            m._shape_contact_pair_data = _ShapeContactPairs(
+                self.shape_body,
+                self.shape_world,
+                self.shape_collision_group,
+                self.shape_flags,
+                shape_collision_filter_packed,
+                self.world_count,
+            )
+            pair_counts = m._shape_contact_pair_data.counts
+            pair_counts.setflags(write=False)
+            m._shape_contact_pair_counts[None] = pair_counts
+            m._shape_contact_pair_count = int(pair_counts.sum())
 
             # enable ground plane
             m.up_axis = self.up_axis
@@ -15380,16 +15352,12 @@ class ModelBuilder:
                     )
                     clamping_objs.append(comp_class(**comp_arrays, **shared_kw))
 
-                target_pos_indices_arg = (
-                    pos_indices_arg if (pos_indices_arg is not None and m.use_coord_layout_targets) else indices
-                )
                 actuator = Actuator(
                     indices=indices,
                     drive=drive,
                     delay=delay_obj,
                     clamping=clamping_objs if clamping_objs else None,
                     pos_indices=pos_indices_arg,
-                    target_pos_indices=target_pos_indices_arg,
                     requires_grad=requires_grad,
                 )
 
@@ -15430,7 +15398,7 @@ class ModelBuilder:
                         warnings.warn(
                             f"Custom attribute '{full_key}' has {attr_count} values but frequency '{freq_key}' "
                             f"expects {expected_count}. Missing values will be filled with defaults.",
-                            UserWarning,
+                            NewtonWarning,
                             stacklevel=3,
                         )
 
@@ -15472,49 +15440,6 @@ class ModelBuilder:
             )
             m.bvh_build_particles(m)
             return m
-
-    def _test_group_pair(self, group_a: int, group_b: int) -> bool:
-        """Test if two collision groups should interact.
-
-        This matches the exact logic from broad_phase_common.test_group_pair kernel function.
-
-        Args:
-            group_a: First collision group ID
-            group_b: Second collision group ID
-
-        Returns:
-            Whether the groups should collide.
-        """
-        if group_a == 0 or group_b == 0:
-            return False
-        if group_a > 0:
-            return group_a == group_b or group_b < 0
-        if group_a < 0:
-            return group_a != group_b
-        return False
-
-    def _test_world_and_group_pair(
-        self, world_a: int, world_b: int, collision_group_a: int, collision_group_b: int
-    ) -> bool:
-        """Test if two entities should collide based on world indices and collision groups.
-
-        This matches the exact logic from broad_phase_common.test_world_and_group_pair kernel function.
-
-        Args:
-            world_a: World index of first entity
-            world_b: World index of second entity
-            collision_group_a: Collision group of first entity
-            collision_group_b: Collision group of second entity
-
-        Returns:
-            Whether the entities should collide.
-        """
-        # Check world indices first
-        if world_a != -1 and world_b != -1 and world_a != world_b:
-            return False
-
-        # If same world or at least one is global (-1), check collision groups
-        return self._test_group_pair(collision_group_a, collision_group_b)
 
     def _iter_validated_shape_collision_filter_pairs(self, pairs):
         shape_count = len(self.shape_type)
@@ -15592,298 +15517,6 @@ class ModelBuilder:
                         f"local shape indices must be in [0, {block.shape_count})."
                     )
             validated_templates.add(template_key)
-
-    def _find_shape_contact_pairs(self, model: Model) -> None:
-        shape_body_values = self.shape_body
-        filter_pairs = self._shape_collision_filter_pairs
-        world_filter_blocks: tuple[_ShapeCollisionFilterBlock, ...] = ()
-        explicit_filter_pairs: tuple[tuple[int, int], ...] = ()
-        if isinstance(filter_pairs, _BuilderShapeCollisionFilterPairs):
-            blocks = filter_pairs.blocks
-            self._validate_compact_shape_collision_filter_blocks(blocks)
-            # Compact blocks come from replicated builders; keep this path in
-            # world-local coordinates so identical worlds can share one template.
-            world_filter_blocks = tuple(block for block in blocks if block.world is not None)
-            # Blocks without a world assignment (add_builder outside a world
-            # context) are folded into the explicit residual pairs so they do
-            # not disable the fast path for the replicated worlds.
-            floating_block_pairs = (
-                (block.shape_start + shape_a, block.shape_start + shape_b)
-                for block in blocks
-                if block.world is None
-                for shape_a, shape_b in block.local_pairs
-            )
-            explicit_filter_pairs = tuple(
-                self._iter_validated_shape_collision_filter_pairs((*filter_pairs.explicit_pairs, *floating_block_pairs))
-            )
-
-        use_world_templates = self.world_count > 0 and isinstance(filter_pairs, _BuilderShapeCollisionFilterPairs)
-        if use_world_templates:
-            shape_world_np = np.asarray(self.shape_world, dtype=np.int32)
-            starts = self.shape_world_start
-            if len(starts) != self.world_count + 2:
-                use_world_templates = False
-            else:
-                segment_worlds = np.full(self.shape_count, -1, dtype=np.int32)
-                for world in range(self.world_count):
-                    segment_worlds[starts[world] : starts[world + 1]] = world
-                use_world_templates = np.array_equal(segment_worlds, shape_world_np)
-                if use_world_templates:
-                    shape_body_np = np.asarray(shape_body_values, dtype=np.int32)
-                    body_world_np = np.asarray(self.body_world, dtype=np.int32)
-                    attached = shape_body_np >= 0
-                    # Body-relative template keys are valid only when shapes and their bodies share a world.
-                    use_world_templates = np.array_equal(
-                        shape_world_np[attached], body_world_np[shape_body_np[attached]]
-                    )
-
-        if use_world_templates:
-            blocks_by_world = {}
-            global_filter_pairs = set()
-            explicit_filters_by_world = {}
-            for block in world_filter_blocks:
-                world = block.world
-                if world < 0 or world >= self.world_count:
-                    use_world_templates = False
-                    break
-
-                world_start = self.shape_world_start[world]
-                world_end = self.shape_world_start[world + 1]
-                if block.shape_start < world_start or block.shape_start + block.shape_count > world_end:
-                    use_world_templates = False
-                    break
-
-                # Store block starts as world-local offsets for the template cache
-                # instead of keying homogeneous worlds by absolute shape ids.
-                blocks_by_world.setdefault(world, []).append(
-                    (block.shape_start - world_start, block.shape_count, block.local_pairs)
-                )
-
-            if use_world_templates:
-                # Residual explicit filters may involve global shapes, so split
-                # them into globally keyed filters and per-world local filters.
-                for shape_a, shape_b in explicit_filter_pairs:
-                    world_a = self.shape_world[shape_a]
-                    world_b = self.shape_world[shape_b]
-
-                    if world_a == -1 and world_b == -1:
-                        global_filter_pairs.add((shape_a, shape_b))
-                    elif world_a == -1 and world_b >= 0:
-                        explicit_filters_by_world.setdefault(world_b, []).append(
-                            ("global_local", shape_a, shape_b - self.shape_world_start[world_b])
-                        )
-                    elif world_b == -1 and world_a >= 0:
-                        explicit_filters_by_world.setdefault(world_a, []).append(
-                            ("global_local", shape_b, shape_a - self.shape_world_start[world_a])
-                        )
-                    elif world_a == world_b and world_a >= 0:
-                        world_start = self.shape_world_start[world_a]
-                        explicit_filters_by_world.setdefault(world_a, []).append(
-                            ("local", shape_a - world_start, shape_b - world_start)
-                        )
-                    # Cross-world pairs never collide, so filtering them is a no-op.
-
-            if use_world_templates:
-                contact_pairs = []
-                shape_flags_np = np.asarray(self.shape_flags, dtype=np.int64)
-                colliding_np = (shape_flags_np & int(ShapeFlags.COLLIDE_SHAPES)) != 0
-                colliding_globals = [
-                    (int(shape_idx), self.shape_collision_group[shape_idx], int(shape_body_np[shape_idx]))
-                    for shape_idx in np.flatnonzero((shape_world_np == -1) & colliding_np)
-                ]
-
-                for i1, (shape_a, group_a, body_a) in enumerate(colliding_globals):
-                    for shape_b, group_b, body_b in colliding_globals[i1 + 1 :]:
-                        # Same-body and static-static shape pairs are inherently filtered.
-                        if body_a == body_b or (body_a < 0 and body_b < 0):
-                            continue
-                        if not self._test_group_pair(group_a, group_b):
-                            continue
-                        pair = (shape_a, shape_b) if shape_a <= shape_b else (shape_b, shape_a)
-                        if pair not in global_filter_pairs:
-                            contact_pairs.append(pair)
-
-                shape_group_np = np.asarray(self.shape_collision_group, dtype=np.int64)
-                template_cache = {}
-                template_runs: list[tuple[list[int], tuple[np.ndarray, np.ndarray]]] = []
-                for world in range(self.world_count):
-                    world_start = self.shape_world_start[world]
-                    world_end = self.shape_world_start[world + 1]
-                    if world_start == world_end:
-                        continue
-
-                    block_specs = tuple(blocks_by_world.get(world, ()))
-                    explicit_filter_specs = tuple(explicit_filters_by_world.get(world, ()))
-                    block_key = tuple(
-                        (offset, shape_count, id(local_pairs)) for offset, shape_count, local_pairs in block_specs
-                    )
-                    world_shape_bodies_np = shape_body_np[world_start:world_end]
-                    body_key = np.where(
-                        world_shape_bodies_np >= 0,
-                        world_shape_bodies_np - self.body_world_start[world],
-                        -1,
-                    ).tobytes()
-                    # Key homogeneous worlds by raw bytes instead of Python
-                    # tuples; re-hashing per-shape tuples per world dominates
-                    # this loop at high world counts.
-                    cache_key = (
-                        shape_flags_np[world_start:world_end].tobytes(),
-                        shape_group_np[world_start:world_end].tobytes(),
-                        body_key,
-                        block_key,
-                        explicit_filter_specs,
-                    )
-                    cached_pairs = template_cache.get(cache_key)
-
-                    if cached_pairs is None:
-                        collision_groups = self.shape_collision_group[world_start:world_end]
-                        world_shape_bodies = _list_for_iteration(world_shape_bodies_np)
-                        local_colliding_indices = np.flatnonzero(colliding_np[world_start:world_end]).tolist()
-
-                        # Replicated-block filters are local to the source block;
-                        # shift them into this world's local shape coordinates.
-                        local_filters = set()
-                        for block_offset, _shape_count, local_filter_pairs in block_specs:
-                            for shape_a, shape_b in local_filter_pairs:
-                                offset_shape_a = block_offset + shape_a
-                                offset_shape_b = block_offset + shape_b
-                                local_filters.add(
-                                    (offset_shape_a, offset_shape_b)
-                                    if offset_shape_a <= offset_shape_b
-                                    else (offset_shape_b, offset_shape_a)
-                                )
-
-                        global_local_filters = set()
-                        for kind, shape_a, shape_b in explicit_filter_specs:
-                            if kind == "local":
-                                local_filters.add((shape_a, shape_b) if shape_a <= shape_b else (shape_b, shape_a))
-                            else:
-                                global_local_filters.add((shape_a, shape_b))
-
-                        # Cache global/local pairs separately: the global id is
-                        # absolute, while the local id is shifted during replay.
-                        global_local_pairs = []
-                        for global_shape, global_group, global_body in colliding_globals:
-                            for local_shape in local_colliding_indices:
-                                local_body = world_shape_bodies[local_shape]
-                                # Same-body and static-static shape pairs are inherently filtered.
-                                if global_body == local_body or (global_body < 0 and local_body < 0):
-                                    continue
-                                if self._test_group_pair(global_group, collision_groups[local_shape]):
-                                    pair = (global_shape, local_shape)
-                                    if pair not in global_local_filters:
-                                        global_local_pairs.append(pair)
-
-                        local_pairs = []
-                        for i1, shape_a in enumerate(local_colliding_indices):
-                            group_a = collision_groups[shape_a]
-                            body_a = world_shape_bodies[shape_a]
-                            for shape_b in local_colliding_indices[i1 + 1 :]:
-                                body_b = world_shape_bodies[shape_b]
-                                # Same-body and static-static shape pairs are inherently filtered.
-                                if body_a == body_b or (body_a < 0 and body_b < 0):
-                                    continue
-                                if not self._test_group_pair(group_a, collision_groups[shape_b]):
-                                    continue
-
-                                pair = (shape_a, shape_b)
-                                if pair not in local_filters:
-                                    local_pairs.append(pair)
-
-                        cached_pairs = (
-                            np.asarray(global_local_pairs, dtype=np.int32).reshape((-1, 2)),
-                            np.asarray(local_pairs, dtype=np.int32).reshape((-1, 2)),
-                        )
-                        template_cache[cache_key] = cached_pairs
-
-                    # Group runs of consecutive worlds sharing one template so
-                    # the replay below is a broadcast add per run, not a Python
-                    # loop over millions of per-world tuples.
-                    if template_runs and template_runs[-1][1] is cached_pairs:
-                        template_runs[-1][0].append(world_start)
-                    else:
-                        template_runs.append(([world_start], cached_pairs))
-
-                chunks = []
-                if contact_pairs:
-                    chunks.append(np.asarray(contact_pairs, dtype=np.int32).reshape((-1, 2)))
-                for starts, (global_local_pairs, local_pairs) in template_runs:
-                    offsets = np.asarray(starts, dtype=np.int32)
-                    global_count = global_local_pairs.shape[0]
-                    pairs_per_world = global_count + local_pairs.shape[0]
-                    if pairs_per_world == 0:
-                        continue
-                    replay = np.empty((offsets.shape[0], pairs_per_world, 2), dtype=np.int32)
-                    if global_count:
-                        global_replay = replay[:, :global_count, :]
-                        global_replay[:, :, 0] = global_local_pairs[:, 0]
-                        # Cached global/local pairs hold an absolute global id
-                        # and a world-local id shifted per world during replay.
-                        global_replay[:, :, 1] = global_local_pairs[:, 1] + offsets[:, None]
-                        global_replay.sort(axis=2)
-                    if pairs_per_world > global_count:
-                        replay[:, global_count:, :] = local_pairs[None, :, :] + offsets[:, None, None]
-                    chunks.append(replay.reshape((-1, 2)))
-
-                if chunks:
-                    pair_array = np.concatenate(chunks, axis=0)
-                else:
-                    pair_array = np.empty((0, 2), dtype=np.int32)
-                model.shape_contact_pairs = wp.array(pair_array, dtype=wp.vec2i, device=model.device)
-                model.shape_contact_pair_count = len(pair_array)
-                return
-
-        contact_pairs: list[tuple[int, int]] = []
-        shape_body = _list_for_iteration(shape_body_values)
-        shape_world = self.shape_world
-        shape_collision_group = self.shape_collision_group
-
-        # Keep only colliding shapes (those with COLLIDE_SHAPES flag) and sort by world for optimization
-        colliding_indices = [i for i, flag in enumerate(self.shape_flags) if flag & ShapeFlags.COLLIDE_SHAPES]
-        sorted_indices = sorted(colliding_indices, key=shape_world.__getitem__)
-
-        # Iterate over all pairs of colliding shapes
-        for i1 in range(len(sorted_indices)):
-            s1 = sorted_indices[i1]
-            world1 = shape_world[s1]
-            body1 = shape_body[s1]
-            collision_group1 = shape_collision_group[s1]
-
-            for i2 in range(i1 + 1, len(sorted_indices)):
-                s2 = sorted_indices[i2]
-                world2 = shape_world[s2]
-                collision_group2 = shape_collision_group[s2]
-
-                # Early break optimization: if both shapes are in non-global worlds and different worlds,
-                # they can never collide. Since shapes are sorted by world, all remaining shapes will also
-                # be in different worlds, so we can break early.
-                if world1 != -1 and world2 != -1 and world1 != world2:
-                    break
-
-                body2 = shape_body[s2]
-                # Same-body and static-static shape pairs are inherently filtered.
-                if body1 == body2 or (body1 < 0 and body2 < 0):
-                    continue
-
-                if not self._test_world_and_group_pair(world1, world2, collision_group1, collision_group2):
-                    continue
-
-                if s1 > s2:
-                    shape_a, shape_b = s2, s1
-                else:
-                    shape_a, shape_b = s1, s2
-
-                contact_pairs.append((shape_a, shape_b))
-
-        # Drop explicitly filtered pairs with one bulk query instead of a
-        # per-pair membership test inside the candidate loop.
-        candidate_pairs = np.asarray(contact_pairs, dtype=np.int32).reshape((-1, 2))
-        if candidate_pairs.shape[0] > 0:
-            filtered = model.shape_collision_filter_mask(candidate_pairs)
-            candidate_pairs = candidate_pairs[~filtered]
-
-        model.shape_contact_pairs = wp.array(candidate_pairs, dtype=wp.vec2i, device=model.device)
-        model.shape_contact_pair_count = len(candidate_pairs)
 
 
 _ArrayBackedListDescriptor = tuple[Literal["ctypes", "tuple", "list", "ndarray", "scalar"], Any]

@@ -4082,8 +4082,7 @@ def Xform "Articulation" (
                 builder = newton.ModelBuilder()
                 SolverMuJoCo.register_custom_attributes(builder)
                 builder.add_usd(stage, schema_resolvers=[resolver_type() for resolver_type in resolver_types])
-                with mock.patch("newton.use_coord_layout_targets", True):
-                    model = builder.finalize()
+                model = builder.finalize()
 
                 joint_index = model.joint_label.index("/World/Articulation/Joint")
                 dof_start = int(model.joint_qd_start.numpy()[joint_index])
@@ -4117,8 +4116,7 @@ def Xform "Articulation" (
         builder.default_joint_cfg.damping = 99.0
         SolverMuJoCo.register_custom_attributes(builder)
         builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverMjc()])
-        with mock.patch("newton.use_coord_layout_targets", True):
-            model = builder.finalize()
+        model = builder.finalize()
 
         joint_index = model.joint_label.index("/World/Articulation/Joint")
         dof_start = int(model.joint_qd_start.numpy()[joint_index])
@@ -4215,8 +4213,7 @@ def Xform "Articulation" (
         builder = newton.ModelBuilder()
         builder.default_joint_cfg.damping = 99.0
         builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverMjc()])
-        with mock.patch("newton.use_coord_layout_targets", True):
-            model = builder.finalize()
+        model = builder.finalize()
 
         joint_index = model.joint_label.index("/World/Articulation/Joint")
         self.assertEqual(builder.joint_dof_dim[joint_index], (1, 1))
@@ -4789,14 +4786,15 @@ def Xform "World"
         from pxr import Usd
 
         test_cases = [
-            ("integrator", "0", 0),  # Euler
-            ("solver", "2", 2),  # Newton
-            ("cone", "1", 1),  # elliptic
-            ("jacobian", "1", 1),  # sparse
+            ("integrator", "int", "0", 0),  # Euler
+            ("integrator", "uniform token", '"discrete"', 4),
+            ("solver", "int", "2", 2),  # Newton
+            ("cone", "int", "1", 1),  # elliptic
+            ("jacobian", "int", "1", 1),  # sparse
         ]
 
-        for option_name, usd_value, expected_int in test_cases:
-            with self.subTest(option=option_name):
+        for option_name, usd_type, usd_value, expected_int in test_cases:
+            with self.subTest(option=option_name, value=usd_value):
                 usd_content = f"""#usda 1.0
 (
     defaultPrim = "World"
@@ -4810,7 +4808,7 @@ def Xform "World"
         prepend apiSchemas = ["MjcSceneAPI"]
     )
     {{
-        int mjc:option:{option_name} = {usd_value}
+        {usd_type} mjc:option:{option_name} = {usd_value}
     }}
 
     def Xform "Articulation" (
@@ -5659,14 +5657,16 @@ def Xform "Articulation" (
         stage, shape_path = self._build_uvless_textured_visual_mesh_stage(material_subset=False)
         builder = newton.ModelBuilder()
 
-        with self.assertLogs("newton", level=logging.INFO) as log_ctx:
+        with self.assertLogs("newton", level=logging.DEBUG) as log_ctx:
             result = builder.add_usd(stage)
 
         mesh = builder.shape_source[result["path_shape_map"][shape_path]]
         self.assertIsNotNone(mesh.texture)
         self.assertIsNone(mesh.uvs)
         np.testing.assert_allclose(np.asarray(mesh.color), np.ones(3))
-        self.assertIn("texture sampling is disabled", "\n".join(log_ctx.output))
+        self.assertEqual(
+            {r.levelno for r in log_ctx.records if "texture sampling is disabled" in r.getMessage()}, {logging.DEBUG}
+        )
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_uvless_textured_visual_mesh_subset_disables_uv_sampling(self):
@@ -5674,14 +5674,16 @@ def Xform "Articulation" (
         stage, shape_path = self._build_uvless_textured_visual_mesh_stage(material_subset=True)
         builder = newton.ModelBuilder()
 
-        with self.assertLogs("newton", level=logging.INFO) as log_ctx:
+        with self.assertLogs("newton", level=logging.DEBUG) as log_ctx:
             result = builder.add_usd(stage)
 
         mesh = builder.shape_source[result["path_shape_map"][shape_path]]
         self.assertIsNotNone(mesh.texture)
         self.assertIsNone(mesh.uvs)
         np.testing.assert_allclose(np.asarray(mesh.color), np.ones(3))
-        self.assertIn("texture sampling is disabled", "\n".join(log_ctx.output))
+        self.assertEqual(
+            {r.levelno for r in log_ctx.records if "texture sampling is disabled" in r.getMessage()}, {logging.DEBUG}
+        )
 
     def _build_custom_shader_mesh_stage(self, *, with_diffuse: bool):
         """Build a stage whose mesh binds a non-UsdPreviewSurface shader with map inputs.
@@ -6167,7 +6169,10 @@ def Xform "Articulation" (
         UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(material)
 
         builder = newton.ModelBuilder()
-        with _warnings.catch_warnings(record=True) as caught, self.assertLogs("newton", level=_logging.INFO) as log_ctx:
+        with (
+            _warnings.catch_warnings(record=True) as caught,
+            self.assertLogs("newton", level=_logging.DEBUG) as log_ctx,
+        ):
             _warnings.simplefilter("always")
             builder.add_usd(stage)
         uv_warnings = [
@@ -6175,9 +6180,8 @@ def Xform "Articulation" (
         ]
         self.assertEqual(uv_warnings, [], f"unexpected UV warnings: {[str(w.message) for w in uv_warnings]}")
 
-        joined = "\n".join(log_ctx.output)
-        self.assertIn("UV primvar length", joined)
-        self.assertIn("texture sampling is disabled", joined)
+        for text in ("UV primvar length", "texture sampling is disabled"):
+            self.assertEqual({r.levelno for r in log_ctx.records if text in r.getMessage()}, {_logging.DEBUG})
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_material_density_used_by_mass_properties(self):
@@ -6635,7 +6639,7 @@ def Xform "Articulation" (
             result = builder.add_usd(stage)
 
         self.assertEqual(len(caught), 1)
-        self.assertEqual(caught[0].category, UserWarning)
+        self.assertEqual(caught[0].category, newton.exceptions.NewtonWarning)
         self.assertRegex(str(caught[0].message), _MIRRORED_BODY_WARNING)
 
         for case_name, _scale, _angle, _com, include_partial in cases:

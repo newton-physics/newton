@@ -1623,7 +1623,6 @@ def apply_mjc_control_kernel(
     dofs_per_world: wp.int32,
     ctrls_per_world: wp.int32,
     joints_per_world: wp.int32,
-    use_coord_layout_targets: bool,
     # outputs
     mj_ctrl: wp.array2d[wp.float32],
 ):
@@ -1664,27 +1663,18 @@ def apply_mjc_control_kernel(
                     mj_ctrl[world, actuator] = joint_target_q[world_target_q] + ref
             else:
                 # Ball-joint position target
-                # Coord layout stores a 4-float quat (needs log-map); DOF layout stores
-                # extrinsic ZYX Euler target angles directly at the joint's target-q base.
-                last_elem = world_target_q + wp.where(use_coord_layout_targets, 3, 2)  # check size
+                # Position targets store a quaternion at the joint's coordinate base.
+                last_elem = world_target_q + 3
                 assert last_elem < joint_target_q.shape[0]
                 if not last_elem < joint_target_q.shape[0]:
                     return
 
-                if use_coord_layout_targets:
-                    q_n = wp.quat(
-                        joint_target_q[world_target_q + 0],
-                        joint_target_q[world_target_q + 1],
-                        joint_target_q[world_target_q + 2],
-                        joint_target_q[world_target_q + 3],
-                    )
-                else:
-                    angles = wp.vec3(
-                        joint_target_q[world_target_q + 0],
-                        joint_target_q[world_target_q + 1],
-                        joint_target_q[world_target_q + 2],
-                    )
-                    q_n = wp.quat_from_euler(angles, 2, 1, 0)
+                q_n = wp.quat(
+                    joint_target_q[world_target_q + 0],
+                    joint_target_q[world_target_q + 1],
+                    joint_target_q[world_target_q + 2],
+                    joint_target_q[world_target_q + 3],
+                )
 
                 aa_newton = _target_quat_to_axis_angle(q_n[0], q_n[1], q_n[2], q_n[3])
                 jnt = mjc_actuator_to_newton_ball_jnt[actuator]
