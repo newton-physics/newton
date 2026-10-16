@@ -18,11 +18,13 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike
+from ..exceptions import NewtonDeprecationWarning
 from ..geometry.flags import ShapeFlags
 from ..utils.deprecation import RemovedAttribute
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
 from .contacts import Contacts
 from .control import Control
+from .shape_contact_pairs import _ShapeContactPairs
 from .state import State
 
 logger = logging.getLogger(__name__)
@@ -386,8 +388,10 @@ class Model:
         "_shape_support_data": AttributeSpec(AttributeFrequency.SHAPE, requires_empty_sentinel=True),
         "_shape_sdf_index": AttributeSpec(AttributeFrequency.SHAPE),
         "_shape_mesh_properties": AttributeSpec(AttributeFrequency.SHAPE),
+        "_shape_mesh_boundary_start": AttributeSpec(AttributeFrequency.SHAPE, requires_empty_sentinel=True),
         "shape_collision_aabb_lower": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_collision_aabb_upper": AttributeSpec(AttributeFrequency.SHAPE),
+        "_shape_interior_point": AttributeSpec(AttributeFrequency.SHAPE),
         "_shape_voxel_resolution": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_world_start": AttributeSpec(
             AttributeFrequency.SHAPE,
@@ -509,6 +513,7 @@ class Model:
         "joint_qd": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_f": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_armature": AttributeSpec(AttributeFrequency.JOINT_DOF),
+        "joint_target_q": AttributeSpec(AttributeFrequency.JOINT_COORD),
         "joint_target_qd": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_act": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_axis": AttributeSpec(AttributeFrequency.JOINT_DOF),
@@ -616,7 +621,7 @@ class Model:
             warnings.warn(
                 "Model.AttributeNamespace.add_deprecated_alias() is deprecated; "
                 "define an explicit property on a custom namespace instead.",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=2,
             )
             if name in self.__dict__ or name in self._deprecated_aliases:
@@ -627,7 +632,7 @@ class Model:
             aliases = self.__dict__.get("_deprecated_aliases", {})
             if name in aliases:
                 getter, message = aliases[name]
-                warnings.warn(message, DeprecationWarning, stacklevel=2)
+                warnings.warn(message, NewtonDeprecationWarning, stacklevel=2)
                 return getter()
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
@@ -636,7 +641,7 @@ class Model:
                 aliases = object.__getattribute__(self, "__dict__").get("_deprecated_aliases", {})
                 if name in aliases:
                     getter, message = aliases[name]
-                    warnings.warn(message, DeprecationWarning, stacklevel=2)
+                    warnings.warn(message, NewtonDeprecationWarning, stacklevel=2)
                     target = getter()
                     if isinstance(target, wp.array):
                         target.assign(value)
@@ -786,14 +791,11 @@ class Model:
         self._shape_collision_filter_pairs = _ShapeCollisionFilterPairs(np.empty(0, dtype=np.int64))
         self.shape_collision_radius: wp.array[wp.float32] | None = None
         """Collision radius [m] for bounding sphere broadphase, shape [shape_count], float. Not supported by :class:`~newton.solvers.SolverMuJoCo`."""
-        self.shape_contact_pairs: wp.array[wp.vec2i] | None = None
-        """Pairs of shape indices that may collide, shape [contact_pair_count, 2], int.
-
-        Static-static pairs are omitted. Kinematic-kinematic and static-kinematic pairs
-        are retained so consumers can opt into them during contact generation.
-        """
-        self.shape_contact_pair_count: int = 0
-        """Number of shape contact pairs."""
+        self._shape_contact_pairs: wp.array[wp.vec2i] | None = None
+        self._shape_contact_pair_data: _ShapeContactPairs | None = None
+        """Finalized collision topology for lazy pair construction and statistics."""
+        self._shape_contact_pair_count: int = 0
+        self._shape_contact_pair_counts: dict[bytes | tuple[bytes, int | None] | None, np.ndarray] = {}
         self.shape_world: wp.array[wp.int32] | None = None
         """World index for each shape, shape [shape_count], int. -1 for global."""
         self.shape_world_start: wp.array[wp.int32] | None = None
@@ -874,6 +876,12 @@ class Model:
         """Per-shape (start, count) into mesh edge arrays, shape [shape_count]. (-1,0) if no edges."""
         self._shape_mesh_properties: wp.array[wp.int32] | None = None
         """Per-shape mesh property bitfield used by collision kernels, shape [shape_count]."""
+        self._mesh_boundary_flags: wp.array[wp.uint8] | None = None
+        """Packed per-face open-boundary bits of non-watertight collision meshes, shape [face_count].
+
+        Bit ``i`` marks the edge opposite face vertex ``i`` and bit ``3 + i`` marks vertex ``i``."""
+        self._shape_mesh_boundary_start: wp.array[wp.int32] | None = None
+        """Per-shape start into :attr:`_mesh_boundary_flags`, or -1 without boundary bits, shape [shape_count]."""
 
         # SDF storage (compact table + per-shape index indirection).
         # All SDF arrays are private; the public attribute names are exposed
@@ -908,6 +916,9 @@ class Model:
         """Scaled local-space AABB upper bound [m] for each shape, shape [shape_count, 3], float.
         Includes shape scale but excludes margin and gap (those are applied at runtime).
         Used for broadphase AABB computation and voxel-based contact reduction."""
+        self._shape_interior_point: wp.array[wp.vec3] | None = None
+        """Scaled local-space point [m] inside each shape, shape [shape_count, 3], float.
+        Convex meshes use their vertex mean; other shapes use their origin."""
         self._shape_voxel_resolution: wp.array[wp.vec3i] | None = None
         """Voxel grid resolution (nx, ny, nz) for each shape, shape [shape_count, 3], int. Used for voxel-based contact reduction."""
 
@@ -1081,13 +1092,11 @@ class Model:
         """Default generalized joint forces [N or N·m, depending on joint type] used to initialize :attr:`newton.Control.joint_f`, shape [joint_dof_count], float.
         For FREE, DISTANCE, and ROD joints, the linear entries are world-frame force at the child COM and the angular entries are world-frame torque about the child COM."""
         self.joint_target_q: wp.array[wp.float32] | None = None
-        """Generalized joint position targets [m or rad, depending on joint type] used to initialize :attr:`newton.Control.joint_target_q`, shape ``[joint_coord_count]`` or ``[joint_dof_count]``, float.
+        """Generalized joint position targets [m or rad, depending on joint type] used to initialize :attr:`newton.Control.joint_target_q`, shape ``[joint_coord_count]``, float.
 
-        Shape matches :attr:`joint_q` (``joint_coord_count``) when
-        :attr:`newton.use_coord_layout_targets` is ``True``; otherwise the array
-        is shaped ``(joint_dof_count,)`` (legacy layout). Index via
-        :attr:`joint_target_q_start`, which aliases :attr:`joint_q_start` or
-        :attr:`joint_qd_start` to match the active layout.
+        Shape matches :attr:`joint_q`. Index via :attr:`joint_target_q_start`,
+        which aliases :attr:`joint_q_start`. Ball and free joint rotations use
+        unit quaternions.
 
         For ROD joints, this Model-owned array defines structural rest;
         see :ref:`Rod joints`.
@@ -1286,7 +1295,6 @@ class Model:
         self._rigid_contact_max: int | None = None
         self._soft_contact_max: int | None = None
         self._contact_capacity_initialized = False
-        self._solver_observable_contact_capacity: tuple[int, int] | None = None
 
         self.up_axis: int = 2
         """Up axis: 0 for x, 1 for y, 2 for z."""
@@ -1391,13 +1399,6 @@ class Model:
         self.device: wp.Device = wp.get_device(device)
         """Device on which the Model was allocated."""
 
-        import newton  # noqa: PLC0415
-
-        self.use_coord_layout_targets: bool = newton.use_coord_layout_targets
-        """Snapshot of :data:`newton.use_coord_layout_targets` taken at
-        :meth:`ModelBuilder.finalize`. All layout decisions for this Model
-        consult this — toggling the global later doesn't change behavior."""
-
         self.custom_frequency_counts: dict[str, int] = {}
         """Counts for custom frequencies (e.g., ``{"mujoco:pair": 5}``). Set during finalize()."""
 
@@ -1412,19 +1413,12 @@ class Model:
         # cached collision pipeline
         self._requested_contact_attributes: set[str] = set()
 
-        target_q_freq = (
-            Model.AttributeFrequency.JOINT_COORD
-            if self.use_coord_layout_targets
-            else Model.AttributeFrequency.JOINT_DOF
-        )
         self.attribute_specs: dict[str, Model.AttributeSpec] = dict(Model._CORE_ATTRIBUTE_SPECS)
         """Semantic metadata keyed by built-in or custom attribute name.
 
         Attribute values remain normal Python attributes on the model. This
         registry describes their indexing, ownership, and reference semantics.
         """
-
-        self.attribute_specs["joint_target_q"] = Model.AttributeSpec(target_q_freq)
 
         # Deprecated solver-produced State attributes remain registered for
         # compatibility with request_state_attributes().
@@ -1443,6 +1437,44 @@ class Model:
 
         self.actuators: list[Actuator] = []
         """List of actuator instances for this model."""
+
+    @property
+    def shape_contact_pairs(self) -> wp.array[wp.vec2i] | None:
+        """Pairs of shape indices that may collide, shape [shape_contact_pair_count], vec2i.
+
+        Constructed on first access; access it before CUDA graph capture if needed.
+
+        Default pairs omit static-static pairs and retain static-kinematic and
+        kinematic-kinematic pairs.
+
+        Assign a replacement array to change pairs, or ``None`` to remove the
+        model's pair array and set its count to zero. In-place edits are unsupported.
+        """
+        pairs = self._shape_contact_pairs
+        if pairs is None and self._shape_contact_pair_data is not None:
+            topology = self._shape_contact_pair_data
+            if self.device.is_cuda and self.device.is_capturing and topology.counts.any():
+                raise RuntimeError(
+                    "Initialize model.shape_contact_pairs before CUDA graph capture, "
+                    "for example by constructing the explicit CollisionPipeline before capture."
+                )
+            pairs = wp.array(topology.build_pairs(), dtype=wp.vec2i, device=self.device, copy=False)
+            self._shape_contact_pairs = pairs
+        return pairs
+
+    @shape_contact_pairs.setter
+    def shape_contact_pairs(self, pairs: wp.array[wp.vec2i] | None) -> None:
+        self._shape_contact_pairs = pairs
+        self._shape_contact_pair_data = None
+        self._shape_contact_pair_count = len(pairs) if pairs is not None else 0
+        self._shape_contact_pair_counts.clear()
+
+    @property
+    def shape_contact_pair_count(self) -> int:
+        """Number of shape pairs. Read-only; does not construct the full pair array."""
+        if self._shape_contact_pairs is not None:
+            return len(self._shape_contact_pairs)
+        return self._shape_contact_pair_count
 
     def _set_shape_collision_filter_packed(self, packed: np.ndarray) -> None:
         """Install the canonical filter store: sorted unique packed pair codes."""
@@ -1603,12 +1635,12 @@ class Model:
         .. deprecated:: 1.7
             Limit joint rotations with the per-DOF :attr:`joint_limit_lower` instead.
         """
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         return self._deprecated_joint_twist_lower
 
     @joint_twist_lower.setter
     def joint_twist_lower(self, value: wp.array[wp.float32] | None) -> None:
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         self._deprecated_joint_twist_lower = value
 
     @property
@@ -1618,22 +1650,20 @@ class Model:
         .. deprecated:: 1.7
             Limit joint rotations with the per-DOF :attr:`joint_limit_upper` instead.
         """
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         return self._deprecated_joint_twist_upper
 
     @joint_twist_upper.setter
     def joint_twist_upper(self, value: wp.array[wp.float32] | None) -> None:
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         self._deprecated_joint_twist_upper = value
 
     @property
     def joint_target_q_start(self) -> wp.array | None:
         """Per-joint start index into :attr:`joint_target_q`, shape
-        ``(joint_count + 1,)``. Aliases :attr:`joint_q_start` under coord
-        layout, :attr:`joint_qd_start` otherwise. Solvers and actuators should
-        index :attr:`joint_target_q` through this regardless of layout.
+        ``(joint_count + 1,)``. Aliases :attr:`joint_q_start`.
         """
-        return self.joint_q_start if self.use_coord_layout_targets else self.joint_qd_start
+        return self.joint_q_start
 
     def bvh_build_shapes(
         self,
@@ -2024,9 +2054,8 @@ class Model:
     def rigid_contact_max(self) -> int | None:
         """Rigid contact buffer capacity, or ``None`` before collision setup.
 
-        :class:`CollisionPipeline` publishes its resolved capacity. Zero is a
-        valid capacity. Contact-indexed solver observables freeze both capacities
-        for the lifetime of this model.
+        :class:`CollisionPipeline` publishes its resolved capacity, which later
+        pipelines reuse as their default. Zero is a valid capacity.
         """
         return self._rigid_contact_max
 
@@ -2054,20 +2083,16 @@ class Model:
         self._soft_contact_max = value
 
     def _validate_contact_capacity(self, rigid_max: int | None, soft_max: int | None) -> None:
-        """Reject invalid capacities or changes that invalidate solver observables."""
+        """Reject negative capacities."""
         if (rigid_max is not None and rigid_max < 0) or (soft_max is not None and soft_max < 0):
             raise ValueError("Contact capacities must be nonnegative or None.")
-        frozen = self._solver_observable_contact_capacity
-        if frozen is not None and (rigid_max, soft_max) != frozen:
-            raise ValueError(
-                f"Contact capacities are frozen at {frozen} by allocated solver observables; "
-                "create a new model and solver observables to change capacities."
-            )
 
     def _get_contact_capacity(self) -> tuple[int, int]:
         """Return capacities published by a successfully initialized pipeline."""
         if not self._contact_capacity_initialized or self.rigid_contact_max is None or self.soft_contact_max is None:
-            raise RuntimeError("Create CollisionPipeline(model) before requesting contact-indexed solver observables.")
+            raise RuntimeError(
+                "Create CollisionPipeline(model) to publish contact capacities before resolving contact frequencies."
+            )
         return self.rigid_contact_max, self.soft_contact_max
 
     def _init_collision_pipeline(self, enable_rigid_soft_full_surface_contact: bool = False):
@@ -2115,7 +2140,7 @@ class Model:
         """
         warnings.warn(
             "Model.contacts() is deprecated; create a CollisionPipeline and call pipeline.contacts() instead.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         if collision_pipeline is not None:
@@ -2161,7 +2186,7 @@ class Model:
         warnings.warn(
             "Model.collide() is deprecated; create a CollisionPipeline and call "
             "pipeline.collide(state, contacts) instead.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         if collision_pipeline is not None:
@@ -2201,7 +2226,7 @@ class Model:
         warnings.warn(
             "Model.request_state_attributes() is deprecated in Newton 1.7; "
             "request SolverBase.Observables from the solver instead.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         self._request_state_attributes(*attributes)
@@ -2225,7 +2250,7 @@ class Model:
         warnings.warn(
             "Model.request_contact_attributes() is deprecated in Newton 1.7; "
             "request SolverBase.Observables from the solver instead.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         self._request_contact_attributes(*attributes)
