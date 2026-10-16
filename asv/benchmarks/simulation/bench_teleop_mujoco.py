@@ -466,13 +466,8 @@ class _TeleopMuJoCoBenchmark:
     def setup(self, mode: str) -> None:
         self.mode = _TELEOP_MODES[mode]
         _skip_unavailable_mode(self.mode)
-        previous_target_layout = newton.use_coord_layout_targets
-        newton.use_coord_layout_targets = True
-        try:
-            with wp.ScopedDevice(self.mode.device):
-                self.loop = _TeleopLoop(self.mode, self.num_frames)
-        finally:
-            newton.use_coord_layout_targets = previous_target_layout
+        with wp.ScopedDevice(self.mode.device):
+            self.loop = _TeleopLoop(self.mode, self.num_frames)
 
         self._step_frames(self.warmup_frames)
         self.loop.clear_metrics()

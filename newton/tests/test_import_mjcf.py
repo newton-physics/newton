@@ -11,7 +11,6 @@ import unittest
 import warnings
 import zlib
 from pathlib import Path
-from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -4726,8 +4725,7 @@ class TestImportMjcfSolverParams(unittest.TestCase):
                 builder.default_joint_cfg.damping = default_damping
                 builder.add_mjcf(mjcf_content)
                 joint_index = builder.joint_type.index(newton.JointType.BALL)
-                with mock.patch("newton.use_coord_layout_targets", True):
-                    model = builder.finalize()
+                model = builder.finalize()
 
                 dof_start = int(model.joint_qd_start.numpy()[joint_index])
                 np.testing.assert_allclose(

@@ -37,7 +37,6 @@ XPBD_CONTACT_RELAXATION = 0.8
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.test_mode = args.test
         self.world_count = args.world_count

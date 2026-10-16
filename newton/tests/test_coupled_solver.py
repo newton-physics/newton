@@ -1683,36 +1683,35 @@ class TestSolverCoupledBasic(unittest.TestCase):
         np.testing.assert_allclose(view.mujoco.dof_ref.numpy(), 0.2)
         np.testing.assert_allclose(view.mujoco.dof_springref.numpy(), 0.3)
 
-    def test_joint_properties_refresh_compacted_legacy_targets(self):
-        """Refresh legacy position targets in a compact model view."""
-        with mock.patch("newton.use_coord_layout_targets", False):
-            builder = newton.ModelBuilder()
-            bodies = [builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3))) for _ in range(2)]
-            joints = [builder.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z) for body in bodies]
-            for joint in joints:
-                builder.add_articulation([joint])
-            model = builder.finalize(device="cpu")
-            coupled = SolverCoupled(
-                model=model,
-                entries=[
-                    SolverCoupled.Entry(
-                        name="joint",
-                        solver=_StepCountingCopySolver,
-                        bodies=[bodies[1]],
-                        joints=[joints[1]],
-                    )
-                ],
-            )
-            view = coupled.view("joint")
+    def test_joint_properties_refresh_compacted_targets(self):
+        """Refresh position targets in a compact model view."""
+        builder = newton.ModelBuilder()
+        bodies = [builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3))) for _ in range(2)]
+        joints = [builder.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z) for body in bodies]
+        for joint in joints:
+            builder.add_articulation([joint])
+        model = builder.finalize(device="cpu")
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="joint",
+                    solver=_StepCountingCopySolver,
+                    bodies=[bodies[1]],
+                    joints=[joints[1]],
+                )
+            ],
+        )
+        view = coupled.view("joint")
 
-            model.joint_target_q.assign(np.array([2.0, 3.0], dtype=np.float32))
-            np.testing.assert_array_equal(view.joint_target_q.numpy(), [0.0])
-            coupled.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
-            np.testing.assert_array_equal(view.joint_target_q.numpy(), [3.0])
+        model.joint_target_q.assign(np.array([2.0, 3.0], dtype=np.float32))
+        np.testing.assert_array_equal(view.joint_target_q.numpy(), [0.0])
+        coupled.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+        np.testing.assert_array_equal(view.joint_target_q.numpy(), [3.0])
 
-            model.joint_target_q.assign(np.array([4.0, 5.0], dtype=np.float32))
-            coupled.notify_model_changed(newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES)
-            np.testing.assert_array_equal(view.joint_target_q.numpy(), [5.0])
+        model.joint_target_q.assign(np.array([4.0, 5.0], dtype=np.float32))
+        coupled.notify_model_changed(newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES)
+        np.testing.assert_array_equal(view.joint_target_q.numpy(), [5.0])
 
     def test_custom_control_arrays_are_mapped_to_entries(self):
         """Custom CONTROL attributes should follow their compact frequency map."""

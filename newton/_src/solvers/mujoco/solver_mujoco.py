@@ -5801,7 +5801,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         dofs_per_world,
                         ctrls_per_world,
                         joints_per_world,
-                        model.use_coord_layout_targets,
                     ],
                     outputs=[
                         ctrl,
@@ -7725,8 +7724,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         args["forcerange"] = [-effort_limit, effort_limit]
 
                         template_dof = ai
-                        # Ball targets share one base slot per joint. The kernel reads the coord-layout
-                        # quaternion or DOF-layout extrinsic-ZYX triple, then emits component i.
+                        # Ball targets share one quaternion base per joint;
+                        # the kernel converts it to angular component i.
                         template_target_q = tq_start
                         template_target_q_axis = i
                         if mode == JointTargetMode.POSITION:

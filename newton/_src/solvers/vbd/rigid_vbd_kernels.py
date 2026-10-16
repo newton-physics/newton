@@ -4344,7 +4344,6 @@ def init_rod_rest_bend_twist(
     joint_type: wp.array[int],
     joint_target_q_start: wp.array[int],
     joint_target_q: wp.array[float],
-    target_uses_coord_layout: bool,
     joint_rod_rest_kb_local: wp.array[wp.vec3],
     joint_rod_rest_twist: wp.array[float],
 ):
@@ -4357,20 +4356,12 @@ def init_rod_rest_bend_twist(
         return
 
     target_start = joint_target_q_start[j]
-    if target_uses_coord_layout:
-        q_wc_rest = wp.quat(
-            joint_target_q[target_start + 3],
-            joint_target_q[target_start + 4],
-            joint_target_q[target_start + 5],
-            joint_target_q[target_start + 6],
-        )
-    else:
-        angles = wp.vec3(
-            joint_target_q[target_start + 3],
-            joint_target_q[target_start + 4],
-            joint_target_q[target_start + 5],
-        )
-        q_wc_rest = wp.quat_from_euler(angles, 2, 1, 0)
+    q_wc_rest = wp.quat(
+        joint_target_q[target_start + 3],
+        joint_target_q[target_start + 4],
+        joint_target_q[target_start + 5],
+        joint_target_q[target_start + 6],
+    )
     q_wc_rest = wp.normalize(q_wc_rest)
 
     # Rest DER bend (parent-local curvature binormal) and rest twist (transported

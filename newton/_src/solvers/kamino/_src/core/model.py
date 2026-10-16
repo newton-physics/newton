@@ -562,20 +562,6 @@ class ModelKamino:
         """Whether the model was finalized (see :meth:`ModelBuilder.finalize`) with gradient computation enabled."""
         return self._requires_grad
 
-    @property
-    def use_coord_layout_targets(self) -> bool:
-        """Target-layout snapshot. Returns the wrapped
-        :class:`newton.Model`'s snapshot when this ``ModelKamino`` was built
-        via :meth:`from_newton`; falls back to the live module global
-        :data:`newton.use_coord_layout_targets` for native Kamino models (no
-        wrapped Newton model).
-        """
-        if self._model is not None:
-            return self._model.use_coord_layout_targets
-        import newton  # noqa: PLC0415
-
-        return newton.use_coord_layout_targets
-
     ###
     # Factories
     ###
@@ -763,12 +749,6 @@ class ModelKamino:
                     shape=self.size.sum_of_num_joint_dofs, dtype=wp.float32, requires_grad=requires_grad
                 ),
             )
-
-        # Post-processing to finalize the control container
-        # NOTE: This is currently necessary to handle the case when
-        # the total number of joint coordinates and DoFs differ, in
-        # which case a temporary buffer is allocated for the conversion.
-        control.finalize(self, device=device)
 
         # Return the constructed control container
         return control

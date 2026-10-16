@@ -860,7 +860,6 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         # Initialize the internal Kamino control wrapper
         self._control_kamino = self._kamino.ControlKamino()
-        self._control_kamino.finalize(self._model_kamino)
 
     @property
     def status(self) -> wp.array[Any]:
@@ -1119,7 +1118,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         # internal control arrays if None is provided.
         if control is None:
             control = self.model.control(clone_variables=False)
-        self._control_kamino.from_newton(control, self._model_kamino)
+        self._control_kamino.from_newton(control)
 
         # Internal detection is authoritative when enabled for this solver.
         if self._config.use_collision_detector:

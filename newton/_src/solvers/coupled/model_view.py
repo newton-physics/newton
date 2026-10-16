@@ -145,7 +145,7 @@ class ModelView:
     @property
     def joint_target_q_start(self) -> wp.array | None:
         """View-local start indices for :attr:`~newton.Model.joint_target_q`."""
-        return self.joint_q_start if self.use_coord_layout_targets else self.joint_qd_start
+        return self.joint_q_start
 
     @property
     def overrides(self) -> dict[str, object]:
