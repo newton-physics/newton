@@ -163,8 +163,9 @@ class Battery:
     def refresh(self, control: Any) -> None:
         """Compute the voltage from ``control.joint_f`` and write ``control.supply_voltage``.
 
-        A battery reset since the last call keeps its nominal voltage and
-        ignores the effort in ``joint_f``.
+        Call once per step, before clearing ``joint_f`` for the next actuator
+        step. A battery reset since the last call keeps its nominal voltage
+        and ignores the effort in ``joint_f``.
 
         Args:
             control: Object carrying ``joint_f`` and ``supply_voltage``, both

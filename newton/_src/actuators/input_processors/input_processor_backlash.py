@@ -14,40 +14,35 @@ from .base import InputProcessorBase
 @wp.kernel
 def _backlash_read_kernel(
     positions: wp.array[float],
-    velocities: wp.array[float],
     pos_indices: wp.array[wp.uint32],
-    vel_indices: wp.array[wp.uint32],
     sim_positions: wp.array[float],
-    sim_velocities: wp.array[float],
     backlash_pos_indices: wp.array[wp.uint32],
-    backlash_indices: wp.array[wp.uint32],
     out_pos: wp.array[float],
-    out_vel: wp.array[float],
 ):
     i = wp.tid()
     out_pos[pos_indices[i]] = positions[pos_indices[i]] + sim_positions[backlash_pos_indices[i]]
-    out_vel[vel_indices[i]] = velocities[vel_indices[i]] + sim_velocities[backlash_indices[i]]
 
 
 class InputProcessorBacklash(InputProcessorBase):
-    """Measure position and velocity on the link side of a backlash joint.
+    """Measure position on the link side of a backlash joint.
 
     The backlash itself is modelled in the physics: a passive joint with a
     small motion range sits in series between the actuated joint and the
     link. The solver handles the dead zone, where the actuator effort does
     not reach the link. This processor models an encoder on the link side of
-    that joint. The drive reads
+    that joint. The drive reads the position
 
     .. math::
 
-        q = q_{\\text{actuated}} + q_{\\text{backlash}}, \\qquad
-        \\dot q = \\dot q_{\\text{actuated}} + \\dot q_{\\text{backlash}}
+        q = q_{\\text{actuated}} + q_{\\text{backlash}}
 
-    instead of the actuated joint alone.
+    instead of the actuated joint alone. The velocity stays that of the
+    actuated joint: it is motor physics, e.g. the back-EMF of
+    :class:`~newton.actuators.DriveBAM`, not an encoder reading.
 
-    The sums are written into arrays shaped like the incoming positions and
-    velocities, at the actuated indices, so the index arrays stay valid for
-    other ``joint_qd``-shaped drive inputs.
+    The sum is written into an array shaped like the incoming positions, at
+    the actuated indices, so :attr:`~newton.actuators.InputProcessorBase.Inputs.pos_indices`
+    stays valid.
     """
 
     JOINT_PARAMS: ClassVar[set[str]] = {"backlash_joint"}
@@ -95,7 +90,6 @@ class InputProcessorBacklash(InputProcessorBase):
         self._device: wp.Device | None = None
         self._requires_grad: bool = False
         self._out_pos: wp.array[float] | None = None
-        self._out_vel: wp.array[float] | None = None
 
     def finalize(self, device: wp.Device, num_actuators: int, requires_grad: bool = False) -> None:
         if len(self.backlash_joint_indices) != num_actuators:
@@ -107,28 +101,16 @@ class InputProcessorBacklash(InputProcessorBase):
         self._num_actuators = num_actuators
         self._requires_grad = requires_grad
 
-    def _output(self, out: wp.array[float] | None, source: wp.array[float]) -> wp.array[float]:
-        if out is None or out.shape != source.shape:
-            out = wp.zeros(source.shape, dtype=wp.float32, device=self._device, requires_grad=self._requires_grad)
-        return out
-
     def process(self, inputs: InputProcessorBase.Inputs, state: None, dt: float | None) -> InputProcessorBase.Inputs:
-        self._out_pos = self._output(self._out_pos, inputs.positions)
-        self._out_vel = self._output(self._out_vel, inputs.velocities)
+        if self._out_pos is None or self._out_pos.shape != inputs.positions.shape:
+            self._out_pos = wp.zeros(
+                inputs.positions.shape, dtype=wp.float32, device=self._device, requires_grad=self._requires_grad
+            )
         wp.launch(
             kernel=_backlash_read_kernel,
             dim=self._num_actuators,
-            inputs=[
-                inputs.positions,
-                inputs.velocities,
-                inputs.pos_indices,
-                inputs.vel_indices,
-                inputs.sim_positions,
-                inputs.sim_velocities,
-                self.backlash_joint_pos_indices,
-                self.backlash_joint_indices,
-            ],
-            outputs=[self._out_pos, self._out_vel],
+            inputs=[inputs.positions, inputs.pos_indices, inputs.sim_positions, self.backlash_joint_pos_indices],
+            outputs=[self._out_pos],
             device=self._device,
         )
-        return replace(inputs, positions=self._out_pos, velocities=self._out_vel)
+        return replace(inputs, positions=self._out_pos)

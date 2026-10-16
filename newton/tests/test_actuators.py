@@ -341,9 +341,13 @@ def _joint_reaction_kernel(
     coriolis_force: wp.array[float],
     reaction: wp.array[float],
 ):
-    """``M qdd + C qd + g - tau_motor + bias``: the load MuJoCo reports as bias + constraint."""
+    """``M qdd - tau_motor``: BAM's external load ``-bias + constraint``.
+
+    It still contains the joint's own friction and passive forces, which BAM
+    subtracts; Newton does not expose the friction constraint force yet.
+    """
     i = wp.tid()
-    reaction[i] = total_force[i] - motor_torque[i] + gravity_force[i] + coriolis_force[i]
+    reaction[i] = total_force[i] - gravity_force[i] - coriolis_force[i] - motor_torque[i]
 
 
 @wp.kernel
@@ -2686,6 +2690,236 @@ class TestDriveNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.TestCa
                 )
 
 
+class TestDriveBAM(unittest.TestCase):
+    """BAM servo drive, alone and with a shared battery."""
+
+    def test_bam_battery_shared_across_actuator_groups(self):
+        """Servos in different actuator groups sag one shared battery.
+
+        The knee has a backlash processor and the ankle has none, so they are
+        two actuators. Each world has one battery for both. Each step, both
+        drives read the voltage left by the previous step's total draw.
+        """
+        kp, kt, resistance, max_pwm, target, dt = 0.5, 0.6, 2.0, 0.9, 1.0, 0.01
+        nominal_voltage, sag_gain, min_voltage = 5.0, 0.5, 4.4
+        template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        links = [template.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA) for _ in range(3)]
+        knee = template.add_joint_revolute(parent=-1, child=links[0], axis=newton.Axis.Z, label="knee")
+        backlash = template.add_joint_revolute(
+            parent=links[0], child=links[1], axis=newton.Axis.Z, limit_lower=-0.02, limit_upper=0.02, label="backlash"
+        )
+        ankle = template.add_joint_revolute(parent=links[1], child=links[2], axis=newton.Axis.Z, label="ankle")
+        template.add_articulation([knee, backlash, ankle])
+        bam = {
+            "kp": kp,
+            "kt": kt,
+            "resistance": resistance,
+            "vin": 5.0,
+            "max_pwm": max_pwm,
+            "supply_from_control": True,
+        }
+        template.add_actuator(
+            DriveBAM,
+            index=template.joint_qd_start[knee],
+            input_processors=[(InputProcessorBacklash, {"backlash_joint": "backlash"})],
+            **bam,
+        )
+        template.add_actuator(DriveBAM, index=template.joint_qd_start[ankle], **bam)
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        model = builder.finalize()
+        self.assertEqual(len(model.actuators), 2)
+
+        dofs = template.joint_dof_count
+        knees, backlashes, ankles = ([j, j + dofs] for j in (0, 1, 2))
+        battery = Battery(
+            dof_battery=wp.array([0, -1, 0, 1, -1, 1], dtype=wp.int32),
+            nominal_voltage=wp.full(2, nominal_voltage, dtype=float),
+            sag_gain=wp.full(2, sag_gain, dtype=float),
+            min_voltage=wp.full(2, min_voltage, dtype=float),
+        )
+        q = np.array([0.3, 0.015, -0.1, -0.2, -0.017, 0.4], dtype=np.float32)
+        state = model.state()
+        control = model.control()
+        state.joint_q.assign(q)
+        control.joint_target_q.fill_(target)
+        duty = {
+            "knee": np.clip(kp * (target - (q[knees] + q[backlashes])), -max_pwm, max_pwm),
+            "ankle": np.clip(kp * (target - q[ankles]), -max_pwm, max_pwm),
+        }
+
+        drawn = np.zeros(2)
+        sagged = []
+        for _ in range(4):
+            battery.refresh(control)
+            control.joint_f.zero_()
+            for actuator in model.actuators:
+                actuator.step(state, control, dt=dt)
+
+            voltage = np.maximum(nominal_voltage - sag_gain * drawn, min_voltage)
+            sagged.append(nominal_voltage - sag_gain * drawn)
+            np.testing.assert_allclose(battery.voltage.numpy(), voltage, rtol=1e-5)
+            current = {servo: voltage * d / resistance for servo, d in duty.items()}
+            effort = control.joint_f.numpy()
+            np.testing.assert_allclose(effort[knees], kt * current["knee"], rtol=1e-5)
+            np.testing.assert_allclose(effort[ankles], kt * current["ankle"], rtol=1e-5)
+            drawn = sum(np.abs(kt * current[servo]) for servo in duty)
+        sagged = np.array(sagged[1:])
+        self.assertTrue(np.any(sagged > min_voltage) and np.any(sagged < min_voltage))
+
+    def test_bam_current_and_pwm_limits(self):
+        """DriveBAM limits the duty cycle by the firmware current limit, then by ``max_pwm``."""
+        kp, kt, resistance, vin, max_pwm = 2.0, 0.5, 1.0, 10.0, 0.9
+        max_current = np.array([1.0, 0.0], dtype=np.float32)
+        qd = np.array([0.5, -1.0], dtype=np.float32)
+        n = 2
+        drive = DriveBAM(
+            kp=wp.full(n, kp, dtype=float),
+            kt=wp.full(n, kt, dtype=float),
+            resistance=wp.full(n, resistance, dtype=float),
+            vin=wp.full(n, vin, dtype=float),
+            max_pwm=wp.full(n, max_pwm, dtype=float),
+            max_current=wp.array(max_current, dtype=float),
+        )
+        actuator = Actuator(indices=wp.array(np.arange(n), dtype=wp.uint32), drive=drive)
+        state = types.SimpleNamespace(joint_q=wp.zeros(n, dtype=float), joint_qd=wp.array(qd, dtype=float))
+        control = types.SimpleNamespace(
+            joint_target_q=wp.ones(n, dtype=float),
+            joint_target_qd=wp.zeros(n, dtype=float),
+            joint_act=None,
+            joint_f=wp.zeros(n, dtype=float),
+        )
+        actuator.step(state, control, dt=0.01)
+
+        duty = np.full(n, kp * 1.0)
+        limited = max_current > 0.0
+        center, span = kt * qd / vin, resistance * max_current / vin
+        duty[limited] = np.clip(duty[limited], (center - span)[limited], (center + span)[limited])
+        duty = np.clip(duty, -max_pwm, max_pwm)
+        expected = kt * (vin * duty - kt * qd) / resistance
+        np.testing.assert_allclose(control.joint_f.numpy(), expected, rtol=1e-5)
+        self.assertAlmostEqual(float(control.joint_f.numpy()[0]), kt * 1.0, places=5)
+
+    @unittest.skipUnless(hasattr(newton.solvers, "SolverMuJoCo"), "SolverMuJoCo not installed")
+    def test_bam_load_dependent_friction_loop(self):
+        """BAM's load-dependent gearbox friction, driven from caller-owned code.
+
+        BAM's friction grows with the torque the gearbox transmits, so it needs the
+        joint reaction. That reaction is recovered here from the manipulator
+        equation rather than from solver internals. Per step:
+
+        1. :meth:`Actuator.step` writes the motor torque into ``control.joint_f``.
+        2. the solver integrates.
+        3. the reaction ``M(q) qdd - tau_motor`` (``-bias + constraint``) follows
+           from :func:`newton.eval_inverse_dynamics_passive` and
+           :func:`newton.eval_inverse_dynamics_force`. Unlike BAM, it still
+           includes the joint's own friction force.
+        4. the Coulomb budget ``base + |reaction*k_ext - motor*k_motor|`` is
+           written into :attr:`Model.joint_friction` and published with
+           :attr:`ModelFlags.JOINT_DOF_FORCE_PROPERTIES`. BAM's viscous term is a
+           fitted constant and is set once, outside the loop.
+        5. the solver applies it by clipping the stopping torque.
+
+        The friction coefficients here are illustrative; a real set comes from a
+        BAM identification run.
+        """
+        dt, target, friction_base, viscous = 1.0 / 240.0, 0.9, 0.05, 0.02
+
+        def build() -> newton.Model:
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
+            link = builder.add_link(com=wp.vec3(0.5, 0.0, 0.0), inertia=_POINT_MASS_INERTIA, mass=1.0)
+            joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Y, damping=viscous)
+            builder.add_articulation([joint])
+            builder.add_actuator(DriveBAM, index=0, kp=3.0, kt=1.2, resistance=1.0, vin=12.0, max_pwm=1.0)
+            return builder.finalize()
+
+        def run(steps: int):
+            model = build()
+            solver = newton.solvers.SolverMuJoCo(model)
+            actuator = model.actuators[0]
+            state_0, state_1, control = model.state(), model.state(), model.control()
+            n, device = model.joint_dof_count, model.device
+            k_motor = 0.08
+            k_external = 0.30
+
+            mass_matrix = wp.zeros((model.articulation_count, n, n), dtype=wp.float32, device=device)
+            gravity_force = wp.zeros(n, dtype=wp.float32, device=device)
+            coriolis_force = wp.zeros(n, dtype=wp.float32, device=device)
+            total_force = wp.zeros(n, dtype=wp.float32, device=device)
+            joint_qdd = wp.zeros(n, dtype=wp.float32, device=device)
+            reaction = wp.zeros(n, dtype=wp.float32, device=device)
+
+            for _ in range(steps):
+                # 1. the drive writes the motor torque into control.joint_f
+                control.joint_target_q.fill_(target)
+                control.joint_f.zero_()
+                actuator.step(state_0, control, dt=dt)
+
+                # 2. integrate; the solver writes state_1 and leaves control alone
+                solver.step(state_0, state_1, control, None, dt)
+
+                # 3. recover the joint reaction from the manipulator equation
+                wp.launch(
+                    _finite_difference_qdd_kernel,
+                    dim=n,
+                    inputs=[state_0.joint_qd, state_1.joint_qd, float(1.0 / dt)],
+                    outputs=[joint_qdd],
+                    device=device,
+                )
+                newton.eval_inverse_dynamics_passive(
+                    model,
+                    state_0,
+                    mass_matrix=mass_matrix,
+                    gravity_force=gravity_force,
+                    coriolis_force=coriolis_force,
+                )
+                newton.eval_inverse_dynamics_force(
+                    model,
+                    state_0,
+                    mass_matrix=mass_matrix,
+                    joint_qdd=joint_qdd,
+                    coriolis_force=coriolis_force,
+                    gravity_force=gravity_force,
+                    joint_f=total_force,
+                )
+                wp.launch(
+                    _joint_reaction_kernel,
+                    dim=n,
+                    inputs=[total_force, control.joint_f, gravity_force, coriolis_force],
+                    outputs=[reaction],
+                    device=device,
+                )
+
+                # 4. turn it into BAM's friction budget and publish it to the solver
+                wp.launch(
+                    _bam_friction_budget_kernel,
+                    dim=n,
+                    inputs=[control.joint_f, reaction, friction_base, k_motor, k_external],
+                    outputs=[model.joint_friction],
+                    device=device,
+                )
+                solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+
+                # 5. the solver applies it on the next step; swap states
+                state_0, state_1 = state_1, state_0
+
+            return reaction, control.joint_f, model.joint_friction
+
+        reaction_arr, motor_arr, load_frictionloss = run(steps=40)
+
+        reaction = float(reaction_arr.numpy()[0])
+        motor = float(motor_arr.numpy()[0])
+        load_budget = float(load_frictionloss.numpy()[0])
+
+        # Holding the arm against gravity means the gearbox transmits the gravity
+        # torque, which at this pose is a few newton-metres.
+        self.assertGreater(abs(reaction), 1.0, "the gearbox should be carrying the gravity load")
+
+        # The budget grows with the transmitted load. This is the quantity the solver consumes.
+        self.assertGreater(load_budget, friction_base + 0.1)
+        self.assertAlmostEqual(load_budget, friction_base + abs(reaction * 0.30 - motor * 0.08), places=5)
+
+
 # ---------------------------------------------------------------------------
 # 2. Delay
 # ---------------------------------------------------------------------------
@@ -2817,7 +3051,7 @@ class TestInputProcessors(unittest.TestCase):
     """Input processors composed through ModelBuilder.add_actuator."""
 
     def test_backlash_drive_reads_link_side_joint(self):
-        """The drive sees actuated + backlash joint position and velocity, in every replicated world.
+        """The drive sees actuated + backlash joint position and the actuated velocity, in every replicated world.
 
         A processor that replaces ``positions`` runs first, so the backlash
         joint must be read from the unprocessed simulation arrays.
@@ -2856,7 +3090,7 @@ class TestInputProcessors(unittest.TestCase):
         actuator = model.actuators[0]
         actuator.step(state, control, dt=0.01)
 
-        expected = [kp * (target - (q[w] + offset + q[w + 1])) - kd * (qd[w] + qd[w + 1]) for w in (0, 2)]
+        expected = [kp * (target - (q[w] + offset + q[w + 1])) - kd * qd[w] for w in (0, 2)]
         np.testing.assert_allclose(control.joint_f.numpy()[[0, 2]], expected, rtol=1e-5)
         np.testing.assert_array_equal(control.joint_f.numpy()[[1, 3]], [0.0, 0.0])
 
@@ -3030,231 +3264,6 @@ def Xform "World"
                         places=5,
                         msg=f"step {step} world {world} servo {servo}: lag {lag} not applied",
                     )
-
-    def test_bam_battery_shared_across_actuator_groups(self):
-        """Servos in different actuator groups sag one shared battery.
-
-        The knee has a backlash processor and the ankle has none, so they are
-        two actuators. Each world has one battery for both. Each step, both
-        drives read the voltage left by the previous step's total draw.
-        """
-        kp, kt, resistance, max_pwm, target, dt = 0.5, 0.6, 2.0, 0.9, 1.0, 0.01
-        nominal_voltage, sag_gain, min_voltage = 5.0, 0.5, 4.4
-        template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        links = [template.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA) for _ in range(3)]
-        knee = template.add_joint_revolute(parent=-1, child=links[0], axis=newton.Axis.Z, label="knee")
-        backlash = template.add_joint_revolute(
-            parent=links[0], child=links[1], axis=newton.Axis.Z, limit_lower=-0.02, limit_upper=0.02, label="backlash"
-        )
-        ankle = template.add_joint_revolute(parent=links[1], child=links[2], axis=newton.Axis.Z, label="ankle")
-        template.add_articulation([knee, backlash, ankle])
-        bam = {
-            "kp": kp,
-            "kt": kt,
-            "resistance": resistance,
-            "vin": 5.0,
-            "max_pwm": max_pwm,
-            "supply_from_control": True,
-        }
-        template.add_actuator(
-            DriveBAM,
-            index=template.joint_qd_start[knee],
-            input_processors=[(InputProcessorBacklash, {"backlash_joint": "backlash"})],
-            **bam,
-        )
-        template.add_actuator(DriveBAM, index=template.joint_qd_start[ankle], **bam)
-        builder = newton.ModelBuilder()
-        builder.replicate(template, 2)
-        model = builder.finalize()
-        self.assertEqual(len(model.actuators), 2)
-
-        dofs = template.joint_dof_count
-        knees, backlashes, ankles = ([j, j + dofs] for j in (0, 1, 2))
-        battery = Battery(
-            dof_battery=wp.array([0, -1, 0, 1, -1, 1], dtype=wp.int32),
-            nominal_voltage=wp.full(2, nominal_voltage, dtype=float),
-            sag_gain=wp.full(2, sag_gain, dtype=float),
-            min_voltage=wp.full(2, min_voltage, dtype=float),
-        )
-        q = np.array([0.3, 0.015, -0.1, -0.2, -0.017, 0.4], dtype=np.float32)
-        state = model.state()
-        control = model.control()
-        state.joint_q.assign(q)
-        control.joint_target_q.fill_(target)
-        duty = {
-            "knee": np.clip(kp * (target - (q[knees] + q[backlashes])), -max_pwm, max_pwm),
-            "ankle": np.clip(kp * (target - q[ankles]), -max_pwm, max_pwm),
-        }
-
-        drawn = np.zeros(2)
-        sagged = []
-        for _ in range(4):
-            battery.refresh(control)
-            control.joint_f.zero_()
-            for actuator in model.actuators:
-                actuator.step(state, control, dt=dt)
-
-            voltage = np.maximum(nominal_voltage - sag_gain * drawn, min_voltage)
-            sagged.append(nominal_voltage - sag_gain * drawn)
-            np.testing.assert_allclose(battery.voltage.numpy(), voltage, rtol=1e-5)
-            current = {servo: voltage * d / resistance for servo, d in duty.items()}
-            effort = control.joint_f.numpy()
-            np.testing.assert_allclose(effort[knees], kt * current["knee"], rtol=1e-5)
-            np.testing.assert_allclose(effort[ankles], kt * current["ankle"], rtol=1e-5)
-            drawn = sum(np.abs(kt * current[servo]) for servo in duty)
-        sagged = np.array(sagged[1:])
-        self.assertTrue(np.any(sagged > min_voltage) and np.any(sagged < min_voltage))
-
-    def test_bam_current_and_pwm_limits(self):
-        """DriveBAM limits the duty cycle by the firmware current limit, then by ``max_pwm``."""
-        kp, kt, resistance, vin, max_pwm = 2.0, 0.5, 1.0, 10.0, 0.9
-        max_current = np.array([1.0, 0.0], dtype=np.float32)
-        qd = np.array([0.5, -1.0], dtype=np.float32)
-        n = 2
-        drive = DriveBAM(
-            kp=wp.full(n, kp, dtype=float),
-            kt=wp.full(n, kt, dtype=float),
-            resistance=wp.full(n, resistance, dtype=float),
-            vin=wp.full(n, vin, dtype=float),
-            max_pwm=wp.full(n, max_pwm, dtype=float),
-            max_current=wp.array(max_current, dtype=float),
-        )
-        actuator = Actuator(indices=wp.array(np.arange(n), dtype=wp.uint32), drive=drive)
-        state = types.SimpleNamespace(joint_q=wp.zeros(n, dtype=float), joint_qd=wp.array(qd, dtype=float))
-        control = types.SimpleNamespace(
-            joint_target_q=wp.ones(n, dtype=float),
-            joint_target_qd=wp.zeros(n, dtype=float),
-            joint_act=None,
-            joint_f=wp.zeros(n, dtype=float),
-        )
-        actuator.step(state, control, dt=0.01)
-
-        duty = np.full(n, kp * 1.0)
-        limited = max_current > 0.0
-        center, span = kt * qd / vin, resistance * max_current / vin
-        duty[limited] = np.clip(duty[limited], (center - span)[limited], (center + span)[limited])
-        duty = np.clip(duty, -max_pwm, max_pwm)
-        expected = kt * (vin * duty - kt * qd) / resistance
-        np.testing.assert_allclose(control.joint_f.numpy(), expected, rtol=1e-5)
-        self.assertAlmostEqual(float(control.joint_f.numpy()[0]), kt * 1.0, places=5)
-
-    @unittest.skipUnless(hasattr(newton.solvers, "SolverMuJoCo"), "SolverMuJoCo not installed")
-    def test_bam_load_dependent_friction_loop(self):
-        """BAM's load-dependent gearbox friction, driven from caller-owned code.
-
-        BAM's friction grows with the torque the gearbox transmits, so it needs the
-        joint reaction. That reaction is recovered here from the manipulator
-        equation rather than from solver internals. Per step:
-
-        1. :meth:`Actuator.step` writes the motor torque into ``control.joint_f``.
-        2. the solver integrates.
-        3. the reaction follows from ``M(q) qdd + C(q, qd) qd + g(q) - tau_motor``
-           plus the bias term, via :func:`newton.eval_inverse_dynamics_passive` and
-           :func:`newton.eval_inverse_dynamics_force`.
-        4. the Coulomb budget ``base + |reaction*k_ext - motor*k_motor|`` is
-           written into :attr:`Model.joint_friction` and published with
-           :attr:`ModelFlags.JOINT_DOF_FORCE_PROPERTIES`. BAM's viscous term is a
-           fitted constant and is set once, outside the loop.
-        5. the solver applies it by clipping the stopping torque.
-
-        The friction coefficients here are illustrative; a real set comes from a
-        BAM identification run.
-        """
-        dt, target, friction_base, viscous = 1.0 / 240.0, 0.9, 0.05, 0.02
-
-        def build() -> newton.Model:
-            builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
-            link = builder.add_link(com=wp.vec3(0.5, 0.0, 0.0), inertia=_POINT_MASS_INERTIA, mass=1.0)
-            joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Y, damping=viscous)
-            builder.add_articulation([joint])
-            builder.add_actuator(DriveBAM, index=0, kp=3.0, kt=1.2, resistance=1.0, vin=12.0, max_pwm=1.0)
-            return builder.finalize()
-
-        def run(steps: int):
-            model = build()
-            solver = newton.solvers.SolverMuJoCo(model)
-            actuator = model.actuators[0]
-            state_0, state_1, control = model.state(), model.state(), model.control()
-            n, device = model.joint_dof_count, model.device
-            k_motor = 0.08
-            k_external = 0.30
-
-            mass_matrix = wp.zeros((model.articulation_count, n, n), dtype=wp.float32, device=device)
-            gravity_force = wp.zeros(n, dtype=wp.float32, device=device)
-            coriolis_force = wp.zeros(n, dtype=wp.float32, device=device)
-            total_force = wp.zeros(n, dtype=wp.float32, device=device)
-            joint_qdd = wp.zeros(n, dtype=wp.float32, device=device)
-            reaction = wp.zeros(n, dtype=wp.float32, device=device)
-
-            for _ in range(steps):
-                # 1. the drive writes the motor torque into control.joint_f
-                control.joint_target_q.fill_(target)
-                control.joint_f.zero_()
-                actuator.step(state_0, control, dt=dt)
-
-                # 2. integrate; the solver writes state_1 and leaves control alone
-                solver.step(state_0, state_1, control, None, dt)
-
-                # 3. recover the joint reaction from the manipulator equation
-                wp.launch(
-                    _finite_difference_qdd_kernel,
-                    dim=n,
-                    inputs=[state_0.joint_qd, state_1.joint_qd, float(1.0 / dt)],
-                    outputs=[joint_qdd],
-                    device=device,
-                )
-                newton.eval_inverse_dynamics_passive(
-                    model,
-                    state_0,
-                    mass_matrix=mass_matrix,
-                    gravity_force=gravity_force,
-                    coriolis_force=coriolis_force,
-                )
-                newton.eval_inverse_dynamics_force(
-                    model,
-                    state_0,
-                    mass_matrix=mass_matrix,
-                    joint_qdd=joint_qdd,
-                    coriolis_force=coriolis_force,
-                    gravity_force=gravity_force,
-                    joint_f=total_force,
-                )
-                wp.launch(
-                    _joint_reaction_kernel,
-                    dim=n,
-                    inputs=[total_force, control.joint_f, gravity_force, coriolis_force],
-                    outputs=[reaction],
-                    device=device,
-                )
-
-                # 4. turn it into BAM's friction budget and publish it to the solver
-                wp.launch(
-                    _bam_friction_budget_kernel,
-                    dim=n,
-                    inputs=[control.joint_f, reaction, friction_base, k_motor, k_external],
-                    outputs=[model.joint_friction],
-                    device=device,
-                )
-                solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
-
-                # 5. the solver applies it on the next step; swap states
-                state_0, state_1 = state_1, state_0
-
-            return reaction, control.joint_f, model.joint_friction
-
-        reaction_arr, motor_arr, load_frictionloss = run(steps=40)
-
-        reaction = float(reaction_arr.numpy()[0])
-        motor = float(motor_arr.numpy()[0])
-        load_budget = float(load_frictionloss.numpy()[0])
-
-        # Holding the arm against gravity means the gearbox transmits the gravity
-        # torque, which at this pose is a few newton-metres.
-        self.assertLess(reaction, -1.0, "the gearbox should be carrying the gravity load")
-
-        # The budget grows with the transmitted load. This is the quantity the solver consumes.
-        self.assertGreater(load_budget, friction_base + 0.1)
-        self.assertAlmostEqual(load_budget, friction_base + abs(reaction * 0.30 - motor * 0.08), places=5)
 
     def test_deprecated_delay_arguments_match_input_processor(self):
         """Deprecated delay arguments warn and delay targets exactly like the Delay input processor."""

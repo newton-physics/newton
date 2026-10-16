@@ -60,7 +60,8 @@ An actuator is composed from three building blocks, applied in this order:
    backlash joint.  The backlash itself is a passive joint with a small
    motion range, placed in series between the actuated joint and the link;
    the solver handles the dead zone.  The drive reads the sum of the actuated
-   and the backlash joint positions and velocities.
+   and the backlash joint positions; the velocity stays that of the actuated
+   joint.
 
    In USD, processors keep the order of the actuator prim's ``apiSchemas``,
    and a joint parameter is a relationship, e.g. ``rel newton:backlashJoint``.
@@ -93,7 +94,10 @@ class to add new models.
    ``Delay`` is renamed :class:`InputProcessorDelay`.  The ``delay``
    argument of :class:`Actuator`, the ``delay_steps`` argument of
    :meth:`~newton.ModelBuilder.add_actuator`, :attr:`Actuator.delay`,
-   :attr:`Actuator.State.delay_state`, and ``ComponentKind.DELAY`` are
+   :attr:`Actuator.State.delay_state`, ``ModelBuilder.ActuatorEntry.delay_args``,
+   ``ComponentKind.DELAY``, and the
+   ``update_state(target_pos, target_vel, feedforward, pos_indices,
+   vel_indices, current_state, next_state)`` form of the delay are
    deprecated.  Pass the delay in ``input_processors`` and read its state
    from :attr:`Actuator.State.input_processor_states`.
 
@@ -523,8 +527,8 @@ Input processors
 ^^^^^^^^^^^^^^^^
 
 * :class:`InputProcessorDelay` — circular-buffer delay for control targets (stateful).
-* :class:`InputProcessorBacklash` — position and velocity on the link side of
-  a backlash joint (stateless).  :meth:`~newton.ModelBuilder.add_actuator`
+* :class:`InputProcessorBacklash` — position on the link side of a backlash
+  joint (stateless).  :meth:`~newton.ModelBuilder.add_actuator`
   takes the backlash joint as a joint index or joint label in
   ``backlash_joint``.
 
