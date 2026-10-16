@@ -54,10 +54,12 @@ class Example:
             skip_mesh_approximation=True,
         )
 
-        for i in range(6, g1.joint_dof_count):
-            g1.joint_target_ke[i] = 500.0
-            g1.joint_target_kd[i] = 10.0
-            g1.joint_target_mode[i] = int(JointTargetMode.POSITION)
+        # MuJoCo uses the position actuators already authored in the USD asset.
+        if self.solver_type == "kamino":
+            for i in range(6, g1.joint_dof_count):
+                g1.joint_target_ke[i] = 500.0
+                g1.joint_target_kd[i] = 10.0
+                g1.joint_target_mode[i] = int(JointTargetMode.POSITION)
 
         # approximate meshes for faster collision detection
         g1.approximate_meshes("bounding_box")
@@ -165,6 +167,11 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
+        """Verify one actuator per joint and a settled robot pose."""
+        if self.solver_type == "mujoco":
+            assert self.solver.mj_model.nu == self.model.joint_dof_count // self.world_count - 6, (
+                "Each G1 joint should have exactly one MuJoCo actuator"
+            )
         newton.examples.test_body_state(
             self.model,
             self.state_0,
