@@ -54,6 +54,54 @@ def closest_segment_point(a: wp.vec3, b: wp.vec3, pt: wp.vec3) -> wp.vec3:
 
 
 @wp.func
+def _collide_capsule_cylinder_barrel(
+    capsule_pos: wp.vec3,
+    capsule_axis: wp.vec3,
+    capsule_radius: float,
+    capsule_half_length: float,
+    cylinder_pos: wp.vec3,
+    cylinder_axis: wp.vec3,
+    cylinder_radius: float,
+    cylinder_half_height: float,
+) -> tuple[bool, float, wp.vec3, wp.vec3]:
+    """Solve a capsule core's exterior closest point on a finite cylinder barrel.
+
+    Return an unhandled result for near-parallel cores, cap/rim witnesses, or core
+    intersection. Those cases retain the general convex query and its manifold.
+    Axes are normalized. The handled witness attains the infinite-cylinder
+    distance bound inside the finite barrel, so it is also a global closest pair.
+    """
+    if capsule_half_length <= 0.0 or cylinder_radius <= 0.0 or cylinder_half_height <= 0.0:
+        return False, float(MAXVAL), wp.vec3(0.0), wp.vec3(0.0)
+
+    relative = capsule_pos - cylinder_pos
+    radial_center = relative - cylinder_axis * wp.dot(relative, cylinder_axis)
+    radial_axis = capsule_axis - cylinder_axis * wp.dot(capsule_axis, cylinder_axis)
+    radial_axis_sq = wp.dot(radial_axis, radial_axis)
+    # This dimensionless guard preserves the parallel side-contact manifold.
+    if radial_axis_sq <= 1.0e-6:
+        return False, float(MAXVAL), wp.vec3(0.0), wp.vec3(0.0)
+    along = wp.clamp(
+        -wp.dot(radial_center, radial_axis) / radial_axis_sq,
+        -capsule_half_length,
+        capsule_half_length,
+    )
+    closest = relative + along * capsule_axis
+    axial = wp.dot(closest, cylinder_axis)
+    radial = closest - axial * cylinder_axis
+    radial_distance = wp.length(radial)
+    # Keep numerically ambiguous rim and core-boundary witnesses on MPR/GJK.
+    tolerance = 1.0e-6 * wp.max(cylinder_radius, wp.max(cylinder_half_height, capsule_half_length))
+    if radial_distance <= cylinder_radius + tolerance or wp.abs(axial) >= cylinder_half_height - tolerance:
+        return False, float(MAXVAL), wp.vec3(0.0), wp.vec3(0.0)
+    normal = -radial / radial_distance
+    separation = radial_distance - cylinder_radius - capsule_radius
+    capsule_surface = capsule_pos + along * capsule_axis + capsule_radius * normal
+    cylinder_surface = cylinder_pos + axial * cylinder_axis - cylinder_radius * normal
+    return True, separation, 0.5 * (capsule_surface + cylinder_surface), normal
+
+
+@wp.func
 def closest_segment_point_and_dist(a: wp.vec3, b: wp.vec3, pt: wp.vec3) -> tuple[wp.vec3, float]:
     """Returns closest point on the line segment and the distance squared."""
     closest = closest_segment_point(a, b, pt)
