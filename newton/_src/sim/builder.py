@@ -74,6 +74,7 @@ from .graph_coloring import (
     combine_independent_coloring_plan,
     construct_particle_graph,
 )
+from .joint_mimic import _SUPPORTED_JOINT_TYPES
 from .model import Model, _pack_shape_pair_codes
 from .rod import Rod
 from .tendon import TendonGuide, TendonGuideFlags, TendonGuideType
@@ -908,6 +909,10 @@ class ModelBuilder:
 
         :class:`~newton.solvers.SolverXPBD` requires ``enable_restitution=True``
         on the solver constructor for this field to take effect.
+        :class:`~newton.solvers.SolverSteel` uses the arithmetic mean of the
+        two shapes' coefficients, each clamped to ``[0, 1]`` (non-finite values
+        count as zero), for contacts whose incident normal speed exceeds its
+        ``restitution_velocity_threshold``.
         """
         mu_torsional: float = 0.005
         """The coefficient of torsional friction [m] (resistance to spinning at contact point)."""
@@ -4477,6 +4482,7 @@ class ModelBuilder:
         legacy_angular_velocity_units: bool = False,
         legacy_springref_units: bool = False,
         return_deformable_results: bool = False,
+        allow_unsafe_torch_checkpoints: bool = False,
     ) -> dict[str, Any]:
         """Parses a Universal Scene Description (USD) stage and adds rigid bodies, particles, soft bodies, shapes, and joints to the given ModelBuilder.
 
@@ -4642,6 +4648,10 @@ class ModelBuilder:
                 returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` /
                 ``path_attachment_map`` and the matching ``path_*_attrs``). Off by default, so the
                 default return shape carries no deformable additions.
+            allow_unsafe_torch_checkpoints: Allow USD neural actuators to reference
+                Torch checkpoints. Only use this for trusted USD assets and
+                checkpoints: loading a Torch checkpoint may execute code during
+                :meth:`newton.ModelBuilder.finalize`. Defaults to ``False``.
 
         Returns:
             .. experimental::
@@ -4796,6 +4806,7 @@ class ModelBuilder:
             legacy_angular_velocity_units=legacy_angular_velocity_units,
             legacy_springref_units=legacy_springref_units,
             return_deformable_results=return_deformable_results,
+            allow_unsafe_torch_checkpoints=allow_unsafe_torch_checkpoints,
         )
 
     def add_mjcf(
@@ -7014,7 +7025,7 @@ class ModelBuilder:
         *,
         coeffs: Vec2 = (0.0, 1.0),
     ) -> None:
-        """Configure a joint to mimic another joint with matching dimensions.
+        """Configure a PRISMATIC, REVOLUTE, or D6 joint to mimic another with matching dimensions.
 
         The relationship is applied componentwise to every position and
         velocity coordinate. The follower coordinates are defined by
@@ -7022,8 +7033,15 @@ class ModelBuilder:
         ``qd[joint] = coeffs[1] * qd[reference_joint]``. Passing ``None`` as
         ``reference_joint`` clears the relationship.
 
+        Quaternion joints (BALL, FREE, DISTANCE, and ROD) cannot be followers
+        or references because the componentwise relationship does not preserve
+        unit quaternions. FIXED joints have no coordinates to mimic and are also
+        not supported.
+
         Mimic chains are not supported: the reference joint must be independent,
         and a joint referenced by another mimic joint cannot become a follower.
+        When both joints belong to articulations, they must share an articulation.
+        This is checked again during finalization after articulation assignment.
 
         Args:
             joint: Index of the follower joint.
@@ -7033,7 +7051,8 @@ class ModelBuilder:
                 coordinates [m or rad, dimensionless].
 
         Raises:
-            ValueError: If an index is invalid, the joint dimensions differ, the
+            ValueError: If an index is invalid, either joint type is unsupported,
+                the joint dimensions differ, the
                 joints belong to different worlds or articulations, the
                 coefficients are not finite, or the relationship creates a mimic
                 chain.
@@ -7051,6 +7070,17 @@ class ModelBuilder:
             raise ValueError(f"Invalid reference joint index {reference_joint}; expected 0..{joint_count - 1}")
         if joint == reference_joint:
             raise ValueError(f"Joint {joint} cannot mimic itself")
+
+        if (
+            self.joint_type[joint] not in _SUPPORTED_JOINT_TYPES
+            or self.joint_type[reference_joint] not in _SUPPORTED_JOINT_TYPES
+        ):
+            supported_types = ", ".join(JointType(joint_type).name for joint_type in sorted(_SUPPORTED_JOINT_TYPES))
+            raise ValueError(
+                f"Mimic followers and references only support {supported_types} joints. "
+                f"Follower joint {joint} has type {self.joint_type[joint].name}; "
+                f"reference joint {reference_joint} has type {self.joint_type[reference_joint].name}."
+            )
 
         follower_dimensions = self.joint_type[joint].dof_count(sum(self.joint_dof_dim[joint]))
         reference_dimensions = self.joint_type[reference_joint].dof_count(sum(self.joint_dof_dim[reference_joint]))
@@ -13065,12 +13095,30 @@ class ModelBuilder:
 
         with self._raw_array_access():
             joint_articulation = np.asarray(self.joint_articulation)
+            joint_mimic_joint = np.asarray(self.joint_mimic_joint)
             joint_parent = np.asarray(self.joint_parent)
             joint_child = np.asarray(self.joint_child)
             body_count = self.body_count
 
         articulated = joint_articulation >= 0
         self._validate_articulation_connections(joint_articulation, joint_parent, joint_child, articulated, body_count)
+        followers = np.flatnonzero(joint_mimic_joint >= 0)
+        follower_articulations = joint_articulation[followers]
+        reference_articulations = joint_articulation[joint_mimic_joint[followers]]
+        invalid_mimics = np.flatnonzero(
+            (follower_articulations >= 0)
+            & (reference_articulations >= 0)
+            & (follower_articulations != reference_articulations)
+        )
+        if len(invalid_mimics) > 0:
+            idx = int(invalid_mimics[0])
+            follower = int(followers[idx])
+            reference = int(joint_mimic_joint[follower])
+            raise ValueError(
+                "Mimic joints must belong to the same articulation. "
+                f"Follower joint {follower} belongs to articulation {follower_articulations[idx]}; "
+                f"reference joint {reference} belongs to articulation {reference_articulations[idx]}."
+            )
         if np.all(articulated):
             return
 
@@ -14183,6 +14231,41 @@ class ModelBuilder:
             m.heightfield_meshes = heightfield_meshes
             m._mesh_keep_alive = mesh_keep_alive
 
+            # Open-boundary bits for collision meshes queried with pseudo-normal
+            # signs, packed once per unique finalized mesh.
+            from ..geometry.sdf_contact import compute_mesh_boundary_flags  # noqa: PLC0415
+
+            finalized_meshes = {mesh.id: mesh for mesh in mesh_keep_alive}
+            boundary_chunks = []
+            boundary_offset = 0
+            boundary_starts = {}
+            shape_mesh_boundary_start = []
+            for shape_type, source, shape_flags, mesh_properties in zip(
+                self.shape_type, geo_sources, shape_flags_list, shape_mesh_properties, strict=True
+            ):
+                start = -1
+                if (
+                    shape_type == GeoType.MESH
+                    and source in finalized_meshes
+                    and shape_flags & ShapeFlags.COLLIDE_SHAPES
+                    and not mesh_properties & MeshProperties.WATERTIGHT
+                ):
+                    start = boundary_starts.get(source)
+                    if start is None:
+                        flags = compute_mesh_boundary_flags(finalized_meshes[source])
+                        start = boundary_starts[source] = boundary_offset
+                        boundary_chunks.append(flags)
+                        boundary_offset += len(flags)
+                shape_mesh_boundary_start.append(start)
+            m._mesh_boundary_flags = wp.array(
+                np.concatenate(boundary_chunks) if boundary_offset > 0 else np.zeros(1, dtype=np.uint8),
+                dtype=wp.uint8,
+                device=device,
+            )
+            m._shape_mesh_boundary_start = wp.array(
+                shape_mesh_boundary_start if shape_mesh_boundary_start else [-1], dtype=wp.int32, device=device
+            )
+
             # Compact convex support data (one copy per shared geometry).
             shape_support_data = []
             support_lut_chunks = []
@@ -14279,6 +14362,7 @@ class ModelBuilder:
             # Compute local AABBs and voxel resolutions for contact reduction
             local_aabb_lower = []
             local_aabb_upper = []
+            local_interior_point = []
             voxel_resolution = []
             from ..geometry.contact_reduction import NUM_VOXEL_DEPTH_SLOTS  # noqa: PLC0415
 
@@ -14336,8 +14420,11 @@ class ModelBuilder:
 
                 # Check cache first
                 if cache_key in shape_aabb_cache:
-                    aabb_lower, aabb_upper, nx, ny, nz = shape_aabb_cache[cache_key]
+                    aabb_lower, aabb_upper, interior_point, nx, ny, nz = shape_aabb_cache[cache_key]
                 else:
+                    # Primitive origins are interior. A hull's AABB center can lie
+                    # outside it, but its vertex mean cannot.
+                    interior_point = np.zeros(3)
                     # Compute AABB based on shape type
                     if shape_type == GeoType.MESH and shape_src is not None:
                         # Compute local AABB from mesh vertices
@@ -14352,6 +14439,7 @@ class ModelBuilder:
                     elif shape_type == GeoType.CONVEX_MESH and shape_src is not None:
                         lo = shape_src.vertices.min(axis=0) * np.array(shape_scale)
                         hi = shape_src.vertices.max(axis=0) * np.array(shape_scale)
+                        interior_point = shape_src.vertices.mean(axis=0) * np.array(shape_scale)
                         aabb_lower = np.minimum(lo, hi)
                         aabb_upper = np.maximum(lo, hi)
 
@@ -14424,14 +14512,16 @@ class ModelBuilder:
                         nx, ny, nz = 1, 1, 1
 
                     # Cache the result for reuse by identical shapes
-                    shape_aabb_cache[cache_key] = (aabb_lower, aabb_upper, nx, ny, nz)
+                    shape_aabb_cache[cache_key] = (aabb_lower, aabb_upper, interior_point, nx, ny, nz)
 
                 local_aabb_lower.append(aabb_lower)
                 local_aabb_upper.append(aabb_upper)
+                local_interior_point.append(interior_point)
                 voxel_resolution.append([nx, ny, nz])
 
             m.shape_collision_aabb_lower = wp.array(local_aabb_lower, dtype=wp.vec3, device=device)
             m.shape_collision_aabb_upper = wp.array(local_aabb_upper, dtype=wp.vec3, device=device)
+            m._shape_interior_point = wp.array(local_interior_point, dtype=wp.vec3, device=device)
             m._shape_voxel_resolution = wp.array(voxel_resolution, dtype=wp.vec3i, device=device)
 
             # ---------------------

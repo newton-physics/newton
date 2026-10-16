@@ -1554,6 +1554,7 @@ class CollisionPipeline:
         contact_reduction_hashtable_size_factor: float = 0.25,
         speculative_contact_gap_max: float | None = None,
         dynamic_shape_scale: bool = False,
+        publish_capacity: bool = True,
     ):
         """
         Initialize the CollisionPipeline (expert API).
@@ -1702,6 +1703,10 @@ class CollisionPipeline:
                 warning once and a later :meth:`collide` call outside graph capture raise
                 :class:`RuntimeError`. Mesh-plane and mesh-convex contacts are unaffected.
                 Ignored when ``narrow_phase`` is provided. Defaults to ``False``.
+            publish_capacity: Whether to publish the resolved capacities as the model's
+                default :attr:`~newton.Model.rigid_contact_max` and
+                :attr:`~newton.Model.soft_contact_max`. Pass ``False`` for a private
+                pipeline, such as a solver's internal one. Defaults to ``True``.
 
         .. experimental::
 
@@ -2280,11 +2285,11 @@ class CollisionPipeline:
         # _get_soft_self_contact_detector).
         self._soft_self_contact_detector: TriMeshCollisionDetector | None = None
 
-        # Publish only after all construction succeeds. Observables can now allocate
-        # from these capacities without needing a Contacts instance or a collide.
-        model.rigid_contact_max = rigid_contact_max
-        model.soft_contact_max = soft_contact_max
-        model._contact_capacity_initialized = True
+        # Publish only after all construction succeeds.
+        if publish_capacity:
+            model.rigid_contact_max = rigid_contact_max
+            model.soft_contact_max = soft_contact_max
+            model._contact_capacity_initialized = True
 
     @property
     def rigid_contact_max(self) -> int:
@@ -2879,6 +2884,8 @@ class CollisionPipeline:
             shape_transform=self.geom_transform,
             shape_source=model.shape_source_ptr,
             shape_mesh_properties=model._shape_mesh_properties,
+            mesh_boundary_flags=model._mesh_boundary_flags,
+            shape_mesh_boundary_start=model._shape_mesh_boundary_start,
             shape_sdf_index=model._shape_sdf_index,
             texture_sdf_data=model._texture_sdf_data,
             shape_gap=search_gap,
@@ -2887,6 +2894,7 @@ class CollisionPipeline:
             shape_collision_aabb_lower=model.shape_collision_aabb_lower,
             shape_collision_aabb_upper=model.shape_collision_aabb_upper,
             shape_voxel_resolution=self.narrow_phase.shape_voxel_resolution,
+            shape_interior_point=model._shape_interior_point,
             shape_heightfield_index=model.shape_heightfield_index,
             heightfield_data=model.heightfield_data,
             heightfield_elevations=model.heightfield_elevations,

@@ -485,6 +485,24 @@ class TestImportUrdfBasic(unittest.TestCase):
                 assert builder.shape_source[0].vertices.shape[0] == 8
                 assert builder.shape_source[0].indices.shape[0] == 3 * 12
 
+    def test_empty_mesh_reports_filename(self):
+        """Reject empty geometry before processing colors or material overrides."""
+        files = {
+            "empty.stl": bytes(84),
+            "broken.dae": TEXTURED_DAE.replace(
+                "<init_from>tex-image</init_from>", "<init_from>missing</init_from>"
+            ).encode(),
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for name, content in files.items():
+                path = Path(tmpdir) / name
+                path.write_bytes(content)
+                for color in (None, (1.0, 0.0, 0.0)):
+                    with self.subTest(file=name, color=color):
+                        with self.assertRaisesRegex(ValueError, "contains no triangles") as error:
+                            load_meshes_from_file(str(path), maxhullvert=0, override_color=color)
+                        self.assertIn(str(path), str(error.exception))
+
     def test_dae_visual_texture_urdf(self):
         """Verify URDF visual meshes preserve Collada texture bindings."""
         urdf = """

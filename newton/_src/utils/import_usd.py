@@ -166,6 +166,7 @@ def parse_usd(
     legacy_angular_velocity_units: bool = False,
     legacy_springref_units: bool = False,
     return_deformable_results: bool = False,
+    allow_unsafe_torch_checkpoints: bool = False,
 ) -> dict[str, Any]:
     """Parses a Universal Scene Description (USD) stage and adds rigid bodies, particles, soft bodies, shapes, and joints to the given ModelBuilder.
 
@@ -332,6 +333,10 @@ def parse_usd(
             returned mapping (``path_cable_map`` / ``path_cloth_map`` / ``path_soft_map`` /
             ``path_attachment_map`` and the matching ``path_*_attrs``). Off by default, so the
             default return shape carries no deformable additions.
+        allow_unsafe_torch_checkpoints: Allow USD neural actuators to reference
+            Torch checkpoints. Only use this for trusted USD assets and
+            checkpoints: loading a Torch checkpoint may execute code during
+            :meth:`newton.ModelBuilder.finalize`. Defaults to ``False``.
 
     Returns:
         .. experimental::
@@ -1579,7 +1584,19 @@ def parse_usd(
         }:
             paths, joint_specs = value
             for path, joint_spec in zip(paths, joint_specs, strict=False):
-                joint_descriptions[str(path)] = joint_spec
+                joint_path = str(path)
+                body0_path = str(joint_spec.body0)
+                # USD has already resolved descendant targets to their rigid bodies.
+                if (
+                    joint_spec.body0 == joint_spec.body1
+                    and body0_path in body_specs
+                    and (joint_spec.jointEnabled or not only_load_enabled_joints)
+                    and not any(re.match(p, joint_path) for p in ignore_paths)
+                ):
+                    raise ValueError(
+                        f"Unable to parse joint {joint_path}: both endpoints resolve to the same rigid body {body0_path}"
+                    )
+                joint_descriptions[joint_path] = joint_spec
 
     mjc_equality_connect_paths: set[str] = set()
     mjc_equality_weld_paths: set[str] = set()
@@ -2833,7 +2850,7 @@ def parse_usd(
         prim_path = str(prim.GetPath())
         if any(re.match(pattern, prim_path) for pattern in ignore_paths):
             continue
-        parsed = parse_actuator_prim(prim)
+        parsed = parse_actuator_prim(prim, allow_unsafe_torch_checkpoints=allow_unsafe_torch_checkpoints)
         if parsed is None:
             continue
         target_path = parsed.target_path

@@ -125,7 +125,7 @@ def _default_path_resolver(base_dir: str | None, file_path: str) -> str:
 def _load_and_expand_mjcf(
     source: str,
     path_resolver: Callable[[str | None, str], str] = _default_path_resolver,
-    included_files: set[str] | None = None,
+    include_stack: set[str] | None = None,
 ) -> tuple[ET.Element, str | None]:
     """Load MJCF source and recursively expand <include> elements.
 
@@ -135,7 +135,7 @@ def _load_and_expand_mjcf(
             - For <include> elements: either an absolute file path or XML content directly
             - For asset elements (mesh, texture, etc.): must return an absolute file path
             Default resolver joins paths and returns absolute file paths.
-        included_files: Set of already-included file paths for cycle detection
+        include_stack: File paths on the active include stack for cycle detection
 
     Returns:
         Tuple of (root element, base directory or None for XML string input)
@@ -143,8 +143,8 @@ def _load_and_expand_mjcf(
     Raises:
         ValueError: If a circular include is detected
     """
-    if included_files is None:
-        included_files = set()
+    if include_stack is None:
+        include_stack = set()
 
     # Load source
     if is_xml_content(source):
@@ -152,6 +152,10 @@ def _load_and_expand_mjcf(
         root = ET.fromstring(sanitize_xml_content(source))
     else:
         # Treat as file path
+        filename = os.path.realpath(source)
+        if filename in include_stack:
+            raise ValueError(f"Circular include detected: {filename}")
+        include_stack = include_stack | {filename}
         base_dir = os.path.dirname(source) or "."
         root = ET.parse(source).getroot()
 
@@ -193,15 +197,9 @@ def _load_and_expand_mjcf(
 
         resolved = path_resolver(base_dir, file_attr)
 
-        if not is_xml_content(resolved):
-            # Cycle detection for file paths
-            if resolved in included_files:
-                raise ValueError(f"Circular include detected: {resolved}")
-            included_files.add(resolved)
-
         # Recursive call - each included file extracts its own compiler and
         # resolves its own asset paths before returning.
-        included_root, _ = _load_and_expand_mjcf(resolved, path_resolver, included_files)
+        included_root, _ = _load_and_expand_mjcf(resolved, path_resolver, include_stack)
 
         # Replace include element with children of included root
         idx = list(parent).index(include)
@@ -595,9 +593,8 @@ def parse_mjcf(
     explicit_pair_geom_names: set[str] = set()
     for contact in contact_sections:
         for pair in contact.findall("pair"):
-            pair_attrib = resolve_element_attrib(pair, "pair")
             for geom_key in ("geom1", "geom2"):
-                geom_name = pair_attrib.get(geom_key)
+                geom_name = pair.get(geom_key)
                 if geom_name:
                     explicit_pair_geom_names.add(geom_name)
 
@@ -619,7 +616,7 @@ def parse_mjcf(
                 if not os.path.isabs(fname):
                     fname = os.path.abspath(os.path.join(mjcf_dirname, fname))
                 name = mesh_name or ".".join(os.path.basename(fname).split(".")[:-1])
-                refpos, refquat = _parse_mesh_ref_pose(mesh_attrib, f"MJCF mesh {name!r}")
+                refpos, refquat = _parse_mesh_ref_pose(mesh.attrib, f"MJCF mesh {name!r}")
                 mesh_assets[name] = {
                     "file": fname,
                     "scale": mesh_scale,
@@ -685,7 +682,7 @@ def parse_mjcf(
                         )
                     texcoords = texcoords.reshape(-1, 2)
 
-                refpos, refquat = _parse_mesh_ref_pose(mesh_attrib, f"Inline MJCF mesh {name!r}")
+                refpos, refquat = _parse_mesh_ref_pose(mesh.attrib, f"Inline MJCF mesh {name!r}")
 
                 mesh_assets[name] = {
                     "vertices": vertices,
@@ -1970,7 +1967,7 @@ def parse_mjcf(
         # Infer if this is a root body by checking if parent matches the outer parent_body parameter
         # Root bodies are direct children of <worldbody>, where parent == parent_body (closure variable)
         is_mjcf_root = parent == parent_body
-        body_class = body.get("class") or body.get("childclass")
+        body_class = body.get("childclass")
         if body_class is None:
             body_class = childclass
             defaults = incoming_defaults
@@ -1978,7 +1975,7 @@ def parse_mjcf(
             if is_ignored_class(body_class):
                 return
             defaults = resolve_class_defaults(body_class, incoming_defaults)
-        body_attrib = merge_attrib(defaults.get("body", {}), body.attrib)
+        body_attrib = body.attrib
         body_name = body_attrib.get("name", f"body_{builder.body_count}")
         body_name = sanitize_name(body_name)
         has_inertial_definition = body.find("inertial") is not None
@@ -2423,12 +2420,7 @@ def parse_mjcf(
                 I_m[1, 1] = diaginertia[1] * scale**2
                 I_m[2, 2] = diaginertia[2] * scale**2
             else:
-                fullinertia = inertial_attrib.get("fullinertia")
-                if fullinertia is None:
-                    raise ValueError(
-                        f"MJCF inertial element for body '{body_label_path}' must define "
-                        "either diaginertia or fullinertia."
-                    )
+                fullinertia = inertial_attrib.get("fullinertia", "0 0 0 0 0 0")
                 fullinertia = np.array(fullinertia.split(), dtype=np.float32)
                 if fullinertia.shape[0] != 6:
                     raise ValueError(
@@ -2931,8 +2923,8 @@ def parse_mjcf(
         pairs = (pair for contact in contact_sections for pair in contact.findall("pair"))
         for pair in pairs:
             merged_attrib = resolve_element_attrib(pair, "pair")
-            geom1_name = merged_attrib.get("geom1")
-            geom2_name = merged_attrib.get("geom2")
+            geom1_name = pair.get("geom1")
+            geom2_name = pair.get("geom2")
 
             if not geom1_name or not geom2_name:
                 if verbose:

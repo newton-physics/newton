@@ -23,7 +23,7 @@ from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
 def _create_heightfield_midphase(*, upstream_default):
     """Exercise the upstream call contract or an unculled reference at the launch boundary."""
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def midphase(
         shape_types: wp.array[int],
         shape_transform: wp.array[wp.transform],
@@ -33,6 +33,7 @@ def _create_heightfield_midphase(*, upstream_default):
         shape_collision_radius: wp.array[float],
         shape_collision_aabb_lower: wp.array[wp.vec3],
         shape_collision_aabb_upper: wp.array[wp.vec3],
+        shape_interior_point: wp.array[wp.vec3],
         shape_heightfield_index: wp.array[wp.int32],
         heightfield_data: wp.array[HeightfieldData],
         heightfield_elevations: wp.array[wp.float32],

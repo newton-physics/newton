@@ -123,6 +123,10 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         ``v x* (I*v)`` term during tumbling) rather than a true joint
         reaction. Treat it as a diagnostic in that case.
 
+    Mimic reduction requires every mimic follower and reference to belong to
+    the same assigned articulation. Models with standalone or mixed-membership
+    mimic pairs may be used with maximal-coordinate solvers instead.
+
     Example
     -------
 
@@ -165,13 +169,31 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
 
         Raises:
             ValueError: If ``model`` contains a :attr:`~newton.JointType.ROD`
-                joint, which is not supported by this solver.
+                joint, or active mimic reduction contains a pair outside the
+                same assigned articulation.
         """
         if model._has_rod_joints and JointType.ROD in model.joint_type.numpy():  # pyright: ignore[reportPrivateUsage]
             raise ValueError("SolverFeatherstone does not support JointType.ROD joints.")
 
         super().__init__(model)
         self._has_joint_mimics = has_supported_joint_mimics(model, "SolverFeatherstone")
+        if self._has_joint_mimics:
+            mimic_joints = model.joint_mimic_joint.numpy()
+            articulations = model.joint_articulation.numpy()
+            followers = np.flatnonzero(mimic_joints >= 0)
+            references = mimic_joints[followers]
+            invalid = np.flatnonzero(
+                (articulations[followers] < 0) | (articulations[followers] != articulations[references])
+            )
+            if len(invalid) > 0:
+                idx = int(invalid[0])
+                follower = int(followers[idx])
+                reference = int(references[idx])
+                raise ValueError(
+                    "SolverFeatherstone requires mimic joints to belong to the same articulation. "
+                    f"Follower joint {follower} belongs to articulation {articulations[follower]}; "
+                    f"reference joint {reference} belongs to articulation {articulations[reference]}."
+                )
         effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
         if model.joint_count > 0:
             self._set_module_options(

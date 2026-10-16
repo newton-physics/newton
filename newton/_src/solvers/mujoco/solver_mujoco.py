@@ -14,7 +14,7 @@ from array import array
 from collections.abc import Iterable
 from contextlib import contextmanager
 from dataclasses import dataclass
-from enum import IntEnum
+from enum import IntEnum, IntFlag
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -70,6 +70,7 @@ from .kernels import (
     apply_mjc_free_joint_f_to_body_f_kernel,
     apply_mjc_qfrc_kernel,
     build_ref_q_kernel,
+    collect_overflow_kernel,
     compute_physical_meaninertia_kernel,
     convert_mj_coords_to_warp_kernel,
     convert_newton_contacts_to_mjwarp_kernel,
@@ -612,14 +613,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         QFRC_ACTUATOR = "qfrc_actuator"
         """Actuator forces in Newton generalized-coordinate order."""
 
+        OVERFLOW = "overflow"
+        """Per-world capacity-overflow bitmask for the most recent step; see :ref:`mujoco_overflow_observable`."""
+
     @dataclass(eq=False)
     class Observables(SolverBase.Observables):
         """Standard and MuJoCo-specific observable arrays.
 
-        The native CPU backend (``use_mujoco_cpu=True``) supports only
-        ``QFRC_ACTUATOR``. MuJoCo Warp supports the standard body and contact
-        fields, including body fields when sensors are disabled. With native
-        collision detection, contact storage must cover
+        The native CPU backend (``use_mujoco_cpu=True``) supports
+        ``BODY_QDD`` and ``BODY_PARENT_F`` with Euler, RK4, implicit, or
+        implicitfast integration, and ``QFRC_ACTUATOR`` with any integrator. MuJoCo Warp
+        also supports the standard contact fields, including body fields when
+        sensors are disabled. With native collision detection, contact storage must cover
         :meth:`SolverMuJoCo.get_max_contact_count`. External collision detection
         uses the pipeline's own capacity. Construct a compatible
         :class:`~newton.CollisionPipeline` before allocating contact observables.
@@ -636,12 +641,36 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
         """Actuator forces [N or N·m], shape ``(joint_dof_count,)``."""
 
+        overflow: wp.array[wp.int32] | None = SolverBase.Observables.field(  # noqa: RUF009
+            dtype=wp.int32,
+            frequency=AttributeFrequency.WORLD,
+        )
+        """Per-world capacity-overflow bitmask of :class:`SolverMuJoCo.OverflowBits` for the latest step, shape ``(world_count,)``."""
+
+    class OverflowBits(IntFlag):
+        """Bits of the per-world ``Observables.overflow`` bitmask.
+
+        Bits 0-15 carry MuJoCo Warp's own ``mujoco_warp.OverflowType`` flags
+        (``NEFC``, ``NJMAX_NNZ``, ``BROADPHASE``, ...). The members below are the
+        bits Newton adds on top.
+
+        See :ref:`mujoco_overflow_observable` for allocation, interpretation,
+        backend support, and shared-buffer attribution.
+        """
+
+        CONTACT_PIPELINE = int(kernels.OVERFLOW_CONTACT_PIPELINE)
+        """The Newton collision pipeline generated more contacts than ``rigid_contact_max``."""
+
+        SOLVER_NCONMAX = int(kernels.OVERFLOW_SOLVER_NCONMAX)
+        """Newton contacts exceeded MuJoCo Warp's ``nconmax`` capacity."""
+
     SUPPORTED_OBSERVABLES = frozenset(
         {
             SolverBase.ObservableKind.BODY_QDD,
             SolverBase.ObservableKind.BODY_PARENT_F,
             SolverBase.ObservableKind.CONTACT_F,
             ObservableKind.QFRC_ACTUATOR,
+            ObservableKind.OVERFLOW,
         }
     )
 
@@ -653,15 +682,21 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """
         kinds = super().supported_observables
         if self.use_mujoco_cpu:
-            # Body exports currently read MuJoCo Warp's RNE buffers, which the
-            # native CPU step does not update. Do not expose stale diagnostics.
-            return kinds.difference(
+            # Contact forces and overflow flags are only exported from MuJoCo Warp data.
+            kinds = kinds.difference(
                 {
-                    SolverBase.ObservableKind.BODY_QDD,
-                    SolverBase.ObservableKind.BODY_PARENT_F,
                     SolverBase.ObservableKind.CONTACT_F,
+                    self.ObservableKind.OVERFLOW,
                 }
             )
+            if self.mj_model.opt.integrator not in (
+                self._mujoco.mjtIntegrator.mjINT_EULER,
+                self._mujoco.mjtIntegrator.mjINT_RK4,
+                self._mujoco.mjtIntegrator.mjINT_IMPLICIT,
+                self._mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
+            ):
+                # Native body exports require a Python-accessible integrator.
+                return kinds.difference({SolverBase.ObservableKind.BODY_QDD, SolverBase.ObservableKind.BODY_PARENT_F})
         return kinds
 
     def observables(
@@ -669,28 +704,34 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     ) -> SolverMuJoCo.Observables:
         """Allocate solver observables with a compatible native contact export budget.
 
-        Supply ``contacts`` when requesting contact-indexed fields; the factory
-        validates and binds that storage for subsequent steps and consumers.
+        Supply ``contacts`` when requesting contact-indexed fields; their
+        capacities size the contact arrays.
 
         See :meth:`SolverBase.observables` for the shared allocation contract and
         errors, and :ref:`solver_observables` for usage and native collision setup.
 
         Raises:
             ValueError: If the native contact export capacity exceeds the
-                :class:`~newton.CollisionPipeline` rigid contact capacity.
+                rigid contact capacity of ``contacts``.
         """
         with self._create_observables(kinds, contacts=contacts, requires_grad=requires_grad) as observables:
-            if (
-                observables.is_requested(SolverBase.ObservableKind.CONTACT_F)
-                and self.mjw_model.opt.run_collision_detection
-                and self.mjw_data.naconmax > self.model.rigid_contact_max
-            ):
-                raise ValueError(
-                    f"MuJoCo contact capacity ({self.mjw_data.naconmax}) exceeds CollisionPipeline capacity "
-                    f"({self.model.rigid_contact_max}). Construct CollisionPipeline with "
-                    "rigid_contact_max=solver.get_max_contact_count() before requesting contact observables."
-                )
+            if observables.contacts is not None:
+                self._validate_native_contact_export(observables, observables.contacts)
             return observables
+
+    @override
+    def _validate_native_contact_export(self, observables: SolverBase.Observables, contacts: Contacts) -> None:
+        if (
+            observables.is_requested(SolverBase.ObservableKind.CONTACT_F)
+            and not self.use_mujoco_cpu
+            and self.mjw_model.opt.run_collision_detection
+            and self.mjw_data.naconmax > contacts.rigid_contact_max
+        ):
+            raise ValueError(
+                f"MuJoCo contact capacity ({self.mjw_data.naconmax}) exceeds Contacts capacity "
+                f"({contacts.rigid_contact_max}). Construct CollisionPipeline with "
+                "rigid_contact_max=solver.get_max_contact_count() before requesting contact observables."
+            )
 
     EqType = _EqType
     """MuJoCo equality constraint type."""
@@ -779,6 +820,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
                     import mujoco
                     import mujoco_warp
+
+                    # Inspect every member so a stale ALL mask cannot hide a new flag.
+                    overflow_bits = 0
+                    for flag in mujoco_warp.OverflowType.__members__.values():
+                        overflow_bits |= int(flag)
+                    if overflow_bits & ~0xFFFF:
+                        raise RuntimeError(
+                            "Incompatible mujoco-warp OverflowType: flags exceed reserved bits 0-15 "
+                            f"(mask {overflow_bits:#x}). Newton's overflow bit layout must be updated "
+                            "before using this backend."
+                        )
 
                     cls._mujoco = mujoco
                     cls._mujoco_warp = mujoco_warp
@@ -4208,6 +4260,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         include_sites: bool = True,
         skip_visual_only_geoms: bool = True,
         deterministic: wp.DeterministicMode | None = None,
+        strict_capacity: bool = False,
     ):
         """
         Solver options (e.g., ``impratio``) follow this resolution priority:
@@ -4251,7 +4304,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             nvmax: Maximum number of active degrees of freedom per world when sleeping is enabled. Must accommodate every initially awake degree of freedom. If None, allocates space for every degree of freedom, which is safe but provides no compact-solver memory savings.
             sleep_tolerance: Sleep velocity tolerance. If None, uses model custom attribute or MuJoCo default (0.001).
             disable_contacts: If True, disable contact computation in MuJoCo.
-            disable_sensors: If True, disable sensor computation in MuJoCo. ``body_qdd`` and ``body_parent_f`` are still computed on the MuJoCo Warp backend when requested through solver observables or legacy output-state fields.
+            disable_sensors: If True, disable sensor computation in MuJoCo. ``body_qdd`` and ``body_parent_f`` are still computed on either backend when requested through solver observables or legacy output-state fields.
             update_data_interval: Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf: Optional path to save the generated MJCF model file.
             use_mujoco_contacts: If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
@@ -4270,6 +4323,19 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             deterministic: Deterministic mode for MuJoCo Warp solver kernels. Pass a
                 :class:`warp.DeterministicMode`, or ``None`` to inherit
                 ``wp.config.deterministic``.
+            strict_capacity: If ``True``, raise a ``RuntimeError`` when the
+                Newton contact pipeline buffer *capacity*
+                (``contacts.rigid_contact_max``) exceeds MuJoCo Warp's buffer
+                *capacity* (``nconmax``); the check runs at the start of every
+                step and requires no GPU sync.  This is a capacity mismatch,
+                not evidence that contacts were actually dropped — the two
+                buffers are sized by independent heuristics and routinely
+                disagree even on scenes that never overflow — so it is not
+                reported by default (``False``).  Runtime overflow (contacts
+                actually dropped during a step) is always reported GPU-side
+                via a ``wp.printf`` message; to detect it in Python without a
+                GPU sync, request ``ObservableKind.OVERFLOW`` via
+                :meth:`observables` and check the bitmask after each step.
         """
         super().__init__(model)
         if use_speculative_contacts and (use_mujoco_contacts or use_mujoco_cpu):
@@ -4329,6 +4395,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._initial_nv_awake = 0
         self._initial_model_sync = True
         self._deterministic = deterministic if deterministic is not None else wp.config.deterministic
+        self._strict_capacity = strict_capacity
         self._deterministic_max_records = 0
         if not use_mujoco_cpu:
             # MJWarp's step pipeline spans several modules (forward dynamics,
@@ -4546,6 +4613,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._contact_tid_to_cid: wp.array[wp.int32] | None = None
         self._last_contact_generation = wp.full(1, _GENERATION_SENTINEL, dtype=wp.int32, device=self.device)
         self._last_nacon_count = wp.zeros(1, dtype=wp.int32, device=self.device)
+        # Placeholder for collect_overflow_kernel's rigid_contact_count arg when contacts is None.
+        self._zero_contact_count = wp.zeros(1, dtype=wp.int32, device=self.device)
         # Track the Contacts instance and its capacity.  Any change to these
         # invariants invalidates the cached tid_to_cid mapping because the
         # cached tid values would refer to a different input buffer.
@@ -4739,11 +4808,66 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         state_in: State,
         state_out: State,
         control: Control,
-        contacts: Contacts,
+        contacts: Contacts | None,
         dt: float,
         *,
         observables: SolverBase.Observables | None = None,
     ) -> None:
+        """Advance the simulation by one timestep.
+
+        Follows a three-phase push-integrate-pull cycle:
+
+        1. **Push** — transfer ``state_in`` and ``control`` to MuJoCo's working
+           data.  When ``use_mujoco_contacts=False``, ``contacts`` are also
+           converted and fed to MuJoCo Warp before the integrator runs.
+        2. **Integrate** — run MuJoCo (CPU) or MuJoCo Warp (GPU) forward by
+           ``dt`` seconds.
+        3. **Pull** — populate ``state_out`` from the integrated MuJoCo data.
+           Contact points and forces are **not** written back automatically;
+           call :meth:`update_contacts` when you need them.
+
+        **Overflow detection** — capacity overflows (contacts dropped, constraint
+        buffer exceeded, broadphase clipped) are reported through
+        ``Observables.overflow``, a per-world ``int32`` bitmask.  Allocate it
+        with :meth:`observables` using ``ObservableKind.OVERFLOW`` and pass
+        the container to this method, then read the bitmask after each step (or
+        after :func:`warp.capture_launch` when using CUDA graphs).  The request
+        is only supported with MuJoCo Warp (``use_mujoco_cpu=False``)::
+
+            observables = solver.observables({solver.ObservableKind.OVERFLOW})
+            solver.step(state_in, state_out, control, contacts, dt, observables=observables)
+            overflow = observables.overflow.numpy()
+            if overflow[0] & newton.solvers.SolverMuJoCo.OverflowBits.SOLVER_NCONMAX:
+                # runtime contacts exceeded nconmax — increase nconmax
+                ...
+
+        Bits 0-15 carry MuJoCo Warp's own
+        ``mujoco_warp.OverflowType`` flags (``NEFC``, ``NJMAX_NNZ``,
+        ``BROADPHASE``, ``NVMAX``, …).  The bits Newton adds are
+        :attr:`SolverMuJoCo.OverflowBits.CONTACT_PIPELINE`, set when the Newton
+        collision pipeline dropped contacts beyond ``rigid_contact_max``, and
+        :attr:`SolverMuJoCo.OverflowBits.SOLVER_NCONMAX`, set when runtime
+        contacts exceeded ``nconmax``. The bitmask is reset at every step so
+        it always reflects the current step only.  Steps that are not passed the
+        container leave it unchanged.
+
+        See :ref:`mujoco_overflow_observable` for the bit layout, public flag
+        names, and shared-buffer attribution.
+
+        Args:
+            state_in: Input state for this step.
+            state_out: Output state written by this step.
+            control: Joint targets and feedforward forces.
+            contacts: Newton collision pipeline contacts.  Required when
+                ``use_mujoco_contacts=False``.  Ignored (and may be ``None``)
+                when ``use_mujoco_contacts=True`` (MuJoCo Warp runs its own
+                collision detection); the Newton bits of
+                ``Observables.overflow`` are suppressed in that mode since
+                the contacts object is not used by the solver.
+            dt: Timestep in seconds.
+            observables: Optional solver observable arrays allocated by
+                :meth:`observables`.
+        """
         self.validate_observables(observables, contacts)
         if self._use_speculative_contacts and (not math.isfinite(dt) or dt <= 0.0):
             raise ValueError("use_speculative_contacts=True requires a finite positive timestep.")
@@ -4753,7 +4877,21 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # XXX updating the mujoco state at every step may introduce numerical instability
                 self._update_mjc_data(self.mj_data, self.model, state_in)
             self.mj_model.opt.timestep = dt
-            self._mujoco.mj_step(self.mj_model, self.mj_data)
+            needs_body_observables = (
+                state_out.body_qdd is not None
+                or state_out.body_parent_f is not None
+                or (
+                    observables is not None
+                    and (
+                        observables.is_requested(SolverBase.ObservableKind.BODY_QDD)
+                        or observables.is_requested(SolverBase.ObservableKind.BODY_PARENT_F)
+                    )
+                )
+            )
+            if needs_body_observables:
+                self._step_mujoco_cpu_with_body_observables(state_out, observables)
+            else:
+                self._mujoco.mj_step(self.mj_model, self.mj_data)
             self._update_newton_state(self.model, state_out, self.mj_data, state_prev=state_in, observables=observables)
         else:
             with wp.ScopedDevice(self.model.device), self._scoped_mujoco_warp_execution():
@@ -4763,11 +4901,42 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     self._update_mjc_data(self.mjw_data, self.model, state_in)
                 self.mjw_model.opt.timestep.fill_(dt)
                 if not self.mjw_model.opt.run_collision_detection:
+                    if contacts is None:
+                        raise ValueError(
+                            "contacts is required when use_mujoco_contacts=False "
+                            "(MuJoCo Warp does not run its own collision detection)."
+                        )
                     self._convert_contacts_to_mjwarp(self.model, state_in, contacts)
+                # Always clear d.overflow before the step so observables.overflow
+                # reflects only the current step (d.overflow uses |= accumulation).
+                self.mjw_data.overflow.zero_()
                 self._mujoco_warp_step()
                 self._update_newton_state(
                     self.model, state_out, self.mjw_data, state_prev=state_in, observables=observables
                 )
+                if observables is not None and observables.is_requested(self.ObservableKind.OVERFLOW):
+                    # 1 only when Newton fed real contacts in; contacts is None
+                    # whenever use_mujoco_contacts=True (see contacts arg doc above).
+                    newton_contacts = int(not self.mjw_model.opt.run_collision_detection and contacts is not None)
+                    if newton_contacts:
+                        rigid_contact_count = contacts.rigid_contact_count
+                        rigid_contact_max = contacts.rigid_contact_max
+                    else:
+                        rigid_contact_count = self._zero_contact_count
+                        rigid_contact_max = 0
+                    wp.launch(
+                        collect_overflow_kernel,
+                        dim=self.mjw_data.nworld,
+                        inputs=[
+                            rigid_contact_count,
+                            rigid_contact_max,
+                            self.mjw_data.naconmax,
+                            newton_contacts,
+                            self.mjw_data.overflow,
+                        ],
+                        outputs=[observables.overflow],
+                        device=self.model.device,
+                    )
                 if observables is not None and observables.is_requested(SolverBase.ObservableKind.CONTACT_F):
                     observable_contacts = observables.contacts
                     if observable_contacts is None:
@@ -4781,7 +4950,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         observable_contacts.force is not None
                         and observable_contacts.force.ptr != observables.contact_f.ptr
                     ):
-                        observable_contacts.force.assign(observables.contact_f)
+                        wp.copy(
+                            observable_contacts.force,
+                            observables.contact_f,
+                            count=observable_contacts.force.shape[0],
+                        )
         self._step += 1
 
     @override
@@ -5042,7 +5215,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
     def _enable_rne_postconstraint(self, state_out: State, observables: SolverBase.Observables | None = None):
         """Request computation of RNE forces for solver observables or legacy state fields."""
-        # TODO: handle use_mujoco_cpu
         m = self.mjw_model
         if m.opt.run_rne_postconstraint:
             return
@@ -5217,6 +5389,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # path clamps count and rejects cid >= naconmax).  Launching more
         # threads than naconmax wastes GPU resources, so cap the grid size.
         naconmax = self.mjw_data.naconmax
+        # rigid_contact_max and naconmax are independent buffer capacities and
+        # routinely disagree without any contacts being dropped, so only
+        # strict_capacity raises on a mismatch; it does not warn by default.
+        if self._strict_capacity and contacts.rigid_contact_max > naconmax:
+            raise RuntimeError(
+                f"contacts.rigid_contact_max ({contacts.rigid_contact_max}) exceeds "
+                f"nconmax ({naconmax}); contacts beyond the cap will be dropped if more "
+                f"than {naconmax} contacts are actually generated. "
+                f"Pass nconmax>={contacts.rigid_contact_max} to SolverMuJoCo to size for the worst case."
+            )
         launch_dim = min(contacts.rigid_contact_max, naconmax)
 
         # Invalidate the cached tid_to_cid mapping whenever any of the
@@ -5820,6 +6002,99 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             mj_data.qpos[:] = qpos.numpy().flatten()[: len(mj_data.qpos)]
             mj_data.qvel[:] = qvel.numpy().flatten()[: len(mj_data.qvel)]
 
+    def _step_mujoco_cpu_with_body_observables(self, state_out: State, observables: SolverBase.Observables | None):
+        """Export native body diagnostics from the forward solve before integration."""
+        mujoco, model, data = self._mujoco, self.mj_model, self.mj_data
+        integrator = model.opt.integrator
+        if integrator not in (
+            mujoco.mjtIntegrator.mjINT_EULER,
+            mujoco.mjtIntegrator.mjINT_RK4,
+            mujoco.mjtIntegrator.mjINT_IMPLICIT,
+            mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
+        ):
+            raise ValueError("Native body observables require Euler, RK4, implicit, or implicitfast integration.")
+
+        # Follow mj_step's checked forward/integrate pipeline, inserting the
+        # export while qvel, cvel, cdof_dot, and the constraint solve agree.
+        mujoco.mj_checkPos(model, data)
+        mujoco.mj_checkVel(model, data)
+        mujoco.mj_forward(model, data)
+        mujoco.mj_checkAcc(model, data)
+        if model.opt.enableflags & mujoco.mjtEnableBit.mjENBL_FWDINV:
+            mujoco.mj_compareFwdInv(model, data)
+        self._update_body_observables(self.model, state_out, data, observables)
+
+        if integrator == mujoco.mjtIntegrator.mjINT_EULER:
+            mujoco.mj_Euler(model, data)
+        elif integrator == mujoco.mjtIntegrator.mjINT_RK4:
+            mujoco.mj_RungeKutta(model, data, 4)
+        else:
+            mujoco.mj_implicit(model, data)
+
+    def _update_body_observables(
+        self,
+        model: Model,
+        state: State,
+        mj_data: MjWarpData | MjData,
+        observables: SolverBase.Observables | None = None,
+    ):
+        """Export body diagnostics from a consistent MuJoCo dynamics snapshot."""
+        is_mjwarp = SolverMuJoCo._data_is_mjwarp(mj_data)
+        nworld = mj_data.nworld if is_mjwarp else 1
+        # Update requested rigid-body observables. Extended state attributes remain
+        # compatibility destinations during migration to SolverBase.Observables.
+        body_qdd = (
+            observables.body_qdd
+            if observables is not None and observables.is_requested(SolverBase.ObservableKind.BODY_QDD)
+            else state.body_qdd
+        )
+        body_parent_f = (
+            observables.body_parent_f
+            if observables is not None and observables.is_requested(SolverBase.ObservableKind.BODY_PARENT_F)
+            else state.body_parent_f
+        )
+        if body_qdd is not None or body_parent_f is not None:
+            # Launch over MuJoCo bodies
+            nbody = self.mjc_body_to_newton.shape[1]
+            if is_mjwarp:
+                rne_inputs = [
+                    self.mjw_model.body_rootid,
+                    self.mjw_model.opt.gravity,
+                    mj_data.xipos,
+                    mj_data.subtree_com,
+                    mj_data.cacc,
+                    mj_data.cvel,
+                    mj_data.cfrc_int,
+                ]
+            else:
+                # Populate cacc and cfrc_int independently of MuJoCo sensors.
+                self._mujoco.mj_rnePostConstraint(self.mj_model, mj_data)
+                device = model.device
+                rne_inputs = [
+                    wp.array(self.mj_model.body_rootid, dtype=wp.int32, device=device),
+                    wp.array([self.mj_model.opt.gravity], dtype=wp.vec3, device=device),
+                    wp.array([mj_data.xipos], dtype=wp.vec3, device=device),
+                    wp.array([mj_data.subtree_com], dtype=wp.vec3, device=device),
+                    wp.array([mj_data.cacc], dtype=wp.spatial_vector, device=device),
+                    wp.array([mj_data.cvel], dtype=wp.spatial_vector, device=device),
+                    wp.array([mj_data.cfrc_int], dtype=wp.spatial_vector, device=device),
+                ]
+            wp.launch(
+                convert_rigid_forces_from_mj_kernel,
+                (nworld, nbody),
+                inputs=[self.mjc_body_to_newton, *rne_inputs],
+                outputs=[body_qdd, body_parent_f],
+                device=model.device,
+            )
+            if state.body_qdd is not None and body_qdd is not None and state.body_qdd.ptr != body_qdd.ptr:
+                state.body_qdd.assign(body_qdd)
+            if (
+                state.body_parent_f is not None
+                and body_parent_f is not None
+                and state.body_parent_f.ptr != body_parent_f.ptr
+            ):
+                state.body_parent_f.assign(body_parent_f)
+
     def _update_newton_state(
         self,
         model: Model,
@@ -5886,45 +6161,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        # Update requested rigid-body observables. Extended state attributes remain
-        # compatibility destinations during migration to SolverBase.Observables.
-        body_qdd = (
-            observables.body_qdd
-            if observables is not None and observables.is_requested(SolverBase.ObservableKind.BODY_QDD)
-            else state.body_qdd
-        )
-        body_parent_f = (
-            observables.body_parent_f
-            if observables is not None and observables.is_requested(SolverBase.ObservableKind.BODY_PARENT_F)
-            else state.body_parent_f
-        )
-        if body_qdd is not None or body_parent_f is not None:
-            # Launch over MuJoCo bodies
-            nbody = self.mjc_body_to_newton.shape[1]
-            wp.launch(
-                convert_rigid_forces_from_mj_kernel,
-                (nworld, nbody),
-                inputs=[
-                    self.mjc_body_to_newton,
-                    self.mjw_model.body_rootid,
-                    self.mjw_model.opt.gravity,
-                    self.mjw_data.xipos,
-                    self.mjw_data.subtree_com,
-                    self.mjw_data.cacc,
-                    self.mjw_data.cvel,
-                    self.mjw_data.cfrc_int,
-                ],
-                outputs=[body_qdd, body_parent_f],
-                device=model.device,
-            )
-            if state.body_qdd is not None and body_qdd is not None and state.body_qdd.ptr != body_qdd.ptr:
-                state.body_qdd.assign(body_qdd)
-            if (
-                state.body_parent_f is not None
-                and body_parent_f is not None
-                and state.body_parent_f.ptr != body_parent_f.ptr
-            ):
-                state.body_parent_f.assign(body_parent_f)
+        if is_mjwarp:
+            self._update_body_observables(model, state, mj_data, observables)
 
         # Update actuator forces in joint DOF space.
         legacy_qfrc_actuator = getattr(getattr(state, "mujoco", None), "qfrc_actuator", None)

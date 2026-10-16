@@ -53,6 +53,19 @@ All importers will rotate the asset now to match the builder's ``up_axis`` (inst
 :meth:`newton.ModelBuilder.add_usd` accepts both file paths and URLs directly, so a separate
 ``resolve_usd_from_url()`` helper is usually unnecessary when migrating from ``warp.sim``.
 
+USD cables now use ``physics:restShapePoints`` and ``physics:restNormals`` as their simulated
+rest shape. Previously, rest points affected only material gains and rest normals were ignored.
+With both rest fields absent, the cable uses its initial geometry as its rest shape.
+Review assets that relied on rest fields being ignored: remove unwanted rest fields, or set
+them to the initial points and normals, to start relaxed. Separately, welded cable graphs now
+honor authored initial normals even without rest fields; earlier versions ignored those normals.
+Rest lengths now determine capsule size and mass volume weights. Explicit segment masses keep
+their authored values. Attachments follow native rod material endpoints, which can differ from
+the initial USD points when initial and rest segment lengths differ; see :ref:`usd_parsing`
+for the supported subset.
+These changes affect the experimental deformable importer, so they do not require a deprecation
+period under Newton's :doc:`compatibility policy <guide/compatibility>`.
+
 The MJCF importer from Warp sim only uses the ``geom_density`` defined in the MJCF for sphere and box shapes but ignores these definitions for other shape types (which will receive the default density specified by the ``density`` argument to ``wp.sim.parse_mjcf``). The Newton MJCF importer now considers the ``geom_density`` for all shape types. This change may yield to different simulation results and may require tuning contact and other simulation parameters to achieve similar results in Newton compared to Warp sim.
 
 
