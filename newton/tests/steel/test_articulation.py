@@ -244,7 +244,10 @@ def test_unsupported_loop_joints_are_rejected(test, device):
     """Reject non-BALL loop joints and closures between two dynamic articulations."""
     b = _build_four_bar()
     _expect_one_warning(
-        test, UserWarning, "another joint already connects these bodies", lambda: b.add_joint_fixed(parent=1, child=2)
+        test,
+        newton.exceptions.NewtonWarning,
+        "another joint already connects these bodies",
+        lambda: b.add_joint_fixed(parent=1, child=2),
     )
     with test.assertRaisesRegex(NotImplementedError, "only BALL loop-closing joints"):
         SolverSteel(b.finalize(device=device), solve_mode="matrix_free")
@@ -491,7 +494,7 @@ def test_imported_connect_equality_is_enforced(test, device):
             # The converted CONNECT becomes a BALL loop joint parallel to the hinge.
             _expect_one_warning(
                 test,
-                UserWarning,
+                newton.exceptions.NewtonWarning,
                 "another joint already connects these bodies",
                 functools.partial(b.add_mjcf, mjcf, convert_mjc_equality_constraints=True),
             )

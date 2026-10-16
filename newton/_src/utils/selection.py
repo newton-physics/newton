@@ -15,6 +15,7 @@ import numpy as np
 import warp as wp
 from warp.types import is_array
 
+from ..exceptions import NewtonDeprecationWarning
 from ..sim import (
     Control,
     JointType,
@@ -1944,7 +1945,7 @@ class ArticulationView:
         if not include_armature:
             warnings.warn(
                 _INCLUDE_ARMATURE_DEPRECATION_MSG.format(name="ArticulationView.eval_mass_matrix()"),
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=2,
             )
         articulation_mask = self.get_model_articulation_mask(mask=mask)

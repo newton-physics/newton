@@ -7,6 +7,7 @@ import warnings
 
 import warp as wp
 
+from ..exceptions import NewtonDeprecationWarning
 from ..math import quat_decompose, transform_twist, velocity_at_point
 from .enums import BodyFlags, JointType
 from .model import Model
@@ -1754,7 +1755,7 @@ def eval_mass_matrix(
     if not include_armature:
         warnings.warn(
             _INCLUDE_ARMATURE_DEPRECATION_MSG.format(name="eval_mass_matrix()"),
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
     return _eval_mass_matrix(
