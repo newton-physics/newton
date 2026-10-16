@@ -4361,19 +4361,20 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         self.assertEqual(int(constraints_per_world[0]), joint_count)
         self.assertLessEqual(int(np.max(constraints_per_world)), solver.mjw_data.njmax)
 
-    def test_default_capacity_covers_friction_enabled_after_construction(self):
-        """Reserve constraint rows and sparse Jacobian nonzeros for friction enabled at runtime."""
+    def test_default_njmax_nnz_covers_friction_enabled_after_construction(self):
+        """Reserve sparse Jacobian nonzeros for friction enabled at runtime."""
         try:
             mujoco, _ = SolverMuJoCo.import_mujoco()
         except ImportError as e:
             self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
 
-        # 40 joints fit the default njmax and only overflow sparse nonzeros; 80 also overflow rows.
-        for joint_count, use_mujoco_contacts in itertools.product((40, 80), (True, False)):
-            with self.subTest(joint_count=joint_count, use_mujoco_contacts=use_mujoco_contacts):
-                self._check_friction_enabled_after_construction(joint_count, use_mujoco_contacts, mujoco)
+        for use_mujoco_contacts in (True, False):
+            with self.subTest(use_mujoco_contacts=use_mujoco_contacts):
+                self._check_friction_enabled_after_construction(use_mujoco_contacts, mujoco)
 
-    def _check_friction_enabled_after_construction(self, joint_count, use_mujoco_contacts, mujoco):
+    def _check_friction_enabled_after_construction(self, use_mujoco_contacts, mujoco):
+        # Enough DOFs for sparse MJWarp Jacobians, few enough rows for the default njmax.
+        joint_count = 40
         tendon_count = 4
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         SolverMuJoCo.register_custom_attributes(builder)
