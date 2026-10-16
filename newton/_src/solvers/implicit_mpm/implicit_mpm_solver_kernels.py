@@ -1485,45 +1485,6 @@ def transfer_gimp_impulses(
 
 
 @fem.integrand
-def gimp_contact_weights(
-    s: fem.Sample,
-    domain: fem.Domain,
-    u: fem.Field,
-    particle_volume: wp.array[float],
-    gimp_cells: wp.array2d[int],
-    particle_contact_node: wp.array[int],
-    contact_normal: wp.array[wp.vec3],
-    max_nodes: int,
-    rows: wp.array[int],
-    cols: wp.array[int],
-    values: wp.array[float],
-):
-    """Triplets of S_ip = sum_k f_k N_i(x_k): row = particle contact node, column = velocity node."""
-    p = s.qp_index
-    node = particle_contact_node[p]
-    if node < 0 or particle_volume[p] <= 0.0:
-        return
-    if wp.length_sq(contact_normal[node]) == 0.0:
-        # invalid normal, contact is disabled
-        return
-
-    cell = fem.element_partition_index(domain, s.element_index)
-    slot = int(-1)
-    for k in range(8):
-        if slot < 0 and gimp_cells[p, k] == cell:
-            slot = k
-    if slot < 0:
-        return
-
-    fraction = s.qp_weight * fem.measure(domain, s) / particle_volume[p]
-    base = (p * 8 + slot) * max_nodes
-    for k in range(fem.node_count(u, s)):
-        rows[base + k] = node
-        cols[base + k] = fem.node_partition_index(u, fem.node_index(u, s, k))
-        values[base + k] = fraction * fem.node_inner_weight(u, s, k)
-
-
-@fem.integrand
 def gimp_store_point_stress(
     s: fem.Sample,
     domain: fem.Domain,
@@ -1576,3 +1537,40 @@ def integrate_gimp_point_stress(
         ):
             value = point_stress[p, k]
     return wp.ddot(tau(s), value) * inv_cell_volume
+
+
+def make_contact_cell_keys_kernel(
+    domain: fem.GeometryDomain, partition: fem.SpacePartition, nodes_per_cell: int, domain_indices: bool
+):
+    @fem.cache.dynamic_kernel(suffix=(domain.name, partition.name, nodes_per_cell, domain_indices))
+    def contact_cell_keys(
+        domain_arg: domain.ElementIndexArg,
+        partition_arg: partition.PartitionArg,
+        space_node_indices: wp.array[int],
+        evaluation_particles: wp.array[int],
+        particle_cells: wp.array[int],
+        contact_offsets: wp.array[int],
+        keys: wp.array[int],
+        rows: wp.array[int],
+        cell_offsets: wp.array[int],
+    ):
+        i = wp.tid()
+        cell_count = cell_offsets.shape[0] - 1
+        cell = cell_count
+        node = space_node_indices[i]
+        if node >= 0 and contact_offsets[i] != contact_offsets[i + 1]:
+            particle = evaluation_particles[node]
+            domain_cell = particle_cells[particle]
+            if domain_cell >= 0:
+                geometry_cell = domain_cell
+                if wp.static(domain_indices):
+                    geometry_cell = domain.element_index(domain_arg, domain_cell)
+                node_index = partition.partition_node_index(partition_arg, geometry_cell * nodes_per_cell)
+                candidate = wp.where(node_index >= 0, node_index // nodes_per_cell, -1)
+                if candidate >= 0 and candidate < cell_count:
+                    cell = candidate
+                    wp.atomic_add(cell_offsets, cell + 1, 1)
+        keys[i] = cell
+        rows[i] = i
+
+    return contact_cell_keys

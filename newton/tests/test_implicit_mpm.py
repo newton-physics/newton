@@ -5,6 +5,7 @@ import itertools
 import unittest
 from contextlib import contextmanager
 from itertools import product
+from unittest.mock import patch
 
 import numpy as np
 import warp as wp
@@ -12,6 +13,7 @@ import warp.fem as fem
 import warp.sparse as sp
 
 import newton
+from newton._src.solvers.implicit_mpm import solve_rheology as solve_module
 from newton._src.solvers.implicit_mpm.implicit_mpm_solver_kernels import collision_weight_field
 from newton._src.solvers.implicit_mpm.rasterized_collisions import (
     _ALL_COLLIDER_WORLDS,
@@ -305,7 +307,7 @@ def test_assembled_elastic_stiffness(test, device):
 
 
 @contextmanager
-def _coupled_rheology(device, grid_type="dense", max_active_cell_count=-1):
+def _coupled_rheology(device, grid_type="dense", max_active_cell_count=-1, strain_basis="P0", flat_particles=False):
     with wp.ScopedDevice(device):
         builder = _make_mpm_particle_builder(gravity=(0, 0, 0), dimensions=(4, 2, 2))
         model = builder.finalize(device=device)
@@ -318,7 +320,7 @@ def _coupled_rheology(device, grid_type="dense", max_active_cell_count=-1):
             grid_padding=0,
             max_active_cell_count=max_active_cell_count,
             velocity_basis="Q1",
-            strain_basis="P0",
+            strain_basis=strain_basis,
             collider_basis="Q1",
             solver="gs",
             warmstart_mode="none",
@@ -328,7 +330,7 @@ def _coupled_rheology(device, grid_type="dense", max_active_cell_count=-1):
         solver = SolverImplicitMPM(model, config)
         state = model.state()
         positions = state.particle_q.numpy()
-        positions[:, 2] = np.where(positions[:, 2] < 0.05, 0.02, 0.04)
+        positions[:, 2] = 0.02 if flat_particles else np.where(positions[:, 2] < 0.05, 0.02, 0.04)
         state.particle_q.assign(positions)
         pic = solver._particles_to_cells(state.particle_q)
         scratch = solver._rebuild_scratchpad(pic)
@@ -355,6 +357,8 @@ def _coupled_rheology(device, grid_type="dense", max_active_cell_count=-1):
                 elastic_strain_delta=scratch.elastic_strain_delta_field.dof_values,
                 plastic_strain_delta=scratch.plastic_strain_delta_field.dof_values,
                 stress=scratch.stress_field.dof_values,
+                strain_velocity_node_count=solver._velocity_nodes_per_strain_sample,
+                strain_nodes_per_cell=scratch.strain_nodes_per_element,
             )
             operator = _DelassusOperator(
                 rheology,
@@ -674,6 +678,50 @@ def test_rheology_residual_inactive_strain_nodes(test, device):
                 res_l2, res_linf = _nonlinear_solver_result_norms(residual, tolerance_scale)
                 test.assertLess(res_l2, 1e-5)
                 test.assertLess(res_linf, 1e-5)
+
+
+def test_strain_cell_velocity_cache(test, device, capture=False):
+    """Preserve cell relaxation for each GS layout when grid velocities stay in registers."""
+    original_factory = solve_module.make_gs_solve_kernel
+    for basis, flat in product(("P1d", "Q1d"), (False, True)):
+        with _coupled_rheology(device, strain_basis=basis, flat_particles=flat) as (operator, store):
+            r = operator.rheology
+            velocity = np.linspace(-0.01, 0.01, 3 * operator.momentum.velocity.shape[0], dtype=np.float32).reshape(
+                -1, 3
+            )
+            stress = np.linspace(-0.001, 0.001, 6 * operator.size, dtype=np.float32).reshape(-1, 6)
+            for mode in ("gs", "gs-soa"):
+                results = []
+                for cached in (False, True):
+                    with test.subTest(basis=basis, flat=flat, solver=mode, cached=cached):
+                        operator.momentum.velocity.assign(velocity)
+                        r.stress.assign(stress)
+
+                        def factory(*args, use_cache=cached, **kwargs):
+                            return original_factory(*args, **kwargs, cache_cell_velocity=use_cache)
+
+                        with patch.object(solve_module, "make_gs_solve_kernel", factory):
+                            solver = _RHEOLOGY_SOLVERS[mode](operator, store)
+                        try:
+                            solver.apply_initial_guess()
+                            if capture:
+                                with wp.ScopedCapture(device=device) as graph:
+                                    for _ in range(5):
+                                        solver.solve()
+                                wp.capture_launch(graph.graph)
+                            else:
+                                for _ in range(5):
+                                    solver.solve()
+                            results.append((operator.momentum.velocity.numpy(), r.stress.numpy()))
+                        finally:
+                            solver.release()
+                for actual, expected in zip(results[1], results[0], strict=True):
+                    np.testing.assert_allclose(actual, expected, rtol=5e-5, atol=2e-7, err_msg=f"{basis}/{mode}")
+                if mode == "gs":
+                    gs_result = results[0]
+                elif mode == "gs-soa":
+                    for actual, expected in zip(results[0], gs_result, strict=True):
+                        np.testing.assert_allclose(actual, expected, rtol=5e-5, atol=2e-7)
 
 
 def _make_mpm_particle_builder(
@@ -2638,6 +2686,14 @@ add_function_test(
     "test_rheology_residual_inactive_strain_nodes",
     test_rheology_residual_inactive_strain_nodes,
     devices=devices,
+)
+add_function_test(TestImplicitMPM, "test_strain_cell_velocity_cache", test_strain_cell_velocity_cache, devices=devices)
+add_function_test(
+    TestImplicitMPM,
+    "test_strain_cell_velocity_cache_capture",
+    test_strain_cell_velocity_cache,
+    devices=get_cuda_test_devices(),
+    capture=True,
 )
 add_function_test(
     TestImplicitMPM,
