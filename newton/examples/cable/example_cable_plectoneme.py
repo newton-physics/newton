@@ -146,7 +146,6 @@ class Example:
             twist_damping=self.TWIST_DAMPING,
             label="plectoneme",
             wrap_in_articulation=False,
-            body_frame_origin="com",
         )
         self.bodies = list(map(int, bodies))
         self.joints = list(map(int, joints))
@@ -169,7 +168,6 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
-            rigid_compliant_alm=True,
             rigid_contact_history=True,
             rigid_body_contact_buffer_size=1024,
         )

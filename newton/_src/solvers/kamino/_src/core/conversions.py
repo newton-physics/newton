@@ -2258,7 +2258,7 @@ def convert_geometries(
     )
 
     # Compute total number of required contacts per world
-    if model.rigid_contact_max > 0:
+    if model.rigid_contact_max is not None:
         model_min_contacts = int(model.rigid_contact_max)
         min_contacts_per_world = model.rigid_contact_max // model.world_count
         world_min_contacts = [min_contacts_per_world] * model.world_count
@@ -2305,6 +2305,9 @@ def convert_geometries(
         heightfield_elevations=model.heightfield_elevations,
         collision_aabb_lower=model.shape_collision_aabb_lower,
         collision_aabb_upper=model.shape_collision_aabb_upper,
+        interior_point=model._shape_interior_point,
+        mesh_boundary_flags=model._mesh_boundary_flags,
+        mesh_boundary_start=model._shape_mesh_boundary_start,
         voxel_resolution=model._shape_voxel_resolution,
         collision_radius=model.shape_collision_radius,
     )

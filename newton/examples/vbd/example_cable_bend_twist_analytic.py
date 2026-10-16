@@ -149,7 +149,7 @@ class Example:
         builder.color()
         self.model = builder.finalize()
 
-        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations, rigid_compliant_alm=True)
+        self.solver = newton.solvers.SolverVBD(self.model, iterations=self.sim_iterations)
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
@@ -209,7 +209,6 @@ class Example:
             twist_damping=twist_damping,
             label=label,
             wrap_in_articulation=False,
-            body_frame_origin="com",
         )
         return list(bodies), list(joints)
 

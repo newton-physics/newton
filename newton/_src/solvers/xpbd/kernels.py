@@ -13,6 +13,7 @@ from ...math import (
     velocity_at_point,
 )
 from ...sim import BodyFlags, JointType, Model
+from ...sim.articulation import eval_angular_coordinates
 from ...sim.contacts import contact_surface_point, contact_surface_separation
 from ...sim.joint_mimic import eval_joint_mimic_coordinate
 
@@ -1008,7 +1009,7 @@ def apply_joint_forces(
     type = joint_type[tid]
     if not joint_enabled[tid]:
         return
-    if type == JointType.FIXED or type == JointType.ROD:
+    if type == JointType.FIXED:
         return
 
     # rigid body indices of the child and parent
@@ -1047,17 +1048,19 @@ def apply_joint_forces(
     t_total = wp.vec3()
     f_total = wp.vec3()
 
-    if type == JointType.FREE or type == JointType.DISTANCE:
+    if type == JointType.FREE or type == JointType.DISTANCE or type == JointType.ROD:
         f_total = wp.vec3(joint_f[qd_start + 0], joint_f[qd_start + 1], joint_f[qd_start + 2])
         t_total = wp.vec3(joint_f[qd_start + 3], joint_f[qd_start + 4], joint_f[qd_start + 5])
-        # Interpret free-joint forces as spatial wrench at the COM (same as body_f).
-        # Avoid adding a moment arm that would introduce torque for pure forces.
+        # The input wrench is world-frame and referenced at the child's COM.
         wp.atomic_add(body_f, id_c, wp.spatial_vector(f_total, t_total))
         if id_p >= 0:
-            wp.atomic_sub(body_f, id_p, wp.spatial_vector(f_total, t_total))
+            # Shift the reaction wrench to the parent's COM.
+            r_pc = wp.transform_point(pose_c, com_c) - wp.transform_point(pose_p, com_p)
+            t_parent = t_total + wp.cross(r_pc, f_total)
+            wp.atomic_sub(body_f, id_p, wp.spatial_vector(f_total, t_parent))
         # Record the contribution to the inbound joint wrench (used to populate
-        # ``State.body_parent_f``).  For FREE joints this is a diagnostic only;
-        # for DISTANCE joints the constraint solver adds its own contribution.
+        # ``SolverBase.Observables.body_parent_f``). For FREE and ROD joints this is
+        # diagnostic only; for DISTANCE joints the solver adds its contribution.
         # Convention: positive = wrench transmitted parent->child at child COM.
         if joint_impulse:
             wp.atomic_add(joint_impulse, tid, wp.spatial_vector(f_total, t_total) * dt)
@@ -1085,21 +1088,18 @@ def apply_joint_forces(
             a_p = wp.transform_vector(X_wp, axis)
             f_total += f * a_p
 
-        if ang_axis_count > 0:
-            axis = joint_axis[qd_start + lin_axis_count + 0]
-            f = joint_f[qd_start + lin_axis_count + 0]
-            a_p = wp.transform_vector(X_wp, axis)
-            t_total += f * a_p
-        if ang_axis_count > 1:
-            axis = joint_axis[qd_start + lin_axis_count + 1]
-            f = joint_f[qd_start + lin_axis_count + 1]
-            a_p = wp.transform_vector(X_wp, axis)
-            t_total += f * a_p
-        if ang_axis_count > 2:
-            axis = joint_axis[qd_start + lin_axis_count + 2]
-            f = joint_f[qd_start + lin_axis_count + 2]
-            a_p = wp.transform_vector(X_wp, axis)
-            t_total += f * a_p
+        ang_start = qd_start + lin_axis_count
+        if ang_axis_count == 1:
+            axis = joint_axis[ang_start]
+            t_total += joint_f[ang_start] * wp.transform_vector(X_wp, axis)
+        elif ang_axis_count > 1:
+            _angles, covectors = eval_angular_coordinates(
+                joint_axis, ang_start, ang_axis_count, wp.transform_get_rotation(X_wp), wp.transform_get_rotation(X_wc)
+            )
+            tau = wp.vec3(joint_f[ang_start], joint_f[ang_start + 1], 0.0)
+            if ang_axis_count == 3:
+                tau[2] = joint_f[ang_start + 2]
+            t_total += wp.transpose(covectors) * tau
 
     else:
         print("joint type not handled in apply_joint_forces")
@@ -1111,7 +1111,7 @@ def apply_joint_forces(
     wp.atomic_add(body_f, id_c, child_wrench_at_com)
 
     # Record the joint-f contribution to the inbound joint wrench (used to
-    # populate ``State.body_parent_f``).  We accumulate the child-side spatial
+    # populate ``SolverBase.Observables.body_parent_f``).  We accumulate the child-side spatial
     # wrench (linear ``[N]``, torque ``[N·m]`` at the child COM, world frame)
     # multiplied by ``dt`` so that the same `impulse / dt` conversion applied
     # in :func:`convert_joint_impulse_to_parent_f` recovers the wrench.
@@ -1270,7 +1270,7 @@ def solve_simple_body_joints(
 
     if not joint_enabled[tid]:
         return
-    if type == JointType.FREE:
+    if type == JointType.FREE or type == JointType.ROD:
         return
     if type == JointType.DISTANCE:
         return
@@ -1590,7 +1590,7 @@ def solve_body_joints(
 
     if not joint_enabled[tid]:
         return
-    if type == JointType.FREE:
+    if type == JointType.FREE or type == JointType.ROD:
         return
     # if type == JointType.FIXED:
     #     return
@@ -1886,7 +1886,73 @@ def solve_body_joints(
                 lin_delta_c += linear_c * (d_lambda * linear_relaxation)
                 ang_delta_c += angular_c * (d_lambda * angular_relaxation)
 
-    if type == JointType.FIXED or type == JointType.PRISMATIC or type == JointType.REVOLUTE or type == JointType.D6:
+    if type == JointType.D6 and ang_axis_count >= 2:
+        # constrain the intrinsic-Euler coordinates used by eval_fk, one per angular DOF
+        ang_start = axis_start + lin_axis_count
+        ang_target_start = target_axis_start + lin_axis_count
+        angles, covectors = eval_angular_coordinates(
+            joint_axis, ang_start, ang_axis_count, wp.transform_get_rotation(X_wp), wp.transform_get_rotation(X_wc)
+        )
+        omega_rel = omega_c - omega_p
+
+        for dim in range(3):
+            e = angles[dim]
+            angular_c = covectors[dim]
+            angular_p = -angular_c
+            derr = wp.dot(angular_c, omega_rel)
+
+            # the third coordinate of a 2-axis joint is locked
+            lower = 0.0
+            upper = 0.0
+            ke = 0.0
+            kd = 0.0
+            target_pos = 0.0
+            target_vel = 0.0
+            if dim < ang_axis_count:
+                lower = joint_limit_lower[ang_start + dim]
+                upper = joint_limit_upper[ang_start + dim]
+                ke = joint_target_ke[ang_start + dim]
+                kd = joint_target_kd[ang_start + dim]
+                target_pos = joint_target_q[ang_target_start + dim]
+                target_vel = joint_target_qd[ang_start + dim]
+
+            err = 0.0
+            compliance = angular_compliance
+            damping = 0.0
+            if e < lower:
+                err = e - lower
+            elif e > upper:
+                err = e - upper
+            elif ke > 0.0:
+                err = e - wp.clamp(target_pos, lower, upper)
+                compliance = 1.0 / ke
+                damping = kd
+            elif kd > 0.0:
+                compliance = 1.0 / kd
+                damping = kd
+
+            d_lambda = (
+                compute_angular_correction(
+                    err,
+                    derr - target_vel,
+                    pose_p,
+                    pose_c,
+                    I_inv_p,
+                    I_inv_c,
+                    angular_p,
+                    angular_c,
+                    0.0,
+                    compliance,
+                    damping,
+                    dt,
+                )
+                * angular_relaxation
+            )
+
+            ang_delta_p += angular_p * d_lambda
+            ang_delta_c += angular_c * d_lambda
+
+    elif type == JointType.FIXED or type == JointType.PRISMATIC or type == JointType.REVOLUTE or type == JointType.D6:
         # handle angular constraints
 
         # local joint rotations
@@ -2106,7 +2172,7 @@ def _joint_mimic_effective_mass(
     return body_inv_m[body] * wp.length_sq(linear) + wp.dot(angular_body, body_inv_I[body] * angular_body)
 
 
-@wp.kernel
+@wp.kernel(module="unique")
 def solve_joint_mimics(
     body_q: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
@@ -2254,7 +2320,7 @@ def solve_joint_mimics(
             wp.atomic_add(joint_impulse, reference, impulse_reference_child * delta_lambda)
 
 
-@wp.kernel
+@wp.kernel(module="unique")
 def apply_joint_mimic_deltas(
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
@@ -2827,7 +2893,7 @@ def convert_contact_impulse_to_force(
     # output
     contact_force: wp.array[wp.spatial_vector],
 ):
-    """Convert accumulated per-contact spatial impulse to ``contacts.force`` spatial vectors.
+    """Convert accumulated per-contact spatial impulse to contact-force output vectors.
 
     The XPBD lambda convention used in this solver already absorbs one power
     of ``dt`` (see ``compute_contact_constraint_delta``), so dividing the
@@ -2862,7 +2928,7 @@ def convert_joint_impulse_to_parent_f(
     # output
     body_parent_f: wp.array[wp.spatial_vector],
 ):
-    """Convert accumulated child-side joint impulse to ``state.body_parent_f``.
+    """Convert accumulated child-side joint impulse to a body-parent-wrench output.
 
     The accumulated ``joint_impulse[joint_id]`` contains two contributions:
 

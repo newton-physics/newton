@@ -75,6 +75,25 @@ def test_triangle_interior_distance_is_scale_relative(test, device):
                 np.testing.assert_allclose(actual[2:5], expected_normal, atol=2e-5)
 
 
+def test_short_segment_distance(test, device):
+    """Resolve the interior distance of simplex edges shorter than 0.1 mm."""
+    vertices = np.array([[-2e-5, 0.0, 4e-5], [2e-5, 0.0, 4e-5], [0.0, 3e-5, 4e-5]])
+    for scale in (0.5, 1.0, 2.0):
+        with test.subTest(scale=scale):
+            output = wp.zeros(5, dtype=float, device=device)
+            wp.launch(
+                _query_triangle_point,
+                dim=1,
+                inputs=[wp.vec3(*vertex) for vertex in vertices * scale],
+                outputs=[output],
+                device=device,
+            )
+            actual = output.numpy()
+            test.assertEqual(actual[0], 1.0)
+            test.assertAlmostEqual(float(actual[1]), 4e-5 * scale, delta=1e-9 * scale)
+            np.testing.assert_allclose(actual[2:5], [0.0, 0.0, -1.0], atol=1e-6)
+
+
 class TestGJKSmallSimplex(unittest.TestCase):
     """Preserve small, nondegenerate simplex faces during distance queries."""
 
@@ -83,6 +102,12 @@ add_function_test(
     TestGJKSmallSimplex,
     "test_triangle_interior_distance_is_scale_relative",
     test_triangle_interior_distance_is_scale_relative,
+    devices=get_test_devices(),
+)
+add_function_test(
+    TestGJKSmallSimplex,
+    "test_short_segment_distance",
+    test_short_segment_distance,
     devices=get_test_devices(),
 )
 
