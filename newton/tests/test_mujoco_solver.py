@@ -11111,6 +11111,64 @@ class TestActuatorDampratioMultiWorldRuntime(unittest.TestCase):
         rebuilt = SolverMuJoCo(model, disable_contacts=True)
         np.testing.assert_array_equal(rebuilt.mjw_model.actuator_biasprm.numpy()[:, 0, 2], 0.0)
 
+    def test_joint_target_kinematic_initial_damping(self):
+        """Preserve physical damping through a kinematic-to-dynamic transition and rebuild."""
+        native = self.solver._mujoco.MjModel.from_xml_string(
+            self.MJCF.replace('type="hinge"', 'type="hinge" armature="0.3"')
+        )
+        expected = -native.actuator_biasprm[0, 2]
+        for cpu in (True, False):
+            with self.subTest(cpu=cpu):
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(self.MJCF)
+                builder.body_flags[0] = int(BodyFlags.KINEMATIC)
+                builder.joint_armature[0] = 0.3
+                model = builder.finalize(device="cpu" if cpu else self.model.device)
+                solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
+
+                np.testing.assert_allclose(model.joint_target_kd.numpy(), expected, rtol=1e-5)
+                np.testing.assert_allclose(solver.mj_model.actuator_biasprm[:, 2], -expected, rtol=1e-5)
+                np.testing.assert_allclose(solver.mjw_model.actuator_biasprm.numpy()[..., 2], -expected, rtol=1e-5)
+                np.testing.assert_allclose(solver.mjw_model.dof_armature.numpy(), KINEMATIC_ARMATURE)
+                if cpu:
+                    np.testing.assert_allclose(solver.mj_model.dof_armature, KINEMATIC_ARMATURE)
+
+                model.body_flags.fill_(int(BodyFlags.DYNAMIC))
+                solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
+                np.testing.assert_allclose(solver.mjw_model.dof_armature.numpy(), 0.3)
+                np.testing.assert_allclose(solver.mjw_model.actuator_biasprm.numpy()[..., 2], -expected, rtol=1e-5)
+                rebuilt = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
+                np.testing.assert_allclose(model.joint_target_kd.numpy(), expected, rtol=1e-5)
+                np.testing.assert_allclose(rebuilt.mj_model.actuator_biasprm[:, 2], -expected, rtol=1e-5)
+                np.testing.assert_allclose(rebuilt.mjw_model.actuator_biasprm.numpy()[..., 2], -expected, rtol=1e-5)
+
+    def test_joint_target_damping_with_skipped_rows(self):
+        """Resolve distinct world ratios while leaving skipped global metadata untouched."""
+        template = newton.ModelBuilder()
+        template.add_mjcf(self.MJCF)
+        native = self.solver._mujoco.MjModel.from_xml_string(self.MJCF)
+        ratios = np.array([0.5, 2.0], dtype=np.float32)
+        expected = native.actuator_biasprm[0, 2] * ratios
+        for skipped_count in (1, 2):
+            with self.subTest(skipped_count=skipped_count):
+                builder = newton.ModelBuilder()
+                builder.replicate(template, 2)
+                for _ in range(skipped_count):
+                    builder.add_custom_values(**{"mujoco:actuator_target_label": "/missing"})
+                model = builder.finalize()
+                worlds = model.mujoco.actuator_world.numpy()
+                biasprm = model.mujoco.actuator_biasprm.numpy()
+                biasprm[worlds >= 0, 2] = ratios[worlds[worlds >= 0]]
+                biasprm[worlds < 0, 2] = 0.75
+                model.mujoco.actuator_biasprm.assign(biasprm)
+                with self.assertWarnsRegex(UserWarning, "unresolved target '/missing'"):
+                    solver = SolverMuJoCo(model, disable_contacts=True)
+                np.testing.assert_allclose(model.joint_target_kd.numpy(), -expected, rtol=1e-5)
+                np.testing.assert_allclose(solver.mjw_model.actuator_biasprm.numpy()[:, 0, 2], expected, rtol=1e-5)
+                consumed = model.mujoco.actuator_biasprm.numpy()
+                np.testing.assert_allclose(consumed[worlds >= 0, 2], expected[worlds[worlds >= 0]], rtol=1e-5)
+                np.testing.assert_array_equal(consumed[worlds < 0], biasprm[worlds < 0])
+
 
 class TestActuatorInheritrange(unittest.TestCase):
     """Verify inheritrange on position actuators copies joint range to ctrlrange."""
