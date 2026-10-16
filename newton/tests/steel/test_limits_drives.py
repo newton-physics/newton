@@ -24,7 +24,11 @@ from newton._src.solvers.steel.kernels import (
     build_joint_limit_rows,
     prescale_joint_velocity_limits,
 )
-from newton._src.solvers.steel.solver_steel import _get_joint_limit_warp_kernel, _use_resident_mfgs_metadata
+from newton._src.solvers.steel.solver_steel import (
+    _DENSE_META_MAX_PARENT,
+    _get_joint_limit_warp_kernel,
+    _use_resident_mfgs_metadata,
+)
 from newton.solvers import SolverSteel
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
@@ -1920,6 +1924,11 @@ class TestSteelJointFriction(unittest.TestCase):
         for joint in ("ball", "free"):
             with self.subTest(joint=joint), self.assertRaisesRegex(ValueError, "joint_friction is nonzero"):
                 _friction_solver(_unsupported_joint_model(joint, friction=FRICTION))
+        # Joint-friction rows take a fourth row-type bit, halving the packed parent range.
+        with self.assertRaisesRegex(ValueError, "articulation_constraint_max must be at most"):
+            _friction_solver(
+                _single_dof_model("revolute"), articulation_constraint_max=(_DENSE_META_MAX_PARENT + 1) // 2 + 1
+            )
 
     def test_eager_notify_raises_after_applying_updates(self):
         """Raise from an eager notify after the other updates, and accept the next valid notify."""

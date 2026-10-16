@@ -913,8 +913,7 @@ class _SteelTreePlan:
 
 _DENSE_META_ROW_TYPE_BITS = 3
 _DENSE_META_ROW_TYPE_MASK = (1 << _DENSE_META_ROW_TYPE_BITS) - 1
-# The matrix-free sweep widens the type field by one bit for joint-friction rows.
-_DENSE_META_MAX_PARENT = ((2**31 - 1) >> (_DENSE_META_ROW_TYPE_BITS + 1)) - 1
+_DENSE_META_MAX_PARENT = ((2**31 - 1) >> _DENSE_META_ROW_TYPE_BITS) - 1
 
 
 def _use_resident_mfgs_metadata(
@@ -2082,8 +2081,10 @@ class SolverSteel(SolverBase):
         self._requested_dense_max_constraints = int(articulation_constraint_max)
         if self._requested_dense_max_constraints < 1:
             raise ValueError("articulation_constraint_max must be >= 1")
-        if self._requested_dense_max_constraints - 1 > _DENSE_META_MAX_PARENT:
-            raise ValueError(f"articulation_constraint_max must be at most {_DENSE_META_MAX_PARENT + 1}")
+        # Joint-friction rows widen the packed row-type field of the matrix-free sweep by one bit.
+        max_parent = ((2**31 - 1) >> (_DENSE_META_ROW_TYPE_BITS + int(self._enable_joint_friction))) - 1
+        if self._requested_dense_max_constraints - 1 > max_parent:
+            raise ValueError(f"articulation_constraint_max must be at most {max_parent + 1}")
         self._free_body_constraint_max = int(free_body_constraint_max)
         if self._free_body_constraint_max < 1:
             raise ValueError("free_body_constraint_max must be >= 1")
@@ -2756,7 +2757,7 @@ class SolverSteel(SolverBase):
             self.check_joint_friction()
 
     @property
-    def joint_friction_invalid(self) -> wp.array:
+    def joint_friction_invalid(self) -> "wp.array[wp.bool]":
         """Device flags of invalid :attr:`~newton.Model.joint_friction`, in the :attr:`constraint_overflow` layout.
 
         With ``enable_joint_friction``, every joint DOF notification sets the entry of the world that owns
