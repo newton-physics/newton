@@ -532,7 +532,7 @@ def solve_tetrahedra(
     # Damping uses XPBD's compliant Rayleigh term:
     #
     #     gamma = k_damp / (k * dt)
-    #     dlambda = -(C + gamma * dt * grad(C).dot(v))
+    #     dlambda = -(C + alpha * lambda + gamma * dt * grad(C).dot(v))
     #               / ((1 + gamma) * sum_i(w_i |grad_i C|^2) + alpha)
     #
     # Each tetrahedron stores one accumulated multiplier per scalar constraint.
