@@ -411,7 +411,9 @@ class TestCollisionPipeline(unittest.TestCase):
                     mock.patch.object(pairs, "numpy", wraps=pairs.numpy) as read_pairs,
                     warnings.catch_warnings(record=True) as caught,
                 ):
-                    warnings.filterwarnings("always", message="Explicit broad phase tests", category=RuntimeWarning)
+                    warnings.filterwarnings(
+                        "always", message="Explicit broad phase tests", category=newton.exceptions.NewtonWarning
+                    )
                     newton.CollisionPipeline(model, broad_phase=broad_phase, **kwargs)
                 self.assertEqual(len(caught), int(mode in ("custom", "expert")))
                 self.assertEqual(read_pairs.call_count, int(mode in ("custom", "expert")))
