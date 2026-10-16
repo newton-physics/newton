@@ -8,11 +8,14 @@ Tests the unified collision detection pipeline.
 """
 
 import unittest
+import warnings
+from unittest import mock
 
 import numpy as np
 import warp as wp
 
 from newton import ModelBuilder
+from newton._src.geometry import broad_phase_nxn
 from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
@@ -193,6 +196,33 @@ def test_unified_pipeline_on_shape_pair(
 
 
 class TestCollisionPipelineUnified(unittest.TestCase):
+    def test_primitive_local_bounds(self):
+        """Retain local bounds for primitive-only penetration refinement."""
+        devices = ["cpu"]
+        if wp.is_cuda_available():
+            devices.append("cuda:0")
+        for device in devices:
+            with self.subTest(device=device):
+                builder = ModelBuilder()
+                builder.add_shape_box(-1, hx=0.6, hy=0.15, hz=0.005)
+                body = builder.add_body(xform=wp.transform(wp.vec3(0.56, 0.0, 0.008), wp.quat_identity()))
+                rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), wp.pi / 2)
+                builder.add_shape_cylinder(
+                    body, xform=wp.transform(wp.vec3(0.0), rotation), radius=0.005, half_height=0.025
+                )
+                model = ModelKamino.from_newton(builder.finalize(device))
+                pipeline = CollisionPipelineUnifiedKamino(model)
+                self.assertEqual(pipeline.collision_aabb_lower.size, model.geoms.num_geoms)
+                self.assertEqual(pipeline.collision_aabb_upper.size, model.geoms.num_geoms)
+                contacts = ContactsKamino(model=model, device=device)
+                pipeline.collide(model.data(), contacts)
+                count = int(contacts.model_active_contacts.numpy()[0])
+                self.assertGreater(count, 0)
+                normals = np.array(
+                    [wp.quat_rotate(wp.quat(frame), wp.vec3(0.0, 0.0, 1.0)) for frame in contacts.frame.numpy()[:count]]
+                )
+                np.testing.assert_allclose(np.abs(normals[:, 2]), 1.0, atol=1.0e-3)
+
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
@@ -537,6 +567,31 @@ class TestCollisionPipelineUnified(unittest.TestCase):
             margin=1e-5,
             device=self.default_device,
         )
+
+    def test_09_large_pair_warning_only_on_explicit_setup(self):
+        """Warn about large pair workloads only for explicit collision setup."""
+        builder = ModelBuilder()
+        builder.replicate(basics.build_sphere_on_plane(z_offset=0.5), world_count=2)
+        model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
+        pairs = wp.array([[0, 1], [1, 0], [0, 1], [2, 3]], dtype=wp.vec2i, device=self.default_device)
+        model.geoms.collidable_pairs = pairs
+        model.geoms.num_collidable_pairs = len(pairs)
+        for broadphase in ("sap", "nxn", "explicit"):
+            with (
+                self.subTest(broadphase=broadphase),
+                mock.patch.object(broad_phase_nxn, "_EXPLICIT_LARGE_PAIR_COUNT_TOTAL", 3),
+                mock.patch.object(broad_phase_nxn, "_EXPLICIT_LARGE_PAIR_COUNT_PER_WORLD", 3),
+                mock.patch.object(pairs, "numpy", wraps=pairs.numpy) as read_pairs,
+                mock.patch.object(model.geoms.wid, "numpy", wraps=model.geoms.wid.numpy) as read_worlds,
+                warnings.catch_warnings(record=True) as caught,
+            ):
+                warnings.filterwarnings("always", message="Explicit broad phase tests", category=RuntimeWarning)
+                CollisionPipelineUnifiedKamino(model, broadphase=broadphase)
+            self.assertEqual(len(caught), int(broadphase == "explicit"))
+            self.assertEqual(read_pairs.call_count, int(broadphase == "explicit"))
+            if broadphase == "explicit":
+                self.assertEqual(read_worlds.call_count, 1)
+                self.assertIn("3 in the busiest world", str(caught[0].message))
 
 
 class TestUnifiedWriterContactDataRegression(unittest.TestCase):

@@ -10,6 +10,7 @@ from collections.abc import Sequence
 from typing import TYPE_CHECKING, ClassVar
 
 from ..core.types import override
+from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..usd.schema_resolver import PrimType, SchemaResolver
 from . import utils as usd
 
@@ -47,7 +48,7 @@ def _newton_legacy_contact_attr(legacy_name: str, material_attr: str):
             warnings.warn(
                 f"'{legacy_name}' on shape prim is deprecated; "
                 f"author '{material_attr}' on the bound NewtonMaterialAPI material instead.",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=4,
             )
             return float(value)
@@ -66,7 +67,7 @@ def _newton_non_schema_joint_state_attr(attr_name: str):
                 f"'{attr_name}' on joint prim is a non-schema attribute. "
                 f"Please file an issue at https://github.com/newton-physics/newton/issues "
                 f"describing your use case so we can provide a supported alternative.",
-                UserWarning,
+                NewtonWarning,
                 stacklevel=4,
             )
             return float(value)
@@ -83,7 +84,7 @@ def _newton_legacy_joint_limit_attr(legacy_name: str, schema_attr: str):
         if value is not None:
             warnings.warn(
                 f"'{legacy_name}' on joint prim is deprecated; use '{schema_attr}' instead.",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=4,
             )
             return float(value)
@@ -102,7 +103,7 @@ def _mjc_legacy_material_solref(converter, material_attr: str):
                 f"'mjc:solref' on material prim is deprecated; author '{material_attr}' on the "
                 f"bound NewtonMaterialAPI material, or use per-shape 'mjc:solref' (MjcGeomAPI) "
                 f"instead.",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=4,
             )
             return converter(value)

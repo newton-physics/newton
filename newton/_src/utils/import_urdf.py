@@ -15,7 +15,9 @@ import numpy as np
 import warp as wp
 
 from ..core import Axis, AxisType, quat_between_axes
+from ..core._warnings import _external_warning_stacklevel
 from ..core.types import Transform
+from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..geometry import Mesh, ShapeFlags
 from ..sim import ModelBuilder
 from ..sim.enums import JointTargetMode
@@ -83,6 +85,7 @@ def parse_urdf(
     mesh_maxhullvert: int | None = None,
     force_position_velocity_actuation: bool = False,
     override_root_xform: bool = False,
+    joint_damping_mode: Literal["passive", "drive"] | None = None,
 ):
     """
     Parses a URDF file and adds the bodies and joints to the given ModelBuilder.
@@ -182,7 +185,24 @@ def parse_urdf(
             :attr:`~newton.JointTargetMode.POSITION` if stiffness > 0, :attr:`~newton.JointTargetMode.VELOCITY` if only
             damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
             (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
+        joint_damping_mode: How to interpret URDF ``<dynamics damping>``.
+            ``"passive"`` imports it into ``joint_damping`` and keeps drive
+            damping at ``default_joint_cfg.target_kd``. ``"drive"`` imports it
+            into ``joint_target_kd``; absent values use ``default_joint_cfg.target_kd``.
+            In drive mode, passive damping uses ``default_joint_cfg.damping``
+            for revolute, prismatic, and planar joints.
+            XPBD/VBD do not consume passive joint damping.
+
+            .. deprecated:: 1.7
+                The implicit None default retains the drive mapping and warns
+                when the URDF authors damping. The default will become
+                ``"passive"`` in Newton 1.8. Pass either mode explicitly to
+                silence the warning; both explicit modes remain supported.
     """
+    if joint_damping_mode not in (None, "passive", "drive"):
+        raise ValueError("joint_damping_mode must be 'passive', 'drive', or None")
+    use_drive_damping = joint_damping_mode != "passive"
+
     # Early validation of base joint parameters
     builder._validate_base_joint_params(floating, base_joint, parent_body)
 
@@ -224,12 +244,23 @@ def parse_urdf(
         xml_content = sanitize_xml_content(source)
         urdf_root = ET.fromstring(xml_content)
 
+    if joint_damping_mode is None and urdf_root.find("joint/dynamics[@damping]") is not None:
+        warnings.warn(
+            "The default joint_damping_mode currently maps URDF damping to drive damping. "
+            "The default will switch to 'passive' in Newton 1.8. "
+            "Pass joint_damping_mode='drive' to retain the current mapping or "
+            "joint_damping_mode='passive' to use passive damping explicitly.",
+            NewtonDeprecationWarning,
+            stacklevel=_external_warning_stacklevel(),
+        )
+
     # load joint defaults
     default_joint_limit_lower = builder.default_joint_cfg.limit_lower
     default_joint_limit_upper = builder.default_joint_cfg.limit_upper
     default_joint_limit_effort = builder.default_joint_cfg.effort_limit
     default_joint_target_kd = builder.default_joint_cfg.target_kd
     default_joint_damping = builder.default_joint_cfg.damping
+    urdf_default_damping = default_joint_target_kd if use_drive_damping else default_joint_damping
     default_joint_friction = builder.default_joint_cfg.friction
 
     # load shape defaults
@@ -264,19 +295,21 @@ def parse_urdf(
                     filename = resolve_robotics_uri(filename, package_dirs=package_dirs)
                 except FileNotFoundError:
                     warnings.warn(
-                        f'Warning: could not resolve URI "{filename}". '
+                        f'Could not resolve URI "{filename}". '
                         f"Check that the package is installed and that relevant environment variables "
                         f"(ROS_PACKAGE_PATH, AMENT_PREFIX_PATH, GZ_SIM_RESOURCE_PATH, etc.) are set correctly. "
                         f"See https://github.com/ami-iit/resolve-robotics-uri-py for details.",
+                        NewtonWarning,
                         stacklevel=2,
                     )
                     return None, None
             else:
                 if not os.path.isfile(source):
                     warnings.warn(
-                        f'Warning: cannot resolve URI "{filename}" when URDF is loaded from XML string. '
+                        f'Cannot resolve URI "{filename}" when URDF is loaded from XML string. '
                         f"Load URDF from a file path, or install resolve-robotics-uri-py: "
                         f"pip install resolve-robotics-uri-py",
+                        NewtonWarning,
                         stacklevel=2,
                     )
                     return None, None
@@ -294,16 +327,18 @@ def parse_urdf(
                         filename = os.path.join(os.fspath(package_root), fn)
                     else:
                         warnings.warn(
-                            f'Warning: could not resolve package "{package_name}" in URI "{filename}". '
+                            f'Could not resolve package "{package_name}" in URI "{filename}". '
                             f"For robust URI resolution, install resolve-robotics-uri-py: "
                             f"pip install resolve-robotics-uri-py",
+                            NewtonWarning,
                             stacklevel=2,
                         )
                         return None, None
                 else:
                     warnings.warn(
-                        f'Warning: cannot resolve model:// URI "{filename}" without resolve-robotics-uri-py. '
+                        f'Cannot resolve model:// URI "{filename}" without resolve-robotics-uri-py. '
                         f"Install it with: pip install resolve-robotics-uri-py",
+                        NewtonWarning,
                         stacklevel=2,
                     )
                     return None, None
@@ -314,15 +349,16 @@ def parse_urdf(
             if not os.path.isabs(filename):
                 if not os.path.isfile(source):
                     warnings.warn(
-                        f'Warning: cannot resolve relative URI "{filename}" when URDF is loaded from XML string. '
+                        f'Cannot resolve relative URI "{filename}" when URDF is loaded from XML string. '
                         f"Load URDF from a file path.",
+                        NewtonWarning,
                         stacklevel=2,
                     )
                     return None, None
                 filename = os.path.join(os.path.dirname(source), filename)
 
         if not os.path.exists(filename):
-            warnings.warn(f"Warning: asset file {filename} does not exist", stacklevel=2)
+            warnings.warn(f"Asset file {filename} does not exist", NewtonWarning, stacklevel=2)
             return None, None
 
         return filename, file_tmp
@@ -530,7 +566,8 @@ def parse_urdf(
                 for m_mesh in m_meshes:
                     if m_mesh.texture is not None and m_mesh.uvs is None:
                         warnings.warn(
-                            f"Warning: mesh {resolved} has a texture but no UVs; texture will be ignored.",
+                            f"Mesh {resolved} has a texture but no UVs; texture will be ignored.",
+                            NewtonWarning,
                             stacklevel=2,
                         )
                         m_mesh.texture = None
@@ -572,7 +609,7 @@ def parse_urdf(
             "child": child,
             "type": joint.get("type"),
             "origin": parse_transform(joint),
-            "damping": default_joint_damping,
+            "damping": urdf_default_damping,
             "friction": default_joint_friction,
             "axis": wp.vec3(1.0, 0.0, 0.0),
             "limit_lower": default_joint_limit_lower,
@@ -586,7 +623,7 @@ def parse_urdf(
             joint_data["axis"] = wp.vec3(float(ax[0]), float(ax[1]), float(ax[2]))
         el_dynamics = joint.find("dynamics")
         if el_dynamics is not None:
-            joint_data["damping"] = float(el_dynamics.get("damping", default_joint_damping))
+            joint_data["damping"] = float(el_dynamics.get("damping", urdf_default_damping))
             joint_data["friction"] = float(el_dynamics.get("friction", default_joint_friction))
         el_limit = joint.find("limit")
         if el_limit is not None:
@@ -787,6 +824,8 @@ def parse_urdf(
         effort_limit = joint.get("limit_effort", None)
         velocity_limit = joint.get("limit_velocity")
         joint_damping = joint["damping"]
+        joint_target_kd = joint_damping if use_drive_damping else default_joint_target_kd
+        joint_passive_damping = default_joint_damping if use_drive_damping else joint_damping
         joint_friction = joint["friction"]
 
         parent_xform = joint["origin"]
@@ -809,7 +848,8 @@ def parse_urdf(
         if joint["type"] == "revolute" or joint["type"] == "continuous":
             created_joint_idx = builder.add_joint_revolute(
                 axis=joint["axis"],
-                damping=joint_damping,
+                target_kd=joint_target_kd,
+                damping=joint_passive_damping,
                 friction=joint_friction,
                 actuator_mode=actuator_mode,
                 limit_lower=lower,
@@ -821,7 +861,8 @@ def parse_urdf(
         elif joint["type"] == "prismatic":
             created_joint_idx = builder.add_joint_prismatic(
                 axis=joint["axis"],
-                damping=joint_damping,
+                target_kd=joint_target_kd,
+                damping=joint_passive_damping,
                 friction=joint_friction,
                 actuator_mode=actuator_mode,
                 limit_lower=lower * scale,
@@ -854,8 +895,8 @@ def parse_urdf(
                         axis=u,
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,
-                        target_kd=default_joint_target_kd,
-                        damping=joint_damping,
+                        target_kd=joint_target_kd,
+                        damping=joint_passive_damping,
                         friction=joint_friction,
                         actuator_mode=actuator_mode,
                     ),
@@ -863,8 +904,8 @@ def parse_urdf(
                         axis=v,
                         limit_lower=lower * scale,
                         limit_upper=upper * scale,
-                        target_kd=default_joint_target_kd,
-                        damping=joint_damping,
+                        target_kd=joint_target_kd,
+                        damping=joint_passive_damping,
                         friction=joint_friction,
                         actuator_mode=actuator_mode,
                     ),
@@ -877,31 +918,51 @@ def parse_urdf(
         joint_indices.append(created_joint_idx)
         joint_name_to_idx[joint["name"]] = created_joint_idx
 
-    # Configure mimic relationships
+    # Flatten imported chains because joint-owned mimic metadata requires an independent reference.
+    joints_by_name = {joint["name"]: joint for joint in sorted_joints}
     for joint in sorted_joints:
         if "mimic_joint" in joint:
             mimic_target_name = joint["mimic_joint"]
-            if mimic_target_name not in joint_name_to_idx:
-                warnings.warn(
-                    f"Mimic joint '{joint['name']}' references unknown joint '{mimic_target_name}', skipping mimic constraint",
-                    stacklevel=2,
-                )
-                continue
-
             follower_idx = joint_name_to_idx.get(joint["name"])
-            leader_idx = joint_name_to_idx.get(mimic_target_name)
-
             if follower_idx is None:
                 warnings.warn(
                     f"Mimic joint '{joint['name']}' was not created, skipping mimic constraint",
+                    NewtonWarning,
                     stacklevel=2,
                 )
                 continue
 
+            offset = joint.get("mimic_coef0", 0.0)
+            multiplier = joint.get("mimic_coef1", 1.0)
+            visited = [joint["name"]]
+            while mimic_target_name in joint_name_to_idx:
+                if mimic_target_name in visited:
+                    cycle = " -> ".join([*visited, mimic_target_name])
+                    raise ValueError(f"Cyclic URDF mimic joints: {cycle}")
+                visited.append(mimic_target_name)
+                target = joints_by_name[mimic_target_name]
+                if "mimic_joint" not in target:
+                    break
+                offset += multiplier * target.get("mimic_coef0", 0.0)
+                multiplier *= target.get("mimic_coef1", 1.0)
+                mimic_target_name = target["mimic_joint"]
+            else:
+                warnings.warn(
+                    f"Mimic joint '{joint['name']}' references unknown joint '{mimic_target_name}', skipping mimic constraint",
+                    NewtonWarning,
+                    stacklevel=2,
+                )
+                continue
+
+            # The composed relation uses URDF units. Convert it to the imported joint coordinates.
+            follower_scale = scale if joint["type"] == "prismatic" else 1.0
+            reference_scale = scale if joints_by_name[mimic_target_name]["type"] == "prismatic" else 1.0
+            if reference_scale == 0.0:
+                raise ValueError("URDF scale must be nonzero for a prismatic mimic reference.")
             builder.set_joint_mimic(
                 joint=follower_idx,
-                reference_joint=leader_idx,
-                coeffs=(joint.get("mimic_coef0", 0.0), joint.get("mimic_coef1", 1.0)),
+                reference_joint=joint_name_to_idx[mimic_target_name],
+                coeffs=(offset * follower_scale, multiplier * follower_scale / reference_scale),
             )
 
     # Create articulation from all collected joints

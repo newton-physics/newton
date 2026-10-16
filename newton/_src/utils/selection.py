@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+import logging
 import re
+import warnings
+import weakref
 from fnmatch import fnmatch
 from types import NoneType
 from typing import TYPE_CHECKING, Any
@@ -12,6 +15,7 @@ import numpy as np
 import warp as wp
 from warp.types import is_array
 
+from ..exceptions import NewtonDeprecationWarning
 from ..sim import (
     Control,
     JointType,
@@ -21,11 +25,14 @@ from ..sim import (
     eval_inverse_dynamics_force,
     eval_inverse_dynamics_passive,
     eval_jacobian,
-    eval_mass_matrix,
 )
+from ..sim.articulation import _INCLUDE_ARMATURE_DEPRECATION_MSG, _eval_mass_matrix
+from ..solvers.solver import SolverBase
 
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
+
+logger = logging.getLogger(__name__)
 
 AttributeFrequency = Model.AttributeFrequency
 
@@ -769,7 +776,7 @@ class ArticulationView:
         allow_partial_layouts: If True, construct the view when only some selected
             data has a common layout. Access to data without a common layout raises
             :class:`AttributeError`.
-        verbose: If True, prints selection summary.
+        verbose: If True, logs selection summary.
     """
 
     def __init__(
@@ -789,8 +796,9 @@ class ArticulationView:
     ):
         self.model = model
         self.device = model.device
-        self._attribute_array_cache = {}
-        self._actuator_dof_mapping_cache = {}
+        # Per-view caches. Sources and actuators are held weakly, so the view does not keep them alive.
+        self._attribute_array_cache = weakref.WeakKeyDictionary()
+        self._actuator_dof_mapping_cache = weakref.WeakKeyDictionary()
 
         if verbose is None:
             verbose = wp.config.log_level <= wp.LOG_DEBUG
@@ -1220,25 +1228,26 @@ class ArticulationView:
         )
 
         if verbose:
-            print(f"Articulation '{pattern}': {self.count}")
-            print(f"  Link count:     {self.link_count} ({'' if self.links_contiguous else 'non-'}contiguous)")
-            print(f"  Shape count:    {self.shape_count} ({'' if self.shapes_contiguous else 'non-'}contiguous)")
-            print(f"  Joint count:    {self.joint_count} ({'' if self.joints_contiguous else 'non-'}contiguous)")
-            print(
-                f"  DOF count:      {self.joint_dof_count} ({'' if self.joint_dofs_contiguous else 'non-'}contiguous)"
-            )
-            print(f"  Fixed base?     {self.is_fixed_base}")
-            print(f"  Floating base?  {self.is_floating_base}")
-            print("Link names:")
-            print(f"  {self.link_names}")
-            print("Joint names:")
-            print(f"  {self.joint_names}")
-            print("Joint DOF names:")
-            print(f"  {self.joint_dof_names}")
-            print("Shapes:")
+            lines = [
+                f"Articulation '{pattern}': {self.count}",
+                f"  Link count:     {self.link_count} ({'' if self.links_contiguous else 'non-'}contiguous)",
+                f"  Shape count:    {self.shape_count} ({'' if self.shapes_contiguous else 'non-'}contiguous)",
+                f"  Joint count:    {self.joint_count} ({'' if self.joints_contiguous else 'non-'}contiguous)",
+                f"  DOF count:      {self.joint_dof_count} ({'' if self.joint_dofs_contiguous else 'non-'}contiguous)",
+                f"  Fixed base?     {self.is_fixed_base}",
+                f"  Floating base?  {self.is_floating_base}",
+                "Link names:",
+                f"  {self.link_names}",
+                "Joint names:",
+                f"  {self.joint_names}",
+                "Joint DOF names:",
+                f"  {self.joint_dof_names}",
+                "Shapes:",
+            ]
             for link_idx in range(len(self.link_shapes or [])):
                 shape_names = [self.shape_names[shape_idx] for shape_idx in self.link_shapes[link_idx]]
-                print(f"  Link '{self.link_names[link_idx]}': {shape_names}")
+                lines.append(f"  Link '{self.link_names[link_idx]}': {shape_names}")
+            logger.info("%s", "\n".join(lines))
 
     @property
     def body_names(self):
@@ -1258,18 +1267,14 @@ class ArticulationView:
     # ========================================================================================
     # Generic attribute API
 
-    def _get_attribute_array(
-        self, name: str, source: Model | State | Control, _slice: Slice | int | None = None, layout=None
-    ):
-        key = (name, source, _slice, layout)
-        if key not in self._attribute_array_cache:
-            self._attribute_array_cache[key] = self._create_attribute_array(name, source, _slice, layout)
-        return self._attribute_array_cache[key]
-
-    def _create_attribute_array(
-        self, name: str, source: Model | State | Control, _slice: Slice | int | None, layout=None
-    ):
-        # get the attribute (handle namespaced attributes like "mujoco.tendon_stiffness")
+    def _resolve_attribute(
+        self, name: str, source: Model | State | Control | SolverBase.Observables
+    ) -> tuple[wp.array, str]:
+        """Return the array currently stored on ``source`` under ``name`` and its frequency name."""
+        is_observable = isinstance(source, SolverBase.Observables)
+        if is_observable and source.model is not self.model:
+            raise ValueError("Solver observables and ArticulationView must use the same model.")
+        # handle namespaced attributes like "mujoco.tendon_stiffness"
         # Note: the user-facing API uses dots (e.g., "mujoco.tendon_stiffness")
         # but internally attributes are stored with colons (e.g., "mujoco:tendon_stiffness")
         if "." in name:
@@ -1282,10 +1287,60 @@ class ArticulationView:
         else:
             attrib = getattr(source, name)
             frequency_name = name
+        if is_observable and attrib is None:
+            raise ValueError(f"Observable '{name}' was not requested from the solver.")
         assert isinstance(attrib, wp.array)
+        return attrib, frequency_name
+
+    def _get_attribute_array(
+        self,
+        name: str,
+        source: Model | State | Control | SolverBase.Observables,
+        _slice: Slice | int | None = None,
+        layout=None,
+    ):
+        """Return the cached reshaped array of ``source.<name>``, rebuilding it if the source array was replaced.
+
+        Entries are keyed weakly on ``source``, so they are dropped with the source and with the view.
+        An entry is reused only while ``source.<name>`` and its gradient are the arrays it was built from.
+        """
+        source_array, _ = self._resolve_attribute(name, source)
+        source_grad = source_array.grad if source_array.requires_grad else None
+        # native slices are unhashable before Python 3.12
+        slice_key = (_slice.start, _slice.stop, _slice.step) if isinstance(_slice, slice) else _slice
+        key = (name, slice_key, layout)
+        try:
+            entries = self._attribute_array_cache.get(source)
+            if entries is None:
+                entries = self._attribute_array_cache[source] = {}
+        except TypeError:
+            # the source cannot be weakly referenced; build an uncached array
+            return self._create_attribute_array(name, source, _slice, layout)
+        entry = entries.get(key)
+        if entry is not None and entry[1] is source_array and entry[2] is source_grad:
+            return entry[0]
+        attrib = self._create_attribute_array(name, source, _slice, layout)
+        entries[key] = (attrib, source_array, source_grad)
+        return attrib
+
+    def _create_attribute_array(
+        self,
+        name: str,
+        source: Model | State | Control | SolverBase.Observables,
+        _slice: Slice | int | None = None,
+        layout=None,
+    ):
+        attrib, frequency_name = self._resolve_attribute(name, source)
 
         # get frequency info
-        frequency = self.model.get_attribute_frequency(frequency_name)
+        frequency_source = source if isinstance(source, SolverBase.Observables) else self.model
+        frequency = frequency_source.get_attribute_frequency(frequency_name)
+        if frequency in (AttributeFrequency.CONTACT, AttributeFrequency.CONTACT_RIGID, AttributeFrequency.CONTACT_SOFT):
+            raise AttributeError(
+                f"Attribute '{name}' has dynamic contact frequency '{frequency.name}'; "
+                "ArticulationView requires stable articulation ownership. "
+                "Filter using Contacts endpoints or reduce to a BODY-frequency observable first."
+            )
 
         if layout is None and frequency in self._unavailable_reasons:
             raise AttributeError(f"Attribute '{name}' is unavailable: {self._unavailable_reasons[frequency]}")
@@ -1394,7 +1449,11 @@ class ArticulationView:
         return attrib
 
     def _get_attribute_values(
-        self, name: str, source: Model | State | Control, _slice: slice | None = None, layout=None
+        self,
+        name: str,
+        source: Model | State | Control | SolverBase.Observables,
+        _slice: slice | None = None,
+        layout=None,
     ):
         attrib = self._get_attribute_array(name, source, _slice=_slice, layout=layout)
         if hasattr(attrib, "_staging_array"):
@@ -1405,6 +1464,7 @@ class ArticulationView:
                     dim=attrib._staging_array.shape,
                     inputs=[attrib._gather_src, attrib._gather_indices],
                     outputs=[attrib._staging_array],
+                    device=self.device,
                 )
                 src_grad = attrib._gather_src.grad
                 dst_grad = attrib._staging_array.grad
@@ -1417,7 +1477,13 @@ class ArticulationView:
         return attrib
 
     def _set_attribute_values(
-        self, name: str, target: Model | State | Control, values, mask=None, _slice: slice | None = None, layout=None
+        self,
+        name: str,
+        target: Model | State | Control | SolverBase.Observables,
+        values,
+        mask=None,
+        _slice: slice | None = None,
+        layout=None,
     ):
         attrib = self._get_attribute_array(name, target, _slice=_slice, layout=layout)
 
@@ -1477,9 +1543,9 @@ class ArticulationView:
             else:
                 raise NotImplementedError(f"Unsupported attribute with ndim={attrib.ndim}")
 
-    def get_attribute(self, name: str, source: Model | State | Control):
+    def get_attribute(self, name: str, source: Model | State | Control | SolverBase.Observables):
         """
-        Get an attribute from the source (Model, State, or Control).
+        Get an attribute from a model, state, control, or solver observable container.
 
         Args:
             name: The name of the attribute to get.
@@ -1487,13 +1553,19 @@ class ArticulationView:
 
         Returns:
             array: The attribute values (dtype matches the attribute).
+
+        .. experimental::
+
+            ``SolverBase.Observables`` sources use their declared row frequencies
+            and must belong to this view's model. Dynamic contact frequencies
+            are not supported; they need endpoint-based filtering or reduction.
         """
         return self._get_attribute_values(name, source)
 
     def set_attribute(
         self,
         name: str,
-        target: Model | State | Control,
+        target: Model | State | Control | SolverBase.Observables,
         values: wp.array[Any],
         mask: wp.array[bool] | wp.array2d[bool] | None = None,
     ) -> None:
@@ -1842,13 +1914,16 @@ class ArticulationView:
         articulation_mask = self.get_model_articulation_mask(mask=mask)
         return eval_jacobian(self.model, state, J, joint_S_s=joint_S_s, mask=articulation_mask)
 
-    def eval_mass_matrix(self, state: State, H=None, J=None, body_I_s=None, joint_S_s=None, mask=None):
+    def eval_mass_matrix(
+        self, state: State, H=None, J=None, body_I_s=None, joint_S_s=None, mask=None, *, include_armature=True
+    ):
         """Evaluate generalized mass matrix for articulations in this view.
 
         Computes the generalized mass matrix H = J^T * M * J, where J is the spatial
         Jacobian and M is the block-diagonal spatial mass matrix. The resulting
         matrix is consistent with kinetic energy computed from COM-referenced
-        body twists.
+        body twists. :attr:`~newton.Model.joint_armature` is added to the
+        diagonal. See :func:`~newton.eval_mass_matrix`.
 
         Args:
             state: The state containing body transforms (body_q).
@@ -1858,13 +1933,31 @@ class ArticulationView:
             body_I_s: Optional pre-allocated temp array for spatial inertias.
             joint_S_s: Optional pre-allocated temp array for motion subspaces.
             mask: Optional mask of articulations in this ArticulationView (all by default).
+            include_armature: Deprecated in Newton 1.8. If True (default), add
+               :attr:`~newton.Model.joint_armature` to the diagonal. Passing
+               False returns the rigid-body matrix and emits a
+               :class:`DeprecationWarning`. This argument will be removed in a
+               future minor release.
 
         Returns:
             The mass matrix array H, or None if the model has no articulations.
         """
+        if not include_armature:
+            warnings.warn(
+                _INCLUDE_ARMATURE_DEPRECATION_MSG.format(name="ArticulationView.eval_mass_matrix()"),
+                NewtonDeprecationWarning,
+                stacklevel=2,
+            )
         articulation_mask = self.get_model_articulation_mask(mask=mask)
-        return eval_mass_matrix(
-            self.model, state, H, J=J, body_I_s=body_I_s, joint_S_s=joint_S_s, mask=articulation_mask
+        return _eval_mass_matrix(
+            self.model,
+            state,
+            H,
+            J=J,
+            body_I_s=body_I_s,
+            joint_S_s=joint_S_s,
+            mask=articulation_mask,
+            include_armature=include_armature,
         )
 
     def eval_inverse_dynamics_passive(
@@ -1975,16 +2068,29 @@ class ArticulationView:
     # Actuator parameter access
 
     def _get_actuator_dof_mapping(self, actuator: Actuator):
-        if actuator not in self._actuator_dof_mapping_cache:
-            self._actuator_dof_mapping_cache[actuator] = self._create_actuator_dof_mapping(actuator)
-        return self._actuator_dof_mapping_cache[actuator]
+        """Return the cached DOF mapping for ``actuator``, built on first use.
+
+        The cache belongs to the view and holds actuators weakly.
+        """
+        # views that borrow the actuator methods may not define the cache
+        cache = getattr(self, "_actuator_dof_mapping_cache", None)
+        if cache is None:
+            cache = self._actuator_dof_mapping_cache = weakref.WeakKeyDictionary()
+        try:
+            mapping = cache.get(actuator)
+        except TypeError:
+            # the actuator cannot be weakly referenced; build an uncached mapping
+            return self._create_actuator_dof_mapping(actuator)
+        if mapping is None:
+            mapping = cache[actuator] = self._create_actuator_dof_mapping(actuator)
+        return mapping
 
     def _create_actuator_dof_mapping(self, actuator: Actuator):
         """
         Build mapping from view DOF positions to actuator parameter indices.
 
         Note:
-            Assumes SISO actuators (one DOF per actuator).
+            Assumes one DOF per actuator.
 
         Returns array of shape (world_count * dofs_per_world,) where each element is:
         - actuator parameter index if that DOF is actuated

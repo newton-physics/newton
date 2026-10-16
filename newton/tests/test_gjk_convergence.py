@@ -59,7 +59,7 @@ def test_sphere_box_distance_convergence(test, device):
         normal = np.asarray(direction, dtype=np.float64)
         normal /= np.linalg.norm(normal)
         for scale in (0.5, 1.0, 2.0):
-            for gap in (0.0004, 0.001, 0.003):
+            for gap in (1e-5, 5e-5, 9.5e-5, 0.0004, 0.001, 0.003):
                 with test.subTest(feature=feature, scale=scale, gap=gap):
                     center = scale * (np.asarray(feature) + (0.01 + gap) * normal)
                     output = wp.zeros(5, dtype=float, device=device)

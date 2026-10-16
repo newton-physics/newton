@@ -21,7 +21,6 @@ from newton import JointTargetMode, JointType
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -95,10 +94,10 @@ class Example:
             solver_config = newton.solvers.SolverKamino.Config.from_model(
                 self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
             )
-            # Bounded joint drives and foot contacts need the bilateral rows
-            # resolved throughout the alternating solve to hold the stance.
+            # Eliminate bilateral rows once before the projected inequality sweeps.
             solver_config.dvi.max_alternating_iterations = 32
-            solver_config.dvi.bilateral_solve_interval = 1
+            solver_config.dvi.use_schur_complement = True
+            solver_config.dvi.bilateral_solver_type = "LLTBRCM"
             self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             self.solver = newton.solvers.SolverMuJoCo(
@@ -121,10 +120,16 @@ class Example:
 
         self.use_mujoco_contacts = use_mujoco_contacts
         if use_mujoco_contacts:
-            self.contacts = newton.Contacts(self.solver.get_max_contact_count(), 0)
+            self.collision_pipeline = newton.CollisionPipeline(
+                self.model, rigid_contact_max=self.solver.get_max_contact_count(), soft_contact_max=0
+            )
+            self.contacts = self.collision_pipeline.contacts()
         else:
             self.collision_pipeline = newton.CollisionPipeline(self.model)
             self.contacts = self.collision_pipeline.contacts()
+        self.solver_observables = self.solver.observables(
+            contacts=self.contacts, kinds={self.solver.ObservableKind.CONTACT_F}
+        )
 
         # ensure this is called at the end of the Example constructor
         self.viewer.set_model(self.model)
@@ -143,17 +148,21 @@ class Example:
     def simulate(self):
         if not self.use_mujoco_contacts:
             self.collision_pipeline.collide(self.state_0, self.contacts)
-        for _ in range(self.sim_substeps):
+        for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
 
             # apply forces to the model for picking, wind, etc
             self.viewer.apply_forces(self.state_0)
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            self.solver.step(
+                self.state_0,
+                self.state_1,
+                self.control,
+                self.contacts,
+                self.sim_dt,
+                observables=self.solver_observables if substep == self.sim_substeps - 1 else None,
+            )
             # swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
-
-        if self.use_mujoco_contacts:
-            self.solver.update_contacts(self.contacts, self.state_0)
 
     def step(self):
         if self.graph:
@@ -166,7 +175,7 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
+        self.viewer.log_contacts(self.contacts, self.state_0, observables=self.solver_observables)
         self.viewer.end_frame()
 
     def test_final(self):
