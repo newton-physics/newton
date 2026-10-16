@@ -320,12 +320,6 @@ def _has_missing_implicit_pd_gains(
     return missing_velocity_gain | missing_position_gain
 
 
-def _validate_implicit_pd_gains(act_type: JointActuationType, k_p: float, k_d: float, *, label: str) -> None:
-    """Raises if an implicit-PD actuation type has no effective gain."""
-    if _has_missing_implicit_pd_gains(act_type, k_p, k_d):
-        raise ValueError(f"Invalid implicit-PD actuation: {act_type.name} requires a non-zero gain ({label}).")
-
-
 def _is_bounded_effort_limit(tau_max: float) -> bool:
     """Return whether ``tau_max`` denotes a user-authored bounded effort limit."""
     return np.isfinite(tau_max) and tau_max < JOINT_TAUMAX

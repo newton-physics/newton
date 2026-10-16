@@ -32,7 +32,6 @@ from .joints import (
     JointDoFType,
     JointsModel,
     _has_missing_implicit_pd_gains,
-    _validate_implicit_pd_gains,
     has_dynamic_cts_wp,
     has_effort_cts_wp,
     has_friction_cts_wp,
@@ -1581,8 +1580,9 @@ def _validate_model_joint_pd_gains(model: Model | ModelView) -> None:
     invalid = (act_types < 0) | _has_missing_implicit_pd_gains(act_types, k_p, k_d)
     if np.any(invalid):
         dof = int(np.flatnonzero(invalid)[0])
+        # `from_newton` raises for unsupported target modes.
         act_type = JointActuationType.from_newton(target_mode[dof])
-        _validate_implicit_pd_gains(act_type, k_p[dof], k_d[dof], label=f"DoF={dof}")
+        raise ValueError(f"Invalid implicit-PD actuation: {act_type.name} requires a non-zero gain (DoF={dof}).")
 
 
 def convert_joints(
