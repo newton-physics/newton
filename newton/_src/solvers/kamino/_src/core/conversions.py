@@ -12,6 +12,7 @@ import numpy as np
 import warp as wp
 
 from .....geometry import ShapeFlags
+from .....sim import JointTargetMode
 from .....sim.model import Model
 from ....coupled.model_view import ModelView
 from ..utils import logger as msg
@@ -29,6 +30,7 @@ from .joints import (
     JointActuationType,
     JointDoFType,
     JointsModel,
+    _has_missing_implicit_pd_gains,
     _validate_implicit_pd_gains,
     has_dynamic_cts_wp,
     has_effort_cts_wp,
@@ -1540,7 +1542,12 @@ def _validate_model_joint_pd_gains(model: Model | ModelView) -> None:
     target_mode = model.joint_target_mode.numpy()
     k_p = model.joint_target_ke.numpy()
     k_d = model.joint_target_kd.numpy()
-    for dof in range(model.joint_dof_count):
+    act_types = np.full(target_mode.shape, -1, dtype=np.int32)
+    for mode in JointTargetMode:
+        act_types[target_mode == mode] = JointActuationType.from_newton(mode)
+    invalid = (act_types < 0) | _has_missing_implicit_pd_gains(act_types, k_p, k_d)
+    if np.any(invalid):
+        dof = int(np.flatnonzero(invalid)[0])
         act_type = JointActuationType.from_newton(target_mode[dof])
         _validate_implicit_pd_gains(act_type, k_p[dof], k_d[dof], label=f"DoF={dof}")
 

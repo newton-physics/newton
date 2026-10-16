@@ -1466,17 +1466,14 @@ class SolverKamino(SolverBase, CouplingInterface):
         # Check for unsupported joint types
         if model.joint_count > 0:
             joint_type_np = model.joint_type.numpy()
-
-            unsupported_joint_types = {}
-
-            for j in range(model.joint_count):
-                joint_type = int(joint_type_np[j])
-
-                # Check for explicitly unsupported joint types
-                if joint_type == JointType.DISTANCE:
-                    unsupported_joint_types["DISTANCE"] = unsupported_joint_types.get("DISTANCE", 0) + 1
-                elif joint_type == JointType.ROD:
-                    unsupported_joint_types["ROD"] = unsupported_joint_types.get("ROD", 0) + 1
+            unsupported_joint_types = {
+                name: count
+                for name, count in (
+                    ("DISTANCE", int(np.count_nonzero(joint_type_np == JointType.DISTANCE))),
+                    ("ROD", int(np.count_nonzero(joint_type_np == JointType.ROD))),
+                )
+                if count > 0
+            }
             if len(unsupported_joint_types) > 0:
                 joint_desc = [f"{name} ({count} instances)" for name, count in unsupported_joint_types.items()]
                 unsupported_features.append("joint types: " + ", ".join(joint_desc))
@@ -1522,7 +1519,9 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         inv_mass = model.body_inv_mass.numpy()
         inv_inertia = model.body_inv_inertia.numpy()
-        singular_inertia = np.linalg.matrix_rank(inv_inertia) < 3
+        # Inverse inertia tensors are symmetric, so the Hermitian rank path can use
+        # eigenvalues instead of a general singular-value decomposition.
+        singular_inertia = np.linalg.matrix_rank(inv_inertia, hermitian=True) < 3
         singular = [b for b in range(model.body_count) if inv_mass[b] == 0.0 or singular_inertia[b]]
         if not singular:
             return []

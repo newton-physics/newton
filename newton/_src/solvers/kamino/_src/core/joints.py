@@ -298,20 +298,26 @@ def _has_implicit_pd(act_type: int, k_p: float, k_d: float) -> bool:
     ) and (k_p > 0.0 or k_d > 0.0)
 
 
-def _has_missing_implicit_pd_gains(act_type: int, k_p: float, k_d: float) -> bool:
-    """Returns whether an implicit-PD actuation type has no effective gain."""
-    if act_type == JointActuationType.VELOCITY:
-        return k_d == 0.0
-    return (
-        act_type
-        in (
-            JointActuationType.POSITION,
-            JointActuationType.POSITION_VELOCITY,
-            JointActuationType.POSITION_VELOCITY_FORCE,
+def _has_missing_implicit_pd_gains(
+    act_type: int | np.ndarray,
+    k_p: float | np.ndarray,
+    k_d: float | np.ndarray,
+) -> np.bool_ | np.ndarray:
+    """Returns whether implicit-PD actuation types have no effective gain."""
+    missing_velocity_gain = (act_type == JointActuationType.VELOCITY) & (k_d == 0.0)
+    missing_position_gain = (
+        np.isin(
+            act_type,
+            (
+                JointActuationType.POSITION,
+                JointActuationType.POSITION_VELOCITY,
+                JointActuationType.POSITION_VELOCITY_FORCE,
+            ),
         )
-        and k_p == 0.0
-        and k_d == 0.0
+        & (k_p == 0.0)
+        & (k_d == 0.0)
     )
+    return missing_velocity_gain | missing_position_gain
 
 
 def _validate_implicit_pd_gains(act_type: JointActuationType, k_p: float, k_d: float, *, label: str) -> None:
