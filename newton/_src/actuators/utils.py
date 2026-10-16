@@ -11,31 +11,9 @@ from typing import Any
 
 import warp as wp
 
+from ..utils.onnx import load_onnx_runtime, require_onnx
+
 _METADATA_FILE = "metadata.json"
-
-
-def _require_onnx():
-    """Lazy import of the ``onnx`` package with a friendly error message."""
-    try:
-        import onnx  # noqa: PLC0415
-    except ImportError as exc:  # pragma: no cover - exercised only on missing dep
-        raise ImportError(
-            "Loading neural-drive ONNX checkpoints requires the optional `onnx` package. "
-            "Install it with `pip install newton[onnx]`."
-        ) from exc
-    return onnx
-
-
-def _require_warp_nn_runtime():
-    """Lazy import of the Warp-NN ONNX runtime."""
-    try:
-        from warp_nn.runtime import OnnxRuntime  # noqa: PLC0415
-    except ImportError as exc:  # pragma: no cover - exercised only on missing dep
-        raise ImportError(
-            "Loading neural-drive ONNX checkpoints requires Warp-NN's ONNX runtime. "
-            "Install it with `pip install newton[onnx]`."
-        ) from exc
-    return OnnxRuntime
 
 
 def _looks_like_torch_checkpoint(path: str) -> bool:
@@ -57,7 +35,7 @@ def load_metadata(path: str) -> dict[str, Any]:
     """
     if _looks_like_torch_checkpoint(path):
         return _load_torch_metadata(path)
-    onnx = _require_onnx()
+    onnx = require_onnx()
     model = onnx.load(path, load_external_data=False)
     return _extract_metadata(model, path)
 
@@ -65,7 +43,6 @@ def load_metadata(path: str) -> dict[str, Any]:
 def load_checkpoint(
     path: str,
     device: str | wp.Device | None = None,
-    batch_size: int = 1,
     input_batch_axes: int | dict[str, int] | None = None,
     requires_grad: bool = False,
 ):
@@ -79,10 +56,8 @@ def load_checkpoint(
         path: File path to the checkpoint.
         device: Warp device string (e.g. ``"cuda:0"``).  ``None`` uses the
             current default device.
-        batch_size: Fixed batch dimension used to pre-allocate intermediate
-            buffers.
-        input_batch_axes: Optional ONNX graph-input batch-axis override passed
-            to :class:`warp_nn.runtime.OnnxRuntime`.
+        input_batch_axes: ONNX graph-input dimensions to make dynamic for
+            the actuator batch.
         requires_grad: Whether the runtime allocates gradient storage for its
             own tensors. Required to differentiate the network, since the
             runtime owns intermediate buffers that cannot be given gradients
@@ -96,11 +71,9 @@ def load_checkpoint(
         return _load_torch_raw(path)
 
     metadata = load_metadata(path)
-    OnnxRuntime = _require_warp_nn_runtime()
-    runtime = OnnxRuntime(
+    runtime = load_onnx_runtime(
         path,
         device=device,
-        batch_size=batch_size,
         input_batch_axes=input_batch_axes,
         requires_grad=requires_grad,
     )
@@ -155,20 +128,6 @@ def _parse_metadata_scale(
             f"Invalid metadata value for '{value_key}' in '{model_path}': expected a finite non-zero number, got {value!r}"
         )
     return scale
-
-
-def _runtime_shape(runtime, name: str) -> tuple[int, ...]:
-    """Return a runtime tensor shape while isolating Warp-NN private access."""
-    shapes = getattr(runtime, "_shapes", None)
-    if shapes is None:
-        raise AttributeError(
-            f"{type(runtime).__name__} does not expose tensor shapes; update Warp-NN to provide shape metadata"
-        )
-    if name not in shapes:
-        raise ValueError(
-            f"{type(runtime).__name__} has no shape for tensor '{name}'; available tensors: {sorted(shapes)}"
-        )
-    return tuple(shapes[name])
 
 
 def _require_torch():

@@ -9,6 +9,7 @@ from typing import Literal
 import warp as wp
 from warp import DeviceLike as Devicelike
 
+from ..exceptions import NewtonDeprecationWarning
 from ..geometry.tri_mesh_collision import TriMeshCollisionInfo, build_tri_mesh_collision_info
 
 GENERATION_SENTINEL = -1
@@ -32,7 +33,7 @@ def _warn_rigid_contact_diff_deprecated(name: str) -> None:
     replacement = _RIGID_CONTACT_DIFF_REPLACEMENTS[name]
     warnings.warn(
         f"Contacts.{name} is deprecated in Newton 1.6 and will be removed in a future release; {replacement}.",
-        DeprecationWarning,
+        NewtonDeprecationWarning,
         stacklevel=3,
     )
 
@@ -131,14 +132,12 @@ class Contacts:
 
     EXTENDED_ATTRIBUTES: frozenset[str] = frozenset(("force",))
     """
-    Names of optional extended contact attributes that are not allocated by default.
+    Deprecated optional solver-produced contact attributes.
 
-    These can be requested via :meth:`newton.ModelBuilder.request_contact_attributes` or
-    :meth:`newton.Model.request_contact_attributes` before calling
-    :meth:`newton.CollisionPipeline.contacts`. When constructing :class:`newton.Contacts` directly,
-    pass the names via ``requested_attributes``.
+    .. deprecated:: 1.7
 
-    See :ref:`extended_contact_attributes` for details and usage.
+        Request :attr:`newton.solvers.SolverBase.ObservableKind.CONTACT_F` from the
+        solver instead.
     """
 
     @classmethod
@@ -208,8 +207,8 @@ class Contacts:
                 If False (default), clear() only resets counts in a single fused kernel launch,
                 relying on collision detection to overwrite active contacts. This is much faster
                 than the conservative path and safe since solvers only read up to contact_count.
-            requested_attributes: Set of extended contact attribute names to allocate.
-                See :attr:`EXTENDED_ATTRIBUTES` for available options.
+            requested_attributes: Deprecated set of solver-produced contact
+                attribute names to allocate. See :attr:`EXTENDED_ATTRIBUTES`.
             contact_matching: Allocate a per-contact match index array
                 (:attr:`rigid_contact_match_index`) that stores frame-to-frame
                 contact correspondences filled by the collision pipeline.
@@ -353,8 +352,18 @@ class Contacts:
                 Non-negative elements index matching contacts in the previous sorted contact buffer.
                 Negative elements indicate new or broken contacts.
                 Shape (rigid_contact_max,), dtype int32."""
+                self.rigid_contact_match_generation = wp.full(1, GENERATION_SENTINEL, dtype=wp.int32)
+                """:attr:`contact_generation` of this buffer's contact set that
+                :attr:`rigid_contact_match_index` refers to.
+
+                ``-1`` when the indices refer to no earlier contact set of this buffer:
+                the pipeline's previous collision pass wrote another buffer, or wrote none,
+                or the buffer was written without matching. Consumers that carry
+                per-contact state across frames can compare it with the generation they
+                saved. Shape (1,), dtype int32."""
             else:
                 self.rigid_contact_match_index = None
+                self.rigid_contact_match_generation = None
 
             if contact_report:
                 self.rigid_contact_new_indices = wp.zeros(rigid_contact_max, dtype=wp.int32)
@@ -431,7 +440,7 @@ class Contacts:
             # lives at the consuming solver. Kept private to avoid a public API/deprecation surface.
             self._enable_rigid_soft_full_surface_contact = False
 
-            # Extended contact attributes (optional, allocated on demand)
+            # Deprecated contact attributes (optional compatibility allocation)
             self.force: wp.array | None = None
             """Contact forces (spatial) [N, N·m], shape (rigid_contact_max + soft_contact_max,), dtype :class:`spatial_vector`.
             Force and torque exerted on body0 by body1, referenced to the center of mass (COM) of body0, and in world frame, where body0 and body1 are the bodies of shape0 and shape1.
@@ -445,7 +454,9 @@ class Contacts:
             static. Negating the force gives the force on the soft contact point. Which rows a solver populates
             is documented by its ``update_contacts`` method; unpopulated rows are left unwritten.
 
-            This is an extended contact attribute; see :ref:`extended_contact_attributes` for more information.
+            .. deprecated:: 1.7
+                Request :attr:`newton.solvers.SolverBase.ObservableKind.CONTACT_F` and read
+                :attr:`newton.solvers.SolverBase.Observables.contact_f` instead.
             """
             if requested_attributes and "force" in requested_attributes:
                 total_contacts = rigid_contact_max + soft_contact_max
@@ -539,6 +550,7 @@ class Contacts:
 
             if self.rigid_contact_match_index is not None:
                 self.rigid_contact_match_index.fill_(-1)
+                self.rigid_contact_match_generation.fill_(GENERATION_SENTINEL)
 
             self.soft_contact_indices.fill_(wp.vec3i(-1, -1, -1))
             self.soft_contact_particle.fill_(-1)

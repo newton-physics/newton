@@ -103,7 +103,7 @@ class SensorCamera:
         width, height = 640, 480
         camera_rays = SensorCamera.compute_camera_rays_pinhole(width, height, camera_fov=1.0, device=model.device)
         camera_transforms = wp.array([wp.transform_identity()], dtype=wp.transformf, device=model.device)
-        color = camera.create_color_image_output(camera_transforms.shape[0], width, height)
+        color = camera.allocate_image_color(camera_transforms.shape[0], width, height)
 
         camera.update(state, camera_transforms, camera_rays, color_image=color)
     """
@@ -155,8 +155,8 @@ class SensorCamera:
         """Device of the model this sensor renders."""
         return self._render_context.model.device
 
-    def create_image_output(self, view_count: int, width: int, height: int, dtype: Any) -> wp.array[Any]:
-        """Create a zeroed output image array on the model device.
+    def allocate_image(self, view_count: int, width: int, height: int, dtype: Any) -> wp.array[Any]:
+        """Allocate a zeroed output image array on the model device.
 
         Args:
             view_count: Number of views (the array's leading dimension).
@@ -171,8 +171,8 @@ class SensorCamera:
         """
         return wp.zeros((int(view_count), int(height), int(width)), dtype=dtype, device=self.device)
 
-    def create_color_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.uint32]:
-        """Create an RGBA color output array (packed ``uint32``).
+    def allocate_image_color(self, view_count: int, width: int, height: int) -> wp.array3d[wp.uint32]:
+        """Allocate an RGBA color output array (packed ``uint32``).
 
         Args:
             view_count: Number of views (the array's leading dimension).
@@ -182,10 +182,10 @@ class SensorCamera:
         Returns:
             Zeroed array of shape ``(view_count, height, width)``, dtype ``uint32``.
         """
-        return self.create_image_output(view_count, width, height, wp.uint32)
+        return self.allocate_image(view_count, width, height, wp.uint32)
 
-    def create_depth_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.float32]:
-        """Create a ray-distance depth output array [m].
+    def allocate_image_depth(self, view_count: int, width: int, height: int) -> wp.array3d[wp.float32]:
+        """Allocate a ray-distance depth output array [m].
 
         Args:
             view_count: Number of views (the array's leading dimension).
@@ -195,10 +195,10 @@ class SensorCamera:
         Returns:
             Zeroed array of shape ``(view_count, height, width)``, dtype ``float32``.
         """
-        return self.create_image_output(view_count, width, height, wp.float32)
+        return self.allocate_image(view_count, width, height, wp.float32)
 
-    def create_forward_depth_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.float32]:
-        """Create a forward (planar) depth output array [m].
+    def allocate_image_depth_forward(self, view_count: int, width: int, height: int) -> wp.array3d[wp.float32]:
+        """Allocate a forward (planar) depth output array [m].
 
         Args:
             view_count: Number of views (the array's leading dimension).
@@ -208,36 +208,10 @@ class SensorCamera:
         Returns:
             Zeroed array of shape ``(view_count, height, width)``, dtype ``float32``.
         """
-        return self.create_depth_image_output(view_count, width, height)
+        return self.allocate_image_depth(view_count, width, height)
 
-    def create_shape_index_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.uint32]:
-        """Create a shape-index output array.
-
-        Args:
-            view_count: Number of views (the array's leading dimension).
-            width: Image width [px].
-            height: Image height [px].
-
-        Returns:
-            Zeroed array of shape ``(view_count, height, width)``, dtype ``uint32``.
-        """
-        return self.create_image_output(view_count, width, height, wp.uint32)
-
-    def create_normal_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.vec3f]:
-        """Create a world-space surface-normal output array (``vec3f``).
-
-        Args:
-            view_count: Number of views (the array's leading dimension).
-            width: Image width [px].
-            height: Image height [px].
-
-        Returns:
-            Zeroed array of shape ``(view_count, height, width)``, dtype ``vec3f``.
-        """
-        return self.create_image_output(view_count, width, height, wp.vec3f)
-
-    def create_albedo_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.uint32]:
-        """Create an RGBA albedo output array (packed ``uint32``).
+    def allocate_image_shape_index(self, view_count: int, width: int, height: int) -> wp.array3d[wp.uint32]:
+        """Allocate a shape-index output array.
 
         Args:
             view_count: Number of views (the array's leading dimension).
@@ -247,10 +221,10 @@ class SensorCamera:
         Returns:
             Zeroed array of shape ``(view_count, height, width)``, dtype ``uint32``.
         """
-        return self.create_image_output(view_count, width, height, wp.uint32)
+        return self.allocate_image(view_count, width, height, wp.uint32)
 
-    def create_hdr_color_image_output(self, view_count: int, width: int, height: int) -> wp.array3d[wp.vec3f]:
-        """Create a linear HDR color output array (``vec3f``).
+    def allocate_image_normal(self, view_count: int, width: int, height: int) -> wp.array3d[wp.vec3f]:
+        """Allocate a world-space surface-normal output array (``vec3f``).
 
         Args:
             view_count: Number of views (the array's leading dimension).
@@ -260,7 +234,33 @@ class SensorCamera:
         Returns:
             Zeroed array of shape ``(view_count, height, width)``, dtype ``vec3f``.
         """
-        return self.create_image_output(view_count, width, height, wp.vec3f)
+        return self.allocate_image(view_count, width, height, wp.vec3f)
+
+    def allocate_image_albedo(self, view_count: int, width: int, height: int) -> wp.array3d[wp.uint32]:
+        """Allocate an RGBA albedo output array (packed ``uint32``).
+
+        Args:
+            view_count: Number of views (the array's leading dimension).
+            width: Image width [px].
+            height: Image height [px].
+
+        Returns:
+            Zeroed array of shape ``(view_count, height, width)``, dtype ``uint32``.
+        """
+        return self.allocate_image(view_count, width, height, wp.uint32)
+
+    def allocate_image_color_hdr(self, view_count: int, width: int, height: int) -> wp.array3d[wp.vec3f]:
+        """Allocate a linear HDR color output array (``vec3f``).
+
+        Args:
+            view_count: Number of views (the array's leading dimension).
+            width: Image width [px].
+            height: Image height [px].
+
+        Returns:
+            Zeroed array of shape ``(view_count, height, width)``, dtype ``vec3f``.
+        """
+        return self.allocate_image(view_count, width, height, wp.vec3f)
 
     @staticmethod
     def compute_camera_rays_pinhole(
@@ -358,7 +358,7 @@ class SensorCamera:
         return out_rays
 
     @staticmethod
-    def compute_camera_rays_usd_pinhole(
+    def compute_camera_rays_pinhole_usd(
         width: int,
         height: int,
         camera: Any,
@@ -396,7 +396,7 @@ class SensorCamera:
         width, height, sample_count, out_rays, device = _validate_camera_ray_output(
             width, height, out_rays, device, sample_count=sample_count
         )
-        camera_utils.compute_camera_rays_usd_pinhole(
+        camera_utils.compute_camera_rays_pinhole_usd(
             width,
             height,
             camera,
@@ -812,7 +812,13 @@ class SensorCamera:
             xform=xform,
         )
 
-    def create_default_light(self, enable_shadows: bool = True, direction: wp.vec3f | None = None) -> None:
+    def create_default_light(
+        self,
+        *,
+        enable_shadows: bool = True,
+        direction: wp.vec3f | None = None,
+        color: Sequence[float] | wp.vec3f | None = None,
+    ) -> None:
         """Create a default directional light for the rendered scene.
 
         Args:
@@ -822,9 +828,32 @@ class SensorCamera:
                 ``render_config.enable_shadows=True`` (the latter defaults to
                 ``False``); both switches must be set.
             direction: Normalized light direction. If ``None``, defaults to
-                normalized ``(-1, 1, -1)``.
+                normalized ``(-1, 1, -1)`` for a Z-up model, rotated to the
+                model's up axis otherwise, so the light always points down.
+            color: Linear RGB radiance of the light. If ``None``, defaults to
+                white ``(1, 1, 1)``. Changing it does not recompile the render
+                kernel.
         """
-        self._render_context.create_default_light(enable_shadows=enable_shadows, direction=direction)
+        self._render_context.create_default_light(enable_shadows=enable_shadows, direction=direction, color=color)
+
+    def set_ambient_light(
+        self,
+        sky_color: Sequence[float] | wp.vec3f,
+        ground_color: Sequence[float] | wp.vec3f | None = None,
+    ) -> None:
+        """Set the hemispheric ambient light used when ambient lighting is enabled.
+
+        Surfaces facing the model's up axis receive *sky_color*, surfaces facing
+        away receive *ground_color*, and other orientations blend between the
+        two. The defaults are ``(0.2, 0.2, 0.225)`` and ``(0.05, 0.05, 0.06)``.
+        Changing the colors does not recompile the render kernel.
+
+        Args:
+            sky_color: Linear RGB ambient radiance from above.
+            ground_color: Linear RGB ambient radiance from below. If ``None``,
+                *sky_color* is used, which gives uniform ambient light.
+        """
+        self._render_context.set_ambient_light(sky_color, ground_color)
 
     def assign_checkerboard_material(
         self,
@@ -914,8 +943,9 @@ class SensorCamera:
                 ``render_config.anti_aliasing`` to be :attr:`AntiAliasing.SSAA`
                 or :attr:`AntiAliasing.MSAA`.
             color_image: Output RGBA color buffer (packed ``uint32``).
-            depth_image: Output depth buffer [m].
-            forward_depth_image: Output forward-depth buffer [m].
+            depth_image: Output ray-distance depth from each ray origin [m].
+            forward_depth_image: Output depth measured from the camera origin
+                along its forward axis [m], including per-ray origin offsets.
             shape_index_image: Output shape-index buffer.
             normal_image: Output world-space surface normals.
             albedo_image: Output albedo buffer (packed ``uint32``).

@@ -11,8 +11,10 @@ import shutil
 import tempfile
 import types
 import unittest
+import zipfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -845,7 +847,7 @@ class TestDriveNeuralGRU(unittest.TestCase):
             state,
             dt,
             self.device,
-            custom_inputs,
+            custom_inputs=custom_inputs,
         )
         return forces
 
@@ -1786,35 +1788,74 @@ class TestDriveNeuralMLP(unittest.TestCase):
             DriveNeuralMLP(model_path=path)
 
     def test_finalize_fixed_batch_onnx_with_multiple_actuators(self):
-        """Fixed-batch ONNX exports can still run one scalar per actuator."""
+        """Preserve inference when fixed export and actuator batch sizes differ."""
         weights = np.array([[2.0, 0.0]], dtype=np.float32)
         bias = np.array([1.0], dtype=np.float32)
-        path = self._save_mlp(weights, bias, filename="fixed_batch_mlp.onnx", batch_dim=1)
+        for batch_dim in (1, 3):
+            for n in (1, 3):
+                with self.subTest(batch_dim=batch_dim, num_actuators=n):
+                    path = self._save_mlp(weights, bias, filename="fixed_batch_mlp.onnx", batch_dim=batch_dim)
 
-        n = 3
-        ctrl = DriveNeuralMLP(model_path=path)
-        ctrl.finalize(self.device, n)
-        self.assertEqual(ctrl._network._shapes[ctrl._net_input_name], (n, 2))
-        self.assertEqual(ctrl._network._shapes[ctrl._net_output_name], (n, 1))
+                    ctrl = DriveNeuralMLP(model_path=path)
+                    ctrl.finalize(self.device, n)
+                    self.assertEqual(ctrl._net_input.shape, (n, 2))
+                    self.assertEqual(
+                        ctrl._network({ctrl._net_input_name: ctrl._net_input})[ctrl._net_output_name].shape, (n, 1)
+                    )
 
-        indices = wp.array([0, 1, 2], dtype=wp.uint32, device=self.device)
-        forces = wp.zeros(n, dtype=wp.float32, device=self.device)
-        ctrl.compute(
-            wp.zeros(n, dtype=wp.float32, device=self.device),
-            wp.zeros(n, dtype=wp.float32, device=self.device),
-            wp.array([1.0, 2.0, 3.0], dtype=wp.float32, device=self.device),
-            wp.zeros(n, dtype=wp.float32, device=self.device),
-            None,
-            indices,
-            indices,
-            indices,
-            indices,
-            forces,
-            ctrl.state(n, self.device),
-            0.01,
-            self.device,
+                    indices = wp.array(np.arange(n, dtype=np.uint32), dtype=wp.uint32, device=self.device)
+                    forces = wp.zeros(n, dtype=wp.float32, device=self.device)
+                    ctrl.compute(
+                        wp.zeros(n, dtype=wp.float32, device=self.device),
+                        wp.zeros(n, dtype=wp.float32, device=self.device),
+                        wp.array(np.arange(1, n + 1, dtype=np.float32), dtype=wp.float32, device=self.device),
+                        wp.zeros(n, dtype=wp.float32, device=self.device),
+                        None,
+                        indices,
+                        indices,
+                        indices,
+                        indices,
+                        forces,
+                        ctrl.state(n, self.device),
+                        0.01,
+                        self.device,
+                    )
+                    np.testing.assert_allclose(
+                        forces.numpy(), 2.0 * np.arange(1, n + 1, dtype=np.float32) + 1.0, rtol=1e-5
+                    )
+
+    def test_fixed_batch_external_weights_preserve_checkpoint(self):
+        """Rebatch external ONNX weights without editing files or breaking capture."""
+        onnx, _, _, _ = _onnx_modules()
+        weights = np.array([[2.0, 3.0]], dtype=np.float32)
+        bias = np.array([1.0], dtype=np.float32)
+        path = self._save_mlp(weights, bias, batch_dim=1)
+        model = onnx.load(path)
+        onnx.save_model(
+            model,
+            path,
+            save_as_external_data=True,
+            all_tensors_to_one_file=True,
+            location="weights.bin",
+            size_threshold=0,
         )
-        np.testing.assert_allclose(forces.numpy(), np.array([3.0, 5.0, 7.0], dtype=np.float32), rtol=1e-5)
+        files = (Path(path), Path(self._tmp_dir) / "weights.bin")
+        original = [file.read_bytes() for file in files]
+
+        drive = DriveNeuralMLP(model_path=path)
+        drive.finalize(self.device, 3)
+        inputs = np.array([[1.0, 2.0], [-1.0, 0.5], [0.0, 4.0]], dtype=np.float32)
+        drive._net_input.assign(inputs)
+        arguments = {drive._net_input_name: drive._net_input}
+        if self.device.is_cuda:
+            with wp.ScopedCapture(device=self.device) as capture:
+                outputs = drive._network(arguments)
+            wp.capture_launch(capture.graph)
+        else:
+            outputs = drive._network(arguments)
+        np.testing.assert_allclose(outputs[drive._net_output_name].numpy(), inputs @ weights.T + bias)
+        self.assertEqual([file.read_bytes() for file in files], original)
+        self.assertEqual(onnx.load(path).graph.input[0].type.tensor_type.shape.dim[0].dim_value, 1)
 
     def test_neural_mlp_implicit_linear_net(self):
         """A 1-layer (linear) neural drive solves implicitly, exact.
@@ -2018,6 +2059,64 @@ class TestDriveNeuralLSTM(unittest.TestCase):
         path = os.path.join(self._tmp_dir, filename)
         _build_lstm_onnx(path, hidden_size=hidden, num_layers=1, metadata=metadata)
         return path
+
+    def test_finalize_fixed_batch_onnx(self):
+        """Preserve LSTM inference with individually fixed input batch axes."""
+        onnx_mod, _, _, _ = _onnx_modules()
+        dynamic_path = self._save_lstm(filename="dynamic_lstm.onnx")
+        for input_names in (("input",), ("h_in",), ("c_in",), ("input", "h_in", "c_in")):
+            path = self._save_lstm()
+            model = onnx_mod.load(path)
+            for value in model.graph.input:
+                if value.name in input_names:
+                    value.type.tensor_type.shape.dim[1].dim_value = 1
+            onnx_mod.save(model, path)
+            for n in (1, 3):
+                with self.subTest(input_names=input_names, num_actuators=n):
+                    ctrl = DriveNeuralLSTM(model_path=path)
+                    ctrl.finalize(self.device, n)
+                    reference = DriveNeuralLSTM(model_path=dynamic_path)
+                    reference.finalize(self.device, n)
+                    inputs = {
+                        "input": wp.ones((1, n, 2), dtype=wp.float32, device=self.device),
+                        "h_in": wp.zeros((1, n, 8), dtype=wp.float32, device=self.device),
+                        "c_in": wp.zeros((1, n, 8), dtype=wp.float32, device=self.device),
+                    }
+                    outputs = ctrl._network(inputs)
+                    expected = reference._network(inputs)
+                    self.assertEqual(outputs["output"].shape, (n, 1))
+                    self.assertEqual(outputs["h_out"].shape, (1, n, 8))
+                    self.assertEqual(outputs["c_out"].shape, (1, n, 8))
+                    for name in outputs:
+                        np.testing.assert_allclose(outputs[name].numpy(), expected[name].numpy(), rtol=1e-5, atol=1e-6)
+
+    def test_finalize_preserves_symbolic_sequence_length(self):
+        """Keep a symbolic LSTM sequence axis independent of the actuator batch."""
+        onnx_mod, _, _, _ = _onnx_modules()
+        path = self._save_lstm()
+        model = onnx_mod.load(path)
+        model.graph.input[0].type.tensor_type.shape.dim[0].dim_param = "sequence"
+        # Exercise adaptation of a fixed state batch alongside a symbolic sequence.
+        model.graph.input[1].type.tensor_type.shape.dim[1].dim_value = 1
+        onnx_mod.save(model, path)
+        original = Path(path).read_bytes()
+
+        ctrl = DriveNeuralLSTM(model_path=path)
+        ctrl.finalize(self.device, 3)
+        inputs = {
+            "input": wp.ones((1, 3, 2), dtype=wp.float32, device=self.device),
+            "h_in": wp.zeros((1, 3, 8), dtype=wp.float32, device=self.device),
+            "c_in": wp.zeros((1, 3, 8), dtype=wp.float32, device=self.device),
+        }
+        if self.device.is_cuda:
+            with wp.ScopedCapture(device=self.device) as capture:
+                outputs = ctrl._network(inputs)
+            wp.capture_launch(capture.graph)
+        else:
+            outputs = ctrl._network(inputs)
+        self.assertEqual(outputs["output"].shape, (3, 1))
+        self.assertTrue(np.all(np.isfinite(outputs["output"].numpy())))
+        self.assertEqual(Path(path).read_bytes(), original)
 
     def _run_lstm_compute(self, ctrl: DriveNeuralLSTM) -> None:
         n = 1
@@ -2234,12 +2333,10 @@ class TestDriveNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.TestCas
 
         Regression test for a bug where the Torch path fell back to sequential indices
         into target_pos whenever target_pos_indices was not literally the same array
-        object as pos_indices. This matters in practice for a floating-base robot: the
-        free joint occupies 7 coordinate ("q", position-layout) DOFs but only 6 velocity
-        ("qd") DOFs, so ``pos_indices`` (coord layout) and ``indices``/``target_pos_indices``
-        (legacy DOF layout, see ``newton.use_coord_layout_targets``) are offset
-        differently for the two actuated joints that follow it, and neither equals a plain
-        ``arange(n)``.
+        object as pos_indices. Custom target buffers may use offsets different
+        from both the position coordinates and sequential actuator indices.
+        Exercise those independent mappings with two actuated joints following
+        a floating base.
         """
         self.torch.manual_seed(0)
         net = self.torch.nn.Sequential(self.torch.nn.Linear(2, 1, bias=True)).to(self._torch_dev)
@@ -2252,7 +2349,7 @@ class TestDriveNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.TestCas
         # joint_q layout: 7 free-joint DOFs, then the 2 actuated revolute joints at 7, 8.
         positions = wp.array([0.0] * 7 + [0.3, -0.2], dtype=wp.float32, device=self.device)
         pos_indices = wp.array([7, 8], dtype=wp.uint32, device=self.device)
-        # joint_qd / legacy target layout: 6 free-joint DOFs, then the actuated joints at 6, 7.
+        # Velocity indices follow 6 free-joint DOFs; the custom target buffer uses the same offsets.
         velocities = wp.zeros(8, dtype=wp.float32, device=self.device)
         vel_indices = wp.array([6, 7], dtype=wp.uint32, device=self.device)
         target_pos = wp.array([0.0] * 6 + [1.0, 2.0], dtype=wp.float32, device=self.device)
@@ -2391,12 +2488,10 @@ class TestDriveNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.TestCa
 
         Regression test for a bug where the Torch path fell back to sequential indices
         into target_pos whenever target_pos_indices was not literally the same array
-        object as pos_indices. This matters in practice for a floating-base robot: the
-        free joint occupies 7 coordinate ("q", position-layout) DOFs but only 6 velocity
-        ("qd") DOFs, so ``pos_indices`` (coord layout) and ``indices``/``target_pos_indices``
-        (legacy DOF layout, see ``newton.use_coord_layout_targets``) are offset
-        differently for the two actuated joints that follow it, and neither equals a plain
-        ``arange(n)``.
+        object as pos_indices. Custom target buffers may use offsets different
+        from both the position coordinates and sequential actuator indices.
+        Exercise those independent mappings with two actuated joints following
+        a floating base.
         """
         net = self._make_lstm(hidden=4, layers=1)
         path = self._save_pt2(net, metadata={"effort_scale": 1.0, "num_layers": 1, "hidden_size": 4})
@@ -2408,7 +2503,7 @@ class TestDriveNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.TestCa
         # joint_q layout: 7 free-joint DOFs, then the 2 actuated revolute joints at 7, 8.
         positions = wp.array([0.0] * 7 + [0.3, -0.2], dtype=wp.float32, device=self.device)
         pos_indices = wp.array([7, 8], dtype=wp.uint32, device=self.device)
-        # joint_qd / legacy target layout: 6 free-joint DOFs, then the actuated joints at 6, 7.
+        # Velocity indices follow 6 free-joint DOFs; the custom target buffer uses the same offsets.
         velocities = wp.zeros(8, dtype=wp.float32, device=self.device)
         vel_indices = wp.array([6, 7], dtype=wp.uint32, device=self.device)
         target_pos = wp.array([0.0] * 6 + [1.0, 2.0], dtype=wp.float32, device=self.device)
@@ -3868,12 +3963,12 @@ class TestJointSpaceResponse(unittest.TestCase):
         with_armature = alpha_for(0.5)
         self.assertTrue(np.all(with_armature < bare))
 
-        # alpha must match a dense inverse of (H + diag(armature)).
+        # alpha must match a dense inverse of H, which already includes the armature.
         m = _two_link_builder(armature=0.5).finalize(device=device)
         st = m.state()
         st.joint_q.assign(q0)
         newton.eval_fk(m, st.joint_q, st.joint_qd, st)
-        H = newton.eval_mass_matrix(m, st).numpy()[0, :2, :2] + np.diag([0.5, 0.5])
+        H = newton.eval_mass_matrix(m, st).numpy()[0, :2, :2]
         np.testing.assert_allclose(with_armature, np.diag(np.linalg.inv(H)), rtol=1e-4)
 
     def test_refresh_does_not_mutate_state(self):
@@ -5178,7 +5273,7 @@ class TestDriveStateGraphCapture(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-@unittest.skipUnless(HAS_USD and _HAS_ONNX, "pxr or onnx not installed")
+@unittest.skipUnless(HAS_USD, "pxr not installed")
 class TestNeuralActuatorUsdParsing(unittest.TestCase):
     """Verify ``parse_actuator_prim`` correctly handles neural drive
     prims with asset-typed ``newton:modelPath`` attributes.
@@ -5262,6 +5357,7 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
 
         return stage
 
+    @unittest.skipUnless(_HAS_ONNX, "onnx not installed")
     def test_parse_mlp_from_usd(self):
         """parse_actuator_prim resolves Sdf.AssetPath for MLP checkpoint."""
         model_path = self._make_mlp_checkpoint(metadata={"model_type": "mlp"})
@@ -5279,6 +5375,7 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
         self.assertEqual(cls, ClampingDCMotor)
         self.assertAlmostEqual(kwargs["saturation_effort"], 100.0)
 
+    @unittest.skipUnless(_HAS_ONNX, "onnx not installed")
     def test_parse_lstm_from_usd(self):
         """parse_actuator_prim resolves Sdf.AssetPath for LSTM checkpoint."""
         model_path = self._make_lstm_checkpoint(metadata={"model_type": "lstm"})
@@ -5290,6 +5387,40 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
         self.assertEqual(parsed.drive_class, DriveNeuralLSTM)
         self.assertEqual(parsed.drive_kwargs["model_path"], model_path)
 
+    def test_usd_torch_checkpoint_requires_opt_in(self):
+        """Require a valid model path and trust before importing a Torch checkpoint."""
+        from pxr import Sdf
+
+        model_path = os.path.join(self._tmp_dir, "mlp.pt2")
+        with zipfile.ZipFile(model_path, "w") as archive:
+            archive.writestr("archive/archive_format", "pt2")
+            archive.writestr("archive/extra/metadata.json", json.dumps({"model_type": "mlp"}))
+
+        stage_path = os.path.join(self._tmp_dir, "robot.usda")
+        stage = self._build_neural_stage("mlp.pt2")
+        stage.GetRootLayer().Export(stage_path)
+
+        with self.assertRaisesRegex(ValueError, "allow_unsafe_torch_checkpoints"):
+            newton.ModelBuilder().add_usd(stage_path)
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage_path, allow_unsafe_torch_checkpoints=True)
+        self.assertEqual(result["actuator_count"], 1)
+        self.assertEqual(next(iter(builder.actuator_entries.values())).drive_shared_kwargs["model_path"], model_path)
+
+        prim = stage.GetPrimAtPath("/World/Robot/NeuralActuator")
+        prim.GetAttribute("newton:modelPath").Set(Sdf.AssetPath(""))
+        message = (
+            "Actuator prim '/World/Robot/NeuralActuator': "
+            "NewtonNeuralControlAPI requires a non-empty newton:modelPath attribute"
+        )
+        for allow_unsafe in (False, True):
+            with self.subTest(allow_unsafe_torch_checkpoints=allow_unsafe):
+                with self.assertRaisesRegex(ValueError, message):
+                    parse_actuator_prim(prim, allow_unsafe_torch_checkpoints=allow_unsafe)
+                with self.assertRaisesRegex(ValueError, message):
+                    newton.ModelBuilder().add_usd(stage, allow_unsafe_torch_checkpoints=allow_unsafe)
+
 
 # ---------------------------------------------------------------------------
 # 12. target_pos_indices separation from pos_indices
@@ -5299,7 +5430,8 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
 class TestTargetPosIndicesSeparation(unittest.TestCase):
     """Actuator must read joint_target_q via target_pos_indices, not pos_indices."""
 
-    def test_target_pos_read_from_dof_index_not_coord_index(self):
+    def test_target_pos_read_from_custom_index(self):
+        """Read a custom target buffer through its explicit index mapping."""
         device = wp.get_device()
 
         def _a(vals: Sequence[float], dtype: type = wp.float32) -> wp.array[Any]:
@@ -5312,7 +5444,7 @@ class TestTargetPosIndicesSeparation(unittest.TestCase):
 
         indices = _a([1], dtype=wp.uint32)  # DOF index 1
         pos_indices = _a([3], dtype=wp.uint32)  # coord index 3 (joint_q layout)
-        target_pos_indices = _a([1], dtype=wp.uint32)  # DOF index 1 (legacy DOF target layout)
+        target_pos_indices = _a([1], dtype=wp.uint32)  # index 1 in a custom target buffer
 
         ctrl = DrivePD(kp=_a([kp]), kd=_a([0.0]), const_effort=_a([0.0]))
         actuator = Actuator(
@@ -5358,10 +5490,8 @@ class TestTargetPosIndicesSeparation(unittest.TestCase):
 class TestControlTargetAttrDefaults(unittest.TestCase):
     """``control_target_pos_attr`` / ``control_target_vel_attr`` accept ``None``.
 
-    Both parameters used to default to ``None``, meaning "resolve against the
-    active target layout". The layout switch removed that resolution step, but
-    callers may still pass ``None`` explicitly; it must keep selecting the
-    canonical names instead of reaching ``getattr()`` with a non-string.
+    Explicit ``None`` must select the canonical target attribute names
+    instead of reaching ``getattr()`` with a non-string.
     """
 
     def _actuator(self, **kwargs):

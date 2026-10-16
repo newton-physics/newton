@@ -399,7 +399,9 @@ the audited ref; schema representation alone is not complete support.
 Render **Schema & Importer Support** with columns
 `Feature | Disposition | Evidence / remaining work`:
 
-- **Supported**: cite schema, parsing, and behavioral coverage.
+- **Supported**: record the supported subset and cite schema-to-builder-to-runtime
+  evidence, tests against equivalent builder-created models, and verified schema
+  semantics.
 - **Explicitly deferred**: cite review acceptance, reason, issue, owner, and
   target milestone, plus the remaining limitation.
 - **Not applicable**: explain why the feature is runtime-only or non-authorable.
