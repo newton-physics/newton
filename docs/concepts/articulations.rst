@@ -114,8 +114,7 @@ explicit rest points, the initial endpoints may differ.
 
 At structural rest, parent and child anchor points coincide. The rod's
 :attr:`newton.Model.joint_target_q` therefore has zero translation and stores
-the relative rest rotation as a quaternion in coordinate layout or extrinsic
-ZYX angles [rad] in legacy layout. For individual joints, specify
+the relative rest rotation as a unit quaternion. For individual joints, specify
 ``rest_rotation`` on :meth:`newton.ModelBuilder.add_joint_rod`; its default is
 the initial relative anchor rotation.
 
@@ -567,11 +566,9 @@ properties defined via :class:`newton.ModelBuilder.JointDofConfig`, and the
 velocity targets at :attr:`newton.Control.joint_target_qd`.
 
 The position targets at :attr:`newton.Control.joint_target_q` instead match
-:attr:`newton.Model.joint_q` (coord layout) by default; index those with
-:attr:`newton.Model.joint_q_start`. Under the deprecated legacy layout
-(``use_coord_layout_targets = False``) the array is DOF-shaped and indexed
-via :attr:`newton.Model.joint_qd_start` — see the
-:ref:`migration guide <joint-target-layout>` for details.
+:attr:`newton.Model.joint_q` (coordinate layout); index those with
+:attr:`newton.Model.joint_target_q_start`, which aliases :attr:`newton.Model.joint_q_start`.
+See the :ref:`migration guide <joint-target-layout>` for details.
 
 For every generalized-coordinate joint, these per-DOF arrays are stored
 consecutively, with linear DOFs first and angular DOFs second. Use
@@ -600,8 +597,7 @@ The same start index can be used to query other per-DOF arrays for that joint:
     num_angular_dofs = joint_dof_dim[joint_id, 1]
     # all per-DOF arrays for this joint start at this index:
     dof_start = joint_qd_start[joint_id]
-    # position targets use the layout-aware mapping (aliases joint_q_start
-    # under newton.use_coord_layout_targets, joint_qd_start otherwise):
+    # position targets use coordinate indices (aliases joint_q_start):
     target_q_start = joint_target_q_start[joint_id]
     # the axis vector for the first linear DOF
     first_lin_axis = joint_axis[dof_start]

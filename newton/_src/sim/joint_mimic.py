@@ -7,6 +7,7 @@ import warnings
 
 import warp as wp
 
+from ..exceptions import NewtonWarning
 from .articulation import eval_angular_coordinates
 from .enums import JointType
 from .model import Model
@@ -368,6 +369,7 @@ def has_supported_joint_mimics(model: Model, solver_name: str) -> bool:
         warnings.warn(
             f"{solver_name} ignores joint-owned mimic relationships unless both joints are PRISMATIC, "
             f"REVOLUTE, or D6; unsupported follower joint indices: {unsupported_sample}{omitted_suffix}.",
+            NewtonWarning,
             stacklevel=3,
         )
     return has_supported
