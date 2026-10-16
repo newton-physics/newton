@@ -3,7 +3,6 @@
 
 import builtins
 import hashlib
-import importlib.util
 import inspect
 import logging
 import math
@@ -13,6 +12,7 @@ import tempfile
 import types
 import unittest
 import warnings
+from contextlib import nullcontext
 from unittest import mock
 from urllib.parse import urlparse
 
@@ -51,6 +51,65 @@ _PARTIAL_EQ_SOLREF_WARNING = (
 
 class TestImportUsdPhysics(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_legacy_unit_flags_warn_when_enabled(self):
+        """Deprecate each enabled legacy unit flag without warning for defaults."""
+        from pxr import Usd
+
+        for kwargs, expected_flags in (
+            ({}, ()),
+            ({"legacy_angular_velocity_units": False, "legacy_springref_units": False}, ()),
+            ({"legacy_angular_velocity_units": True}, ("legacy_angular_velocity_units",)),
+            ({"legacy_springref_units": True}, ("legacy_springref_units",)),
+            (
+                {"legacy_angular_velocity_units": True, "legacy_springref_units": True},
+                ("legacy_angular_velocity_units", "legacy_springref_units"),
+            ),
+        ):
+            with self.subTest(kwargs=kwargs):
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always", DeprecationWarning)
+                    newton.ModelBuilder().add_usd(Usd.Stage.CreateInMemory(), **kwargs)
+                deprecations = [warning for warning in caught if issubclass(warning.category, DeprecationWarning)]
+                self.assertEqual(len(deprecations), len(expected_flags))
+                for warning, flag in zip(deprecations, expected_flags, strict=True):
+                    self.assertRegex(str(warning.message), rf"{flag}.*deprecated.*1\.8")
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_material_binding_outside_import_root(self):
+        """Import shared physics materials without importing unrelated bodies."""
+        from pxr import Usd, UsdGeom, UsdPhysics, UsdShade
+
+        root_path = "/World/envs/env_0"
+        for material_root in (root_path, "/World"):
+            with self.subTest(material_root=material_root):
+                stage = Usd.Stage.CreateInMemory()
+                UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+                UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+                UsdGeom.Xform.Define(stage, root_path)
+                material = UsdShade.Material.Define(stage, f"{material_root}/PhysicsMaterials/Shared")
+                physics_material = UsdPhysics.MaterialAPI.Apply(material.GetPrim())
+                physics_material.CreateStaticFrictionAttr(0.7)
+                physics_material.CreateDynamicFrictionAttr(0.4)
+                physics_material.CreateRestitutionAttr(0.2)
+
+                for path in (f"{root_path}/Body0", f"{root_path}/Body1", "/World/envs/env_1/Body"):
+                    body = UsdGeom.Cube.Define(stage, path)
+                    UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                    UsdPhysics.MassAPI.Apply(body.GetPrim()).CreateMassAttr(1.0)
+                    UsdPhysics.CollisionAPI.Apply(body.GetPrim())
+                    UsdShade.MaterialBindingAPI.Apply(body.GetPrim()).Bind(material, materialPurpose="physics")
+
+                builder = newton.ModelBuilder()
+                result = builder.add_usd(stage, root_path=root_path, load_visual_shapes=False)
+                self.assertEqual(set(result["path_body_map"]), {f"{root_path}/Body0", f"{root_path}/Body1"})
+                self.assertEqual(set(result["path_shape_map"]), {f"{root_path}/Body0", f"{root_path}/Body1"})
+                self.assertEqual(builder.body_count, 2)
+                self.assertEqual(builder.shape_count, 2)
+                for shape in result["path_shape_map"].values():
+                    self.assertAlmostEqual(builder.shape_material_mu[shape], 0.4, places=6)
+                    self.assertAlmostEqual(builder.shape_material_restitution[shape], 0.2, places=6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_per_import_shape_defaults(self):
         """Keep unbound material and shape defaults independent between imports."""
         from pxr import Usd, UsdGeom, UsdPhysics
@@ -86,6 +145,19 @@ class TestImportUsdPhysics(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_rigid_body_velocity(self):
+        """Import rigid-body velocities correctly with either body ordering."""
+        for bodies_follow_joint_ordering in (False, True):
+            with self.subTest(bodies_follow_joint_ordering=bodies_follow_joint_ordering):
+                self._check_rigid_body_velocity(bodies_follow_joint_ordering=bodies_follow_joint_ordering)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_legacy_rigid_body_velocity_units(self):
+        """Keep rigid-body velocity conversion unchanged by the deprecated flag."""
+        with self.assertWarnsRegex(DeprecationWarning, r"legacy_angular_velocity_units.*1\.8"):
+            self._check_rigid_body_velocity(legacy_angular_velocity_units=True)
+
+    def _check_rigid_body_velocity(self, **import_kwargs):
+        """Import a rotated body and check its body and joint velocities."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -107,24 +179,18 @@ class TestImportUsdPhysics(unittest.TestCase):
             (10.0, 20.0, 30.0),
             wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.5 * wp.pi),
         )
-        for bodies_follow_joint_ordering in (False, True):
-            with self.subTest(bodies_follow_joint_ordering=bodies_follow_joint_ordering):
-                builder = newton.ModelBuilder()
-                result = builder.add_usd(
-                    stage,
-                    xform=scene_xform,
-                    bodies_follow_joint_ordering=bodies_follow_joint_ordering,
-                )
-                body_id = result["path_body_map"]["/World/Body"]
-                model = builder.finalize()
-                expected = np.asarray((-2.0, 3.0, -1.0, 0.0, 0.0, -0.5 * np.pi))
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, xform=scene_xform, **import_kwargs)
+        body_id = result["path_body_map"]["/World/Body"]
+        model = builder.finalize()
+        expected = np.asarray((-2.0, 3.0, -1.0, 0.0, 0.0, -0.5 * np.pi))
 
-                assert_np_equal(model.body_qd.numpy()[body_id], expected, tol=1.0e-5)
-                assert_np_equal(model.joint_qd.numpy(), expected, tol=1.0e-5)
+        assert_np_equal(model.body_qd.numpy()[body_id], expected, tol=1.0e-5)
+        assert_np_equal(model.joint_qd.numpy(), expected, tol=1.0e-5)
 
-                state = model.state()
-                newton.eval_fk(model, model.joint_q, model.joint_qd, state)
-                assert_np_equal(state.body_qd.numpy()[body_id], expected, tol=1.0e-5)
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        assert_np_equal(state.body_qd.numpy()[body_id], expected, tol=1.0e-5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_physx_joint_state_velocity_units(self):
@@ -156,7 +222,7 @@ class TestImportUsdPhysics(unittest.TestCase):
         set_state(connect(prismatic, "Slider"), "linear", 0.25, 0.5)
 
         d6 = connect(UsdPhysics.Joint.Define(stage, "/World/D6"), "Gimbal")
-        # Newton creates D6 DOFs only for axes with a limit; rotX is the single rotational DOF.
+        # Newton creates D6 DOFs only for axes with a limit; rotX is the rotational DOF.
         limit = UsdPhysics.LimitAPI.Apply(d6, "rotX")
         limit.CreateLowAttr().Set(-180.0)
         limit.CreateHighAttr().Set(180.0)
@@ -171,23 +237,36 @@ class TestImportUsdPhysics(unittest.TestCase):
         merged_hinge.CreateBody1Rel().SetTargets(["/World/Merged"])
         set_state(merged_hinge.GetPrim(), "angular", 90.0, 180.0)
 
+        # Reuse the stage and builder to catch options leaking across imports.
         builder = newton.ModelBuilder()
-        result = builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverPhysx()])
-        joint_q, joint_qd = np.asarray(builder.joint_q), np.asarray(builder.joint_qd)
-        for path, position, velocity in (
-            ("/World/Revolute", 0.5 * np.pi, np.pi),
-            ("/World/Prismatic", 0.25, 0.5),
-            ("/World/D6", 0.5 * np.pi, np.pi),
+        for kwargs, angular_velocity in (
+            ({"legacy_angular_velocity_units": True}, 180.0),
+            ({}, np.pi),
+            ({"legacy_angular_velocity_units": False}, np.pi),
         ):
-            with self.subTest(joint=path):
-                joint = result["path_joint_map"][path]
-                self.assertAlmostEqual(joint_q[builder.joint_q_start[joint]], position, places=5)
-                self.assertAlmostEqual(joint_qd[builder.joint_qd_start[joint]], velocity, places=5)
+            with self.subTest(kwargs=kwargs):
+                warning = (
+                    self.assertWarnsRegex(DeprecationWarning, r"legacy_angular_velocity_units.*1\.8")
+                    if kwargs.get("legacy_angular_velocity_units")
+                    else nullcontext()
+                )
+                with warning:
+                    result = builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverPhysx()], **kwargs)
+                joint_q, joint_qd = np.asarray(builder.joint_q), np.asarray(builder.joint_qd)
+                for path, offset, position, velocity in (
+                    ("/World/Revolute", 0, 0.5 * np.pi, angular_velocity),
+                    ("/World/Prismatic", 0, 0.25, 0.5),
+                    ("/World/D6", 0, 0.5 * np.pi, angular_velocity),
+                ):
+                    with self.subTest(joint=path):
+                        joint = result["path_joint_map"][path]
+                        self.assertAlmostEqual(joint_q[builder.joint_q_start[joint] + offset], position, places=5)
+                        self.assertAlmostEqual(joint_qd[builder.joint_qd_start[joint] + offset], velocity, places=5)
 
-        merged = result["path_joint_map"]["/World/MergedHinge"]
-        self.assertEqual(result["path_joint_map"]["/World/MergedSlide"], merged)
-        qd_start = builder.joint_qd_start[merged]
-        np.testing.assert_allclose(joint_qd[qd_start : qd_start + 2], [0.5, np.pi], atol=1e-5)
+                merged = result["path_joint_map"]["/World/MergedHinge"]
+                self.assertEqual(result["path_joint_map"]["/World/MergedSlide"], merged)
+                qd_start = builder.joint_qd_start[merged]
+                np.testing.assert_allclose(joint_qd[qd_start : qd_start + 2], [0.5, angular_velocity], atol=1e-5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_rigid_body_velocity_with_collapsed_fixed_joint(self):
@@ -602,128 +681,7 @@ class TestImportUsdPhysics(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_physx_convex_decomposition_limits(self):
-        """Honor PhysX hull count and hull vertex limits on convex decomposition."""
-        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
-
-        stage = Usd.Stage.CreateInMemory()
-        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
-        UsdPhysics.Scene.Define(stage, "/physicsScene")
-        box = newton.Mesh.create_box(
-            1.0, 1.0, 1.0, duplicate_vertices=False, compute_normals=False, compute_uvs=False, compute_inertia=False
-        )
-        for name in ("/Plain", "/Physx", "/Default", "/Other"):
-            mesh = UsdGeom.Mesh.Define(stage, name)
-            UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
-            mesh.CreateFaceVertexCountsAttr().Set([3] * (len(box.indices) // 3))
-            mesh.CreateFaceVertexIndicesAttr().Set(box.indices.tolist())
-            mesh.CreatePointsAttr().Set([Gf.Vec3f(*point) for point in box.vertices.tolist()])
-            UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).GetApproximationAttr().Set(
-                UsdPhysics.Tokens.convexDecomposition
-            )
-        physx = stage.GetPrimAtPath("/Physx")
-        physx.AddAppliedSchema("PhysxConvexDecompositionCollisionAPI")
-        physx.CreateAttribute("physxConvexDecompositionCollision:maxConvexHulls", Sdf.ValueTypeNames.Int).Set(5)
-        physx.CreateAttribute("physxConvexDecompositionCollision:hullVertexLimit", Sdf.ValueTypeNames.Int).Set(8)
-        stage.GetPrimAtPath("/Default").AddAppliedSchema("PhysxConvexDecompositionCollisionAPI")
-        other = stage.GetPrimAtPath("/Other")
-        other.AddAppliedSchema("PhysxConvexDecompositionCollisionAPI")
-        other.CreateAttribute("physxConvexDecompositionCollision:maxConvexHulls", Sdf.ValueTypeNames.Int).Set(2)
-        other.CreateAttribute("physxConvexDecompositionCollision:hullVertexLimit", Sdf.ValueTypeNames.Int).Set(16)
-        calls = []
-        fake_coacd = types.ModuleType("coacd")
-        fake_coacd.Mesh = lambda vertices, indices: (vertices, indices)
-
-        def run_coacd(cmesh, **kwargs):
-            calls.append(kwargs)
-            return [cmesh]
-
-        fake_coacd.run_coacd = run_coacd
-        for load_visual_shapes in (False, True):
-            with self.subTest(load_visual_shapes=load_visual_shapes):
-                calls.clear()
-                with patch_sys_module("coacd", fake_coacd):
-                    newton.ModelBuilder().add_usd(
-                        stage, load_visual_shapes=load_visual_shapes, schema_resolvers=[usd.SchemaResolverPhysx()]
-                    )
-                merged = [call for call in calls if call["merge"]]
-                self.assertEqual(len(merged), 3)
-                self.assertEqual(
-                    sorted((call["max_convex_hull"], call["max_ch_vertex"]) for call in merged),
-                    [(2, 16), (5, 8), (32, 64)],
-                )
-                self.assertTrue(all(call["decimate"] for call in merged))
-                plain = [call for call in calls if not call["merge"]]
-                self.assertEqual(len(plain), 1)
-                self.assertEqual(plain[0]["max_convex_hull"], newton.Mesh.MAX_HULL_VERTICES)
-                self.assertNotIn("decimate", plain[0])
-                self.assertNotIn("max_ch_vertex", plain[0])
-                self.assertEqual(len(calls), 4)
-        calls.clear()
-        with patch_sys_module("coacd", fake_coacd):
-            newton.ModelBuilder().add_usd(stage)
-        self.assertTrue(calls)
-        self.assertTrue(all(not call["merge"] for call in calls))
-        self.assertTrue(all("decimate" not in call for call in calls))
-
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_physx_convex_decomposition_budget_spans_components(self):
-        """Cap the hull count of the whole mesh, not of each disconnected component."""
-        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
-
-        def two_boxes_stage(max_hulls):
-            stage = Usd.Stage.CreateInMemory()
-            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
-            UsdGeom.SetStageMetersPerUnit(stage, 1.0)
-            UsdPhysics.Scene.Define(stage, "/physicsScene")
-            small = newton.Mesh.create_box(0.5, 0.5, 0.5, duplicate_vertices=False, compute_inertia=False)
-            large = newton.Mesh.create_box(2.0, 2.0, 2.0, duplicate_vertices=False, compute_inertia=False)
-            points = np.concatenate((small.vertices, large.vertices + np.array([10.0, 0.0, 0.0])))
-            indices = np.concatenate((small.indices, large.indices + len(small.vertices)))
-            mesh = UsdGeom.Mesh.Define(stage, "/Boxes")
-            UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
-            mesh.CreateFaceVertexCountsAttr().Set([3] * (len(indices) // 3))
-            mesh.CreateFaceVertexIndicesAttr().Set(indices.tolist())
-            mesh.CreatePointsAttr().Set([Gf.Vec3f(*point) for point in points.tolist()])
-            UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).GetApproximationAttr().Set(
-                UsdPhysics.Tokens.convexDecomposition
-            )
-            prim = mesh.GetPrim()
-            prim.AddAppliedSchema("PhysxConvexDecompositionCollisionAPI")
-            prim.CreateAttribute("physxConvexDecompositionCollision:maxConvexHulls", Sdf.ValueTypeNames.Int).Set(
-                max_hulls
-            )
-            return stage
-
-        budgets = []
-        fake_coacd = types.ModuleType("coacd")
-        fake_coacd.Mesh = lambda vertices, indices: (vertices, indices)
-
-        def run_coacd(cmesh, **kwargs):
-            budgets.append((len(cmesh[0]), kwargs["max_convex_hull"]))
-            return [cmesh]
-
-        fake_coacd.run_coacd = run_coacd
-        with patch_sys_module("coacd", fake_coacd):
-            newton.ModelBuilder().add_usd(two_boxes_stage(10), schema_resolvers=[usd.SchemaResolverPhysx()])
-            self.assertEqual(sum((budget for _, budget in budgets)), 10)
-            self.assertLess(budgets[0][1], budgets[1][1])
-            budgets.clear()
-            builder = newton.ModelBuilder()
-            with self.assertWarns(UserWarning):
-                builder.add_usd(two_boxes_stage(1), schema_resolvers=[usd.SchemaResolverPhysx()])
-            self.assertEqual([budget for _, budget in budgets], [1, 1])
-            hulls = [i for i, kind in enumerate(builder.shape_type) if kind == newton.GeoType.CONVEX_MESH]
-            self.assertEqual(len(hulls), 1)
-            extent = builder.shape_source[hulls[0]].vertices[:, 0]
-            self.assertAlmostEqual(float(extent.min()), -0.5, places=5)
-            self.assertAlmostEqual(float(extent.max()), 12.0, places=5)
-
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    def test_physx_convex_decomposition_real_backend(self):
-        """Bound imported hulls and their vertices using the actual CoACD backend."""
-        if importlib.util.find_spec("coacd") is None:
-            self.skipTest("Requires coacd")
+        """Import opt-in PhysX limits without merging disconnected components."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -733,30 +691,76 @@ class TestImportUsdPhysics(unittest.TestCase):
         source = newton.Mesh.create_sphere(
             num_latitudes=8, num_longitudes=12, compute_normals=False, compute_uvs=False, compute_inertia=False
         )
-        mesh = UsdGeom.Mesh.Define(stage, "/Sphere")
-        mesh.CreatePointsAttr().Set([Gf.Vec3f(*point) for point in source.vertices.tolist()])
-        mesh.CreateFaceVertexIndicesAttr().Set(source.indices.tolist())
-        mesh.CreateFaceVertexCountsAttr().Set([3] * (len(source.indices) // 3))
-        prim = mesh.GetPrim()
-        UsdPhysics.CollisionAPI.Apply(prim)
-        UsdPhysics.MeshCollisionAPI.Apply(prim).GetApproximationAttr().Set(UsdPhysics.Tokens.convexDecomposition)
-        prim.AddAppliedSchema("PhysxConvexDecompositionCollisionAPI")
-        prim.CreateAttribute("physxConvexDecompositionCollision:maxConvexHulls", Sdf.ValueTypeNames.Int).Set(2)
-        prim.CreateAttribute("physxConvexDecompositionCollision:hullVertexLimit", Sdf.ValueTypeNames.Int).Set(8)
-        builder = newton.ModelBuilder()
-        with warnings.catch_warnings():
-            warnings.simplefilter("error")
-            builder.add_usd(stage, load_visual_shapes=False, schema_resolvers=[usd.SchemaResolverPhysx()])
-        hulls = [i for i, kind in enumerate(builder.shape_type) if kind == newton.GeoType.CONVEX_MESH]
-        self.assertGreater(len(hulls), 0)
-        self.assertLessEqual(len(hulls), 2)
-        for shape in hulls:
-            self.assertLessEqual(len(builder.shape_source[shape].vertices), 8)
-        for device in devices:
-            with self.subTest(device=device):
-                model = builder.finalize(device=device)
-                self.assertEqual(model.shape_count, len(hulls))
-                self.assertTrue(np.isfinite(model.shape_scale.numpy()).all())
+        for name in ("/Plain", "/Physx", "/Default", "/Other", "/Hull"):
+            vertices, indices = source.vertices, source.indices
+            if name == "/Physx":
+                vertices = np.concatenate((vertices, vertices + np.array([10.0, 0.0, 0.0])))
+                indices = np.concatenate((indices, indices + len(source.vertices)))
+            mesh = UsdGeom.Mesh.Define(stage, name)
+            mesh.CreateFaceVertexCountsAttr().Set([3] * (len(indices) // 3))
+            mesh.CreateFaceVertexIndicesAttr().Set(indices.tolist())
+            mesh.CreatePointsAttr().Set([Gf.Vec3f(*point) for point in vertices.tolist()])
+            prim = mesh.GetPrim()
+            UsdPhysics.CollisionAPI.Apply(prim)
+            approximation = UsdPhysics.Tokens.convexHull if name == "/Hull" else UsdPhysics.Tokens.convexDecomposition
+            UsdPhysics.MeshCollisionAPI.Apply(prim).GetApproximationAttr().Set(approximation)
+            if name != "/Plain":
+                prim.AddAppliedSchema("PhysxConvexDecompositionCollisionAPI")
+            if name in ("/Plain", "/Physx", "/Other", "/Hull"):
+                hulls, vertices = (1, 8) if name == "/Physx" else (2, 16)
+                prim.CreateAttribute("physxConvexDecompositionCollision:maxConvexHulls", Sdf.ValueTypeNames.Int).Set(
+                    hulls
+                )
+                prim.CreateAttribute("physxConvexDecompositionCollision:hullVertexLimit", Sdf.ValueTypeNames.Int).Set(
+                    vertices
+                )
+                prim.CreateAttribute("physxConvexHullCollision:hullVertexLimit", Sdf.ValueTypeNames.Int).Set(
+                    4 if name == "/Other" else 32
+                )
+        calls = []
+        fake_coacd = types.ModuleType("coacd")
+        fake_coacd.Mesh = lambda vertices, indices: (vertices, indices)
+
+        def run_coacd(cmesh, **kwargs):
+            calls.append(kwargs)
+            return [cmesh]
+
+        fake_coacd.run_coacd = run_coacd
+        for physx_resolver in (False, True):
+            for load_visual_shapes in (False, True):
+                with self.subTest(physx_resolver=physx_resolver, load_visual_shapes=load_visual_shapes):
+                    calls.clear()
+                    builder = newton.ModelBuilder()
+                    with patch_sys_module("coacd", fake_coacd):
+                        builder.add_usd(
+                            stage,
+                            load_visual_shapes=load_visual_shapes,
+                            schema_resolvers=[usd.SchemaResolverPhysx()] if physx_resolver else [],
+                        )
+                    merged = [call for call in calls if call["merge"]]
+                    self.assertEqual(
+                        sorted(call["max_convex_hull"] for call in merged), [1, 1, 2, 32] if physx_resolver else []
+                    )
+                    self.assertTrue(all(not call.get("decimate", False) for call in calls))
+                    self.assertTrue(all("max_ch_vertex" not in call for call in calls))
+                    hulls = [i for i, kind in enumerate(builder.shape_type) if kind == newton.GeoType.CONVEX_MESH]
+                    self.assertEqual(len(hulls), 6)
+                    expected = {"/Plain": 32, "/Physx": 8, "/Default": 64, "/Other": 16, "/Hull": 32}
+                    for shape in hulls:
+                        label = builder.shape_label[shape]
+                        path = next(path for path in expected if label.startswith(path))
+                        limit = expected[path] if physx_resolver else newton.Mesh.MAX_HULL_VERTICES
+                        self.assertEqual(builder.shape_source[shape].maxhullvert, limit)
+                        self.assertLessEqual(len(builder.shape_source[shape].vertices), limit)
+                        if path == "/Physx":
+                            # Each separated component keeps its own hull, even with a budget of one.
+                            extent = builder.shape_source[shape].vertices[:, 0]
+                            self.assertLess(float(np.ptp(extent)), 3.0)
+                    for device in devices:
+                        with self.subTest(device=device):
+                            model = builder.finalize(device=device)
+                            self.assertEqual(model.shape_count, builder.shape_count)
+                            self.assertTrue(np.isfinite(model.shape_scale.numpy()).all())
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_disabled_mesh_collider_skips_approximation(self):
@@ -5101,6 +5105,73 @@ def Xform "Articulation" (
         self.assertAlmostEqual(model.joint_target_q.numpy()[target_idx], np.deg2rad(20.0), places=5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_legacy_springref_units(self):
+        """Restore raw springrefs without changing refs, lengths, or later imports."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        for angle_units in (None, "degree", "radian", "no_scene"):
+            stage = Usd.Stage.CreateInMemory()
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            if angle_units != "no_scene":
+                scene = UsdPhysics.Scene.Define(stage, "/physicsScene")
+                if angle_units is not None:
+                    scene.GetPrim().CreateAttribute("mjc:compiler:angle", Sdf.ValueTypeNames.Token).Set(angle_units)
+
+            for path in ("Hinge", "Slider", "Merged"):
+                body = UsdGeom.Xform.Define(stage, f"/World/{path}")
+                UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+                mass = UsdPhysics.MassAPI.Apply(body.GetPrim())
+                mass.CreateMassAttr(1.0)
+                mass.CreateDiagonalInertiaAttr(Gf.Vec3f(0.1))
+
+            for path, body, angular in (
+                ("Revolute", "Hinge", True),
+                ("Prismatic", "Slider", False),
+                ("MergedHinge", "Merged", True),
+                ("MergedSlide", "Merged", False),
+            ):
+                joint_schema = UsdPhysics.RevoluteJoint if angular else UsdPhysics.PrismaticJoint
+                joint = joint_schema.Define(stage, f"/World/{path}")
+                joint.CreateBody1Rel().SetTargets([f"/World/{body}"])
+                prim = joint.GetPrim()
+                prim.CreateAttribute("mjc:ref", Sdf.ValueTypeNames.Float).Set(15.0 if angular else 0.1)
+                prim.CreateAttribute("mjc:springref", Sdf.ValueTypeNames.Float).Set(30.0 if angular else 0.25)
+
+            builder = newton.ModelBuilder()
+            SolverMuJoCo.register_custom_attributes(builder)
+            for kwargs, legacy in (
+                ({"legacy_springref_units": True}, True),
+                ({}, False),
+                ({"legacy_springref_units": False}, False),
+            ):
+                with self.subTest(angle_units=angle_units, kwargs=kwargs):
+                    warning = (
+                        self.assertWarnsRegex(DeprecationWarning, r"legacy_springref_units.*1\.8")
+                        if legacy
+                        else nullcontext()
+                    )
+                    with warning:
+                        result = builder.add_usd(stage, **kwargs)
+                    model = builder.finalize(device="cpu")
+                    springref = model.mujoco.dof_springref.numpy()
+                    reference = model.mujoco.dof_ref.numpy()
+                    angular_factor = 1.0 if angle_units == "radian" else np.pi / 180.0
+                    expected_springref = 30.0 if legacy else 30.0 * angular_factor
+
+                    for path, offset, expected_spring, expected_ref in (
+                        ("Revolute", 0, expected_springref, 15.0 * angular_factor),
+                        ("Prismatic", 0, 0.25, 0.1),
+                        ("MergedHinge", 1, expected_springref, 15.0 * angular_factor),
+                        ("MergedSlide", 0, 0.25, 0.1),
+                    ):
+                        joint = result["path_joint_map"][f"/World/{path}"]
+                        dof = builder.joint_qd_start[joint] + offset
+                        self.assertAlmostEqual(springref[dof], expected_spring, places=5)
+                        self.assertAlmostEqual(reference[dof], expected_ref, places=5)
+
+                    self.assertEqual(stage.GetPrimAtPath("/World/Revolute").GetAttribute("mjc:springref").Get(), 30.0)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_springref_attribute_parsing(self):
         """Test that 'mjc:springref' attribute is parsed for revolute and prismatic joints."""
         from pxr import Usd
@@ -7245,6 +7316,49 @@ def Xform "Articulation" (
         np.testing.assert_allclose(inertia @ inv_inertia, np.eye(3), atol=1e-5, rtol=1e-5)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_massapi_authored_mass_without_colliders_uses_small_sphere_inertia(self):
+        """Authored mass without inertia or colliders gets OpenUSD's small-sphere inertia.
+
+        Bodies with colliders keep the collider inertia scaled to the authored mass.
+        """
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        for name, mass, geometry, diagonal_inertia in (
+            ("Bare", 2.0, None, None),
+            ("VisualOnly", 1.0, "visual", None),
+            ("Cube", 1.0, "collider", None),
+            ("Authored", 1.0, None, Gf.Vec3f(1.0, 2.0, 3.0)),
+        ):
+            body = UsdGeom.Xform.Define(stage, f"/World/{name}")
+            UsdPhysics.RigidBodyAPI.Apply(body.GetPrim())
+            mass_api = UsdPhysics.MassAPI.Apply(body.GetPrim())
+            mass_api.CreateMassAttr().Set(mass)
+            if diagonal_inertia is not None:
+                mass_api.CreateDiagonalInertiaAttr().Set(diagonal_inertia)
+            if geometry is not None:
+                cube = UsdGeom.Cube.Define(stage, f"/World/{name}/Geom")
+                cube.CreateSizeAttr().Set(2.0)
+                if geometry == "collider":
+                    UsdPhysics.CollisionAPI.Apply(cube.GetPrim())
+
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage)
+
+        def inertia(name):
+            return np.array(builder.body_inertia[result["path_body_map"][f"/World/{name}"]]).reshape(3, 3)
+
+        # Solid sphere of radius 0.1 m: I = 0.4 * m * r**2.
+        np.testing.assert_allclose(inertia("Bare"), np.eye(3) * 0.4 * 2.0 * 0.1**2, rtol=1e-6)
+        np.testing.assert_allclose(inertia("VisualOnly"), np.eye(3) * 0.4 * 1.0 * 0.1**2, rtol=1e-6)
+        # Solid cube of unit mass and edge 2: I = m * s**2 / 6.
+        np.testing.assert_allclose(inertia("Cube"), np.eye(3) * 2.0**2 / 6.0, rtol=1e-5)
+        np.testing.assert_allclose(np.diag(inertia("Authored")), [1.0, 2.0, 3.0], rtol=1e-6)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_massapi_authored_mass_without_inertia_scales_to_uniform_density(self):
         """Authored mass without inertia should produce inertia consistent with a uniform-density body.
 
@@ -7943,7 +8057,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_mimic_coef0_warns_for_multi_dof_follower(self):
-        """A spherical follower has no scalar angle, so the offset is passed through with a warning."""
+        """Warn and preserve the offset for a supported D6 follower with mixed coordinate units."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -7960,19 +8074,22 @@ def Xform "Articulation" (
             UsdPhysics.CollisionAPI.Apply(link)
             links.append(link)
 
-        def joint(joint_cls, path, body0, body1):
-            j = joint_cls.Define(stage, path)
+        def joint(path, body0, body1):
+            j = UsdPhysics.Joint.Define(stage, path)
             j.CreateBody0Rel().SetTargets([body0.GetPath()])
             j.CreateBody1Rel().SetTargets([body1.GetPath()])
             j.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
             j.CreateLocalPos1Attr().Set(Gf.Vec3f(0.0, 0.0, 0.0))
             j.CreateLocalRot0Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
             j.CreateLocalRot1Attr().Set(Gf.Quatf(1.0, 0.0, 0.0, 0.0))
-            j.CreateAxisAttr().Set("Z")
+            for axis in ("transX", "rotZ"):
+                limit = UsdPhysics.LimitAPI.Apply(j.GetPrim(), axis)
+                limit.CreateLowAttr().Set(-1.0)
+                limit.CreateHighAttr().Set(1.0)
             return j
 
-        leader = joint(UsdPhysics.SphericalJoint, "/World/Root/Leader", root, links[0])
-        follower = joint(UsdPhysics.SphericalJoint, "/World/Root/Follower", links[0], links[1])
+        leader = joint("/World/Root/Leader", root, links[0])
+        follower = joint("/World/Root/Follower", links[0], links[1])
         prim = follower.GetPrim()
         prim.ApplyAPI("NewtonMimicAPI")
         prim.GetRelationship("newton:mimicJoint").SetTargets([leader.GetPrim().GetPath()])
@@ -7984,9 +8101,11 @@ def Xform "Articulation" (
             result = builder.add_usd(stage)
         model = builder.finalize()
 
-        # A ball joint's coordinates are a quaternion, so no scalar conversion applies.
+        # Mixed linear/angular coordinates have no single scalar unit for the offset.
         leader_idx = result["path_joint_map"]["/World/Root/Leader"]
         follower_idx = result["path_joint_map"]["/World/Root/Follower"]
+        self.assertEqual(builder.joint_type[follower_idx], newton.JointType.D6)
+        self.assertEqual(builder.joint_dof_dim[follower_idx], (1, 1))
         self.assertEqual(model.constraint_mimic_count, 0)
         self.assertEqual(model.joint_mimic_joint.numpy()[follower_idx], leader_idx)
         self.assertAlmostEqual(model.joint_mimic_coeffs.numpy()[follower_idx, 0], 0.5, places=6)
@@ -8669,7 +8788,7 @@ def Xform "Articulation" (
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_ordering_cycle_raises(self):
-        """Topological sort errors (cycle/multi-root) must propagate instead of silently falling back."""
+        """Reject invalid joint graphs and propagate topological sort errors."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -8705,6 +8824,51 @@ def Xform "Articulation" (
             builder = newton.ModelBuilder()
             with self.assertRaises(ValueError):
                 builder.add_usd(stage, joint_ordering="dfs", load_visual_shapes=False, load_sites=False)
+
+        joint_x = UsdPhysics.FixedJoint.Define(stage, joint_x.GetPath())
+        frame0 = UsdGeom.Xform.Define(stage, "/World/Articulation/Base/Frame0")
+        frame1 = UsdGeom.Xform.Define(stage, "/World/Articulation/Base/Frame1")
+        for articulated in (True, False):
+            if not articulated:
+                articulation.GetPrim().RemoveAPI(UsdPhysics.ArticulationRootAPI)
+            for body0, body1 in ((base, base), (frame0, frame1)):
+                joint_x.CreateBody0Rel().SetTargets([body0.GetPath()])
+                joint_x.CreateBody1Rel().SetTargets([body1.GetPath()])
+                for joint_ordering in ("dfs", "bfs", None):
+                    for enabled, only_load_enabled in ((True, True), (False, False)):
+                        with self.subTest(
+                            articulated=articulated,
+                            body0=body0.GetPath(),
+                            body1=body1.GetPath(),
+                            joint_ordering=joint_ordering,
+                            enabled=enabled,
+                        ):
+                            joint_x.CreateJointEnabledAttr().Set(enabled)
+                            builder = newton.ModelBuilder()
+                            with self.assertRaisesRegex(
+                                ValueError,
+                                r"/World/Articulation/JointX.*same rigid body /World/Articulation/Base",
+                            ):
+                                builder.add_usd(
+                                    stage,
+                                    joint_ordering=joint_ordering,
+                                    only_load_enabled_joints=only_load_enabled,
+                                    load_visual_shapes=False,
+                                    load_sites=False,
+                                )
+
+            for enabled, ignore_paths in (
+                (False, []),
+                (True, ["/World/Articulation/Joint.*"]),
+                (True, ["/World/Articulation/Base.*"]),
+            ):
+                with self.subTest(articulated=articulated, enabled=enabled, ignore_paths=ignore_paths):
+                    joint_x.CreateJointEnabledAttr().Set(enabled)
+                    builder = newton.ModelBuilder()
+                    result = builder.add_usd(
+                        stage, ignore_paths=ignore_paths, load_visual_shapes=False, load_sites=False
+                    )
+                    self.assertNotIn(str(joint_x.GetPath()), result["path_joint_map"])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_scene_path(self):
@@ -8989,6 +9153,16 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
                 namespace="test",
             )
         )
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="item_world",
+                frequency="test:item",
+                dtype=wp.int32,
+                default=99,
+                namespace="test",
+                references="world",
+            )
+        )
 
         # Parse one subtree - this should find the 2 prims under RobotA and increment count
         builder.add_usd(stage, root_path="/World/RobotA")
@@ -9007,6 +9181,7 @@ class TestImportSampleAssetsComposition(unittest.TestCase):
         self.assertEqual(len(item_values), 2)
         self.assertAlmostEqual(item_values[0], default_value, places=5)
         self.assertAlmostEqual(item_values[1], default_value, places=5)
+        np.testing.assert_array_equal(model.test.item_world.numpy(), [-1, -1])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_custom_frequency_honors_ignore_paths(self):
@@ -13338,6 +13513,51 @@ def Xform "World"
         finally:
             os.unlink(path)
 
+    def test_mesh_create_from_file_glb_scene_transforms(self):
+        """Test Mesh.create_from_file applies glTF scene-graph node transforms.
+
+        A multi-node glb stores each part's vertices in node-local space;
+        the authored placement lives in the scene graph. The loader must
+        compose those transforms, otherwise all parts collapse onto the
+        origin as overlapping local geometry.
+        """
+        try:
+            import trimesh
+        except ImportError:
+            self.skipTest("trimesh not installed")
+
+        scene = trimesh.Scene()
+        part = trimesh.creation.box(extents=[2.0, 2.0, 2.0])
+        scene.add_geometry(
+            part,
+            node_name="part_right",
+            geom_name="part_right",
+            transform=trimesh.transformations.translation_matrix([10.0, 0.0, 0.0]),
+        )
+        scene.add_geometry(
+            part,
+            node_name="part_left",
+            geom_name="part_left",
+            transform=trimesh.transformations.translation_matrix([-10.0, 0.0, 0.0]),
+        )
+
+        with tempfile.NamedTemporaryFile(suffix=".glb", delete=False) as f:
+            scene.export(f.name)
+            path = f.name
+
+        try:
+            mesh = newton.Mesh.create_from_file(path)
+            vertices = np.asarray(mesh.vertices)
+
+            # Both parts must land at their authored offsets: the merged
+            # bounding box spans the ~22-unit separation. Without transform
+            # composition the two parts overlap at the origin and no axis
+            # exceeds 2 units.
+            span = vertices.max(axis=0) - vertices.min(axis=0)
+            self.assertGreater(float(span.max()), 20.0)
+        finally:
+            os.unlink(path)
+
     def test_mesh_create_from_file_not_found(self):
         """Test Mesh.create_from_file raises on missing file."""
         with self.assertRaises(FileNotFoundError):
@@ -13593,10 +13813,9 @@ class TestResolveUsdFromUrl(unittest.TestCase):
         from newton._src.utils.import_usd import resolve_usd_from_url  # noqa: PLC0415
 
         with (
-            mock.patch.dict(
-                "sys.modules",
-                {"requests": mock_requests, "pxr": mock_pxr, "pxr.Usd": mock_usd},
-            ),
+            patch_sys_module("requests", mock_requests),
+            patch_sys_module("pxr", mock_pxr),
+            patch_sys_module("pxr.Usd", mock_usd),
             mock.patch("builtins.open", tracking_open),
         ):
             result = resolve_usd_from_url(base_url, target_folder_name=tmpdir)

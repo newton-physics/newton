@@ -138,6 +138,7 @@ class Example:
         self.sim_time = 0.0
 
         self.viewer = viewer
+        self.viewer.picking_enabled = False
         self.viewer.show_particles = True
 
         # ------------------------------------------------------------------
@@ -147,6 +148,7 @@ class Example:
         builder.add_urdf(
             newton.utils.download_asset("franka_emika_panda") / "urdf/fr3_franka_hand.urdf",
             floating=False,
+            joint_damping_mode="passive",
         )
         builder.add_ground_plane()
 

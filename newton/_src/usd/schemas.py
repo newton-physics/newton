@@ -38,6 +38,16 @@ def _physx_gap_from_prim(prim: Usd.Prim) -> float | None:
     return float(contact_offset) - float(rest_offset)
 
 
+def _physx_max_hull_vertices(prim: Usd.Prim) -> int | None:
+    """Prefer decomposition limits for meshes using the applied decomposition API."""
+    approximation = str(usd.get_attribute(prim, "physics:approximation", "")).lower()
+    if approximation == "convexdecomposition" and usd.has_applied_api_schema(
+        prim, "PhysxConvexDecompositionCollisionAPI"
+    ):
+        return usd.get_attribute(prim, "physxConvexDecompositionCollision:hullVertexLimit", 64)
+    return usd.get_attribute(prim, "physxConvexHullCollision:hullVertexLimit")
+
+
 def _newton_legacy_contact_attr(legacy_name: str, material_attr: str):
     """Return a getter that reads a legacy contact custom attr with a deprecation warning."""
 
@@ -374,11 +384,16 @@ class SchemaResolverPhysx(SchemaResolver):
         },
         PrimType.SHAPE: {
             # Mesh
-            "max_hull_vertices": SchemaAttribute("physxConvexHullCollision:hullVertexLimit", 64),
-            "convex_decomposition_max_hulls": SchemaAttribute("physxConvexDecompositionCollision:maxConvexHulls", 32),
-            "convex_decomposition_max_vertices": SchemaAttribute(
-                "physxConvexDecompositionCollision:hullVertexLimit", 64
+            "max_hull_vertices": SchemaAttribute(
+                "physxConvexHullCollision:hullVertexLimit",
+                64,
+                usd_value_getter=_physx_max_hull_vertices,
+                attribute_names=(
+                    "physxConvexHullCollision:hullVertexLimit",
+                    "physxConvexDecompositionCollision:hullVertexLimit",
+                ),
             ),
+            "convex_decomposition_max_hulls": SchemaAttribute("physxConvexDecompositionCollision:maxConvexHulls", 32),
             # Collisions: newton margin == physx restOffset, newton gap == physx contactOffset - restOffset.
             # PhysX uses -inf to mean "engine default"; treat as unset (None).
             "margin": SchemaAttribute(
