@@ -1441,8 +1441,14 @@ class ArticulationView:
             if world_count > 1:
                 outer_strides = [starts[world][0] - starts[world - 1][0] for world in range(1, world_count)]
                 if not all_equal(outer_strides):
-                    # irregular world origins are addressed through explicit model indices
-                    model_starts = starts
+                    if homogeneous:
+                        reason = (
+                            f"Custom frequency '{frequency}' has non-uniform strides between worlds, "
+                            "which requires `homogeneous=False`"
+                        )
+                    else:
+                        # irregular world origins are addressed through explicit model indices
+                        model_starts = starts
                 outer_stride = outer_strides[0]
             else:
                 outer_stride = inner_stride * count_per_world

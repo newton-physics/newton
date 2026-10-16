@@ -2109,6 +2109,51 @@ def test_sparse_world_custom_frequency(test, device):
     assert_np_equal(model.mujoco.tendon_stiffness.numpy(), expected)
 
 
+def test_irregular_custom_frequency_requires_non_homogeneous(test, device):
+    """Reject custom-frequency rows that are irregular between worlds unless ``homogeneous=False``."""
+
+    def make_world(other_item: bool):
+        world = newton.ModelBuilder()
+        world.add_custom_frequency(
+            newton.ModelBuilder.CustomFrequency(
+                name="item", namespace="test", articulation_owner_attribute="test:item_articulation"
+            )
+        )
+        world.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="item_articulation",
+                namespace="test",
+                frequency="test:item",
+                dtype=wp.int32,
+                references="articulation",
+            )
+        )
+        world.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="item_value", namespace="test", frequency="test:item", dtype=wp.float32
+            )
+        )
+        for label in ("robot", "other"):
+            link = world.add_link(label=f"{label}/link")
+            world.add_articulation([world.add_joint_revolute(-1, link)], label=label)
+        # the other articulation's item sits before the robot's, shifting the robot's row in this world only
+        for articulation in (1, 0) if other_item else (0,):
+            world.add_custom_values(**{"test:item_articulation": articulation, "test:item_value": float(articulation)})
+        return world
+
+    scene = newton.ModelBuilder()
+    for other_item in (False, True, False):
+        scene.add_world(make_world(other_item))
+    model = scene.finalize(device=device)
+
+    with test.assertRaisesRegex(ValueError, "'test:item' has non-uniform strides between worlds"):
+        ArticulationView(model, "robot", verbose=False)
+    view = ArticulationView(model, "robot", homogeneous=False, verbose=False)
+    test.assertFalse(view.frequency_layouts[newton.Model.AttributeFrequency.JOINT].uses_explicit_model_indices)
+    test.assertTrue(view.frequency_layouts["test:item"].uses_explicit_model_indices)
+    assert_np_equal(view.get_attribute("test.item_value", model).numpy().ravel(), np.zeros(3))
+
+
 def test_sparse_world_getters_capture_cold(test, device):
     """Capture built-in getters and setters of sparse views on first use and replay them correctly."""
     if not wp.is_mempool_enabled(device):
@@ -2159,6 +2204,7 @@ for _test in (
     test_sparse_world_root_transforms_and_velocities,
     test_sparse_world_gradients,
     test_sparse_world_custom_frequency,
+    test_irregular_custom_frequency_requires_non_homogeneous,
 ):
     add_function_test(TestSelectionSparseWorlds, _test.__name__, _test, devices=devices)
 add_function_test(
