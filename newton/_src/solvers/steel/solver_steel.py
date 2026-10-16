@@ -1198,7 +1198,8 @@ class SolverSteel(SolverBase):
     does not simulate bodies that are not connected through joints. Floating bases and
     free bodies need an explicit free joint, see :meth:`~newton.ModelBuilder.add_joint_free`
     (:meth:`~newton.ModelBuilder.add_body` adds one). Free-joint ``joint_qd`` is
-    ``(v_com, omega)`` in world frame, the convention of :func:`newton.eval_fk`.
+    ``(v_com, omega)`` in the frame of the joint's parent anchor (``joint_X_p``), which is the
+    world frame for an identity anchor, the convention of :func:`newton.eval_fk`.
 
     Supported features:
 
