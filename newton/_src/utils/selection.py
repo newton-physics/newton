@@ -1615,6 +1615,8 @@ class ArticulationView:
 
         Entries are keyed weakly on ``source``, so they are dropped with the source and with the view.
         An entry is reused only while ``source.<name>`` and its gradient are the arrays it was built from.
+        An array built during graph capture is used by that graph alone, since its staging storage
+        exists only once the graph runs.
         """
         source_array, _ = self._resolve_attribute(name, source)
         source_grad = source_array.grad if source_array.requires_grad else None
@@ -1632,7 +1634,8 @@ class ArticulationView:
         if entry is not None and entry[1] is source_array and entry[2] is source_grad:
             return entry[0]
         attrib = self._create_attribute_array(name, source, _slice, layout)
-        entries[key] = (attrib, source_array, source_grad)
+        if not wp.get_device(self.device).is_capturing:
+            entries[key] = (attrib, source_array, source_grad)
         return attrib
 
     def _create_attribute_array(

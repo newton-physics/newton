@@ -2194,6 +2194,94 @@ def test_sparse_world_getters_capture_cold(test, device):
                 assert_np_equal(state.joint_qd.numpy(), expected_qd)
 
 
+def test_attribute_access_after_capture_before_replay(test, device):
+    """Access staged attributes correctly after cold captures that have not been replayed.
+
+    Covers explicit DOF and shape rows and indexed DOFs with retained, discarded and aborted
+    captures and a second graph replayed before the first, followed by eager gets, sets and replays.
+    """
+    if not wp.is_mempool_enabled(device):
+        test.skipTest("CUDA graph capture of allocations requires the mempool")
+    for layout in ("explicit_dofs", "explicit_shapes", "indexed_dofs"):
+        for scenario in ("retained", "discarded", "aborted", "second_graph_first"):
+            with test.subTest(layout=layout, scenario=scenario):
+                _check_attribute_access_after_capture(test, device, layout, scenario)
+
+
+def _check_attribute_access_after_capture(test, device, layout, scenario):
+    if layout == "explicit_dofs":
+        model = _make_sparse_robot_model("irregular", device)
+        source, name, label, options = model.state(), "joint_q", "robot_a", {"homogeneous": False}
+    elif layout == "explicit_shapes":
+        model = _make_interleaved_robot_model(device)
+        source, name, label, options = model, "shape_margin", "robot", {"homogeneous": False}
+    else:
+        scene = newton.ModelBuilder()
+        for _ in range(3):
+            scene.add_world(_make_robot_world("robot_a", 4, floating=False))
+        model = scene.finalize(device=device)
+        source, name, label, options = model.state(), "joint_q", "robot_a", {"include_joints": ["joint_1", "joint_3"]}
+    warm_view = ArticulationView(model, label, verbose=False, **options)
+    warm_view.set_attribute(name, source, warm_view.get_attribute(name, source))  # compile the kernels
+
+    view = ArticulationView(model, label, verbose=False, **options)
+    test.assertEqual(view.uses_explicit_model_indices, layout != "indexed_dofs")
+    if layout == "explicit_shapes":
+        rows = _owned_shape_rows(model, view)
+    else:
+        articulation_ids = view.articulation_ids.numpy().reshape(-1)
+        joint_names = ["joint_1", "joint_3"] if layout == "indexed_dofs" else None
+        rows = _articulation_rows(model, articulation_ids, joint_names)["coord"][:, None]
+    expected = np.arange(getattr(source, name).shape[0], dtype=np.float32)
+    getattr(source, name).assign(expected)
+    graph_mask = wp.array([False, True, False], dtype=bool, device=device)
+    eager_mask = wp.array([True, False, True], dtype=bool, device=device)
+
+    def capture_access():
+        values = wp.zeros(rows.shape, dtype=float, device=device)
+        gathered = wp.zeros(rows.shape, dtype=float, device=device)
+        with wp.ScopedCapture(device) as capture:
+            view.set_attribute(name, source, values, mask=graph_mask)
+            wp.copy(gathered, view.get_attribute(name, source))
+        return capture.graph, values, gathered
+
+    def replay(graph, values, gathered, offset):
+        new_values = -(np.arange(rows.size, dtype=np.float32).reshape(rows.shape) + offset)
+        values.assign(new_values)
+        wp.capture_launch(graph)
+        expected[rows[1]] = new_values[1]
+        assert_np_equal(getattr(source, name).numpy(), expected)
+        assert_np_equal(gathered.numpy(), expected[rows])
+
+    graphs = []
+    if scenario == "aborted":
+        with test.assertRaisesRegex(RuntimeError, "abort capture"):
+            with wp.ScopedCapture(device):
+                view.get_attribute(name, source)
+                raise RuntimeError("abort capture")
+    else:
+        graphs.append(capture_access())
+        if scenario == "second_graph_first":
+            graphs.append(capture_access())
+    # checked before any eager access or replay, which could otherwise use unallocated staging storage
+    test.assertFalse(view._attribute_array_cache.get(source))
+    if scenario == "discarded":
+        graphs.clear()
+        gc.collect()
+    if scenario == "second_graph_first":
+        replay(*graphs[1], offset=1.0)
+
+    assert_np_equal(view.get_attribute(name, source).numpy(), expected[rows])
+    new_values = -(np.arange(rows.size, dtype=np.float32).reshape(rows.shape) + 100.0)
+    view.set_attribute(name, source, new_values, mask=eager_mask)
+    expected[rows[[0, 2]]] = new_values[[0, 2]]
+    assert_np_equal(getattr(source, name).numpy(), expected)
+    test.assertEqual(len(view._attribute_array_cache[source]), 1)
+    for i, graph in enumerate(graphs):
+        replay(*graph, offset=200.0 + 100.0 * i)
+    replay(*capture_access(), offset=500.0)
+
+
 class TestSelectionSparseWorlds(unittest.TestCase):
     pass
 
@@ -2211,12 +2299,8 @@ for _test in (
     test_irregular_custom_frequency_requires_non_homogeneous,
 ):
     add_function_test(TestSelectionSparseWorlds, _test.__name__, _test, devices=devices)
-add_function_test(
-    TestSelectionSparseWorlds,
-    "test_sparse_world_getters_capture_cold",
-    test_sparse_world_getters_capture_cold,
-    devices=get_cuda_test_devices(),
-)
+for _test in (test_sparse_world_getters_capture_cold, test_attribute_access_after_capture_before_replay):
+    add_function_test(TestSelectionSparseWorlds, _test.__name__, _test, devices=get_cuda_test_devices())
 
 
 # ========================================================================================
