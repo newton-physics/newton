@@ -115,9 +115,12 @@ RTX appearance
 --------------
 
 The PET shell defaults to 0.55 display opacity. Use ``--bottle-opacity`` to
-adjust it. The opaque blue label follows the deformed wall and is offset by
-0.4 mm for rendering, which avoids overlapping the PET surface. It contributes
-no mechanical thickness or stiffness.
+adjust it. A printed Newton label follows the deformed wall, offset by 0.4 mm
+to avoid overlapping the PET surface. Its texture reuses the project's logo
+and repeats around the bottle; separate triangle corners keep the UV seam
+continuous during deformation. An open rolled lip, closure beads and support
+flange follow the neck's local frame. These details are render geometry and
+add no collision thickness or stiffness; the physical mouth remains open.
 
 The RTX viewer uses separate PET and water materials. The closed water surface
 uses an MDL OmniGlass material with refractive index 1.333, roughness 0.02,
@@ -188,7 +191,7 @@ This demonstrates ideal bending plasticity, not a calibrated PET material
 model. It omits membrane plasticity, rate dependence, fracture, enclosed air,
 and cap mechanics. The bottle bottom is fixed, PET self-weight is neglected,
 and the Franka follows joint trajectories obtained from inverse kinematics.
-The label is a visual overlay and adds no stiffness.
+The label and neck details are visual overlays and add no stiffness.
 
 The coupling is one-way: the deforming shell supplies the water boundary, and
 water pressure does not feed back onto the shell. A quantitative bottle

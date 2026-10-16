@@ -13,7 +13,7 @@ bending curvature; it is an ideal bending-only law, not calibrated PET.
 the shell. Newton's ParticleSurface reconstructs the liquid and clips it to
 the moving bottle and table. Water pressure does not feed back onto the shell.
 The Franka follows checked IK waypoints with physical squeeze plates. Its
-base and the bottle bottom are fixed; the label is a visual overlay.
+base and the bottle bottom are fixed; the label and neck finish are visual overlays.
 
 Physics uses cm/kg/s for conditioning, while rendering uses meters. Water
 experiences Earth gravity; PET self-weight, fracture and enclosed air are
@@ -93,10 +93,40 @@ def _scale_positions(source: wp.array[wp.vec3], output: wp.array[wp.vec3]):
 
 
 @wp.kernel
-def _offset_label(positions: wp.array[wp.vec3], normals: wp.array[wp.vec3], output: wp.array[wp.vec3]):
+def _update_label(
+    positions: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    vertices: wp.array[int],
+    output: wp.array[wp.vec3],
+    output_normals: wp.array[wp.vec3],
+):
     i = wp.tid()
     # Keep the visual wrapper outside the PET surface in ray-traced views.
-    output[i] = positions[i] + 0.0004 * wp.normalize(normals[i])
+    normal = normals[vertices[i]]
+    output[i] = positions[vertices[i]] + 0.0004 * normal
+    output_normals[i] = normal
+
+
+@wp.kernel
+def _update_neck(
+    positions: wp.array[wp.vec3],
+    segments: int,
+    anchors: wp.array[int],
+    offsets: wp.array[wp.vec4],
+    output: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+):
+    i = wp.tid()
+    anchor = anchors[i]
+    ring = 1 + ((anchor - 1) // segments) * segments
+    s = anchor - ring
+    tangent = wp.normalize(positions[ring + (s + 1) % segments] - positions[ring + (s + segments - 1) % segments])
+    axis = wp.normalize(positions[anchor] - positions[anchor - segments])
+    radial = wp.normalize(wp.cross(tangent, axis))
+    axis = wp.cross(radial, tangent)
+    offset = offsets[i]
+    output[i] = positions[anchor] + offset[0] * radial + offset[1] * axis
+    normals[i] = offset[2] * radial + offset[3] * axis
 
 
 @wp.kernel
@@ -162,6 +192,47 @@ def _bottle_mesh(segments: int, rings: int):
             else:
                 triangles.extend(([a, b, d], [a, d, c]))
     return np.asarray(points, dtype=np.float32), np.asarray(triangles, dtype=np.int32)
+
+
+def _bottle_neck(vertices, segments):
+    """Bind an open rolled lip, closure beads and support flange to neck rings."""
+    sides = 12
+    anchors, offsets, triangles = [], [], []
+    heights = vertices[1::segments, 2]
+    section = np.arange(sides) * (2.0 * np.pi / sides)
+    # Height, radial stand-off and cross-section radius [m]. These details
+    # follow the shell without altering its collision mesh or open mouth.
+    for height, stand_off, tube_radius in (
+        (_BOTTLE_HEIGHT, 0.0003, 0.0007),
+        (0.204, 0.0003, 0.0006),
+        (0.198, 0.0003, 0.0006),
+        (0.191, 0.0012, 0.0007),
+    ):
+        row = int(np.argmin(np.abs(heights - height)))
+        start = len(anchors)
+        for s in range(segments):
+            anchors.extend([1 + row * segments + s] * sides)
+            offsets.extend(
+                np.column_stack(
+                    (
+                        stand_off + tube_radius * np.cos(section),
+                        height - heights[row] + tube_radius * np.sin(section),
+                        np.cos(section),
+                        np.sin(section),
+                    )
+                )
+            )
+            for j in range(sides):
+                a = start + s * sides + j
+                b = start + ((s + 1) % segments) * sides + j
+                c = start + s * sides + (j + 1) % sides
+                d = start + ((s + 1) % segments) * sides + (j + 1) % sides
+                triangles.extend(((a, b, c), (b, d, c)))
+    return (
+        np.asarray(anchors, dtype=np.int32),
+        np.asarray(offsets, dtype=np.float32),
+        np.asarray(triangles, dtype=np.int32),
+    )
 
 
 def _pet_bending_properties(builder: newton.ModelBuilder):
@@ -396,7 +467,7 @@ class Example:
             hx=0.8,
             hy=0.55,
             hz=0.03,
-            color=(0.22, 0.11, 0.045),
+            color=(0.20, 0.23, 0.25),
         )
         render_builder.add_ground_plane()
         self.render_model = render_builder.finalize()
@@ -414,13 +485,28 @@ class Example:
             inputs=[self.state_0.particle_q, self.render_shell],
             device=self.model.device,
         )
-        self.render_label = wp.empty_like(self.render_shell)
         self.shell_normals = wp.zeros_like(self.render_shell)
         self.render_water = wp.empty_like(self.water.positions)
         self.shell_indices = wp.array(triangles.flatten(), dtype=int, device=self.model.device)
-        tri_height = vertices[triangles, 2].mean(axis=1)
-        label = triangles[(tri_height >= 0.078) & (tri_height < 0.126)]
-        self.label_indices = wp.array(label.flatten(), dtype=int, device=self.model.device)
+        heights = vertices[triangles, 2]
+        label = triangles[(heights.min(axis=1) >= 0.078) & (heights.max(axis=1) <= 0.126)]
+        self.label_vertices = wp.array(label.flatten(), dtype=int, device=self.model.device)
+        self.render_label = wp.empty(label.size, dtype=wp.vec3, device=self.model.device)
+        self.label_normals = wp.empty_like(self.render_label)
+        self.label_indices = wp.array(np.arange(label.size), dtype=int, device=self.model.device)
+        # Duplicate triangle corners so UVs remain continuous across the seam.
+        angle = np.unwrap(((label - 1) % args.segments) * (2.0 * np.pi / args.segments), axis=1)
+        height = vertices[label, 2]
+        uvs = np.stack((4.0 * angle / (2.0 * np.pi) + 0.5, (height - height.min()) / np.ptp(height)), axis=-1)
+        self.label_uvs = wp.array(uvs.reshape(-1, 2), dtype=wp.vec2, device=self.model.device)
+        self.label_texture = newton.examples.get_asset("bottle_label.png")
+        anchors, offsets, neck_triangles = _bottle_neck(vertices, args.segments)
+        self.neck_anchors = wp.array(anchors, dtype=int, device=self.model.device)
+        self.neck_offsets = wp.array(offsets, dtype=wp.vec4, device=self.model.device)
+        self.neck_indices = wp.array(neck_triangles.flatten(), dtype=int, device=self.model.device)
+        self.render_neck = wp.empty(len(anchors), dtype=wp.vec3, device=self.model.device)
+        self.neck_normals = wp.empty_like(self.render_neck)
+        self.segments = args.segments
         self.surface = BottleSurface(
             self.render_shell,
             triangles,
@@ -564,9 +650,22 @@ class Example:
             wp.launch(_scale_positions, len(source), inputs=[source, target], device=self.model.device)
         compute_normals(self.render_shell, self.shell_indices, self.shell_normals)
         wp.launch(
-            _offset_label,
-            self.model.particle_count,
-            inputs=[self.render_shell, self.shell_normals, self.render_label],
+            _update_label,
+            len(self.render_label),
+            inputs=[self.render_shell, self.shell_normals, self.label_vertices, self.render_label, self.label_normals],
+            device=self.model.device,
+        )
+        wp.launch(
+            _update_neck,
+            len(self.render_neck),
+            inputs=[
+                self.render_shell,
+                self.segments,
+                self.neck_anchors,
+                self.neck_offsets,
+                self.render_neck,
+                self.neck_normals,
+            ],
             device=self.model.device,
         )
         self.viewer.begin_frame(self.sim_time)
@@ -576,19 +675,29 @@ class Example:
             self.render_shell,
             self.shell_indices,
             self.shell_normals,
-            color=(0.90, 0.95, 0.97),
+            color=(0.94, 0.97, 0.99),
             opacity=self.bottle_opacity,
-            roughness=0.30,
+            roughness=0.16,
             backface_culling=False,
         )
         self.viewer.log_mesh(
             "/bottle/label",
             self.render_label,
             self.label_indices,
-            self.shell_normals,
-            color=(0.025, 0.23, 0.43),
+            self.label_normals,
+            uvs=self.label_uvs,
+            texture=self.label_texture,
             opacity=1.0,
-            roughness=0.35,
+            roughness=0.55,
+        )
+        self.viewer.log_mesh(
+            "/bottle/neck",
+            self.render_neck,
+            self.neck_indices,
+            self.neck_normals,
+            color=(0.94, 0.97, 0.99),
+            opacity=0.85,
+            roughness=0.18,
         )
         verts, indices, normals = self.surface.extract(self.render_water, self.water.surface_radii)
         if verts is not None:
