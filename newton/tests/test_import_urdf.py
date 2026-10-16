@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import base64
-import nturl2path
 import os
 import tempfile
 import unittest
@@ -1998,9 +1997,8 @@ f 1/1 2/2 3/3
 
     def test_file_uri_rejects_windows_relative_paths(self):
         """Validate converted Windows paths independently of the host platform."""
-        # Drive-relative URIs like file:///C:mesh.obj are omitted: nturl2path makes them absolute before Python 3.13.
         with (
-            patch("newton._src.utils.import_urdf.url2pathname", nturl2path.url2pathname),
+            patch("newton._src.utils.import_urdf.url2pathname", lambda path: path.replace("/", "\\")),
             patch("newton._src.utils.import_urdf.PurePath", PureWindowsPath),
             self.assertRaisesRegex(ValueError, "file URI"),
         ):
