@@ -238,7 +238,7 @@ class LOXSolver:
         self._data = LOXData(
             model.info.num_bodies.numpy().tolist(),
             DualSolution(model, config) if compute_solution_metrics else None,
-            config.joint_penalty_scale,
+            config.min_joint_penalty_scale,
             self._device,
         )
         self._build_projection_schedule()
@@ -299,7 +299,8 @@ class LOXSolver:
         The estimate is the reciprocal of the smallest positive eigenvalue of the
         effective-mass-normalized structural Delassus, independently for each joint-connected component,
         capped so that the penalty adds at most :attr:`LOXSolverConfig.joint_penalty_condition` to the
-        conditioning. The smooth operator excludes the body splitting weights.
+        conditioning, and at least :attr:`LOXSolverConfig.min_joint_penalty_scale`. Components whose
+        estimate fails keep the minimum scale. The smooth operator excludes the body splitting weights.
 
         This operation prepares the LOX problem from the initial rigid state and
         runs a one-time Lanczos estimate on the device that synchronizes with
@@ -333,6 +334,7 @@ class LOXSolver:
                         problem.data.structural_rows,
                         self._data.joint_penalty_scale,
                         self._config.joint_penalty_condition,
+                        self._config.min_joint_penalty_scale,
                     )
                 finally:
                     self.reset()

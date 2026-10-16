@@ -965,12 +965,13 @@ class SolverKamino(SolverBase, CouplingInterface):
         """
         return self._solver_kamino.metrics
 
-    def lox_joint_penalty_scale_seed(self, dt: float) -> wp.array[wp.float32]:
+    def lox_joint_penalty_seed_update(self, dt: float) -> wp.array[wp.float32]:
         """Estimate and apply a timestep-aware LOX joint penalty scale.
 
-        Call this once after constructing a LOX solver and before capturing or
-        stepping the simulation. The operation performs a one-time dense
-        structural analysis and synchronizes with the host.
+        The solver already seeds the scale at construction with
+        :attr:`LOXSolverConfig.joint_penalty_seed_time_step`. Call this once to refine the seed with the
+        simulation time step, before capturing or stepping the simulation. The operation
+        synchronizes with the host.
 
         Args:
             dt: Simulation time step [s].

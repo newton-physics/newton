@@ -15,6 +15,7 @@ import numpy as np
 import warp as wp
 
 from ...core.types import to_warp_int32_array
+from ...utils import logger as msg
 from .seed_kernels import (
     SEED_STATUS_NO_POSITIVE_EIGENVALUE,
     SEED_STATUS_NONFINITE,
@@ -61,6 +62,7 @@ def estimate_joint_penalty_scale(
     structural_rows: StructuralRows,
     scales: wp.array[wp.float32],
     condition: float,
+    min_scale: float,
 ) -> None:
     """Set the penalty scale of each body from the structural spectrum of its joint-connected component.
 
@@ -71,7 +73,8 @@ def estimate_joint_penalty_scale(
     scale of its positive eigenvalues ``mu``: the reciprocal of the smallest eigenvalue,
     capped by ``(condition - 1) / mu_max``. The spectrum of the penalized matrix relative
     to ``A`` is ``1 + s mu``, so the cap bounds the conditioning added by the penalty by
-    ``condition``. Bodies of components without structural rows keep their scale.
+    ``condition``. The scale of a component is at least ``min_scale``, which components whose
+    estimate fails also take, with a warning. Bodies of components without structural rows keep their scale.
 
     A float32 Lanczos recurrence on ``S`` estimates the extreme eigenvalues of every
     component at once on the device. It runs for :data:`_LANCZOS_STEPS_PER_ROW` steps per
@@ -87,10 +90,7 @@ def estimate_joint_penalty_scale(
         structural_rows: Structural rows, with their Jacobians and effective masses.
         scales: Dimensionless penalty scale of each body, updated in place.
         condition: Largest conditioning added by the structural penalty, greater than one.
-
-    Raises:
-        RuntimeError: If the structural Delassus of a component is not finite or has no
-            resolvable positive eigenvalue, or if its seed exceeds the float32 range.
+        min_scale: Smallest penalty scale of a component with structural rows.
     """
     device = system.device
     system_data = system.data
@@ -219,11 +219,14 @@ def estimate_joint_penalty_scale(
             SEED_STATUS_NO_POSITIVE_EIGENVALUE: "structural Delassus has no resolvable positive eigenvalue",
             SEED_STATUS_NOT_REPRESENTABLE: "structural ALM penalty seed is not representable in float32",
         }[int(status_host[block])]
-        raise RuntimeError(f"World {system.block_world_host[block]} component {block} {reason}.")
+        msg.warning(
+            f"LOX joint penalty seed failed for {failed.size} component(s), which keep the minimum scale "
+            f"{min_scale:g}. First: world {system.block_world_host[block]} component {block}: {reason}."
+        )
     wp.launch(
         _write_body_scales,
         dim=system.num_bodies,
-        inputs=[system_data.body_block, block_row_offset, block_scale],
+        inputs=[system_data.body_block, block_row_offset, block_scale, status, min_scale],
         outputs=[scales],
         device=device,
     )

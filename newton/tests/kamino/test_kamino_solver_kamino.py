@@ -35,7 +35,7 @@ from newton._src.solvers.kamino.solver_kamino import SolverKamino
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.sampling import sample_world_mask
 from newton.tests.utils import basics
-from newton.tests.utils.basics import build_box_on_plane, build_boxes_fourbar, build_boxes_hinged
+from newton.tests.utils.basics import build_boxes_fourbar
 from newton.tests.utils.testing import build_binary_revolute_joint_test, build_shape_pairs_test
 
 ###
@@ -495,8 +495,10 @@ class TestSolverKaminoConfig(unittest.TestCase):
             {"weight_sigma": 1.1},
             {"weight_sigma": float("nan")},
             {"joint_penalty_condition": 1.0},
+            {"joint_penalty_seed_time_step": 0.0},
+            {"joint_penalty_seed_time_step": float("nan")},
             {"selective_weights": 1},
-            {"joint_penalty_scale": 0.0},
+            {"min_joint_penalty_scale": 0.0},
             {"projected_twist_fraction": -0.1},
             {"projected_twist_fraction": 1.1},
             {"joint_warmstart_factor": -0.1},
@@ -1056,34 +1058,6 @@ class TestSolverKaminoImpl(unittest.TestCase):
                 model=model,
                 config=SolverKaminoImpl.Config(dynamics_solver="lox", sparse_jacobian=False),
             )
-
-    def test_lox_joint_penalty_scale_seed(self):
-        """Seed the LOX joint penalty of each joint-connected component from its structural spectrum."""
-        builder = newton.ModelBuilder()
-        builder.add_world(build_box_on_plane(ground=False))
-        builder.add_world(build_boxes_hinged(ground=False))
-        model = builder.finalize(device=self.default_device)
-        config = SolverKamino.Config(dynamics_solver="lox")
-        config.lox.joint_penalty_scale = 123.0
-        solver = SolverKamino(model, config=config)
-
-        with self.assertRaises(ValueError):
-            solver.lox_joint_penalty_scale_seed(0.0)
-        with self.assertRaises(ValueError):
-            SolverKamino(model).lox_joint_penalty_scale_seed(0.001)
-
-        # The free box keeps the configured scale, and the two hinged boxes share the seed of their component
-        seed = solver.lox_joint_penalty_scale_seed(0.001).numpy()
-        self.assertEqual(len(seed), model.body_count)
-        self.assertEqual(len(seed), 3)
-        self.assertTrue(np.all(np.isfinite(seed)))
-        self.assertTrue(np.all(seed > 0.0))
-        self.assertAlmostEqual(seed[0], 123.0)
-        self.assertEqual(seed[1], seed[2])
-        self.assertNotAlmostEqual(seed[1], seed[0])
-        self.assertEqual(config.lox.joint_penalty_scale, 123.0)
-        solver.step(model.state(), model.state(), control=None, contacts=None, dt=0.001)
-        self.assertTrue(np.all(np.isfinite(solver.status.numpy()["r_p"])))
 
     ###
     # Test Reset Operations

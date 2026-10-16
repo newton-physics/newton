@@ -1043,7 +1043,7 @@ class TestSolverKaminoLOX(unittest.TestCase):
         solver = SolverKamino(model, config=config)
         time_step = 1.0 / 600.0
 
-        seed = solver.lox_joint_penalty_scale_seed(time_step).numpy()
+        seed = solver.lox_joint_penalty_seed_update(time_step).numpy()
 
         self.assertTrue(np.all(np.isfinite(seed)))
         self.assertTrue(np.all(seed > 0.0))

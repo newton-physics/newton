@@ -366,6 +366,9 @@ class SolverKaminoImpl(SolverBase):
         # Initialize all internal solver data
         with wp.ScopedDevice(self._model.device):
             self._reset()
+            if self._config.dynamics_solver == "lox":
+                # Seed at the configured reference time step so that no user call is needed
+                self._solver_fd.joint_penalty_scale_seed(float(self._config.lox.joint_penalty_seed_time_step))
 
     ###
     # Properties
