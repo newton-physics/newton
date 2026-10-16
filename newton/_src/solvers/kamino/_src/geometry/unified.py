@@ -555,6 +555,8 @@ class CollisionPipelineUnifiedKamino:
             contact_writer_warp_func=_write_contact_unified_kamino,
             has_meshes=_has_meshes,
             has_heightfields=_has_heightfields,
+            # Kamino passes no support acceleration data, so skip compiling that path.
+            convex_support_acceleration=False,
         )
 
         # Convert geometry data from Kamino to Newton format
