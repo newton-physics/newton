@@ -1347,8 +1347,8 @@ class Model:
         self.curve_label: list[str] = []
         """Experimental labels of rod-backed deformable objects, shape [curve_count].
 
-        Copied from :attr:`ModelBuilder.curve_label` at finalization, in builder order.
-        Treat finalized identities and ranges as read-only; edit labels on the builder.
+        Copied from :attr:`ModelBuilder.curve_label` at finalization.
+        Treat this list as read-only; edit labels on the builder.
         """
         self.curve_world: wp.array[wp.int32] | None = None
         """Experimental world indices for :attr:`curve_label`, shape [curve_count]. -1 means global."""
@@ -1364,8 +1364,8 @@ class Model:
         self.surface_label: list[str] = []
         """Experimental labels of triangle-surface deformable objects, shape [surface_count].
 
-        Copied from :attr:`ModelBuilder.surface_label` at finalization, in builder order.
-        Treat finalized identities and ranges as read-only; edit labels on the builder.
+        Copied from :attr:`ModelBuilder.surface_label` at finalization.
+        Treat this list as read-only; edit labels on the builder.
         """
         self.surface_world: wp.array[wp.int32] | None = None
         """Experimental world indices for :attr:`surface_label`, shape [surface_count]. -1 means global."""
@@ -1385,8 +1385,8 @@ class Model:
         self.volume_label: list[str] = []
         """Experimental labels of tetrahedral deformable objects, shape [volume_count].
 
-        Copied from :attr:`ModelBuilder.volume_label` at finalization, in builder order.
-        Treat finalized identities and ranges as read-only; edit labels on the builder.
+        Copied from :attr:`ModelBuilder.volume_label` at finalization.
+        Treat this list as read-only; edit labels on the builder.
         """
         self.volume_world: wp.array[wp.int32] | None = None
         """Experimental world indices for :attr:`volume_label`, shape [volume_count]. -1 means global."""

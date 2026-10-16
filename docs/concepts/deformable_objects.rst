@@ -61,9 +61,10 @@ Model labels and ranges
    count, and range attributes may change without the normal deprecation period.
 
 :meth:`~newton.ModelBuilder.finalize` copies the labels, worlds, and simulation
-ranges to public :class:`~newton.Model` attributes. Each family retains its
-builder order. Later builder edits do not change an existing model. Treat
-model labels, worlds, and ranges as read-only.
+ranges to public :class:`~newton.Model` attributes without reordering the
+builder's lists. Within a family, the label, world index, and element ranges
+at index ``i`` describe the same deformable object. Later builder edits do not change
+an existing model. Treat model labels, worlds, and ranges as read-only.
 
 Labels are Python lists. Worlds and range endpoints are one-dimensional
 ``int32`` Warp arrays on the model device. Each list or array has one entry per

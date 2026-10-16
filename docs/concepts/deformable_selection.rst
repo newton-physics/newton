@@ -163,6 +163,7 @@ The view provides access to its recorded simulation elements.
 See :ref:`deformable-objects` for how native calls and USD imports record these elements.
 
 Each view orders selected deformable objects by world, then by their order in the model.
+This orders the view's rows; it does not reorder the model's arrays.
 For example, suppose deformable objects are added in this order within each world:
 
 .. code-block:: text
