@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterable
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -28,7 +28,7 @@ FloatType = wp.float16 | wp.float32 | wp.float64
 IntType = wp.int16 | wp.int32 | wp.int64
 VecIntType = wp.vec2s | wp.vec2i | wp.vec2l
 
-ArrayLike = np.ndarray | list | tuple | Iterable
+ArrayLike = np.ndarray | list | tuple | Sequence
 """An Array-like structure for aliasing various data types compatible with numpy."""
 
 

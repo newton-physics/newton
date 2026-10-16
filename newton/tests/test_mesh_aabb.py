@@ -214,6 +214,58 @@ class TestHeightfieldLocalAABB(unittest.TestCase):
         np.testing.assert_allclose(hi, [4.0, 1.5, 12.0], atol=1e-5)
 
 
+class TestCylinderLocalAABB(unittest.TestCase):
+    """Verify local cylinder bounds include an optional barrel profile."""
+
+    def test_barrel_cylinder_local_aabb(self):
+        """Verify barrel bulging expands the cylinder's radial bounds."""
+        radius = 0.5
+        half_height = 1.0
+        barrel_radius = 2.0
+        radial_extent = radius + barrel_radius - np.sqrt(barrel_radius**2 - half_height**2)
+
+        builder = newton.ModelBuilder()
+        builder.add_shape_cylinder(
+            body=-1,
+            radius=radius,
+            half_height=half_height,
+            barrel_radius=barrel_radius,
+        )
+        model = builder.finalize()
+
+        lo = model.shape_collision_aabb_lower.numpy()[0]
+        hi = model.shape_collision_aabb_upper.numpy()[0]
+        np.testing.assert_allclose(lo, [-radial_extent, -radial_extent, -half_height], atol=1.0e-6)
+        np.testing.assert_allclose(hi, [radial_extent, radial_extent, half_height], atol=1.0e-6)
+
+    def test_barrel_cylinder_world_aabb(self):
+        """Verify collision broadphase bounds include the barrel bulge."""
+        radius = 0.5
+        half_height = 1.0
+        barrel_radius = 2.0
+        radial_extent = radius + barrel_radius - np.sqrt(barrel_radius**2 - half_height**2)
+
+        builder = newton.ModelBuilder()
+        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 2.0)))
+        builder.add_shape_cylinder(
+            body=body,
+            radius=radius,
+            half_height=half_height,
+            barrel_radius=barrel_radius,
+        )
+        model = builder.finalize()
+        pipeline = newton.CollisionPipeline(model)
+        state = model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+        pipeline.collide(state, pipeline.contacts())
+
+        lo = pipeline.narrow_phase.shape_aabb_lower.numpy()[0]
+        hi = pipeline.narrow_phase.shape_aabb_upper.numpy()[0]
+        margin = model.shape_margin.numpy()[0] + model.shape_gap.numpy()[0]
+        np.testing.assert_allclose(lo, [-radial_extent - margin, -radial_extent - margin, 1.0 - margin], atol=1.0e-5)
+        np.testing.assert_allclose(hi, [radial_extent + margin, radial_extent + margin, 3.0 + margin], atol=1.0e-5)
+
+
 class TestPlaneBoundingSphere(unittest.TestCase):
     """Verify plane bounding-sphere radius uses half-diagonal for finite planes."""
 

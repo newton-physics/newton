@@ -3,9 +3,12 @@
 
 import functools
 import itertools
+import logging
 import time
 
 import warp as wp
+
+logger = logging.getLogger(__name__)
 
 
 class EventTracer:
@@ -175,43 +178,50 @@ def run_benchmark(benchmark_cls, number=1, print_results=True):
     else:
         combinations = [()]
 
+    cache = None
+    has_cache = hasattr(benchmark_cls, "setup_cache")
+    if has_cache:
+        cache = benchmark_cls().setup_cache()
+        has_cache = cache is not None
+
     results = {}
     # For each parameter combination:
     for params in combinations:
+        call_params = (cache, *params) if has_cache else params
         # Create a fresh benchmark instance.
         instance = benchmark_cls()
         if hasattr(instance, "setup"):
-            instance.setup(*params)
+            instance.setup(*call_params)
         # Iterate over all attributes to find benchmark methods.
         for attr in dir(instance):
             if attr.startswith("time_") or attr.startswith("track_"):
                 method = getattr(instance, attr)
-                print(f"\n[Benchmark] Running {benchmark_cls.__name__}.{attr} with parameters {params}")
+                logger.info("[Benchmark] Running %s.%s with parameters %s", benchmark_cls.__name__, attr, params)
                 samples = []
                 if attr.startswith("time_"):
                     # Warmup run (not measured).
-                    method(*params)
+                    method(*call_params)
                     wp.synchronize()
                     # Run timing benchmarks multiple times and measure elapsed time.
                     for _ in range(number):
                         start = time.perf_counter()
-                        method(*params)
+                        method(*call_params)
                         t = time.perf_counter() - start
                         samples.append(t)
                 elif attr.startswith("track_"):
                     # Run tracking benchmarks multiple times and record returned values.
                     for _ in range(number):
-                        val = method(*params)
+                        val = method(*call_params)
                         samples.append(val)
                 # Compute the average result.
                 avg = sum(samples) / len(samples)
                 results[(attr, params)] = avg
         if hasattr(instance, "teardown"):
-            instance.teardown(*params)
+            instance.teardown(*call_params)
 
     if print_results:
-        print("\n=== Benchmark Results ===")
+        print("\n=== Benchmark Results ===")  # noqa: T201
         for (method_name, params), avg in results.items():
-            print(f"{benchmark_cls.__name__}.{method_name} {params}: {avg:.6f}")
+            print(f"{benchmark_cls.__name__}.{method_name} {params}: {avg:.6f}")  # noqa: T201
 
     return results

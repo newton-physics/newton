@@ -31,7 +31,6 @@ from newton.solvers import SolverImplicitMPM
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         voxel_size = args.voxel_size
         particles_per_cell = args.particles_per_cell
         tolerance = args.tolerance
@@ -68,6 +67,7 @@ class Example:
             enable_self_collisions=False,
             collapse_fixed_joints=True,
             ignore_inertial_definitions=False,
+            joint_damping_mode="passive",
         )
 
         # Disable collisions with bodies other than shanks
@@ -168,8 +168,8 @@ class Example:
 
         policy_path = str(asset_path / "rl_policies" / "anymal_walking_policy_physx.onnx")
         self.policy = OnnxRuntime(policy_path, device=self.device)
-        self._policy_input_name = self.policy.input_names[0]
-        self._policy_output_name = self.policy.output_names[0]
+        self._policy_input_name = self.policy.inputs[0].name
+        self._policy_output_name = self.policy.outputs[0].name
         validate_policy_io_shapes(
             policy_path,
             self._policy_input_name,
@@ -186,6 +186,7 @@ class Example:
         self._command = wp.vec3(0.0, 0.0, 0.0)
         self._obs_wp = wp.zeros((1, 48), dtype=wp.float32, device=self.device)
         self._prev_act_wp = wp.zeros((1, 12), dtype=wp.float32, device=self.device)
+        self.policy.prepare({self._policy_input_name: self._obs_wp})
 
         self._auto_forward = True
 
@@ -254,16 +255,15 @@ class Example:
 
     def step(self):
         # Build command from viewer keyboard
-        if hasattr(self.viewer, "is_key_down"):
-            fwd = 1.0 if self.viewer.is_key_down("i") else (-1.0 if self.viewer.is_key_down("k") else 0.0)
-            lat = 0.5 if self.viewer.is_key_down("j") else (-0.5 if self.viewer.is_key_down("l") else 0.0)
-            rot = 1.0 if self.viewer.is_key_down("u") else (-1.0 if self.viewer.is_key_down("o") else 0.0)
+        fwd = 1.0 if self.viewer.is_key_down("i") else (-1.0 if self.viewer.is_key_down("k") else 0.0)
+        lat = 0.5 if self.viewer.is_key_down("j") else (-0.5 if self.viewer.is_key_down("l") else 0.0)
+        rot = 1.0 if self.viewer.is_key_down("u") else (-1.0 if self.viewer.is_key_down("o") else 0.0)
 
-            if fwd or lat or rot:
-                # disable forward motion
-                self._auto_forward = False
+        if fwd or lat or rot:
+            # disable forward motion
+            self._auto_forward = False
 
-            self._command = wp.vec3(float(fwd), float(lat), float(rot))
+        self._command = wp.vec3(float(fwd), float(lat), float(rot))
 
         if self._auto_forward:
             self._command = wp.vec3(1.0, 0.0, 0.0)

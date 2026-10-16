@@ -184,7 +184,6 @@ def advance_task_kernel(
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.fps = 60
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -197,6 +196,7 @@ class Example:
         self.verbose = args.verbose
 
         self.viewer = viewer
+        self.viewer.picking_enabled = False
 
         self.cube_count = 3
         self.cube_size = 0.05
@@ -245,7 +245,8 @@ class Example:
         # Evaluate forward kinematics for collision detection
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
 
         # Setup ik and tasks
         self.state = self.model.state()
@@ -257,7 +258,6 @@ class Example:
             self.viewer = newton.viewer.ViewerNull()
 
         self.viewer.set_model(self.model)
-        self.viewer.picking_enabled = False  # Disable interactive GUI picking for this example
 
         if hasattr(self.viewer, "renderer"):
             self.viewer.set_world_offsets(wp.vec3(1.5, 1.5, 0.0))
@@ -285,11 +285,11 @@ class Example:
 
     def simulate(self):
         if not self.collide_substeps:
-            self.model.collide(self.state_0, self.contacts)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
 
         for _ in range(self.sim_substeps):
             if self.collide_substeps:
-                self.model.collide(self.state_0, self.contacts)
+                self.collision_pipeline.collide(self.state_0, self.contacts)
 
             self.state_0.clear_forces()
 
@@ -338,6 +338,7 @@ class Example:
             floating=False,
             enable_self_collisions=False,
             parse_visuals_as_colliders=False,
+            joint_damping_mode="passive",
         )
 
         builder.joint_q[:9] = [

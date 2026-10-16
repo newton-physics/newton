@@ -3,10 +3,84 @@
 
 .. currentmodule:: newton
 
-Visualization
-=============
+Viewers and Debugging
+=====================
 
-Newton provides multiple viewer backends for different visualization needs, from real-time rendering to offline recording and external integrations.
+Newton provides multiple viewer backends for live visualization, debugging,
+historical inspection, persistent recording, and external integrations.
+
+.. _choosing-a-viewer:
+
+Choosing a Viewer
+-----------------
+
+Choose a viewer based on whether you need a live display, history within the
+current viewer session, or a persistent artifact:
+
+.. list-table:: Viewer Comparison
+    :header-rows: 1
+
+    * - Viewer
+      - Best for
+      - Inspection or output
+      - Dependencies
+    * - :class:`~newton.viewer.ViewerGL`
+      - Interactive development and live debugging
+      - Real-time display; frame capture
+      - pyglet, imgui_bundle
+    * - :class:`~newton.viewer.ViewerRTX`
+      - Path-traced visualization on NVIDIA GPUs
+      - Real-time display; frame capture
+      - ovrtx, ovstage, usd-core, pyglet (``uv sync --extra rtx``)
+    * - :class:`~newton.viewer.ViewerFile`
+      - Persistent state-snapshot recording and visual playback
+      - ``.json`` or ``.bin`` file
+      - None for JSON; cbor2 for binary
+    * - :class:`~newton.viewer.ViewerUSD`
+      - Persistent scene export for 3D pipelines
+      - Time-sampled ``.usd`` file
+      - usd-core
+    * - :class:`~newton.viewer.ViewerRerun`
+      - Live visualization and optional session timeline inspection
+      - Web interface
+      - rerun-sdk
+    * - :class:`~newton.viewer.ViewerViser`
+      - Browser or notebook visualization and visual recording
+      - Web interface; ``.viser`` file
+      - viser
+    * - :class:`~newton.viewer.ViewerNull`
+      - Headless or automated execution without visualization
+      - None
+      - None
+
+.. _debugging-with-viewers:
+
+Debugging with Viewers
+----------------------
+
+Newton's viewers use cooperative, explicit logging rather than automatically
+inspecting every part of a simulation. Call
+:meth:`~newton.viewer.ViewerBase.set_model` to provide the scene structure and
+:meth:`~newton.viewer.ViewerBase.log_state` each frame to provide its motion.
+Contacts appear only when the application calls
+:meth:`~newton.viewer.ViewerBase.log_contacts`. Forces, targets, normals,
+metrics, and other diagnostics similarly require explicit ``log_*()`` calls.
+The way these diagnostics are presented and whether their history is retained
+depends on the viewer backend.
+
+Use a live viewer such as :class:`~newton.viewer.ViewerGL` to inspect the
+current scene and add :ref:`custom overlays <viewer-custom-visualization>` for
+contacts or other diagnostic data. For historical inspection, enable
+``keep_historical_data`` in :class:`~newton.viewer.ViewerRerun` to retain a
+timeline for the current viewer session, or use
+:ref:`ViewerFile <viewer-file-recording>` to create a persistent state-snapshot
+recording for later visual playback. :class:`~newton.viewer.ViewerViser` and
+:class:`~newton.viewer.ViewerUSD` instead create persistent visual or scene
+artifacts for sharing and external tools.
+
+Current viewers do not automatically capture solver internals or all the inputs
+needed to reproduce a simulation. Recording and diagnostic capture will be
+expanded in the future.
 
 Common Interface
 ----------------
@@ -22,7 +96,62 @@ All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a 
 - :meth:`~newton.viewer.ViewerBase.is_running` — check whether the viewer is still open (useful as a loop condition)
 - :meth:`~newton.viewer.ViewerBase.is_paused` — check whether the simulation is paused (toggled with ``SPACE`` in :class:`~newton.viewer.ViewerGL`)
 - :meth:`~newton.viewer.ViewerBase.should_step` — call exactly once per frame; returns ``True`` when running, or ``True`` once after a single-step request (triggered with ``.`` or the "Step" button in :class:`~newton.viewer.ViewerGL`) and ``False`` otherwise; prefer this over composing ``is_paused()`` manually
+- :meth:`~newton.viewer.ViewerBase.set_rendering_paused` / :meth:`~newton.viewer.ViewerBase.is_rendering_paused` — freeze or resume the displayed image independently of simulation stepping in GL and RTX
 - :meth:`~newton.viewer.ViewerBase.close` — close the viewer and release resources
+
+**Rendering pause (GL and RTX):**
+
+Click **Pause Rendering**, or call ``viewer.set_rendering_paused(True)``, to
+freeze the last displayed image while simulation may continue. UI controls,
+plots, window resize, and close events remain active. Camera navigation and
+scene picking/gizmos are disabled while the image is frozen. The ordinary
+**Pause** and **Step** controls still govern simulation independently.
+
+Continue calling ``begin_frame()``, logging updates, and ``end_frame()`` during
+rendering pause. The viewer retains the latest scene updates, including
+transforms, visibility, debug geometry, and programmatic camera changes.
+Resuming renders the current state without replaying intervening frames.
+Frame-scoped UI annotations and fullscreen-image requests keep their normal
+per-frame lifetime. A fullscreen image already displayed stays frozen too.
+
+.. code-block:: python
+
+    viewer.set_rendering_paused(True)
+    while viewer.is_running():
+        if viewer.should_step():
+            simulation.step()
+        viewer.begin_frame(simulation.time)
+        viewer.log_state(simulation.state)
+        viewer.end_frame()  # Keep servicing the window and Resume control.
+
+Rendering pause also works programmatically in headless mode. ``num_frames``
+continues to count viewer-loop frames during pause; windowed viewers continue
+to ignore that budget. GL frame capture and RTX screenshots return the frozen
+image while paused. With no previously displayed image, the background is
+empty and capture raises ``RuntimeError``; headless RTX uses the last image
+accepted by the viewer. Clearing or replacing the model invalidates the image
+but preserves the rendering-pause setting. Other backends report ``False``
+and ignore requests to enable rendering pause.
+
+RTX retains its existing rendering modes: the default ``async_rendering=True``
+submits one frame asynchronously and waits for it on the next unpaused
+``end_frame()``; ``False`` renders synchronously. Rendering pause neither
+waits for nor submits a renderer frame. Any outstanding async result is held
+and discarded on resume, so it cannot replace the frozen image. Resume
+publishes the latest retained scene updates and follows the selected mode's
+usual presentation cadence; async mode displays that new result on the
+following frame. Scene updates remain bounded to the latest values per object.
+Initial renderer/model loading, explicit cleanup, and an unpaused render can
+still wait for GPU work. Rendering pause does not interrupt those operations.
+
+Windowed RTX and GL retain a separate RGBA image texture so changes to the
+scene, camera, or fullscreen images cannot overwrite the frozen image. This
+requires four extra bytes per pixel (about 33 MB at 3840 x 2160), plus a GPU
+image copy on every unpaused frame, even if rendering pause is never used.
+The copy preserves the displayed image if a logged fullscreen texture is
+updated or the render target is resized before pause is requested. Headless
+RTX likewise keeps a GPU copy of the last accepted image, independent of any
+outstanding async render.
 
 **Camera and layout:**
 
@@ -36,8 +165,11 @@ All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a 
 - :meth:`~newton.viewer.ViewerBase.log_points` — draw a point cloud (e.g. contact locations, particle positions)
 - :meth:`~newton.viewer.ViewerBase.log_contacts` — visualize :class:`~newton.Contacts` as normal lines at contact points
 - :meth:`~newton.viewer.ViewerBase.log_gizmo` — display a transform gizmo (position + orientation axes)
-- :meth:`~newton.viewer.ViewerBase.log_scalar` / :meth:`~newton.viewer.ViewerBase.log_array` — log numeric data for backend-specific visualization (e.g. time-series plots in Rerun)
-- :meth:`~newton.viewer.ViewerBase.log_image` — display a single or batched image as a dockable window in :class:`~newton.viewer.ViewerGL` (no-op on other backends)
+- :meth:`~newton.viewer.ViewerBase.log_scalar` / :meth:`~newton.viewer.ViewerBase.log_array` — display numeric diagnostics as scalar plots or array visualizations; see :ref:`viewer-live-plots`
+- :meth:`~newton.viewer.ViewerBase.log_image` — display a single or batched image in a
+  :class:`~newton.viewer.ViewerGL` or :class:`~newton.viewer.ViewerRTX` dock or fullscreen
+  surface, or in the selected-image panel of :class:`~newton.viewer.ViewerViser`
+  (no-op on other backends)
 
 **Limiting rendered worlds**: When training with many parallel environments, rendering all worlds can impact performance.
 All viewers support ``set_visible_worlds()`` to limit visualization to a subset of environments:
@@ -53,8 +185,117 @@ All viewers support ``set_visible_worlds()`` to limit visualization to a subset 
     viewer.set_model(model)
     viewer.set_visible_worlds(range(4))
 
+.. _viewer-live-plots:
+
+Live Plots
+~~~~~~~~~~
+
+:meth:`~newton.viewer.ViewerBase.log_scalar` and
+:meth:`~newton.viewer.ViewerBase.log_array` provide numeric diagnostics with
+backend-specific displays:
+
+- :class:`~newton.viewer.ViewerGL` and :class:`~newton.viewer.ViewerRTX`
+  display rolling scalar line plots and heatmaps for scalar, 1-D, and 2-D
+  NumPy or Warp arrays in a Plots window.
+- :class:`~newton.viewer.ViewerViser` displays rolling scalar line plots in
+  the sidebar. Generic array visualization is not supported.
+- :class:`~newton.viewer.ViewerRerun` forwards scalar and array data to
+  Rerun's native scalar visualization.
+
+For ``ViewerGL``, ``ViewerRTX``, and ``ViewerViser``, set
+``plot_history_size`` when constructing the viewer to configure the number
+of plotted scalar samples (default: 250). Use ``smoothing`` to average a
+group of raw samples into each plotted point, and ``clear=True`` with
+``log_scalar`` to reset a signal's history and pending smoothing samples.
+For example, with ``ViewerGL`` or ``ViewerRTX``:
+
+.. code-block:: python
+
+    viewer.log_scalar("Training/reward", reward, smoothing=10)
+    viewer.log_array("Training/observations", observations)
+
+In ``ViewerGL`` and ``ViewerRTX``, pass ``None`` to ``log_array`` to remove
+a heatmap. Logging works before the first rendered frame and in headless
+mode; plots are displayed when the viewer window and its UI are active.
+
+``ViewerRerun`` controls history through ``keep_scalar_history`` for
+scalars and ``keep_historical_data`` for arrays. It ignores ``clear`` and
+``smoothing``, and passing ``None`` to ``log_array`` is a no-op.
+
 Real-time Viewers
 -----------------
+
+.. _viewer-frame-capture:
+
+Headless Mode and Frame Capture
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+:class:`~newton.viewer.ViewerGL` and :class:`~newton.viewer.ViewerRTX` support
+``headless=True`` to render off-screen without opening a window. Both implement
+:meth:`~newton.viewer.ViewerBase.get_frame` to capture the last rendered frame
+as an RGB Warp array on the viewer device with shape ``(height, width, 3)``,
+dtype ``wp.uint8``, and a top-left origin. Other viewers inherit the base
+implementation, which raises ``NotImplementedError`` because they do not
+support frame capture. Call it after ``end_frame()`` in either headless or
+windowed mode:
+
+.. code-block:: python
+
+    viewer = newton.viewer.ViewerGL(headless=True)  # Or ViewerRTX(headless=True)
+    viewer.set_model(model)
+
+    viewer.begin_frame(sim_time)
+    viewer.log_state(state)
+    viewer.end_frame()
+
+    frame = viewer.get_frame()
+    rgb = frame.numpy()  # NumPy uint8 array with shape (height, width, 3)
+
+    # Reuse the output buffer after rendering subsequent frames.
+    viewer.get_frame(output=frame)
+
+Use an image library to save the captured pixels, for example:
+
+.. code-block:: python
+
+    from PIL import Image
+
+    Image.fromarray(rgb).save("screenshot.png")
+
+UI overlays are excluded by default. ``ViewerGL`` supports
+``get_frame(render_ui=True)`` to include them; ``ViewerRTX`` does not support
+that option. RTX also does not support capturing fullscreen images displayed
+with ``log_image(..., fullscreen=True)``: ``get_frame()`` raises
+``NotImplementedError`` for those frames. Capture resumes after the next scene
+render. RTX capture uses the fixed render resolution and reads through CPU
+memory. With asynchronous rendering, ``get_frame()`` waits for the render
+submitted by the latest ``end_frame()`` so each captured image contains the
+latest logged state. Capturing a frame therefore blocks until that render
+completes.
+
+.. note::
+
+    For ``ViewerGL`` on a machine without a display, pyglet must also be put in headless mode.
+    pyglet binds its display backend the first time that backend is imported, and Newton imports pyglet's window
+    and display modules when the first :class:`~newton.viewer.ViewerGL` is constructed, so the
+    option has to be set before that point. Otherwise the snippet above fails with
+    ``pyglet.display.xlib.NoSuchDisplayException: Cannot connect to "None"`` on Linux, since
+    pyglet defaults to Xlib. Either set the environment variable::
+
+        PYGLET_HEADLESS=1 python your_script.py
+
+    or set the option in Python before creating the viewer::
+
+        import newton
+        import pyglet
+
+        pyglet.options["headless"] = True
+
+        viewer = newton.viewer.ViewerGL(headless=True)
+
+    On a machine with several GPUs, ``PYGLET_HEADLESS_DEVICE`` (or
+    ``pyglet.options["headless_device"]``) selects which one renders; it defaults to ``0``,
+    which is not necessarily the device the rest of the simulation runs on.
 
 OpenGL Viewer
 ~~~~~~~~~~~~~
@@ -94,24 +335,6 @@ Keys can be specified as single-character strings (``'w'``), special key names (
 
     if viewer.is_key_down('r'):
         state = model.state()  # reset
-
-**Headless mode and frame capture:**
-
-In headless mode (``headless=True``), the viewer renders off-screen without opening a window.
-Use :meth:`~newton.viewer.ViewerGL.get_frame` to retrieve the rendered image as a
-Warp array on the viewer device:
-
-.. code-block:: python
-
-    viewer = newton.viewer.ViewerGL(headless=True)
-    viewer.set_model(model)
-
-    viewer.begin_frame(sim_time)
-    viewer.log_state(state)
-    viewer.end_frame()
-
-    # Returns a wp.array with shape (height, width, 3), dtype wp.uint8
-    frame = viewer.get_frame()
 
 **Custom UI panels:**
 
@@ -184,11 +407,25 @@ RTX Viewer
 ~~~~~~~~~~
 
 :class:`~newton.viewer.ViewerRTX` provides real-time path-traced rendering using the NVIDIA OVRTX renderer.
-It builds a USD scene on the first frame and updates rigid-body transforms each frame via the OVRTX attribute API,
-presenting the result in a pyglet/OpenGL window.
+It builds a USD scene on the first frame and updates rigid-body transforms each frame via the renderer's runtime
+scene interface, presenting the result in a pyglet/OpenGL window. ViewerRTX selects the legacy OVRTX attribute
+interface for OVRTX versions before 0.4 and the OVStage interface for OVRTX 0.4 and newer.
+
+Debug geometry can be added before or after the first rendered frame using
+:meth:`~newton.viewer.ViewerBase.log_shapes`, :meth:`~newton.viewer.ViewerBase.log_points`,
+:meth:`~newton.viewer.ViewerBase.log_lines`, and :meth:`~newton.viewer.ViewerBase.log_arrows`.
+For custom markers, register a triangle mesh with :meth:`~newton.viewer.ViewerBase.log_mesh`
+and place it with :meth:`~newton.viewer.ViewerBase.log_instances`. Instance batches support
+changing counts, transforms, scales, colors, and visibility. RTX arrows have cylinder shafts
+and cone heads; their ``width`` specifies the shaft radius in meters.
 
 .. note::
     The RTX viewer is experimental and may not have the same functionality as the OpenGL viewer.
+
+.. note::
+    The first image can take a while to appear while OVRTX loads and compiles RTX shaders.
+    A blank window during this startup work does not necessarily indicate a rendering failure;
+    wait for shader compilation to finish before diagnosing the viewer.
 
 **Installation**: Requires the ``rtx`` dependency group:
 
@@ -196,7 +433,22 @@ presenting the result in a pyglet/OpenGL window.
 
     uv sync --extra rtx
 
-This installs ``ovrtx`` (the NVIDIA OVRTX renderer) and ``usd-core``, in addition to ``pyglet`` for the window.
+This installs ``ovrtx`` (the NVIDIA OVRTX renderer), ``ovstage`` for runtime scene management, and
+``usd-core``, in addition to ``pyglet`` for the window.
+
+ViewerRTX has been validated with the following renderer configurations:
+
+- ``ovrtx==0.3.0.312915`` with ``ovstage==0.1.1.355824`` (minimum-dependency CI)
+- ``ovrtx==0.5.1.385782`` with ``ovstage==0.2.1.385922`` (GPU CI)
+
+OVRTX 0.4 and newer select the same OVStage interface, but only the exact configurations above are part of
+Newton's validated matrix. Upgrade ``ovrtx`` and ``ovstage`` together; OVRTX 0.5.1 fails to start with
+OVStage 0.2.0.
+
+.. warning::
+    With ``ovstage==0.2.0.377349``, CUDA-backed runtime transform updates can leave ViewerRTX showing a uniform
+    gray image, commonly after switching examples in the same process. OVStage 0.2.1 no longer shows this. See
+    `issue #4283 <https://github.com/newton-physics/newton/issues/4283>`__.
 
 .. code-block:: python
 
@@ -209,14 +461,143 @@ This installs ``ovrtx`` (the NVIDIA OVRTX renderer) and ``usd-core``, in additio
     viewer.log_state(state)
     viewer.end_frame()
 
+The :ref:`live plots <viewer-live-plots>` use ``imgui_bundle``, included in
+the ``examples`` dependencies. Install both RTX viewer and UI dependencies
+with ``uv sync --extra rtx --extra examples``.
+
+**Lighting and render settings**: For custom lighting, pass ``environment="none"`` and add a USD layer with your
+lights, e.g. an HDR ``DomeLight``, via :meth:`~newton.viewer.ViewerRTX.add_background_usd` before the first frame.
+``render_settings`` authors ``omni:rtx:*`` attributes on the viewer's render product:
+
+.. code-block:: python
+
+    viewer = newton.viewer.ViewerRTX(
+        environment="none", render_settings={"omni:rtx:pt:samplesPerPixel": ("uint", 4)}
+    )
+    viewer.add_background_usd("lighting.usda")
+
+.. _viewer-rtx-existing-stage:
+
+Rendering an existing USD scene
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+With OVStage 0.2 or newer, ``ViewerRTX(ovstage=stage)`` renders a populated ``ovstage.Stage`` with its authored
+materials and lights instead of building a scene from the model. The stage presents the scene; Newton only moves it:
+
+- **Bodies**: :meth:`~newton.viewer.ViewerRTX.set_model` binds each Newton body to the stage prim whose path equals the
+  body's ``body_label``, and :meth:`~newton.viewer.ViewerRTX.log_state` writes the body's simulated world pose to that
+  prim, keeping the prim's authored scale. :meth:`~newton.ModelBuilder.add_usd` labels each body with the path of its
+  rigid-body prim, so importing the scene the stage holds yields matching labels. Bodies without a matching prim are
+  not rendered and trigger a warning; bodies sharing a label are rejected. Bodies merged by
+  ``collapse_fixed_joints`` leave their prims without a body; such prims move only if they are descendants of the
+  prim they were merged into.
+- **Frames**: If the import re-oriented the stage, through up-axis alignment or ``xform``,
+  :meth:`~newton.viewer.ViewerRTX.set_model` infers the model-to-stage transform from the root bodies, whose poses must
+  still match the stage's. Bodies then stay at their authored poses, and the camera and debug geometry follow the
+  model's frame. Without bound root bodies, the viewer assumes both frames coincide.
+- **Other geometry**: The viewer generates no geometry for the model's shapes, cloth, or particles, and does not
+  update the stage's deformable prims. ``show_triangles``, which is off by default here, and ``show_particles`` draw
+  the simulated cloth and particles as debug overlays.
+- **Stage ownership**: The viewer keeps its camera, render product, and debug geometry under ``/__newton_viewer`` and
+  never clears the stage. :meth:`~newton.viewer.ViewerRTX.set_model` and each
+  :meth:`~newton.viewer.ViewerRTX.end_frame` write above the stage's current write floor and then advance it, so finish
+  your own writes to the stage before calling them. Bound prims keep their last world
+  pose after the viewer releases the stage. The stage needs GPU hierarchy computation.
+
+To replicate an asset across environments, clone it in the stage and replicate the same prototype with
+:meth:`~newton.ModelBuilder.replicate`. Each world must sit where the stage places its clone, and its body labels must
+name the clone's prims. The example below imports ``env_0`` as the prototype, makes its labels relative to ``env_0``,
+and lets ``label_prefixes`` root each world's labels at its own environment:
+
+.. code-block:: python
+
+    import ovrtx
+
+    ovrtx.register_schema_paths()
+
+    import ovstage
+    import warp as wp
+    from pxr import Gf, Usd, UsdGeom, UsdLux
+
+    import newton
+    import newton.examples
+    import newton.viewer
+
+    env_count, spacing = 4, 2.5
+    envs = [f"/World/envs/env_{i}" for i in range(env_count)]
+
+    # Author lights, a ground, one placed Xform per environment, and the robot in env_0.
+    scene = Usd.Stage.CreateNew("scene.usda")
+    UsdGeom.SetStageUpAxis(scene, UsdGeom.Tokens.z)
+    UsdLux.DomeLight.Define(scene, "/World/Light").CreateIntensityAttr(1000.0)
+    ground = UsdGeom.Plane.Define(scene, "/World/Ground")
+    ground.CreateWidthAttr(50.0)
+    ground.CreateLengthAttr(50.0)
+    for i, env in enumerate(envs):
+        UsdGeom.Xform.Define(scene, env).AddTranslateOp().Set(Gf.Vec3d(spacing * i, 0.0, 0.0))
+    scene.DefinePrim(f"{envs[0]}/Robot").GetReferences().AddReference(newton.examples.get_asset("ant.usda"))
+    scene.Save()
+
+    # Populate the stage and clone the robot into the other environments.
+    stage = ovstage.Stage(
+        "scene",
+        config=ovstage.StageConfig(
+            runtime_default_hierarchy_computation_model=ovstage.HierarchyComputationModel.GPU_INCREMENTAL
+        ),
+    )
+    ovstage.population.open_usd(stage, "scene.usda", ordinal=1)
+    stage.clone(f"{envs[0]}/Robot", [f"{env}/Robot" for env in envs[1:]], ordinal=2)
+    stage.advance_write_floor(2).wait()
+
+    # Replicate env_0 at the stage's placements, labeled with each environment's prim paths.
+    prototype = newton.ModelBuilder()
+    prototype.add_usd("scene.usda", root_path=envs[0])
+    for labels in (prototype.body_label, prototype.joint_label, prototype.shape_label, prototype.articulation_label):
+        labels[:] = [label.removeprefix(f"{envs[0]}/") for label in labels]
+    builder = newton.ModelBuilder()
+    builder.replicate(
+        prototype,
+        env_count,
+        xforms=[wp.transform((spacing * i, 0.0, 0.0), wp.quat_identity()) for i in range(env_count)],
+        label_prefixes=envs,
+    )
+    builder.add_ground_plane()
+    model = builder.finalize()
+
+    viewer = newton.viewer.ViewerRTX(ovstage=stage)
+    viewer.set_model(model)
+
+    # at every frame:
+    viewer.begin_frame(sim_time)
+    viewer.log_state(state)
+    viewer.end_frame()
+
 Recording and Offline Viewers
 -----------------------------
+
+.. _viewer-file-recording:
 
 Recording to File (ViewerFile)
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-The :class:`~newton.viewer.ViewerFile` backend records simulation data to JSON or binary files for later replay or analysis. 
-This is useful for capturing simulations for debugging, sharing results, or post-processing.
+The :class:`~newton.viewer.ViewerFile` backend records model and state
+snapshots to JSON or binary files for later visual playback or programmatic
+inspection. This is useful for capturing simulation motion for debugging or
+sharing.
+
+A ``ViewerFile`` recording contains:
+
+- the :class:`~newton.Model` passed to
+  :meth:`~newton.viewer.ViewerBase.set_model`;
+- every Warp array stored directly on each :class:`~newton.State` passed to
+  :meth:`~newton.viewer.ViewerBase.log_state`.
+
+It does not currently contain contacts, custom primitives, scalar or array
+diagnostics, solver internals, or the simulation timestamps passed to
+:meth:`~newton.viewer.ViewerBase.begin_frame`. Loading a recording restores the
+captured model and state snapshots; it does not re-execute the simulation.
+Solver configuration, controls, contacts, and other simulation inputs must be
+captured separately if they are needed to reproduce a run.
 
 **File formats:**
 
@@ -229,7 +610,7 @@ To use binary format, install the optional dependency:
 
     pip install cbor2
 
-**Recording a simulation:**
+**Recording static state snapshots:**
 
 .. testcode:: viewer-file
 
@@ -247,6 +628,7 @@ To use binary format, install the optional dependency:
     viewer.set_model(model)
 
     sim_time = 0.0
+    # Record five snapshots of the current static state
     for _ in range(5):
         viewer.begin_frame(sim_time)
         viewer.log_state(state)
@@ -260,6 +642,9 @@ To use binary format, install the optional dependency:
    :options: +NORMALIZE_WHITESPACE, +ELLIPSIS
 
     ...
+
+This minimal snippet records a static state to demonstrate the ``ViewerFile``
+API. Use the built-in recording example below to capture simulation motion.
 
 **Loading and playing back recordings:**
 
@@ -283,7 +668,23 @@ Use :class:`~newton.viewer.ViewerFile` to load a recording, then restore the mod
 
     Frames: 5
 
-For a complete example with UI controls for scrubbing and playback, see ``newton/examples/basic/example_replay_viewer.py``.
+To try the complete workflow with the built-in examples:
+
+.. code-block:: bash
+
+    uv run --extra examples -m newton.examples recording
+    uv run --extra examples -m newton.examples replay_viewer
+
+``example_recording.py`` simulates humanoids across multiple worlds and writes
+the model and state snapshots to ``humanoid_recording.bin``. In the replay
+viewer, select that file to scrub through the captured state snapshots.
+
+``ViewerFile`` captures all direct Warp-array attributes of the logged
+``State``, regardless of which worlds are selected with
+:meth:`~newton.viewer.ViewerBase.set_visible_worlds`. Large states and long
+runs can therefore use substantial memory and disk space. Set
+``max_history_size`` when constructing ``ViewerFile`` to retain only the latest
+bounded number of snapshots. Per-world capture is not currently supported.
 
 Rendering to USD
 ~~~~~~~~~~~~~~~~
@@ -404,7 +805,7 @@ providing web-based 3D visualization that works in any browser and has native Ju
 
 .. code-block:: bash
 
-    pip install viser
+    pip install 'viser>=1.1.1'
 
 **Usage**:
 
@@ -424,6 +825,48 @@ providing web-based 3D visualization that works in any browser and has native Ju
 
     # Close the viewer when done
     viewer.close()
+
+``--paused`` also applies when launching examples with ``--viewer viser``.
+The native Simulation panel provides Pause, Step, and Reset; the Examples
+panel can switch scenarios without reconnecting the browser. Example controls
+run on the simulation thread. A Layers panel toggles visibility of named
+simulation layers, including the multi-solver overlay example.
+Press-and-hold buttons use browser heartbeats
+and release within 150 ms of the last heartbeat, or immediately on disconnect.
+
+For application-specific panels, lighting, or scene tools, use the read-only
+:attr:`~newton.viewer.ViewerViser.server` property to access the native Viser API:
+
+.. code-block:: python
+
+    with viewer.server.gui.add_folder("Diagnostics"):
+        viewer.server.gui.add_markdown("Application-specific status")
+    viewer.server.scene.configure_environment_map(hdri="studio", background=False)
+
+The viewer owns this server and stops it when closed. Native Viser callbacks
+run asynchronously; enqueue changes to simulation state and consume them on
+the simulation thread before stepping. The common ImGui-style callback adapter
+supports buttons, checkboxes, radio buttons, float/int sliders, float inputs,
+text, separators, disabled scopes, and button hold state. The ``same_line``
+layout helper is a no-op. See
+:meth:`~newton.viewer.ViewerViser.register_ui_callback` for the complete subset.
+The adapter reports ``is_available = False`` because no full ImGui context is
+present; registered callbacks still run. Unsupported calls raise an
+``AttributeError`` directing you to ``viewer.server.gui``. Use that native API
+for richer interfaces.
+
+Bind each layer's model with ``activate()`` and ``set_model()`` before capturing
+its CUDA graph, and call ``apply_forces(state)`` for that active layer during
+capture. Picking uses device state, so picks made later in the browser take
+effect on graph replay. ``clear_all_layers()`` restores the default Viser camera
+when switching examples; clearing one layer preserves the current view.
+
+Textured meshes preserve texture alpha and display opacity using glTF blend
+materials. A textured instance batch can share one opacity value; Viser does
+not expose varying per-instance opacity for textured batches. Such requests
+warn and retain the mesh material's opacity. Applications using
+:meth:`~newton.viewer.ViewerViser.log_instances` can use separate batches for
+different opacities. Untextured batches support per-instance opacity directly.
 
 **Recording and playback**
 
@@ -474,6 +917,9 @@ The viser viewer provides features like:
 
 - Real-time 3D visualization in any web browser
 - Interactive camera controls (pan, zoom, orbit)
+- Native simulation and visualization controls
+- Interactive transform gizmos and object picking
+- A selected-image panel and live scalar plots
 - GPU-accelerated batched mesh rendering
 - Recording and playback capabilities
 - Public URL sharing via viser's share feature
@@ -517,6 +963,8 @@ This is particularly useful for:
 - Running simulations on headless servers
 - Batch processing of simulations
 
+.. _viewer-custom-visualization:
+
 Custom Visualization
 --------------------
 
@@ -559,6 +1007,12 @@ The viewer's ``show_contacts`` flag (toggled in the :class:`~newton.viewer.Viewe
 
     viewer.log_contacts(contacts, state)
 
+Contact normals, mode disks, and force arrows are sized relative to the smaller
+shape in each contact pair. Use the ``Contact Relative Scale`` control to adjust
+all contact glyphs while preserving their proportions across differently sized
+contacts. Contact mode coloring and force arrows require the ``"force"``
+extended contact attribute.
+
 **Transform gizmos:**
 
 Use :meth:`~newton.viewer.ViewerBase.log_gizmo` to display a coordinate-frame gizmo at a given transform:
@@ -569,16 +1023,20 @@ Use :meth:`~newton.viewer.ViewerBase.log_gizmo` to display a coordinate-frame gi
 
 **Logging images:**
 
-Use :meth:`~newton.viewer.ViewerBase.log_image` to display images (including batched/tiled
-outputs from :class:`~newton.sensors.SensorTiledCamera`) as dockable windows in
-:class:`~newton.viewer.ViewerGL`. Accepted shapes are ``(H, W)``, ``(H, W, C)``,
+Use :meth:`~newton.viewer.ViewerBase.log_image` to display images (including per-view
+outputs from :class:`~newton.sensors.SensorCamera`). By default, non-headless
+:class:`~newton.viewer.ViewerGL` and :class:`~newton.viewer.ViewerRTX` show logged images
+as dockable windows. Pass ``fullscreen=True`` to draw the image as the main viewer
+surface for the current frame instead of the 3D scene. :class:`~newton.viewer.ViewerViser`
+displays the selected stream in a persistent native ``Images`` panel and accepts,
+but ignores, the ``fullscreen`` option. Accepted shapes are ``(H, W)``, ``(H, W, C)``,
 ``(N, H, W)``, and ``(N, H, W, C)`` with ``C in (1, 3, 4)``. Accepted dtypes are
-``uint8`` (values in ``[0, 255]``) and ``float32`` (values in ``[0, 1]``; values
-outside the range are clipped).
+``uint8`` (values in ``[0, 255]``) and ``float32`` (values in ``[0, 1]``; values outside
+the range are clipped).
 
 .. testcode:: viewer-log-image
 
-    from newton.sensors import SensorTiledCamera
+    from newton.sensors import SensorCamera
 
     builder = newton.ModelBuilder()
     builder.add_body(mass=1.0)
@@ -593,28 +1051,62 @@ outside the range are clipped).
     heatmap = depth_image / max(depth_image.max(), 1e-6)
     viewer.log_image("heatmap", heatmap)
 
-    # Batched color tiles from a tiled-camera sensor. Allocate the sensor
-    # output once and reuse it every frame; the RGBA conversion is a
-    # zero-copy view.
-    sensor = SensorTiledCamera(model=model)
-    W, H, camera_count = 16, 16, 1
-    color_image = sensor.utils.create_color_image_output(W, H, camera_count)
-    # ... in a real pipeline, sensor.update(...) fills color_image each frame.
-    rgba = sensor.utils.to_rgba_from_color(color_image)
-    viewer.log_image("tiled_camera", rgba)
+    # Per-view color images from a camera sensor. Allocate the sensor output
+    # once and reuse it every frame; the RGBA conversion is a zero-copy view.
+    camera = SensorCamera(model)
+    view_count, width, height = 1, 16, 16
+    color_image = camera.allocate_image_color(view_count, width, height)
+    # ... in a real pipeline, camera.update(...) fills color_image each frame.
+    rgba = SensorCamera.Utils.to_rgba_from_color(color_image)
+    viewer.log_image("camera", rgba)
 
 For a 3D input, a last-axis of 1, 3, or 4 is interpreted as channel count
 for a single ``(H, W, C)`` image; otherwise the array is interpreted as a
 batch ``(N, H, W)`` of grayscale images. Pass a 4D array if the
 disambiguation matters.
 
-**Camera and world layout:**
-
-Set the camera programmatically with :meth:`~newton.viewer.ViewerBase.set_camera`:
+Use ``fullscreen=True`` for image-first viewers, camera-debug views, or headless
+frame capture where the image should replace the 3D scene:
 
 .. code-block:: python
 
-    viewer.set_camera(pos=wp.vec3(5.0, 2.0, 3.0), pitch=-0.3, yaw=0.5)
+    from newton.sensors import SensorCamera
+
+    builder = newton.ModelBuilder()
+    builder.add_body(mass=1.0)
+    model = builder.finalize()
+
+    viewer = newton.viewer.ViewerNull()
+    viewer.set_model(model)
+
+    # Per-view color images from a camera sensor. Allocate the sensor output
+    # once and reuse it every frame; the RGBA conversion is a zero-copy view.
+    camera = SensorCamera(model)
+    view_count, width, height = 1, 16, 16
+    color_image = camera.allocate_image_color(view_count, width, height)
+    # ... in a real pipeline, camera.update(...) fills color_image each frame.
+    rgba = SensorCamera.Utils.to_rgba_from_color(color_image)
+    viewer.log_image("camera", rgba, fullscreen=True)
+
+For :class:`~newton.viewer.ViewerGL` and :class:`~newton.viewer.ViewerRTX`, the
+``fullscreen=True`` selection is per-frame: call
+:meth:`~newton.viewer.ViewerBase.log_image` with ``fullscreen=True`` after
+:meth:`~newton.viewer.ViewerBase.begin_frame` and before
+:meth:`~newton.viewer.ViewerBase.end_frame` on every frame that should show the
+image. If a frame does not log a fullscreen image, the viewer renders the 3D scene
+for that frame. :class:`~newton.viewer.ViewerRTX` ignores images in headless mode.
+:class:`~newton.viewer.ViewerViser` retains its ``Images`` panel and updates only the
+stream selected there. Other viewer backends inherit the no-op base implementation
+and ignore both the image and the ``fullscreen`` option.
+
+**Camera and world layout:**
+
+Set the camera programmatically with :meth:`~newton.viewer.ViewerBase.set_camera`.
+``pitch`` and ``yaw`` are specified in degrees:
+
+.. code-block:: python
+
+    viewer.set_camera(pos=wp.vec3(5.0, 2.0, 3.0), pitch=-20.0, yaw=30.0)
     viewer.camera_speed = 0.2  # m/s
 
 When visualizing multiple worlds, use :meth:`~newton.viewer.ViewerBase.set_world_offsets` to arrange them in a grid
@@ -623,42 +1115,3 @@ When visualizing multiple worlds, use :meth:`~newton.viewer.ViewerBase.set_world
 .. code-block:: python
 
     viewer.set_world_offsets(spacing=(5.0, 5.0, 0.0))
-
-Choosing the Right Viewer
--------------------------
-
-.. list-table:: Viewer Comparison
-    :header-rows: 1
-
-    * - Viewer
-      - Use Case
-      - Output
-      - Dependencies
-    * - :class:`~newton.viewer.ViewerGL`
-      - Interactive development and debugging
-      - Real-time display
-      - pyglet, imgui_bundle
-    * - :class:`~newton.viewer.ViewerRTX`
-      - Path-traced real-time visualization on NVIDIA GPUs
-      - Real-time display
-      - ovrtx, usd-core, pyglet (``uv sync --extra rtx``)
-    * - :class:`~newton.viewer.ViewerFile`
-      - Recording for replay/sharing
-      - .json or .bin files
-      - None
-    * - :class:`~newton.viewer.ViewerUSD`
-      - Integration with 3D pipelines
-      - .usd files
-      - usd-core
-    * - :class:`~newton.viewer.ViewerRerun`
-      - Advanced visualization and analysis
-      - Web interface
-      - rerun-sdk
-    * - :class:`~newton.viewer.ViewerViser`
-      - Browser-based visualization and Jupyter notebooks
-      - Web interface, .viser files
-      - viser
-    * - :class:`~newton.viewer.ViewerNull`
-      - Headless/automated environments
-      - None
-      - None

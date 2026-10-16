@@ -5,15 +5,22 @@
 # Example Cable Cross-Slide Table
 #
 # Demonstrates a cable-driven cross-slide table inspired by the Simscape
-# Multibody cable-driven XY table example https://www.mathworks.com/help/sm/ug/cable-driven-xy-table-with-cross-base.html.
-# The mechanism is laid out on the ground plane: the blue base is fixed, the green carriage moves horizontally,
-# and the beige carriage moves vertically on the green carriage. The cable is
-# driven only by the two blue input pulleys.
+# Multibody cable-driven XY table example:
+# https://www.mathworks.com/help/sm/ug/cable-driven-xy-table-with-cross-base.html
+# The mechanism is laid out on the ground plane: the blue base is fixed, the
+# green carriage moves horizontally, and the beige carriage moves vertically on
+# the green carriage. The cable is driven only by the two blue input pulleys.
 #
 # The sample combines passive revolute pulleys, a closed cable loop, and two
 # commanded input pulleys. The input rotations trace a rectangle with the
 # beige table marker while the solver resolves cable wrapping and contact
 # against the guides.
+#
+# Run interactively:
+#   uv run --extra examples python -m newton.examples.cable.example_cable_cross_slide_table
+#
+# Run as a test:
+#   uv run --extra examples python -m newton.examples.cable.example_cable_cross_slide_table --test --viewer null
 #
 ###########################################################################
 
@@ -37,6 +44,8 @@ JOINT_LIMIT_TOLERANCE = 0.003
 START_RAMP_DURATION = 1.2
 MOUSE_PICK_STIFFNESS = 0.01
 MOUSE_PICK_DAMPING = 0.001
+PULLEY_OPACITY = 0.55
+CONTACT_KE = 1.0e6
 
 
 @wp.kernel
@@ -107,21 +116,6 @@ def drive_input_pulleys(
 def advance_time(sim_time: wp.array[wp.float32], dt: float):
     """Advance a device-side time accumulator for graph-captured simulation."""
     sim_time[0] = sim_time[0] + dt
-
-
-@wp.kernel
-def set_body_xforms(
-    body_indices: wp.array[wp.int32],
-    body_xforms: wp.array[wp.transform],
-    body_q0: wp.array[wp.transform],
-    body_q1: wp.array[wp.transform],
-):
-    """Initialize selected body transforms in both state buffers."""
-    tid = wp.tid()
-    body = body_indices[tid]
-    xform = body_xforms[tid]
-    body_q0[body] = xform
-    body_q1[body] = xform
 
 
 def _symmetric_bounds(half_extent: float) -> tuple[float, float]:
@@ -198,8 +192,8 @@ def add_pulley(
     groove_half_width = 1.55 * cable_radius
     flange_half_thickness = 0.6 * cable_radius
     flange_radius = radius + 3.2 * cable_radius
-    sheave_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, ke=1.0e5, kd=0.0, mu=sheave_mu)
-    flange_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, ke=1.0e5, kd=0.0, mu=0.0)
+    sheave_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, ke=CONTACT_KE, kd=0.0, mu=sheave_mu)
+    flange_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, ke=CONTACT_KE, kd=0.0, mu=0.0)
     flange_color = _dim_color(color, 0.68)
 
     for suffix, z, shape_radius, half_height, cfg, shape_color in (
@@ -228,6 +222,7 @@ def add_pulley(
             half_height=half_height,
             cfg=cfg,
             color=shape_color,
+            opacity=PULLEY_OPACITY,
             label=f"{label}_{suffix}" if label else None,
         )
 
@@ -453,7 +448,7 @@ class Example:
         # so the cable remains guided by the pulley grooves.
         builder = newton.ModelBuilder()
         builder.rigid_gap = 5.0 * cable_radius
-        builder.default_shape_cfg.ke = 1.0e5
+        builder.default_shape_cfg.ke = CONTACT_KE
         builder.default_shape_cfg.kd = 0.0
         builder.default_shape_cfg.mu = 1.0
 
@@ -486,6 +481,7 @@ class Example:
         self.table_tracking_max_error = 0.0
         self.table_tracking_error_sq_sum = 0.0
         self.table_tracking_sample_count = 0
+        self._last_body_q: np.ndarray | None = None
         self.slide_x_bounds = _symmetric_bounds(TABLE_RECT_HALF_X)
         self.table_y_bounds = _symmetric_bounds(TABLE_RECT_HALF_Y)
 
@@ -497,7 +493,7 @@ class Example:
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
             limit_lower=self.slide_x_bounds[0],
             limit_upper=self.slide_x_bounds[1],
-            limit_ke=2.0e3,
+            limit_ke=1.0e4,
             limit_kd=1.0e-4,
             friction=0.0,
             label="green_x_slide_axis",
@@ -510,7 +506,7 @@ class Example:
             child_xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()),
             limit_lower=self.table_y_bounds[0],
             limit_upper=self.table_y_bounds[1],
-            limit_ke=2.0e3,
+            limit_ke=1.0e4,
             limit_kd=1.0e-4,
             friction=0.0,
             label="beige_y_table_axis",
@@ -667,23 +663,14 @@ class Example:
             segment_length=initial_segment_length,
             wrap_clearance=cable_wrap_clearance,
         )
-        cable_quats = newton.utils.create_parallel_transport_cable_quaternions(cable_points)
-        cable_segment_count = len(cable_points) - 1
-        straight_cable_points, straight_cable_quats = newton.utils.create_straight_cable_points_and_quaternions(
-            start=left_anchor_world,
-            direction=wp.vec3(1.0, 0.0, 0.0),
-            length=cable_segment_count * cable_segment_length,
-            num_segments=cable_segment_count,
-        )
+        cable_rod = newton.Rod(cable_points, radius=cable_radius, rest_straight=True)
 
         cable_cfg = builder.default_shape_cfg.copy()
         cable_cfg.density = 200.0
         cable_cfg.gap = 2.0 * cable_radius
 
         self.cable_bodies, cable_joints = builder.add_rod(
-            positions=straight_cable_points,
-            quaternions=straight_cable_quats,
-            radius=cable_radius,
+            rod=cable_rod,
             cfg=cable_cfg,
             stretch_stiffness=1.0e5,
             stretch_damping=1.0e-4,
@@ -691,12 +678,7 @@ class Example:
             bend_damping=1.0e-2,
             wrap_in_articulation=False,
             label="xy_table_cable",
-            body_frame_origin="com",
         )
-        initial_cable_xforms = [
-            wp.transform(cable_points[i] + (cable_points[i + 1] - cable_points[i]) * 0.5, cable_quats[i])
-            for i in range(len(self.cable_bodies))
-        ]
         filter_body_group_collisions(builder, self.cable_bodies)
 
         # Ball joints close the cable loop at the table anchors.
@@ -755,20 +737,21 @@ class Example:
         self.model = builder.finalize(device=sim_device)
         self.model.set_gravity((0.0, 0.0, 0.0))
 
+        # Preserve cable-pulley friction state and preallocate it before CUDA graph capture.
+        self.collision_pipeline = newton.CollisionPipeline(self.model, contact_matching="latest")
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=sim_iterations,
+            rigid_contact_history=True,
             rigid_body_contact_buffer_size=256,
-            rigid_contact_hard=False,
         )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        pipeline = newton.CollisionPipeline(self.model)
-        self.contacts = self.model.contacts(collision_pipeline=pipeline)
+        self.contacts = self.collision_pipeline.contacts()
 
-        # Device arrays used by kernels during simulation and CUDA graph replay.
+        # Device arrays used by kernels during simulation and captured replay.
         self.kinematic_body_indices = wp.array(
             kinematic_body_indices,
             dtype=wp.int32,
@@ -785,28 +768,6 @@ class Example:
             device=self.model.device,
         )
         self.target_table_xy = wp.zeros(2, dtype=wp.float32, device=self.model.device)
-        cable_body_indices = wp.array(
-            self.cable_bodies,
-            dtype=wp.int32,
-            device=self.model.device,
-        )
-        cable_body_xforms = wp.array(
-            initial_cable_xforms,
-            dtype=wp.transform,
-            device=self.model.device,
-        )
-        wp.launch(
-            set_body_xforms,
-            dim=cable_body_indices.shape[0],
-            inputs=[
-                cable_body_indices,
-                cable_body_xforms,
-                self.state_0.body_q,
-                self.state_1.body_q,
-            ],
-            device=self.model.device,
-        )
-        self.solver.body_q_prev = wp.clone(self.state_0.body_q, device=self.solver.device)
         self.sim_time_wp = wp.zeros(1, dtype=wp.float32, device=self.model.device)
 
         # Viewer setup.
@@ -827,13 +788,10 @@ class Example:
         self.capture()
 
     def capture(self):
-        """Capture the simulation update when running on CUDA."""
-        if self.solver.device.is_cuda:
-            with wp.ScopedCapture() as capture:
-                self.simulate()
-            self.graph = capture.graph
-        else:
-            self.graph = None
+        """Capture the simulation update into a graph for replay."""
+        with wp.ScopedCapture() as capture:
+            self.simulate()
+        self.graph = capture.graph
 
     def simulate(self):
         """Advance the XY table simulation by one rendered frame."""
@@ -857,7 +815,7 @@ class Example:
             )
 
             self.viewer.apply_forces(self.state_0)
-            self.model.collide(self.state_0, self.contacts)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
@@ -878,6 +836,7 @@ class Example:
         q_left = float(input_pulley_angles[0])
         q_right = float(input_pulley_angles[1])
         body_q = self.state_0.body_q.numpy()
+        self._last_body_q = body_q
         target_table_xy = self.target_table_xy.numpy()
         table_pos = body_q[self.table_body, 0:3]
         table_x = float(table_pos[0]) - self.table_origin_xy[0]
@@ -933,7 +892,9 @@ class Example:
         if self.state_0.body_q is None:
             raise RuntimeError("Body state is not available.")
 
-        body_q = self.state_0.body_q.numpy()
+        body_q = self._last_body_q
+        if body_q is None:
+            body_q = self.state_0.body_q.numpy()
         self._check_state_bounds(body_q)
 
     def test_final(self):
@@ -941,7 +902,9 @@ class Example:
         if self.state_0.body_q is None:
             raise RuntimeError("Body state is not available.")
 
-        body_q = self.state_0.body_q.numpy()
+        body_q = self._last_body_q
+        if body_q is None:
+            body_q = self.state_0.body_q.numpy()
         self._check_state_bounds(body_q)
 
         if self.table_tracking_sample_count == 0:

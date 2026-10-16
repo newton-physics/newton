@@ -3,12 +3,17 @@
 
 """Frame Transform Sensor - measures transforms relative to sites."""
 
+import logging
+import re
+
 import warp as wp
 
 from ..geometry import ShapeFlags
 from ..sim.model import Model
 from ..sim.state import State
 from ..utils.selection import match_labels
+
+logger = logging.getLogger(__name__)
 
 
 @wp.kernel
@@ -120,8 +125,8 @@ class SensorFrameTransform:
     def __init__(
         self,
         model: Model,
-        shapes: str | list[str] | list[int],
-        reference_sites: str | list[str] | list[int],
+        shapes: str | list[str] | re.Pattern[str] | list[int],
+        reference_sites: str | list[str] | re.Pattern[str] | list[int],
         *,
         verbose: bool | None = None,
     ):
@@ -129,12 +134,13 @@ class SensorFrameTransform:
 
         Args:
             model: The model to measure.
-            shapes: List of shape indices, single pattern to match against shape
-                labels, or list of patterns where any one matches.
-            reference_sites: List of site indices, single pattern to match against
-                site labels, or list of patterns where any one matches. Must expand
+            shapes: Glob pattern, list of glob patterns, compiled regular-expression
+                pattern to match against shape labels, or list of shape indices. Regular
+                expressions use full matching.
+            reference_sites: Glob pattern, list of glob patterns, compiled regular-expression
+                pattern to match against site labels, or list of site indices. Must expand
                 to one site or the same number as ``shapes``.
-            verbose: If True, print details. If False, suppress details. If None, print details when
+            verbose: If True, log details. If False, suppress details. If None, log details when
                 ``wp.config.log_level`` is configured for debug logging.
 
         Raises:
@@ -208,11 +214,15 @@ class SensorFrameTransform:
         self._reference_indices_arr = wp.array(reference_sites_matched, dtype=int, device=model.device)
 
         if self.verbose:
-            print("SensorFrameTransform initialized:")
-            print(f"  Shapes: {len(shapes)}")
-            print(f"  Reference sites: {len(set(reference_sites_matched))} unique")
-            print(
-                f"  Unique shapes to compute: {len(self._unique_shape_indices)} (optimized from {len(shapes) + len(reference_sites_matched)})"
+            logger.info(
+                "SensorFrameTransform initialized:\n"
+                "  Shapes: %s\n"
+                "  Reference sites: %s unique\n"
+                "  Unique shapes to compute: %s (optimized from %s)",
+                len(shapes),
+                len(set(reference_sites_matched)),
+                len(self._unique_shape_indices),
+                len(shapes) + len(reference_sites_matched),
             )
 
     def update(self, state: State):

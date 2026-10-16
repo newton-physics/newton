@@ -3,7 +3,6 @@
 
 from __future__ import annotations
 
-import warnings
 from typing import TYPE_CHECKING
 
 import warp as wp
@@ -14,6 +13,10 @@ from .types import Gaussian, GeoType
 
 if TYPE_CHECKING:
     from ..sim import Model, State
+
+
+SHAPE_BOUNDS_BLOCK_DIM = 256
+_SHAPE_FLAG_VISIBLE = wp.constant(wp.int32(int(ShapeFlags.VISIBLE)))
 
 
 @wp.func
@@ -98,7 +101,13 @@ def compute_capsule_bounds(transform: wp.transformf, size: wp.vec3f) -> tuple[wp
 def compute_cylinder_bounds(transform: wp.transformf, size: wp.vec3f) -> tuple[wp.vec3f, wp.vec3f]:
     radius = size[0]
     half_length = size[1]
-    extent = wp.vec3f(radius, radius, half_length)
+    barrel_radius = size[2]
+    radial_extent = radius
+    if barrel_radius > 0.0:
+        radial_extent += (half_length * half_length) / (
+            barrel_radius + wp.sqrt(barrel_radius * barrel_radius - half_length * half_length)
+        )
+    extent = wp.vec3f(radial_extent, radial_extent, half_length)
     return compute_box_bounds(transform, extent)
 
 
@@ -170,12 +179,21 @@ def is_supported_shape_type(shape_type: wp.int32) -> wp.bool:
 def compute_enabled_shapes(
     shape_type: wp.array[wp.int32],
     shape_flags: wp.array[wp.int32],
+    shape_flags_mask: wp.int32,
+    shape_opacity: wp.array[wp.float32],
     out_shape_enabled: wp.array[wp.uint32],
     out_shape_enabled_count: wp.array[wp.int32],
 ):
     tid = wp.tid()
 
-    if not bool(shape_flags[tid] & ShapeFlags.VISIBLE):
+    flags = shape_flags[tid]
+
+    # A fully transparent shape (e.g. an MJCF helper geom with rgba alpha 0) is not visible, so it must not occlude
+    # other shapes. Clear VISIBLE before applying the mask so shapes selected through other flags are kept.
+    if shape_opacity.shape[0] > 0 and shape_opacity[tid] <= 0.0:
+        flags = flags & ~_SHAPE_FLAG_VISIBLE
+
+    if not bool(flags & shape_flags_mask):
         return
 
     if not is_supported_shape_type(shape_type[tid]):
@@ -205,31 +223,35 @@ def compute_shape_local_bounds(
     in_gaussians: wp.array[Gaussian.Data],
     out_bounds: wp.array2d[wp.vec3f],
 ):
-    tid = wp.tid()
+    shape_index, lane = wp.tid()
 
     min_point = wp.vec3(MAXVAL)
     max_point = wp.vec3(-MAXVAL)
 
     if (
-        in_shape_type[tid] == GeoType.MESH
-        or in_shape_type[tid] == GeoType.CONVEX_MESH
-        or in_shape_type[tid] == GeoType.HFIELD
+        in_shape_type[shape_index] == GeoType.MESH
+        or in_shape_type[shape_index] == GeoType.CONVEX_MESH
+        or in_shape_type[shape_index] == GeoType.HFIELD
     ):
         # Heightfields and convex meshes store mesh-backed geometry in shape_source_ptr.
-        mesh = wp.mesh_get(in_shape_ptr[tid])
-        for i in range(mesh.points.shape[0]):
+        mesh = wp.mesh_get(in_shape_ptr[shape_index])
+        for i in range(lane, mesh.points.shape[0], wp.block_dim()):
             min_point = wp.min(min_point, mesh.points[i])
             max_point = wp.max(max_point, mesh.points[i])
 
-    elif in_shape_type[tid] == GeoType.GAUSSIAN:
-        gaussian_id = in_shape_ptr[tid]
-        for i in range(in_gaussians[gaussian_id].num_points):
+    elif in_shape_type[shape_index] == GeoType.GAUSSIAN:
+        gaussian_id = in_shape_ptr[shape_index]
+        for i in range(lane, in_gaussians[gaussian_id].num_points, wp.block_dim()):
             lower, upper = compute_gaussian_bounds(in_gaussians[gaussian_id], i)
             min_point = wp.min(min_point, lower)
             max_point = wp.max(max_point, upper)
 
-    out_bounds[tid, 0] = min_point
-    out_bounds[tid, 1] = max_point
+    min_point = wp.tile_reduce(wp.min, wp.tile(min_point, preserve_type=True))[0]
+    max_point = wp.tile_reduce(wp.max, wp.tile(max_point, preserve_type=True))[0]
+
+    if lane == 0:
+        out_bounds[shape_index, 0] = min_point
+        out_bounds[shape_index, 1] = max_point
 
 
 @wp.kernel(enable_backward=False)
@@ -393,44 +415,6 @@ def compute_shape_world_transforms_launch(model: Model, state: State) -> None:
     )
 
 
-def build_bvh_shape(model: Model, state: State, *, bvh_constructor: str | None = None) -> None:
-    """Deprecated alias for :meth:`newton.Model.bvh_build_shapes`.
-
-    .. deprecated:: 1.3
-        Use :meth:`newton.Model.bvh_build_shapes` instead.
-
-    Args:
-        model: Simulation model providing shape metadata.
-        state: Current simulation state with body transforms.
-        bvh_constructor: Warp BVH construction algorithm forwarded to
-            :meth:`newton.Model.bvh_build_shapes`.
-    """
-    warnings.warn(
-        "newton.geometry.build_bvh_shape(model, state) is deprecated; use model.bvh_build_shapes(state) instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    model.bvh_build_shapes(state, bvh_constructor=bvh_constructor)
-
-
-def refit_bvh_shape(model: Model, state: State) -> None:
-    """Deprecated alias for :meth:`newton.Model.bvh_refit_shapes`.
-
-    .. deprecated:: 1.3
-        Use :meth:`newton.Model.bvh_refit_shapes` instead.
-
-    Args:
-        model: Simulation model providing shape metadata.
-        state: Current simulation state with body transforms.
-    """
-    warnings.warn(
-        "newton.geometry.refit_bvh_shape(model, state) is deprecated; use model.bvh_refit_shapes(state) instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    model.bvh_refit_shapes(state)
-
-
 def compute_particle_bvh_bounds_launch(
     model: Model,
     state: State,
@@ -454,41 +438,3 @@ def compute_particle_bvh_bounds_launch(
         ],
         device=model.device,
     )
-
-
-def build_bvh_particle(model: Model, state: State, *, bvh_constructor: str | None = None) -> None:
-    """Deprecated alias for :meth:`newton.Model.bvh_build_particles`.
-
-    .. deprecated:: 1.3
-        Use :meth:`newton.Model.bvh_build_particles` instead.
-
-    Args:
-        model: Simulation model providing particle metadata.
-        state: Current simulation state with particle positions.
-        bvh_constructor: Warp BVH construction algorithm forwarded to
-            :meth:`newton.Model.bvh_build_particles`.
-    """
-    warnings.warn(
-        "newton.geometry.build_bvh_particle(model, state) is deprecated; use model.bvh_build_particles(state) instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    model.bvh_build_particles(state, bvh_constructor=bvh_constructor)
-
-
-def refit_bvh_particle(model: Model, state: State) -> None:
-    """Deprecated alias for :meth:`newton.Model.bvh_refit_particles`.
-
-    .. deprecated:: 1.3
-        Use :meth:`newton.Model.bvh_refit_particles` instead.
-
-    Args:
-        model: Simulation model providing particle metadata.
-        state: Current simulation state with particle positions.
-    """
-    warnings.warn(
-        "newton.geometry.refit_bvh_particle(model, state) is deprecated; use model.bvh_refit_particles(state) instead.",
-        DeprecationWarning,
-        stacklevel=2,
-    )
-    model.bvh_refit_particles(state)

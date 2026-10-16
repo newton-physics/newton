@@ -22,24 +22,6 @@ from ..core.types import Devicelike
 # keys as signed int64, so ``0x7FFF…`` (max positive int64) sorts last.
 SORT_KEY_SENTINEL = wp.constant(wp.int64(0x7FFFFFFFFFFFFFFF))
 
-
-@wp.kernel(enable_backward=False)
-def _prepare_sort(
-    contact_count: wp.array[int],
-    sort_keys_src: wp.array[wp.int64],
-    sort_keys_dst: wp.array[wp.int64],
-    sort_indices: wp.array[wp.int32],
-):
-    """Copy active keys and init identity indices; fill unused slots with sentinel."""
-    tid = wp.tid()
-    if tid < contact_count[0]:
-        sort_keys_dst[tid] = sort_keys_src[tid]
-        sort_indices[tid] = wp.int32(tid)
-    else:
-        sort_keys_dst[tid] = SORT_KEY_SENTINEL
-        sort_indices[tid] = wp.int32(tid)
-
-
 # -----------------------------------------------------------------------
 # Structs + fused backup/gather kernels for the two contact layouts.
 #
@@ -74,11 +56,20 @@ class _SimpleContactArrays:
 
 
 @wp.kernel(enable_backward=False)
-def _backup_simple_kernel(data: _SimpleContactArrays, count: wp.array[int]):
-    """Copy active contacts into scratch buffers."""
+def _backup_simple_kernel(
+    data: _SimpleContactArrays,
+    count: wp.array[int],
+    sort_keys_src: wp.array[wp.int64],
+    sort_keys_dst: wp.array[wp.int64],
+    sort_indices: wp.array[wp.int32],
+):
+    """Prepare sort keys and copy active contacts into scratch buffers."""
     i = wp.tid()
+    sort_indices[i] = wp.int32(i)
     if i >= count[0]:
+        sort_keys_dst[i] = SORT_KEY_SENTINEL
         return
+    sort_keys_dst[i] = sort_keys_src[i]
     data.pair_buf[i] = data.pair[i]
     data.position_buf[i] = data.position[i]
     data.normal_buf[i] = data.normal[i]
@@ -143,11 +134,20 @@ class _FullContactArrays:
 
 
 @wp.kernel(enable_backward=False)
-def _backup_full_kernel(data: _FullContactArrays, count: wp.array[int]):
-    """Copy active contacts into scratch buffers."""
+def _backup_full_kernel(
+    data: _FullContactArrays,
+    count: wp.array[int],
+    sort_keys_src: wp.array[wp.int64],
+    sort_keys_dst: wp.array[wp.int64],
+    sort_indices: wp.array[wp.int32],
+):
+    """Prepare sort keys and copy active contacts into scratch buffers."""
     i = wp.tid()
+    sort_indices[i] = wp.int32(i)
     if i >= count[0]:
+        sort_keys_dst[i] = SORT_KEY_SENTINEL
         return
+    sort_keys_dst[i] = sort_keys_src[i]
     data.shape0_buf[i] = data.shape0[i]
     data.shape1_buf[i] = data.shape1[i]
     data.point0_buf[i] = data.point0[i]
@@ -202,11 +202,29 @@ class ContactSorter:
     the active ``contact_count`` are filled with a sentinel key
     (``0x7FFFFFFFFFFFFFFF``) so they sort to the end and the gather kernels
     skip them via the ``contact_count`` guard.
+
+    ``key_bit_count`` limits sorting to the populated low key bits, reducing
+    radix passes without changing the full-capacity graph-capture behavior.
+
+    Set ``allocate_simple_scratch=False`` for a sorter used only by
+    :meth:`sort_full` to avoid allocating the unused simple-layout scratch.
+    Scratch allocation is fixed at construction time.
     """
 
-    def __init__(self, capacity: int, *, per_contact_shape_properties: bool = False, device: Devicelike = None):
+    def __init__(
+        self,
+        capacity: int,
+        *,
+        key_bit_count: int = 64,
+        per_contact_shape_properties: bool = False,
+        allocate_simple_scratch: bool = True,
+        device: Devicelike = None,
+    ):
+        if not 1 <= key_bit_count <= 64:
+            raise ValueError(f"key_bit_count must be in [1, 64], got {key_bit_count}")
         with wp.ScopedDevice(device):
             self._capacity = capacity
+            self._key_bit_count = key_bit_count
             # radix_sort_pairs uses the second half as scratch, so allocate 2x.
             self._sort_indices = wp.zeros(2 * capacity, dtype=wp.int32)
             self._sort_keys_copy = wp.zeros(2 * capacity, dtype=wp.int64)
@@ -214,11 +232,13 @@ class ContactSorter:
             self._has_shape_props = per_contact_shape_properties
 
             # Scratch buffers for the simple gather (NarrowPhase.launch path).
-            self._simple_pair_buf = wp.zeros(capacity, dtype=wp.vec2i)
-            self._simple_position_buf = wp.zeros(capacity, dtype=wp.vec3)
-            self._simple_normal_buf = wp.zeros(capacity, dtype=wp.vec3)
-            self._simple_penetration_buf = wp.zeros(capacity, dtype=float)
-            self._simple_tangent_buf = wp.zeros(capacity, dtype=wp.vec3)
+            self._has_simple_scratch = allocate_simple_scratch
+            simple_capacity = capacity if allocate_simple_scratch else 0
+            self._simple_pair_buf = wp.zeros(simple_capacity, dtype=wp.vec2i)
+            self._simple_position_buf = wp.zeros(simple_capacity, dtype=wp.vec3)
+            self._simple_normal_buf = wp.zeros(simple_capacity, dtype=wp.vec3)
+            self._simple_penetration_buf = wp.zeros(simple_capacity, dtype=float)
+            self._simple_tangent_buf = wp.zeros(simple_capacity, dtype=wp.vec3)
             self._simple_match_index_buf = wp.zeros(1, dtype=wp.int32)
 
             # Scratch buffers for the full gather (CollisionPipeline.collide path).
@@ -276,8 +296,9 @@ class ContactSorter:
                 permuted alongside the other contact fields during sorting.
             device: Device to launch on.
         """
+        if not self._has_simple_scratch:
+            raise ValueError("sort_simple requires allocate_simple_scratch=True")
         n = self._capacity
-        self._sort_and_permute(sort_keys, contact_count, device=device)
 
         has_tangent = contact_tangent is not None and contact_tangent.shape[0] > 0
         has_match = match_index is not None and match_index.shape[0] > 0
@@ -298,7 +319,13 @@ class ContactSorter:
         data.has_tangent = 1 if has_tangent else 0
         data.has_match_index = 1 if has_match else 0
 
-        wp.launch(_backup_simple_kernel, dim=n, inputs=[data, contact_count], device=device)
+        wp.launch(
+            _backup_simple_kernel,
+            dim=n,
+            inputs=[data, contact_count, sort_keys, self._sort_keys_copy, self._sort_indices],
+            device=device,
+        )
+        wp.utils.radix_sort_pairs(self._sort_keys_copy, self._sort_indices, n, end_bit=self._key_bit_count)
         wp.launch(_gather_simple_kernel, dim=n, inputs=[data, self._sort_indices, contact_count], device=device)
 
     def sort_full(
@@ -348,7 +375,6 @@ class ContactSorter:
             device: Device to launch on.
         """
         n = self._capacity
-        self._sort_and_permute(sort_keys, contact_count, device=device)
 
         has_props = self._has_shape_props
         has_match = match_index is not None and match_index.shape[0] > 0
@@ -389,7 +415,13 @@ class ContactSorter:
         data.has_shape_props = 1 if has_props else 0
         data.has_match_index = 1 if has_match else 0
 
-        wp.launch(_backup_full_kernel, dim=n, inputs=[data, contact_count], device=device)
+        wp.launch(
+            _backup_full_kernel,
+            dim=n,
+            inputs=[data, contact_count, sort_keys, self._sort_keys_copy, self._sort_indices],
+            device=device,
+        )
+        wp.utils.radix_sort_pairs(self._sort_keys_copy, self._sort_indices, n, end_bit=self._key_bit_count)
         wp.launch(_gather_full_kernel, dim=n, inputs=[data, self._sort_indices, contact_count], device=device)
 
     @property
@@ -404,42 +436,25 @@ class ContactSorter:
 
     @property
     def scratch_pos_world(self) -> wp.array:
-        """Shared scratch buffer for external cross-frame world-space positions.
+        """Transient position scratch available to sequential pipeline stages.
 
-        Sized ``capacity`` :class:`wp.vec3`.  Reserved for use by
-        :class:`~newton._src.geometry.contact_match.ContactMatcher`, which
-        repurposes the sorter's unused ``point0`` scratch between frames to
-        store the previous frame's world-space contact positions.
+        Sized ``capacity`` :class:`wp.vec3`.  :meth:`sort_full` overwrites this
+        storage on every call, so it cannot hold state across frames;
+        :class:`~newton._src.geometry.contact_match.ContactMatcher` keeps its
+        previous-frame history in buffers it owns.
 
         .. note::
-            The buffer is **only idle between frames** — i.e. between the end
-            of one :meth:`sort_full` call and the start of the next.  Writes
-            outside that window will corrupt the next sort.  Do not write to
-            this buffer unless you are implementing cross-frame state that
-            coordinates with the pipeline's per-frame call order.
+            Contents are only meaningful to the stage that wrote them, until
+            the next :meth:`sort_full` call.  Coordinate any reuse with the
+            pipeline's per-frame call order.
         """
         return self._full_point0_buf
 
     @property
     def scratch_normal(self) -> wp.array:
-        """Shared scratch buffer for external cross-frame world-space normals.
+        """Transient normal scratch available to sequential pipeline stages.
 
         Sized ``capacity`` :class:`wp.vec3`.  Companion to
         :attr:`scratch_pos_world`; see that property for usage constraints.
         """
         return self._full_normal_buf
-
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
-    def _sort_and_permute(self, sort_keys: wp.array, contact_count: wp.array, *, device: Devicelike = None) -> None:
-        """Prepare keys (sentinel-fill unused slots), then radix-sort over the full buffer."""
-        n = self._capacity
-        wp.launch(
-            _prepare_sort,
-            dim=n,
-            inputs=[contact_count, sort_keys, self._sort_keys_copy, self._sort_indices],
-            device=device,
-        )
-        wp.utils.radix_sort_pairs(self._sort_keys_copy, self._sort_indices, n)

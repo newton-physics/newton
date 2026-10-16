@@ -125,6 +125,10 @@ class IKOptimizerLBFGS:
         wolfe_c2: Strong-Wolfe curvature constant.
         problem_idx: Optional mapping from batch rows to base problem indices
             for per-problem objective data.
+
+    Raises:
+        ValueError: If ``model`` contains a :attr:`~newton.JointType.ROD`
+            joint, which is not supported by this optimizer.
     """
 
     TILE_N_DOFS = None
@@ -141,6 +145,9 @@ class IKOptimizerLBFGS:
         *a: Any,
         **kw: Any,
     ) -> IKOptimizerLBFGS:
+        if model._has_rod_joints and JointType.ROD in model.joint_type.numpy():  # pyright: ignore[reportPrivateUsage]
+            raise ValueError("IKOptimizerLBFGS does not support JointType.ROD joints.")
+
         n_dofs = model.joint_dof_count
         n_residuals = sum(o.residual_dim() for o in objectives)
         history_len = kw.get("history_len", 10)
@@ -854,14 +861,12 @@ class IKOptimizerLBFGS:
             inputs=[
                 self.model.joint_type,
                 self.model.joint_parent,
-                self.model.joint_child,
                 self.model.joint_q_start,
                 self.model.joint_qd_start,
                 joint_q_in,
                 self.model.joint_axis,
                 self.model.joint_dof_dim,
                 body_q,
-                self.model.body_com,
                 self.model.joint_X_p,
             ],
             outputs=[
@@ -1348,13 +1353,16 @@ class IKOptimizerLBFGS:
         _select_best_step_tiled = wp.kernel(enable_backward=False, module="unique")(_select_best_step_template)
 
         # late-import jcalc_* helpers to avoid circular import error
-        from ...sim.articulation import jcalc_motion_subspace  # noqa: PLC0415
+        from ...sim.articulation import (  # noqa: PLC0415
+            jcalc_motion_subspace,
+            write_free_distance_motion_subspace,
+        )
         from ...solvers.featherstone.kernels import (  # noqa: PLC0415
             jcalc_integrate,
             jcalc_transform,
         )
 
-        @wp.kernel
+        @wp.kernel(module="unique")
         def _integrate_dq_dof(
             # model-wide
             joint_type: wp.array[wp.int32],  # (n_joints)
@@ -1427,14 +1435,12 @@ class IKOptimizerLBFGS:
         def _compute_motion_subspace_2d(
             joint_type: wp.array[wp.int32],  # (n_joints)
             joint_parent: wp.array[wp.int32],  # (n_joints)
-            joint_child: wp.array[wp.int32],  # (n_joints)
             joint_q_start: wp.array[wp.int32],  # (n_joints + 1)
             joint_qd_start: wp.array[wp.int32],  # (n_joints + 1)
             joint_q: wp.array2d[wp.float32],  # (n_batch, n_coords)
             joint_axis: wp.array[wp.vec3],  # (n_joint_dof_count)
             joint_dof_dim: wp.array2d[wp.int32],  # (n_joints, 2)
             body_q: wp.array2d[wp.transform],  # (n_batch, n_bodies)
-            body_com: wp.array[wp.vec3],  # (n_bodies)
             joint_X_p: wp.array[wp.transform],  # (n_joints)
             # outputs
             joint_S_s: wp.array2d[wp.spatial_vector],  # (n_batch, n_joint_dof_count)
@@ -1443,7 +1449,6 @@ class IKOptimizerLBFGS:
 
             type = joint_type[joint_idx]
             parent = joint_parent[joint_idx]
-            child = joint_child[joint_idx]
             q_start = joint_q_start[joint_idx]
             qd_start = joint_qd_start[joint_idx]
 
@@ -1459,16 +1464,10 @@ class IKOptimizerLBFGS:
             S_s_out = joint_S_s[row]
 
             if type == JointType.FREE or type == JointType.DISTANCE:
-                jcalc_motion_subspace(
-                    type,
-                    joint_axis,
-                    joint_q_1d,
-                    lin_axis_count,
-                    ang_axis_count,
+                # IK integration applies angular increments about the fixed parent anchor.
+                write_free_distance_motion_subspace(
                     X_wpj,
-                    body_q[row, child],
-                    body_com[child],
-                    q_start,
+                    wp.transform_get_translation(X_wpj),
                     qd_start,
                     S_s_out,
                 )

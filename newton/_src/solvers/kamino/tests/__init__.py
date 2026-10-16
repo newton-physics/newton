@@ -43,7 +43,7 @@ test_context = TestContext()
 ###
 
 
-def setup_tests(verbose: bool = False, device: wp.DeviceLike | str | None = None, clear_cache: bool = True):
+def setup_tests(verbose: bool = False, device: wp.DeviceLike | str | None = None, clear_cache: bool = False):
     # Numpy configuration
     np.set_printoptions(
         linewidth=999999, edgeitems=999999, threshold=999999, precision=10, suppress=True

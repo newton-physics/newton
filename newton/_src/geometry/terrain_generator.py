@@ -634,77 +634,95 @@ def create_mesh_heightfield(
     if extent_y <= 0:
         raise ValueError(f"extent_y must be positive, got {extent_y}")
 
-    # Create grid coordinates
+    # Vertex and index buffers are allocated once and filled in place. The intermediate
+    # column_stack/vstack chain this replaces built the index buffer in int64 (twice the
+    # width it is finally stored in) and copied every triangle several times, which
+    # dominates terrain construction at Isaac Lab grid sizes (millions of triangles).
+    n_grid = grid_size_x * grid_size_y
+    n_quad = (grid_size_x - 1) * (grid_size_y - 1)
+    n_side = 2 * (grid_size_x - 1) + 2 * (grid_size_y - 1)
+
+    # Vertices: top surface followed by the bottom surface, both on the same XY grid.
     x = np.linspace(-extent_x / 2, extent_x / 2, grid_size_x) + center_x
     y = np.linspace(-extent_y / 2, extent_y / 2, grid_size_y) + center_y
-    X, Y = np.meshgrid(x, y, indexing="ij")
+    vertices = np.empty((2 * n_grid, 3), dtype=np.float32)
+    top_xyz = vertices[:n_grid].reshape(grid_size_x, grid_size_y, 3)
+    bottom_xyz = vertices[n_grid:].reshape(grid_size_x, grid_size_y, 3)
+    top_xyz[..., 0] = x[:, None]
+    top_xyz[..., 1] = y[None, :]
+    top_xyz[..., 2] = heightfield
+    bottom_xyz[..., 0] = x[:, None]
+    bottom_xyz[..., 1] = y[None, :]
+    bottom_xyz[..., 2] = ground_z
 
-    # Top and bottom surface vertices
-    top_vertices = np.column_stack([X.ravel(), Y.ravel(), heightfield.ravel()]).astype(np.float32)
-    bottom_z = np.full_like(heightfield, ground_z)
-    bottom_vertices = np.column_stack([X.ravel(), Y.ravel(), bottom_z.ravel()]).astype(np.float32)
-    vertices = np.vstack([top_vertices, bottom_vertices])
+    # Corner indices of every grid cell, in the same row-major order as the vertices.
+    num_top_vertices = n_grid
+    ii = np.arange(grid_size_x - 1, dtype=np.int32)[:, None]
+    jj = np.arange(grid_size_y - 1, dtype=np.int32)[None, :]
+    v0 = (ii * grid_size_y + jj).ravel()
+    v1 = v0 + 1
+    v2 = v0 + grid_size_y
+    v3 = v2 + 1
 
-    # Generate quad indices for all grid cells
-    i_indices = np.arange(grid_size_x - 1)
-    j_indices = np.arange(grid_size_y - 1)
-    ii, jj = np.meshgrid(i_indices, j_indices, indexing="ij")
-    ii, jj = ii.ravel(), jj.ravel()
+    indices = np.empty((4 * n_quad + 2 * n_side, 3), dtype=np.int32)
 
-    v0 = ii * grid_size_y + jj
-    v1 = ii * grid_size_y + (jj + 1)
-    v2 = (ii + 1) * grid_size_y + jj
-    v3 = (ii + 1) * grid_size_y + (jj + 1)
+    # Top surface faces (counter-clockwise), two triangles per cell.
+    top_faces = indices[: 2 * n_quad].reshape(n_quad, 2, 3)
+    top_faces[:, 0, 0] = v0
+    top_faces[:, 0, 1] = v2
+    top_faces[:, 0, 2] = v1
+    top_faces[:, 1, 0] = v1
+    top_faces[:, 1, 1] = v2
+    top_faces[:, 1, 2] = v3
 
-    # Top surface faces (counter-clockwise)
-    top_faces = np.column_stack([np.column_stack([v0, v2, v1]), np.column_stack([v1, v2, v3])]).reshape(-1, 3)
+    # Bottom surface faces (clockwise), offset onto the bottom vertex block.
+    bottom_faces = indices[2 * n_quad : 4 * n_quad].reshape(n_quad, 2, 3)
+    bottom_faces[:, 0, 0] = v0
+    bottom_faces[:, 0, 1] = v1
+    bottom_faces[:, 0, 2] = v2
+    bottom_faces[:, 1, 0] = v1
+    bottom_faces[:, 1, 1] = v3
+    bottom_faces[:, 1, 2] = v2
+    bottom_faces += num_top_vertices
 
-    # Bottom surface faces (clockwise)
-    num_top_vertices = len(top_vertices)
-    bottom_faces = np.column_stack(
-        [
-            np.column_stack([num_top_vertices + v0, num_top_vertices + v1, num_top_vertices + v2]),
-            np.column_stack([num_top_vertices + v1, num_top_vertices + v3, num_top_vertices + v2]),
-        ]
-    ).reshape(-1, 3)
+    # Side walls, one strip per boundary edge, written in place after the surfaces.
+    i_edge = np.arange(grid_size_x - 1, dtype=np.int32)
+    j_edge = np.arange(grid_size_y - 1, dtype=np.int32)
+    side = indices[4 * n_quad :].reshape(n_side, 2, 3)
 
-    # Side wall faces (4 edges)
-    side_faces_list = []
-    i_edge = np.arange(grid_size_x - 1)
-    j_edge = np.arange(grid_size_y - 1)
+    def _write_wall(offset: int, t0, t1, flip: bool):
+        """Emit one quad strip between top edge (t0, t1) and its bottom counterpart."""
+        b0 = t0 + num_top_vertices
+        b1 = t1 + num_top_vertices
+        wall = side[offset : offset + len(t0)]
+        if flip:
+            wall[:, 0, 0], wall[:, 0, 1], wall[:, 0, 2] = t0, t1, b0
+            wall[:, 1, 0], wall[:, 1, 1], wall[:, 1, 2] = t1, b1, b0
+        else:
+            wall[:, 0, 0], wall[:, 0, 1], wall[:, 0, 2] = t0, b0, t1
+            wall[:, 1, 0], wall[:, 1, 1], wall[:, 1, 2] = t1, b0, b1
+        return offset + len(t0)
 
+    offset = 0
     # Front edge (j=0)
-    t0, t1 = i_edge * grid_size_y, (i_edge + 1) * grid_size_y
-    b0, b1 = num_top_vertices + t0, num_top_vertices + t1
-    side_faces_list.append(
-        np.column_stack([np.column_stack([t0, b0, t1]), np.column_stack([t1, b0, b1])]).reshape(-1, 3)
-    )
-
+    offset = _write_wall(offset, i_edge * grid_size_y, (i_edge + 1) * grid_size_y, flip=False)
     # Back edge (j=grid_size_y-1)
-    t0 = i_edge * grid_size_y + (grid_size_y - 1)
-    t1 = (i_edge + 1) * grid_size_y + (grid_size_y - 1)
-    b0, b1 = num_top_vertices + t0, num_top_vertices + t1
-    side_faces_list.append(
-        np.column_stack([np.column_stack([t0, t1, b0]), np.column_stack([t1, b1, b0])]).reshape(-1, 3)
+    offset = _write_wall(
+        offset,
+        i_edge * grid_size_y + (grid_size_y - 1),
+        (i_edge + 1) * grid_size_y + (grid_size_y - 1),
+        flip=True,
     )
-
     # Left edge (i=0)
-    t0, t1 = j_edge, j_edge + 1
-    b0, b1 = num_top_vertices + t0, num_top_vertices + t1
-    side_faces_list.append(
-        np.column_stack([np.column_stack([t0, t1, b0]), np.column_stack([t1, b1, b0])]).reshape(-1, 3)
-    )
-
+    offset = _write_wall(offset, j_edge, j_edge + 1, flip=True)
     # Right edge (i=grid_size_x-1)
-    t0 = (grid_size_x - 1) * grid_size_y + j_edge
-    t1 = (grid_size_x - 1) * grid_size_y + (j_edge + 1)
-    b0, b1 = num_top_vertices + t0, num_top_vertices + t1
-    side_faces_list.append(
-        np.column_stack([np.column_stack([t0, b0, t1]), np.column_stack([t1, b0, b1])]).reshape(-1, 3)
+    _write_wall(
+        offset,
+        (grid_size_x - 1) * grid_size_y + j_edge,
+        (grid_size_x - 1) * grid_size_y + (j_edge + 1),
+        flip=False,
     )
 
-    # Combine all faces
-    all_faces = np.vstack([top_faces, bottom_faces, *side_faces_list])
-    indices = all_faces.astype(np.int32).flatten()
+    indices = indices.reshape(-1)
 
     return vertices, indices

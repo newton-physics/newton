@@ -200,7 +200,7 @@ def init_step_kernel(
         mass = particle_masses[tid]
         static_A_diags[tid] = pd_diags[tid] + mass / (dt * dt)
         world_idx = particle_world[tid]
-        world_g = gravity[wp.max(world_idx, 0)]
+        world_g = gravity[world_idx]
         x_inertia[tid] = x_last + v_prev * dt + (world_g + f_ext[tid] / mass) * (dt * dt)
         dx[tid] = v_prev * dt
 

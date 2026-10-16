@@ -49,11 +49,16 @@ jobs:
             }
 
             try {
-              await github.rest.issues.checkUserCanBeAssigned({
-                owner,
-                repo,
-                assignee: author,
-              });
+              // PR participants may be assignable without repository-wide access.
+              await github.request(
+                'GET /repos/{owner}/{repo}/issues/{issue_number}/assignees/{assignee}',
+                {
+                  owner,
+                  repo,
+                  issue_number: pr.number,
+                  assignee: author,
+                }
+              );
             } catch (error) {
               if (error.status === 404) {
                 core.warning(

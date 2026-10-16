@@ -141,8 +141,8 @@ class Example:
             "iterations": 10,
             "friction_epsilon": 0.01,
             "particle_enable_self_contact": True,
-            "particle_self_contact_radius": 0.01,
             "particle_self_contact_margin": 0.01,
+            "particle_self_contact_gap": 0.0,
         }
 
         if self.use_coupled:
@@ -198,7 +198,8 @@ class Example:
         # Simulation state
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
         self.control = self.model.control()
 
         newton.examples.configure_coupled_view(self, args)
@@ -211,7 +212,7 @@ class Example:
         self.graph = _capture_frame_graph(self.model, self.simulate)
 
     def simulate(self):
-        self.model.collide(self.state_0, self.contacts)
+        self.collision_pipeline.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             newton.examples.apply_coupled_viewer_forces(self, self.state_0)

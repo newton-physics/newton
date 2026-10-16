@@ -5,12 +5,12 @@
 
 from __future__ import annotations
 
-import math
 import warnings
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, ClassVar
 
 from ..core.types import override
+from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..usd.schema_resolver import PrimType, SchemaResolver
 from . import utils as usd
 
@@ -48,7 +48,7 @@ def _newton_legacy_contact_attr(legacy_name: str, material_attr: str):
             warnings.warn(
                 f"'{legacy_name}' on shape prim is deprecated; "
                 f"author '{material_attr}' on the bound NewtonMaterialAPI material instead.",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=4,
             )
             return float(value)
@@ -67,7 +67,7 @@ def _newton_non_schema_joint_state_attr(attr_name: str):
                 f"'{attr_name}' on joint prim is a non-schema attribute. "
                 f"Please file an issue at https://github.com/newton-physics/newton/issues "
                 f"describing your use case so we can provide a supported alternative.",
-                UserWarning,
+                NewtonWarning,
                 stacklevel=4,
             )
             return float(value)
@@ -84,7 +84,7 @@ def _newton_legacy_joint_limit_attr(legacy_name: str, schema_attr: str):
         if value is not None:
             warnings.warn(
                 f"'{legacy_name}' on joint prim is deprecated; use '{schema_attr}' instead.",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=4,
             )
             return float(value)
@@ -103,7 +103,7 @@ def _mjc_legacy_material_solref(converter, material_attr: str):
                 f"'mjc:solref' on material prim is deprecated; author '{material_attr}' on the "
                 f"bound NewtonMaterialAPI material, or use per-shape 'mjc:solref' (MjcGeomAPI) "
                 f"instead.",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=4,
             )
             return converter(value)
@@ -287,8 +287,8 @@ class SchemaResolverNewton(SchemaResolver):
             "self_collision_enabled": SchemaAttribute("newton:selfCollisionEnabled", True),
         },
         PrimType.MATERIAL: {
-            "mu_torsional": SchemaAttribute("newton:torsionalFriction", 0.25),
-            "mu_rolling": SchemaAttribute("newton:rollingFriction", 0.0005),
+            "mu_torsional": SchemaAttribute("newton:torsionalFriction", 0.005),
+            "mu_rolling": SchemaAttribute("newton:rollingFriction", 0.0001),
             "ke": SchemaAttribute("newton:contactStiffness", None),
             "kd": SchemaAttribute("newton:contactDamping", None),
             "kf": SchemaAttribute("newton:contactFrictionGain", None),
@@ -346,13 +346,12 @@ class SchemaResolverPhysx(SchemaResolver):
         PrimType.JOINT: {
             "armature": SchemaAttribute("physxJoint:armature", 0.0),
             "velocity_limit": SchemaAttribute("physxJoint:maxJointVelocity", None),
-            # Per-axis linear limit aliases
-            "limit_transX_ke": SchemaAttribute("physxLimit:linear:stiffness", 0.0),
-            "limit_transY_ke": SchemaAttribute("physxLimit:linear:stiffness", 0.0),
-            "limit_transZ_ke": SchemaAttribute("physxLimit:linear:stiffness", 0.0),
-            "limit_transX_kd": SchemaAttribute("physxLimit:linear:damping", 0.0),
-            "limit_transY_kd": SchemaAttribute("physxLimit:linear:damping", 0.0),
-            "limit_transZ_kd": SchemaAttribute("physxLimit:linear:damping", 0.0),
+            "limit_transX_ke": SchemaAttribute("physxLimit:transX:stiffness", 0.0),
+            "limit_transY_ke": SchemaAttribute("physxLimit:transY:stiffness", 0.0),
+            "limit_transZ_ke": SchemaAttribute("physxLimit:transZ:stiffness", 0.0),
+            "limit_transX_kd": SchemaAttribute("physxLimit:transX:damping", 0.0),
+            "limit_transY_kd": SchemaAttribute("physxLimit:transY:damping", 0.0),
+            "limit_transZ_kd": SchemaAttribute("physxLimit:transZ:damping", 0.0),
             "limit_linear_ke": SchemaAttribute("physxLimit:linear:stiffness", 0.0),
             "limit_angular_ke": SchemaAttribute("physxLimit:angular:stiffness", 0.0),
             "limit_rotX_ke": SchemaAttribute("physxLimit:rotX:stiffness", 0.0),
@@ -460,24 +459,22 @@ def solref_to_damping(solref: Sequence[float] | None) -> float | None:
     return damping
 
 
-# `parse_usd` divides revolute and D6-angular `limit_ke` / `limit_kd` by
-# DegreesToRadian (= pi/180) on the assumption that resolver-supplied gains are
-# authored in per-degree units (UsdPhysics convention). MuJoCo's `mjc:solreflimit`
-# always produces per-radian stiffness/damping (mjModel never expresses stiffness
-# per-degree). Pre-multiplying here cancels the importer's later division so the
-# per-radian value survives. Linear axes are unaffected and use the un-scaled
-# helpers above.
-_RAD_PER_DEG = math.pi / 180.0
+def _mjc_joint_effort_limit(prim: Usd.Prim) -> float | None:
+    """Read a joint effort limit [N or N·m] from MuJoCo ``mjc:actuatorfrcrange``.
 
-
-def _solref_to_stiffness_per_rad(solref: Sequence[float] | None) -> float | None:
-    s = solref_to_stiffness(solref)
-    return s * _RAD_PER_DEG if s is not None else None
-
-
-def _solref_to_damping_per_rad(solref: Sequence[float] | None) -> float | None:
-    d = solref_to_damping(solref)
-    return d * _RAD_PER_DEG if d is not None else None
+    ``mjc:actuatorfrclimited = "auto"`` follows MuJoCo's default ``autolimits`` and
+    limits only a non-empty range. Newton's effort limit is symmetric, so an
+    asymmetric range keeps its larger magnitude, as MJCF import does.
+    """
+    lower = usd.get_attribute(prim, "mjc:actuatorfrcrange:min")
+    upper = usd.get_attribute(prim, "mjc:actuatorfrcrange:max")
+    if lower is None and upper is None:
+        return None
+    lower, upper = float(lower or 0.0), float(upper or 0.0)
+    limited = usd.get_attribute(prim, "mjc:actuatorfrclimited", "auto")
+    if limited == "true" or (limited == "auto" and lower < upper):
+        return max(abs(lower), abs(upper))
+    return None
 
 
 class SchemaResolverMjc(SchemaResolver):
@@ -495,24 +492,17 @@ class SchemaResolverMjc(SchemaResolver):
         },
         PrimType.JOINT: {
             "armature": SchemaAttribute("mjc:armature", 0.0),
+            # MuJoCo damping is authored in SI units (per radian for angular
+            # DOFs), unlike the USD per-degree convention behind the plain
+            # "damping" key, so it resolves through the _per_rad variant.
+            "damping_per_rad": SchemaAttribute("mjc:damping", None),
             "friction": SchemaAttribute("mjc:frictionloss", 0.0),
-            # Per-axis aliases mapped to solreflimit (MjcJointAPI authors joint limit solref here)
-            "limit_transX_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_stiffness),
-            "limit_transY_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_stiffness),
-            "limit_transZ_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_stiffness),
-            "limit_transX_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_damping),
-            "limit_transY_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_damping),
-            "limit_transZ_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_damping),
-            "limit_linear_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_stiffness),
-            "limit_angular_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_stiffness_per_rad),
-            "limit_rotX_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_stiffness_per_rad),
-            "limit_rotY_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_stiffness_per_rad),
-            "limit_rotZ_ke": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_stiffness_per_rad),
-            "limit_linear_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], solref_to_damping),
-            "limit_angular_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_damping_per_rad),
-            "limit_rotX_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_damping_per_rad),
-            "limit_rotY_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_damping_per_rad),
-            "limit_rotZ_kd": SchemaAttribute("mjc:solreflimit", [0.02, 1.0], _solref_to_damping_per_rad),
+            "effort_limit": SchemaAttribute(
+                "mjc:actuatorfrcrange:min",
+                None,
+                usd_value_getter=_mjc_joint_effort_limit,
+                attribute_names=("mjc:actuatorfrcrange:min", "mjc:actuatorfrcrange:max", "mjc:actuatorfrclimited"),
+            ),
         },
         PrimType.SHAPE: {
             # Mesh

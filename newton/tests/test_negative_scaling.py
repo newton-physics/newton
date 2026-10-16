@@ -76,7 +76,21 @@ class TestBuilderNormalization(unittest.TestCase):
         body = builder.add_body()
         shape = builder.add_shape_cylinder(body=body, radius=-0.4, half_height=-0.6)
         scale = builder.shape_scale[shape]
-        np.testing.assert_allclose(scale[:2], (0.4, 0.6), rtol=1e-6)
+        np.testing.assert_allclose(scale, (0.4, 0.6, 0.0), rtol=1e-6)
+
+    def test_cylinder_barrel_radius_stored(self):
+        """Verify cylinders store the barrel radius in the third scale component."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        shape = builder.add_shape_cylinder(body=body, radius=0.4, half_height=0.6, barrel_radius=1.0)
+        np.testing.assert_allclose(builder.shape_scale[shape], (0.4, 0.6, 1.0), rtol=1e-6)
+
+    def test_cylinder_barrel_radius_rejects_short_arc(self):
+        """Verify a barrel arc spans the full cylinder height."""
+        builder = newton.ModelBuilder()
+        body = builder.add_body()
+        with self.assertRaises(ValueError):
+            builder.add_shape_cylinder(body=body, half_height=0.6, barrel_radius=0.5)
 
     def test_ellipsoid_negative_absorbed(self):
         builder = newton.ModelBuilder()
@@ -301,6 +315,7 @@ class TestUsdNegativeScale(unittest.TestCase):
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_asymmetric_mesh_negative_scale_transform_matches_usd(self):
+        """Preserve mirrored triangle positions despite normal-driven vertex splitting."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -338,16 +353,20 @@ class TestUsdNegativeScale(unittest.TestCase):
         result = builder.add_usd(stage)
 
         shape_id = result["path_shape_map"]["/World/Body/Collision"]
+        imported_mesh = builder.shape_source[shape_id]
         imported_vertices = transform_points(
-            builder.shape_source[shape_id].vertices,
+            imported_mesh.vertices,
             builder.shape_transform[shape_id],
             scale=builder.shape_scale[shape_id],
         )
         expected_vertices = vertices * np.array([-1.0, 1.0, 1.0], dtype=np.float32)
-        assert_np_equal(imported_vertices, expected_vertices, tol=1e-6)
+        # Sharp shading may split vertices; compare triangle corners, including winding.
+        source_indices = np.asarray(mesh.GetFaceVertexIndicesAttr().Get())
+        assert_np_equal(imported_vertices[imported_mesh.indices], expected_vertices[source_indices], tol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_import_asymmetric_mesh_negative_scale_from_parent_xform(self):
+        """Preserve mirrored triangle positions under a scaled parent."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
 
         stage = Usd.Stage.CreateInMemory()
@@ -390,13 +409,15 @@ class TestUsdNegativeScale(unittest.TestCase):
         shape_id = result["path_shape_map"][shape_path]
         assert_np_equal(np.array(result["path_shape_scale"][shape_path]), np.array([-1.0, 2.0, 3.0]), tol=1e-6)
 
+        imported_mesh = builder.shape_source[shape_id]
         imported_vertices = transform_points(
-            builder.shape_source[shape_id].vertices,
+            imported_mesh.vertices,
             builder.shape_transform[shape_id],
             scale=builder.shape_scale[shape_id],
         )
         expected_vertices = vertices * np.array([-1.0, 2.0, 3.0], dtype=np.float32)
-        assert_np_equal(imported_vertices, expected_vertices, tol=1e-6)
+        source_indices = np.asarray(mesh.GetFaceVertexIndicesAttr().Get())
+        assert_np_equal(imported_vertices[imported_mesh.indices], expected_vertices[source_indices], tol=1e-6)
 
 
 if __name__ == "__main__":

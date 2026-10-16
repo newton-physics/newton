@@ -126,7 +126,7 @@ class Example:
         template.rigid_gap = 0.005
         SolverMuJoCo.register_custom_attributes(template)
         if self.payload_kind == "vbd-cable":
-            SolverVBD.register_custom_attributes(template, dahl_defaults_enabled=False)
+            SolverVBD.register_custom_attributes(template)
         self._emit_template(template)
 
         bodies_per_world = template.body_count
@@ -206,8 +206,7 @@ class Example:
         if isinstance(self.viewer, newton.viewer.ViewerGL):
             scale = max(1.0, float(np.sqrt(self.world_count)))
             self.viewer.set_camera(pos=wp.vec3(0.9 * scale, -1.7 * scale, 0.95 * scale), pitch=-18.0, yaw=120.0)
-            if hasattr(self.viewer.camera, "look_at"):
-                self.viewer.camera.look_at(wp.vec3(0.45, 0.0, 0.28))
+            self.viewer.camera.look_at(wp.vec3(0.45, 0.0, 0.28))
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_1)
@@ -285,6 +284,7 @@ class Example:
             enable_self_collisions=False,
             parse_visuals_as_colliders=False,
             force_show_colliders=False,
+            joint_damping_mode="passive",
         )
         builder.joint_q[: len(FRANKA_Q)] = FRANKA_Q
         builder.joint_target_q[: len(FRANKA_Q)] = FRANKA_Q
@@ -308,17 +308,16 @@ class Example:
             margin=0.001,
             gap=0.002,
         )
-        points, quats = newton.utils.create_straight_cable_points_and_quaternions(
+        rod = newton.Rod.create_straight(
             start=PAYLOAD_CENTER - wp.vec3(0.5 * PAYLOAD_LENGTH, 0.0, 0.0),
             direction=wp.vec3(1.0, 0.0, 0.0),
             length=PAYLOAD_LENGTH,
-            num_segments=self.payload_segments,
+            segment_count=self.payload_segments,
             twist_total=0.0,
+            radius=self.payload_radius,
         )
         return builder.add_rod(
-            positions=points,
-            quaternions=quats,
-            radius=self.payload_radius,
+            rod=rod,
             body_frame_origin="start",
             cfg=cable_cfg,
             stretch_stiffness=stretch_stiffness,
@@ -567,7 +566,7 @@ class Example:
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             newton.examples.apply_coupled_viewer_forces(self, self.state_0)
-            self.model.collide(self.state_0, self.contacts, collision_pipeline=self.collision_pipeline)
+            self.collision_pipeline.collide(self.state_0, self.contacts)
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             newton.eval_ik(self.model, self.state_1, self.state_1.joint_q, self.state_1.joint_qd)
             self.state_0, self.state_1 = self.state_1, self.state_0

@@ -8,6 +8,8 @@
 
    api/newton
    api/newton_actuators
+   api/newton_controllers
+   api/newton_exceptions
    api/newton_geometry
    api/newton_ik
    api/newton_math

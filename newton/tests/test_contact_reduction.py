@@ -22,6 +22,7 @@ from newton._src.geometry.contact_reduction import (
     NUM_SPATIAL_DIRECTIONS,
     NUM_VOXEL_DEPTH_SLOTS,
     compute_num_reduction_slots,
+    get_face_normal,
     get_slot,
 )
 from newton.tests.unittest_utils import add_function_test, get_test_devices
@@ -37,6 +38,13 @@ def _get_slot_kernel(
     slots[tid] = get_slot(normals[tid])
 
 
+@wp.kernel
+def _get_face_normal_kernel(normals: wp.array[wp.vec3]):
+    """Fetch every configured face normal through the device lookup."""
+    tid = wp.tid()
+    normals[tid] = get_face_normal(tid)
+
+
 class TestContactReduction(unittest.TestCase):
     """Tests for contact reduction functionality."""
 
@@ -46,6 +54,15 @@ class TestContactReduction(unittest.TestCase):
 # =============================================================================
 # Face-normal geometry tests
 # =============================================================================
+
+
+def test_face_normal_lookup_matches_matrix(test, device):
+    """Verify the device lookup exactly reproduces the configured face-normal matrix."""
+    normals = wp.empty(NUM_NORMAL_BINS, dtype=wp.vec3, device=device)
+    wp.launch(_get_face_normal_kernel, dim=NUM_NORMAL_BINS, inputs=[normals], device=device)
+
+    expected = np.array([[FACE_NORMALS[i, j] for j in range(3)] for i in range(NUM_NORMAL_BINS)], dtype=np.float32)
+    np.testing.assert_array_equal(normals.numpy(), expected)
 
 
 def test_face_normals_are_unit_vectors(test, device):
@@ -149,6 +166,12 @@ devices = get_test_devices()
 for device in devices:
     add_function_test(
         TestContactReduction, "test_face_normals_are_unit_vectors", test_face_normals_are_unit_vectors, devices=[device]
+    )
+    add_function_test(
+        TestContactReduction,
+        "test_face_normal_lookup_matches_matrix",
+        test_face_normal_lookup_matches_matrix,
+        devices=[device],
     )
     add_function_test(
         TestContactReduction, "test_face_normals_cover_sphere", test_face_normals_cover_sphere, devices=[device]

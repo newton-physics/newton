@@ -193,7 +193,7 @@ class TestJointLimits(unittest.TestCase):
     def test_robustness_of_limit_comparisons(self):
         """Test that limit comparisons work robustly with >= and <= operators."""
         builder = newton.ModelBuilder()
-        body = builder.add_body()
+        body = builder.add_link()
 
         # Add joint with unlimited limits
         joint = builder.add_joint_revolute(parent=-1, child=body, limit_lower=-MAXVAL, limit_upper=MAXVAL)

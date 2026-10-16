@@ -5,6 +5,7 @@ import unittest
 
 import warp as wp
 
+import newton
 from newton import ModelBuilder
 from newton._src.geometry.broad_phase_common import test_world_and_group_pair
 
@@ -94,10 +95,11 @@ class TestEnvironmentGroupCollision(unittest.TestCase):
 
         model = builder.finalize(device=self.device)
         state = model.state()
-        contacts = model.contacts()
+        collision_pipeline = newton.CollisionPipeline(model)
+        contacts = collision_pipeline.contacts()
 
         # Run collision detection
-        model.collide(state, contacts)
+        collision_pipeline.collide(state, contacts)
 
         # Get soft contact count
         soft_contact_count = int(contacts.soft_contact_count.numpy()[0])
@@ -337,7 +339,7 @@ class TestWorldGroupBroadphaseKernels(unittest.TestCase):
         # Run tests on CPU
         for world_a, world_b, col_a, col_b, expected in test_cases:
 
-            @wp.kernel
+            @wp.kernel(module="unique")
             def test_kernel(world_a: int, world_b: int, col_a: int, col_b: int, result: wp.array[bool]):
                 result[0] = test_world_and_group_pair(world_a, world_b, col_a, col_b)
 

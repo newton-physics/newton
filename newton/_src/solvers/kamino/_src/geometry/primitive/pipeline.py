@@ -18,7 +18,6 @@ import warp as wp
 from ......geometry.types import GeoType
 from ...core.data import DataKamino
 from ...core.model import ModelKamino
-from ...core.state import StateKamino
 from ...core.types import to_warp_int32_array, vec6f
 from ..contacts import DEFAULT_GEOM_PAIR_CONTACT_GAP, ContactsKamino
 from .broadphase import (
@@ -73,6 +72,7 @@ class CollisionPipelinePrimitive:
         self._cmodel: CollisionCandidatesModel | None = None
         self._cdata: CollisionCandidatesData | None = None
         self._bvdata: BoundingVolumesData | None = None
+        self._contact_overflow_warning_emitted: wp.array[wp.int32] | None = None
 
         # If a builder is provided, proceed to finalize all data allocations
         if model is not None:
@@ -159,14 +159,14 @@ class CollisionPipelinePrimitive:
                 wid=wp.zeros(shape=(self._model.geoms.num_collidable_pairs,), dtype=wp.int32),
                 geom_pair=wp.zeros_like(self._model.geoms.collidable_pairs),
             )
+            self._contact_overflow_warning_emitted = wp.zeros(shape=(1,), dtype=wp.int32)
 
-    def collide(self, data: DataKamino, state: StateKamino, contacts: ContactsKamino):
+    def collide(self, data: DataKamino, contacts: ContactsKamino):
         """
-        Runs the unified collision detection pipeline to generate discrete contacts.
+        Runs the primitive collision detection pipeline to generate discrete contacts.
 
         Args:
             data: The data container holding internal time-varying state of the solver.
-            state: The state container holding the time-varying state of the simulation.
             contacts: Output contacts container (will be cleared and populated)
         """
         # Ensure that the pipeline has been finalized
@@ -176,10 +176,11 @@ class CollisionPipelinePrimitive:
         # Clear all active collision candidates and contacts
         self._cdata.clear()
         contacts.clear()
+        self._contact_overflow_warning_emitted.zero_()
 
         # Perform the broad-phase collision detection to generate candidate pairs
         primitive_broadphase_explicit(
-            body_poses=state.q_i,
+            body_poses=data.bodies.q_i,
             geoms_model=self._model.geoms,
             geoms_data=data.geoms,
             bv_type=self._bvtype,
@@ -190,7 +191,14 @@ class CollisionPipelinePrimitive:
         )
 
         # Perform the narrow-phase collision detection to generate active contacts
-        primitive_narrowphase(self._model, data, self._cdata, contacts, default_gap=self._default_gap)
+        primitive_narrowphase(
+            self._model,
+            data,
+            self._cdata,
+            contacts,
+            self._contact_overflow_warning_emitted,
+            default_gap=self._default_gap,
+        )
 
     ###
     # Internals
@@ -203,7 +211,12 @@ class CollisionPipelinePrimitive:
         Raises:
             RuntimeError: If the pipeline has not been finalized.
         """
-        if self._cmodel is None or self._cdata is None or self._bvdata is None:
+        if (
+            self._cmodel is None
+            or self._cdata is None
+            or self._bvdata is None
+            or self._contact_overflow_warning_emitted is None
+        ):
             raise RuntimeError(
                 "CollisionPipelinePrimitive has not been finalized. "
                 "Please call `finalize(builder, device)` before using the pipeline."

@@ -3,41 +3,24 @@
 
 from __future__ import annotations
 
+import logging
+import re
 import warnings
-from typing import Any, Literal
+from typing import Literal
 
 import numpy as np
 import warp as wp
 
+from ..exceptions import NewtonDeprecationWarning
 from ..sim import Contacts, Model, State
 from ..sim.contacts import contact_surface_point
+from ..solvers.solver import SolverBase
 from ..utils.selection import match_labels
 
-_UNSET = object()
+logger = logging.getLogger(__name__)
 
 _SENSING_KIND_SHAPE = 1
 _SENSING_KIND_BODY = 2
-
-_SENSING_OBJ_IDX_DEPRECATION_MSG = (
-    "SensorContact.sensing_obj_idx is deprecated; use SensorContact.sensing_indices. "
-    "The alias will be removed in a future release."
-)
-_SENSING_OBJ_TYPE_DEPRECATION_MSG = (
-    "SensorContact.sensing_obj_type is deprecated; use SensorContact.sensing_type. "
-    "The alias will be removed in a future release."
-)
-_SENSING_OBJ_TRANSFORMS_DEPRECATION_MSG = (
-    "SensorContact.sensing_obj_transforms is deprecated; use SensorContact.sensing_transforms. "
-    "The alias will be removed in a future release."
-)
-_SENSING_OBJ_BODIES_DEPRECATION_MSG = (
-    "SensorContact(..., sensing_obj_bodies=...) is deprecated; use sensing_bodies=... instead. "
-    "The alias will be removed in a future release."
-)
-_SENSING_OBJ_SHAPES_DEPRECATION_MSG = (
-    "SensorContact(..., sensing_obj_shapes=...) is deprecated; use sensing_shapes=... instead. "
-    "The alias will be removed in a future release."
-)
 
 
 @wp.kernel(enable_backward=False)
@@ -319,12 +302,12 @@ class SensorContact:
 
     .. rubric:: Construction and update order
 
-    ``SensorContact`` requests the ``force`` extended attribute from the model at init, so a :class:`~newton.Contacts`
-    object created afterwards (via :meth:`Model.contacts() <newton.Model.contacts>` or directly) will include it
-    automatically.
-
-    :meth:`update` reads from ``contacts.force``. Call ``solver.update_contacts(contacts)`` before
-    ``sensor.update()`` so that contact forces are current.
+    Construct a :class:`~newton.CollisionPipeline` and pass its contacts to
+    :meth:`~newton.solvers.SolverBase.observables` when requesting
+    :attr:`~newton.solvers.SolverBase.ObservableKind.CONTACT_F` from the solver. Pass the resulting
+    :class:`~newton.solvers.SolverBase.Observables` and the pipeline's :class:`~newton.Contacts`
+    buffer to both the solver step and :meth:`update`. The sensor uses only the linear part of
+    each ``CONTACT_F`` wrench (force [N]); the torque part is ignored.
 
     Parameters that select bodies or shapes accept label patterns -- see :ref:`label-matching`.
 
@@ -343,18 +326,29 @@ class SensorContact:
             builder.add_shape_sphere(body, radius=0.1, label="ball")
             model = builder.finalize()
 
-            sensor = SensorContact(model, sensing_shapes="ball")
+            sensor = SensorContact(model, sensing_shapes="ball", request_contact_attributes=False)
             solver = newton.solvers.SolverMuJoCo(model)
             state = model.state()
-            contacts = model.contacts()
+            collision_pipeline = newton.CollisionPipeline(
+                model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0
+            )
+            contacts = collision_pipeline.contacts()
+            observables = solver.observables(kinds=sensor.solver_observable_kinds, contacts=contacts)
 
-            solver.step(state, state, None, None, dt=1.0 / 60.0)
-            solver.update_contacts(contacts)
-            sensor.update(state, contacts)
+            solver.step(state, state, None, contacts, dt=1.0 / 60.0, observables=observables)
+            sensor.update(state, contacts, observables=observables)
             force = sensor.total_force.numpy()  # (n_sensing, 3)
 
     Raises:
         ValueError: If the configuration of sensing/counterpart objects is invalid.
+    """
+
+    solver_observable_kinds = frozenset({SolverBase.ObservableKind.CONTACT_F})
+    """Solver observables required by :meth:`update`.
+
+    .. experimental::
+
+        The solver observable API may change while additional observables are migrated to it.
     """
 
     sensing_indices: list[int]
@@ -401,63 +395,17 @@ class SensorContact:
     """World-frame transforms of sensing objects [m, unitless quaternion],
     shape ``(n_sensing,)``, dtype :class:`transform`."""
 
-    @property
-    def sensing_obj_idx(self) -> list[int]:
-        """Deprecated alias for :attr:`sensing_indices`.
-
-        .. deprecated:: 1.4
-            Use :attr:`sensing_indices` instead.
-        """
-        warnings.warn(_SENSING_OBJ_IDX_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-        return self.sensing_indices
-
-    @sensing_obj_idx.setter
-    def sensing_obj_idx(self, value: list[int]) -> None:
-        warnings.warn(_SENSING_OBJ_IDX_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-        self.sensing_indices = value
-
-    @property
-    def sensing_obj_type(self) -> Literal["body", "shape"]:
-        """Deprecated alias for :attr:`sensing_type`.
-
-        .. deprecated:: 1.4
-            Use :attr:`sensing_type` instead.
-        """
-        warnings.warn(_SENSING_OBJ_TYPE_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-        return self.sensing_type
-
-    @sensing_obj_type.setter
-    def sensing_obj_type(self, value: Literal["body", "shape"]) -> None:
-        warnings.warn(_SENSING_OBJ_TYPE_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-        self.sensing_type = value
-
-    @property
-    def sensing_obj_transforms(self) -> wp.array[wp.transform]:
-        """Deprecated alias for :attr:`sensing_transforms`.
-
-        .. deprecated:: 1.4
-            Use :attr:`sensing_transforms` instead.
-        """
-        warnings.warn(_SENSING_OBJ_TRANSFORMS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-        return self.sensing_transforms
-
-    @sensing_obj_transforms.setter
-    def sensing_obj_transforms(self, value: wp.array[wp.transform]) -> None:
-        warnings.warn(_SENSING_OBJ_TRANSFORMS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-        self.sensing_transforms = value
-
     def __init__(
         self,
         model: Model,
         *,
-        sensing_bodies: str | list[str] | list[int] | None = None,
-        sensing_shapes: str | list[str] | list[int] | None = None,
-        counterpart_bodies: str | list[str] | list[int] | None = None,
-        counterpart_shapes: str | list[str] | list[int] | None = None,
+        sensing_bodies: str | list[str] | re.Pattern[str] | list[int] | None = None,
+        sensing_shapes: str | list[str] | re.Pattern[str] | list[int] | None = None,
+        counterpart_bodies: str | list[str] | re.Pattern[str] | list[int] | None = None,
+        counterpart_shapes: str | list[str] | re.Pattern[str] | list[int] | None = None,
         measure_total: bool = True,
         verbose: bool | None = None,
         request_contact_attributes: bool = True,
-        **kwargs: Any,
     ):
         """Initialize the SensorContact.
 
@@ -468,41 +416,27 @@ class SensorContact:
 
         Args:
             model: The simulation model providing shape/body definitions and world layout.
-            sensing_bodies: List of body indices, single pattern to match against body labels, or list of patterns where
-                any one matches.
-            sensing_shapes: List of shape indices, single pattern to match against shape labels, or list of patterns
-                where any one matches.
-            counterpart_bodies: List of body indices, single pattern to match
-                against body labels, or list of patterns where any one matches.
-            counterpart_shapes: List of shape indices, single pattern to match
-                against shape labels, or list of patterns where any one matches.
+            sensing_bodies: Glob pattern, list of glob patterns, compiled regular-expression pattern to match against
+                body labels, or list of body indices. Regular expressions use full matching.
+            sensing_shapes: Glob pattern, list of glob patterns, compiled regular-expression pattern to match against
+                shape labels, or list of shape indices. Regular expressions use full matching.
+            counterpart_bodies: Glob pattern, list of glob patterns, compiled regular-expression pattern to match
+                against body labels, or list of body indices. Regular expressions use full matching.
+            counterpart_shapes: Glob pattern, list of glob patterns, compiled regular-expression pattern to match
+                against shape labels, or list of shape indices. Regular expressions use full matching.
             measure_total: If True (default), :attr:`total_force` and :attr:`total_force_friction` are allocated.
                 If False, both are None.
-            verbose: If True, print details. If False, suppress details. If None, print details when
+            verbose: If True, log details. If False, suppress details. If None, log details when
                 ``wp.config.log_level`` is configured for debug logging.
-            request_contact_attributes: If True (default), transparently request the extended contact attribute
-                ``force`` from the model.
+            request_contact_attributes: If True, request the deprecated ``contacts.force`` extended attribute
+                for compatibility. Defaults to True during the deprecation period.
+                Pass False and supply solver observables to :meth:`update` instead.
+
+                .. deprecated:: 1.7
+                    Passing True is deprecated. Allocate :attr:`solver_observable_kinds`
+                    through the solver and pass :class:`~newton.solvers.SolverBase.Observables`
+                    to :meth:`update` instead.
         """
-        deprecated_sensing_bodies = kwargs.pop("sensing_obj_bodies", _UNSET)
-        if deprecated_sensing_bodies is not _UNSET:
-            warnings.warn(_SENSING_OBJ_BODIES_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-            if sensing_bodies is not None and deprecated_sensing_bodies is not None:
-                raise TypeError("Specify only one of `sensing_bodies` and deprecated `sensing_obj_bodies`.")
-            if deprecated_sensing_bodies is not None:
-                sensing_bodies = deprecated_sensing_bodies
-
-        deprecated_sensing_shapes = kwargs.pop("sensing_obj_shapes", _UNSET)
-        if deprecated_sensing_shapes is not _UNSET:
-            warnings.warn(_SENSING_OBJ_SHAPES_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-            if sensing_shapes is not None and deprecated_sensing_shapes is not None:
-                raise TypeError("Specify only one of `sensing_shapes` and deprecated `sensing_obj_shapes`.")
-            if deprecated_sensing_shapes is not None:
-                sensing_shapes = deprecated_sensing_shapes
-
-        if kwargs:
-            unexpected = next(iter(kwargs))
-            raise TypeError(f"SensorContact.__init__() got an unexpected keyword argument '{unexpected}'")
-
         if (sensing_bodies is None) == (sensing_shapes is None):
             raise ValueError("Exactly one of `sensing_bodies` and `sensing_shapes` must be specified")
 
@@ -512,9 +446,16 @@ class SensorContact:
         self.device = model.device
         self.verbose = verbose if verbose is not None else wp.config.log_level <= wp.LOG_DEBUG
 
-        # request contact force attribute
+        # Retain an explicit compatibility path during the deprecation period.
         if request_contact_attributes:
-            model.request_contact_attributes("force")
+            warnings.warn(
+                "SensorContact(request_contact_attributes=True) is deprecated in Newton 1.7; "
+                "allocate SolverBase.Observables with solver.observables(kinds=sensor.solver_observable_kinds, contacts=contacts) "
+                "and pass them to update(..., observables=...).",
+                NewtonDeprecationWarning,
+                stacklevel=2,
+            )
+            model._request_contact_attributes("force")
 
         if sensing_bodies is not None:
             s_bodies = match_labels(model.body_label, sensing_bodies)
@@ -661,15 +602,17 @@ class SensorContact:
         self.counterpart_indices = [counterparts_by_world[w] for w in worlds]
 
         if self.verbose:
-            print("SensorContact initialized:")
-            print(f"  Sensing objects: {n_rows} ({self.sensing_type}s)")
-            print(
-                f"  Counterpart columns: {max_readings}"
-                + (f" ({self.counterpart_type}s)" if self.counterpart_type else "")
-            )
-            print(
-                f"  total_force: {'yes' if measure_total else 'no'}, "
-                f"force_matrix: {'yes' if max_readings > 0 else 'no'}"
+            logger.info(
+                "SensorContact initialized:\n"
+                "  Sensing objects: %s (%ss)\n"
+                "  Counterpart columns: %s%s\n"
+                "  total_force: %s, force_matrix: %s",
+                n_rows,
+                self.sensing_type,
+                max_readings,
+                f" ({self.counterpart_type}s)" if self.counterpart_type else "",
+                "yes" if measure_total else "no",
+                "yes" if max_readings > 0 else "no",
             )
 
         self._model = model
@@ -678,7 +621,7 @@ class SensorContact:
         self._sensing_kinds = wp.full(n_rows, sensing_kind, dtype=wp.int32, device=self.device)
         self.sensing_transforms = wp.zeros(n_rows, dtype=wp.transform, device=self.device)
 
-    def update(self, state: State | None, contacts: Contacts):
+    def update(self, state: State | None, contacts: Contacts, *, observables: SolverBase.Observables | None = None):
         """Update the contact sensor readings based on the provided state and contacts.
 
         Computes world-frame transforms for all sensing objects and evaluates contact forces and their friction
@@ -690,11 +633,34 @@ class SensorContact:
                 :attr:`sensing_transforms` is left unchanged and :attr:`position_matrix` is reset to zero.
                 Contact-force outputs are updated in either case.
             contacts: The contact data to evaluate.
+            observables: Solver observable arrays containing :attr:`~newton.solvers.SolverBase.Observables.contact_f`.
+                If omitted, the deprecated ``contacts.force`` array is used when available.
+                ``contacts`` must be the buffer that produced ``contact_f`` (``observables.contacts``).
+                Before the first solver step, newly allocated observables report zero contact forces.
+                See :ref:`solver_observables` for allocation and usage examples.
 
         Raises:
-            ValueError: If ``contacts.force`` is None.
-            ValueError: If ``contacts.device`` does not match the sensor's device.
+            ValueError: If ``observables`` belong to a different model, no contact-force
+                output is available, or ``contact_f`` was produced with a different ``contacts`` instance.
+            ValueError: If legacy contacts are on a different device from the sensor.
         """
+        if observables is not None and observables.model is not self._model:
+            raise ValueError("Solver observables must belong to the sensor's model.")
+        contact_f = observables.contact_f if observables is not None else contacts.force
+        if contact_f is None:
+            raise ValueError(
+                "SensorContact requires contact-force solver observables. Request "
+                "SolverBase.ObservableKind.CONTACT_F and pass the SolverBase.Observables to update()."
+            )
+        if observables is not None:
+            if observables.contacts is not contacts:
+                raise ValueError(
+                    "Contact solver observables were produced with a different Contacts instance; "
+                    "pass the Contacts used by the step that produced them."
+                )
+        elif contacts.device != self.device:
+            raise ValueError(f"Contacts device ({contacts.device}) does not match sensor device ({self.device}).")
+
         # update sensing transforms
         n = len(self._sensing_indices)
         if n > 0 and state is not None and state.body_q is not None:
@@ -712,16 +678,9 @@ class SensorContact:
                 device=self.device,
             )
 
-        if contacts.force is None:
-            raise ValueError(
-                "SensorContact requires a ``Contacts`` object with ``force`` allocated. "
-                "Create ``SensorContact`` before ``Contacts`` for automatically requesting it."
-            )
-        if contacts.device != self.device:
-            raise ValueError(f"Contacts device ({contacts.device}) does not match sensor device ({self.device}).")
-        self._eval_forces(state, contacts)
+        self._eval_forces(state, contacts, contact_f)
 
-    def _eval_forces(self, state: State | None, contacts: Contacts):
+    def _eval_forces(self, state: State | None, contacts: Contacts, contact_f: wp.array[wp.spatial_vector]):
         """Recompute force outputs and, when ``state.body_q`` is available, contact positions."""
         if self.total_force is not None:
             self.total_force.zero_()
@@ -744,7 +703,7 @@ class SensorContact:
                 contacts.rigid_contact_point1,
                 contacts.rigid_contact_offset0,
                 contacts.rigid_contact_offset1,
-                contacts.force,
+                contact_f,
                 contacts.rigid_contact_normal,
                 self._model.shape_body,
                 # body_q and the two position outputs below must be all-None or all-set:

@@ -7,6 +7,7 @@
 # Shows how to control multiple articulation per world in a single ArticulationView.
 #
 # Command: python -m newton.examples selection_multiple
+#          python -m newton.examples selection_multiple --solver kamino
 #
 ###########################################################################
 
@@ -85,13 +86,16 @@ class Example:
         self.frame_dt = 1.0 / self.fps
 
         self.sim_time = 0.0
-        self.sim_substeps = 10
+        self.sim_substeps = 6 if args.solver == "kamino" else 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.world_count = args.world_count
+        self.solver_type = args.solver
 
         # load articulation
         arti = newton.ModelBuilder()
+        if self.solver_type == "kamino":
+            newton.solvers.SolverKamino.register_custom_attributes(arti)
         arti.default_shape_cfg.gap = 0.0
         arti.add_mjcf(
             newton.examples.get_asset("nv_ant.xml"),
@@ -114,7 +118,14 @@ class Example:
         # finalize model
         self.model = scene.finalize()
 
-        self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100, nconmax=70)
+        if self.solver_type == "kamino":
+            solver_config = newton.solvers.SolverKamino.Config.from_model(
+                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+            )
+            solver_config.dvi.max_alternating_iterations = 8
+            self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
+        else:
+            self.solver = newton.solvers.SolverMuJoCo(self.model, njmax=100, nconmax=70)
 
         self.viewer = viewer
 
@@ -122,7 +133,12 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
         # Contacts only needed for non-MuJoCo solvers
-        self.contacts = self.model.contacts() if not isinstance(self.solver, newton.solvers.SolverMuJoCo) else None
+        if isinstance(self.solver, newton.solvers.SolverMuJoCo):
+            self.collision_pipeline = None
+            self.contacts = None
+        else:
+            self.collision_pipeline = newton.CollisionPipeline(self.model)
+            self.contacts = self.collision_pipeline.contacts()
 
         self.next_reset = 0.0
         self.step_count = 0
@@ -194,7 +210,7 @@ class Example:
 
             # explicit collisions needed without MuJoCo solver
             if self.contacts is not None:
-                self.model.collide(self.state_0, self.contacts)
+                self.collision_pipeline.collide(self.state_0, self.contacts)
 
             self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
@@ -276,6 +292,7 @@ class Example:
     def create_parser():
         parser = newton.examples.create_parser()
         newton.examples.add_world_count_arg(parser)
+        parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
         parser.set_defaults(world_count=16)
         return parser
 

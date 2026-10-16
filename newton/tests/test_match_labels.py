@@ -3,6 +3,7 @@
 
 """Tests for match_labels utility."""
 
+import re
 import unittest
 
 from newton._src.utils.selection import match_labels
@@ -26,6 +27,31 @@ class TestMatchLabels(unittest.TestCase):
     def test_str_star_matches_all(self):
         labels = ["a", "b", "c"]
         self.assertEqual(match_labels(labels, "*"), [0, 1, 2])
+
+    def test_compiled_regex_matches_full_labels(self):
+        labels = [
+            "/World/envs/env_0/Object_A",
+            "/World/envs/env_12/Object_B",
+            "/World/envs/env_12/Object_D",
+            "/World/envs/env_x/Object_A",
+        ]
+        pattern = re.compile(r"/World/envs/env_[0-9]+/Object_(A|B)")
+
+        self.assertEqual(match_labels(labels, pattern), [0, 1])
+
+    def test_compiled_regex_requires_full_match(self):
+        labels = ["robot", "robot_arm"]
+
+        self.assertEqual(match_labels(labels, re.compile(r"robot")), [0])
+
+    def test_regex_looking_string_remains_a_glob(self):
+        labels = [
+            "/World/envs/env_0/Object_A",
+            "/World/envs/env_12/Object_B",
+        ]
+        pattern = r"/World/envs/env_[0-9]+/Object_(A|B)"
+
+        self.assertEqual(match_labels(labels, pattern), [])
 
     def test_list_str_union(self):
         labels = ["alpha", "beta", "gamma", "delta"]

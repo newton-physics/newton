@@ -53,6 +53,19 @@ All importers will rotate the asset now to match the builder's ``up_axis`` (inst
 :meth:`newton.ModelBuilder.add_usd` accepts both file paths and URLs directly, so a separate
 ``resolve_usd_from_url()`` helper is usually unnecessary when migrating from ``warp.sim``.
 
+USD cables now use ``physics:restShapePoints`` and ``physics:restNormals`` as their simulated
+rest shape. Previously, rest points affected only material gains and rest normals were ignored.
+With both rest fields absent, the cable uses its initial geometry as its rest shape.
+Review assets that relied on rest fields being ignored: remove unwanted rest fields, or set
+them to the initial points and normals, to start relaxed. Separately, welded cable graphs now
+honor authored initial normals even without rest fields; earlier versions ignored those normals.
+Rest lengths now determine capsule size and mass volume weights. Explicit segment masses keep
+their authored values. Attachments follow native rod material endpoints, which can differ from
+the initial USD points when initial and rest segment lengths differ; see :ref:`usd_parsing`
+for the supported subset.
+These changes affect the experimental deformable importer, so they do not require a deprecation
+period under Newton's :doc:`compatibility policy <guide/compatibility>`.
+
 The MJCF importer from Warp sim only uses the ``geom_density`` defined in the MJCF for sphere and box shapes but ignores these definitions for other shape types (which will receive the default density specified by the ``density`` argument to ``wp.sim.parse_mjcf``). The Newton MJCF importer now considers the ``geom_density`` for all shape types. This change may yield to different simulation results and may require tuning contact and other simulation parameters to achieve similar results in Newton compared to Warp sim.
 
 
@@ -79,12 +92,39 @@ to locate a joint's slice in the per-DOF arrays.
 
 For free and D6 joints, Newton stores linear DOFs before angular DOFs in per-axis arrays. In
 particular, floating-base slices of :attr:`newton.State.joint_qd`, :attr:`newton.Control.joint_f`,
-:attr:`newton.Control.joint_target_q`, and :attr:`newton.Control.joint_target_qd` use
+and :attr:`newton.Control.joint_target_qd` use
 ``(linear, angular)`` ordering, whereas ``warp.sim`` used ``(ang_vel, lin_vel)``.
-For public ``FREE`` and ``DISTANCE`` joints, :attr:`newton.State.joint_qd`
+:attr:`newton.Control.joint_target_q` keeps that ordering but follows :attr:`newton.State.joint_q`:
+a free joint occupies 7 coordinates ``(position, quaternion)``. See
+:ref:`joint-target-layout` for migration guidance.
+For public ``FREE``, ``DISTANCE``, and ``ROD`` joints, :attr:`newton.State.joint_qd`
 stores the child-COM twist in the joint parent frame, while
 :attr:`newton.Control.joint_f` stores the world-frame COM wrench
 ``(f_world, tau_com_world)``.
+
+Rod joints now use seven ``joint_q`` coordinates for relative position and
+orientation and six ``joint_qd`` entries for relative linear and angular
+velocity. Their material-axis order is ``[shear_x, shear_y, stretch_z,
+bend_x, bend_y, twist_z]``. Migrate old ``[stretch, shear, bend, twist]``
+offsets ``[0, 1, 2, 3]`` to ``[2, (0, 1), (3, 4), 5]``, and use
+:attr:`newton.Model.joint_q_start` and
+:attr:`newton.Model.joint_qd_start` to locate each Rod slice.
+
+Rod angular rest is stored in :attr:`newton.Model.joint_target_q`; after
+editing it, call :meth:`newton.solvers.SolverVBD.notify_model_changed` with
+:attr:`newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES`. Editing
+:attr:`newton.Model.body_q` no longer changes angular rest.
+
+Code that wrote the old bend offset ``qd_start + 2`` now silently sets stretch.
+The shear/bend isotropy check cannot detect every outdated offset; audit
+direct Rod ``joint_target_ke``/``joint_target_kd`` indexing.
+
+:func:`newton.eval_fk` now reconstructs Rod body state from ``joint_q`` and
+``joint_qd`` like free joints.
+:class:`newton.solvers.SolverVBD` advances Rod bodies in maximal coordinates
+without updating these arrays. Before calling ``eval_fk`` during the simulation,
+exclude the rod articulations with ``mask``/``indices`` or use
+:func:`newton.eval_ik` to update the coordinate arrays passed to ``eval_fk``.
 
 +------------------------------------------------------------------+-----------------------------------------------------------------------------------------------------------------------+
 | **warp.sim**                                                     | **Newton**                                                                                                            |
@@ -143,23 +183,20 @@ corresponds to :attr:`newton.JointTargetMode.EFFORT` together with
 
 .. _joint-target-layout:
 
-Joint-target layout (``newton.use_coord_layout_targets``)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Joint-target layout
+~~~~~~~~~~~~~~~~~~~
 
-Historically ``Control.joint_target_pos`` was shaped ``(joint_dof_count,)`` — the same layout as
-:attr:`~newton.State.joint_qd` — even though position targets semantically match
-:attr:`~newton.State.joint_q`. The two layouts diverge whenever an articulation contains a free
-joint (7 coords vs. 6 DOFs) or ball joint (4 coords vs. 3 DOFs); every actuated DOF downstream
-then ends up indexed with the wrong stride.
+In ``warp.sim`` the target array was DOF-shaped like ``joint_qd``. Newton stores position
+targets in the coordinate layout of :attr:`~newton.State.joint_q` instead, since that is what a
+position semantically is: the two layouts diverge whenever an articulation contains a free,
+distance, or rod joint (7 coords vs. 6 DOFs) or ball joint (4 coords vs. 3 DOFs), and under the
+DOF layout every actuated DOF downstream of such a joint is indexed with the wrong stride.
 
-Newton 1.3 introduces an opt-in flag to switch ``Model.joint_target_q`` / ``Control.joint_target_q``
-to the coord-aligned layout that matches ``joint_q``:
+Position targets always use the coordinate layout:
 
 .. code-block:: python
 
    import newton
-
-   newton.use_coord_layout_targets = True  # set once, before building any model
 
    builder = newton.ModelBuilder()
    # ... build articulation ...
@@ -167,26 +204,26 @@ to the coord-aligned layout that matches ``joint_q``:
    # model.joint_target_q  has shape (joint_coord_count,)  — matches joint_q
    # model.joint_target_qd has shape (joint_dof_count,)    — matches joint_qd
 
-Migration steps:
+Under the coordinate layout, ball and free joint position targets are quaternions (plus a
+translation for free joints), matching ``joint_q``. Migration notes coming from ``warp.sim``:
 
-- Replace ``Control.joint_target_pos`` / ``Model.joint_target_pos`` with
-  :attr:`Control.joint_target_q` / :attr:`Model.joint_target_q`. The legacy names emit a
-  :class:`DeprecationWarning` and raise :class:`AttributeError` when
-  ``newton.use_coord_layout_targets`` is ``True``.
-- Replace ``Control.joint_target_vel`` / ``Model.joint_target_vel`` with
-  :attr:`Control.joint_target_qd` / :attr:`Model.joint_target_qd`.
-- On :class:`ModelBuilder`, ``joint_target_pos`` and ``joint_target_vel`` have been removed.
-  Configure per-axis targets via :attr:`ModelBuilder.JointDofConfig.target_pos` /
-  :attr:`~ModelBuilder.JointDofConfig.target_vel` before calling ``add_joint*()``, or write
-  to :attr:`ModelBuilder.joint_target_q` / :attr:`~ModelBuilder.joint_target_qd` directly.
+- Replace writes to the ``warp.sim`` target arrays with
+  :attr:`Control.joint_target_q` / :attr:`Control.joint_target_qd`. Configure per-axis initial
+  targets via :attr:`ModelBuilder.JointDofConfig.target_pos` /
+  :attr:`~ModelBuilder.JointDofConfig.target_vel` before calling ``add_joint*()``, or write to
+  :attr:`ModelBuilder.joint_target_q` / :attr:`~ModelBuilder.joint_target_qd` directly.
 - When indexing ``joint_target_q`` from user code, use :attr:`Model.joint_target_q_start` (which
-  aliases :attr:`Model.joint_q_start` when the flag is ``True`` and
-  :attr:`Model.joint_qd_start` otherwise). Solvers and the actuator library already do this.
-- When constructing an :class:`Actuator` with a custom ``pos_indices``, drop the
-  ``target_pos_indices`` argument: with the coord layout it defaults to ``pos_indices``.
+  aliases :attr:`Model.joint_q_start`). Velocity targets continue to use
+  :attr:`Model.joint_qd_start`.
+- When constructing an :class:`Actuator` for the standard ``joint_target_q`` array,
+  ``target_pos_indices`` defaults to ``pos_indices`` and can be omitted. Keep an explicit
+  ``target_pos_indices`` mapping for custom target buffers that use different indices.
 
-A subsequent release will flip the flag's default to ``True`` and remove the legacy
-attributes.
+Newton 1.8 removes ``newton.use_coord_layout_targets`` and the legacy DOF-shaped position-target
+layout, deprecated in 1.5. Remove assignments to the flag and reads of
+``Model.use_coord_layout_targets``. Replace DOF-based position-target indices with coordinate
+indices, and replace raw Euler-angle targets for ball/free/distance/rod joints with unit
+quaternions. ``Model.joint_target_q_start`` remains an alias for ``Model.joint_q_start``.
 
 
 ``ModelBuilder``
@@ -243,11 +280,17 @@ Collisions
 +-----------------------------------------------+--------------------------------------------------------------+
 | **warp.sim**                                  | **Newton**                                                   |
 +-----------------------------------------------+--------------------------------------------------------------+
-| ``contacts = model.collide(state)``           | ``contacts = model.collide(state)``                          |
+| ``contacts = model.collide(state)``           | ``pipeline.collide(state, contacts)``                        |
 +-----------------------------------------------+--------------------------------------------------------------+
 
-:meth:`~newton.Model.collide` allocates and returns a contacts buffer when ``contacts`` is omitted.
-For more control, create a :class:`~newton.CollisionPipeline` directly.
+Create a :class:`~newton.CollisionPipeline` and its contacts buffer before stepping::
+
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    pipeline.collide(state, contacts)
+
+The compatibility helpers :meth:`~newton.Model.contacts` and
+:meth:`~newton.Model.collide` are deprecated in Newton 1.5.
 
 
 Renderers

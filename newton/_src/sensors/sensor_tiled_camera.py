@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 
+import os
 import warnings
 from typing import Any
 
 import warp as wp
 
+from ..exceptions import NewtonDeprecationWarning
 from ..sim import Model, State
 from .warp_raytrace import (
     ClearData,
@@ -16,8 +18,11 @@ from .warp_raytrace import (
     RenderContext,
     RenderLightType,
     RenderOrder,
+    TextureProjectionMode,
     Utils,
 )
+
+PROFILE_ENABLED = os.environ.get("NEWTON_PROFILE", "0") != "0"
 
 _RENDER_CONFIG_DEPRECATION_MSG = (
     "SensorTiledCamera.render_config is deprecated as of Newton 1.4; "
@@ -27,6 +32,10 @@ _RENDER_CONFIG_DEPRECATION_MSG = (
 _CONFIG_DEPRECATION_MSG = (
     "SensorTiledCamera(..., config=...) is deprecated as of Newton 1.4; use default_render_config=... instead. "
     "The alias will be removed in a future release."
+)
+_TILED_CAMERA_DEPRECATION_MSG = (
+    "SensorTiledCamera is deprecated as of Newton 1.7 and will be removed in a future release; "
+    "use newton.sensors.SensorCamera instead."
 )
 
 
@@ -40,6 +49,10 @@ _DEPRECATED_CONFIG_UNSET: Any = _ConfigUnset()
 
 class SensorTiledCamera:
     """Warp-based tiled camera sensor for raytraced rendering across multiple worlds.
+
+    .. deprecated:: 1.7
+        Use :class:`~newton.sensors.SensorCamera` instead. ``SensorTiledCamera``
+        will be removed in a future release.
 
     Renders up to seven image channels per (world, camera) pair:
 
@@ -81,6 +94,7 @@ class SensorTiledCamera:
 
     RenderLightType = RenderLightType
     RenderOrder = RenderOrder
+    TextureProjectionMode = TextureProjectionMode
     GaussianRenderMode = GaussianRenderMode
     RenderConfig = RenderConfig
     ClearData = ClearData
@@ -114,10 +128,12 @@ class SensorTiledCamera:
             load_textures: Load texture data from the model. Set to ``False``
                 to skip texture loading when textures are not needed.
         """
+        warnings.warn(_TILED_CAMERA_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+
         self.model = model
 
         if config is not _DEPRECATED_CONFIG_UNSET:
-            warnings.warn(_CONFIG_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            warnings.warn(_CONFIG_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
             if default_render_config is not None:
                 raise TypeError("Specify only one of `default_render_config` and deprecated `config`.")
             default_render_config = config
@@ -224,24 +240,27 @@ class SensorTiledCamera:
                 for the render megakernel.
         """
 
-        self.sync_transforms(state)
+        with wp.ScopedTimer(
+            "Newton::SensorTiledCamera::update", active=PROFILE_ENABLED, use_nvtx=True, synchronize=True
+        ):
+            self.sync_transforms(state)
 
-        self.__render_context.render(
-            self.model,
-            state,
-            camera_transforms=camera_transforms,
-            camera_rays=camera_rays,
-            color_image=color_image,
-            hdr_color_image=hdr_color_image,
-            depth_image=depth_image,
-            forward_depth_image=forward_depth_image,
-            shape_index_image=shape_index_image,
-            normal_image=normal_image,
-            albedo_image=albedo_image,
-            clear_data=clear_data if clear_data is not None else self.default_clear_data,
-            config=render_config if render_config is not None else self.default_render_config,
-            kernel_block_dim=kernel_block_dim,
-        )
+            self.__render_context.render(
+                self.model,
+                state,
+                camera_transforms=camera_transforms,
+                camera_rays=camera_rays,
+                color_image=color_image,
+                hdr_color_image=hdr_color_image,
+                depth_image=depth_image,
+                forward_depth_image=forward_depth_image,
+                shape_index_image=shape_index_image,
+                normal_image=normal_image,
+                albedo_image=albedo_image,
+                clear_data=clear_data if clear_data is not None else self.default_clear_data,
+                config=render_config if render_config is not None else self.default_render_config,
+                kernel_block_dim=kernel_block_dim,
+            )
 
     @property
     def render_config(self) -> RenderConfig:
@@ -253,7 +272,7 @@ class SensorTiledCamera:
         Returns:
             The live default :class:`RenderConfig` instance.
         """
-        warnings.warn(_RENDER_CONFIG_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_RENDER_CONFIG_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         return self.default_render_config
 
     @property

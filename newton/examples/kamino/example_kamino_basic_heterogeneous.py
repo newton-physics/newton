@@ -92,15 +92,15 @@ class Example:
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
+        self.solver_observables = self.solver.observables(
+            contacts=self.contacts, kinds={self.solver.ObservableKind.CONTACT_F}
+        )
 
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
         self.viewer.set_world_offsets(spacing=(5.0, 5.0, 0.0))
-
-        # Warm-start the simulation
-        self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
-        self.solver.reset(self.state_0)
 
         # Capture the simulation graph if running on CUDA
         # NOTE: This only has an effect on GPU devices
@@ -116,7 +116,7 @@ class Example:
 
     def capture(self):
         self.graph = None
-        if self.device.is_cuda:
+        if self.device.is_cuda and not wp.config.verify_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -126,8 +126,14 @@ class Example:
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
-            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
-            self.solver.update_contacts(self.contacts, self.state_0)
+            self.solver.step(
+                self.state_0,
+                self.state_1,
+                self.control,
+                self.contacts,
+                self.sim_dt,
+                observables=self.solver_observables,
+            )
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
@@ -144,7 +150,7 @@ class Example:
         # so contacts are rendered with self.state_1 to match the body positions at the
         # time of contact generation.
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_1)
+        self.viewer.log_contacts(self.contacts, self.state_1, observables=self.solver_observables)
         self.viewer.end_frame()
 
     def test_final(self):

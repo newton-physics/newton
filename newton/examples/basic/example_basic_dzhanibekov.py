@@ -12,6 +12,7 @@
 # Command: python -m newton.examples basic_dzhanibekov
 # XPBD: python -m newton.examples basic_dzhanibekov --solver xpbd
 # MuJoCo: python -m newton.examples basic_dzhanibekov --solver mujoco
+# Kamino: python -m newton.examples basic_dzhanibekov --solver kamino
 #
 ###########################################################################
 
@@ -43,6 +44,8 @@ class Example:
         self.min_stem_axis_y = 1.0
 
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        if self.solver_type == "kamino":
+            newton.solvers.SolverKamino.register_custom_attributes(builder)
 
         self.body = builder.add_body(
             xform=wp.transform(wp.vec3(0.0, 0.0, 2.0), wp.quat_identity()),
@@ -98,10 +101,12 @@ class Example:
 
         if self.solver_type == "vbd":
             self.solver = newton.solvers.SolverVBD(self.model, iterations=4)
-            self.contacts = self.model.contacts()
+            self.collision_pipeline = newton.CollisionPipeline(self.model)
+            self.contacts = self.collision_pipeline.contacts()
         elif self.solver_type == "xpbd":
             self.solver = newton.solvers.SolverXPBD(self.model, iterations=10)
-            self.contacts = self.model.contacts()
+            self.collision_pipeline = newton.CollisionPipeline(self.model)
+            self.contacts = self.collision_pipeline.contacts()
         elif self.solver_type == "mujoco":
             self.solver = newton.solvers.SolverMuJoCo(
                 self.model,
@@ -110,13 +115,24 @@ class Example:
                 integrator="implicitfast",
                 iterations=10,
             )
+            self.collision_pipeline = None
+            self.contacts = None
+        elif self.solver_type == "kamino":
+            solver_config = newton.solvers.SolverKamino.Config.from_model(
+                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+            )
+            self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
+            self.collision_pipeline = None
             self.contacts = None
         else:
-            raise ValueError(f"Unknown solver type: {self.solver_type}. Choose from 'vbd', 'xpbd', or 'mujoco'.")
+            raise ValueError(
+                f"Unknown solver type: {self.solver_type}. Choose from 'vbd', 'xpbd', 'mujoco', or 'kamino'."
+            )
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
         self.control = self.model.control()
+        self.initial_rotational_energy = self._rotational_energy() if self.solver_type == "kamino" else None
 
         self.initial_body_q = self.state_0.body_q.numpy().copy()
         self.body_com = self.model.body_com.numpy()[self.body].copy()
@@ -158,7 +174,19 @@ class Example:
         ]
         self.min_stem_axis_y = min(self.min_stem_axis_y, float(local_y_world[1]))
 
+    def _rotational_energy(self):
+        body_q = self.state_0.body_q.numpy()[self.body]
+        omega = self.state_0.body_qd.numpy()[self.body, 3:6]
+        rotation = np.array(wp.quat_to_matrix(wp.quat(*body_q[3:7])), dtype=np.float32).reshape(3, 3)
+        inertia = self.model.body_inertia.numpy()[self.body]
+        return float(0.5 * omega @ (rotation @ inertia @ rotation.T) @ omega)
+
     def test_final(self):
+        """Verify the free body flips without gaining rotational energy."""
+        if self.initial_rotational_energy is not None:
+            energy_ratio = self._rotational_energy() / self.initial_rotational_energy
+            if not np.isfinite(energy_ratio) or abs(energy_ratio - 1.0) > 0.01:
+                raise ValueError(f"Torque-free body changed rotational energy by {energy_ratio - 1.0:.1%}")
         body_q = self.state_0.body_q.numpy()
         body_qd = self.state_0.body_qd.numpy()
         if not np.isfinite(body_q[self.body]).all() or not np.isfinite(body_qd[self.body]).all():
@@ -185,8 +213,8 @@ if __name__ == "__main__":
         "--solver",
         type=str,
         default="vbd",
-        choices=["vbd", "xpbd", "mujoco"],
-        help="Solver type: vbd (default), xpbd, or mujoco.",
+        choices=["vbd", "xpbd", "mujoco", "kamino"],
+        help="Solver type: vbd (default), xpbd, mujoco, or kamino.",
     )
     viewer, args = newton.examples.init(parser)
     newton.examples.run(Example(viewer, args), args)

@@ -112,9 +112,7 @@ class Example:
             flags[fixed_vertex_id] = flags[fixed_vertex_id] & ~ParticleFlags.ACTIVE
         self.model.particle_flags = wp.array(flags)
 
-        # set up contact query and contact detection distances
-        self.model.soft_contact_radius = 0.2e-2
-        self.model.soft_contact_margin = 0.35e-2
+        # set up contact material parameters
         self.model.soft_contact_ke = 1.0e1
         self.model.soft_contact_kd = 1.0e-5
         self.model.soft_contact_mu = 0.2
@@ -128,7 +126,8 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
 
-        self.contacts = self.model.contacts()
+        self.collision_pipeline = newton.CollisionPipeline(self.model)
+        self.contacts = self.collision_pipeline.contacts()
 
         self.viewer.set_model(self.model)
         self.viewer.set_camera(wp.vec3(0.0, -1.7, 1.4), 0.0, -270.0)
@@ -145,7 +144,7 @@ class Example:
         self.graph = capture.graph
 
     def simulate(self):
-        self.model.collide(self.state_0, self.contacts)
+        self.collision_pipeline.collide(self.state_0, self.contacts)
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
 

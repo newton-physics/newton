@@ -344,11 +344,9 @@ def test_picking_torque_limit_cable(test: TestPickingSetup, device):
     segment_length = 0.05
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     points = [wp.vec3(-0.5 * num_links * segment_length + i * segment_length, 0.0, 0.3) for i in range(num_links + 1)]
-    quaternions = newton.utils.create_parallel_transport_cable_quaternions(points, twist_total=0.0)
+    rod = newton.Rod(points, radius=0.012)
     bodies, _ = builder.add_rod(
-        positions=points,
-        quaternions=quaternions,
-        radius=0.012,
+        rod=rod,
         stretch_stiffness=5.0e5,
         bend_stiffness=20.0,
         bend_damping=20.0,
@@ -359,7 +357,7 @@ def test_picking_torque_limit_cable(test: TestPickingSetup, device):
     state_in = model.state()
     state_out = model.state()
     control = model.control()
-    solver = newton.solvers.SolverVBD(model, iterations=5)
+    solver = newton.solvers.SolverVBD(model, iterations=5, rigid_compliant_alm=True)
     picking = Picking(model, pick_stiffness=100.0, pick_damping=0.0, pick_max_acceleration=5.0)
 
     picking.pick(state_in, wp.vec3(0.025, 0.0, 1.0), wp.vec3(0.0, 0.0, -1.0))

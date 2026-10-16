@@ -7,9 +7,11 @@
 # Demonstrates nut/bolt mesh collision using hydroelastic contacts.
 #
 # Command: python -m newton.examples nut_bolt_hydro
+#          python -m newton.examples nut_bolt_hydro --solver kamino
 #
 ###########################################################################
 
+import argparse
 import tempfile
 from pathlib import Path
 
@@ -29,6 +31,7 @@ ISAACGYM_NUT_BOLT_FOLDER = "assets/factory/mesh/factory_nut_bolt"
 
 SDF_MAX_RESOLUTION = 128
 SDF_NARROW_BAND_RANGE = (-0.005, 0.005)
+SDF_CONSTRUCTION_PADDING = 0.005
 # Persist cooked SDFs across runs so the (slow) cook only happens once.
 # Entries are content-addressed, so leftovers from older runs are harmless.
 MESH_SDF_CACHE_DIR = Path(tempfile.gettempdir()) / "newton_sdf_cache"
@@ -36,9 +39,15 @@ MESH_SDF_CACHE_DIR = Path(tempfile.gettempdir()) / "newton_sdf_cache"
 SHAPE_CFG = newton.ModelBuilder.ShapeConfig(
     margin=0.0,
     mu=0.01,
-    ke=1e7,  # Contact stiffness for MuJoCo solver
-    kd=1e4,  # Contact damping
-    gap=0.005,
+    # Hydroelastic supplies the per-contact stiffness for the nut/bolt pair, so
+    # ``ke``/``kd`` reach only the non-hydroelastic contacts. At the 1e10 ``kh``
+    # default the thread contacts resolve over a ~95 ms solref time constant --
+    # roughly 45 substeps -- and the nut sits visibly cocked under MuJoCo. XPBD
+    # projects positions and is insensitive to this either way.
+    kh=1e11,  # Hydroelastic contact stiffness
+    ke=1e7,
+    kd=1e4,
+    gap=0.0,
     density=8000.0,
     mu_torsional=0.0,
     mu_rolling=0.0,
@@ -103,7 +112,6 @@ def add_mesh_object(
 
 def load_mesh_with_sdf(
     mesh_file: str,
-    shape_cfg: newton.ModelBuilder.ShapeConfig | None = None,
     scale: float = 1.0,
     center_origin: bool = True,
 ) -> tuple[newton.Mesh, wp.vec3]:
@@ -111,7 +119,6 @@ def load_mesh_with_sdf(
 
     Args:
         mesh_file: Mesh file path.
-        shape_cfg: Optional shape configuration used for contact margin [m].
         scale: Uniform mesh scale [unitless].
         center_origin: Whether to recenter mesh vertices about the AABB center.
 
@@ -134,7 +141,7 @@ def load_mesh_with_sdf(
     mesh.build_sdf(
         max_resolution=SDF_MAX_RESOLUTION,
         narrow_band_range=SDF_NARROW_BAND_RANGE,
-        margin=shape_cfg.gap if shape_cfg and shape_cfg.gap is not None else 0.005,
+        margin=SDF_CONSTRUCTION_PADDING,
         scale=(scale, scale, scale),
         cache_dir=MESH_SDF_CACHE_DIR,
     )
@@ -147,13 +154,17 @@ class Example:
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.sim_substeps = 4
-        self.collide_every = 2 if args.solver == "mujoco" else 1  # re-collide every K substeps
+        self.collide_every = 1 if args.solver == "xpbd" else 2  # re-collide every K substeps
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         self.world_count = args.world_count
+        if self.world_count is None:
+            self.world_count = 8 if args.solver == "kamino" else 20
         self.viewer = viewer
         self.solver_type = args.solver
         self.test_mode = args.test
+        self.deterministic = args.deterministic
+        self.deterministic_solver = args.deterministic_solver
 
         # XPBD contact correction (0.0 = no correction, 1.0 = full correction)
         self.xpbd_contact_relaxation = 0.8
@@ -169,9 +180,14 @@ class Example:
         self.grid_x = int(np.ceil(np.sqrt(self.num_per_world)))
         self.grid_y = int(np.ceil(self.num_per_world / self.grid_x))
 
+        # Contact budget per world. MuJoCo's njmax/nconmax are per-world limits
+        # while CollisionPipeline's rigid_contact_max covers every world, so both
+        # derive from this rather than from a fixed whole-scene pool. A threading
+        # assembly peaks near 115 contacts, so this leaves ~9x headroom.
+        self.contacts_per_world = 1024 * self.num_per_world
+
         # Maximum number of rigid contacts to allocate (limits memory usage)
-        # None = auto-calculate (can be very large), or set explicit limit (e.g., 1_000_000)
-        self.rigid_contact_max = 40_000
+        self.rigid_contact_max = self.contacts_per_world * self.world_count
 
         # Broad phase mode: NXN (O(N²)), SAP (O(N log N)), EXPLICIT (precomputed pairs)
         self.broad_phase_mode = "sap"
@@ -179,6 +195,8 @@ class Example:
         world_builder = self._build_nut_bolt_scene()
 
         main_scene = newton.ModelBuilder()
+        if self.solver_type == "kamino":
+            newton.solvers.SolverKamino.register_custom_attributes(main_scene)
         main_scene.default_shape_cfg.gap = 0.001 * self.scene_scale
         # Add ground plane at z = ground_plane_offset.
         # For plane equation n·x + d = 0, with n=(0,0,1): z + d = 0, so z = -d.
@@ -212,6 +230,7 @@ class Example:
             rigid_contact_max=self.rigid_contact_max,
             broad_phase=self.broad_phase_mode,
             sdf_hydroelastic_config=sdf_hydroelastic_config,
+            deterministic=self.deterministic,
         )
 
         # Create solver based on user choice
@@ -220,21 +239,35 @@ class Example:
                 self.model,
                 iterations=10,
                 rigid_contact_relaxation=self.xpbd_contact_relaxation,
+                deterministic=wp.DeterministicMode.RUN_TO_RUN
+                if self.deterministic_solver
+                else wp.DeterministicMode.NOT_GUARANTEED,
             )
         elif self.solver_type == "mujoco":
-            num_per_world = self.rigid_contact_max // self.world_count
             self.solver = newton.solvers.SolverMuJoCo(
                 self.model,
                 use_mujoco_contacts=False,
+                # The scene defines no sensors, and MuJoCo's tactile sensor kernel
+                # mixes max/add reductions, which deterministic mode rejects.
+                disable_sensors=True,
                 solver="newton",
                 integrator="implicitfast",
                 cone="elliptic",
-                njmax=num_per_world,
-                nconmax=num_per_world,
+                njmax=self.contacts_per_world,
+                nconmax=self.contacts_per_world,
                 iterations=15,
                 ls_iterations=100,
                 impratio=1.0,
+                deterministic=wp.DeterministicMode.RUN_TO_RUN
+                if self.deterministic_solver
+                else wp.DeterministicMode.NOT_GUARANTEED,
             )
+        elif self.solver_type == "kamino":
+            solver_config = newton.solvers.SolverKamino.Config.from_model(
+                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+            )
+            solver_config.dvi.max_alternating_iterations = 4
+            self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
         else:
             raise ValueError(f"Unknown solver '{self.solver_type}'")
 
@@ -269,12 +302,8 @@ class Example:
 
         bolt_file = str(asset_path / f"factory_bolt_{ASSEMBLY_STR}.obj")
         nut_file = str(asset_path / f"factory_nut_{ASSEMBLY_STR}_subdiv_3x.obj")
-        bolt_mesh, bolt_center = load_mesh_with_sdf(
-            bolt_file, shape_cfg=SHAPE_CFG, scale=self.scene_scale, center_origin=True
-        )
-        nut_mesh, nut_center = load_mesh_with_sdf(
-            nut_file, shape_cfg=SHAPE_CFG, scale=self.scene_scale, center_origin=True
-        )
+        bolt_mesh, bolt_center = load_mesh_with_sdf(bolt_file, scale=self.scene_scale, center_origin=True)
+        nut_mesh, nut_center = load_mesh_with_sdf(nut_file, scale=self.scene_scale, center_origin=True)
 
         # Spacing between assemblies in the grid
         spacing = 0.1 * self.scene_scale
@@ -454,13 +483,33 @@ class Example:
     def create_parser():
         parser = newton.examples.create_parser()
         newton.examples.add_world_count_arg(parser)
-        parser.set_defaults(world_count=20)
+        parser.set_defaults(world_count=None)
+        parser.add_argument(
+            "--deterministic",
+            action=argparse.BooleanOptionalAction,
+            default=False,
+            help=(
+                "Make contact generation and ordering reproducible across runs on the same GPU. "
+                "Costs a few percent of step time. Needs a world count small enough to keep the "
+                "hydroelastic face-contact buffer under the 2^20 deterministic contact-id limit."
+            ),
+        )
+        parser.add_argument(
+            "--deterministic-solver",
+            action=argparse.BooleanOptionalAction,
+            default=False,
+            help=(
+                "Additionally make the solver bit-exact. Separate from --deterministic because "
+                "it instruments every atomic scatter in the solver and costs ~7x step time, "
+                "while contact ordering is what varies between runs."
+            ),
+        )
         parser.add_argument(
             "--solver",
             type=str,
-            choices=["xpbd", "mujoco"],
+            choices=["xpbd", "mujoco", "kamino"],
             default="mujoco",
-            help="Solver to use: 'xpbd' or 'mujoco'.",
+            help="Solver to use: 'xpbd', 'mujoco', or 'kamino'.",
         )
         parser.add_argument(
             "--num-per-world",

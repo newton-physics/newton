@@ -317,6 +317,7 @@ class RobotComposerSim:
                 ],
                 "angular_axes": [newton.ModelBuilder.JointDofConfig(axis=[0.0, 0.0, 1.0])],
             },
+            joint_damping_mode="passive",
         )
 
         # Base joints

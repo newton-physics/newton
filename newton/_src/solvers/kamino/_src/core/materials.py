@@ -39,7 +39,6 @@ from .types import Descriptor
 ###
 
 __all__ = [
-    "DEFAULT_DENSITY",
     "DEFAULT_FRICTION",
     "DEFAULT_RESTITUTION",
     "MaterialDescriptor",
@@ -53,12 +52,6 @@ __all__ = [
 ###
 # Constants
 ###
-
-DEFAULT_DENSITY = 1000.0
-"""
-The global default density for materials, in kg/m^3.
-Equals ``1000.0`` kg/m^3.
-"""
 
 DEFAULT_RESTITUTION = 0.0
 """
@@ -98,6 +91,9 @@ class MaterialMixMode(IntEnum):
     MIN = 3
     """Pairwise property is the minimum of the two material properties."""
 
+    GEOMETRIC_AVERAGE = 4
+    """Pairwise property is the geometric average (square root of the product) of the two material properties."""
+
     @classmethod
     def from_string(cls, s: str) -> MaterialMixMode:
         """Converts a string to a MaterialMixMode enum value."""
@@ -122,17 +118,13 @@ class MaterialDescriptor(Descriptor):
     """
     A container to represent a managed material.
 
-    This descriptor holds both intrinsic and extrinsic properties of a material. While the former
-    are truly dependent on the material itself (e.g., density), the latter are actually dependent
-    on the pairwise interactions of the material with others (e.g., friction, restitution). These
-    extrinsic properties are stored here to support model specifications such as USD which
-    currently do not support material-pair definitions.
+    To support model specifications such as USD (which currently do not support material-pair
+    definitions), this descriptor holds extrinsic properties of a material (e.g., friction, restitution),
+    which are actually dependent on the pairwise interactions of the material with others.
 
     Attributes:
         name: The name of the material.
         uid: The unique identifier (UUID) of the material.
-        density: The density of the material [kg/m³].
-            Defaults to the global default of ``1000.0`` kg/m³.
         restitution: The coefficient of restitution, according to the Newtonian impact model.
             Defaults to the global default of ``0.0``.
         static_friction: The coefficient of static friction, according to the Coulomb friction model.
@@ -148,12 +140,6 @@ class MaterialDescriptor(Descriptor):
     ###
     # Attributes
     ###
-
-    density: float = DEFAULT_DENSITY
-    """
-    The density of the material, in kg/m^3.
-    Defaults to the global default of ``1000.0`` kg/m^3.
-    """
 
     restitution: float = DEFAULT_RESTITUTION
     """
@@ -196,7 +182,6 @@ class MaterialDescriptor(Descriptor):
             f"MaterialDescriptor(\n"
             f"name: {self.name},\n"
             f"uid: {self.uid},\n"
-            f"density: {self.density},\n"
             f"restitution: {self.restitution},\n"
             f"static_friction: {self.static_friction},\n"
             f"dynamic_friction: {self.dynamic_friction}\n"
@@ -254,8 +239,6 @@ class MaterialsModel:
 
     Attributes:
         num_materials: Total number of materials represented in the model.
-        density: Array of material density values of each registered material.
-            Shape of ``(num_materials,)``.
         restitution: Array of restitution coefficients for each registered material.
             Shape of ``(num_materials,)``.
         static_friction: Array of static friction coefficients for each registered material.
@@ -266,12 +249,6 @@ class MaterialsModel:
 
     num_materials: int = 0
     """Total number of materials represented in the model."""
-
-    density: wp.array[wp.float32] | None = None
-    """
-    Array of material density values of each registered material.
-    Shape of ``(num_materials,)``.
-    """
 
     restitution: wp.array[wp.float32] | None = None
     """
@@ -415,6 +392,24 @@ def material_min(
     return wp.min(value1, value2)
 
 
+@wp.func
+def material_geometric_average(
+    value1: wp.float32,
+    value2: wp.float32,
+) -> wp.float32:
+    """
+    Computes the geometric average of two material property values.
+
+    Args:
+        value1: The first material property value.
+        value2: The second material property value.
+
+    Returns:
+        The geometric average of the two material property values.
+    """
+    return wp.sqrt(value1 * value2)
+
+
 def get_material_mixing_function(
     mixmode: MaterialMixMode = MaterialMixMode.AVERAGE,
 ) -> Callable[[wp.float32, wp.float32], wp.float32]:
@@ -431,6 +426,8 @@ def get_material_mixing_function(
             mix_func = material_max
         case MaterialMixMode.MIN:
             mix_func = material_min
+        case MaterialMixMode.GEOMETRIC_AVERAGE:
+            mix_func = material_geometric_average
         case _:
             raise ValueError(f"Unsupported material mixing mode: {mixmode}")
 

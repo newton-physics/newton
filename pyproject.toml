@@ -4,7 +4,7 @@ build-backend = "uv_build"
 
 [project]
 name = "newton"
-version = "1.5.0.dev0"
+version = "1.8.0.dev0"
 license = "Apache-2.0"
 license-files = ["LICENSE.md", "newton/licenses/**/*.txt"]
 authors = [{ name = "Newton Developers", email = "developers@newton-physics.org" }]
@@ -28,7 +28,7 @@ description = "A GPU-accelerated physics engine for robotics simulation"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "warp-lang>=1.15.0.dev20260626",
+    "warp-lang>=1.17.0",
 ]
 
 [project.optional-dependencies]
@@ -36,13 +36,13 @@ dependencies = [
 # Core simulation dependencies
 sim = [
     # MuJoCo simulation
-    "mujoco-warp~=3.10.0,>=3.10.0.2",  # MuJoCo, warp-accelerated
-    "mujoco~=3.10.0",       # MuJoCo physics engine
+    "mujoco-warp~=3.15.0",  # MuJoCo, warp-accelerated
+    "mujoco~=3.15.0",       # MuJoCo physics engine
 ]
 
 # Optional ONNX policy inference for neural actuators and RL policy examples.
 onnx = [
-    "warp-nn[onnx]==0.3.0",
+    "warp-nn[onnx]~=0.4.0",
 ]
 
 # Asset import and mesh processing dependencies
@@ -58,20 +58,21 @@ importers = [
     "trimesh>=4.6.8",              # for mesh operations and V-HACD
     "meshio>=5.3.5",               # alternative mesh file loader (fallback)
     "pycollada>=0.9",              # transitive dependency of trimesh for COLLADA (.dae) mesh support
+    "Pillow>=11.3.0",
     "resolve-robotics-uri-py>=0.4.0",  # for resolving ROS/Gazebo-style URIs (package://, model://)
-    "open3d>=0.19.0; python_version < '3.13' and (sys_platform != 'linux' or platform_machine != 'aarch64')",
+    "open3d>=0.20.0; sys_platform != 'darwin' or platform_machine == 'arm64'",  # no Intel macOS wheels
 
     # USD core libraries
-    "usd-core>=25.5,<26.5 ; platform_machine != 'aarch64' and python_version < '3.14'",
-    "usd-exchange>=2.2.0 ; platform_machine == 'aarch64' and python_version < '3.13'",
+    "usd-core>=25.5,<26.9 ; platform_machine != 'aarch64' and python_version < '3.14'",
+    "usd-exchange>=2.3.0,<4 ; platform_machine == 'aarch64' and python_version < '3.14'",
 
     # Newton USD Schemas
-    "newton-usd-schemas>=0.4.0",
+    "newton-usd-schemas>=0.5.0",
 ]
 
 # Remeshing dependencies (for SurfaceReconstructor)
 remesh = [
-    "open3d>=0.19.0; python_version < '3.13' and (sys_platform != 'linux' or platform_machine != 'aarch64')",
+    "open3d>=0.20.0; sys_platform != 'darwin' or platform_machine == 'arm64'",  # no Intel macOS wheels
     "pyfqmr>=0.5.0",               # for fast mesh simplification
 ]
 
@@ -81,11 +82,12 @@ examples = [
     "newton[importers]",    # include import dependencies
     "newton[onnx]",         # for RL policy examples
     "pyglet>=2.1.6,<3",     # for OpenGL viewer
-    "GitPython>=3.1.47",    # for downloading assets via newton.utils.download_asset()
+    "GitPython>=3.1.58",    # for downloading assets via newton.utils.download_asset()
     "imgui_bundle>=1.92.0", # for viewer GUI
     "pyyaml>=6.0.2",
     "cbor2>=5.7.0",         # for binary recording format (.bin files) - more efficient than JSON
-    "Pillow>=11.3.0",
+    "matplotlib>=3.10.7",   # for plotting utilities and diagnostics
+    "networkx>=2.6",        # for articulation and graph coloring plots
 ]
 
 # OVRTX real-time ray tracing viewer
@@ -93,6 +95,7 @@ rtx = [
     "newton[importers]",    # include import dependencies (USD)
     "pyglet>=2.1.6,<3",     # for the viewer window/presentation
     "ovrtx>=0.3",           # NVIDIA OVRTX renderer
+    "ovstage>=0.1.1",       # runtime scene management for OVRTX 0.4+
 ]
 
 # PyTorch is not required for ONNX policy inference. These extras cover
@@ -111,6 +114,7 @@ torch-cu13 = [
 dev = [
     "newton[examples]",      # includes examples, which pulls in sim and visualization
     "coverage[toml]>=7.8.0", # for code coverage testing
+    "viser>=1.1.1",          # exercise browser viewer interactions in CPU and GPU CI
 ]
 
 # Documentation dependencies
@@ -127,9 +131,8 @@ docs = [
     "ipykernel>=6.0.0,<7.0.0",      # required by nbsphinx to execute notebooks (pinned <7 for rerun-sdk compatibility)
     "pypandoc>=1.11",               # required by nbsphinx for notebook conversion
     "pypandoc_binary>=1.11",        # bundled pandoc binary
-    "GitPython>=3.1.47",            # for downloading tutorial assets via newton.utils.download_asset() (>=3.1.47 for GHSA-x2qx-6953-8485)
-    # Pin the backend and web client to one Viser build; 1.0.24-1.0.26 changed playback-sensitive paths.
-    "viser==1.0.26",
+    "GitPython>=3.1.58",            # for downloading tutorial assets via newton.utils.download_asset()
+    "viser>=1.1.1",
 ]
 
 # Dependencies for Jupyter notebook compatibility
@@ -138,8 +141,7 @@ notebook = [
     "rerun-sdk[notebook]>=0.27.1; python_version < '3.14'",
     "jupyterlab>=4.5.7",
     "jupyter-server-proxy>=4.5.0",
-    # Pin the backend and web client to one Viser build; 1.0.24-1.0.26 changed playback-sensitive paths.
-    "viser==1.0.26",
+    "viser>=1.1.1",
 ]
 
 [tool.uv.build-backend]
@@ -203,6 +205,7 @@ select = [
     "UP",  # pyupgrade
     "RUF",  # ruff-specific rules
     "TID253",  # banned module-level imports
+    "T201",  # print; library code logs instead
 ]
 ignore = [
     "E501",   # Many lines are over 120 characters already (TODO: Fix)
@@ -216,12 +219,20 @@ ignore = [
     "F821",
 ]
 
+[tool.ruff.lint.flake8-bugbear]
+# This helper returns dataclass field metadata, not a shared mutable default.
+extend-immutable-calls = ["newton.solvers.SolverBase.Observables.field"]
+
 [tool.ruff.lint.per-file-ignores]
 "asv/benchmarks/**/*" = ["RUF012", "E402"]
 "newton/examples/**/*" = ["E402", "TID253"]
 # TID253 (banned module-level imports) only applies to newton/_src and newton/tests
 "docs/**/*" = ["TID253"]
 "asv/**/*" = ["TID253"]
+# T201 (print) only applies to library code in newton/_src
+"!newton/_src/**/*" = ["T201"]
+"newton/_src/**/tests/**/*" = ["T201"]
+"newton/_src/solvers/kamino/examples/**/*" = ["T201"]
 
 [tool.ruff.lint.flake8-tidy-imports]
 banned-module-level-imports = [
@@ -238,6 +249,7 @@ banned-module-level-imports = [
     "networkx",
     "open3d",
     "openmesh",
+    "ovstage",
     "ovrtx",
     "PIL",
     "point_cloud_utils",
@@ -295,6 +307,41 @@ reportUnknownMemberType = false
 reportUnknownParameterType = false
 reportOptionalOperand = false
 reportUnusedCallResult = false
+
+[tool.towncrier]
+directory = "changelog"
+filename = "CHANGELOG.md"
+start_string = "<!-- towncrier release notes start -->\n"
+title_format = "## [{version}] - {project_date}"
+issue_format = "[#{issue}](https://github.com/newton-physics/newton/issues/{issue})"
+issue_pattern = "\\d+"
+ignore = ["*.skip"]
+wrap = false
+
+[[tool.towncrier.type]]
+directory = "added"
+name = "Added"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "changed"
+name = "Changed"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "deprecated"
+name = "Deprecated"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "removed"
+name = "Removed"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "fixed"
+name = "Fixed"
+showcontent = true
 
 [tool.typos]
 files.extend-exclude = ["/examples/assets", "*.urdf", "*.usd", "*.usda", "*.mjcf", "*.js"]

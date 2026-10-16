@@ -5,17 +5,22 @@
 
 from __future__ import annotations
 
+import math
 import warnings
+from numbers import Real
 
 import numpy as np
 import warp as wp
 
+from ..exceptions import NewtonWarning
 from .types import (
     GeoType,
     Heightfield,
     Mesh,
     Vec3,
 )
+
+_BARREL_INERTIA_NODES, _BARREL_INERTIA_WEIGHTS = np.polynomial.legendre.leggauss(32)
 
 # Relative tolerance for eigenvalue positivity checks.  An eigenvalue is
 # considered "near-zero" only when it is smaller than this fraction of the
@@ -39,6 +44,37 @@ _INERTIA_SYMMETRY_RTOL = 1.0e-5
 _INERTIA_SYMMETRY_ATOL = 1.0e-8
 
 _MESH_INERTIA_TILE_SIZE = 256
+
+
+def _validate_hollow_thickness(
+    shape_name: str,
+    thickness: float,
+    limits: tuple[tuple[str, float], ...],
+) -> float:
+    if isinstance(thickness, bool) or not isinstance(thickness, Real):
+        raise TypeError(f"thickness must be a real scalar for a hollow {shape_name} geom")
+
+    thickness = float(thickness)
+    if not math.isfinite(thickness):
+        raise ValueError(f"thickness must be finite for a hollow {shape_name} geom; got {thickness}")
+    if thickness < 0.0:
+        raise ValueError(f"thickness must be >= 0 for a hollow {shape_name} geom; got {thickness}")
+    if thickness == 0.0:
+        warnings.warn(
+            f"A hollow {shape_name} geom with zero thickness has zero mass and inertia.",
+            NewtonWarning,
+            stacklevel=2,
+        )
+        return thickness
+
+    for dim_name, dim_value in limits:
+        dim_limit = float(dim_value)
+        if thickness >= dim_limit:
+            raise ValueError(
+                f"thickness ({thickness}) must be smaller than {dim_name} ({dim_limit}) for a hollow {shape_name} geom"
+            )
+
+    return thickness
 
 
 def compute_inertia_sphere(density: float, radius: float) -> tuple[float, wp.vec3, wp.mat33]:
@@ -114,30 +150,48 @@ def compute_inertia_capsule(density: float, radius: float, half_height: float) -
     return (m, wp.vec3(), I)
 
 
-def compute_inertia_cylinder(density: float, radius: float, half_height: float) -> tuple[float, wp.vec3, wp.mat33]:
-    """Helper to compute mass and inertia of a solid cylinder extending along the z-axis
+def compute_inertia_cylinder(
+    density: float, radius: float, half_height: float, barrel_radius: float = 0.0
+) -> tuple[float, wp.vec3, wp.mat33]:
+    """Compute mass and inertia of a solid cylinder extending along the z-axis.
 
     Args:
-        density: The cylinder density [kg/m³]
-        radius: The cylinder radius [m]
-        half_height: The half-height of the cylinder along the z-axis [m]
+        density: The cylinder density [kg/m³].
+        radius: The cylinder radius at its ends [m].
+        half_height: The half-height of the cylinder along the z-axis [m].
+        barrel_radius: The radius of the symmetric circular side-profile arc [m].
+            Use `0.0` for a straight-sided cylinder.
 
     Returns:
-
-        A tuple of (mass, center of mass, inertia) with inertia specified around the center of mass
+        The mass, center of mass, and inertia tensor about the center of mass.
     """
+    if barrel_radius != 0.0:
+        if barrel_radius < half_height:
+            raise ValueError("barrel_radius must be zero or at least half_height")
 
-    h = 2.0 * half_height  # full height
+        z = half_height * _BARREL_INERTIA_NODES
+        weights = half_height * _BARREL_INERTIA_WEIGHTS
 
-    m = density * wp.pi * radius * radius * h
+        barrel_radius_sq = barrel_radius * barrel_radius
+        half_height_sq = half_height * half_height
+        end_offset = math.sqrt(barrel_radius_sq - half_height_sq)
+        profile_offset = np.sqrt(np.maximum(barrel_radius_sq - z * z, 0.0))
+        radius_profile = radius + (half_height_sq - z * z) / (profile_offset + end_offset)
 
-    Ia = 1 / 12 * m * (3 * radius * radius + h * h)
-    Ib = 1 / 2 * m * radius * radius
+        radius_sq = radius_profile * radius_profile
+        radius_fourth = radius_sq * radius_sq
+        mass = float(density * np.pi * np.dot(weights, radius_sq))
+        inertia_axial = float(0.5 * density * np.pi * np.dot(weights, radius_fourth))
+        inertia_radial = float(density * np.pi * np.dot(weights, 0.25 * radius_fourth + radius_sq * z * z))
+    else:
+        height = 2.0 * half_height
+        mass = density * wp.pi * radius * radius * height
+        inertia_radial = 1.0 / 12.0 * mass * (3.0 * radius * radius + height * height)
+        inertia_axial = 0.5 * mass * radius * radius
 
-    # For Z-axis orientation: I_xx = I_yy = Ia, I_zz = Ib
-    I = wp.mat33([[Ia, 0.0, 0.0], [0.0, Ia, 0.0], [0.0, 0.0, Ib]])
+    inertia = wp.mat33([[inertia_radial, 0.0, 0.0], [0.0, inertia_radial, 0.0], [0.0, 0.0, inertia_axial]])
 
-    return (m, wp.vec3(), I)
+    return mass, wp.vec3(), inertia
 
 
 def compute_inertia_cone(density: float, radius: float, half_height: float) -> tuple[float, wp.vec3, wp.mat33]:
@@ -582,7 +636,9 @@ def compute_inertia_shape(
         if is_solid:
             return solid
         else:
-            assert isinstance(thickness, float), "thickness must be a float for a hollow sphere geom"
+            thickness = _validate_hollow_thickness("sphere", thickness, (("radius", scale[0]),))
+            if thickness == 0.0:
+                return 0.0, solid[1], wp.mat33()
             hollow = compute_inertia_sphere(density, scale[0] - thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
     elif type == GeoType.BOX:
@@ -591,7 +647,11 @@ def compute_inertia_shape(
         if is_solid:
             return solid
         else:
-            assert isinstance(thickness, float), "thickness must be a float for a hollow box geom"
+            thickness = _validate_hollow_thickness(
+                "box", thickness, (("hx", scale[0]), ("hy", scale[1]), ("hz", scale[2]))
+            )
+            if thickness == 0.0:
+                return 0.0, solid[1], wp.mat33()
             hollow = compute_inertia_box(density, scale[0] - thickness, scale[1] - thickness, scale[2] - thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
     elif type == GeoType.CAPSULE:
@@ -600,17 +660,26 @@ def compute_inertia_shape(
         if is_solid:
             return solid
         else:
-            assert isinstance(thickness, float), "thickness must be a float for a hollow capsule geom"
+            thickness = _validate_hollow_thickness(
+                "capsule", thickness, (("radius", scale[0]), ("half_height", scale[1]))
+            )
+            if thickness == 0.0:
+                return 0.0, solid[1], wp.mat33()
             hollow = compute_inertia_capsule(density, scale[0] - thickness, scale[1] - thickness)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
     elif type == GeoType.CYLINDER:
-        # scale[0] = radius, scale[1] = half_height
-        solid = compute_inertia_cylinder(density, scale[0], scale[1])
+        # scale = (end_radius, half_height, barrel_radius)
+        solid = compute_inertia_cylinder(density, scale[0], scale[1], scale[2])
         if is_solid:
             return solid
         else:
-            assert isinstance(thickness, float), "thickness must be a float for a hollow cylinder geom"
-            hollow = compute_inertia_cylinder(density, scale[0] - thickness, scale[1] - thickness)
+            thickness = _validate_hollow_thickness(
+                "cylinder", thickness, (("radius", scale[0]), ("half_height", scale[1]))
+            )
+            if thickness == 0.0:
+                return 0.0, solid[1], wp.mat33()
+            inner_barrel_radius = scale[2] - thickness if scale[2] > 0.0 else 0.0
+            hollow = compute_inertia_cylinder(density, scale[0] - thickness, scale[1] - thickness, inner_barrel_radius)
             return solid[0] - hollow[0], solid[1], solid[2] - hollow[2]
     elif type == GeoType.CONE:
         # scale[0] = radius, scale[1] = half_height
@@ -618,15 +687,11 @@ def compute_inertia_shape(
         if is_solid:
             return solid
         else:
-            assert isinstance(thickness, float), "thickness must be a float for a hollow cone geom"
+            thickness = _validate_hollow_thickness("cone", thickness, (("radius", scale[0]), ("half_height", scale[1])))
+            if thickness == 0.0:
+                return 0.0, solid[1], wp.mat33()
             hollow = compute_inertia_cone(density, scale[0] - thickness, scale[1] - thickness)
             m_shell = solid[0] - hollow[0]
-            if m_shell <= 0.0:
-                raise ValueError(
-                    f"Hollow cone shell has non-positive mass ({m_shell:.6g}). "
-                    f"The thickness ({thickness}) must be smaller than both the "
-                    f"radius ({scale[0]}) and half_height ({scale[1]})."
-                )
             # Cones have non-zero COM so outer and inner cones have different COMs;
             # compute the shell COM as the weighted difference, then shift both
             # inertia tensors to the shell COM before subtracting (parallel-axis theorem).
@@ -648,7 +713,11 @@ def compute_inertia_shape(
         if is_solid:
             return solid
         else:
-            assert isinstance(thickness, float), "thickness must be a float for a hollow ellipsoid geom"
+            thickness = _validate_hollow_thickness(
+                "ellipsoid", thickness, (("rx", scale[0]), ("ry", scale[1]), ("rz", scale[2]))
+            )
+            if thickness == 0.0:
+                return 0.0, solid[1], wp.mat33()
             hollow = compute_inertia_ellipsoid(
                 density, scale[0] - thickness, scale[1] - thickness, scale[2] - thickness
             )
@@ -675,9 +744,13 @@ def compute_inertia_shape(
 
             c_new = wp.cw_mul(c, scale)
 
-            Ixx = I[0, 0] * (sy**2 + sz**2) / 2 * mass_ratio
-            Iyy = I[1, 1] * (sx**2 + sz**2) / 2 * mass_ratio
-            Izz = I[2, 2] * (sx**2 + sy**2) / 2 * mass_ratio
+            # Scale the per-axis second moments, then rebuild the diagonal.
+            Sx = (I[1, 1] + I[2, 2] - I[0, 0]) / 2
+            Sy = (I[0, 0] + I[2, 2] - I[1, 1]) / 2
+            Sz = (I[0, 0] + I[1, 1] - I[2, 2]) / 2
+            Ixx = (sy**2 * Sy + sz**2 * Sz) * mass_ratio
+            Iyy = (sx**2 * Sx + sz**2 * Sz) * mass_ratio
+            Izz = (sx**2 * Sx + sy**2 * Sy) * mass_ratio
             # Products of inertia pick up the sign of the corresponding scale
             # pair, which is the correct mirror behavior under a single-axis
             # sign flip.
@@ -744,24 +817,25 @@ def verify_and_correct_inertia(
     if not np.isfinite(mass) or not np.all(np.isfinite(inertia_array)):
         warnings.warn(
             f"NaN/Inf detected in mass or inertia{body_id}, zeroing out mass and inertia",
+            NewtonWarning,
             stacklevel=2,
         )
         return 0.0, wp.mat33(np.zeros((3, 3))), True
 
     # Check and correct mass
     if mass < 0:
-        warnings.warn(f"Negative mass {mass} detected{body_id}, setting to 0", stacklevel=2)
+        warnings.warn(f"Negative mass {mass} detected{body_id}, setting to 0", NewtonWarning, stacklevel=2)
         corrected_mass = 0.0
         was_corrected = True
     elif bound_mass is not None and mass < bound_mass and mass > 0:
-        warnings.warn(f"Mass {mass} is below bound {bound_mass}{body_id}, clamping", stacklevel=2)
+        warnings.warn(f"Mass {mass} is below bound {bound_mass}{body_id}, clamping", NewtonWarning, stacklevel=2)
         corrected_mass = bound_mass
         was_corrected = True
 
     # For zero mass, inertia should also be zero
     if corrected_mass == 0.0:
         if np.any(inertia_array != 0):
-            warnings.warn(f"Zero mass body{body_id} should have zero inertia, correcting", stacklevel=2)
+            warnings.warn(f"Zero mass body{body_id} should have zero inertia, correcting", NewtonWarning, stacklevel=2)
             corrected_inertia = np.zeros((3, 3))
             was_corrected = True
         return corrected_mass, wp.mat33(corrected_inertia), was_corrected
@@ -774,7 +848,7 @@ def verify_and_correct_inertia(
         rtol=_INERTIA_SYMMETRY_RTOL,
         atol=_INERTIA_SYMMETRY_ATOL,
     ):
-        warnings.warn(f"Inertia matrix{body_id} is not symmetric, making it symmetric", stacklevel=2)
+        warnings.warn(f"Inertia matrix{body_id} is not symmetric, making it symmetric", NewtonWarning, stacklevel=2)
         was_corrected = True
     corrected_inertia = symmetrized
 
@@ -790,6 +864,7 @@ def verify_and_correct_inertia(
         if np.any(eigenvalues < eig_threshold):
             warnings.warn(
                 f"Eigenvalues below threshold detected{body_id}: {eigenvalues}, correcting inertia",
+                NewtonWarning,
                 stacklevel=2,
             )
             # Make positive definite by adjusting eigenvalues
@@ -804,7 +879,9 @@ def verify_and_correct_inertia(
             min_eig = np.min(eigenvalues)
             if min_eig < bound_inertia:
                 warnings.warn(
-                    f"Minimum eigenvalue {min_eig} is below bound {bound_inertia}{body_id}, adjusting", stacklevel=2
+                    f"Minimum eigenvalue {min_eig} is below bound {bound_inertia}{body_id}, adjusting",
+                    NewtonWarning,
+                    stacklevel=2,
                 )
                 adjustment = bound_inertia - min_eig
                 corrected_inertia += np.eye(3, dtype=corrected_inertia.dtype) * adjustment
@@ -822,7 +899,11 @@ def verify_and_correct_inertia(
         has_violations = I1 + I2 < I3 - tri_tol
 
     except np.linalg.LinAlgError:
-        warnings.warn(f"Failed to compute eigenvalues for inertia tensor{body_id}, making it diagonal", stacklevel=2)
+        warnings.warn(
+            f"Failed to compute eigenvalues for inertia tensor{body_id}, making it diagonal",
+            NewtonWarning,
+            stacklevel=2,
+        )
         was_corrected = True
         # Fallback: use diagonal elements
         trace = np.trace(corrected_inertia)
@@ -836,6 +917,7 @@ def verify_and_correct_inertia(
     if has_violations:
         warnings.warn(
             f"Inertia tensor{body_id} violates triangle inequality with principal moments ({I1:.6f}, {I2:.6f}, {I3:.6f})",
+            NewtonWarning,
             stacklevel=2,
         )
 
@@ -862,6 +944,7 @@ def verify_and_correct_inertia(
                 warnings.warn(
                     f"Balanced principal moments{body_id} from ({I1:.6f}, {I2:.6f}, {I3:.6f}) to "
                     f"({new_I1:.6f}, {new_I2:.6f}, {new_I3:.6f})",
+                    NewtonWarning,
                     stacklevel=2,
                 )
 
@@ -871,13 +954,15 @@ def verify_and_correct_inertia(
         try:
             eigenvalues = np.linalg.eigvalsh(corrected_inertia)
         except np.linalg.LinAlgError:
-            warnings.warn(f"Failed to compute eigenvalues of inertia matrix{body_id}", stacklevel=2)
+            warnings.warn(f"Failed to compute eigenvalues of inertia matrix{body_id}", NewtonWarning, stacklevel=2)
             eigenvalues = np.array([0.0, 0.0, 0.0])
 
     # Check final eigenvalues
     if np.any(eigenvalues <= 0) or np.any(~np.isfinite(eigenvalues)):
         warnings.warn(
-            f"Corrected inertia matrix{body_id} is not positive definite, this should not happen", stacklevel=2
+            f"Corrected inertia matrix{body_id} is not positive definite, this should not happen",
+            NewtonWarning,
+            stacklevel=2,
         )
         # As a last resort, make it positive definite by adding a small value to diagonal.
         min_eigenvalue = (

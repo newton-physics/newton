@@ -47,6 +47,19 @@ range and still yield an unreliable normal after division.  A threshold of
 triangles contribute near-zero area anyway)."""
 
 
+def _get_marching_cubes_class():
+    """Find Warp's marching-cubes class without using its deprecated alias.
+
+    Remove the fallback once Newton's minimum Warp version provides
+    ``warp.geometry.IsoSurfaceMarchingCubes``.
+    """
+    try:
+        from warp.geometry import IsoSurfaceMarchingCubes  # noqa: PLC0415 - Warp 1.17 lacks this module
+    except ImportError:
+        return wp.MarchingCubes
+    return IsoSurfaceMarchingCubes
+
+
 def get_mc_tables(device):
     """Create marching cubes lookup tables on the specified device.
 
@@ -76,10 +89,11 @@ def get_mc_tables(device):
         ]
     )
 
-    tri_local_inds = np.asarray(wp.MarchingCubes.TRI_LOCAL_INDICES, dtype=np.int32)
-    tri_range_table = wp.array(wp.MarchingCubes.CASE_TO_TRI_RANGE, dtype=wp.int32, device=device)
+    marching_cubes = _get_marching_cubes_class()
+    tri_local_inds = np.asarray(marching_cubes.TRI_LOCAL_INDICES, dtype=np.int32)
+    tri_range_table = wp.array(marching_cubes.CASE_TO_TRI_RANGE, dtype=wp.int32, device=device)
     tri_local_inds_table = wp.array(tri_local_inds, dtype=wp.int32, device=device)
-    corner_offsets_table = wp.array(wp.MarchingCubes.CUBE_CORNER_OFFSETS, dtype=wp.vec3ub, device=device)
+    corner_offsets_table = wp.array(marching_cubes.CUBE_CORNER_OFFSETS, dtype=wp.vec3ub, device=device)
     edge_to_verts_table = wp.array(edge_to_verts, dtype=wp.vec2ub, device=device)
 
     # Create flattened table:
@@ -122,25 +136,31 @@ def get_triangle_fraction(vert_depths: wp.vec3f, num_inside: wp.int32) -> wp.flo
     if num_inside == 0:
         return 0.0
 
-    # Find the vertex with different inside/outside status
-    # With standard convention: negative depth = inside (penetrating)
-    idx = wp.int32(0)
+    # Rotate the distinct vertex into d0 without dynamic vector indexing. The
+    # latter forces this three-float value into thread-local memory on CUDA.
+    d0 = vert_depths[0]
+    d1 = vert_depths[1]
+    d2 = vert_depths[2]
     if num_inside == 1:
         # Find the one vertex that IS inside (negative depth)
         if vert_depths[1] < 0.0:
-            idx = 1
+            d0 = vert_depths[1]
+            d1 = vert_depths[2]
+            d2 = vert_depths[0]
         elif vert_depths[2] < 0.0:
-            idx = 2
+            d0 = vert_depths[2]
+            d1 = vert_depths[0]
+            d2 = vert_depths[1]
     else:  # num_inside == 2
         # Find the one vertex that is NOT inside (non-negative depth)
         if vert_depths[1] >= 0.0:
-            idx = 1
+            d0 = vert_depths[1]
+            d1 = vert_depths[2]
+            d2 = vert_depths[0]
         elif vert_depths[2] >= 0.0:
-            idx = 2
-
-    d0 = vert_depths[idx]
-    d1 = vert_depths[(idx + 1) % 3]
-    d2 = vert_depths[(idx + 2) % 3]
+            d0 = vert_depths[2]
+            d1 = vert_depths[0]
+            d2 = vert_depths[1]
 
     denom = (d0 - d1) * (d0 - d2)
     eps = wp.float32(1e-8)
@@ -195,14 +215,14 @@ def mc_calc_face(
         p_0 = wp.vec3f(corner_offsets_table[v_idx_from])
         p_1 = wp.vec3f(corner_offsets_table[v_idx_to])
         val_diff = wp.float32(val_1 - val_0)
-        if wp.abs(val_diff) < wp.static(MC_EDGE_VAL_DIFF_EPS):
+        if wp.abs(val_diff) < MC_EDGE_VAL_DIFF_EPS:
             p = 0.5 * (p_0 + p_1)
         else:
             # Clamp t away from cube corners to prevent vertex collapse when
             # corner values are near zero (e.g. at SDF ridge boundaries).
             # Without the clamp, t close to 0 or 1 places multiple vertices
             # at the same corner, producing degenerate (zero-area) triangles.
-            t = wp.clamp((isovalue - val_0) / val_diff, wp.static(MC_EDGE_CLAMP_MIN), wp.static(MC_EDGE_CLAMP_MAX))
+            t = wp.clamp((isovalue - val_0) / val_diff, MC_EDGE_CLAMP_MIN, MC_EDGE_CLAMP_MAX)
             p = p_0 + t * (p_1 - p_0)
         vol_idx = p + int_to_vec3f(x_id, y_id, z_id)
         p_scaled = wp.volume_index_to_world(sdf_a, vol_idx)
@@ -216,7 +236,7 @@ def mc_calc_face(
 
     n = wp.cross(face_verts[1] - face_verts[0], face_verts[2] - face_verts[0])
     n_sq = wp.dot(n, n)
-    if n_sq < wp.static(MC_DEGENERATE_N_SQ_EPS):
+    if n_sq < MC_DEGENERATE_N_SQ_EPS:
         # Degenerate triangle — return zero area with a valid (non-NaN) normal.
         area = 0.0
         normal = wp.vec3(0.0, 0.0, 1.0)

@@ -270,7 +270,7 @@ the wrench to a point offset by :math:`\mathbf{r}` changes the torque as:
 This convention is used in all Newton solvers.
 
 The array of joint forces (torques) in generalized coordinates is stored in :attr:`Control.joint_f <newton.Control.joint_f>`.
-For ``FREE`` and ``DISTANCE`` joints, the corresponding 6 dimensions in this
+For ``FREE``, ``DISTANCE``, and ``ROD`` joints, the corresponding 6 dimensions in this
 array are the physical wrench in world coordinates, with the force and torque
 referenced at the child body's center of mass (COM).
 
@@ -410,7 +410,7 @@ apply the appropriate rotation transforms:
 
 The up axis controls geometry conventions but does not constrain an explicit
 gravity vector. Omitting ``gravity`` defaults to ``-9.81`` along the configured
-up axis. Passing a scalar gravity value is deprecated.
+up axis.
 
 Color Space Handling
 --------------------
@@ -441,9 +441,9 @@ with :func:`newton.utils.color_srgb_to_linear` and
 Base-color textures stored on Newton models follow the same convention and are
 kept display/sRGB-encoded.
 
-Packed color and albedo outputs from :class:`newton.sensors.SensorTiledCamera`
+Packed color and albedo outputs from :class:`newton.sensors.SensorCamera`
 use display/sRGB encoding by default. Set
-``SensorTiledCamera.RenderConfig(output_color_space=newton.utils.ColorSpace.LINEAR)``
+``SensorCamera.RenderConfig(output_color_space=newton.utils.ColorSpace.LINEAR)``
 when linear RGB bytes are required for downstream processing. Clear colors are
 specified as display/sRGB packed RGBA values and are converted to linear when
 linear output is requested.
@@ -484,8 +484,8 @@ Newton defines collision primitives with consistent conventions across all shape
      - Extends along Z-axis; half_height excludes hemispherical caps
    * - **Cylinder**
      - Geometric center
-     - ``radius``, ``half_height``
-     - Extends along Z-axis
+     - ``radius``, ``half_height``, optional ``barrel_radius``
+     - Extends along Z-axis; ``barrel_radius`` curves the side as a symmetric circular arc
    * - **Cone**
      - Geometric center
      - ``radius`` (base), ``half_height``
@@ -502,6 +502,10 @@ Newton defines collision primitives with consistent conventions across all shape
 **Shape Orientation and Alignment**
 
 All Newton primitives that have a primary axis (capsule, cylinder, cone) are aligned along the Z-axis in their local coordinate frame. The shape's transform determines its final position and orientation in the world or parent body frame.
+
+For a cylinder, ``radius`` is the radius at both ends. Setting ``barrel_radius`` to a nonzero value replaces the
+straight side profile with a symmetric circular arc of that radius before revolving it around the Z-axis.
+``barrel_radius`` must then be at least ``half_height``. Its default value of zero selects a regular cylinder.
 
 **Center of Mass Considerations**
 
@@ -590,7 +594,7 @@ The following tables compare how different engines and formats define common col
      - **Parameter Convention**
      - **Notes**
    * - **Newton**
-     - ``radius``, ``half_height``
+     - ``radius``, ``half_height``, optional ``barrel_radius``
      - Extends along Z-axis
    * - **MuJoCo**
      - ``size[0]`` = radius, ``size[1]`` = half-length

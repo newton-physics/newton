@@ -3,13 +3,39 @@
 
 from __future__ import annotations
 
+import warnings
+from typing import Literal
+
 import warp as wp
 from warp import DeviceLike as Devicelike
 
-from ..utils.deprecation import deprecate_nonkeyword_arguments
+from ..exceptions import NewtonDeprecationWarning
+from ..geometry.tri_mesh_collision import TriMeshCollisionInfo, build_tri_mesh_collision_info
 
 GENERATION_SENTINEL = -1
 """Value reserved as an impossible generation; the increment kernel skips it."""
+
+_RIGID_CONTACT_DIFF_REPLACEMENTS = {
+    "rigid_contact_diff_distance": (
+        "allocate an output array and pass it as out_distance to newton.eval_rigid_contact_kinematics()"
+    ),
+    "rigid_contact_diff_normal": "use Contacts.rigid_contact_normal",
+    "rigid_contact_diff_point0_world": (
+        "allocate an output array and pass it as out_point0_world to newton.eval_rigid_contact_kinematics()"
+    ),
+    "rigid_contact_diff_point1_world": (
+        "allocate an output array and pass it as out_point1_world to newton.eval_rigid_contact_kinematics()"
+    ),
+}
+
+
+def _warn_rigid_contact_diff_deprecated(name: str) -> None:
+    replacement = _RIGID_CONTACT_DIFF_REPLACEMENTS[name]
+    warnings.warn(
+        f"Contacts.{name} is deprecated in Newton 1.6 and will be removed in a future release; {replacement}.",
+        NewtonDeprecationWarning,
+        stacklevel=3,
+    )
 
 
 @wp.kernel(enable_backward=False)
@@ -106,13 +132,12 @@ class Contacts:
 
     EXTENDED_ATTRIBUTES: frozenset[str] = frozenset(("force",))
     """
-    Names of optional extended contact attributes that are not allocated by default.
+    Deprecated optional solver-produced contact attributes.
 
-    These can be requested via :meth:`newton.ModelBuilder.request_contact_attributes` or
-    :meth:`newton.Model.request_contact_attributes` before calling :meth:`newton.Model.contacts` or
-    :meth:`newton.CollisionPipeline.contacts`.
+    .. deprecated:: 1.7
 
-    See :ref:`extended_contact_attributes` for details and usage.
+        Request :attr:`newton.solvers.SolverBase.ObservableKind.CONTACT_F` from the
+        solver instead.
     """
 
     @classmethod
@@ -136,7 +161,6 @@ class Contacts:
             bad = ", ".join(invalid)
             raise ValueError(f"Unknown extended contact attribute(s): {bad}. Allowed: {allowed}.")
 
-    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         rigid_contact_max: int,
@@ -150,6 +174,14 @@ class Contacts:
         requested_attributes: set[str] | None = None,
         contact_matching: bool = False,
         contact_report: bool = False,
+        rigid_contact_surface_velocity: bool = False,
+        soft_self_contact: bool = False,
+        particle_count: int = 0,
+        tri_count: int = 0,
+        edge_count: int = 0,
+        soft_self_contact_vertex_buffer_pre_alloc: int = 16,
+        soft_self_contact_edge_buffer_pre_alloc: int = 32,
+        soft_self_contact_record_triangle_vertices: bool = False,
     ):
         """
         Initialize Contacts storage.
@@ -163,20 +195,20 @@ class Contacts:
                 particle + edge + face candidate-pair count so a custom (smaller)
                 ``soft_contact_max`` cannot drop a launch thread's replay slot.
             requires_grad: Whether contact arrays require gradients for differentiable
-                simulation.  When ``True``, soft contact arrays (body_pos, body_vel, normal)
+                simulation. When ``True``, soft contact arrays (body_pos, body_vel, normal)
                 are allocated with gradients so that gradient-based optimization can flow
-                through particle-shape contacts, **and** additional differentiable rigid
-                contact arrays are allocated (``rigid_contact_diff_*``) that provide
-                first-order gradients of contact distance and world-space points with
-                respect to body poses.
+                through particle-shape contacts. For compatibility, the deprecated
+                rigid-contact distance and point outputs are also allocated; new code
+                should provide selected outputs to
+                :func:`newton.eval_rigid_contact_kinematics`.
             device: Device to allocate buffers on
             per_contact_shape_properties: Enable per-contact stiffness/damping/friction arrays
             clear_buffers: If True, clear() will zero all contact buffers (slower but conservative).
                 If False (default), clear() only resets counts in a single fused kernel launch,
                 relying on collision detection to overwrite active contacts. This is much faster
                 than the conservative path and safe since solvers only read up to contact_count.
-            requested_attributes: Set of extended contact attribute names to allocate.
-                See :attr:`EXTENDED_ATTRIBUTES` for available options.
+            requested_attributes: Deprecated set of solver-produced contact
+                attribute names to allocate. See :attr:`EXTENDED_ATTRIBUTES`.
             contact_matching: Allocate a per-contact match index array
                 (:attr:`rigid_contact_match_index`) that stores frame-to-frame
                 contact correspondences filled by the collision pipeline.
@@ -186,27 +218,48 @@ class Contacts:
                 :attr:`rigid_contact_broken_indices`,
                 :attr:`rigid_contact_broken_count`) populated each frame by
                 the collision pipeline.  Requires ``contact_matching=True``.
+            rigid_contact_surface_velocity: Allocate per-contact rigid surface
+                velocities. The collision pipeline enables this only when the
+                model contains an opted-in mesh.
+            soft_self_contact: Allocate tri-mesh self-contact result buffers
+                (:attr:`soft_self_contact_data`). Requires the mesh sizes below.
+            particle_count: Number of mesh vertices; used only when
+                ``soft_self_contact=True``.
+            tri_count: Number of mesh triangles; used only when ``soft_self_contact=True``.
+            edge_count: Number of mesh edges; used only when ``soft_self_contact=True``.
+            soft_self_contact_vertex_buffer_pre_alloc: Per-vertex collision buffer capacity;
+                pairs beyond it are silently dropped during detection.
+            soft_self_contact_edge_buffer_pre_alloc: Per-edge collision buffer capacity;
+                pairs beyond it are silently dropped during detection.
+            soft_self_contact_record_triangle_vertices: Also record per-triangle
+                contacting vertices.
 
         .. experimental::
 
-            The ``rigid_contact_diff_*`` arrays allocated when
-            ``requires_grad=True`` may change without prior notice; see
-            :meth:`newton.CollisionPipeline.collide`.
+            Rigid-contact gradients computed by
+            :func:`newton.eval_rigid_contact_kinematics` are a
+            tangent approximation and may change without prior notice.
         """
         if contact_report and not contact_matching:
             raise ValueError("contact_report=True requires contact_matching=True")
         self.per_contact_shape_properties = per_contact_shape_properties
         self.clear_buffers = clear_buffers
+        self._contact_matching_mode: Literal["disabled", "latest", "sticky"] = "disabled"
         with wp.ScopedDevice(device):
-            # One int32[2] array holding two independent contact counts: [0] rigid, [1] soft.
+            # One int32[3] array holding two independent contact counts, [0] rigid and [1] soft,
+            # plus [2] an internal flag set when global contact reduction lost candidates.
             # rigid_contact_count (the [0:1] view) and soft_contact_count (the [1:2] view) index
             # into this same array, so each remains a separate count; they share one array only so
-            # a single kernel can reset both to zero in one launch instead of two. The reset
+            # a single kernel can reset all slots to zero in one launch. The reset
             # happens at the start of every collision pass -- folded into the first kernel that
             # runs, compute_shape_aabbs -- and clear() resets them as well.
-            self.contact_counters = wp.zeros(2, dtype=wp.int32)
+            self.contact_counters = wp.zeros(3, dtype=wp.int32)
             # Sliced view for the rigid counter (no additional allocation)
             self.rigid_contact_count = self.contact_counters[0:1]
+            # Nonzero when the collision pass that filled this buffer dropped contact candidates
+            # inside global contact reduction (reducer buffer or hashtable full). Owned by this
+            # contact stream rather than aliased to a pipeline's reusable reducer counters.
+            self._reduction_overflow = self.contact_counters[2:3]
 
             self.contact_generation = wp.zeros(1, dtype=wp.int32)
             """Device-side generation counter, incremented each time :meth:`clear` is called.
@@ -222,6 +275,10 @@ class Contacts:
             """Body-frame contact point on shape 0 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
             self.rigid_contact_point1 = wp.zeros(rigid_contact_max, dtype=wp.vec3)
             """Body-frame contact point on shape 1 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
+            self.rigid_contact_surface_velocity = (
+                wp.zeros(rigid_contact_max, dtype=wp.vec3) if rigid_contact_surface_velocity else None
+            )
+            """World-space surface velocity of shape 1 relative to shape 0 [m/s], or None when disabled."""
             self.rigid_contact_offset0 = wp.zeros(rigid_contact_max, dtype=wp.vec3)
             """Body-frame friction anchor offset for shape 0 [m], shape (rigid_contact_max,), dtype :class:`vec3`.
 
@@ -249,27 +306,24 @@ class Contacts:
             self.rigid_contact_force = wp.zeros(rigid_contact_max, dtype=wp.vec3)
             """Contact force [N], shape (rigid_contact_max,), dtype :class:`vec3`."""
 
-            # Differentiable rigid contact arrays -- only allocated when requires_grad
-            # is True.  Populated by the post-processing kernel in
-            # :mod:`newton._src.geometry.differentiable_contacts`.
+            # Deprecated compatibility outputs, retained for one deprecation cycle.
             if requires_grad:
-                self.rigid_contact_diff_distance = wp.zeros(rigid_contact_max, dtype=wp.float32, requires_grad=True)
+                self._rigid_contact_diff_distance = wp.zeros(rigid_contact_max, dtype=wp.float32, requires_grad=True)
                 """Differentiable signed distance [m], shape (rigid_contact_max,), dtype float."""
-                self.rigid_contact_diff_normal = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=False)
-                """Contact normal (A-to-B, world frame) [unitless], shape (rigid_contact_max,), dtype :class:`vec3`."""
-                self.rigid_contact_diff_point0_world = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=True)
+                self._rigid_contact_diff_point0_world = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=True)
                 """World-space contact point on shape 0 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
-                self.rigid_contact_diff_point1_world = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=True)
+                self._rigid_contact_diff_point1_world = wp.zeros(rigid_contact_max, dtype=wp.vec3, requires_grad=True)
                 """World-space contact point on shape 1 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
             else:
-                self.rigid_contact_diff_distance = None
+                self._rigid_contact_diff_distance = None
                 """Differentiable signed distance [m], shape (rigid_contact_max,), dtype float."""
-                self.rigid_contact_diff_normal = None
-                """Contact normal (A-to-B, world frame) [unitless], shape (rigid_contact_max,), dtype :class:`vec3`."""
-                self.rigid_contact_diff_point0_world = None
+                self._rigid_contact_diff_point0_world = None
                 """World-space contact point on shape 0 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
-                self.rigid_contact_diff_point1_world = None
+                self._rigid_contact_diff_point1_world = None
                 """World-space contact point on shape 1 [m], shape (rigid_contact_max,), dtype :class:`vec3`."""
+            # The deprecated normal output aliases rigid_contact_normal by
+            # default; retain a separate array only if a caller assigns one.
+            self._rigid_contact_diff_normal_override = None
 
             # contact stiffness/damping/friction (only allocated if per_contact_shape_properties is enabled)
             if self.per_contact_shape_properties:
@@ -298,8 +352,18 @@ class Contacts:
                 Non-negative elements index matching contacts in the previous sorted contact buffer.
                 Negative elements indicate new or broken contacts.
                 Shape (rigid_contact_max,), dtype int32."""
+                self.rigid_contact_match_generation = wp.full(1, GENERATION_SENTINEL, dtype=wp.int32)
+                """:attr:`contact_generation` of this buffer's contact set that
+                :attr:`rigid_contact_match_index` refers to.
+
+                ``-1`` when the indices refer to no earlier contact set of this buffer:
+                the pipeline's previous collision pass wrote another buffer, or wrote none,
+                or the buffer was written without matching. Consumers that carry
+                per-contact state across frames can compare it with the generation they
+                saved. Shape (1,), dtype int32."""
             else:
                 self.rigid_contact_match_index = None
+                self.rigid_contact_match_generation = None
 
             if contact_report:
                 self.rigid_contact_new_indices = wp.zeros(rigid_contact_max, dtype=wp.int32)
@@ -376,18 +440,57 @@ class Contacts:
             # lives at the consuming solver. Kept private to avoid a public API/deprecation surface.
             self._enable_rigid_soft_full_surface_contact = False
 
-            # Extended contact attributes (optional, allocated on demand)
+            # Deprecated contact attributes (optional compatibility allocation)
             self.force: wp.array | None = None
             """Contact forces (spatial) [N, N·m], shape (rigid_contact_max + soft_contact_max,), dtype :class:`spatial_vector`.
             Force and torque exerted on body0 by body1, referenced to the center of mass (COM) of body0, and in world frame, where body0 and body1 are the bodies of shape0 and shape1.
             First three entries: linear force [N]; last three entries: torque (moment) [N·m].
-            When both rigid and soft contacts are present, soft contact forces follow rigid contact forces.
+            Rigid contact ``i`` occupies row ``i``; soft contact ``i`` occupies row ``rigid_contact_max + i``.
 
-            This is an extended contact attribute; see :ref:`extended_contact_attributes` for more information.
+            For a soft contact the contacted shape (:attr:`soft_contact_shape`) takes the role of shape0 and the
+            soft feature -- particle, edge, or face -- the role of shape1: the row holds the force exerted on the
+            shape's body by the soft feature, applied at the shape-side contact point (:attr:`soft_contact_body_pos`
+            in world space), and its torque about that body's COM, or about the world origin when the shape is
+            static. Negating the force gives the force on the soft contact point. Which rows a solver populates
+            is documented by its ``update_contacts`` method; unpopulated rows are left unwritten.
+
+            .. deprecated:: 1.7
+                Request :attr:`newton.solvers.SolverBase.ObservableKind.CONTACT_F` and read
+                :attr:`newton.solvers.SolverBase.Observables.contact_f` instead.
             """
             if requested_attributes and "force" in requested_attributes:
                 total_contacts = rigid_contact_max + soft_contact_max
                 self.force = wp.zeros(total_contacts, dtype=wp.spatial_vector, requires_grad=requires_grad)
+
+        self.soft_self_contact_data: TriMeshCollisionInfo | None = None
+        """Tri-mesh self-contact results owned by this container, written by the
+        collision pipeline's tri-mesh collision detector; ``None`` unless
+        constructed with ``soft_self_contact=True``.
+
+        .. experimental::
+
+            This storage-level result attribute may change without the normal
+            deprecation period while the public self-contact API matures.
+        """
+        if soft_self_contact:
+            mesh_counts = {
+                "particle_count": particle_count,
+                "tri_count": tri_count,
+                "edge_count": edge_count,
+            }
+            invalid_counts = {name: count for name, count in mesh_counts.items() if count <= 0}
+            if invalid_counts:
+                values = ", ".join(f"{name}={count}" for name, count in invalid_counts.items())
+                raise ValueError(f"soft_self_contact=True requires positive mesh counts; got {values}")
+            self.soft_self_contact_data = build_tri_mesh_collision_info(
+                particle_count,
+                tri_count,
+                edge_count,
+                vertex_collision_buffer_pre_alloc=soft_self_contact_vertex_buffer_pre_alloc,
+                edge_collision_buffer_pre_alloc=soft_self_contact_edge_buffer_pre_alloc,
+                record_triangle_contacting_vertices=soft_self_contact_record_triangle_vertices,
+                device=device,
+            )
 
         self.requires_grad = requires_grad
 
@@ -433,11 +536,12 @@ class Contacts:
             if self.force is not None:
                 self.force.zero_()
 
-            if self.rigid_contact_diff_distance is not None:
-                self.rigid_contact_diff_distance.zero_()
-                self.rigid_contact_diff_normal.zero_()
-                self.rigid_contact_diff_point0_world.zero_()
-                self.rigid_contact_diff_point1_world.zero_()
+            if self._rigid_contact_diff_distance is not None:
+                self._rigid_contact_diff_distance.zero_()
+                self._rigid_contact_diff_point0_world.zero_()
+                self._rigid_contact_diff_point1_world.zero_()
+            if self._rigid_contact_diff_normal_override is not None:
+                self._rigid_contact_diff_normal_override.zero_()
 
             if self.per_contact_shape_properties:
                 self.rigid_contact_stiffness.zero_()
@@ -446,6 +550,7 @@ class Contacts:
 
             if self.rigid_contact_match_index is not None:
                 self.rigid_contact_match_index.fill_(-1)
+                self.rigid_contact_match_generation.fill_(GENERATION_SENTINEL)
 
             self.soft_contact_indices.fill_(wp.vec3i(-1, -1, -1))
             self.soft_contact_particle.fill_(-1)
@@ -461,6 +566,83 @@ class Contacts:
         Returns the device on which the contact buffers are allocated.
         """
         return self.rigid_contact_count.device
+
+    @property
+    def rigid_contact_diff_distance(self) -> wp.array[float] | None:
+        """Differentiable signed distance [m].
+
+        .. deprecated:: 1.6
+            Allocate an output array and pass it as ``out_distance`` to
+            :func:`newton.eval_rigid_contact_kinematics`.
+        """
+        _warn_rigid_contact_diff_deprecated("rigid_contact_diff_distance")
+        return self._rigid_contact_diff_distance
+
+    @rigid_contact_diff_distance.setter
+    def rigid_contact_diff_distance(self, value: wp.array[float] | None) -> None:
+        _warn_rigid_contact_diff_deprecated("rigid_contact_diff_distance")
+        self._rigid_contact_diff_distance = value
+
+    @property
+    def rigid_contact_diff_normal(self) -> wp.array[wp.vec3] | None:
+        """Frozen world-space contact normal.
+
+        .. deprecated:: 1.6
+            Use :attr:`rigid_contact_normal`, which contains the same values.
+        """
+        _warn_rigid_contact_diff_deprecated("rigid_contact_diff_normal")
+        if self._rigid_contact_diff_normal_override is not None:
+            return self._rigid_contact_diff_normal_override
+        if self.requires_grad:
+            return self.rigid_contact_normal
+        return None
+
+    @rigid_contact_diff_normal.setter
+    def rigid_contact_diff_normal(self, value: wp.array[wp.vec3] | None) -> None:
+        _warn_rigid_contact_diff_deprecated("rigid_contact_diff_normal")
+        self._rigid_contact_diff_normal_override = value
+
+    @property
+    def rigid_contact_diff_point0_world(self) -> wp.array[wp.vec3] | None:
+        """Differentiable world-space contact point on shape 0 [m].
+
+        .. deprecated:: 1.6
+            Allocate an output array and pass it as ``out_point0_world`` to
+            :func:`newton.eval_rigid_contact_kinematics`.
+        """
+        _warn_rigid_contact_diff_deprecated("rigid_contact_diff_point0_world")
+        return self._rigid_contact_diff_point0_world
+
+    @rigid_contact_diff_point0_world.setter
+    def rigid_contact_diff_point0_world(self, value: wp.array[wp.vec3] | None) -> None:
+        _warn_rigid_contact_diff_deprecated("rigid_contact_diff_point0_world")
+        self._rigid_contact_diff_point0_world = value
+
+    @property
+    def rigid_contact_diff_point1_world(self) -> wp.array[wp.vec3] | None:
+        """Differentiable world-space contact point on shape 1 [m].
+
+        .. deprecated:: 1.6
+            Allocate an output array and pass it as ``out_point1_world`` to
+            :func:`newton.eval_rigid_contact_kinematics`.
+        """
+        _warn_rigid_contact_diff_deprecated("rigid_contact_diff_point1_world")
+        return self._rigid_contact_diff_point1_world
+
+    @rigid_contact_diff_point1_world.setter
+    def rigid_contact_diff_point1_world(self, value: wp.array[wp.vec3] | None) -> None:
+        _warn_rigid_contact_diff_deprecated("rigid_contact_diff_point1_world")
+        self._rigid_contact_diff_point1_world = value
+
+    @property
+    def contact_matching_mode(self) -> Literal["disabled", "latest", "sticky"]:
+        """Frame-to-frame rigid-contact matching mode associated with this buffer.
+
+        This read-only value is set by :meth:`newton.CollisionPipeline.contacts` and
+        refreshed by :meth:`newton.CollisionPipeline.collide` when a buffer is reused.
+        Directly constructed buffers report ``"disabled"`` until then.
+        """
+        return self._contact_matching_mode
 
     def _assert_particle_only_soft_contacts(self, solver_name: str):
         """Raise if these contacts include full-surface (edge/face) soft records.
