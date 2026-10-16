@@ -200,15 +200,11 @@ surface chemistry.
 
 ``test_post_step()`` checks finite water positions, table penetration, initial
 containment, and absence of yielding before the squeeze. ``test_final()`` checks
-the fixed base, a valid reconstructed surface, yielded hinges, and a remaining
-dent of at least one wall thickness after release. Unit tests cover elastic
-unloading, reverse yielding, material scaling, open topology, deterministic
-particle counts, wall density completion, contact on both sides including fast
-crossings, reconstructed surface containment at rest and sharp folds,
-preservation of the open-neck jet and real exterior droplets, and continuous
-robot motion with open fingers between successive squeeze cycles. They also
-check XPBD pressure equilibrium and substep reset, and the attached plates'
-physical and visible opening in both simulation and render units.
+the fixed base, reconstructed surface, and retained deformation after release.
+Solver tests verify yielding, springback, state ownership, masked resets, and
+CUDA graph replay. GPU example tests protect wall contact, surface containment,
+open-neck spills, and robot motion; geometry checks protect material scaling
+and the plates' physical and visible openings.
 
 Save rendered frames for a recording:
 

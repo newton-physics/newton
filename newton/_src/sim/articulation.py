@@ -671,6 +671,8 @@ def eval_fk(
             state.body_qd,
         ],
         device=model.device,
+        # Small blocks spread independent articulations across more SMs.
+        block_dim=16 if model.max_joints_per_articulation <= 4 else 8,
     )
 
 
