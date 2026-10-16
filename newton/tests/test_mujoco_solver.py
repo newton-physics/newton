@@ -11153,8 +11153,14 @@ class TestActuatorDampratioMultiWorldRuntime(unittest.TestCase):
             with self.subTest(skipped_count=skipped_count):
                 builder = newton.ModelBuilder()
                 builder.replicate(template, 2)
+                skipped_row = {
+                    key: attr.default
+                    for key, attr in builder.custom_attributes.items()
+                    if attr.frequency == "mujoco:actuator"
+                }
+                skipped_row["mujoco:actuator_target_label"] = "/missing"
                 for _ in range(skipped_count):
-                    builder.add_custom_values(**{"mujoco:actuator_target_label": "/missing"})
+                    builder.add_custom_values(**skipped_row)
                 model = builder.finalize()
                 worlds = model.mujoco.actuator_world.numpy()
                 biasprm = model.mujoco.actuator_biasprm.numpy()
