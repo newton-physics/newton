@@ -2244,23 +2244,25 @@ class ArticulationView:
 
 
 @wp.kernel
-def _gather_object_vec3_kernel(
-    src: wp.array[wp.vec3],
+def _gather_object_kernel(
+    src: wp.array[Any],
     starts: wp.array[wp.int32],
-    out: wp.array2d[wp.vec3],
+    out: wp.array2d[Any],
 ):
     object_index, i = wp.tid()
     out[object_index, i] = src[starts[object_index] + i]
 
 
-@wp.kernel
-def _gather_object_float_kernel(
-    src: wp.array[wp.float32],
-    starts: wp.array[wp.int32],
-    out: wp.array2d[wp.float32],
-):
-    object_index, i = wp.tid()
-    out[object_index, i] = src[starts[object_index] + i]
+_gather_object_float_kernel = wp.overload(
+    _gather_object_kernel, {"src": wp.array[wp.float32], "out": wp.array2d[wp.float32]}
+)
+_gather_object_vec3_kernel = wp.overload(_gather_object_kernel, {"src": wp.array[wp.vec3], "out": wp.array2d[wp.vec3]})
+_gather_object_transform_kernel = wp.overload(
+    _gather_object_kernel, {"src": wp.array[wp.transform], "out": wp.array2d[wp.transform]}
+)
+_gather_object_spatial_kernel = wp.overload(
+    _gather_object_kernel, {"src": wp.array[wp.spatial_vector], "out": wp.array2d[wp.spatial_vector]}
+)
 
 
 @wp.kernel(enable_backward=False)
@@ -2287,11 +2289,11 @@ def _object_membership_to_mask_kernel(membership: wp.array[wp.int32], mask: wp.a
 
 
 @wp.kernel
-def _scatter_object_vec3_kernel(
-    values: wp.array2d[wp.vec3],
+def _scatter_object_kernel(
+    values: wp.array2d[Any],
     starts: wp.array[wp.int32],
     mask: wp.array[wp.bool],
-    dst: wp.array[wp.vec3],
+    dst: wp.array[Any],
 ):
     i, j = wp.tid()
     if mask and not mask[i]:
@@ -2299,50 +2301,15 @@ def _scatter_object_vec3_kernel(
     dst[starts[i] + j] = values[i, j]
 
 
-@wp.kernel
-def _gather_object_transform_kernel(
-    src: wp.array[wp.transform],
-    starts: wp.array[wp.int32],
-    out: wp.array2d[wp.transform],
-):
-    object_index, i = wp.tid()
-    out[object_index, i] = src[starts[object_index] + i]
-
-
-@wp.kernel
-def _scatter_object_transform_kernel(
-    values: wp.array2d[wp.transform],
-    starts: wp.array[wp.int32],
-    mask: wp.array[wp.bool],
-    dst: wp.array[wp.transform],
-):
-    i, j = wp.tid()
-    if mask and not mask[i]:
-        return
-    dst[starts[i] + j] = values[i, j]
-
-
-@wp.kernel
-def _gather_object_spatial_kernel(
-    src: wp.array[wp.spatial_vector],
-    starts: wp.array[wp.int32],
-    out: wp.array2d[wp.spatial_vector],
-):
-    object_index, i = wp.tid()
-    out[object_index, i] = src[starts[object_index] + i]
-
-
-@wp.kernel
-def _scatter_object_spatial_kernel(
-    values: wp.array2d[wp.spatial_vector],
-    starts: wp.array[wp.int32],
-    mask: wp.array[wp.bool],
-    dst: wp.array[wp.spatial_vector],
-):
-    i, j = wp.tid()
-    if mask and not mask[i]:
-        return
-    dst[starts[i] + j] = values[i, j]
+_scatter_object_vec3_kernel = wp.overload(
+    _scatter_object_kernel, {"values": wp.array2d[wp.vec3], "dst": wp.array[wp.vec3]}
+)
+_scatter_object_transform_kernel = wp.overload(
+    _scatter_object_kernel, {"values": wp.array2d[wp.transform], "dst": wp.array[wp.transform]}
+)
+_scatter_object_spatial_kernel = wp.overload(
+    _scatter_object_kernel, {"values": wp.array2d[wp.spatial_vector], "dst": wp.array[wp.spatial_vector]}
+)
 
 
 class _DeformableViewBase:
