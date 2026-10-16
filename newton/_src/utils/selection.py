@@ -2912,19 +2912,19 @@ class _DeformableParticleView(_DeformableViewBase):
         self._scatter("particle", values, _scatter_object_vec3_kernel, target.particle_qd, wp.vec3, mask)
 
 
-class _DeformableRodView(_DeformableViewBase):
-    """Read and write the body state of rod segments."""
+class _DeformableBodyView(_DeformableViewBase):
+    """Read and write body state for selected deformable objects."""
 
     @property
     def bodies_per_deformable_object(self) -> int:
-        """Common rigid-body count in each selected curve, counting its segments."""
+        """Common body count in each selected deformable object."""
         return self._element_count("body")
 
     def get_body_transforms(
         self,
         source: Model | State,
     ) -> wp.array2d[wp.transform]:
-        """Segment transforms of each curve, shape ``(count, bodies_per_deformable_object)``.
+        """Body transforms, shape ``(count, bodies_per_deformable_object)``.
 
         Each transform contains a world-space translation [m] and a unitless
         quaternion.
@@ -2933,7 +2933,7 @@ class _DeformableRodView(_DeformableViewBase):
             source: Model initial state or simulation state to read.
 
         Returns:
-            Segment transforms with shape ``(count, bodies_per_deformable_object)``.
+            Body transforms with shape ``(count, bodies_per_deformable_object)``.
 
         Raises:
             AttributeError: If the selected deformable objects do not all record bodies.
@@ -2949,7 +2949,7 @@ class _DeformableRodView(_DeformableViewBase):
         *,
         mask: Any = None,
     ) -> None:
-        """Write segment transforms for the masked deformable objects.
+        """Write body transforms for the masked deformable objects.
 
         Values stay in view order, including rows that are masked off. Keep
         values and masks unchanged until backward completes when using a tape.
@@ -2957,7 +2957,7 @@ class _DeformableRodView(_DeformableViewBase):
 
         Args:
             target: Model initial state or simulation state to update.
-            values: Segment transforms with world-space translation [m] and a unitless quaternion, shape
+            values: Body transforms with world-space translation [m] and a unitless quaternion, shape
                 ``(count, bodies_per_deformable_object)``. Must not share storage
                 with the target array; clone live getter results before writing.
                 Host inputs are reshaped with a final axis of length 7. None is invalid.
@@ -2977,7 +2977,7 @@ class _DeformableRodView(_DeformableViewBase):
         self,
         source: Model | State,
     ) -> wp.array2d[wp.spatial_vector]:
-        """Segment velocities, shape ``(count, bodies_per_deformable_object)``.
+        """Body velocities, shape ``(count, bodies_per_deformable_object)``.
 
         Each value follows ``(v_com_world, omega_world)``: linear velocity [m/s]
         followed by angular velocity [rad/s].
@@ -2986,7 +2986,7 @@ class _DeformableRodView(_DeformableViewBase):
             source: Model initial state or simulation state to read.
 
         Returns:
-            Segment velocities with shape ``(count, bodies_per_deformable_object)``.
+            Body velocities with shape ``(count, bodies_per_deformable_object)``.
 
         Raises:
             AttributeError: If the selected deformable objects do not all record bodies.
@@ -3002,7 +3002,7 @@ class _DeformableRodView(_DeformableViewBase):
         *,
         mask: Any = None,
     ) -> None:
-        """Write segment velocities for the masked deformable objects.
+        """Write body velocities for the masked deformable objects.
 
         Values stay in view order, including rows that are masked off. Keep
         values and masks unchanged until backward completes when using a tape.
@@ -3010,7 +3010,7 @@ class _DeformableRodView(_DeformableViewBase):
 
         Args:
             target: Model initial state or simulation state to update.
-            values: Segment velocities in (v_com_world, omega_world) order [m/s, rad/s], shape
+            values: Body velocities in (v_com_world, omega_world) order [m/s, rad/s], shape
                 ``(count, bodies_per_deformable_object)``. Must not share storage
                 with the target array; clone live getter results before writing.
                 Host inputs are reshaped with a final axis of length 6. None is invalid.
@@ -3027,7 +3027,7 @@ class _DeformableRodView(_DeformableViewBase):
         self._scatter("body", values, _scatter_object_spatial_kernel, target.body_qd, wp.spatial_vector, mask)
 
 
-class DeformableCurveView(_DeformableRodView):
+class DeformableCurveView(_DeformableBodyView):
     """Select curves by label and read or update their segment body state.
 
     .. experimental::

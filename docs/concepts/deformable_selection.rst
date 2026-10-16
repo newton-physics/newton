@@ -31,10 +31,23 @@ Patterns accept glob strings, lists of globs, and compiled regular expressions,
 as in :class:`~newton.selection.ArticulationView`. A broad pattern selects only
 the class's family. A pattern with no matches in that family raises ``KeyError``.
 
-Currently, curves expose rod body transforms and velocities. Surfaces and volumes
-expose particle positions, velocities, inverse masses, and flags. A family does
-not prescribe a solver or storage layout. Particle-based curves and solver-owned
-MPM data are not supported yet.
+Separate classes make the family clear at the call site. For example, a cloth
+and a soft volume can share a label without sharing a selection:
+
+.. code-block:: python
+
+    cloths = DeformableSurfaceView(model, "object")
+    volumes = DeformableVolumeView(model, "object")
+
+    cloths.ranges("triangle")      # Only the selected surfaces' triangles.
+    volumes.ranges("tetrahedron")  # Only the selected volumes' tetrahedra.
+
+Currently, curve views expose rod body transforms and velocities, with body and
+joint ranges. Surface and volume views share particle methods: positions,
+velocities, inverse masses, and flags. Both expose particle ranges, but surface
+views also expose triangle and edge ranges, while volume views expose tetrahedron
+ranges. A family does not prescribe a solver or storage layout. Particle-based
+curves and solver-owned MPM data are not supported yet.
 
 Read and reset state
 --------------------
