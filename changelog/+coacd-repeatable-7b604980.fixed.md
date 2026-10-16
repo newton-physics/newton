@@ -1,0 +1,1 @@
+Make CoACD convex decompositions in `ModelBuilder.approximate_meshes()` repeatable across runs with OpenMP-backed CoACD builds before 1.0.14 by running them on one OpenMP thread; `threadpoolctl` joins the `importers` extra. The macOS wheels of CoACD 1.0.12-1.0.13 use C++ threads that this cannot limit; use `coacd>=1.0.14` there.
