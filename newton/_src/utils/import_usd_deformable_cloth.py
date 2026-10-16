@@ -10,12 +10,14 @@ surface material onto the isotropic membrane. Driven by :func:`.import_usd.parse
 
 from __future__ import annotations
 
+import logging
 import math
 import warnings
 
 import numpy as np
 import warp as wp
 
+from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from .import_usd_deformable_utils import (
     _AOUSD_DEFAULT_POISSONS_RATIO,
     _AOUSD_DEFAULT_THICKNESS,
@@ -37,6 +39,8 @@ from .import_usd_deformable_utils import (
     _warn_unsupported_rest_fields,
     _world_matrix_reflects,
 )
+
+logger = logging.getLogger(__name__)
 
 # Attributes introduced after the family-prefix rename; density is shared and intentionally omitted.
 _POST_RENAME_SURFACE_MATERIAL_ATTRS = (
@@ -111,7 +115,7 @@ def _warn_legacy_surface_material(path: str, material: dict[str, float] | None) 
             f"{path}: physics:surfaceThickness has moved off the material and is deprecated; "
             "author physics:thicknesses on the simulation geometry with "
             "physics:thicknesses:elementType instead.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
     if _has_legacy_surface_material(material):
@@ -120,7 +124,7 @@ def _warn_legacy_surface_material(path: str, material: dict[str, float] | None) 
             f"and are deprecated; move physics:thickness to simulation-geometry physics:thicknesses "
             f"with an element type, and convert the old moduli to structural "
             f"physics:surface*Stiffness values.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
 
@@ -203,7 +207,7 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
             continue
         skip_reason = _deformable_body_skip_reason(prim, deformable_read)
         if skip_reason is not None:
-            warnings.warn(f"{path}: {skip_reason}; skipping cloth import.", stacklevel=2)
+            warnings.warn(f"{path}: {skip_reason}; skipping cloth import.", NewtonWarning, stacklevel=2)
             continue
         if _skip_for_deformable_body_owner(ctx, prim, path):
             continue
@@ -213,10 +217,12 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         face_counts = mesh.GetFaceVertexCountsAttr().Get()
         face_indices = mesh.GetFaceVertexIndicesAttr().Get()
         if not mesh_points or not face_counts or not face_indices:
-            warnings.warn(f"{path}: cloth mesh missing points / topology; skipping.", stacklevel=2)
+            warnings.warn(f"{path}: cloth mesh missing points / topology; skipping.", NewtonWarning, stacklevel=2)
             continue
         if any(int(c) < 3 for c in face_counts):
-            warnings.warn(f"{path}: cloth mesh has a face with fewer than 3 vertices; skipping.", stacklevel=2)
+            warnings.warn(
+                f"{path}: cloth mesh has a face with fewer than 3 vertices; skipping.", NewtonWarning, stacklevel=2
+            )
             continue
         # Validate the flattened topology before any builder mutation (matching the cable
         # pass's warn-and-skip policy), so malformed authoring cannot crash the import or
@@ -225,12 +231,14 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
             warnings.warn(
                 f"{path}: cloth mesh faceVertexCounts sum {sum(int(c) for c in face_counts)} != "
                 f"faceVertexIndices length {len(face_indices)}; skipping.",
+                NewtonWarning,
                 stacklevel=2,
             )
             continue
         if any(i < 0 or i >= len(mesh_points) for i in face_indices):
             warnings.warn(
                 f"{path}: cloth mesh has a face vertex index outside the {len(mesh_points)}-point array; skipping.",
+                NewtonWarning,
                 stacklevel=2,
             )
             continue
@@ -252,6 +260,7 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
             warnings.warn(
                 f"{path}: invalid physics:restBendAnglesDefault '{rest_bend_angles_default}' "
                 "(expected 'flat' or 'restShape'); using 'flat'.",
+                NewtonWarning,
                 stacklevel=2,
             )
             rest_bend_angles_default = "flat"
@@ -278,6 +287,7 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         if nonfinite_points:
             warnings.warn(
                 f"{path}: cloth mesh has {nonfinite_points} point(s) with non-finite coordinates; skipping.",
+                NewtonWarning,
                 stacklevel=2,
             )
             continue
@@ -288,6 +298,7 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         if nonfinite_areas:
             warnings.warn(
                 f"{path}: cloth mesh has {nonfinite_areas} triangle(s) with non-finite area; skipping.",
+                NewtonWarning,
                 stacklevel=2,
             )
             continue
@@ -295,6 +306,7 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         if degenerate:
             warnings.warn(
                 f"{path}: cloth mesh has {degenerate} zero-area (degenerate) triangle(s); skipping.",
+                NewtonWarning,
                 stacklevel=2,
             )
             continue
@@ -335,6 +347,7 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
                     f"1 mm physical fallback ({thickness:g} stage units) instead of Newton's previous "
                     f"2 mm default. To preserve the previous behavior, author physics:thicknesses = "
                     f"[{previous_thickness:g}] with physics:thicknesses:elementType = 'constant'.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
 
@@ -371,6 +384,7 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
                 f"{path}: {shear_name} is not applied -- Newton's isotropic cloth membrane makes "
                 f"stretch and shear share one modulus. An anisotropic membrane (e.g. SolverStyle3D's "
                 f"tri_aniso_ke) can honor it; the value is preserved in path_cloth_attrs.",
+                NewtonWarning,
                 stacklevel=2,
             )
         resolved_cloth_density = vol_density
@@ -476,6 +490,7 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
                     f"{path}: unauthored physics:restBendAnglesDefault uses the proposal's 'flat' "
                     "fallback and replaces non-planar imported dihedral rest angles; author "
                     "physics:restBendAnglesDefault = 'restShape' to preserve them.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
             for edge_offset in range(e0, builder.edge_count):
@@ -517,4 +532,4 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
                     "legacy_implicit_type": authored_masses.legacy_implicit_type,
                 }
         if verbose:
-            print(f"Added cloth {path} with {builder.particle_count - p0} particles.")
+            logger.info("Added cloth %s with %s particles.", path, builder.particle_count - p0)

@@ -8,6 +8,7 @@ import warnings
 import warp as wp
 
 from ...core.types import override
+from ...exceptions import NewtonDeprecationWarning
 from ...sim import Contacts, Control, JointType, Model, ModelFlags, State, StateFlags
 from ...sim.joint_mimic import has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
@@ -255,12 +256,12 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
             velocities incrementally. ``True`` temporarily retains the legacy
             full-step velocity reconstruction for compatibility.
         """
-        warnings.warn(_COMPUTE_BODY_VELOCITY_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_COMPUTE_BODY_VELOCITY_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         return self._compute_body_velocity_from_position_delta
 
     @compute_body_velocity_from_position_delta.setter
     def compute_body_velocity_from_position_delta(self, value: bool) -> None:
-        warnings.warn(_COMPUTE_BODY_VELOCITY_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_COMPUTE_BODY_VELOCITY_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         self._compute_body_velocity_from_position_delta = value
 
     @override
@@ -1247,7 +1248,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                         device=model.device,
                     )
                 if contacts is not None and contacts.force is not None and contacts.force.ptr != contact_f.ptr:
-                    contacts.force.assign(contact_f)
+                    wp.copy(contacts.force, contact_f, count=contacts.force.shape[0])
 
             # Populate optional ``body_parent_f`` (incoming joint
             # wrench per body) from the per-joint accumulated child-side
@@ -1497,7 +1498,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         warnings.warn(
             "SolverXPBD.update_contacts() is deprecated in Newton 1.7; request SolverBase.ObservableKind.CONTACT_F and pass "
             "SolverBase.Observables to step().",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         self._apply_module_options()

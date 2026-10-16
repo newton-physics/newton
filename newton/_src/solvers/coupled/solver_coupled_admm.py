@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 import warp as wp
 
+from ...exceptions import NewtonDeprecationWarning
 from ...geometry.flags import ShapeFlags
 from ...math import quat_between_vectors_robust
 from ...sim import BodyFlags, JointType, ModelFlags, StateFlags
@@ -556,7 +557,7 @@ class SolverCoupledADMM(SolverCoupled):
         warnings.warn(
             "SolverCoupledADMM.add_body_particle_attachment() is deprecated; use "
             "ModelBuilder.add_attachment_particle_body() instead.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         if cls.BODY_PARTICLE_ATTACHMENT_FREQUENCY not in builder.custom_frequencies:
@@ -1161,6 +1162,7 @@ class SolverCoupledADMM(SolverCoupled):
                 rigid_contact_max=rigid_contact_max,
                 soft_contact_max=None if self._admm_rigid_particle_contact_specs else 0,
                 soft_contact_gap=0.0,
+                publish_capacity=False,
                 contact_matching=(
                     coupling.rigid_contact_matching if self._admm_rigid_rigid_contact_specs else "disabled"
                 ),
