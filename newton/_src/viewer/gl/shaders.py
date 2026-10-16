@@ -271,9 +271,23 @@ float ShadowCalculation(vec3 camera_to_fragment)
         vec2 sampleUV = projCoords.xy + offset * radius * texelSize;
         vec2 texelCenter = (floor(sampleUV / texelSize) + 0.5) * texelSize;
         float receiverDepth = projCoords.z + dot(depthGradient, texelCenter - projCoords.xy);
-        float pcf_depth = texture(shadow_map, texelCenter).r;
+        // Keep sampling independent of implicit derivatives across divergent taps.
+        float pcf_depth = textureLod(shadow_map, texelCenter, 0.0).r;
         if(pcf_depth < receiverDepth - depthBias)
-            shadow += 1.0;
+        {
+            // A concave receiver can rise above its tangent plane without
+            // blocking the light. Check the sampled surface at the receiver too.
+            // Use the smaller one-sided differences to avoid silhouette jumps.
+            float left = pcf_depth - textureLod(shadow_map, texelCenter - vec2(texelSize.x, 0.0), 0.0).r;
+            float right = textureLod(shadow_map, texelCenter + vec2(texelSize.x, 0.0), 0.0).r - pcf_depth;
+            float down = pcf_depth - textureLod(shadow_map, texelCenter - vec2(0.0, texelSize.y), 0.0).r;
+            float up = textureLod(shadow_map, texelCenter + vec2(0.0, texelSize.y), 0.0).r - pcf_depth;
+            vec2 sampleSlope = vec2(abs(left) < abs(right) ? left : right,
+                                    abs(down) < abs(up) ? down : up);
+            float blockerDepth = pcf_depth + dot(sampleSlope, (projCoords.xy - texelCenter) / texelSize);
+            if(blockerDepth < projCoords.z - depthBias)
+                shadow += 1.0;
+        }
     }
     shadow /= 16.0;
     return shadow * fade;

@@ -248,7 +248,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
             viewer.close()
 
     def test_large_quad_is_stable_under_parallel_camera_translation(self):
-        """Keep large-quad shading stable and centimeter-scale contact shadows attached."""
+        """Keep a large uniform quad stable while translating the camera parallel to it."""
         viewer = _make_headless_viewer_gl_or_skip(self, width=400, height=300)
 
         try:
@@ -349,7 +349,21 @@ class TestViewerGLGetFrame(unittest.TestCase):
             )
             edge_changed_fraction = np.mean(np.any(edge_delta > 2, axis=-1))
             self.assertGreater(edge_changed_fraction, 0.001, "the target boxes have no visible edge overlay")
+        finally:
+            viewer.close()
+
+    def test_contact_shadows_on_planar_and_concave_receivers(self):
+        """Keep box shadows attached without darkening unobstructed ramps or bowls."""
+        viewer = _make_headless_viewer_gl_or_skip(self, width=400, height=300)
+        try:
+            viewer.renderer.draw_sky = False
+            viewer.renderer.sky_upper = (0.0, 0.0, 0.0)
+            viewer.renderer.sky_lower = (0.0, 0.0, 0.0)
+            viewer.renderer.draw_edges = False
+            viewer.renderer.specular_scale = 0.0
+            viewer.renderer.spotlight_enabled = False
             self._check_small_box_contact_shadows(viewer)
+            self._check_bowl_shadows(viewer)
         finally:
             viewer.close()
 
@@ -364,6 +378,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
                 rotation = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), float(np.deg2rad(slope)))
 
                 def rotate(point, rotation=rotation):
+                    """Rotate a point into the ramp's coordinate system."""
                     return wp.quat_rotate(rotation, wp.vec3(point))
 
                 builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -401,6 +416,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
                     frames.append(viewer.get_frame().numpy().astype(np.float32))
 
                 def sample_patch(frame, xmin, xmax, ymin, ymax):
+                    """Sample a rectangular patch on the ramp."""
                     points = np.array(
                         [
                             (*rotate((x, y, 0.0)), 1.0)
@@ -428,6 +444,42 @@ class TestViewerGLGetFrame(unittest.TestCase):
                     2.0,
                     "the unobstructed receiver incorrectly shadows itself",
                 )
+
+    def _check_bowl_shadows(self, viewer):
+        """Keep an unobstructed bowl unchanged when shadows are enabled."""
+        viewer.clear_model()
+        coordinates = np.linspace(-0.25, 0.25, 65)
+        vertices = np.array([(x, y, 4.0 * (x * x + y * y)) for y in coordinates for x in coordinates], dtype=np.float32)
+        normals = np.column_stack((-8.0 * vertices[:, 0], -8.0 * vertices[:, 1], np.ones(len(vertices))))
+        normals /= np.linalg.norm(normals, axis=1, keepdims=True)
+        corners = np.array([y * 65 + x for y in range(64) for x in range(64)])
+        indices = np.column_stack((corners, corners + 1, corners + 66, corners, corners + 66, corners + 65))
+        mesh = newton.Mesh(vertices, indices.ravel(), normals=normals, compute_inertia=False)
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        builder.add_shape_mesh(-1, mesh=mesh, color=(0.2, 0.5, 0.8))
+        model = builder.finalize(device=viewer.device)
+        viewer.set_model(model)
+        # Every point on this bowl can see the light, despite its curvature.
+        viewer.renderer._sun_direction = np.array((0.0, -0.2, 1.0)) / np.sqrt(1.04)
+        viewer.set_camera(pos=wp.vec3(0.0, 0.65, 0.9), pitch=0.0, yaw=0.0)
+        viewer.camera.near = 0.005
+        viewer.camera.look_at((0.0, 0.0, 0.1))
+
+        frames = []
+        for shadows in (False, True):
+            viewer.renderer.draw_shadows = shadows
+            viewer.begin_frame(0.0)
+            viewer.log_state(model.state())
+            viewer.end_frame()
+            frames.append(viewer.get_frame().numpy().astype(np.float32))
+
+        bowl = frames[0][:, :, 2] > frames[0][:, :, 0]
+        self.assertTrue(np.any(bowl), "the bowl is not visible")
+        self.assertLess(
+            float(np.mean(np.abs(frames[0][bowl] - frames[1][bowl]))),
+            2.0,
+            "the unobstructed bowl incorrectly shadows itself",
+        )
 
     def test_headless_capture_main_image_frame(self):
         """Verify get_frame captures a main image rendered headlessly."""
