@@ -513,13 +513,30 @@ def parse_mjcf(
                         if key in builder.custom_attributes:
                             builder.custom_attributes[key].values[0] = value
 
-        sleep_enabled_attr = builder.custom_attributes.get("mujoco:enable_sleeping")
-        if sleep_enabled_attr is not None:
-            for option_elem in root.findall("option"):
-                for flag_elem in option_elem.findall("flag"):
-                    parsed = parse_custom_attributes(flag_elem.attrib, [sleep_enabled_attr], "mjcf")
-                    if "mujoco:enable_sleeping" in parsed:
-                        sleep_enabled_attr.values[0] = parsed["mujoco:enable_sleeping"]
+        flag_attrs = [
+            attr
+            for attr in builder_custom_attr_option
+            if attr.namespace == "mujoco" and (attr.name.startswith("flag_") or attr.name == "enable_sleeping")
+        ]
+        flag_names = {attr.mjcf_attribute_name for attr in flag_attrs} | {"gravity"}
+        gravity_enabled = True
+        for option_elem in root.findall("option"):
+            for flag_elem in option_elem.findall("flag"):
+                unknown = set(flag_elem.attrib) - flag_names
+                if unknown:
+                    warnings.warn(
+                        f"MJCF option <flag> has unsupported attribute(s) {sorted(unknown)!r}; ignoring.",
+                        stacklevel=2,
+                    )
+                for key, value in parse_custom_attributes(flag_elem.attrib, flag_attrs, "mjcf").items():
+                    builder.custom_attributes[key].values[0] = value
+                if "gravity" in flag_elem.attrib:
+                    gravity_enabled = SolverMuJoCo._parse_enable_disable(flag_elem.attrib["gravity"])
+        if not gravity_enabled:
+            if builder.current_world >= 0:
+                builder.world_gravity[builder.current_world] = wp.vec3()
+            else:
+                builder.gravity = wp.vec3()
 
     class_parent = {}
     class_children = {}

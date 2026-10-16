@@ -482,11 +482,11 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
         self.assertIsInstance(solver._solver_kamino._integrator, IntegratorMoreauJean)
 
     def test_contact_observables_bind_at_allocation(self):
-        """Allocate from published native capacity and populate bound contacts."""
+        """Allocate from the supplied contacts and populate them with native geometry."""
         model = self._make_three_world_model()
         solver = SolverKamino(model, config=SolverKamino.Config(use_collision_detector=True))
         flags = {newton.solvers.SolverBase.ObservableKind.CONTACT_F}
-        with self.assertRaisesRegex(RuntimeError, "CollisionPipeline"):
+        with self.assertRaisesRegex(ValueError, "Contacts"):
             solver.observables(solver.supported_observables)
         pipeline = newton.CollisionPipeline(model)
         contacts = pipeline.contacts()

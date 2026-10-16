@@ -700,28 +700,34 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
     ) -> SolverMuJoCo.Observables:
         """Allocate solver observables with a compatible native contact export budget.
 
-        Supply ``contacts`` when requesting contact-indexed fields; the factory
-        validates and binds that storage for subsequent steps and consumers.
+        Supply ``contacts`` when requesting contact-indexed fields; their
+        capacities size the contact arrays.
 
         See :meth:`SolverBase.observables` for the shared allocation contract and
         errors, and :ref:`solver_observables` for usage and native collision setup.
 
         Raises:
             ValueError: If the native contact export capacity exceeds the
-                :class:`~newton.CollisionPipeline` rigid contact capacity.
+                rigid contact capacity of ``contacts``.
         """
         with self._create_observables(kinds, contacts=contacts, requires_grad=requires_grad) as observables:
-            if (
-                observables.is_requested(SolverBase.ObservableKind.CONTACT_F)
-                and self.mjw_model.opt.run_collision_detection
-                and self.mjw_data.naconmax > self.model.rigid_contact_max
-            ):
-                raise ValueError(
-                    f"MuJoCo contact capacity ({self.mjw_data.naconmax}) exceeds CollisionPipeline capacity "
-                    f"({self.model.rigid_contact_max}). Construct CollisionPipeline with "
-                    "rigid_contact_max=solver.get_max_contact_count() before requesting contact observables."
-                )
+            if observables.contacts is not None:
+                self._validate_native_contact_export(observables, observables.contacts)
             return observables
+
+    @override
+    def _validate_native_contact_export(self, observables: SolverBase.Observables, contacts: Contacts) -> None:
+        if (
+            observables.is_requested(SolverBase.ObservableKind.CONTACT_F)
+            and not self.use_mujoco_cpu
+            and self.mjw_model.opt.run_collision_detection
+            and self.mjw_data.naconmax > contacts.rigid_contact_max
+        ):
+            raise ValueError(
+                f"MuJoCo contact capacity ({self.mjw_data.naconmax}) exceeds Contacts capacity "
+                f"({contacts.rigid_contact_max}). Construct CollisionPipeline with "
+                "rigid_contact_max=solver.get_max_contact_count() before requesting contact observables."
+            )
 
     EqType = _EqType
     """MuJoCo equality constraint type."""
@@ -737,6 +743,28 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         JOINT_TARGET = 0
         CTRL_DIRECT = 1
+
+    # Only flags supported by Newton conversion and MuJoCo Warp; gravity and sleep use existing settings.
+    _DISABLE_FLAGS = (
+        "constraint",
+        "equality",
+        "frictionloss",
+        "limit",
+        "contact",
+        "spring",
+        "damper",
+        "clampctrl",
+        "warmstart",
+        "actuation",
+        "refsafe",
+        "sensor",
+        "eulerdamp",
+        "nativeccd",
+        "island",
+        "multiccd",
+    )
+    _ENABLE_FLAGS = ("energy", "invdiscrete")
+    _FLAG_DEFAULTS = dict.fromkeys(_DISABLE_FLAGS, True) | dict.fromkeys((*_ENABLE_FLAGS, "multiccd"), False)
 
     class CtrlType(IntEnum):
         """Control type for MuJoCo actuators.
@@ -863,8 +891,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
     @staticmethod
     def _parse_integrator(value: str | int, context: dict[str, Any] | None = None) -> int:
-        """Parse integrator option: Euler=0, RK4=1, implicit=2, implicitfast=3."""
-        return SolverMuJoCo._parse_named_int(value, {"euler": 0, "rk4": 1, "implicit": 2, "implicitfast": 3})
+        """Parse integrator option: Euler=0, RK4=1, implicit=2, implicitfast=3, discrete=4."""
+        return SolverMuJoCo._parse_named_int(
+            value, {"euler": 0, "rk4": 1, "implicit": 2, "implicitfast": 3, "discrete": 4}
+        )
 
     @staticmethod
     def _parse_solver(value: str | int, context: dict[str, Any] | None = None) -> int:
@@ -2008,6 +2038,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 usd_value_transformer=cls._parse_jacobian,
             )
         )
+        for name, default in cls._FLAG_DEFAULTS.items():
+            builder.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name=f"flag_{name}",
+                    frequency=AttributeFrequency.ONCE,
+                    assignment=AttributeAssignment.MODEL,
+                    dtype=wp.bool,
+                    default=default,
+                    namespace="mujoco",
+                    mjcf_attribute_name=name,
+                    usd_attribute_name=f"mjc:flag:{name}",
+                    mjcf_value_transformer=cls._parse_enable_disable,
+                )
+            )
         # endregion solver options
 
         # region pair attributes
@@ -4209,12 +4253,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         wind: tuple | None = None,
         magnetic: tuple | None = None,
         use_mujoco_cpu: bool = False,
-        enable_multiccd: bool = False,
+        enable_multiccd: bool | None = None,
         enable_sleeping: bool | None = None,
         nvmax: int | None = None,
         sleep_tolerance: float | None = None,
-        disable_contacts: bool = False,
-        disable_sensors: bool = False,
+        disable_contacts: bool | None = None,
+        disable_sensors: bool | None = None,
         update_data_interval: int = 1,
         save_to_mjcf: str | None = None,
         use_mujoco_contacts: bool = True,
@@ -4249,7 +4293,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             sdf_iterations: Maximum SDF iterations. If None, uses model custom attribute or MuJoCo's default (10).
             sdf_initpoints: Number of SDF initialization points. If None, uses model custom attribute or MuJoCo's default (40).
             solver: Solver type. Can be "cg" or "newton", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or Newton's default ("newton").
-            integrator: Integrator type. Can be "euler", "rk4", or "implicitfast", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or Newton's default ("implicitfast").
+            integrator: Integrator type. Can be "euler", "rk4", "implicit", "implicitfast", or "discrete", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or Newton's default ("implicitfast").
             cone: The type of contact friction cone. Can be "pyramidal", "elliptic", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or Newton's default ("pyramidal").
             jacobian: Jacobian computation method. Can be "dense", "sparse", or "auto", or their corresponding MuJoCo integer constants. If None, uses model custom attribute or MuJoCo's default ("auto").
             impratio: Frictional-to-normal constraint impedance ratio. If None, uses model custom attribute or MuJoCo's default (1.0).
@@ -4261,12 +4305,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             wind: Wind velocity vector (x, y, z) for lift and drag forces. If None, uses model custom attribute or MuJoCo's default (0, 0, 0).
             magnetic: Global magnetic flux vector (x, y, z). If None, uses model custom attribute or MuJoCo's default (0, -0.5, 0).
             use_mujoco_cpu: If True, use the MuJoCo-C CPU backend instead of `mujoco_warp`.
-            enable_multiccd: If True, enable multi-CCD contact generation (up to 4 contact points per geom pair instead of 1). Note: geom pairs where either geom has ``margin > 0`` always produce a single contact regardless of this flag.
-            enable_sleeping: Whether to enable MuJoCo Warp's sleeping optimization. If None, uses the model custom attribute or defaults to False. Sleeping requires the GPU backend, the Newton solver, MuJoCo contact handling, and a non-RK4 integrator.
+            enable_multiccd: If True, enable multi-CCD contact generation (up to 4 contact points per geom pair instead of 1). If False, disable it. If None, use the model custom attribute or disable it by default. Note: geom pairs where either geom has ``margin > 0`` always produce a single contact regardless of this flag.
+            enable_sleeping: Whether to enable MuJoCo Warp's sleeping optimization. If None, uses the model custom attribute or defaults to False. Sleeping requires the GPU backend, the Newton solver, MuJoCo contact handling, island detection, and a non-RK4 integrator.
             nvmax: Maximum number of active degrees of freedom per world when sleeping is enabled. Must accommodate every initially awake degree of freedom. If None, allocates space for every degree of freedom, which is safe but provides no compact-solver memory savings.
             sleep_tolerance: Sleep velocity tolerance. If None, uses model custom attribute or MuJoCo default (0.001).
-            disable_contacts: If True, disable contact computation in MuJoCo.
-            disable_sensors: If True, disable sensor computation in MuJoCo. ``body_qdd`` and ``body_parent_f`` are still computed on either backend when requested through solver observables or legacy output-state fields.
+            disable_contacts: If True, disable contact computation in MuJoCo. If False, enable it. If None, use the model custom attribute or enable it by default.
+            disable_sensors: If True, disable sensor computation in MuJoCo. If False, enable it. If None, use the model custom attribute or enable it by default. ``body_qdd`` and ``body_parent_f`` are still computed on either backend when requested through solver observables or legacy output-state fields.
             update_data_interval: Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf: Optional path to save the generated MJCF model file.
             use_mujoco_contacts: If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
@@ -4515,25 +4559,43 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         Controls margin zeroing: when True, geom/pair margins on the MuJoCo
         model are kept at zero for NATIVECCD compatibility (#2106)."""
 
+        flags = {
+            name: bool(getattr(mujoco_attrs, f"flag_{name}").numpy()[0])
+            if mujoco_attrs is not None and hasattr(mujoco_attrs, f"flag_{name}")
+            else default
+            for name, default in self._FLAG_DEFAULTS.items()
+        }
+        if enable_sleeping and not flags["island"]:
+            raise ValueError("enable_sleeping=True requires island detection (island flag enabled).")
+        if enable_multiccd is None:
+            enable_multiccd = flags["multiccd"]
+        if disable_contacts is None:
+            disable_contacts = not flags["contact"]
+        if disable_sensors is None:
+            disable_sensors = not flags["sensor"]
+        flags.update(multiccd=enable_multiccd, contact=not disable_contacts, sensor=not disable_sensors)
+        disableflags = sum(
+            int(getattr(mujoco.mjtDisableBit, f"mjDSBL_{name.upper()}"))
+            for name in self._DISABLE_FLAGS
+            if not flags[name]
+        )
+        enableflags = sum(
+            int(getattr(mujoco.mjtEnableBit, f"mjENBL_{name.upper()}")) for name in self._ENABLE_FLAGS if flags[name]
+        )
+
         # mujoco_warp.put_model() rejects non-zero margins on box-box pairs
         # (default NATIVECCD path) or any box/mesh pair when MULTICCD is enabled.
         # Skip the workaround entirely when no such geom types exist in the model.
         shape_types_arr = model.shape_type.numpy()
         has_box = bool(np.any(shape_types_arr == GeoType.BOX))
         has_mesh = bool(np.any((shape_types_arr == GeoType.MESH) | (shape_types_arr == GeoType.CONVEX_MESH)))
-        self._zero_margins_for_native_ccd = has_box or (enable_multiccd and has_mesh)
+        self._zero_margins_for_native_ccd = (has_box and (flags["nativeccd"] or enable_multiccd)) or (
+            enable_multiccd and has_mesh
+        )
         """True when the NATIVECCD/MULTICCD margin workaround applies (#2106)."""
 
-        enableflags = 0
-        disableflags = 0
         if enable_sleeping:
             enableflags |= mujoco.mjtEnableBit.mjENBL_SLEEP
-        if not enable_multiccd:
-            disableflags |= mujoco.mjtDisableBit.mjDSBL_MULTICCD
-        if disable_contacts:
-            disableflags |= mujoco.mjtDisableBit.mjDSBL_CONTACT
-        if disable_sensors:
-            disableflags |= mujoco.mjtDisableBit.mjDSBL_SENSOR
         self.use_mujoco_cpu = use_mujoco_cpu
         if use_mujoco_contacts or use_mujoco_cpu:
             mujoco_attrs_for_warn = getattr(model, "mujoco", None)
@@ -4911,7 +4973,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         observable_contacts.force is not None
                         and observable_contacts.force.ptr != observables.contact_f.ptr
                     ):
-                        observable_contacts.force.assign(observables.contact_f)
+                        wp.copy(
+                            observable_contacts.force,
+                            observables.contact_f,
+                            count=observable_contacts.force.shape[0],
+                        )
         self._step += 1
 
     @override
@@ -5801,7 +5867,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         dofs_per_world,
                         ctrls_per_world,
                         joints_per_world,
-                        model.use_coord_layout_targets,
                     ],
                     outputs=[
                         ctrl,
@@ -6477,7 +6542,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             nconmax: Maximum number of contacts.
             nvmax: Maximum number of active degrees of freedom per world.
             solver: Constraint solver type ("cg" or "newton"). If None, uses model custom attribute or Newton's default ("newton").
-            integrator: Integration method ("euler", "rk4", "implicit", "implicitfast"). If None, uses model custom attribute or Newton's default ("implicitfast").
+            integrator: Integration method ("euler", "rk4", "implicit", "implicitfast", "discrete"). If None, uses model custom attribute or Newton's default ("implicitfast").
             enableflags: MuJoCo enable flags bitmask.
             disableflags: MuJoCo disable flags bitmask.
             disable_contacts: If True, disable contact computation.
@@ -7725,8 +7790,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         args["forcerange"] = [-effort_limit, effort_limit]
 
                         template_dof = ai
-                        # Ball targets share one base slot per joint. The kernel reads the coord-layout
-                        # quaternion or DOF-layout extrinsic-ZYX triple, then emits component i.
+                        # Ball targets share one quaternion base per joint;
+                        # the kernel converts it to angular component i.
                         template_target_q = tq_start
                         template_target_q_axis = i
                         if mode == JointTargetMode.POSITION:
