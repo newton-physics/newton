@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import warnings
 import weakref
 from fnmatch import fnmatch
 from types import NoneType
@@ -704,16 +705,20 @@ def _select_positions(positions, selected):
     return lookup[positions]
 
 
-def _check_layout(slots, offsets, owners, origins, world_count, count_per_world, device, explicit_values=False):
+def _check_layout(
+    slots, offsets, owners, origins, world_count, count_per_world, device, homogeneous, explicit_values=False
+):
     """Check one frequency of every selected articulation against the first one.
 
     Each articulation (slot) must select the same number of values, with the same offsets from its
     origin and the same owning joint or link, and origins must be uniformly strided within worlds.
-    Origins that are not uniformly strided between worlds yield a layout with explicit model indices.
+    Origins that are not uniformly strided between worlds yield a layout with explicit model indices,
+    or, with ``homogeneous``, make the frequency unavailable.
 
     With ``explicit_values``, matching counts and owners suffice: when the offsets differ between
     articulations or the origins are irregular within worlds, the layout records the absolute row
-    of every selected value instead.
+    of every selected value instead. With ``homogeneous``, these rows must repeat in every world at a
+    uniform stride; otherwise the frequency is unavailable.
 
     Returns:
         The layout, or ``None`` with the reason it is unavailable, and whether selected counts match.
@@ -749,8 +754,14 @@ def _check_layout(slots, offsets, owners, origins, world_count, count_per_world,
             model_indices = (origins[:, None] + offsets.reshape(slot_count, count)).reshape(
                 world_count, count_per_world, count
             )
+            if homogeneous:
+                periodic = model_indices == model_indices[0] + between * np.arange(world_count)[:, None, None]
+                irregular_worlds = ~periodic.all(axis=(1, 2))
+                if irregular_worlds.any():
+                    reasons.append("selected rows differ between worlds")
+                    failed |= np.repeat(irregular_worlds, count_per_world)
         elif misplaced.any():
-            if regular_within:
+            if regular_within and not homogeneous:
                 # only the world origins are irregular (e.g. worlds holding different articulations):
                 # address every articulation's rows through explicit model indices
                 model_starts = grid
@@ -793,12 +804,14 @@ def _validate_layouts(
     selected_joints,
     selected_links,
     include_loop_closing_joints,
+    homogeneous,
 ):
     """Check each frequency layout of the selected articulations independently.
 
     ``articulation_ids`` has shape ``(world_count, count_per_world)``. ``selected_joints`` and
     ``selected_links`` are template positions, or ``None`` to select all
     positions of every articulation. Links are the children of the joints an articulation owns.
+    With ``homogeneous``, layouts must repeat in every world at a uniform stride.
 
     Returns:
         The :func:`_check_layout` result for each built-in frequency and for the root joint,
@@ -813,7 +826,7 @@ def _validate_layouts(
 
     def check(slots, offsets, owners, origins, explicit_values=False):
         return _check_layout(
-            slots, offsets, owners, origins, world_count, count_per_world, model.device, explicit_values
+            slots, offsets, owners, origins, world_count, count_per_world, model.device, homogeneous, explicit_values
         )
 
     def selected_origins(slots, rows, fallback):
@@ -923,9 +936,9 @@ class ArticulationView:
     It supports pattern-based selection, inclusion/exclusion filters, and convenient
     attribute access and modification for simulation and control. By default,
     construction fails when any selected data cannot share one batched layout. Set
-    ``allow_partial_layouts=True`` to keep using the data that does share a layout.
+    ``homogeneous=False`` to keep using the data that does share a layout.
 
-    With ``allow_partial_layouts=True``, public metadata is ``None`` when it cannot
+    With ``homogeneous=False``, public metadata is ``None`` when it cannot
     describe every selected articulation consistently:
 
     - A frequency count and its corresponding names and labels are ``None`` when
@@ -955,17 +968,17 @@ class ArticulationView:
     in each selected world. :meth:`set_actuator_parameter` accepts only the
     per-world layout. Masks provided as Warp arrays must be on the view's device.
 
-    The view's world axis holds only the model worlds that contain matching
+    With ``homogeneous=False``, the view's world axis holds only the model worlds that contain matching
     articulations, in model order, so worlds holding other articulations are skipped
     (``is_sparse``). ``world_ids`` maps each view world to its model world, and
     masks and returned arrays use the view's world axis. When the selected articulations'
     rows are not regularly spaced between worlds, for example when worlds hold different
     articulations, the affected attributes are addressed through explicit absolute model
-    indices (``uses_explicit_model_indices``): getters return a gathered copy, and
-    setters scatter the values back, so writing into a returned array does not change
-    the model. Shapes are addressed the same way when every selected articulation has the
-    same shape count and owning links but other shapes are interleaved between its shapes
-    at different positions.
+    indices (``uses_explicit_model_indices``).
+
+    Getters may return a copy instead of a view of the source array, for example when a joint or link filter leaves
+    gaps in the selection or rows are addressed through explicit model indices. Write changes back with the matching
+    setter.
 
     Example:
 
@@ -1012,10 +1025,18 @@ class ArticulationView:
         include_joint_types: List of joint types to include.
         exclude_joint_types: List of joint types to exclude.
         include_loop_closing_joints: If True, include converted loop-closing joints.
-        allow_partial_layouts: If True, construct the view when only some selected
-            data has a common layout. Access to data without a common layout raises
-            :class:`AttributeError`.
+        homogeneous: If True, require matches in every world, the same layout of every frequency
+            for every match, and a fixed stride between worlds. If False, allow sparse views and
+            irregular layouts, and make frequencies whose layout differs between matches unavailable.
+        allow_partial_layouts: Deprecated; use ``homogeneous=False`` instead. If True,
+            construct the view when only some selected data has a common layout. Access
+            to data without a common layout raises :class:`AttributeError`.
         verbose: If True, prints selection summary.
+
+    .. deprecated:: 1.8
+        ``allow_partial_layouts`` is deprecated. Use ``homogeneous=False`` instead,
+        which allows both sparse views and access to individual frequencies that share
+        a common layout, when others don't.
     """
 
     def __init__(
@@ -1030,9 +1051,21 @@ class ArticulationView:
         include_joint_types: list[int] | None = None,
         exclude_joint_types: list[int] | None = None,
         include_loop_closing_joints: bool = False,
-        allow_partial_layouts: bool = False,
+        homogeneous: bool = True,
         verbose: bool | None = None,
+        allow_partial_layouts: bool | None = None,
     ):
+        if allow_partial_layouts is not None:
+            warnings.warn(
+                "`allow_partial_layouts` is deprecated. Use `homogeneous` instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            if not homogeneous and not allow_partial_layouts:
+                raise ValueError("`homogeneous=False` implies `allow_partial_layouts=True`.")
+            homogeneous = not allow_partial_layouts
+            del allow_partial_layouts
+
         self.model = model
         self.device = model.device
         # Per-view caches. Sources and actuators are held weakly, so the view does not keep them alive.
@@ -1087,6 +1120,10 @@ class ArticulationView:
 
         if articulation_count == 0:
             raise KeyError(f"No articulations matching pattern '{pattern}'")
+
+        is_sparse = selected_world_ids not in ([-1], list(range(model.world_count)))
+        if homogeneous and is_sparse:
+            raise ValueError(f"Articulation pattern '{pattern}' does not match articulations in every world")
 
         counts_per_world = [len(ids) for ids in articulation_ids]
         if not all_equal(counts_per_world):
@@ -1292,6 +1329,7 @@ class ArticulationView:
             None if all_joints else selected_joint_indices,
             None if all_links else selected_link_indices,
             include_loop_closing_joints,
+            homogeneous,
         )
         frequencies = (
             AttributeFrequency.JOINT,
@@ -1321,7 +1359,7 @@ class ArticulationView:
         else:
             self._root_unavailable_reason = "; ".join(validations[k][1] for k in root_keys if validations[k][1]) or None
 
-        if not allow_partial_layouts:
+        if homogeneous:
             for frequency, reason in self._unavailable_reasons.items():
                 raise ValueError(f"Articulation {frequency.name} layout is unavailable: {reason}")
             if self._root_unavailable_reason or self.root_joint_type is None or self.is_fixed_base is None:
@@ -1366,7 +1404,7 @@ class ArticulationView:
             flat_row_counts = [count for world_counts in row_counts for count in world_counts]
             if not all_equal(flat_row_counts):
                 reason = f"Articulations have different row counts for custom frequency '{frequency}': {row_counts}"
-                if not allow_partial_layouts:
+                if homogeneous:
                     raise ValueError(reason)
                 self._unavailable_reasons[frequency] = reason
                 self.custom_frequency_counts[frequency] = None
@@ -1427,7 +1465,7 @@ class ArticulationView:
                     self.device,
                     model_starts=model_starts,
                 )
-            elif allow_partial_layouts:
+            elif not homogeneous:
                 self._unavailable_reasons[frequency] = reason
             else:
                 raise ValueError(reason)
@@ -1458,7 +1496,7 @@ class ArticulationView:
         # model world of each view world (-1 for global articulations)
         self.world_ids: wp.array[int] = wp.array(selected_world_ids, dtype=int, device=self.device)
         # whether the view skips model worlds that contain no matching articulation
-        self.is_sparse: bool = selected_world_ids not in ([-1], list(range(model.world_count)))
+        self.is_sparse: bool = is_sparse
         # whether any layout gathers and scatters through explicit model indices instead of strided views
         self.uses_explicit_model_indices: bool = any(
             layout is not None and layout.uses_explicit_model_indices

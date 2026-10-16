@@ -289,7 +289,9 @@ class TestSelectionCacheLifetime(unittest.TestCase):
             scene.add_world(world)
         model = scene.finalize(device=device, requires_grad=requires_grad)
         selected = ["root_joint", "joint_0", "joint_2"] if layout == "indexed" else None
-        return model, ArticulationView(model, "robot", include_joints=selected, verbose=False)
+        return model, ArticulationView(
+            model, "robot", include_joints=selected, homogeneous=layout != "sparse", verbose=False
+        )
 
     @staticmethod
     def make_actuator(model, value):

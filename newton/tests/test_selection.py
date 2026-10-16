@@ -1719,7 +1719,7 @@ class TestSelectionMuJoCoActuators(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "different row counts for custom frequency 'mujoco:actuator'"):
             ArticulationView(model, "*actuated")
 
-        view = ArticulationView(model, "*actuated", allow_partial_layouts=True)
+        view = ArticulationView(model, "*actuated", homogeneous=False)
         self.assertEqual(view.get_attribute("joint_type", model).shape, (1, 2, 1))
         self.assertIsNone(view.custom_frequency_counts["mujoco:actuator"])
         self.assertIsNone(view.custom_frequency_labels["mujoco:actuator"])
@@ -1844,7 +1844,7 @@ def test_sparse_world_view_layouts(test, device):
     ):
         with test.subTest(layout=layout):
             model = _make_sparse_robot_model(layout, device)
-            view = ArticulationView(model, "robot_a", verbose=False)
+            view = ArticulationView(model, "robot_a", homogeneous=layout == "dense", verbose=False)
             test.assertEqual((view.count, view.world_count, view.count_per_world), (3, 3, 1))
             test.assertIs(view.is_sparse, sparse)
             test.assertIs(view.uses_explicit_model_indices, explicit)
@@ -1898,6 +1898,47 @@ def test_sparse_world_view_rejections(test, device):
         ArticulationView(model, "robot", verbose=False)
 
 
+def test_homogeneous_rejects_differing_worlds(test, device):
+    """Reject worlds without matches or with unevenly placed matches unless ``homogeneous=False``."""
+    robot_a = _make_robot_world("robot_a", 2)
+    scene = newton.ModelBuilder()
+    scene.add_world(robot_a)
+    scene.begin_world()
+    scene.add_builder(_make_robot_world("robot_b", 4))
+    scene.add_builder(robot_a)
+    scene.end_world()
+    scene.add_world(robot_a)
+    scene.add_world(robot_a)
+    uneven = scene.finalize(device=device)
+
+    for name, model, world_count, message in (
+        ("sparse", _make_sparse_robot_model("regular", device), 3, "does not match articulations in every world"),
+        ("uneven", uneven, 4, "start indices are not uniformly strided"),
+    ):
+        with test.subTest(model=name):
+            with test.assertRaisesRegex(ValueError, message):
+                ArticulationView(model, "robot_a", verbose=False)
+            view = ArticulationView(model, "robot_a", homogeneous=False, verbose=False)
+            test.assertEqual(view.world_count, world_count)
+
+
+def test_allow_partial_layouts_deprecated(test, device):
+    """Map the deprecated ``allow_partial_layouts`` onto ``homogeneous``."""
+    model = _make_sparse_robot_model("regular", device)
+    with test.subTest(allow_partial_layouts=True):
+        with test.assertWarnsRegex(DeprecationWarning, "allow_partial_layouts"):
+            view = ArticulationView(model, "robot_a", allow_partial_layouts=True, verbose=False)
+        test.assertTrue(view.is_sparse)
+    with test.subTest(allow_partial_layouts=False):
+        with test.assertWarnsRegex(DeprecationWarning, "allow_partial_layouts"):
+            with test.assertRaisesRegex(ValueError, "does not match articulations in every world"):
+                ArticulationView(model, "robot_a", allow_partial_layouts=False, verbose=False)
+    with test.subTest(allow_partial_layouts=False, homogeneous=False):
+        with test.assertWarnsRegex(DeprecationWarning, "allow_partial_layouts"):
+            with test.assertRaisesRegex(ValueError, "implies `allow_partial_layouts=True`"):
+                ArticulationView(model, "robot_a", allow_partial_layouts=False, homogeneous=False, verbose=False)
+
+
 def test_sparse_world_gather_scatter_values(test, device):
     """Gather the selected articulations' rows and scatter masked values only to those rows.
 
@@ -1913,7 +1954,9 @@ def test_sparse_world_gather_scatter_values(test, device):
     for layout, pattern, include_joints in cases:
         with test.subTest(layout=layout, pattern=pattern, indexed=include_joints is not None):
             model = _make_sparse_robot_model(layout, device)
-            view = ArticulationView(model, pattern, include_joints=include_joints, verbose=False)
+            view = ArticulationView(
+                model, pattern, include_joints=include_joints, homogeneous=layout == "dense", verbose=False
+            )
             test.assertTrue(view.is_sparse)
             articulation_ids = view.articulation_ids.numpy().reshape(-1)
             rows = _articulation_rows(model, articulation_ids, include_joints)
@@ -1971,7 +2014,7 @@ def test_sparse_world_root_transforms_and_velocities(test, device):
     for layout in ("regular", "irregular"):
         with test.subTest(layout=layout, base="floating"):
             model = _make_sparse_robot_model(layout, device)
-            view = ArticulationView(model, "robot_a", verbose=False)
+            view = ArticulationView(model, "robot_a", homogeneous=layout == "dense", verbose=False)
             test.assertTrue(view.is_floating_base)
             root_joints = model.articulation_start.numpy()[view.articulation_ids.numpy().reshape(-1)]
             q_start = model.joint_q_start.numpy()[root_joints]
@@ -2004,7 +2047,7 @@ def test_sparse_world_root_transforms_and_velocities(test, device):
 
         with test.subTest(layout=layout, base="fixed"):
             model = _make_sparse_robot_model(layout, device, floating=False)
-            view = ArticulationView(model, "robot_a", verbose=False)
+            view = ArticulationView(model, "robot_a", homogeneous=layout == "dense", verbose=False)
             test.assertTrue(view.is_fixed_base)
             root_joints = model.articulation_start.numpy()[view.articulation_ids.numpy().reshape(-1)]
             x_p = np.arange(model.joint_count * 7, dtype=np.float32).reshape(-1, 7)
@@ -2031,7 +2074,7 @@ def test_sparse_world_gradients(test, device):
         with test.subTest(layout=layout):
             model = _make_sparse_robot_model(layout, device, requires_grad=True)
             state = model.state(requires_grad=True)
-            view = ArticulationView(model, "robot_a", verbose=False)
+            view = ArticulationView(model, "robot_a", homogeneous=layout == "dense", verbose=False)
             rows = _articulation_rows(model, view.articulation_ids.numpy().reshape(-1))
             loss = wp.zeros(1, dtype=float, requires_grad=True, device=device)
             with wp.Tape() as tape:
@@ -2054,7 +2097,7 @@ def test_sparse_world_custom_frequency(test, device):
     stiffness = np.arange(model.get_custom_frequency_count("mujoco:tendon"), dtype=np.float32) + 1.0
     model.mujoco.tendon_stiffness.assign(stiffness)
 
-    view = ArticulationView(model, "two_prismatic_links", verbose=False)
+    view = ArticulationView(model, "two_prismatic_links", homogeneous=False, verbose=False)
     test.assertTrue(view.is_sparse)
     test.assertTrue(view.frequency_layouts["mujoco:tendon"].uses_explicit_model_indices)
     # one tendon per world, in world order
@@ -2074,7 +2117,7 @@ def test_sparse_world_getters_capture_cold(test, device):
         with test.subTest(layout=layout):
             model = _make_sparse_robot_model(layout, device)
             state = model.state()
-            view = ArticulationView(model, "robot_a", verbose=False)
+            view = ArticulationView(model, "robot_a", homogeneous=layout == "dense", verbose=False)
             articulation_ids = view.articulation_ids.numpy().reshape(-1)
             rows = _articulation_rows(model, articulation_ids)
             root_start = model.joint_q_start.numpy()[model.articulation_start.numpy()[articulation_ids]]
@@ -2110,6 +2153,8 @@ devices = get_test_devices()
 for _test in (
     test_sparse_world_view_layouts,
     test_sparse_world_view_rejections,
+    test_homogeneous_rejects_differing_worlds,
+    test_allow_partial_layouts_deprecated,
     test_sparse_world_gather_scatter_values,
     test_sparse_world_root_transforms_and_velocities,
     test_sparse_world_gradients,
@@ -2150,7 +2195,7 @@ def _check_actuator_rows(test, device, layouts):
     for layout in layouts:
         with test.subTest(layout=layout):
             model = _make_sparse_robot_model(layout, device)
-            view = ArticulationView(model, "robot_a", verbose=False)
+            view = ArticulationView(model, "robot_a", homogeneous=layout == "dense", verbose=False)
             selected_dofs = _articulation_rows(model, view.articulation_ids.numpy().reshape(-1))["dof"]
             test.assertEqual(selected_dofs.shape, (3, 7))
 
@@ -2191,7 +2236,7 @@ def test_sparse_world_partial_actuator_parameters(test, device):
     for layout in ("regular", "irregular"):
         with test.subTest(layout=layout):
             model = _make_sparse_robot_model(layout, device)
-            view = ArticulationView(model, "robot_a", verbose=False)
+            view = ArticulationView(model, "robot_a", homogeneous=layout == "dense", verbose=False)
             selected_dofs = _articulation_rows(model, view.articulation_ids.numpy().reshape(-1))["dof"]
             # actuate only the revolute DOFs of every articulation in the model (skip free roots)
             joint_type = model.joint_type.numpy()
@@ -2222,7 +2267,7 @@ def test_actuator_mapping_built_once_and_cached(test, device):
     for layout in ("regular", "irregular", "dense"):
         with test.subTest(layout=layout):
             model = _make_sparse_robot_model(layout, device)
-            view = ArticulationView(model, "robot_a", verbose=False)
+            view = ArticulationView(model, "robot_a", homogeneous=layout == "dense", verbose=False)
             actuator, kp, row_of_dof = _reversed_row_actuator(model, device)
             selected_dofs = _articulation_rows(model, view.articulation_ids.numpy().reshape(-1))["dof"]
             with mock.patch.object(
@@ -2289,11 +2334,11 @@ def test_actuator_parameters_capture_cold(test, device):
     for layout, make_actuator in cases:
         with test.subTest(layout=layout, actuator=make_actuator.__name__):
             model = _make_sparse_robot_model(layout, device)
-            warm_view = ArticulationView(model, "robot_a", verbose=False)
+            warm_view = ArticulationView(model, "robot_a", homogeneous=layout == "dense", verbose=False)
             warm_actuator = make_actuator(model, device)[0]
             warm_view.set_actuator_parameter(warm_actuator, warm_actuator.drive, "kp", np.zeros((3, 7), np.float32))
 
-            view = ArticulationView(model, "robot_a", verbose=False)
+            view = ArticulationView(model, "robot_a", homogeneous=layout == "dense", verbose=False)
             actuator, kp, row_of_dof = make_actuator(model, device)
             selected_dofs = _articulation_rows(model, view.articulation_ids.numpy().reshape(-1))["dof"]
             test.assertEqual(len(view._actuator_dof_mapping_cache), 0)
@@ -2337,11 +2382,11 @@ def test_actuator_access_after_capture_before_replay(test, device):
 
 def _check_actuator_access_after_capture(test, device, layout, scenario):
     model = _make_sparse_robot_model(layout, device)
-    warm_view = ArticulationView(model, "robot_a", verbose=False)
+    warm_view = ArticulationView(model, "robot_a", homogeneous=layout == "dense", verbose=False)
     warm_actuator = _reversed_row_actuator(model, device)[0]
     warm_view.get_actuator_parameter(warm_actuator, warm_actuator.drive, "kp")  # compile the kernels
 
-    view = ArticulationView(model, "robot_a", verbose=False)
+    view = ArticulationView(model, "robot_a", homogeneous=layout == "dense", verbose=False)
     actuator, kp, row_of_dof = _reversed_row_actuator(model, device)
     rows = row_of_dof[_articulation_rows(model, view.articulation_ids.numpy().reshape(-1))["dof"]]
     cache = view._actuator_dof_mapping_cache
@@ -2628,7 +2673,9 @@ def _check_shape_rows(test, model, view, device):
 def test_interleaved_shape_rows_differ_between_worlds(test, device):
     """Address robot shapes whose rows interleave differently with another body's shapes in each world."""
     model = _make_interleaved_robot_model(device)
-    view = ArticulationView(model, "robot", verbose=False)
+    with test.assertRaisesRegex(ValueError, "SHAPE layout is unavailable: selected rows differ between worlds"):
+        ArticulationView(model, "robot", verbose=False)
+    view = ArticulationView(model, "robot", homogeneous=False, verbose=False)
     for frequency in ("JOINT", "JOINT_DOF", "JOINT_COORD", "BODY"):
         layout = view.frequency_layouts[getattr(newton.Model.AttributeFrequency, frequency)]
         test.assertFalse(layout.uses_explicit_model_indices, frequency)
@@ -2654,7 +2701,8 @@ def test_interleaved_shape_rows_of_grouped_objects(test, device):
         with test.subTest(per_world=per_world):
             model = _make_interleaved_object_model(device, per_world)
             ids = [index for index, label in enumerate(model.articulation_label) if label.startswith("object_")]
-            view = ArticulationView(model, ids, verbose=False)
+            # with one object per world, world 1 orders its shapes differently from the others
+            view = ArticulationView(model, ids, homogeneous=not per_world, verbose=False)
             assert_np_equal(_owned_shape_rows(model, view).reshape(3, 2), np.array([[0, 2], [3, 4], [6, 8]]))
             _check_shape_rows(test, model, view, device)
 
@@ -2694,7 +2742,7 @@ def test_interleaved_shape_rows_require_matching_owners(test, device):
     model = _make_interleaved_robot_model(device, owner_swap=True)
     with test.assertRaisesRegex(ValueError, "SHAPE layout is unavailable"):
         ArticulationView(model, "robot", verbose=False)
-    view = ArticulationView(model, "robot", verbose=False, allow_partial_layouts=True)
+    view = ArticulationView(model, "robot", verbose=False, homogeneous=False)
     test.assertIsNone(view.shapes_contiguous)
     test.assertEqual(view.get_dof_positions(model).shape, (3, 1, 8))
     with test.assertRaises(AttributeError):
@@ -2706,7 +2754,7 @@ def test_interleaved_shape_rows_capture_cold(test, device):
     if not wp.is_mempool_enabled(device):
         test.skipTest("CUDA graph capture of allocations requires the mempool")
     model = _make_interleaved_robot_model(device)
-    view = ArticulationView(model, "robot", verbose=False)
+    view = ArticulationView(model, "robot", homogeneous=False, verbose=False)
     rows = _owned_shape_rows(model, view)
     values = wp.full(rows.shape, -1.0, dtype=float, device=device)
     margins = wp.zeros(rows.shape, dtype=float, device=device)
