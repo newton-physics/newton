@@ -68,6 +68,8 @@ finger pads. At the default 18 mm per-finger joint opening, they are 36 mm
 apart; at the initial 40 mm opening, they are 80 mm apart. This leaves room
 to approach a bottle that is already dented and has bulged sideways.
 ``--minimum-opening`` controls the joint displacement and half the plate gap.
+The default 15 mm opening per finger gives a 30 mm closed plate gap. Use
+``--minimum-opening 0.018`` for the previous 36 mm gap.
 
 Material and permanent creases
 -----------------------------
