@@ -92,12 +92,16 @@ def _integrate_moreau_jean_first_inplace(
     # Inputs:
     model_dt: wp.array[wp.float32],
     model_bodies_wid: wp.array[wp.int32],
+    model_bodies_inv_m: wp.array[wp.float32],
     bodies_u: wp.array[wp.spatial_vectorf],
     # Outputs:
     bodies_q: wp.array[wp.transformf],
 ):
     # Retrieve the thread index
     tid = wp.tid()
+
+    if model_bodies_inv_m[tid] <= 0.0:
+        return
 
     # Retrieve the world index
     wid = model_bodies_wid[tid]
@@ -149,6 +153,8 @@ def _integrate_moreau_jean_second_inplace(
 
     # Retrieve the model data
     inv_m_i = model_bodies_inv_m[tid]
+    if inv_m_i <= 0.0:
+        return
     I_i = model_bodies_I[tid]
     inv_I_i = model_bodies_inv_I[tid]
 
@@ -316,6 +322,7 @@ class IntegratorMoreauJean(IntegratorBase):
                 # Inputs:
                 model.time.dt,
                 model.bodies.wid,
+                model.bodies.inv_m_i,
                 data.bodies.u_i,
                 # Outputs:
                 data.bodies.q_i,

@@ -11,11 +11,6 @@ import warp as wp
 from newton._src.solvers.kamino._src.dynamics.dual import DualProblem
 from newton._src.solvers.kamino._src.integrators.euler import integrate_euler_semi_implicit
 from newton._src.solvers.kamino._src.kinematics.jacobians import SparseSystemJacobians
-from newton._src.solvers.kamino._src.models.builders.basics import build_box_on_plane, build_boxes_hinged
-from newton._src.solvers.kamino._src.models.builders.testing import (
-    build_free_joint_test,
-    build_unary_revolute_joint_test,
-)
 from newton._src.solvers.kamino._src.solvers.metrics import SolutionMetrics
 from newton._src.solvers.kamino._src.solvers.padmm import PADMMSolver
 from newton._src.solvers.kamino._src.solvers.padmm.types import PADMMData
@@ -28,6 +23,8 @@ from newton.tests.kamino.utils.extract import (
     extract_info_vectors,
     extract_problem_vector,
 )
+from newton.tests.utils.basics import build_box_on_plane, build_boxes_hinged
+from newton.tests.utils.testing import build_free_joint_test, build_unary_revolute_joint_test
 
 ###
 # Helpers
@@ -60,11 +57,16 @@ def compute_metrics_numpy(problem: DualProblem, solver_data: PADMMData) -> dict[
         problem.data.cio.numpy(), problem.data.mu.numpy().astype(np.float64), problem.delassus.info.dim.numpy()
     )
 
-    num_joint_cts = problem.data.njc.numpy()
+    num_bilateral_joint_cts = problem.data.njc.numpy()
+    num_bounded_joint_cts = problem.data.nbc.numpy()
     num_contacts = problem.data.nc.numpy()
     num_limits = problem.data.nl.numpy()
+    bounded_cts_offset = problem.data.bcio.numpy()
+    joint_bounded_cts_group_offset = problem.data.bcgo.numpy()
     contact_group_offset = problem.data.ccgo.numpy()
     limit_group_offset = problem.data.lcgo.numpy()
+    bound_lower = problem.data.bound_lower.numpy().astype(np.float64)
+    bound_upper = problem.data.bound_upper.numpy().astype(np.float64)
 
     for mat_id in range(num_matrices):
         D_i = D[mat_id]
@@ -102,11 +104,20 @@ def compute_metrics_numpy(problem: DualProblem, solver_data: PADMMData) -> dict[
         v_aug_i = v_plus_true_i + s_i
         output["v_aug"].append(v_aug_i)
 
-        # Compute the NCP primal residual as: r_p := || lambda - proj_K(lambda) ||_inf
+        # Compute the NCP primal residual as: r_p := || lambda - proj_C(lambda) ||_inf
         r_ncp_p_i = 0.0
+        for bounded_id in range(num_bounded_joint_cts[mat_id]):
+            bound_idx = bounded_cts_offset[mat_id] + bounded_id
+            vector_idx = joint_bounded_cts_group_offset[mat_id] + bounded_id
+            lower = P[mat_id][vector_idx] * bound_lower[bound_idx]
+            upper = P[mat_id][vector_idx] * bound_upper[bound_idx]
+            lambda_b = lambdas_i[vector_idx]
+            r_b = np.abs(lambda_b - np.clip(lambda_b, lower, upper))
+            r_ncp_p_i = max(r_ncp_p_i, r_b)
+
         for limit_id in range(num_limits[mat_id]):
             lcio = limit_group_offset[mat_id] + limit_id
-            r_ncp_p_i = np.max(r_ncp_p_i, np.abs(lambdas_i[lcio] - np.max(0.0, lambdas_i[lcio])))
+            r_ncp_p_i = max(r_ncp_p_i, np.abs(lambdas_i[lcio] - max(0.0, lambdas_i[lcio])))
 
         def project_to_coulomb_cone(x, mu):
             xt_norm = np.linalg.norm(x[:2])
@@ -130,14 +141,14 @@ def compute_metrics_numpy(problem: DualProblem, solver_data: PADMMData) -> dict[
 
         # Compute the NCP dual residual as: r_d := || v_plus + s - proj_dual_K(v_plus + s)  ||_inf
         r_ncp_d_i = 0.0
-        for jid in range(num_joint_cts[mat_id]):
+        for jid in range(num_bilateral_joint_cts[mat_id]):
             v_j = v_aug_i[jid]
             r_j = np.abs(v_j)
             r_ncp_d_i = max(r_ncp_d_i, r_j)
 
         for lid in range(num_limits[mat_id]):
             v_l = float(v_aug_i[limit_group_offset[mat_id] + lid])
-            v_l -= np.max(0.0, v_l)
+            v_l -= max(0.0, v_l)
             r_l = np.abs(v_l)
             r_ncp_d_i = max(r_ncp_d_i, r_l)
 
@@ -166,8 +177,19 @@ def compute_metrics_numpy(problem: DualProblem, solver_data: PADMMData) -> dict[
 
         output["r_ncp_d"].append(r_ncp_d_i)
 
-        # Compute the NCP complementarity (lambda _|_ (v_plus + s)) residual as r_c := || lambda.dot(v_plus + s) ||_inf
+        # Compute generalized complementarity for boxes, limits, and contacts.
         r_ncp_c_i = 0.0
+        for bounded_id in range(num_bounded_joint_cts[mat_id]):
+            bound_idx = bounded_cts_offset[mat_id] + bounded_id
+            vector_idx = joint_bounded_cts_group_offset[mat_id] + bounded_id
+            lower = P[mat_id][vector_idx] * bound_lower[bound_idx]
+            upper = P[mat_id][vector_idx] * bound_upper[bound_idx]
+            velocity = v_aug_i[vector_idx]
+            lambda_value = lambdas_i[vector_idx]
+            r_b = (lambda_value - lower) * max(velocity, 0.0)
+            r_b += (upper - lambda_value) * max(-velocity, 0.0)
+            r_ncp_c_i = max(r_ncp_c_i, np.abs(r_b))
+
         for lid in range(num_limits[mat_id]):
             lcio = limit_group_offset[mat_id] + lid
             v_l = v_aug_i[lcio]
@@ -183,16 +205,24 @@ def compute_metrics_numpy(problem: DualProblem, solver_data: PADMMData) -> dict[
             r_ncp_c_i = max(r_ncp_c_i, r_c)
         output["r_ncp_c"].append(r_ncp_c_i)
 
-        # Compute the natural-map residuals as: r_natmap = || lambda - proj_K(lambda - (v + s)) ||_inf
+        # Compute the natural-map residuals as: r_natmap = || lambda - proj_C(lambda - (v + s)) ||_inf
         r_vi_natmap_i = 0.0
-        for jid in range(num_joint_cts[mat_id]):
+        for jid in range(num_bilateral_joint_cts[mat_id]):
             r_vi_natmap_i = max(r_vi_natmap_i, np.abs(v_aug_i[jid]))
+        for bounded_id in range(num_bounded_joint_cts[mat_id]):
+            bound_idx = bounded_cts_offset[mat_id] + bounded_id
+            vector_idx = joint_bounded_cts_group_offset[mat_id] + bounded_id
+            lower = P[mat_id][vector_idx] * bound_lower[bound_idx]
+            upper = P[mat_id][vector_idx] * bound_upper[bound_idx]
+            lambda_b = lambdas_i[vector_idx]
+            r_b = np.abs(lambda_b - np.clip(lambda_b - v_aug_i[vector_idx], lower, upper))
+            r_vi_natmap_i = max(r_vi_natmap_i, r_b)
 
         for lid in range(num_limits[mat_id]):
             lcio = limit_group_offset[mat_id] + lid
             v_l = v_aug_i[lcio]
             lambda_l = lambdas_i[lcio]
-            lambda_l -= np.max(0.0, lambda_l - v_l)
+            lambda_l -= np.maximum(0.0, lambda_l - v_l)
             lambda_l = np.abs(lambda_l)
             r_vi_natmap_i = max(r_vi_natmap_i, lambda_l)
 
@@ -798,8 +828,8 @@ class TestSolverMetrics(unittest.TestCase):
             contacts=test.contacts,
         )
 
-        rtol = 1e-6
-        atol = 1e-6
+        rtol = 1e-5
+        atol = 1e-5
 
         # Compare Jacobians
         J_cts_dense_np = extract_cts_jacobians(

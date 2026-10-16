@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Sequence
 from typing import Any
 
+import numpy as np
 import warp as wp
 
 from ...core.types import vec5
@@ -17,6 +19,19 @@ from .equality import (
     MjcEqualityTargetKind,
     _add_equality_constraint,
 )
+
+
+def solref_invalid_mask(solref: Sequence[float] | np.ndarray) -> np.ndarray:
+    """Return a mask selecting MuJoCo solref pairs with invalid zero or sign components.
+
+    MuJoCo's all-zero inherit-default sentinel is valid.
+    """
+    solref = np.asarray(solref)
+    timeconst = solref[..., 0]
+    dampratio = solref[..., 1]
+    both_zero = (timeconst == 0.0) & (dampratio == 0.0)
+    invalid = (timeconst == 0.0) | (dampratio == 0.0) | (np.sign(timeconst) != np.sign(dampratio))
+    return np.asarray(invalid & ~both_zero)
 
 
 def mjc_eq_solref(custom_attrs: dict[str, Any]) -> wp.vec2:
@@ -148,14 +163,20 @@ def mjc_add_equality_mimic(
     custom_attrs: dict[str, Any],
 ) -> tuple[int, int]:
     """Add a Newton mimic constraint and its authoritative MuJoCo equality row."""
-    mimic_idx = builder.add_constraint_mimic(
-        joint0=joint1,
-        joint1=joint2,
-        coef0=polycoef[0],
-        coef1=polycoef[1],
-        label=label,
-        enabled=enabled,
-    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r"ModelBuilder\.add_constraint_mimic\(\) is deprecated",
+            category=DeprecationWarning,
+        )
+        mimic_idx = builder.add_constraint_mimic(
+            joint0=joint1,
+            joint1=joint2,
+            coef0=polycoef[0],
+            coef1=polycoef[1],
+            label=label,
+            enabled=enabled,
+        )
     eq_idx = _add_equality_constraint(
         builder,
         constraint_type=EqType.JOINT,

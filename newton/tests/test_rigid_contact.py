@@ -182,9 +182,6 @@ def test_shapes_on_plane(test, device, solver_fn):
     substeps = 30  # Increased from 10 for better contact stability
     sim_dt = 1.0 / 60.0
     if use_cuda_graph:
-        # ensure data is allocated and modules are loaded before graph capture
-        # in case of an earlier CUDA version
-        simulate(solver, model, state_0, state_1, control, collision_pipeline, contacts, sim_dt, substeps)
         with wp.ScopedCapture(device) as capture:
             simulate(solver, model, state_0, state_1, control, collision_pipeline, contacts, sim_dt, substeps)
         graph = capture.graph
@@ -851,6 +848,10 @@ solvers = {
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=2),
     "semi_implicit": newton.solvers.SolverSemiImplicit,
     "kamino": newton.solvers.SolverKamino,
+    # The matrix-free solve is CUDA-only; split is the CPU route.
+    "steel": lambda model: newton.solvers.SolverSteel(
+        model, solve_mode="matrix_free" if model.device.is_cuda else "split"
+    ),
 }
 
 
@@ -900,7 +901,7 @@ add_function_test(
 # Register box drop tests for MuJoCo and XPBD solvers
 for device in devices:
     for solver_name, solver_fn in solvers.items():
-        if solver_name not in ("mujoco_cpu", "mujoco_warp", "xpbd"):
+        if solver_name not in ("mujoco_cpu", "mujoco_warp", "xpbd", "steel"):
             continue
         if device.is_cpu and solver_name == "mujoco_warp":
             continue

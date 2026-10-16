@@ -87,6 +87,33 @@ class TestSolverMuJoCoPlanarMesh(unittest.TestCase):
         self.assertEqual(solver.mj_model.mesh_vertnum[0], 4)
         self.assertEqual(solver.mj_model.mesh_facenum[0], 4)
 
+    def test_tiny_mesh_compiles(self):
+        """Compile tiny shell, solid, and convex meshes without volume inertia."""
+        vertices = np.array(
+            [[0.0, 0.0, 0.0], [1.0e-6, 0.0, 0.0], [0.0, 1.0e-6, 0.0], [0.0, 0.0, 1.0e-6]],
+            dtype=np.float32,
+        )
+        indices = np.array([0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3], dtype=np.int32)
+        mesh = newton.Mesh(vertices=vertices, indices=indices, compute_inertia=False)
+        for add_convex_hull, is_solid in ((False, False), (False, True), (True, True)):
+            with self.subTest(add_convex_hull=add_convex_hull, is_solid=is_solid):
+                builder = newton.ModelBuilder()
+                body = builder.add_link(mass=1.0, com=wp.vec3(), inertia=wp.mat33(np.eye(3)))
+                add_shape = builder.add_shape_convex_hull if add_convex_hull else builder.add_shape_mesh
+                add_shape(
+                    body=body,
+                    mesh=mesh,
+                    cfg=newton.ModelBuilder.ShapeConfig(density=0.0, is_solid=is_solid),
+                    label="tiny_mesh",
+                )
+                joint = builder.add_joint_free(child=body)
+                builder.add_articulation([joint])
+                model = builder.finalize(device="cpu")
+
+                solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+
+                self.assertEqual(solver.mj_model.nmesh, 1)
+
     def test_planar_mesh_rejects_mujoco_contacts(self):
         vertices = np.array(
             [

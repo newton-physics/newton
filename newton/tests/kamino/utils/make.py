@@ -11,8 +11,8 @@ from collections.abc import Callable
 import numpy as np
 import warp as wp
 
+from newton import ModelBuilder
 from newton._src.solvers.kamino._src.core.bodies import update_body_inertias
-from newton._src.solvers.kamino._src.core.builder import ModelBuilderKamino
 from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.math import quat_exp
 from newton._src.solvers.kamino._src.core.model import ModelKamino
@@ -30,8 +30,7 @@ from newton._src.solvers.kamino._src.kinematics.jacobians import (
 )
 from newton._src.solvers.kamino._src.kinematics.joints import compute_joints_data
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
-from newton._src.solvers.kamino._src.models.builders import basics as _model_basics
-from newton._src.solvers.kamino._src.models.builders import utils as _model_utils
+from newton.tests.utils.basics import build_boxes_fourbar, make_basics_heterogeneous_builder
 
 from .print import (
     print_data_info,
@@ -120,15 +119,11 @@ def make_inverse_generalized_mass_matrices(model: ModelKamino, data: DataKamino)
 
 
 def make_containers(
-    builder: ModelBuilderKamino,
-    device: wp.DeviceLike = None,
+    model: ModelKamino,
     max_world_contacts: int = 0,
     sparse: bool = True,
     dt: float = 0.001,
 ) -> tuple[ModelKamino, DataKamino, StateKamino, LimitsKamino, CollisionDetector, SystemJacobiansType]:
-    # Create the model from the builder
-    model = builder.finalize(device=device)
-
     # Configure model time-steps
     model.time.dt.fill_(wp.float32(dt))
     model.time.inv_dt.fill_(wp.float32(1.0 / dt))
@@ -141,7 +136,7 @@ def make_containers(
     limits = LimitsKamino(model=model)
 
     # Create the collision detector
-    config = CollisionDetector.Config(max_contacts_per_world=max_world_contacts, pipeline="primitive")
+    config = CollisionDetector.Config(max_contacts_per_world=max_world_contacts, pipeline="unified")
     detector = CollisionDetector(model=model, config=config)
 
     # Construct the unilateral constraints members in the model info
@@ -196,25 +191,21 @@ def update_containers(
 
 
 def make_test_problem(
-    builder: ModelBuilderKamino,
+    model: ModelKamino,
     set_state_fn: Callable[[ModelKamino, DataKamino], None] | None = None,
-    device: wp.DeviceLike = None,
     max_world_contacts: int = 12,
     with_limits: bool = False,
     with_contacts: bool = False,
     dt: float = 0.001,
     verbose: bool = False,
 ) -> tuple[ModelKamino, DataKamino, StateKamino, LimitsKamino | None, ContactsKamino | None]:
-    # Create the model from the builder
-    model = builder.finalize(device=device)
-
     # Configure model time-steps
     model.time.dt.fill_(wp.float32(dt))
     model.time.inv_dt.fill_(wp.float32(1.0 / dt))
 
     # Create a model state container
-    data = model.data(device=device)
-    state = model.state(device=device)
+    data = model.data()
+    state = model.state()
 
     # Construct and allocate the limits container
     limits = None
@@ -224,7 +215,7 @@ def make_test_problem(
     # Create the collision detector
     contacts = None
     if with_contacts:
-        config = CollisionDetector.Config(max_contacts_per_world=max_world_contacts, pipeline="primitive")
+        config = CollisionDetector.Config(max_contacts_per_world=max_world_contacts, pipeline="unified")
         detector = CollisionDetector(model=model, config=config)
         contacts = detector.contacts
 
@@ -410,19 +401,18 @@ def make_test_problem_fourbar(
     with_implicit_joints: bool = True,
     verbose: bool = False,
 ) -> tuple[ModelKamino, DataKamino, StateKamino, LimitsKamino | None, ContactsKamino | None]:
-    # Define the problem using the ModelBuilderKamino
-    builder: ModelBuilderKamino = _model_utils.make_homogeneous_builder(
-        num_worlds=num_worlds,
-        build_fn=_model_basics.build_boxes_fourbar,
-        dynamic_joints=with_implicit_joints,
-        implicit_pd=with_implicit_joints,
+    # Define the problem using the public ModelBuilder, then convert to a ModelKamino
+    builder = ModelBuilder()
+    builder.replicate(
+        build_boxes_fourbar(dynamic_joints=with_implicit_joints, implicit_pd=with_implicit_joints),
+        world_count=num_worlds,
     )
+    model = ModelKamino.from_newton(builder.finalize(device=device))
 
-    # Generate the problem containers using the builder
+    # Generate the problem containers using the model
     return make_test_problem(
-        builder=builder,
+        model=model,
         set_state_fn=set_fourbar_body_states,
-        device=device,
         max_world_contacts=max_world_contacts,
         with_limits=with_limits,
         with_contacts=with_contacts,
@@ -438,16 +428,16 @@ def make_test_problem_heterogeneous(
     with_implicit_joints: bool = True,
     verbose: bool = False,
 ) -> tuple[ModelKamino, DataKamino, StateKamino, LimitsKamino | None, ContactsKamino | None]:
-    # Define the problem using the ModelBuilderKamino
-    builder: ModelBuilderKamino = _model_basics.make_basics_heterogeneous_builder(
+    # Define the problem using the public ModelBuilder, then convert to a ModelKamino
+    builder = make_basics_heterogeneous_builder(
         dynamic_joints=with_implicit_joints,
         implicit_pd=with_implicit_joints,
     )
+    model = ModelKamino.from_newton(builder.finalize(device=device))
 
-    # Generate the problem containers using the builder
+    # Generate the problem containers using the model
     return make_test_problem(
-        builder=builder,
-        device=device,
+        model=model,
         max_world_contacts=max_world_contacts,
         with_limits=with_limits,
         with_contacts=with_contacts,

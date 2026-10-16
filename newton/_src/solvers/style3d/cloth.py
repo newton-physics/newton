@@ -142,15 +142,15 @@ def _compute_edge_bending_data(
         return a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0]
 
     if edge_aniso_values is not None:
-        angle_f0 = np.atan2(panel_x43_f0[:, 1], panel_x43_f0[:, 0])
-        angle_f1 = np.atan2(panel_x43_f1[:, 1], panel_x43_f1[:, 0])
+        angle_f0 = np.arctan2(panel_x43_f0[:, 1], panel_x43_f0[:, 0])
+        angle_f1 = np.arctan2(panel_x43_f1[:, 1], panel_x43_f1[:, 0])
         angle = (angle_f0 + angle_f1) * 0.5
         sin = np.sin(angle)
         cos = np.cos(angle)
-        sin2 = np.pow(sin, 2)
-        cos2 = np.pow(cos, 2)
-        sin12 = np.pow(sin, 12)
-        cos12 = np.pow(cos, 12)
+        sin2 = np.power(sin, 2)
+        cos2 = np.power(cos, 2)
+        sin12 = np.power(sin, 12)
+        cos12 = np.power(cos, 12)
         aniso_ke = np.array(edge_aniso_values, dtype=float).reshape(-1, 3)
         edge_ke = aniso_ke[:, 0] * sin12 + aniso_ke[:, 1] * cos12 + aniso_ke[:, 2] * 4.0 * sin2 * cos2
 

@@ -36,6 +36,7 @@ from .....math import safe_div
 from .....sim.contacts import Contacts, contact_surface_point, contact_surface_separation
 from .....sim.model import Model
 from .....sim.state import State
+from ..core.bodies import is_immovable_for_kamino
 from ..core.materials import MaterialMixMode, make_get_mixed_material_pair_property
 from ..core.model import ModelKamino
 from ..core.types import (
@@ -981,6 +982,9 @@ def make_convert_contacts_newton_to_kamino(
         shape_mu: wp.array[wp.float32],
         shape_restitution: wp.array[wp.float32],
         body_q: wp.array[wp.transformf],
+        body_inv_mass: wp.array[wp.float32],
+        body_inv_inertia: wp.array[wp.mat33f],
+        body_flags: wp.array[wp.int32],
         # Outputs:
         kamino_model_active: wp.array[wp.int32],
         kamino_world_active: wp.array[wp.int32],
@@ -1106,6 +1110,16 @@ def make_convert_contacts_newton_to_kamino(
             pos_B = p1_surf
             margin_A = margin_0
             margin_B = margin_1
+
+        # Skip contacts between two bodies that Kamino treats as immovable
+        # (both masks are zero, so the Delassus row would be structurally zero).
+        # The bid_A == -1 case (world-static A) is intentionally kept: the other
+        # endpoint is exercised against an infinite-mass anchor.
+        if bid_A >= 0 and bid_B >= 0:
+            if is_immovable_for_kamino(
+                body_inv_mass[bid_A], body_inv_inertia[bid_A], body_flags[bid_A]
+            ) and is_immovable_for_kamino(body_inv_mass[bid_B], body_inv_inertia[bid_B], body_flags[bid_B]):
+                return
 
         # Retrieve the material properties for this contact
         # TODO: Integrate use of material manager to retrieve material properties
@@ -1386,8 +1400,8 @@ def convert_contacts_newton_to_kamino(
     contacts_in: Contacts,
     contacts_out: ContactsKamino,
     convert_forces: bool = False,
-    friction_mix_mode: Literal["average", "multiply", "max", "min"] = "average",
-    restitution_mix_mode: Literal["average", "multiply", "max", "min"] = "min",
+    friction_mix_mode: Literal["average", "multiply", "max", "min", "geometric_average"] = "average",
+    restitution_mix_mode: Literal["average", "multiply", "max", "min", "geometric_average"] = "min",
     cull_speculative_contacts: bool = DEFAULT_CULL_SPECULATIVE_CONTACTS,
 ):
     """
@@ -1507,6 +1521,9 @@ def convert_contacts_newton_to_kamino(
             model.shape_material_mu,
             model.shape_material_restitution,
             state.body_q,
+            model.body_inv_mass,
+            model.body_inv_inertia,
+            model.body_flags,
         ],
         outputs=[
             contacts_out.model_active_contacts,
@@ -1536,6 +1553,7 @@ def convert_contacts_kamino_to_newton(
     contacts_out: Contacts,
     clear_output: bool = False,
     convert_forces: bool = False,
+    contact_f: wp.array[wp.spatial_vector] | None = None,
 ) -> None:
     """
     Converts Kamino :class:`ContactsKamino` to Newton's :class:`Contacts` format.
@@ -1580,6 +1598,9 @@ def convert_contacts_kamino_to_newton(
             If ``True``, converts ``contacts_in.reaction`` into ``contacts_out.force``
             using Newton's wrench convention. Required when ``clear_output=False``;
             with ``clear_output=False`` and ``convert_forces=False`` the call is a no-op.
+        contact_f:
+            Optional solver-observable destination for converted contact wrenches.
+            When omitted, the legacy ``contacts_out.force`` array is used.
     """
     # Skip conversion if there are no contacts to convert or no capacity to store them.
     if contacts_in.model_max_contacts_host == 0 or contacts_out.rigid_contact_max == 0:
@@ -1609,7 +1630,7 @@ def convert_contacts_kamino_to_newton(
         )
 
     # Skip conversion of contact forces if not requested
-    contacts_out_force = contacts_out.force if convert_forces else None
+    contacts_out_force = (contact_f if contact_f is not None else contacts_out.force) if convert_forces else None
 
     # Set the maximum number of contacts to convert to the smallest of the
     # number of contacts detected and the maximum capacity of the output contacts.

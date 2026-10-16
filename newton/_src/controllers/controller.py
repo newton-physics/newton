@@ -27,8 +27,9 @@ class ControllerBase(ABC, Generic[InputT, OutputT]):
     - :meth:`is_graphable`: predicate the user can query to decide whether
       graph capture is possible.
     - :meth:`input`, :meth:`output`: allocate fresh typed input/output structs.
-      Baked-in arrays (gains passed as a ``wp.array`` at construction) are
-      stored on the controller and do **not** appear on the input struct.
+      Baked-in values (gains passed as a ``wp.array`` or scalar at
+      construction) are stored on the controller and do **not** appear on the
+      input struct.
     - :meth:`step`: read the input struct's live arrays, run kernels, write
       the output struct's live arrays. Writes are slot-replacing (``=``, not
       ``+=``); composing laws is the user's job.

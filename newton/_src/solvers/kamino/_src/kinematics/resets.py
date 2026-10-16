@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import warp as wp
 
 from ..core.joints import JointDoFType
@@ -14,12 +12,11 @@ from ..core.model import ModelKamino
 from ..core.state import StateKamino
 from ..kinematics.joints import (
     compute_joint_pose_and_relative_motion,
-    convert_angular_vel_to_universal_joint_intermediary_frame,
-    correct_quat_vector_coord,
-    correct_rotational_coord,
+    correct_joint_coords_in_place,
     get_joint_coords_mapping_function,
     map_gimbal_angular_velocity_to_rates,
     select_gimbal_coords,
+    universal_intermediary_axes,
 )
 
 ###
@@ -50,49 +47,6 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 ###
 
 
-def make_correct_joint_coords(dof_type: JointDoFType):
-    @wp.func
-    def _correct_joint_coords(
-        coords: Any,  # dof_type.coords_storage_type,
-        coords_ref: wp.array[wp.float32],
-    ) -> Any:  # dof_type.coords_storage_type
-        if wp.static(
-            dof_type == JointDoFType.CARTESIAN or dof_type == JointDoFType.FIXED or dof_type == JointDoFType.PRISMATIC
-        ):
-            pass  # No correction needed
-
-        elif wp.static(dof_type == JointDoFType.CYLINDRICAL):  # Correct angle up to +/- 2 pi
-            coords[1] = correct_rotational_coord(coords[1], coords_ref[1])
-
-        elif wp.static(dof_type == JointDoFType.FREE):  # Correct quaternion up to sign
-            quat = wp.vec4f(coords[3], coords[4], coords[5], coords[6])
-            quat_ref = wp.vec4f(coords_ref[3], coords_ref[4], coords_ref[5], coords_ref[6])
-            quat_corrected = correct_quat_vector_coord(quat, quat_ref)
-            for i in range(4):
-                coords[3 + i] = quat_corrected[i]
-
-        elif wp.static(dof_type == JointDoFType.REVOLUTE):  # Correct angle up to +/- 2 pi
-            coords[0] = correct_rotational_coord(coords[0], coords_ref[0])
-
-        elif wp.static(dof_type == JointDoFType.SPHERICAL):  # Correct quaternion up to sign
-            quat_ref = wp.vec4f(coords_ref[0], coords_ref[1], coords_ref[2], coords_ref[3])
-            coords = correct_quat_vector_coord(coords, quat_ref)
-
-        elif wp.static(dof_type == JointDoFType.UNIVERSAL):  # Correct angles up to +/- 2 pi
-            coords[0] = correct_rotational_coord(coords[0], coords_ref[0])
-            coords[1] = correct_rotational_coord(coords[1], coords_ref[1])
-
-        elif wp.static(
-            dof_type == JointDoFType.GIMBAL or dof_type == JointDoFType.GIMBAL_LEFT_HANDED
-        ):  # Correct angles up to +/- 2 pi
-            for i in range(3):
-                coords[i] = correct_rotational_coord(coords[i], coords_ref[i])
-
-        return coords
-
-    return _correct_joint_coords
-
-
 def make_compute_and_write_joint_coords(dof_type: JointDoFType):
     """
     Generate a function computing and writing joint coordinates from the relative translation/rotation
@@ -100,6 +54,7 @@ def make_compute_and_write_joint_coords(dof_type: JointDoFType):
     """
     num_coords = dof_type.num_coords
     assert num_coords > 0
+    dof_type_int = int(dof_type)
 
     @wp.func
     def _compute_and_write_joint_coords(
@@ -109,16 +64,15 @@ def make_compute_and_write_joint_coords(dof_type: JointDoFType):
         joint_q_ref: wp.array[wp.float32],
         joint_q: wp.array[wp.float32],
     ):
-        # Compute joint coordinates
+        # Compute joint coordinates and write them into the flat storage array
         coords = wp.static(get_joint_coords_mapping_function(dof_type))(r_j, q_j)
-
-        # Apply correction up to +/- 2pi and quaternion sign
-        coords_ref = joint_q_ref[coords_offset : coords_offset + num_coords]
-        coords = wp.static(make_correct_joint_coords(dof_type))(coords, coords_ref)
-
-        # Write out joint coordinates
         for i in range(num_coords):
             joint_q[coords_offset + i] = coords[i]
+
+        # Apply correction up to +/- 2pi and quaternion sign against the reference, in place.
+        # Note: ``dof_type_int`` is a Python literal captured from the factory, so the runtime dispatch
+        # inside ``correct_joint_coords_in_place`` is compile-time-constant per specialization.
+        correct_joint_coords_in_place(dof_type_int, joint_q, joint_q_ref, coords_offset)
 
     return _compute_and_write_joint_coords
 
@@ -142,7 +96,9 @@ def make_compute_and_write_joint_vel(dof_type: JointDoFType):
     ):
         # Convert angular velocity to intermediary body frame for universal joint
         if wp.static(dof_type == JointDoFType.UNIVERSAL):
-            u_j = convert_angular_vel_to_universal_joint_intermediary_frame(q_j, u_j)
+            axes = universal_intermediary_axes(q_j)
+            omega_intermediary = wp.transpose(axes) @ wp.spatial_bottom(u_j)
+            u_j = wp.spatial_vectorf(*wp.spatial_top(u_j), *omega_intermediary)
 
         if wp.static(dof_type == JointDoFType.GIMBAL or dof_type == JointDoFType.GIMBAL_LEFT_HANDED):
             rates = map_gimbal_angular_velocity_to_rates(
@@ -338,7 +294,10 @@ def _reset_joints_state_from_bodies_state(
     joint_dof_type: wp.array[wp.int32],
     joint_coords_offset: wp.array[wp.int32],
     joint_dofs_offset: wp.array[wp.int32],
-    joint_cts_offset: wp.array[wp.int32],
+    joint_dynamic_cts_offset: wp.array[wp.int32],
+    joint_kinematic_cts_offset: wp.array[wp.int32],
+    joint_friction_cts_offset: wp.array[wp.int32],
+    joint_effort_cts_offset: wp.array[wp.int32],
     joint_bid_B: wp.array[wp.int32],
     joint_bid_F: wp.array[wp.int32],
     joint_B_r_Bj: wp.array[wp.vec3f],
@@ -353,7 +312,10 @@ def _reset_joints_state_from_bodies_state(
     joint_q: wp.array[wp.float32],
     joint_q_prev: wp.array[wp.float32],
     joint_u: wp.array[wp.float32],
-    joint_lambda: wp.array[wp.float32],
+    joint_lambda_dyn: wp.array[wp.float32],
+    joint_lambda_kin: wp.array[wp.float32],
+    joint_lambda_f: wp.array[wp.float32],
+    joint_lambda_tau_j: wp.array[wp.float32],
 ):
     # Get thread id as joint id
     jid = wp.tid()
@@ -368,8 +330,14 @@ def _reset_joints_state_from_bodies_state(
     coords_offset = joint_coords_offset[jid]
     num_coords = joint_coords_offset[jid + 1] - coords_offset
     dofs_offset = joint_dofs_offset[jid]
-    cts_offset = joint_cts_offset[jid]
-    num_cts = joint_cts_offset[jid + 1] - cts_offset
+    dynamic_cts_offset = joint_dynamic_cts_offset[jid]
+    num_dynamic_cts = joint_dynamic_cts_offset[jid + 1] - dynamic_cts_offset
+    kinematic_cts_offset = joint_kinematic_cts_offset[jid]
+    num_kinematic_cts = joint_kinematic_cts_offset[jid + 1] - kinematic_cts_offset
+    friction_cts_offset = joint_friction_cts_offset[jid]
+    num_friction_cts = joint_friction_cts_offset[jid + 1] - friction_cts_offset
+    effort_cts_offset = joint_effort_cts_offset[jid]
+    num_effort_cts = joint_effort_cts_offset[jid + 1] - effort_cts_offset
     bid_B = joint_bid_B[jid]
     bid_F = joint_bid_F[jid]
     r_B = joint_B_r_Bj[jid]
@@ -396,9 +364,15 @@ def _reset_joints_state_from_bodies_state(
     for i in range(num_coords):
         joint_q_prev[coords_offset + i] = joint_q[coords_offset + i]
 
-    # Set lambda to zero
-    for i in range(num_cts):
-        joint_lambda[cts_offset + i] = 0.0
+    # Set lambdas to zero
+    for i in range(num_dynamic_cts):
+        joint_lambda_dyn[dynamic_cts_offset + i] = 0.0
+    for i in range(num_kinematic_cts):
+        joint_lambda_kin[kinematic_cts_offset + i] = 0.0
+    for i in range(num_friction_cts):
+        joint_lambda_f[friction_cts_offset + i] = 0.0
+    for i in range(num_effort_cts):
+        joint_lambda_tau_j[effort_cts_offset + i] = 0.0
 
 
 @wp.kernel
@@ -810,7 +784,10 @@ def reset_joints_state_from_bodies_state(
             model.joints.dof_type,
             model.joints.coords_offset,
             model.joints.dofs_offset,
-            model.joints.cts_offset,
+            model.joints.dynamic_cts_offset,
+            model.joints.kinematic_cts_offset,
+            model.joints.friction_cts_offset,
+            model.joints.effort_cts_offset,
             model.joints.bid_B,
             model.joints.bid_F,
             model.joints.B_r_Bj,
@@ -824,7 +801,10 @@ def reset_joints_state_from_bodies_state(
             state.q_j,
             state.q_j_p,
             state.dq_j,
-            state.lambda_j,
+            state.lambda_dyn_j,
+            state.lambda_kin_j,
+            state.lambda_f_j,
+            state.lambda_tau_j,
         ],
         device=model.device,
     )

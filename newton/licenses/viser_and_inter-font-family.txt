@@ -4,7 +4,7 @@ This distribution contains third-party software and assets. Below is a list of
 components, their respective copyright notices, and license identifiers. 
 
 1. Viser
-   Source: https://github.com/nerfstudio-project/viser
+   Source: https://github.com/viser-project/viser
    License: Apache License 2.0
    Copyright (c) 2023-2024 Brent Yi and the Viser contributors.
 

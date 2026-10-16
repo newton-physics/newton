@@ -9,6 +9,7 @@
 # applies a sinusoidal trajectory to the joint targets.
 #
 # Command: python -m newton.examples robot_ur10 --world-count 16
+#          python -m newton.examples robot_ur10 --solver kamino
 #
 ###########################################################################
 
@@ -57,14 +58,20 @@ class Example:
         self.sim_substeps = 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
+        self.solver_type = args.solver
         self.world_count = args.world_count
+        if self.world_count is None:
+            self.world_count = 4 if self.solver_type == "kamino" else 100
 
         self.viewer = viewer
 
         self.device = wp.get_device()
 
         ur10 = newton.ModelBuilder()
-        newton.solvers.SolverMuJoCo.register_custom_attributes(ur10)
+        if self.solver_type == "kamino":
+            newton.solvers.SolverKamino.register_custom_attributes(ur10)
+        else:
+            newton.solvers.SolverMuJoCo.register_custom_attributes(ur10)
 
         asset_path = newton.utils.download_asset("universal_robots_ur10")
         asset_file = str(asset_path / "usd" / "ur10_instanceable.usda")
@@ -100,6 +107,7 @@ class Example:
         self.state_1 = self.model.state()
         self.control = self.model.control()
         self.contacts = None
+        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
         self.articulation_view = ArticulationView(
             self.model, "*ur10*", exclude_joint_types=[newton.JointType.FREE, newton.JointType.DISTANCE]
@@ -143,10 +151,15 @@ class Example:
 
         self.ctrl = self.articulation_view.get_attribute("joint_target_q", self.control)
 
-        self.solver = newton.solvers.SolverMuJoCo(
-            self.model,
-            disable_contacts=True,
-        )
+        if self.solver_type == "kamino":
+            solver_config = newton.solvers.SolverKamino.Config.from_model(
+                self.model, dynamics_solver="dvi", sparse_dynamics=True, sparse_jacobian=True
+            )
+            solver_config.dvi.max_alternating_iterations = 8
+            solver_config.dvi.bilateral_solve_interval = 8
+            self.solver = newton.solvers.SolverKamino(self.model, config=solver_config)
+        else:
+            self.solver = newton.solvers.SolverMuJoCo(self.model, disable_contacts=True)
 
         self.viewer.set_model(self.model)
 
@@ -193,13 +206,17 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        pass
+        """Verify the robot joint state remains finite while tracking targets."""
+        joint_q = self.state_0.joint_q.numpy()
+        if not np.isfinite(joint_q).all():
+            raise ValueError("UR10 joint positions contain non-finite values")
 
     @staticmethod
     def create_parser():
         parser = newton.examples.create_parser()
         newton.examples.add_world_count_arg(parser)
-        parser.set_defaults(world_count=100)
+        parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
+        parser.set_defaults(world_count=None)
         return parser
 
 

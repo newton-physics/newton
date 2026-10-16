@@ -487,6 +487,7 @@ def _detect_active_joint_configuration_limits(
     model_joint_q_j_min: wp.array[wp.float32],
     model_joint_q_j_max: wp.array[wp.float32],
     state_joints_q_j: wp.array[wp.float32],
+    model_body_is_immovable: wp.array[wp.int32],
     limits_model_max: wp.array[wp.int32],
     limits_world_max: wp.array[wp.int32],
     # Outputs:
@@ -521,7 +522,15 @@ def _detect_active_joint_configuration_limits(
     # - the DoF type is fixed
     # - if the world has not limits allocated
     # - if the model has not limits allocated
+    # - if both endpoints are immovable in Kamino (any fired limit would produce
+    #   a structurally-singular row; mirrors joint-bilateral and contact culling).
+    #   ``bid_B < 0`` (joint against world) is treated as immovable, matching the
+    #   joint-conversion culling predicate.
     if dof_type_j == JointDoFType.FIXED or world_max_limits == 0 or model_max_limits == 0:
+        return
+    parent_immovable = bid_B_j < 0 or model_body_is_immovable[bid_B_j] != 0
+    child_immovable = model_body_is_immovable[bid_F_j] != 0
+    if parent_immovable and child_immovable:
         return
 
     # Use global offsets directly
@@ -773,19 +782,32 @@ class LimitsKamino:
         # Extract the joint limits allocation sizes from the model
         # The memory allocation requires the total number of limits (over multiple worlds)
         # as well as the limit capacities for each world. Corresponding sizes are defaulted to 0 (empty).
+        # Joints whose two endpoints are both immovable in Kamino contribute no
+        # limit slots (matches the detection-time skip and mirrors the culling of
+        # joint bilateral/dynamic/friction/effort rows and contacts). ``bid_B < 0``
+        # (joint against world) is treated as immovable, per the joint-conversion
+        # culling predicate.
         model_max_limits = 0
         world_max_limits = [0] * model.size.num_worlds
         joint_wid = model.joints.wid.numpy()
         joint_num_dofs = model.joints.num_dofs.numpy()
         joint_q_j_min = model.joints.q_j_min.numpy()
         joint_q_j_max = model.joints.q_j_max.numpy()
+        joint_bid_B = model.joints.bid_B.numpy()
+        joint_bid_F = model.joints.bid_F.numpy()
+        body_is_immovable = model.bodies.is_immovable.numpy()
         num_joints = len(joint_wid)
         dofs_start = 0
         for j in range(num_joints):
-            for dof in range(joint_num_dofs[j]):
-                if joint_q_j_min[dofs_start + dof] > JOINT_QMIN or joint_q_j_max[dofs_start + dof] < JOINT_QMAX:
-                    model_max_limits += 1
-                    world_max_limits[joint_wid[j]] += 1
+            bid_B = int(joint_bid_B[j])
+            bid_F = int(joint_bid_F[j])
+            parent_immovable = bid_B < 0 or bool(body_is_immovable[bid_B])
+            child_immovable = bool(body_is_immovable[bid_F])
+            if not (parent_immovable and child_immovable):
+                for dof in range(joint_num_dofs[j]):
+                    if joint_q_j_min[dofs_start + dof] > JOINT_QMIN or joint_q_j_max[dofs_start + dof] < JOINT_QMAX:
+                        model_max_limits += 1
+                        world_max_limits[joint_wid[j]] += 1
             dofs_start += joint_num_dofs[j]
 
         # Skip allocation if there are no limits to allocate
@@ -865,6 +887,7 @@ class LimitsKamino:
                 self._model.joints.q_j_min,
                 self._model.joints.q_j_max,
                 q_j,
+                self._model.bodies.is_immovable,
                 self._data.model_max_limits,
                 self._data.world_max_limits,
                 # Outputs:

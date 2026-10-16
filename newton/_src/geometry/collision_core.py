@@ -16,7 +16,6 @@ from .support_function import (
     GenericShapeData,
     GeoTypeEx,
     SupportMapDataProvider,
-    closest_point_on_triangle,
     pack_mesh_ptr,
     support_map,
     unpack_mesh_ptr,
@@ -276,57 +275,12 @@ def post_process_axial_on_discrete_contact(
     return contact_data
 
 
-@wp.func
-def post_process_triangle_contact(
-    contact_data: ContactData,
-    shape_a: GenericShapeData,
-    pos_a_adjusted: wp.vec3,
-    rot_a: wp.quat,
-    shape_b: GenericShapeData,
-    pos_b_adjusted: wp.vec3,
-    rot_b: wp.quat,
-) -> ContactData:
-    """Constrain heightfield-prism contacts to their physical triangle face."""
-    if shape_a.shape_type == int(GeoTypeEx.TRIANGLE_PRISM) and contact_data.contact_distance < 0.0:
-        normal_local = wp.cross(shape_a.scale, shape_a.auxiliary)
-        normal_length_sq = wp.length_sq(normal_local)
-        if normal_length_sq >= 1.0e-20:
-            normal_local = normal_local / wp.sqrt(normal_length_sq)
-            if normal_local[2] < 0.0:
-                normal_local = -normal_local
-            normal_world = wp.quat_rotate(rot_a, normal_local)
-
-            point_b_world = (
-                contact_data.contact_point_center
-                + 0.5 * contact_data.contact_distance * contact_data.contact_normal_a_to_b
-            )
-            point_b_local = wp.quat_rotate_inv(rot_a, point_b_world - pos_a_adjusted)
-            projected_b = point_b_local - wp.dot(point_b_local, normal_local) * normal_local
-            point_a = closest_point_on_triangle(
-                projected_b,
-                wp.vec3(0.0),
-                shape_a.scale,
-                shape_a.auxiliary,
-            )
-            distance = float(0.0)
-            if wp.length_sq(point_a - projected_b) < 1.0e-10:
-                distance = wp.dot(point_b_local - point_a, normal_local)
-            contact_data.contact_point_center = (
-                wp.quat_rotate(rot_a, point_a) + pos_a_adjusted + 0.5 * distance * normal_world
-            )
-            contact_data.contact_normal_a_to_b = normal_world
-            contact_data.contact_distance = distance
-
-    return post_process_axial_on_discrete_contact(
-        contact_data, shape_a, pos_a_adjusted, rot_a, shape_b, pos_b_adjusted, rot_b
-    )
-
-
 def create_compute_gjk_mpr_contacts(
     writer_func: Any,
     post_process_contact: Any = post_process_axial_on_discrete_contact,
     support_func: Any = None,
     use_precomputed_center: bool = False,
+    penetration_refiner: Any = None,
 ):
     """
     Factory function to create a compute_gjk_mpr_contacts function with a specific writer function.
@@ -336,6 +290,7 @@ def create_compute_gjk_mpr_contacts(
         post_process_contact: Function to post-process contact data
         support_func: Support mapping function (defaults to support_map)
         use_precomputed_center: Whether the geometry data supplies a cached center.
+        penetration_refiner: Optional physical-proxy result refinement function.
 
     Returns:
         A compute_gjk_mpr_contacts function with the writer function baked in
@@ -356,6 +311,7 @@ def create_compute_gjk_mpr_contacts(
         shape_b: int,
         margin_a: float,
         margin_b: float,
+        data_provider: Any,
         writer_data: Any,
         sort_sub_key: int = 0,
     ):
@@ -374,11 +330,12 @@ def create_compute_gjk_mpr_contacts(
             shape_b: Index of shape B
             margin_a: Per-shape margin offset for shape A (signed distance padding)
             margin_b: Per-shape margin offset for shape B (signed distance padding)
+            data_provider: Support-map data provider passed to the configured
+                support function. Accelerated providers carry cooked convex
+                directional seeds and vertex adjacency.
             writer_data: Data structure for contact writer
             sort_sub_key: Sub-key for deterministic contact sorting (e.g. triangle/edge index)
         """
-        data_provider = SupportMapDataProvider()
-
         radius_eff_a = float(0.0)
         radius_eff_b = float(0.0)
 
@@ -411,7 +368,11 @@ def create_compute_gjk_mpr_contacts(
         if wp.static(ENABLE_MULTI_CONTACT):
             wp.static(
                 create_solve_convex_multi_contact(
-                    support_func, writer_func, post_process_contact, use_precomputed_center
+                    support_func,
+                    writer_func,
+                    post_process_contact,
+                    use_precomputed_center,
+                    penetration_refiner,
                 )
             )(
                 shape_a_data,
@@ -432,7 +393,11 @@ def create_compute_gjk_mpr_contacts(
         else:
             wp.static(
                 create_solve_convex_single_contact(
-                    support_func, writer_func, post_process_contact, use_precomputed_center
+                    support_func,
+                    writer_func,
+                    post_process_contact,
+                    use_precomputed_center,
+                    penetration_refiner,
                 )
             )(
                 shape_a_data,
@@ -455,7 +420,7 @@ def compute_tight_aabb_from_support(
     shape_data: GenericShapeData,
     orientation: wp.quat,
     center_pos: wp.vec3,
-    data_provider: SupportMapDataProvider,
+    data_provider: Any,
 ) -> tuple[wp.vec3, wp.vec3]:
     """
     Compute tight AABB for a shape using support function.
@@ -720,6 +685,7 @@ def create_find_contacts(writer_func: Any, support_func: Any = None, post_proces
         shape_b: int,
         margin_a: float,
         margin_b: float,
+        data_provider: Any,
         writer_data: Any,
     ):
         """
@@ -741,6 +707,9 @@ def create_find_contacts(writer_func: Any, support_func: Any = None, post_proces
             shape_b: Index of shape B
             margin_a: Per-shape margin offset for shape A (signed distance padding)
             margin_b: Per-shape margin offset for shape B (signed distance padding)
+            data_provider: Support-map data provider passed to the configured
+                support function. Accelerated providers carry cooked convex
+                directional seeds and vertex adjacency.
             writer_data: Data structure for contact writer
         """
         if writer_data.contact_count[0] >= writer_data.contact_max:
@@ -785,6 +754,7 @@ def create_find_contacts(writer_func: Any, support_func: Any = None, post_proces
             shape_b,
             margin_a,
             margin_b,
+            data_provider,
             writer_data,
         )
 
@@ -993,6 +963,17 @@ def transform_normal_with_scale(
 
 
 @wp.func
+def convex_mesh_interior_point(mesh_id: wp.uint64, scale: wp.vec3) -> wp.vec3:
+    """Return the scaled vertex mean, which always lies inside the convex hull."""
+    hull = wp.mesh_get(mesh_id)
+    num_verts = hull.points.shape[0]
+    center = wp.vec3(0.0, 0.0, 0.0)
+    for i in range(num_verts):
+        center += hull.points[i]
+    return wp.cw_mul(center, scale) / float(wp.max(num_verts, 1))
+
+
+@wp.func
 def _compute_mesh_vs_convex_query_aabb(
     mesh_shape: int,
     non_mesh_shape: int,
@@ -1002,6 +983,7 @@ def _compute_mesh_vs_convex_query_aabb(
     shape_data: wp.array[wp.vec4],
     shape_source_ptr: wp.array[wp.uint64],
     contact_threshold: float,
+    non_mesh_center: wp.vec3,
 ) -> tuple[wp.vec3, wp.vec3, wp.vec3]:
     """Compute unscaled mesh-BVH bounds for a convex shape."""
     X_mesh_sw = wp.transform_inverse(X_mesh_ws)
@@ -1036,7 +1018,9 @@ def _compute_mesh_vs_convex_query_aabb(
         contact_threshold / wp.max(wp.abs(mesh_scale[1]), 1.0e-12),
         contact_threshold / wp.max(wp.abs(mesh_scale[2]), 1.0e-12),
     )
-    center_in_bvh = wp.cw_mul(pos_in_mesh, inv_scale)
+    # Cull against an interior point. A hull's origin and AABB center can
+    # both lie outside it, which discards triangles touching the hull.
+    center_in_bvh = wp.cw_mul(wp.transform_point(X_mesh_shape, non_mesh_center), inv_scale)
     return aabb_lower_bvh - margin_vec, aabb_upper_bvh + margin_vec, center_in_bvh
 
 
@@ -1072,6 +1056,7 @@ def mesh_vs_convex_midphase(
     shape_data: wp.array[wp.vec4],
     shape_source_ptr: wp.array[wp.uint64],
     contact_threshold: float,
+    non_mesh_center: wp.vec3,
     triangle_pairs: wp.array[wp.vec3i],
     triangle_pairs_count: wp.array[int],
 ):
@@ -1093,6 +1078,7 @@ def mesh_vs_convex_midphase(
         shape_data: Array of shape data (vec4: scale.xyz, margin.w)
         shape_source_ptr: Array of mesh/SDF source pointers
         contact_threshold: Contact candidate distance [m], including margin and gap
+        non_mesh_center: Interior point of the convex shape in its scaled local frame [m]
         triangle_pairs: Output array for triangle pairs (mesh_shape, non_mesh_shape, tri_index)
         triangle_pairs_count: Counter for triangle pairs
     """
@@ -1111,6 +1097,7 @@ def mesh_vs_convex_midphase(
                 shape_data,
                 shape_source_ptr,
                 contact_threshold,
+                non_mesh_center,
             )
         bounds = wp.mat33(
             aabb_lower[0],
@@ -1139,6 +1126,7 @@ def mesh_vs_convex_midphase(
             shape_data,
             shape_source_ptr,
             contact_threshold,
+            non_mesh_center,
         )
 
     if wp.static(ENABLE_TILE_BVH_QUERY):

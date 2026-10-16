@@ -1,0 +1,420 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
+# SPDX-License-Identifier: Apache-2.0
+
+import unittest
+
+import numpy as np
+import warp as wp
+
+import newton
+from newton._src.sim.joint_mimic import eval_joint_mimic_coordinate, eval_joint_mimic_velocity
+from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
+
+
+def _build_mimic_model(device, vectorized, *, kinematic_reference=False, small_mismatch=False):
+    """Build an inconsistent scalar or vectorized mimic model."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    reference_body = builder.add_link()
+    follower_body = builder.add_link()
+    builder.add_shape_box(reference_body, hx=0.1, hy=0.1, hz=0.1)
+    builder.add_shape_box(follower_body, hx=0.1, hy=0.1, hz=0.1)
+    if kinematic_reference:
+        builder.body_flags[reference_body] = int(newton.BodyFlags.KINEMATIC)
+
+    if vectorized:
+        axis = newton.ModelBuilder.JointDofConfig.create_unlimited
+        axes = [axis(newton.Axis.X), axis(newton.Axis.Y)]
+        reference = builder.add_joint_d6(-1, reference_body, linear_axes=axes)
+        follower = builder.add_joint_d6(-1, follower_body, linear_axes=axes)
+        initial_q = [0.2, -0.1, -0.18, 0.23] if small_mismatch else [0.2, -0.1, 0.8, 0.5]
+    else:
+        reference = builder.add_joint_revolute(-1, reference_body, axis=newton.Axis.Z)
+        follower = builder.add_joint_prismatic(-1, follower_body, axis=newton.Axis.X)
+        initial_q = [0.35, -0.405] if small_mismatch else [0.35, 0.8]
+
+    builder.add_articulation([reference, follower])
+    offset = 0.1
+    multiplier = -1.5
+    builder.set_joint_mimic(follower, reference, coeffs=(offset, multiplier))
+    builder.color()
+    model = builder.finalize(device=device)
+    model.joint_q.assign(np.asarray(initial_q, dtype=np.float32))
+    model.joint_qd.zero_()
+
+    state_in = model.state()
+    state_out = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+    return model, state_in, state_out, reference, follower, offset, multiplier
+
+
+def _read_joint_q(model, state, generalized):
+    """Return generalized positions from either reduced or maximal solver state."""
+    if generalized:
+        return state.joint_q.numpy()
+    joint_q = wp.empty_like(model.joint_q)
+    joint_qd = wp.empty_like(model.joint_qd)
+    newton.eval_ik(model, state, joint_q, joint_qd)
+    return joint_q.numpy()
+
+
+def _assert_mimic_relation(model, joint_q, reference, follower, offset, multiplier):
+    """Assert every follower coordinate satisfies its affine mimic relationship."""
+    joint_q_start = model.joint_q_start.numpy()
+    reference_slice = slice(joint_q_start[reference], joint_q_start[reference + 1])
+    follower_slice = slice(joint_q_start[follower], joint_q_start[follower + 1])
+    np.testing.assert_allclose(
+        joint_q[follower_slice],
+        offset + multiplier * joint_q[reference_slice],
+        atol=2.0e-3,
+    )
+
+
+def _test_solver_mimic(test, device, solver_name):
+    """Enforce scalar and vectorized mimic relationships with one solver."""
+    for vectorized in (False, True):
+        with test.subTest(vectorized=vectorized):
+            # VBD performs one local mimic projection per solver iteration. Keep
+            # its initial pose within the projection's intended convergence basin;
+            # large authored inconsistencies should be resolved with eval_mimic()
+            # followed by eval_fk() before simulation.
+            model, state_in, state_out, reference, follower, offset, multiplier = _build_mimic_model(
+                device,
+                vectorized,
+                small_mismatch=solver_name == "vbd",
+            )
+            if solver_name == "featherstone":
+                solver = newton.solvers.SolverFeatherstone(model)
+                generalized = True
+            elif solver_name == "semi_implicit":
+                if vectorized:
+                    solver = newton.solvers.SolverSemiImplicit(
+                        model,
+                        joint_mimic_ke=1.0e4,
+                        joint_mimic_kd=1.0e2,
+                    )
+                else:
+                    solver = newton.solvers.SolverSemiImplicit(
+                        model,
+                        joint_mimic_ke=1.0e2,
+                        joint_mimic_kd=3.0,
+                    )
+                generalized = False
+            elif solver_name == "steel":
+                solver = newton.solvers.SolverSteel(model, solve_mode="matrix_free")
+                generalized = True
+            elif solver_name == "vbd":
+                solver = newton.solvers.SolverVBD(
+                    model,
+                    iterations=4,
+                    rigid_compliant_alm=True,
+                )
+                generalized = False
+            else:
+                raise ValueError(f"Unknown solver {solver_name}")
+
+            # Penalty and Baumgarte-stabilized mimics converge over many steps.
+            step_count = 240 if solver_name in ("semi_implicit", "steel") else 1
+            dt = 1.0 / 240.0 if solver_name in ("semi_implicit", "steel") else 1.0 / 60.0
+            for _ in range(step_count):
+                solver.step(state_in, state_out, None, None, dt)
+                state_in, state_out = state_out, state_in
+            joint_q = _read_joint_q(model, state_in, generalized)
+            _assert_mimic_relation(model, joint_q, reference, follower, offset, multiplier)
+            if not generalized and not vectorized:
+                reference_q = float(joint_q[model.joint_q_start.numpy()[reference]])
+                test.assertNotAlmostEqual(reference_q, 0.35, places=4)
+
+
+def _test_featherstone_force_transfer(test, device):
+    """Transfer a follower force into the Featherstone reference coordinate."""
+    model, state_in, state_out, reference, follower, _, _ = _build_mimic_model(device, False)
+    control = model.control()
+    follower_dof = int(model.joint_qd_start.numpy()[follower])
+    reference_dof = int(model.joint_qd_start.numpy()[reference])
+    control.joint_f[follower_dof : follower_dof + 1].fill_(1.0)
+
+    solver = newton.solvers.SolverFeatherstone(model)
+    solver.step(state_in, state_out, control, None, 1.0 / 60.0)
+
+    reference_velocity = float(state_out.joint_qd.numpy()[reference_dof])
+    test.assertGreater(abs(reference_velocity), 1.0e-4)
+
+
+def test_featherstone_mimic(test, device):
+    """Enforce scalar and vectorized mimic relationships in Featherstone."""
+    _test_solver_mimic(test, device, "featherstone")
+    _test_featherstone_force_transfer(test, device)
+
+
+def test_semi_implicit_mimic(test, device):
+    """Enforce scalar and vectorized mimic relationships in SemiImplicit."""
+    _test_solver_mimic(test, device, "semi_implicit")
+
+
+def test_semi_implicit_mimic_preserves_kinematic_reference(test, device):
+    """Keep a prescribed kinematic reference fixed while its follower responds."""
+    model, state_in, state_out, reference, follower, offset, multiplier = _build_mimic_model(
+        device,
+        False,
+        kinematic_reference=True,
+    )
+    reference_body = int(model.joint_child.numpy()[reference])
+    reference_pose = state_in.body_q.numpy()[reference_body].copy()
+    reference_velocity = state_in.body_qd.numpy()[reference_body].copy()
+    solver = newton.solvers.SolverSemiImplicit(
+        model,
+        joint_mimic_ke=1.0e3,
+        joint_mimic_kd=1.5e2,
+    )
+
+    for _ in range(480):
+        solver.step(state_in, state_out, None, None, 1.0 / 240.0)
+        state_in, state_out = state_out, state_in
+
+    np.testing.assert_allclose(state_in.body_q.numpy()[reference_body], reference_pose, atol=1.0e-7)
+    np.testing.assert_allclose(state_in.body_qd.numpy()[reference_body], reference_velocity, atol=1.0e-7)
+    joint_q = _read_joint_q(model, state_in, False)
+    _assert_mimic_relation(model, joint_q, reference, follower, offset, multiplier)
+
+
+def test_semi_implicit_mimic_validates_gains(test, device):
+    """Reject negative or non-finite global mimic penalty gains."""
+    model, *_ = _build_mimic_model(device, False)
+    for name in ("joint_mimic_ke", "joint_mimic_kd"):
+        for value in (-1.0, float("nan"), float("inf")):
+            with test.subTest(name=name, value=value):
+                with test.assertRaisesRegex(ValueError, f"{name} must be finite and non-negative"):
+                    newton.solvers.SolverSemiImplicit(model, **{name: value})
+
+
+def test_steel_mimic(test, device):
+    """Enforce scalar and vectorized mimic relationships in Steel."""
+    _test_solver_mimic(test, device, "steel")
+
+
+def test_vbd_mimic(test, device):
+    """Enforce scalar and vectorized mimic relationships in VBD."""
+    _test_solver_mimic(test, device, "vbd")
+
+
+@wp.kernel
+def _eval_mimic_coordinates(
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_qd_start: wp.array[int],
+    joint_dof_dim: wp.array2d[int],
+    joint_axis: wp.array[wp.vec3],
+    coordinates: wp.array[float],
+    velocities: wp.array[float],
+):
+    k = wp.tid()
+    q, gradient_p, gradient_c = eval_joint_mimic_coordinate(
+        0,
+        k,
+        body_q,
+        body_com,
+        joint_type,
+        joint_parent,
+        joint_child,
+        joint_X_p,
+        joint_X_c,
+        joint_qd_start,
+        joint_dof_dim,
+        joint_axis,
+    )
+    coordinates[k] = q
+    velocities[k] = eval_joint_mimic_velocity(joint_parent[0], joint_child[0], gradient_p, gradient_c, body_qd)
+
+
+def test_mimic_compound_d6_coordinate_gradients(test, device):
+    """Mimic gradients of multi-angular D6 coordinates must map body velocities to eval_fk joint velocities."""
+    q = np.array([0.5, -0.4, 0.7], dtype=np.float32)
+    qd = np.array([0.9, -0.6, 0.3], dtype=np.float32)
+    # non-XYZ axis orders, as in the nv_humanoid.xml hips
+    for axes in ((newton.Axis.X, newton.Axis.Z, newton.Axis.Y), (newton.Axis.X, newton.Axis.Z)):
+        with test.subTest(axis_count=len(axes)):
+            n = len(axes)
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            joint = builder.add_joint_d6(
+                -1, body, angular_axes=[newton.ModelBuilder.JointDofConfig(axis=axis) for axis in axes]
+            )
+            builder.add_articulation([joint])
+            model = builder.finalize(device=device)
+            state = model.state()
+            state.joint_q.assign(q[:n])
+            state.joint_qd.assign(qd[:n])
+            newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+            coordinates = wp.zeros(n, dtype=float, device=device)
+            velocities = wp.zeros(n, dtype=float, device=device)
+            wp.launch(
+                _eval_mimic_coordinates,
+                dim=n,
+                inputs=[
+                    state.body_q,
+                    state.body_qd,
+                    model.body_com,
+                    model.joint_type,
+                    model.joint_parent,
+                    model.joint_child,
+                    model.joint_X_p,
+                    model.joint_X_c,
+                    model.joint_qd_start,
+                    model.joint_dof_dim,
+                    model.joint_axis,
+                ],
+                outputs=[coordinates, velocities],
+                device=device,
+            )
+            np.testing.assert_allclose(coordinates.numpy(), q[:n], atol=1.0e-5)
+            np.testing.assert_allclose(velocities.numpy(), qd[:n], atol=1.0e-5)
+
+
+def test_eval_mimic_selection(test, device):
+    """Select articulations without overwriting unselected output coordinates."""
+    builder = newton.ModelBuilder()
+    for _ in range(2):
+        reference_body, follower_body = builder.add_link(), builder.add_link()
+        reference = builder.add_joint_revolute(-1, reference_body)
+        follower = builder.add_joint_revolute(reference_body, follower_body)
+        builder.add_articulation([reference, follower])
+        builder.set_joint_mimic(follower, reference, coeffs=(0.5, -2.0))
+    model = builder.finalize(device=device)
+    state_in, state_out = model.state(), model.state()
+    q, qd = [1.0, 9.0, 2.0, 9.0], [3.0, 9.0, 4.0, 9.0]
+    mask = wp.array([False, True], dtype=bool, device=device)
+    indices = wp.array([-1, 1, 2], dtype=int, device=device)
+    cases = (
+        ({"mask": mask}, True),
+        ({"indices": indices}, True),
+        ({"mask": wp.zeros(2, dtype=bool, device=device)}, False),
+        ({"indices": wp.empty(0, dtype=int, device=device)}, False),
+    )
+    for selection, selected in cases:
+        for in_place in (False, True):
+            with test.subTest(selection=selection, in_place=in_place):
+                state_in.joint_q.assign(q)
+                state_in.joint_qd.assign(qd)
+                state_out.joint_q.fill_(-17.0)
+                state_out.joint_qd.fill_(-19.0)
+                result = state_in if in_place else state_out
+                expected_q, expected_qd = result.joint_q.numpy(), result.joint_qd.numpy()
+                if selected:
+                    expected_q[2:] = [2.0, -3.5]
+                    expected_qd[2:] = [4.0, -8.0]
+                newton.eval_mimic(model, state_in, None if in_place else state_out, **selection)
+                np.testing.assert_array_equal(result.joint_q.numpy(), expected_q)
+                np.testing.assert_array_equal(result.joint_qd.numpy(), expected_qd)
+                if not in_place:
+                    np.testing.assert_array_equal(state_in.joint_q.numpy(), q)
+                    np.testing.assert_array_equal(state_in.joint_qd.numpy(), qd)
+
+    with test.assertRaisesRegex(ValueError, "both mask and indices"):
+        newton.eval_mimic(model, state_in, mask=mask, indices=indices)
+
+    if device.is_cuda:
+        state_in.joint_q.assign(q)
+        state_in.joint_qd.assign(qd)
+        mask.zero_()
+        with wp.ScopedCapture(device=device) as capture:
+            newton.eval_mimic(model, state_in, mask=mask)
+        mask.assign([False, True])
+        wp.capture_launch(capture.graph)
+        np.testing.assert_array_equal(state_in.joint_q.numpy(), [1.0, 9.0, 2.0, -3.5])
+        np.testing.assert_array_equal(state_in.joint_qd.numpy(), [3.0, 9.0, 4.0, -8.0])
+
+
+class TestSolverMimic(unittest.TestCase):
+    def test_featherstone_mimic_requires_shared_articulation(self):
+        """Reject unsafe mimic ownership before Featherstone allocates articulation matrices."""
+        builder = newton.ModelBuilder()
+        bodies = [builder.add_link() for _ in range(4)]
+        joints = [builder.add_joint_revolute(-1, body) for body in bodies]
+        builder.add_articulation(joints[:2])
+        builder.set_joint_mimic(joints[1], joints[0])
+        reference, follower = joints[2:]
+        builder.set_joint_mimic(follower, reference)
+
+        def assert_rejected(follower, reference, **kwargs):
+            """Finalize a model and check the constructor's ownership diagnostic."""
+            model = builder.finalize(device="cpu", **kwargs)
+            with self.assertRaisesRegex(ValueError, "same articulation") as caught:
+                newton.solvers.SolverFeatherstone(model)
+            self.assertIn(
+                f"Follower joint {follower} belongs to articulation {builder.joint_articulation[follower]}",
+                str(caught.exception),
+            )
+            self.assertIn(
+                f"reference joint {reference} belongs to articulation {builder.joint_articulation[reference]}",
+                str(caught.exception),
+            )
+
+        with self.subTest(membership="neither"):
+            assert_rejected(follower, reference)
+        builder.add_articulation([reference])
+        with self.subTest(membership="reference"):
+            assert_rejected(follower, reference)
+        builder.set_joint_mimic(follower, None)
+        builder.set_joint_mimic(reference, follower)
+        with self.subTest(membership="follower"):
+            assert_rejected(reference, follower)
+        builder.set_joint_mimic(reference, None)
+        builder.set_joint_mimic(follower, reference)
+        builder.add_articulation([follower])
+        for kwargs in ({"skip_validation_joints": True}, {"skip_all_validations": True}):
+            with self.subTest(**kwargs):
+                assert_rejected(follower, reference, **kwargs)
+
+        builder.set_joint_mimic(follower, None)
+        fixed_reference = builder.add_joint_fixed(-1, builder.add_link())
+        fixed_follower = builder.add_joint_fixed(-1, builder.add_link())
+        # Once any supported mimic activates reduction, its kernels visit all
+        # metadata, including unsupported pairs supplied directly by callers.
+        builder.joint_mimic_joint[fixed_follower] = fixed_reference
+        with self.subTest(membership="supported_and_unsupported"):
+            with self.assertWarnsRegex(UserWarning, "unsupported follower joint indices"):
+                assert_rejected(fixed_follower, fixed_reference)
+        builder.set_joint_mimic(joints[1], None)
+        with self.subTest(membership="unsupported_only"):
+            model = builder.finalize(device="cpu")
+            with self.assertWarnsRegex(UserWarning, "unsupported follower joint indices"):
+                newton.solvers.SolverFeatherstone(model)
+
+
+devices = get_test_devices()
+add_function_test(TestSolverMimic, "test_eval_mimic_selection", test_eval_mimic_selection, devices=devices)
+add_function_test(TestSolverMimic, "test_featherstone_mimic", test_featherstone_mimic, devices=devices)
+add_function_test(TestSolverMimic, "test_semi_implicit_mimic", test_semi_implicit_mimic, devices=devices)
+add_function_test(
+    TestSolverMimic,
+    "test_semi_implicit_mimic_preserves_kinematic_reference",
+    test_semi_implicit_mimic_preserves_kinematic_reference,
+    devices=devices,
+)
+add_function_test(
+    TestSolverMimic,
+    "test_semi_implicit_mimic_validates_gains",
+    test_semi_implicit_mimic_validates_gains,
+    devices=devices,
+)
+add_function_test(TestSolverMimic, "test_vbd_mimic", test_vbd_mimic, devices=devices)
+add_function_test(
+    TestSolverMimic,
+    "test_mimic_compound_d6_coordinate_gradients",
+    test_mimic_compound_d6_coordinate_gradients,
+    devices=devices,
+)
+# Steel mimic rows need the CUDA-only matrix-free solve; its split solve rejects them.
+for device in get_cuda_test_devices():
+    add_function_test(TestSolverMimic, "test_steel_mimic", test_steel_mimic, devices=[device])
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2, failfast=True)

@@ -20,7 +20,7 @@ import warp as wp
 from .contact_data import ContactData
 from .mpr import create_solve_mpr, create_support_map_function
 from .multicontact import create_build_manifold
-from .simplex_solver import create_solve_closest_distance
+from .simplex_solver import GJK_CUTOFF_TOLERANCE, coordinate_scale, create_solve_closest_distance
 
 
 @wp.struct
@@ -31,6 +31,21 @@ class ConvexQueryResult:
     point_b: wp.vec3
     normal: wp.vec3
     signed_distance: float
+
+
+@wp.func
+def gjk_separation_cutoff(contact_threshold: float, position_a: wp.vec3, position_b: wp.vec3) -> float:
+    """Return the GJK separation cutoff [m] for a contact threshold, or zero to disable it.
+
+    Contact writers re-derive the distance from world-space points, so the cutoff is
+    widened by an empirical float32 rounding margin (``GJK_CUTOFF_TOLERANCE`` times the
+    coordinate scale) so that pairs a writer could still accept are refined to the exact
+    distance. The margin is an engineering allowance, not a proven error bound.
+    """
+    if contact_threshold <= 0.0:
+        return 0.0
+    world_scale = coordinate_scale(position_a) + coordinate_scale(position_b)
+    return contact_threshold + GJK_CUTOFF_TOLERANCE * world_scale
 
 
 def create_write_convex_query_result(
@@ -109,6 +124,7 @@ def create_solve_convex_multi_contact(
     writer_func: Any,
     post_process_contact: Any,
     use_precomputed_center: bool = False,
+    penetration_refiner: Any = None,
 ):
     """Create a fused MPR/GJK multi-contact solver.
 
@@ -117,6 +133,7 @@ def create_solve_convex_multi_contact(
         writer_func: Function that writes generated contacts.
         post_process_contact: Function that post-processes generated contacts.
         use_precomputed_center: Whether the geometry data supplies a cached center.
+        penetration_refiner: Optional physical-proxy result refinement function.
 
     Returns:
         The specialized contact solver.
@@ -126,6 +143,7 @@ def create_solve_convex_multi_contact(
     support_funcs = create_support_map_function(support_func, use_precomputed_center)
     solve_mpr = create_solve_mpr(support_func, _support_funcs=support_funcs)
     solve_gjk = create_solve_closest_distance(support_func, _support_funcs=support_funcs)
+    has_penetration_refiner = penetration_refiner is not None
 
     @wp.func
     def solve_convex_multi_contact(
@@ -172,6 +190,19 @@ def create_solve_convex_multi_contact(
         )
 
         if collision:
+            if wp.static(has_penetration_refiner):
+                point_a, point_b, normal, penetration = penetration_refiner(
+                    geom_a,
+                    geom_b,
+                    relative_orientation_b,
+                    relative_position_b,
+                    enlarge,
+                    data_provider,
+                    point_a,
+                    point_b,
+                    normal,
+                    penetration,
+                )
             signed_distance = -penetration + enlarge
             # Undo the inflate on the witness points so downstream consumers
             # (manifold builder, contact writer) see true-surface positions.
@@ -181,6 +212,8 @@ def create_solve_convex_multi_contact(
             point_b = point_b + normal * half_enlarge
         else:
             # GJK fallback for separated shapes -- no Minkowski inflate; accurate normals/distances.
+            # Pairs whose support-plane bound clears contact_threshold plus the rounding margin stop early;
+            # no contact is kept for them.
             _separated, point_a, point_b, normal, signed_distance = wp.static(solve_gjk.core)(
                 geom_a,
                 geom_b,
@@ -188,6 +221,7 @@ def create_solve_convex_multi_contact(
                 relative_position_b,
                 0.0,
                 data_provider,
+                max_dist=gjk_separation_cutoff(contact_threshold, position_a, position_b),
             )
 
         if skip_multi_contact or signed_distance > contact_threshold:
@@ -236,6 +270,7 @@ def create_solve_convex_single_contact(
     writer_func: Any,
     post_process_contact: Any,
     use_precomputed_center: bool = False,
+    penetration_refiner: Any = None,
 ):
     """Create a fused MPR/GJK single-contact solver.
 
@@ -244,6 +279,7 @@ def create_solve_convex_single_contact(
         writer_func: Function that writes generated contacts.
         post_process_contact: Function that post-processes generated contacts.
         use_precomputed_center: Whether the geometry data supplies a cached center.
+        penetration_refiner: Optional physical-proxy result refinement function.
 
     Returns:
         The specialized contact solver.
@@ -253,6 +289,7 @@ def create_solve_convex_single_contact(
     support_funcs = create_support_map_function(support_func, use_precomputed_center)
     solve_mpr = create_solve_mpr(support_func, _support_funcs=support_funcs)
     solve_gjk = create_solve_closest_distance(support_func, _support_funcs=support_funcs)
+    has_penetration_refiner = penetration_refiner is not None
 
     @wp.func
     def solve_convex_single_contact(
@@ -293,12 +330,27 @@ def create_solve_convex_single_contact(
         )
 
         if collision:
+            if wp.static(has_penetration_refiner):
+                point_a, point_b, normal, penetration = penetration_refiner(
+                    geom_a,
+                    geom_b,
+                    relative_orientation_b,
+                    relative_position_b,
+                    enlarge,
+                    data_provider,
+                    point_a,
+                    point_b,
+                    normal,
+                    penetration,
+                )
             signed_distance = -penetration + enlarge
             half_enlarge = enlarge * 0.5
             point_a = point_a - normal * half_enlarge
             point_b = point_b + normal * half_enlarge
         else:
             # GJK fallback for separated shapes -- no Minkowski inflate; accurate normals/distances.
+            # Pairs whose support-plane bound clears contact_threshold plus the rounding margin stop early;
+            # no contact is kept for them.
             _separated, point_a, point_b, normal, signed_distance = wp.static(solve_gjk.core)(
                 geom_a,
                 geom_b,
@@ -306,6 +358,7 @@ def create_solve_convex_single_contact(
                 relative_position_b,
                 0.0,
                 data_provider,
+                max_dist=gjk_separation_cutoff(contact_threshold, position_a, position_b),
             )
 
         # Transform results back to world space (once).

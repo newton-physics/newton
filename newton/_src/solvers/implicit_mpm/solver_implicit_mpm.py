@@ -21,11 +21,12 @@ import warp.sparse as wps
 import newton
 
 from ...core.types import override
+from ...geometry.particle_surface import ParticleSurface
 from ...sim import ModelFlags, StateFlags
-from ...utils.deprecation import deprecate_nonkeyword_arguments
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from .implicit_mpm_model import ImplicitMPMModel
+from .particle_surface_colliders import extrapolate_surface_sdf_into_colliders
 from .rasterized_collisions import (
     Collider,
     build_rigidity_operator,
@@ -93,6 +94,9 @@ from .implicit_mpm_solver_kernels import (
     update_particle_strains,
     voxel_coordinates,
 )
+
+# Disabled until Warp includes the fix for NVIDIA/warp#2036 (see #4506).
+_ROW_COMPRESSED_CONTACT_CONSTRUCTION = False
 
 
 def _as_2d_array(array, shape, dtype):
@@ -645,7 +649,11 @@ class ImplicitMPMScratchpad:
             self.collider_total_volumes = fem.borrow_temporary(temporary_store, shape=collider_count, dtype=float)
 
         if max_colors > 0:
-            self.color_indices = fem.borrow_temporary(temporary_store, shape=(2, strain_node_count), dtype=int)
+            # Cell-based coloring sorts one entry per partition cell, and cells without
+            # particles make that count exceed the particle-based strain node count.
+            partition_cell_count = self._strain_space_restriction.space_partition.geo_partition.cell_count()
+            color_block_capacity = max(strain_node_count, partition_cell_count)
+            self.color_indices = fem.borrow_temporary(temporary_store, shape=(2, color_block_capacity), dtype=int)
             self.color_offsets = fem.borrow_temporary(temporary_store, shape=max_colors + 1, dtype=int)
 
     def release_temporaries(self):
@@ -777,10 +785,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
     colliders backed by dynamic bodies are rejected.
 
     A sparse grid is rebuildable when :attr:`Config.max_active_cell_count` is
-    positive, :attr:`Config.grid_padding` is zero, the velocity basis is
-    ``"Q1"``, and the strain and collider bases support rebuilding. Cell and
-    node capacities are totals across all FEM environments, and resolved
-    capacities must satisfy ``upper <= lower <= leaf <= active``.
+    positive, :attr:`Config.grid_padding` is zero, and the strain and collider
+    bases support rebuilding. Every velocity basis supports rebuilding; the
+    ``"B2"`` and ``"B3"`` bases reserve 64 velocity nodes per active cell,
+    compared with 8 for ``"Q1"``. Cell and node capacities are totals across
+    all FEM environments, and resolved capacities must satisfy
+    ``upper <= lower <= leaf <= active``.
 
     Outer graph capture requires CUDA, an enabled memory pool, conditional
     graph support, ``enable_timers=False``, positive active-cell capacity, and
@@ -1387,7 +1397,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             )
         )
 
-    @deprecate_nonkeyword_arguments
     def __init__(
         self,
         model: newton.Model,
@@ -1470,7 +1479,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             self.grid_type == "sparse"
             and self.max_active_cell_count > 0
             and self.grid_padding == 0
-            and self.velocity_basis == "Q1"
             and strain_rebuild_safe
             and collider_rebuild_safe
         )
@@ -1831,11 +1839,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 entry selects global objects whose world index is ``-1``. If
                 ``None``, reset all worlds and global objects.
 
-                .. deprecated:: 1.5
-                    Passing a mask with shape ``(world_count,)`` is deprecated.
-                    Use shape ``(world_count + 1,)`` with a final ``False`` entry
-                    to select local worlds only.
-
                 .. experimental::
 
                     Selective per-world MPM reset behavior may change without prior notice.
@@ -1905,6 +1908,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         control: newton.Control,
         contacts: newton.Contacts,
         dt: float,
+        *,
+        observables: SolverBase.Observables | None = None,
     ) -> None:
         """Advance the simulation by one time step.
 
@@ -1919,7 +1924,11 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             control: Control input (unused; material parameters come from the model).
             contacts: Contact information (unused; collisions are handled internally).
             dt: Time step duration [s].
+            observables: Optional solver observable arrays allocated by :meth:`observables`.
+                This solver declares no supported observables, so only an empty
+                container is accepted.
         """
+        self.validate_observables(observables, contacts)
         model = self.model
 
         with wp.ScopedDevice(model.device):
@@ -2274,7 +2283,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             device=state.mpm.particle_qd_grad.device,
         )
 
-    def sample_render_grains(self, state: newton.State, grains_per_particle: int) -> wp.array:
+    def sample_render_grains(self, state: newton.State, grains_per_particle: int) -> wp.array2d[wp.vec3]:
         """Generate per-particle point samples used for high-resolution rendering.
 
         Args:
@@ -2292,7 +2301,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         self,
         state_prev: newton.State,
         state: newton.State,
-        grains: wp.array,
+        grains: wp.array2d[wp.vec3],
         dt: float,
     ) -> None:
         """Advect grain samples with the grid velocity and keep them inside the deformed particle.
@@ -2314,6 +2323,109 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 particle_environment=self._particle_environment,
                 temporary_store=self.temporary_store,
             )
+
+    def create_particle_surface(
+        self,
+        voxel_size: float | None = None,
+        *,
+        max_grid_cells: int | None = None,
+        **kwargs,
+    ) -> ParticleSurface:
+        """Create a reusable particle surface extraction context.
+
+        Args:
+            voxel_size: Voxel size for the density grid [m].
+                Defaults to ``0.45 * solver_voxel_size``.
+            max_grid_cells: Maximum active sparse-grid cell count across all
+                worlds. When set, extraction uses graph-capturable preallocated
+                buffers. When ``None``, it uses tight sparse allocations.
+            **kwargs: Forwarded to :class:`newton.geometry.ParticleSurface`.
+
+        Returns:
+            A :class:`newton.geometry.ParticleSurface` context for use with
+            :meth:`extract_particle_surface`.
+        """
+        if voxel_size is None:
+            voxel_size = self._mpm_model.voxel_size * 0.45
+        world_count = max(self.model.world_count, 1)
+        if "world_count" in kwargs and kwargs["world_count"] != world_count:
+            raise ValueError(f"world_count must match the model world count ({world_count})")
+        kwargs["world_count"] = world_count
+        return ParticleSurface(
+            voxel_size=voxel_size,
+            max_grid_cells=max_grid_cells,
+            device=self.model.device,
+            **kwargs,
+        )
+
+    def extract_particle_surface(
+        self,
+        state: newton.State,
+        surface: ParticleSurface,
+        *,
+        compute_normals: bool = True,
+        extrapolate_into_colliders: bool = False,
+        collider_extrapolation_depth: float | None = None,
+        collider_extrapolation_onset: float = 0.0,
+        collider_extrapolation_redistance_iterations: int = 1,
+        particle_flags: wp.array[wp.int32] | None = None,
+    ) -> ParticleSurface.ExtractionMesh:
+        """Extract a triangle mesh from the current particle state.
+
+        Args:
+            state: Current simulation state.
+            surface: Reusable extraction context from
+                :meth:`create_particle_surface`.
+            compute_normals: Whether to compute per-vertex normals.
+            extrapolate_into_colliders: Mirror-extrapolate the particle SDF
+                into collider interiors before meshing.  Requires
+                a surface created with ``field_mode="sdf"``.
+            collider_extrapolation_depth: Maximum distance [m] to extrapolate
+                into colliders. Defaults to the smaller of
+                four surface voxels and the allocated topology halo.
+            collider_extrapolation_onset: Signed collider distance [m] where
+                extrapolation starts.  ``0`` starts at the collider surface.
+            collider_extrapolation_redistance_iterations: Number of
+                redistancing iterations to apply after collider extrapolation.
+                Set to 0 to disable redistancing.
+            particle_flags: Optional per-particle flags selecting the active
+                particles to surface.  Defaults to the model particle flags.
+
+        Returns:
+            Mesh buffers and device-resident logical counts.
+        """
+        if particle_flags is None:
+            particle_flags = self._mpm_model.particle_flags
+        if extrapolate_into_colliders and surface.field_mode != "sdf":
+            raise ValueError("Collider extrapolation requires ParticleSurface(field_mode='sdf')")
+
+        if not extrapolate_into_colliders:
+            return surface.extract(
+                state.particle_q,
+                radii=self._mpm_model.particle_radius,
+                compute_normals=compute_normals,
+                particle_flags=particle_flags,
+                particle_world=self.model.particle_world if surface.world_count > 1 else None,
+            )
+
+        sparse_field = surface.update_field(
+            state.particle_q,
+            radii=self._mpm_model.particle_radius,
+            particle_flags=particle_flags,
+            particle_world=self.model.particle_world if surface.world_count > 1 else None,
+        )
+        if sparse_field is None:
+            return surface.resurface(compute_normals=compute_normals)
+
+        return extrapolate_surface_sdf_into_colliders(
+            surface,
+            self._mpm_model.collider,
+            state.body_q,
+            max_depth=collider_extrapolation_depth,
+            onset=collider_extrapolation_onset,
+            redistance_iterations=collider_extrapolation_redistance_iterations,
+            compute_normals=compute_normals,
+        )
 
     def _allocate_grid(
         self,
@@ -2976,7 +3088,21 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     reduction="first",
                     fields={"trial": scratch.fraction_trial, "normal": scratch.collider_normal_field},
                     temporary_store=self.temporary_store,
+                    # Preserve first-sample arithmetic; older Warp falls back to triplets.
+                    bsr_options={"construction": "auto"} if self._use_local_contact_construction(scratch) else None,
                 )
+
+    def _use_local_contact_construction(self, scratch: ImplicitMPMScratchpad) -> bool:
+        """Prefer row compression for validated CUDA contact-map layouts."""
+        # Compact maps with many inactive partition rows can still favor triplets,
+        # even when Warp packs active-row candidate capacity.
+        return (
+            _ROW_COMPRESSED_CONTACT_CONSTRUCTION
+            and self.model.device.is_cuda
+            and self.velocity_basis == "Q1"
+            and self.collider_basis in ("S2", "S3")
+            and scratch.collider_node_count <= scratch.collider_fraction_test.space_restriction.node_count()
+        )
 
     def _build_collider_rigidity_operator(
         self,
@@ -3898,9 +4024,9 @@ def _harvest_mpm_proxy_particle_forces_kernel(
     dst_k = collider.collider_particle_ids[vertex_offset + local_k]
 
     f = collider_impulses[i] / dt
-    w_j = query.u
-    w_k = query.v
-    w_i = 1.0 - w_j - w_k
+    w_i = query.u
+    w_j = query.v
+    w_k = 1.0 - w_i - w_j
 
     if dst_i >= 0 and dst_i < particle_local_to_proxy_global.shape[0]:
         proxy_global_i = particle_local_to_proxy_global[dst_i]

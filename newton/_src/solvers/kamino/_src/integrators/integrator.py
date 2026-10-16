@@ -43,8 +43,8 @@ class IntegratorBase:
     Provides a base class that defines a common interface for time-integrators.
 
     A time-integrator is responsible for solving the time integration sub-problem to
-    renderthe next state of the system given the current state, control inputs, and
-    time-varying inequality constraints induced by joint limits and contacts.
+    render the next state of the system given the current state, control inputs, and
+    time-varying inequality constraints induced by joint friction, joint limits, and contacts.
     """
 
     def __init__(self, model: ModelKamino):

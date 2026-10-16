@@ -11,18 +11,18 @@ from ._src.core import (
 )
 from ._version import __version__
 
-use_coord_layout_targets: bool = False
+use_coord_layout_targets: bool = True
 """Use :attr:`joint_q`-aligned layout for joint position targets.
 
 Controls the shape of :attr:`~newton.Model.joint_target_q` and
 :attr:`~newton.Control.joint_target_q`:
 
-- ``True``: shape ``(joint_coord_count,)``, matching
+- ``True`` (the default): shape ``(joint_coord_count,)``, matching
   :attr:`~newton.State.joint_q`.
-- ``False`` (the default): legacy shape ``(joint_dof_count,)``, which is
-  misaligned with :attr:`~newton.State.joint_q` whenever an articulation
-  contains a free, ball, or distance joint upstream of a position-controlled
-  DOF.
+- ``False``: legacy shape ``(joint_dof_count,)``, which is misaligned with
+  :attr:`~newton.State.joint_q` whenever an articulation contains a free,
+  ball, or distance joint upstream of a position-controlled DOF, or contains
+  a rod joint.
 
 :attr:`joint_target_qd` is shaped ``(joint_dof_count,)`` in both layouts,
 matching :attr:`~newton.State.joint_qd`.
@@ -34,8 +34,7 @@ it before constructing a :class:`~newton.ModelBuilder`.
     The legacy DOF-shaped layout is deprecated. In a future release the
     coordinate layout becomes the only layout and this flag is removed;
     ``finalize()`` warns when building an affected model (one whose joint
-    coordinate and DOF counts differ) under ``False``. Set the flag to
-    ``True`` now to migrate.
+    coordinate and DOF counts differ) under ``False``.
 """
 
 __all__ = [
@@ -79,44 +78,54 @@ __all__ += [
 from ._src.sim import (  # noqa: E402
     BodyFlags,
     CollisionPipeline,
+    CollisionSubstepScheduler,
     Contacts,
     Control,
-    EqType,
     JointTargetMode,
     JointType,
     Model,
     ModelBuilder,
     ModelFlags,
+    Rod,
     State,
     StateFlags,
+    TendonGuide,
+    TendonGuideFlags,
+    TendonGuideType,
     eval_fk,
     eval_ik,
     eval_inverse_dynamics_force,
     eval_inverse_dynamics_passive,
     eval_jacobian,
     eval_mass_matrix,
+    eval_mimic,
     eval_rigid_contact_kinematics,
 )
 
 __all__ += [
     "BodyFlags",
     "CollisionPipeline",
+    "CollisionSubstepScheduler",
     "Contacts",
     "Control",
-    "EqType",
     "JointTargetMode",
     "JointType",
     "Model",
     "ModelBuilder",
     "ModelFlags",
+    "Rod",
     "State",
     "StateFlags",
+    "TendonGuide",
+    "TendonGuideFlags",
+    "TendonGuideType",
     "eval_fk",
     "eval_ik",
     "eval_inverse_dynamics_force",
     "eval_inverse_dynamics_passive",
     "eval_jacobian",
     "eval_mass_matrix",
+    "eval_mimic",
     "eval_rigid_contact_kinematics",
 ]
 

@@ -18,7 +18,6 @@ import newton.examples
 
 class Example:
     def __init__(self, viewer: newton.viewer.ViewerBase, args=None):
-        newton.use_coord_layout_targets = True
         # Set simulation run-time configurations
         self.fps = 50
         self.sim_dt = 0.001
@@ -34,8 +33,6 @@ class Example:
         newton.solvers.SolverKamino.register_custom_attributes(robot_builder)
         robot_builder.default_shape_cfg.margin = 1e-6
         robot_builder.default_shape_cfg.gap = 0.01
-        robot_builder.request_contact_attributes("force")  # For contact visualization
-
         # Load the DR TestMech USD and add it to the builder
         asset_path = newton.utils.download_asset("disneyresearch")
         asset_file = str(asset_path / "dr_testmech/usd" / "dr_testmech.usda")
@@ -77,10 +74,6 @@ class Example:
 
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
-
-        # Warm-start the simulation
-        self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
-        self.solver.reset(self.state_0)
 
         # Capture the simulation graph if running on CUDA
         # NOTE: This only has an effect on GPU devices
