@@ -160,7 +160,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             angular_damping: Angular damping factor. Defaults to 0.05.
             update_mass_matrix_interval: How often to update the mass matrix (every n-th time the :meth:`step` function gets called). Defaults to 1.
             friction_smoothing: The delta value for the Huber norm (see :func:`warp.norm_huber() <warp._src.lang.norm_huber>`) used for the friction velocity normalization. Defaults to 1.0.
-            use_tile_gemm: Whether to use operators from Warp's Tile API to solve for joint accelerations. Defaults to False.
+            use_tile_gemm: Whether to use operators from Warp's Tile API to solve for joint accelerations. A kernel is compiled for each distinct articulation size. Defaults to False.
             fuse_cholesky: Whether to fuse the Cholesky decomposition into the inertia matrix evaluation kernel when using the Tile API. Only used if `use_tile_gemm` is true. Defaults to True.
             deterministic: Opt-in determinism for this solver's atomic-emitting
                 kernel modules. Pass a :class:`warp.DeterministicMode`, or
@@ -230,20 +230,10 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         self._compute_articulation_indices(model)
         self._allocate_model_aux_vars(model)
 
-        if self.use_tile_gemm:
-            # create a custom kernel to evaluate the system matrix for this type
-            if self.fuse_cholesky and not self._has_joint_mimics:
-                self.eval_inertia_matrix_cholesky_kernel = create_inertia_matrix_cholesky_kernel(
-                    int(self.joint_count), int(self.dof_count)
-                )
-            else:
-                self.eval_inertia_matrix_kernel = create_inertia_matrix_kernel(
-                    int(self.joint_count), int(self.dof_count)
-                )
-
-            # ensure matrix is reloaded since otherwise an unload can happen during graph capture
-            # todo: should not be necessary?
-            wp.load_module(device=wp.get_device())
+        self._fuse_tile_cholesky = self.use_tile_gemm and self.fuse_cholesky and not self._has_joint_mimics
+        self._tile_launches = []
+        if self.use_tile_gemm and model.joint_count:
+            self._create_tile_launches(model)
 
     def _update_kinematic_state(self):
         """Recompute cached solver flags and effective joint armature."""
@@ -332,10 +322,6 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             self.M_size = 0
             self.H_size = 0
 
-            articulation_J_start = []
-            articulation_M_start = []
-            articulation_H_start = []
-
             articulation_M_rows = []
             articulation_H_rows = []
             articulation_J_rows = []
@@ -344,44 +330,49 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             articulation_dof_start = []
             articulation_coord_start = []
 
-            articulation_start = model.articulation_start.numpy()
+            articulation_start = model.articulation_start.numpy()[: model.articulation_count]
             articulation_end = model.articulation_end.numpy()
             joint_q_start = model.joint_q_start.numpy()
             joint_qd_start = model.joint_qd_start.numpy()
 
+            joint_counts = articulation_end - articulation_start
+            dof_counts = joint_qd_start[articulation_end] - joint_qd_start[articulation_start]
+
+            # Store equally sized articulations contiguously so the tile kernels can view each
+            # group's matrices as one batched 3D array.
+            groups: dict[tuple[int, int], list[int]] = {}
+            for i in range(model.articulation_count):
+                groups.setdefault((int(joint_counts[i]), int(dof_counts[i])), []).append(i)
+
+            articulation_J_start = [0] * model.articulation_count
+            articulation_M_start = [0] * model.articulation_count
+            articulation_H_start = [0] * model.articulation_count
+
+            # (joint_count, dof_count, articulation dof starts, J_start, M_start, H_start) per group
+            self._articulation_groups = []
+            for (joint_count, dof_count), indices in groups.items():
+                dof_start = joint_qd_start[articulation_start[indices]]
+                self._articulation_groups.append(
+                    (joint_count, dof_count, dof_start, self.J_size, self.M_size, self.H_size)
+                )
+                for i in indices:
+                    articulation_J_start[i] = self.J_size
+                    articulation_M_start[i] = self.M_size
+                    articulation_H_start[i] = self.H_size
+                    self.J_size += 6 * joint_count * dof_count
+                    self.M_size += 6 * joint_count * 6 * joint_count
+                    self.H_size += dof_count * dof_count
+
             for i in range(model.articulation_count):
                 first_joint = articulation_start[i]
-                last_joint = articulation_end[i]
-
-                first_coord = joint_q_start[first_joint]
-
-                first_dof = joint_qd_start[first_joint]
-                last_dof = joint_qd_start[last_joint]
-
-                joint_count = last_joint - first_joint
-                dof_count = last_dof - first_dof
-
-                articulation_J_start.append(self.J_size)
-                articulation_M_start.append(self.M_size)
-                articulation_H_start.append(self.H_size)
-                articulation_dof_start.append(first_dof)
-                articulation_coord_start.append(first_coord)
+                articulation_dof_start.append(joint_qd_start[first_joint])
+                articulation_coord_start.append(joint_q_start[first_joint])
 
                 # bit of data duplication here, but will leave it as such for clarity
-                articulation_M_rows.append(joint_count * 6)
-                articulation_H_rows.append(dof_count)
-                articulation_J_rows.append(joint_count * 6)
-                articulation_J_cols.append(dof_count)
-
-                if self.use_tile_gemm:
-                    # store the joint and dof count assuming all
-                    # articulations have the same structure
-                    self.joint_count = joint_count
-                    self.dof_count = dof_count
-
-                self.J_size += 6 * joint_count * dof_count
-                self.M_size += 6 * joint_count * 6 * joint_count
-                self.H_size += dof_count * dof_count
+                articulation_M_rows.append(joint_counts[i] * 6)
+                articulation_H_rows.append(dof_counts[i])
+                articulation_J_rows.append(joint_counts[i] * 6)
+                articulation_J_cols.append(dof_counts[i])
 
             # matrix offsets for batched gemm
             self.articulation_J_start = wp.array(articulation_J_start, dtype=wp.int32, device=model.device)
@@ -435,6 +426,27 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                 outputs=[self.body_X_com],
                 device=model.device,
             )
+
+    def _create_tile_launches(self, model):
+        """Specialize the tile kernels for each group of equally sized articulations."""
+        for joint_count, dof_count, group_dof_start, J_start, M_start, H_start in self._articulation_groups:
+            if joint_count == 0 or dof_count == 0:
+                continue
+            n = len(group_dof_start)
+            rows = 6 * joint_count
+            J = self.J[J_start : J_start + n * rows * dof_count].reshape((n, rows, dof_count))
+            M = self.M[M_start : M_start + n * rows * rows].reshape((n, rows, rows))
+            H = self.H[H_start : H_start + n * dof_count * dof_count].reshape((n, dof_count, dof_count))
+            dof_start = wp.array(group_dof_start, dtype=wp.int32, device=model.device)
+            if self._fuse_tile_cholesky:
+                kernel = create_inertia_matrix_cholesky_kernel(joint_count, dof_count)
+                L = self.L[H_start : H_start + n * dof_count * dof_count].reshape((n, dof_count, dof_count))
+            else:
+                kernel = create_inertia_matrix_kernel(joint_count, dof_count)
+                L = None
+            # load up front, otherwise the module may get loaded during graph capture
+            wp.load_module(module=kernel.module, device=model.device)
+            self._tile_launches.append((kernel, n, J, M, dof_start, H, L))
 
     def _allocate_state_aux_vars(self, model, target, requires_grad):
         # allocate auxiliary variables that vary with state
@@ -866,46 +878,25 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                         )
 
                         if self.use_tile_gemm:
-                            # reshape arrays
-                            M_tiled = self.M.reshape((-1, 6 * self.joint_count, 6 * self.joint_count))
-                            J_tiled = self.J.reshape((-1, 6 * self.joint_count, self.dof_count))
-                            R_tiled = self.joint_armature_effective.reshape((-1, self.dof_count))
-                            H_tiled = self.H.reshape((-1, self.dof_count, self.dof_count))
-                            L_tiled = self.L.reshape((-1, self.dof_count, self.dof_count))
-                            assert H_tiled.shape == (model.articulation_count, 18, 18)
-                            assert L_tiled.shape == (model.articulation_count, 18, 18)
-                            assert R_tiled.shape == (model.articulation_count, 18)
-
-                            if self.fuse_cholesky and not self._has_joint_mimics:
-                                wp.launch_tiled(
-                                    self.eval_inertia_matrix_cholesky_kernel,
-                                    dim=model.articulation_count,
-                                    inputs=[J_tiled, M_tiled, R_tiled],
-                                    outputs=[H_tiled, L_tiled],
-                                    device=model.device,
-                                    block_dim=64,
-                                )
-
-                            else:
-                                wp.launch_tiled(
-                                    self.eval_inertia_matrix_kernel,
-                                    dim=model.articulation_count,
-                                    inputs=[J_tiled, M_tiled],
-                                    outputs=[H_tiled],
-                                    device=model.device,
-                                    block_dim=256,
-                                )
-
-                            # import numpy as np
-                            # J = J_tiled.numpy()
-                            # M = M_tiled.numpy()
-                            # R = R_tiled.numpy()
-                            # for i in range(model.articulation_count):
-                            #     r = R[i,:,0]
-                            #     H = J[i].T @ M[i] @ J[i]
-                            #     L = np.linalg.cholesky(H + np.diag(r))
-                            #     np.testing.assert_allclose(H, H_tiled.numpy()[i], rtol=1e-2, atol=1e-2)
-                            #     np.testing.assert_allclose(L, L_tiled.numpy()[i], rtol=1e-1, atol=1e-1)
+                            for kernel, n, J, M, dof_start, H, L in self._tile_launches:
+                                if self._fuse_tile_cholesky:
+                                    wp.launch_tiled(
+                                        kernel,
+                                        dim=n,
+                                        inputs=[J, M, self.joint_armature_effective, dof_start],
+                                        outputs=[H, L],
+                                        device=model.device,
+                                        block_dim=64,
+                                    )
+                                else:
+                                    wp.launch_tiled(
+                                        kernel,
+                                        dim=n,
+                                        inputs=[J, M],
+                                        outputs=[H],
+                                        device=model.device,
+                                        block_dim=256,
+                                    )
 
                         else:
                             # form P = M*J
@@ -951,7 +942,7 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                                 device=model.device,
                             )
 
-                        if not (self.use_tile_gemm and self.fuse_cholesky and not self._has_joint_mimics):
+                        if not self._fuse_tile_cholesky:
                             solve_H = self.H
                             solve_armature = self.joint_armature_effective
                             if self._has_joint_mimics:
