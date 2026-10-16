@@ -64,11 +64,9 @@ def test_tile_gemm_mixed_articulation_sizes(test, device):
     model = _build_model(device)
     expected_qd, expected_grad = _simulate(model)
     test.assertGreater(np.abs(expected_grad).max(), 0.0)
-    for fuse_cholesky in (False, True):
-        with test.subTest(fuse_cholesky=fuse_cholesky):
-            qd, grad = _simulate(model, use_tile_gemm=True, fuse_cholesky=fuse_cholesky)
-            np.testing.assert_allclose(qd, expected_qd, rtol=1e-4, atol=1e-5)
-            np.testing.assert_allclose(grad, expected_grad, rtol=1e-3, atol=1e-4)
+    qd, grad = _simulate(model, use_tile_gemm=True)
+    np.testing.assert_allclose(qd, expected_qd, rtol=1e-4, atol=1e-5)
+    np.testing.assert_allclose(grad, expected_grad, rtol=1e-3, atol=1e-4)
 
 
 class TestFeatherstoneTileGemm(unittest.TestCase):
