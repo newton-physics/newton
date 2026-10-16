@@ -1423,15 +1423,15 @@ wp.overload(scatter_field_dof_values, {"src": wp.array[vec6], "dest": wp.array[v
 
 
 @wp.func
-def gimp_half_size(particle_volume: float, voxel_size: float):
+def gimp_half_size(particle_radius: float, voxel_size: float):
     """Half edge of the cubic GIMP particle domain, capped at half a voxel (two cells per axis at most)."""
-    return wp.min(0.5 * wp.pow(wp.max(particle_volume, 0.0), 1.0 / 3.0), 0.5 * voxel_size)
+    return wp.min(particle_radius, 0.5 * voxel_size)
 
 
 @wp.kernel
 def gimp_domain_corners(
     positions: wp.array[wp.vec3],
-    particle_volume: wp.array[float],
+    particle_radius: wp.array[float],
     particle_flags: wp.array[wp.int32],
     particle_environment: wp.array[int],
     voxel_size: float,
@@ -1441,7 +1441,7 @@ def gimp_domain_corners(
 ):
     """Corners of each GIMP particle domain; the cells containing them are the cells the domain overlaps."""
     p, v = wp.tid()
-    half = gimp_half_size(particle_volume[p], voxel_size)
+    half = gimp_half_size(particle_radius[p], voxel_size)
     signs = wp.vec3(float(2 * ((v >> 2) & 1) - 1), float(2 * ((v >> 1) & 1) - 1), float(2 * (v & 1) - 1))
     corners[8 * p + v] = positions[p] + half * signs
     corner_flags[8 * p + v] = particle_flags[p]
