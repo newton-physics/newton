@@ -1185,12 +1185,10 @@ with convex hulls, bounding boxes, or convex decompositions:
 Supported methods: ``"convex_hull"`` (default), ``"bounding_box"``, ``"bounding_sphere"``,
 ``"coacd"`` (convex decomposition), ``"vhacd"``.
 
-CoACD and V-HACD decompositions are cached on disk by default and reused across
+CoACD and V-HACD decompositions support opt-in disk caching for reuse across
 builders and processes, including automatic approximation during USD import.
-The default is the ``meshes`` subdirectory of the Newton cache directory used
-for asset downloads (``NEWTON_CACHE_PATH`` or the platform's user cache location).
-Configure the directory or disable caching through :mod:`newton.config` before
-importing a scene:
+Mesh decomposition caching is disabled by default. Enable it by setting a
+directory through :mod:`newton.config` before importing a scene:
 
 .. code-block:: python
 
@@ -1206,9 +1204,11 @@ importing a scene:
 Explicit ``cache_dir`` directories on :meth:`~ModelBuilder.approximate_meshes`
 override the global setting. Omitting the argument or passing ``None`` uses
 :attr:`config.cache_dir_meshes` at call time. Asset downloads are controlled
-independently by :attr:`config.cache_dir_assets`; setting that to ``None`` keeps
-each download in a fresh temporary directory until process exit. Environment
-defaults are read when Newton is imported. These settings do not affect
+independently by :attr:`config.cache_dir_assets` and remain cached by default in
+the Newton cache directory (``NEWTON_CACHE_PATH`` or the platform's user cache
+location). Setting that to ``None`` keeps each download in a fresh temporary
+directory until process exit. The asset cache environment default is read when
+Newton is imported. These settings do not affect
 :meth:`Mesh.build_sdf`, which retains its explicit, opt-in cache.
 
 Cache directories are created if needed. Entries include the source geometry, effective decomposition options

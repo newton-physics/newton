@@ -15,11 +15,11 @@ from warp._src.thirdparty.appdirs import user_cache_dir
 
 
 class TestConfig(unittest.TestCase):
-    def test_cache_defaults_share_newton_directory(self):
-        """Initialize both caches from the existing environment or platform default."""
+    def test_cache_defaults(self):
+        """Default to persistent assets and uncached meshes regardless of the environment."""
         with tempfile.TemporaryDirectory() as temporary:
             custom = Path(temporary) / "cache with spaces"
-            for root in (None, str(custom)):
+            for root in (None, "", str(custom)):
                 with self.subTest(root=root):
                     env = os.environ.copy()
                     env.pop("NEWTON_CACHE_PATH", None)
@@ -39,7 +39,7 @@ class TestConfig(unittest.TestCase):
                         text=True,
                     )
                     expected = root if root is not None else user_cache_dir("newton", "newton-physics")
-                    self.assertEqual(json.loads(result.stdout), [expected, os.path.join(expected, "meshes")])
+                    self.assertEqual(json.loads(result.stdout), [expected, None])
             self.assertFalse(custom.exists())
 
 

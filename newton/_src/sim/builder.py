@@ -9298,10 +9298,11 @@ class ModelBuilder:
             keep_visual_shapes: If `True`, retain the original geometry as visual-only shapes.
             cache_dir: Directory for persistent ``coacd`` and ``vhacd``
                 decomposition caching. Created if missing; ``None`` uses
-                :attr:`newton.config.cache_dir_meshes`, which defaults to the
-                Newton cache directory's ``meshes`` subdirectory. Set that global
-                setting to ``None`` to disable disk caching. An explicit directory
-                overrides the global setting. Entries are keyed by mesh geometry, effective backend
+                :attr:`newton.config.cache_dir_meshes`, which defaults to ``None``
+                (no disk caching). Set that global setting to a directory to
+                enable caching for subsequent calls, including USD imports.
+                An explicit directory overrides the global setting. Entries are
+                keyed by mesh geometry, effective backend
                 settings, backend versions, and cache format version. Corrupt or
                 incompatible entries are recomputed; cache I/O failures are logged
                 and do not prevent approximation. Other methods ignore this option.

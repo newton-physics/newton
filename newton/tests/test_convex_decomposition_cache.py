@@ -101,7 +101,7 @@ class TestConvexDecompositionCache(unittest.TestCase):
         self.version.assert_not_called()
         self.assertFalse(self.cache_dir.exists())
 
-    def test_cache_uses_global_directory_by_default(self):
+    def test_cache_uses_configured_global_directory(self):
         """Reuse the global cache without passing a directory to the builder."""
         for method, backend in (("coacd", self.coacd), ("vhacd", self.vhacd)):
             with self.subTest(method=method):
