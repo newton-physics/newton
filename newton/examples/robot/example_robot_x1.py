@@ -19,27 +19,36 @@ from newton import JointTargetMode
 
 
 @wp.kernel
-def update_x1_targets(
+def update_x1_position_targets(
     motion_time: wp.array[wp.float32],
     home_q: wp.array[wp.float32],
     pregrasp_q: wp.array[wp.float32],
-    wheel_dofs: wp.array[wp.int32],
     target_q: wp.array[wp.float32],
-    target_qd: wp.array[wp.float32],
 ):
-    """Sequence base approach, lift motion, and dual-arm pre-grasp targets."""
-    dof = wp.tid()
+    """Blend the lift and dual-arm position targets toward pre-grasp."""
+    coordinate = wp.tid()
     time = motion_time[0]
 
     blend = wp.clamp((time - 2.0) / 4.0, 0.0, 1.0)
     blend = blend * blend * (3.0 - 2.0 * blend)
-    target_q[dof] = home_q[dof] + blend * (pregrasp_q[dof] - home_q[dof])
+    target_q[coordinate] = home_q[coordinate] + blend * (pregrasp_q[coordinate] - home_q[coordinate])
+
+
+@wp.kernel
+def update_x1_velocity_targets(
+    motion_time: wp.array[wp.float32],
+    wheel_dofs: wp.array[wp.int32],
+    target_qd: wp.array[wp.float32],
+):
+    """Drive forward for two seconds, accounting for the mirrored wheel axes."""
+    dof = wp.tid()
 
     target_qd[dof] = 0.0
-    if time < 2.0:
-        for wheel in range(2):
-            if dof == wheel_dofs[wheel]:
-                target_qd[dof] = 2.0
+    if motion_time[0] < 2.0:
+        if dof == wheel_dofs[0]:
+            target_qd[dof] = 2.0
+        elif dof == wheel_dofs[1]:
+            target_qd[dof] = -2.0
 
 
 @wp.kernel
@@ -79,6 +88,7 @@ class Example:
             if builder.joint_qd_start[index] < builder.joint_dof_count
         }
         joint_dofs = {label: builder.joint_qd_start[index] for label, index in joint_indices.items()}
+        joint_coordinates = {label: builder.joint_q_start[index] for label, index in joint_indices.items()}
         wheel_dofs = [joint_dofs["lun_r"], joint_dofs["lun_l"]]
 
         for dof in range(builder.joint_dof_count):
@@ -93,7 +103,10 @@ class Example:
             builder.joint_target_mode[dof] = int(JointTargetMode.POSITION)
             builder.joint_target_ke[dof] = 500.0
             builder.joint_target_kd[dof] = 25.0
-            builder.joint_target_q[dof] = builder.joint_q[builder.joint_q_start[joint_indices[label]]]
+            coordinate = joint_coordinates[label]
+            builder.joint_target_q[coordinate] = builder.joint_q[coordinate]
+        builder.joint_target_ke[joint_dofs["sj"]] = 2.0e3
+        builder.joint_target_kd[joint_dofs["sj"]] = 50.0
 
         home_q = np.asarray(builder.joint_target_q, dtype=np.float32)
         pregrasp_q = home_q.copy()
@@ -115,7 +128,7 @@ class Example:
             "l7": 0.00,
         }
         for label, target in pose.items():
-            pregrasp_q[joint_dofs[label]] = target
+            pregrasp_q[joint_coordinates[label]] = target
 
         self.model = builder.finalize()
         self.state_0 = self.model.state()
@@ -125,8 +138,15 @@ class Example:
         self.pregrasp_q = wp.array(pregrasp_q, dtype=wp.float32, device=self.device)
         self.wheel_dofs = wp.array(wheel_dofs, dtype=wp.int32, device=self.device)
         self.motion_time = wp.zeros(1, dtype=wp.float32, device=self.device)
+        self.controlled_coordinates = np.asarray([joint_coordinates[label] for label in pose], dtype=np.int32)
+        self.base_body = next(
+            index for index, label in enumerate(builder.body_label) if label.rsplit("/", 1)[-1] == "base_link"
+        )
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
+        self.initial_base_transform = self.state_0.body_q.numpy()[self.base_body].copy()
+        qx, qy, qz, qw = self.initial_base_transform[3:]
+        self.initial_heading = np.array([1.0 - 2.0 * (qy * qy + qz * qz), 2.0 * (qx * qy + qw * qz)], dtype=np.float32)
         self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.contacts = self.collision_pipeline.contacts()
         self.solver = newton.solvers.SolverMuJoCo(self.model)
@@ -149,10 +169,17 @@ class Example:
         for _ in range(self.sim_substeps):
             self.state_0.clear_forces()
             wp.launch(
-                update_x1_targets,
+                update_x1_position_targets,
+                dim=self.model.joint_coord_count,
+                inputs=[self.motion_time, self.home_q, self.pregrasp_q],
+                outputs=[self.control.joint_target_q],
+                device=self.device,
+            )
+            wp.launch(
+                update_x1_velocity_targets,
                 dim=self.model.joint_dof_count,
-                inputs=[self.motion_time, self.home_q, self.pregrasp_q, self.wheel_dofs],
-                outputs=[self.control.joint_target_q, self.control.joint_target_qd],
+                inputs=[self.motion_time, self.wheel_dofs],
+                outputs=[self.control.joint_target_qd],
                 device=self.device,
             )
             wp.launch(advance_x1_motion_time, dim=1, inputs=[self.motion_time, self.sim_dt], device=self.device)
@@ -176,11 +203,33 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        """Verify that the task advanced and the robot state stayed finite."""
-        if self.motion_time.numpy()[0] <= 0.0:
+        """Verify base motion, stability, and pre-grasp convergence after the task."""
+        motion_time = self.motion_time.numpy()[0]
+        if motion_time <= 0.0:
             raise ValueError("X1 task clock did not advance")
-        if not np.isfinite(self.state_0.joint_q.numpy()).all() or not np.isfinite(self.state_0.joint_qd.numpy()).all():
+        joint_q = self.state_0.joint_q.numpy()
+        if not np.isfinite(joint_q).all() or not np.isfinite(self.state_0.joint_qd.numpy()).all():
             raise ValueError("X1 joint state contains non-finite values")
+        if motion_time < 6.0:
+            return
+
+        base_transform = self.state_0.body_q.numpy()[self.base_body]
+        base_displacement = base_transform[:2] - self.initial_base_transform[:2]
+        forward_displacement = np.dot(base_displacement, self.initial_heading)
+        if forward_displacement < 0.05:
+            raise ValueError(f"X1 base moved only {forward_displacement:.3f} m along its initial heading")
+
+        qx, qy = base_transform[3], base_transform[4]
+        upright_alignment = 1.0 - 2.0 * (qx * qx + qy * qy)
+        if upright_alignment < 0.95:
+            raise ValueError(f"X1 base tipped over: upright alignment is {upright_alignment:.3f}")
+
+        pregrasp_q = self.pregrasp_q.numpy()
+        max_position_error = np.max(
+            np.abs(joint_q[self.controlled_coordinates] - pregrasp_q[self.controlled_coordinates])
+        )
+        if max_position_error > 0.05:
+            raise ValueError(f"X1 controlled joints missed pre-grasp by {max_position_error:.3f} rad or m")
 
     @staticmethod
     def create_parser():
