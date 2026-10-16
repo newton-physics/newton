@@ -561,7 +561,7 @@ class BottleSurface:
                 device=self.device,
             )
             compute_normals(vertices, indices, normals)
-        return mesh
+        return vertices, indices, normals
 
 
 @wp.kernel
@@ -631,31 +631,16 @@ def _normalize_normals(normals: wp.array[wp.vec3]):
     normals[i] = wp.normalize(normals[i])
 
 
-def bind_materials(viewer, bottle_opacity, water_color):
-    """Bind PET and dielectric water before the RTX stage is first loaded."""
+def bind_water_material(viewer, water_color):
+    """Bind dielectric water before the RTX stage is first loaded."""
     if not isinstance(viewer, ViewerRTX):
         return False
 
     from pxr import Sdf, UsdShade  # noqa: PLC0415
 
-    pet = viewer.stage.GetPrimAtPath("/root/bottle/pet")
     water = viewer.stage.GetPrimAtPath("/root/water/surface")
-    if not pet or not water:
+    if not water:
         return False
-
-    material = UsdShade.Material.Define(viewer.stage, "/root/Materials/BottlePET")
-    shader = UsdShade.Shader.Define(viewer.stage, "/root/Materials/BottlePET/PreviewSurface")
-    shader.CreateIdAttr("UsdPreviewSurface")
-    shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set((0.90, 0.95, 0.97))
-    shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(0.30)
-    shader.CreateInput("metallic", Sdf.ValueTypeNames.Float).Set(0.0)
-    shader.CreateInput("opacity", Sdf.ValueTypeNames.Float).Set(bottle_opacity)
-    shader.CreateInput("opacityThreshold", Sdf.ValueTypeNames.Float).Set(0.0)
-    shader.CreateInput("ior", Sdf.ValueTypeNames.Float).Set(1.52)
-    shader.CreateInput("clearcoat", Sdf.ValueTypeNames.Float).Set(0.15)
-    shader.CreateInput("clearcoatRoughness", Sdf.ValueTypeNames.Float).Set(0.18)
-    material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
-    UsdShade.MaterialBindingAPI.Apply(pet).Bind(material)
 
     # MDL transmission traces light through the closed liquid volume.
     # Preview-surface opacity only removes coverage; it does not model refraction.

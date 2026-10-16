@@ -58,7 +58,6 @@ PARAMS = {
     "soft_contact_gap": 0.06,
     # body-body contact: the default 2.5e3 N/m lets these 4-10 kg projectiles overlap by
     # centimeters; 3e6 N/m keeps it below 1 mm, 1e7 destabilizes the resting box.
-    "rigid_compliant_alm": True,
     "shape_ke": 3.0e6,
     "shape_kd": 1.0e3,
     # bottom cloth sheet (pinned at all four edges)
@@ -147,7 +146,6 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.params["solver_iterations"],
-            rigid_compliant_alm=self.params["rigid_compliant_alm"],
             rigid_soft_enable_dat=self.params["enable_dat"],
             particle_enable_self_contact=True,
             particle_self_contact_margin=self.params["self_contact_margin"],

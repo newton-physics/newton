@@ -37,7 +37,6 @@ XPBD_CONTACT_RELAXATION = 0.8
 
 class Example:
     def __init__(self, viewer, args):
-        newton.use_coord_layout_targets = True
         self.viewer = viewer
         self.test_mode = args.test
         self.world_count = args.world_count
@@ -46,7 +45,8 @@ class Example:
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
-        self.sim_substeps = 10
+        # Resolve the heavy-ball impact before deep ground penetration develops.
+        self.sim_substeps = 20 if self.solver_type == "kamino" else 10
         self.sim_dt = self.frame_dt / self.sim_substeps
 
         num_pyramids = args.num_pyramids

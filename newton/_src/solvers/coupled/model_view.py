@@ -71,7 +71,7 @@ class ModelView:
         view = ModelView(model, "vbd")
         view.body_inv_mass = zeroed_inv_mass  # override
         view.body_count  # delegates to model.body_count
-        solver = SolverVBD(model=view, rigid_compliant_alm=True)
+        solver = SolverVBD(model=view)
     """
 
     def __init__(self, parent: Model, name: str) -> None:
@@ -98,6 +98,9 @@ class ModelView:
 
     def __setattr__(self, name: str, value) -> None:
         parent = object.__getattribute__(self, "_parent")
+        if parent.tendon_count and name in {"body_count", "tendon_count", "tendon_guide_count", "tendon_segment_count"}:
+            if value != getattr(parent, name):
+                raise ValueError("Partial model views containing tendons are unsupported; use a complete tendon model")
         spec = parent._attribute_spec(name)
         if spec is not None and spec.alias_of is not None:
             getattr(parent, name)  # Validate availability and emit the deprecation warning.
@@ -142,7 +145,7 @@ class ModelView:
     @property
     def joint_target_q_start(self) -> wp.array | None:
         """View-local start indices for :attr:`~newton.Model.joint_target_q`."""
-        return self.joint_q_start if self.use_coord_layout_targets else self.joint_qd_start
+        return self.joint_q_start
 
     @property
     def overrides(self) -> dict[str, object]:
@@ -678,9 +681,11 @@ class ModelView:
         wp.launch(
             _replace_joint_type_kernel,
             dim=joint_indices.shape[0],
-            inputs=[joint_indices, joint_type, int(JointType.ROD), int(JointType.D6)],
+            inputs=[joint_indices, joint_type, int(JointType.ROD), int(JointType.FREE)],
             device=parent.device,
         )
+        if parent._has_rod_joints:  # pyright: ignore[reportPrivateUsage]
+            self._has_rod_joints = bool(np.any(self.joint_type.numpy() == int(JointType.ROD)))
 
     def zero_particle_mass(self, particle_indices: wp.array[int]) -> None:
         """Zero mass and inverse mass for the given particle indices.

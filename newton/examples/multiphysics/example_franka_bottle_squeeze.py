@@ -34,9 +34,8 @@ import newton
 import newton.examples
 import newton.ik
 import newton.utils
-from newton.examples.multiphysics._bottle import BottleFluid, BottleSurface, bind_materials, compute_normals
+from newton.examples.multiphysics._bottle import BottleFluid, BottleSurface, bind_water_material, compute_normals
 from newton.solvers import SolverBase, SolverVBD
-from newton.viewer import ViewerRTX
 
 _SCALE = 100.0
 _THICKNESS = 0.0003
@@ -221,6 +220,7 @@ def _add_robot(builder, asset, *, scale):
         scale=scale,
         enable_self_collisions=False,
         collapse_fixed_joints=True,
+        joint_damping_mode="passive",
     )
     # Both finger frames point their local +Y outwards. Keep the contact faces
     # flush with the pads; local X is vertical in the horizontal grip pose.
@@ -285,8 +285,10 @@ class Example:
         self.plasticity = args.plasticity
         self.show_particles = args.show_particles
         self.bottle_opacity = args.bottle_opacity
-        self._rtx_materials_bound = False
+        self._rtx_water_material_bound = False
         self.save_frames = args.save_frames
+        if self.save_frames is not None:
+            self.save_frames.mkdir(parents=True, exist_ok=True)
         self.frame_index = 0
         self.minimum_opening = args.minimum_opening * _SCALE
         self.squeeze_angles = tuple(args.squeeze_angles)
@@ -431,11 +433,10 @@ class Example:
             device=self.model.device,
         )
         self.surface_triangle_count = 0
-        self.surface_mesh = None
         self.shell_graphs = []
         if args.cuda_graph:
-            # Capture each shell buffer direction separately. Fluid BVH refits
-            # and hash-grid rebuilds remain outside these reusable graphs.
+            # Capture each shell buffer direction separately. Keep fluid grids
+            # eager: Warp 1.18 shares host grid metadata with reconstruction.
             for _ in range(2):
                 with wp.ScopedCapture(device=self.model.device) as capture:
                     self._simulate_shell()
@@ -589,8 +590,7 @@ class Example:
             opacity=1.0,
             roughness=0.35,
         )
-        self.surface_mesh = self.surface.extract(self.render_water, self.water.surface_radii)
-        verts, indices, normals = self.surface_mesh.to_arrays()
+        verts, indices, normals = self.surface.extract(self.render_water, self.water.surface_radii)
         if verts is not None:
             self.surface_triangle_count = indices.shape[0] // 3
             self.viewer.log_mesh(
@@ -611,18 +611,14 @@ class Example:
                 radii=self.water.radius / _SCALE,
                 colors=_WATER_COLOR,
             )
-        if not self._rtx_materials_bound:
-            self._rtx_materials_bound = bind_materials(self.viewer, self.bottle_opacity, _WATER_COLOR)
+        if not self._rtx_water_material_bound:
+            self._rtx_water_material_bound = bind_water_material(self.viewer, _WATER_COLOR)
         self.viewer.end_frame()
         if self.save_frames is not None:
             from PIL import Image  # noqa: PLC0415
 
-            self.save_frames.mkdir(parents=True, exist_ok=True)
             path = self.save_frames / f"frame_{self.frame_index:05d}.png"
-            if isinstance(self.viewer, ViewerRTX):
-                self.viewer.save_screenshot(str(path))
-            else:
-                Image.fromarray(self.viewer.get_frame().numpy()).save(path)
+            Image.fromarray(self.viewer.get_frame().numpy()).save(path)
         self.frame_index += 1
 
     def test_post_step(self):
@@ -702,7 +698,12 @@ class Example:
         )
         parser.add_argument("--seed", type=int, default=42)
         parser.add_argument("--plasticity", action=argparse.BooleanOptionalAction, default=True)
-        parser.add_argument("--cuda-graph", action=argparse.BooleanOptionalAction, default=True)
+        parser.add_argument(
+            "--cuda-graph",
+            action=argparse.BooleanOptionalAction,
+            default=True,
+            help="Capture robot and VBD shell substeps; fluid and surface extraction execute outside capture",
+        )
         parser.add_argument("--show-particles", action=argparse.BooleanOptionalAction, default=False)
         parser.add_argument(
             "--surface-voxel-size", type=float, default=0.002, help="Water reconstruction voxel size [m]"

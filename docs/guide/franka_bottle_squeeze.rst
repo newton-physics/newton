@@ -50,6 +50,11 @@ within the Franka's joint velocity limits.
 Use ``--no-plasticity`` to compare with an elastic bottle under the same motion.
 Use ``--show-particles`` to inspect the underlying fluid samples.
 
+CUDA graphs capture the robot and VBD shell substeps by default, including
+self-contact and plasticity. The XPBD water loop and surface reconstruction
+execute outside capture. Use ``--no-cuda-graph`` to run the shell eagerly as
+well. This option does not claim capture of the full simulation or rendering.
+
 The default solve uses 320 VBD iterations per substep. Under-solving this stiff
 shell changes the buckling mode and the plastic loading path. Increasing the
 iteration count improves the solve without changing the supplied 3 GPa modulus.
@@ -118,8 +123,9 @@ The RTX viewer uses separate PET and water materials. The closed water surface
 uses an MDL OmniGlass material with refractive index 1.333, roughness 0.02,
 and a light blue tint for transmission and reflections (RGB 0.90, 0.97, 1.0).
 This traces transmission through the liquid volume rather than approximating
-water with opacity alone. PET uses a diffuse preview material with an assumed
-optical index of 1.52. Opaque water shadows are disabled because the path tracer
+water with opacity alone. PET uses the viewer's standard material and opacity
+handling, including its RTX correction for multiple translucent surfaces.
+Opaque water shadows are disabled because the path tracer
 does not resolve focused droplet caustics in this scene. This is a visual
 approximation, not a photometric validation. See the NVIDIA
 `OmniGlass documentation <https://docs.omniverse.nvidia.com/materials-and-rendering/latest/templates/OmniGlass.html>`_.

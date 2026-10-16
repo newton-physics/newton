@@ -20,7 +20,6 @@ from ..geometry.types import Heightfield
 from ..geometry.utils import compute_aabb, compute_inertia_box_mesh, remesh_convex_hull
 from ..sim import JointTargetMode, JointType, ModelBuilder
 from ..sim.model import Model
-from ..solvers.mujoco import SolverMuJoCo
 from ..solvers.mujoco.collision_masks import MUJOCO_COLLISION_MASK_DOMAIN_UNSET, compile_collision_masks
 from ..solvers.mujoco.constants import (
     DEFAULT_LIMIT_SOLREF,
@@ -30,6 +29,7 @@ from ..solvers.mujoco.constants import (
 )
 from ..solvers.mujoco.enums import EqType
 from ..solvers.mujoco.equality import _add_equality_constraint
+from ..solvers.mujoco.solver_mujoco import SolverMuJoCo
 from ..solvers.mujoco.utils import (
     mjc_add_equality_loop_joint,
     mjc_add_equality_mimic,
@@ -53,6 +53,48 @@ from .mesh import load_meshes_from_file
 # Inertia helpers are evaluated at 1 kg/m³, so this is the reference mass
 # of a cube measuring 0.1 mm on each side.
 _MIN_EXPLICIT_MASS_REFERENCE_MASS = 1.0e-12
+
+
+def _parse_mesh_ref_pose(mesh_attrib: dict[str, str], label: str) -> tuple[np.ndarray, np.ndarray]:
+    """Parse and validate an MJCF mesh reference pose."""
+    try:
+        refpos = np.array(mesh_attrib.get("refpos", "0 0 0").split(), dtype=np.float32)
+    except ValueError as exc:
+        raise ValueError(f"{label} has invalid refpos data.") from exc
+    try:
+        refquat = np.array(mesh_attrib.get("refquat", "1 0 0 0").split(), dtype=np.float32)
+    except ValueError as exc:
+        raise ValueError(f"{label} has invalid refquat data.") from exc
+    if refpos.shape != (3,):
+        raise ValueError(f"{label} refpos must have 3 values.")
+    if refquat.shape != (4,):
+        raise ValueError(f"{label} refquat must have 4 values.")
+    refquat_norm = np.linalg.norm(refquat)
+    if not np.isfinite(refquat_norm) or refquat_norm == 0.0:
+        raise ValueError(f"{label} refquat must be finite and nonzero.")
+    if not np.all(np.isfinite(refpos)):
+        raise ValueError(f"{label} refpos must contain only finite values.")
+    return refpos, refquat / refquat_norm
+
+
+def _apply_mesh_ref_pose(
+    vertices: np.ndarray,
+    normals: np.ndarray | None,
+    refpos: np.ndarray,
+    refquat: np.ndarray,
+    scaling: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    """Subtract the reference position, rotate by inverse quaternion, then scale."""
+    rotation = np.asarray(
+        wp.quat_to_matrix(wp.quat(refquat[1], refquat[2], refquat[3], refquat[0])),
+        dtype=np.float32,
+    ).reshape(3, 3)
+    vertices = ((vertices - refpos) @ rotation) * scaling
+    if normals is not None:
+        normals = (normals @ rotation) / scaling
+        lengths = np.linalg.norm(normals, axis=1, keepdims=True)
+        normals = np.divide(normals, lengths, out=np.zeros_like(normals), where=lengths > 0.0)
+    return vertices, normals
 
 
 def _default_path_resolver(base_dir: str | None, file_path: str) -> str:
@@ -79,7 +121,7 @@ def _default_path_resolver(base_dir: str | None, file_path: str) -> str:
 def _load_and_expand_mjcf(
     source: str,
     path_resolver: Callable[[str | None, str], str] = _default_path_resolver,
-    included_files: set[str] | None = None,
+    include_stack: set[str] | None = None,
 ) -> tuple[ET.Element, str | None]:
     """Load MJCF source and recursively expand <include> elements.
 
@@ -89,7 +131,7 @@ def _load_and_expand_mjcf(
             - For <include> elements: either an absolute file path or XML content directly
             - For asset elements (mesh, texture, etc.): must return an absolute file path
             Default resolver joins paths and returns absolute file paths.
-        included_files: Set of already-included file paths for cycle detection
+        include_stack: File paths on the active include stack for cycle detection
 
     Returns:
         Tuple of (root element, base directory or None for XML string input)
@@ -97,8 +139,8 @@ def _load_and_expand_mjcf(
     Raises:
         ValueError: If a circular include is detected
     """
-    if included_files is None:
-        included_files = set()
+    if include_stack is None:
+        include_stack = set()
 
     # Load source
     if is_xml_content(source):
@@ -106,6 +148,10 @@ def _load_and_expand_mjcf(
         root = ET.fromstring(sanitize_xml_content(source))
     else:
         # Treat as file path
+        filename = os.path.realpath(source)
+        if filename in include_stack:
+            raise ValueError(f"Circular include detected: {filename}")
+        include_stack = include_stack | {filename}
         base_dir = os.path.dirname(source) or "."
         root = ET.parse(source).getroot()
 
@@ -147,15 +193,9 @@ def _load_and_expand_mjcf(
 
         resolved = path_resolver(base_dir, file_attr)
 
-        if not is_xml_content(resolved):
-            # Cycle detection for file paths
-            if resolved in included_files:
-                raise ValueError(f"Circular include detected: {resolved}")
-            included_files.add(resolved)
-
         # Recursive call - each included file extracts its own compiler and
         # resolves its own asset paths before returning.
-        included_root, _ = _load_and_expand_mjcf(resolved, path_resolver, included_files)
+        included_root, _ = _load_and_expand_mjcf(resolved, path_resolver, include_stack)
 
         # Replace include element with children of included root
         idx = list(parent).index(include)
@@ -314,6 +354,7 @@ def parse_mjcf(
         collider_classes: A list of regular expressions. Collision geometries with a class matching one of the regular expressions will be parsed.
         no_class_as_colliders: If True, geometries without a class are parsed as collision geometries. If False, geometries without a class are parsed as visual geometries.
         force_show_colliders: If True, the collision shapes are always shown, even if there are visual shapes.
+            Collider planes in MJCF groups 0-2 remain visible even when this is False.
         enable_self_collisions: If True, self-collisions are enabled.
         ignore_inertial_definitions: If True, the inertial parameters defined in the MJCF are ignored and the inertia is calculated from the shape geometry.
         collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged.
@@ -472,13 +513,30 @@ def parse_mjcf(
                         if key in builder.custom_attributes:
                             builder.custom_attributes[key].values[0] = value
 
-        sleep_enabled_attr = builder.custom_attributes.get("mujoco:enable_sleeping")
-        if sleep_enabled_attr is not None:
-            for option_elem in root.findall("option"):
-                for flag_elem in option_elem.findall("flag"):
-                    parsed = parse_custom_attributes(flag_elem.attrib, [sleep_enabled_attr], "mjcf")
-                    if "mujoco:enable_sleeping" in parsed:
-                        sleep_enabled_attr.values[0] = parsed["mujoco:enable_sleeping"]
+        flag_attrs = [
+            attr
+            for attr in builder_custom_attr_option
+            if attr.namespace == "mujoco" and (attr.name.startswith("flag_") or attr.name == "enable_sleeping")
+        ]
+        flag_names = {attr.mjcf_attribute_name for attr in flag_attrs} | {"gravity"}
+        gravity_enabled = True
+        for option_elem in root.findall("option"):
+            for flag_elem in option_elem.findall("flag"):
+                unknown = set(flag_elem.attrib) - flag_names
+                if unknown:
+                    warnings.warn(
+                        f"MJCF option <flag> has unsupported attribute(s) {sorted(unknown)!r}; ignoring.",
+                        stacklevel=2,
+                    )
+                for key, value in parse_custom_attributes(flag_elem.attrib, flag_attrs, "mjcf").items():
+                    builder.custom_attributes[key].values[0] = value
+                if "gravity" in flag_elem.attrib:
+                    gravity_enabled = SolverMuJoCo._parse_enable_disable(flag_elem.attrib["gravity"])
+        if not gravity_enabled:
+            if builder.current_world >= 0:
+                builder.world_gravity[builder.current_world] = wp.vec3()
+            else:
+                builder.gravity = wp.vec3()
 
     class_parent = {}
     class_children = {}
@@ -548,9 +606,8 @@ def parse_mjcf(
     explicit_pair_geom_names: set[str] = set()
     for contact in contact_sections:
         for pair in contact.findall("pair"):
-            pair_attrib = resolve_element_attrib(pair, "pair")
             for geom_key in ("geom1", "geom2"):
-                geom_name = pair_attrib.get(geom_key)
+                geom_name = pair.get(geom_key)
                 if geom_name:
                     explicit_pair_geom_names.add(geom_name)
 
@@ -572,7 +629,14 @@ def parse_mjcf(
                 if not os.path.isabs(fname):
                     fname = os.path.abspath(os.path.join(mjcf_dirname, fname))
                 name = mesh_name or ".".join(os.path.basename(fname).split(".")[:-1])
-                mesh_assets[name] = {"file": fname, "scale": mesh_scale, "maxhullvert": maxhullvert}
+                refpos, refquat = _parse_mesh_ref_pose(mesh.attrib, f"MJCF mesh {name!r}")
+                mesh_assets[name] = {
+                    "file": fname,
+                    "scale": mesh_scale,
+                    "refpos": refpos,
+                    "refquat": refquat,
+                    "maxhullvert": maxhullvert,
+                }
             elif "vertex" in mesh_attrib:
                 name = mesh_name
                 if not name:
@@ -631,24 +695,7 @@ def parse_mjcf(
                         )
                     texcoords = texcoords.reshape(-1, 2)
 
-                try:
-                    refpos = np.array(mesh_attrib.get("refpos", "0 0 0").split(), dtype=np.float32)
-                except ValueError as exc:
-                    raise ValueError(f"Inline MJCF mesh {name!r} has invalid refpos data.") from exc
-                try:
-                    refquat = np.array(mesh_attrib.get("refquat", "1 0 0 0").split(), dtype=np.float32)
-                except ValueError as exc:
-                    raise ValueError(f"Inline MJCF mesh {name!r} has invalid refquat data.") from exc
-                if refpos.shape != (3,):
-                    raise ValueError(f"Inline MJCF mesh {name!r} refpos must have 3 values.")
-                if refquat.shape != (4,):
-                    raise ValueError(f"Inline MJCF mesh {name!r} refquat must have 4 values.")
-                refquat_norm = np.linalg.norm(refquat)
-                if not np.isfinite(refquat_norm) or refquat_norm == 0.0:
-                    raise ValueError(f"Inline MJCF mesh {name!r} refquat must be finite and nonzero.")
-                if not np.all(np.isfinite(refpos)):
-                    raise ValueError(f"Inline MJCF mesh {name!r} refpos must contain only finite values.")
-                refquat /= refquat_norm
+                refpos, refquat = _parse_mesh_ref_pose(mesh.attrib, f"Inline MJCF mesh {name!r}")
 
                 mesh_assets[name] = {
                     "vertices": vertices,
@@ -663,6 +710,16 @@ def parse_mjcf(
         for texture in asset.findall("texture"):
             tex_name = texture.attrib.get("name")
             tex_file = texture.attrib.get("file")
+            builtin = texture.attrib.get("builtin", "none")
+            if tex_name and not tex_file and builtin != "none":
+                # Procedural MuJoCo textures (checker, gradient, flat) have no image; keep their
+                # mean color so textured geoms such as floors keep their authored tone.
+                rgb1 = np.array(texture.attrib.get("rgb1", "0.8 0.8 0.8").split(), dtype=np.float32)[:3]
+                rgb2 = np.array(texture.attrib.get("rgb2", "0.5 0.5 0.5").split(), dtype=np.float32)[:3]
+                # Flat textures fill everything but the bottom face of cube textures with rgb1.
+                mean = rgb1 if builtin == "flat" else 0.5 * (rgb1 + rgb2)
+                texture_assets[tex_name] = {"builtin_color": tuple(float(v) for v in mean)}
+                continue
             if not tex_name or not tex_file:
                 continue
             tex_path = os.path.join(texture_dir, tex_file)
@@ -684,11 +741,15 @@ def parse_mjcf(
             # Parse attributes
             nrow = int(hfield.attrib.get("nrow", "100"))
             ncol = int(hfield.attrib.get("ncol", "100"))
-            size_str = hfield.attrib.get("size", "1 1 1 0")
+            # MJCF requires all four sizes; do not turn an invalid base into
+            # the solver's sentinel for native fields without MJCF metadata.
+            size_str = hfield.attrib.get("size", "")
             size_arr = np.array(size_str.split(), dtype=np.float32)
-            if size_arr.size < 4:
-                size_arr = np.pad(size_arr, (0, 4 - size_arr.size), constant_values=0.0)
-            size = tuple(size_arr[:4])
+            if size_arr.size != 4:
+                raise ValueError(f"MJCF heightfield {hfield_name!r} size must contain exactly four values")
+            if not np.all(np.isfinite(size_arr)) or np.any(size_arr <= 0.0):
+                raise ValueError(f"MJCF heightfield {hfield_name!r} size values must be finite and positive")
+            size = tuple(size_arr)
             # Parse optional file path
             file_attr = hfield.attrib.get("file")
             file_path = None
@@ -725,27 +786,44 @@ def parse_mjcf(
     ) -> list[Mesh]:
         mesh_asset = mesh_assets[mesh_name]
         if "file" in mesh_asset:
-            return load_meshes_from_file(
+            refpos = mesh_asset["refpos"]
+            refquat = mesh_asset["refquat"]
+            has_ref_pose = not (np.all(refpos == 0.0) and np.array_equal(refquat, (1.0, 0.0, 0.0, 0.0)))
+            meshes = load_meshes_from_file(
                 mesh_asset["file"],
-                scale=scaling,
+                scale=(1.0, 1.0, 1.0) if has_ref_pose else scaling,
                 maxhullvert=maxhullvert,
                 override_color=override_color,
                 override_texture=override_texture,
             )
+            if not has_ref_pose:
+                return meshes
 
-        refquat = mesh_asset["refquat"]
-        rotation = np.asarray(
-            wp.quat_to_matrix(wp.quat(refquat[1], refquat[2], refquat[3], refquat[0])),
-            dtype=np.float32,
-        ).reshape(3, 3)
-        vertices = ((mesh_asset["vertices"] - mesh_asset["refpos"]) @ rotation) * scaling
+            transformed_meshes = []
+            for mesh in meshes:
+                vertices, normals = _apply_mesh_ref_pose(mesh.vertices, mesh.normals, refpos, refquat, scaling)
+                transformed_meshes.append(
+                    Mesh(
+                        vertices=vertices,
+                        indices=mesh.indices,
+                        normals=normals,
+                        uvs=mesh.uvs,
+                        compute_inertia=mesh.has_inertia,
+                        is_solid=mesh.is_solid,
+                        maxhullvert=mesh.maxhullvert,
+                        color=mesh.color,
+                        roughness=mesh.roughness,
+                        metallic=mesh.metallic,
+                        texture=mesh.texture,
+                    )
+                )
+            return transformed_meshes
+
+        vertices, normals = _apply_mesh_ref_pose(
+            mesh_asset["vertices"], mesh_asset["normals"], mesh_asset["refpos"], mesh_asset["refquat"], scaling
+        )
         faces = mesh_asset["faces"]
-        normals = mesh_asset["normals"]
         texcoords = mesh_asset["texcoords"]
-        if normals is not None:
-            normals = (normals @ rotation) / scaling
-            lengths = np.linalg.norm(normals, axis=1, keepdims=True)
-            normals = np.divide(normals, lengths, out=np.zeros_like(normals), where=lengths > 0.0)
 
         if faces is None:
             hull_vertices, faces = remesh_convex_hull(vertices, maxhullvert=maxhullvert)
@@ -913,11 +991,18 @@ def parse_mjcf(
             return wp.quat_from_matrix(wp.mat33(rot_matrix))
         if "zaxis" in attrib:
             zaxis = np.array(attrib["zaxis"].split(), dtype=float)
-            zaxis = wp.normalize(wp.vec3(*zaxis))
-            xaxis = wp.normalize(wp.cross(wp.vec3(0, 0, 1), zaxis))
-            yaxis = wp.normalize(wp.cross(zaxis, xaxis))
-            rot_matrix = np.array([xaxis, yaxis, zaxis]).T
-            return wp.quat_from_matrix(wp.mat33(rot_matrix))
+            zaxis /= np.linalg.norm(zaxis)
+            axis = np.array([-zaxis[1], zaxis[0], 0.0])
+            axis_norm_sq = np.dot(axis, axis)
+            # Match MuJoCo's mjuu_z2quat, including mjuu_normvec's mjEPS cutoff.
+            if axis_norm_sq < 1e-14:
+                axis = np.array([1.0, 0.0, 0.0])
+                axis_norm = 0.0
+            else:
+                axis_norm = np.sqrt(axis_norm_sq)
+                axis /= axis_norm
+            half_angle = 0.5 * np.arctan2(axis_norm, zaxis[2])
+            return wp.quat(*(axis * np.sin(half_angle)), np.cos(half_angle))
         return wp.quat_identity()
 
     def parse_fromto_transform(
@@ -1012,7 +1097,8 @@ def parse_mjcf(
                 geom_mass_explicit = None
 
             shape_cfg = builder.default_shape_cfg.copy()
-            shape_cfg.is_visible = visible
+            # Keep floor colliders in MuJoCo's default visible groups.
+            shape_cfg.is_visible = visible or (not just_visual and geom_type == "plane" and 0 <= geom_group <= 2)
             shape_cfg.has_shape_collision = not just_visual
             shape_cfg.has_particle_collision = not just_visual
             shape_cfg.density = geom_density
@@ -1106,6 +1192,12 @@ def parse_mjcf(
             material_info = material_assets.get(material_name, {})
             rgba = geom_attrib.get("rgba", material_info.get("rgba"))
             material_color = None
+            builtin_color = texture_assets.get(material_info.get("texture"), {}).get("builtin_color")
+            if builtin_color is not None and "rgba" not in geom_attrib:
+                # MuJoCo multiplies the material rgba (default white) with the texture color.
+                tint = np.array((rgba or "1 1 1 1").split(), dtype=np.float32)
+                tint = np.pad(tint, (0, max(0, 4 - tint.size)), constant_values=1.0)
+                rgba = " ".join(str(v) for v in (*(np.array(builtin_color) * tint[:3]), tint[3]))
             if rgba is not None:
                 rgba_values = np.array(rgba.split(), dtype=np.float32)
                 if len(rgba_values) >= 3:
@@ -1138,11 +1230,7 @@ def parse_mjcf(
                         print(f"Warning: mesh asset for fitting not found for {geom_name}, skipping geom")
                     continue
                 else:
-                    if "mesh" in geom_defaults:
-                        mesh_scale = parse_vec(geom_defaults["mesh"], "scale", mesh_assets[mesh_name]["scale"])
-                    else:
-                        mesh_scale = mesh_assets[mesh_name]["scale"]
-                    scaling = np.array(mesh_scale) * scale
+                    scaling = np.asarray(mesh_assets[mesh_name]["scale"]) * scale
                     maxhullvert = mesh_assets[mesh_name].get("maxhullvert", mesh_maxhullvert)
 
                     m_meshes = load_mesh_asset(mesh_name, scaling, maxhullvert)
@@ -1388,8 +1476,10 @@ def parse_mjcf(
 
                 # Convert MuJoCo size (size_x, size_y, size_z, size_base) to Newton format.
                 # In MuJoCo, the heightfield's lowest point (data=0) is at the geom origin,
-                # so min_z=0 and max_z=size_z. size_base (depth below origin) is ignored.
-                mj_size_x, mj_size_y, mj_size_z, _mj_size_base = hfield_asset["size"]
+                # so min_z=0 and max_z=size_z. Preserve the base separately for MuJoCo.
+                mj_size_x, mj_size_y, mj_size_z, mj_size_base = hfield_asset["size"]
+                if shape_builder is builder:
+                    custom_attributes["mujoco:hfield_base"] = mj_size_base * scale
                 heightfield = Heightfield(
                     data=elevation,
                     nrow=nrow,
@@ -1880,7 +1970,7 @@ def parse_mjcf(
         # Infer if this is a root body by checking if parent matches the outer parent_body parameter
         # Root bodies are direct children of <worldbody>, where parent == parent_body (closure variable)
         is_mjcf_root = parent == parent_body
-        body_class = body.get("class") or body.get("childclass")
+        body_class = body.get("childclass")
         if body_class is None:
             body_class = childclass
             defaults = incoming_defaults
@@ -1888,7 +1978,7 @@ def parse_mjcf(
             if is_ignored_class(body_class):
                 return
             defaults = resolve_class_defaults(body_class, incoming_defaults)
-        body_attrib = merge_attrib(defaults.get("body", {}), body.attrib)
+        body_attrib = body.attrib
         body_name = body_attrib.get("name", f"body_{builder.body_count}")
         body_name = sanitize_name(body_name)
         has_inertial_definition = body.find("inertial") is not None
@@ -2009,18 +2099,26 @@ def parse_mjcf(
                     ball_damping = parse_float(joint_attrib, "damping", default_joint_damping)
                     break
                 is_angular = joint_type_str == "hinge"
+                is_linear = joint_type_str == "slide"
+                if is_linear:
+                    mjcf_slide_joint_names.add(joint_name[-1])
                 axis_vec = parse_vec(joint_attrib, "axis", (0.0, 0.0, 1.0))
                 # Only convert deg->rad when an explicit range is given; the default
                 # sentinel (+/-MAXVAL) represents "unlimited" and must not be scaled.
                 has_range = "range" in joint_attrib
                 limit_lower = np.deg2rad(joint_range[0]) if has_range and is_angular and use_degrees else joint_range[0]
                 limit_upper = np.deg2rad(joint_range[1]) if has_range and is_angular and use_degrees else joint_range[1]
+                if has_range and is_linear:
+                    limit_lower *= scale
+                    limit_upper *= scale
                 # MJCF ranges use absolute qpos, while Newton joint coordinates use qpos - ref.
                 # SolverMuJoCo adds ref back when it builds jnt_range.
                 if has_range:
                     joint_ref_value = parse_float(joint_attrib, "ref", 0.0)
                     if is_angular and use_degrees:
                         joint_ref_value = np.deg2rad(joint_ref_value)
+                    elif is_linear:
+                        joint_ref_value *= scale
                     limit_lower -= joint_ref_value
                     limit_upper -= joint_ref_value
 
@@ -2076,6 +2174,10 @@ def parse_mjcf(
                     parsing_mode="mjcf",
                     context={"use_degrees": use_degrees, "joint_type": joint_type_str},
                 )
+                if is_linear:
+                    for attr_name in ("mujoco:dof_ref", "mujoco:dof_springref", "mujoco:limit_margin"):
+                        if attr_name in dof_attr:
+                            dof_attr[attr_name] *= scale
                 if has_solreflimit_mode:
                     # The mode keeps native MJCF semantics separate from
                     # Newton-authored force-space ``joint_limit_ke``/``kd``:
@@ -2319,12 +2421,7 @@ def parse_mjcf(
                 I_m[1, 1] = diaginertia[1] * scale**2
                 I_m[2, 2] = diaginertia[2] * scale**2
             else:
-                fullinertia = inertial_attrib.get("fullinertia")
-                if fullinertia is None:
-                    raise ValueError(
-                        f"MJCF inertial element for body '{body_label_path}' must define "
-                        "either diaginertia or fullinertia."
-                    )
+                fullinertia = inertial_attrib.get("fullinertia", "0 0 0 0 0 0")
                 fullinertia = np.array(fullinertia.split(), dtype=np.float32)
                 if fullinertia.shape[0] != 6:
                     raise ValueError(
@@ -2700,6 +2797,7 @@ def parse_mjcf(
     # Maps individual MJCF joint names to their specific DOF index.
     # Used to resolve actuators targeting specific joints within combined Newton joints.
     mjcf_joint_name_to_dof: dict[str, int] = {}
+    mjcf_slide_joint_names: set[str] = set()
     # Maps tendon names to their index in the tendon custom attributes.
     # Used to resolve actuators targeting tendons.
     tendon_name_to_idx: dict[str, int] = {}
@@ -2818,8 +2916,8 @@ def parse_mjcf(
         pairs = (pair for contact in contact_sections for pair in contact.findall("pair"))
         for pair in pairs:
             merged_attrib = resolve_element_attrib(pair, "pair")
-            geom1_name = merged_attrib.get("geom1")
-            geom2_name = merged_attrib.get("geom2")
+            geom1_name = pair.get("geom1")
+            geom2_name = pair.get("geom2")
 
             if not geom1_name or not geom2_name:
                 if verbose:
@@ -3289,6 +3387,7 @@ def parse_mjcf(
             act_name = merged_attrib.get("name", f"{actuator_type}_{target_name_for_log}")
 
             # Extract gains based on actuator type
+            ctrlrange_is_derived = False
             if actuator_type == "position":
                 kp = parse_float(merged_attrib, "kp", 1.0)  # MuJoCo default kp=1
                 kv = parse_float(merged_attrib, "kv", 0.0)  # Optional velocity damping
@@ -3323,6 +3422,7 @@ def parse_mjcf(
                         radius = (upper - lower) / 2.0 * inheritrange
                         merged_attrib["ctrlrange"] = f"{mean - radius} {mean + radius}"
                         merged_attrib["ctrllimited"] = "true"
+                        ctrlrange_is_derived = True
                 # Non-joint actuators (body, tendon, etc.) must use CTRL_DIRECT
                 if trntype != 0 or total_dofs == 0 or ctrl_direct:
                     ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
@@ -3362,9 +3462,54 @@ def parse_mjcf(
                             builder.joint_target_mode[dof_idx] = int(JointTargetMode.VELOCITY)
                         builder.joint_target_kd[dof_idx] = kv
 
+            elif actuator_type == "intvelocity":
+                kp = parse_float(merged_attrib, "kp", 1.0)
+                kv = parse_float(merged_attrib, "kv", 0.0)
+                dampratio = parse_float(merged_attrib, "dampratio", 0.0)
+                gainprm = vec10(kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                biasprm = vec10(0.0, -kp, -kv if kv > 0.0 else dampratio, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
+                actrange_is_derived = False
+                inheritrange = parse_float(merged_attrib, "inheritrange", 0.0)
+                if inheritrange > 0 and joint_name and qd_start >= 0:
+                    # Joint limits are stored relative to ref; activation bounds use absolute qpos.
+                    dof_ref_value = 0.0
+                    ref_attr = builder.custom_attributes.get("mujoco:dof_ref")
+                    if ref_attr is not None and isinstance(ref_attr.values, dict):
+                        dof_ref_value = float(ref_attr.values.get(qd_start, ref_attr.default))
+                    lower = builder.joint_limit_lower[qd_start] + dof_ref_value
+                    upper = builder.joint_limit_upper[qd_start] + dof_ref_value
+                    if lower < upper:
+                        mean = (upper + lower) / 2.0
+                        radius = (upper - lower) / 2.0 * inheritrange
+                        merged_attrib["actrange"] = f"{mean - radius} {mean + radius}"
+                        merged_attrib["actlimited"] = "true"
+                        actrange_is_derived = True
+
             elif actuator_type == "motor":
                 gainprm = vec10(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
+
+            elif actuator_type == "muscle":
+                timeconst = parse_vec(merged_attrib, "timeconst", [0.01, 0.04])
+                muscle_range = parse_vec(merged_attrib, "range", [0.75, 1.05])
+                tausmooth = parse_float(merged_attrib, "tausmooth", 0.0)
+                if tausmooth < 0.0:
+                    raise ValueError("MJCF muscle actuator tausmooth must be nonnegative.")
+                muscle_params = [
+                    float(muscle_range[0]),
+                    float(muscle_range[1]),
+                    parse_float(merged_attrib, "force", -1.0),
+                    parse_float(merged_attrib, "scale", 200.0),
+                    parse_float(merged_attrib, "lmin", 0.5),
+                    parse_float(merged_attrib, "lmax", 1.6),
+                    parse_float(merged_attrib, "vmax", 1.5),
+                    parse_float(merged_attrib, "fpmax", 1.3),
+                    parse_float(merged_attrib, "fvmax", 1.2),
+                ]
+                gainprm = vec10(*muscle_params, 0.0)
+                biasprm = vec10(*muscle_params, 0.0)
                 ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
 
             elif actuator_type == "damper":
@@ -3397,6 +3542,24 @@ def parse_mjcf(
                 parsing_mode="mjcf",
                 context={"actuator_name": act_name},
             )
+            if actuator_type == "muscle":
+                parsed_attrs["mujoco:actuator_dynprm"] = vec10(
+                    float(timeconst[0]), float(timeconst[1]), tausmooth, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+                )
+            if (
+                actuator_type in {"position", "velocity", "intvelocity"}
+                and target_joint_name in mjcf_slide_joint_names
+                and not ctrlrange_is_derived
+                and "mujoco:actuator_ctrlrange" in parsed_attrs
+            ):
+                parsed_attrs["mujoco:actuator_ctrlrange"] *= scale
+            if (
+                actuator_type == "intvelocity"
+                and target_joint_name in mjcf_slide_joint_names
+                and not actrange_is_derived
+                and "mujoco:actuator_actrange" in parsed_attrs
+            ):
+                parsed_attrs["mujoco:actuator_actrange"] *= scale
             if crank_length is not None:
                 parsed_attrs["mujoco:actuator_cranklength"] = crank_length
 
@@ -3408,6 +3571,12 @@ def parse_mjcf(
             shortcut_type_defaults = {
                 "position": {"mujoco:actuator_biastype": 1},  # affine
                 "velocity": {"mujoco:actuator_biastype": 1},  # affine
+                "muscle": {
+                    "mujoco:actuator_dyntype": 4,  # muscle
+                    "mujoco:actuator_gaintype": 2,  # muscle
+                    "mujoco:actuator_biastype": 2,  # muscle
+                },
+                "intvelocity": {"mujoco:actuator_biastype": 1, "mujoco:actuator_dyntype": 1},
                 "damper": {
                     "mujoco:actuator_gaintype": 1,  # affine
                     "mujoco:actuator_biastype": 0,  # none

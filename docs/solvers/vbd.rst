@@ -10,9 +10,9 @@ VBD
 Vertex Block Descent (VBD): cloth, soft bodies, rigid bodies (joints,
 contacts, rods), and their interactions are all solved in one VBD loop, with
 joint and contact constraints enforced through an augmented-Lagrangian (ALM)
-extension of the method. Enable the ALM constraint path with
-``rigid_compliant_alm=True`` (recommended); omitting the option currently
-retains the deprecated legacy path during the migration period.
+extension of the method. The compliant ALM constraint path is enabled
+by default (``rigid_compliant_alm=True``). Pass ``rigid_compliant_alm=False``
+explicitly to retain the deprecated legacy path during its migration period.
 
 .. experimental::
 
@@ -70,11 +70,51 @@ Model Inputs
 *In development.* This section will explain what the solver consumes from
 :class:`~newton.ModelBuilder` for each system: triangle meshes for cloth,
 tetrahedral meshes for soft bodies, rigid bodies with the supported joint
-types (including rods), the ALM constraint mode (``rigid_compliant_alm=True``,
-recommended) versus the deprecated legacy path, and the deprecated legacy-path
-controls — ``model.vbd.joint_is_hard`` and
+types (including rods), the default compliant ALM constraint mode
+(``rigid_compliant_alm=True``) versus the deprecated legacy path, and the deprecated
+legacy-path controls — ``model.vbd.joint_is_hard`` and
 :meth:`~newton.solvers.SolverVBD.set_joint_constraint_mode` (deprecated since
 1.6; no solver-mode effect under compliant ALM).
+
+Shell bending plasticity
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+:class:`~newton.solvers.SolverVBD` supports an optional, rate-independent,
+perfectly plastic bending law for triangle-mesh shells. The default solver
+remains elastic. Register the VBD attributes before finalizing the model,
+author per-edge yield angles in radians, and enable the mode at construction:
+
+.. code-block:: python
+
+    builder = newton.ModelBuilder()
+    newton.solvers.SolverVBD.register_custom_attributes(builder)
+    # Add cloth/shell geometry, then supply a yield angle for each bending edge.
+    builder.custom_attributes["vbd:edge_bending_yield_angle"].values = {
+        edge: yield_angle for edge, yield_angle in enumerate(yield_angles)
+    }
+    builder.color()
+    model = builder.finalize()
+    solver = newton.solvers.SolverVBD(
+        model, particle_enable_bending_plasticity=True
+    )
+    state_in, state_out = model.state(), model.state()
+
+An edge's yield angle limits its elastic angular deviation; zero gives no
+elastic springback, and the default infinity retains elastic behavior. Scale
+angles with the rest mesh's dual widths to model a fixed yield curvature.
+After each timestep, excess bending is retained in
+``state_out.vbd.edge_plastic_angle``. Subsequent steps use the model's original
+``edge_rest_angle`` plus this state-local offset. The model is never deformed
+in place, so different states can share it without sharing creases.
+
+``solver.reset(state, world_mask=mask, flags=newton.StateFlags.PARTICLE_Q)``
+restores selected worlds' original particle positions and clears their plastic
+angles. Velocity-only resets preserve creases. CPU, CUDA, in-place steps, and
+CUDA graph replay are supported. This mode does not implement membrane
+plasticity, hardening, fracture, or automatic differentiation. Edge attributes
+are runtime-only data indexed by generated hinges, rather than USD mesh
+material attributes. See :doc:`/guide/franka_bottle_squeeze` for a material
+conversion and robot manipulation example.
 
 Coupling Modes
 ~~~~~~~~~~~~~~

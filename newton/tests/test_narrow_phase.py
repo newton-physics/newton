@@ -117,12 +117,36 @@ class TestNarrowPhaseBufferWarnings(unittest.TestCase):
                     wp.launch(
                         verify_narrow_phase_buffers,
                         dim=1,
-                        inputs=[zero, 0] * 11 + [active_slots, capacity, zero, 80],
+                        inputs=[zero, 0] * 11 + [active_slots, capacity, zero, zero, 80],
                         device=device,
                     )
                 finally:
                     output = capture.end()
                 self.assertEqual("Contact reduction hashtable fill ratio" in output, expected_warning, output)
+
+    @unittest.skipIf(sys.platform == "win32", "Warp CPU printf capture is unreliable on Windows")
+    def test_reduction_buffer_overflow_warning(self):
+        """Report contact candidates dropped because the reduction buffer was full."""
+        device = "cpu"
+        zero = wp.zeros(1, dtype=int, device=device)
+        active_slots = wp.zeros(101, dtype=int, device=device)
+        for overflows, expected_warning in ((0, False), (3, True)):
+            with self.subTest(overflows=overflows):
+                buffer_overflows = wp.array([overflows], dtype=int, device=device)
+                capture = StdOutCapture()
+                capture.begin()
+                try:
+                    wp.launch(
+                        verify_narrow_phase_buffers,
+                        dim=1,
+                        inputs=[zero, 0] * 11 + [active_slots, 100, zero, buffer_overflows, 80],
+                        device=device,
+                    )
+                finally:
+                    output = capture.end()
+                self.assertEqual("Contact reduction buffer overflowed" in output, expected_warning, output)
+                if expected_warning:
+                    self.assertIn("3 contact candidates", output)
 
 
 def check_normal_direction(pos_a, pos_b, normal, tolerance=1e-5):
@@ -352,6 +376,10 @@ class _NarrowPhaseSetupMixin:
             else:
                 geom_collision_radius[i] = np.linalg.norm(scale_array) if len(scale_array) >= 3 else 10.0
 
+        bounds_count = (
+            n if any(g["type"] in (GeoType.MESH, GeoType.HFIELD, GeoType.CONVEX_MESH) for g in geom_list) else 0
+        )
+
         return (
             wp.array(geom_types, dtype=wp.int32),
             wp.array(geom_data, dtype=wp.vec4),
@@ -361,8 +389,8 @@ class _NarrowPhaseSetupMixin:
             wp.array(geom_collision_radius, dtype=wp.float32),
             wp.full(len(geom_list), -1, dtype=wp.int32),  # shape_sdf_index
             wp.full(len(geom_list), ShapeFlags.COLLIDE_SHAPES, dtype=wp.int32),  # shape_flags
-            wp.zeros(len(geom_list), dtype=wp.vec3),  # shape_collision_aabb_lower
-            wp.ones(len(geom_list), dtype=wp.vec3),  # shape_collision_aabb_upper
+            wp.zeros(bounds_count, dtype=wp.vec3),  # shape_collision_aabb_lower
+            wp.ones(bounds_count, dtype=wp.vec3),  # shape_collision_aabb_upper
             wp.full(len(geom_list), wp.vec3i(4, 4, 4), dtype=wp.vec3i),  # shape_voxel_resolution
         )
 
@@ -437,6 +465,32 @@ class _NarrowPhaseSetupMixin:
 
 class TestNarrowPhase(_NarrowPhaseSetupMixin, unittest.TestCase):
     """Test NarrowPhase collision detection API with various primitive pairs."""
+
+    def test_primitive_pairs_without_local_bounds(self):
+        """Allow primitive custom callers to omit optional local bounds."""
+        devices = ["cpu"]
+        if _cuda_available:
+            devices.append("cuda:0")
+        geoms = [
+            {"type": GeoType.BOX, "data": ([1.0, 1.0, 1.0], 0.0)},
+            {
+                "type": GeoType.CYLINDER,
+                "data": ([0.5, 0.5, 0.0], 0.0),
+                "transform": ([0.0, 0.0, 1.25], [0.0, 0.0, 0.0, 1.0]),
+            },
+        ]
+        for device in devices:
+            for split in (False, True) if device != "cpu" else (False,):
+                with self.subTest(device=device, split=split), wp.ScopedDevice(device):
+                    self.narrow_phase = NarrowPhase(max_candidate_pairs=1, device=device, split_gjk_mpr=split)
+                    arrays = self._create_geometry_arrays(geoms)
+                    self.assertEqual(arrays[8].shape[0], 0)
+                    self.assertEqual(arrays[9].shape[0], 0)
+                    count, pairs, _points, normals, depths, _tangents = self._run_narrow_phase(geoms, [(0, 1)])
+                    self.assertGreater(count, 0)
+                    signs = np.where(pairs[:, 0] == 0, 1.0, -1.0)
+                    np.testing.assert_allclose(normals, signs[:, None] * np.array([0.0, 0.0, 1.0]), atol=1.0e-3)
+                    np.testing.assert_allclose(depths, -0.25, atol=1.0e-3)
 
     def test_launch_forwards_convex_support_metadata(self):
         """Forward cooked convex support metadata through the standard launch path."""

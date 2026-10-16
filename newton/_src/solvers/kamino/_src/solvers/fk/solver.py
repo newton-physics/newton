@@ -1027,7 +1027,9 @@ class ForwardKinematicsSolver:
             RuntimeError: If the effective set of joints that are actuated for FK changed.
             ValueError: If an FK actuation override is invalid.
         """
-        if not flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES):
+        if not flags & (
+            ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES
+        ):
             return
         joint_count = self.model.size.sum_of_num_joints
         if joint_count == 0:

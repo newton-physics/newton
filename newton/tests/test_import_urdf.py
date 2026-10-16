@@ -16,6 +16,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton._src.geometry.types import GeoType
+from newton._src.utils.import_urdf import parse_urdf as direct_parse_urdf
 from newton._src.utils.mesh import load_meshes_from_file
 from newton.tests.unittest_utils import assert_np_equal
 
@@ -483,6 +484,24 @@ class TestImportUrdfBasic(unittest.TestCase):
                 assert_np_equal(builder.shape_transform[0][:], np.array([1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]))
                 assert builder.shape_source[0].vertices.shape[0] == 8
                 assert builder.shape_source[0].indices.shape[0] == 3 * 12
+
+    def test_empty_mesh_reports_filename(self):
+        """Reject empty geometry before processing colors or material overrides."""
+        files = {
+            "empty.stl": bytes(84),
+            "broken.dae": TEXTURED_DAE.replace(
+                "<init_from>tex-image</init_from>", "<init_from>missing</init_from>"
+            ).encode(),
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for name, content in files.items():
+                path = Path(tmpdir) / name
+                path.write_bytes(content)
+                for color in (None, (1.0, 0.0, 0.0)):
+                    with self.subTest(file=name, color=color):
+                        with self.assertRaisesRegex(ValueError, "contains no triangles") as error:
+                            load_meshes_from_file(str(path), maxhullvert=0, override_color=color)
+                        self.assertIn(str(path), str(error.exception))
 
     def test_dae_visual_texture_urdf(self):
         """Verify URDF visual meshes preserve Collada texture bindings."""
@@ -2109,6 +2128,109 @@ class TestUrdfVelocityLimits(unittest.TestCase):
 class TestMimicConstraints(unittest.TestCase):
     """Tests for URDF mimic joint parsing."""
 
+    def test_mimic_chain_flattens_to_independent_reference(self):
+        """Verify affine mimic chains resolve to an independent joint."""
+        urdf = """
+        <robot name="chain">
+            <link name="base"/><link name="l1"/><link name="l2"/><link name="l3"/>
+            <joint name="j1" type="revolute">
+                <parent link="base"/><child link="l1"/>
+                <limit lower="-2" upper="2"/>
+            </joint>
+            <joint name="j2" type="revolute">
+                <parent link="l1"/><child link="l2"/>
+                <limit lower="-2" upper="2"/>
+                <mimic joint="j1" multiplier="2" offset="0.1"/>
+            </joint>
+            <joint name="j3" type="revolute">
+                <parent link="l2"/><child link="l3"/>
+                <limit lower="-2" upper="2"/>
+                <mimic joint="j2" multiplier="3" offset="0.2"/>
+            </joint>
+        </robot>
+        """
+        builder = newton.ModelBuilder()
+        builder.add_urdf(urdf)
+        model = builder.finalize(device="cpu")
+        j1 = model.joint_label.index("chain/j1")
+        j3 = model.joint_label.index("chain/j3")
+        self.assertEqual(model.joint_mimic_joint.numpy()[j3], j1)
+        np.testing.assert_allclose(model.joint_mimic_coeffs.numpy()[j3], (0.5, 6.0))
+
+    def test_scaled_mimic_chain_converts_joint_units(self):
+        """Scale a flattened chain for its follower and reference coordinates."""
+        cases = (
+            ("prismatic", "prismatic", (1.0, 6.0)),
+            ("revolute", "prismatic", (1.0, 12.0)),
+            ("prismatic", "revolute", (0.5, 3.0)),
+        )
+        for reference_type, follower_type, expected in cases:
+            with self.subTest(reference_type=reference_type, follower_type=follower_type):
+                urdf = f"""
+                <robot name="scaled_chain">
+                    <link name="base"/><link name="l1"/><link name="l2"/><link name="l3"/>
+                    <joint name="j1" type="{reference_type}">
+                        <parent link="base"/><child link="l1"/>
+                        <limit lower="-2" upper="2"/>
+                    </joint>
+                    <joint name="j2" type="{follower_type}">
+                        <parent link="l1"/><child link="l2"/>
+                        <limit lower="-2" upper="2"/>
+                        <mimic joint="j1" multiplier="2" offset="0.1"/>
+                    </joint>
+                    <joint name="j3" type="{follower_type}">
+                        <parent link="l2"/><child link="l3"/>
+                        <limit lower="-2" upper="2"/>
+                        <mimic joint="j2" multiplier="3" offset="0.2"/>
+                    </joint>
+                </robot>
+                """
+                builder = newton.ModelBuilder()
+                builder.add_urdf(urdf, scale=2.0)
+                model = builder.finalize(device="cpu")
+                j1 = model.joint_label.index("scaled_chain/j1")
+                j3 = model.joint_label.index("scaled_chain/j3")
+                self.assertEqual(model.joint_mimic_joint.numpy()[j3], j1)
+                np.testing.assert_allclose(model.joint_mimic_coeffs.numpy()[j3], expected)
+
+    def test_zero_scale_prismatic_mimic_reference_reports_error(self):
+        """Avoid dividing by a collapsed prismatic coordinate scale."""
+        urdf = """
+        <robot name="zero_scale">
+            <link name="base"/><link name="l1"/><link name="l2"/>
+            <joint name="j1" type="prismatic">
+                <parent link="base"/><child link="l1"/>
+                <limit lower="-1" upper="1"/>
+            </joint>
+            <joint name="j2" type="prismatic">
+                <parent link="l1"/><child link="l2"/>
+                <limit lower="-1" upper="1"/>
+                <mimic joint="j1"/>
+            </joint>
+        </robot>
+        """
+        with self.assertRaisesRegex(ValueError, "scale must be nonzero"):
+            newton.ModelBuilder().add_urdf(urdf, scale=0.0)
+
+    def test_mimic_cycle_reports_joint_names(self):
+        """Reject cyclic URDF mimic references with named joints."""
+        urdf = """
+        <robot name="cycle">
+            <link name="base"/><link name="l1"/><link name="l2"/>
+            <joint name="j1" type="revolute">
+                <parent link="base"/><child link="l1"/>
+                <mimic joint="j2"/>
+            </joint>
+            <joint name="j2" type="revolute">
+                <parent link="l1"/><child link="l2"/>
+                <mimic joint="j1"/>
+            </joint>
+        </robot>
+        """
+        builder = newton.ModelBuilder()
+        with self.assertRaisesRegex(ValueError, "[Cc]yclic.*j1.*j2"):
+            builder.add_urdf(urdf)
+
     def test_mimic_constraint_basic(self):
         """Verify URDF mimic tags create joint-owned mimic metadata."""
         builder = newton.ModelBuilder()
@@ -2329,10 +2451,128 @@ FRICTION_URDF = """
 
 
 class TestUrdfJointFriction(unittest.TestCase):
+    def test_joint_damping_warning_points_to_caller(self):
+        """Report the user's import line through the builder and direct parser."""
+        for entry_point, importer in (
+            ("builder", lambda builder: builder.add_urdf(FRICTION_URDF)),
+            ("parser", lambda builder: direct_parse_urdf(builder, FRICTION_URDF)),
+        ):
+            with self.subTest(entry_point=entry_point):
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always", DeprecationWarning)
+                    importer(newton.ModelBuilder())
+                deprecations = [warning for warning in caught if issubclass(warning.category, DeprecationWarning)]
+                self.assertEqual(len(deprecations), 1)
+                self.assertEqual(deprecations[0].filename, importer.__code__.co_filename)
+                self.assertEqual(deprecations[0].lineno, importer.__code__.co_firstlineno)
+
+    def test_joint_damping_mode_default_warns_for_authored_damping(self):
+        """Keep drive damping by default and warn only for authored damping."""
+        for source, expected, should_warn in (
+            (FRICTION_URDF, [1.0, 2.0], True),
+            (
+                FRICTION_URDF.replace('damping="1.0"', 'damping="0.0"').replace('damping="2.0"', 'damping="0.0"'),
+                [0.0, 0.0],
+                True,
+            ),
+            (FRICTION_URDF.replace(' damping="1.0"', "").replace(' damping="2.0"', ""), [3.0, 3.0], False),
+        ):
+            with self.subTest(should_warn=should_warn, expected=expected):
+                builder = newton.ModelBuilder()
+                builder.default_joint_cfg.damping = 0.5
+                builder.default_joint_cfg.target_kd = 3.0
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always", DeprecationWarning)
+                    builder.add_urdf(source)
+                deprecations = [warning for warning in caught if issubclass(warning.category, DeprecationWarning)]
+                self.assertEqual(len(deprecations), int(should_warn))
+                if should_warn:
+                    self.assertRegex(str(deprecations[0].message), r"joint_damping_mode.*passive.*1\.8")
+                model = builder.finalize(device="cpu")
+                np.testing.assert_allclose(model.joint_target_kd.numpy(), expected)
+                np.testing.assert_allclose(model.joint_damping.numpy(), [0.5, 0.5])
+
+    def test_joint_damping_mode_explicit_silences_deprecation(self):
+        """Apply explicit damping modes without warning about the default."""
+        for mode, target_kd, damping in (
+            ("drive", [1.0, 2.0], [0.5, 0.5]),
+            ("passive", [3.0, 3.0], [1.0, 2.0]),
+        ):
+            with self.subTest(mode=mode):
+                builder = newton.ModelBuilder()
+                builder.default_joint_cfg.damping = 0.5
+                builder.default_joint_cfg.target_kd = 3.0
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always", DeprecationWarning)
+                    builder.add_urdf(FRICTION_URDF, joint_damping_mode=mode)
+                self.assertFalse([warning for warning in caught if issubclass(warning.category, DeprecationWarning)])
+                model = builder.finalize(device="cpu")
+                np.testing.assert_allclose(model.joint_target_kd.numpy(), target_kd)
+                np.testing.assert_allclose(model.joint_damping.numpy(), damping)
+
+    def test_joint_damping_mode_invalid_does_not_modify_builder(self):
+        """Reject unknown damping modes before importing any bodies."""
+        builder = newton.ModelBuilder()
+        with self.assertRaisesRegex(ValueError, "joint_damping_mode"):
+            builder.add_urdf(FRICTION_URDF, joint_damping_mode="unknown")
+        self.assertEqual(builder.body_count, 0)
+
+    def test_drive_joint_damping_mapping(self):
+        """Restore per-joint drive damping without adding passive damping twice."""
+        for urdf, expected in (
+            (FRICTION_URDF, [1.0, 2.0]),
+            (FRICTION_URDF.replace('damping="1.0"', 'damping="0.0"'), [0.0, 2.0]),
+            (FRICTION_URDF.replace(' damping="1.0"', "").replace(' damping="2.0"', ""), [3.0, 3.0]),
+        ):
+            with self.subTest(expected=expected):
+                builder = newton.ModelBuilder()
+                builder.default_joint_cfg.damping = 0.5
+                builder.default_joint_cfg.target_kd = 3.0
+                parse_urdf(urdf, builder, joint_damping_mode="drive")
+                model = builder.finalize(device="cpu")
+                np.testing.assert_allclose(model.joint_target_kd.numpy(), expected)
+                np.testing.assert_allclose(model.joint_damping.numpy(), [0.5, 0.5])
+                np.testing.assert_allclose(model.joint_friction.numpy(), [0.25, 0.75])
+
+    def test_drive_planar_joint_damping_mapping(self):
+        """Apply configured passive damping to both planar axes in drive mode."""
+        urdf = """
+<robot name="planar_damping_test">
+    <link name="base_link"/>
+    <link name="child_link"/>
+    <joint name="planar_joint" type="planar">
+        <parent link="base_link"/>
+        <child link="child_link"/>
+        <axis xyz="0 0 1"/>
+        <dynamics damping="4.0"/>
+    </joint>
+</robot>
+"""
+        for source, expected in ((urdf, 4.0), (urdf.replace('<dynamics damping="4.0"/>', ""), 3.0)):
+            with self.subTest(expected=expected):
+                builder = newton.ModelBuilder()
+                builder.default_joint_cfg.damping = 0.5
+                builder.default_joint_cfg.target_kd = 3.0
+                parse_urdf(source, builder, joint_damping_mode="drive")
+                model = builder.finalize(device="cpu")
+                np.testing.assert_allclose(model.joint_target_kd.numpy(), [expected, expected])
+                np.testing.assert_allclose(model.joint_damping.numpy(), [0.5, 0.5])
+
+    def test_joint_damping_mode_is_per_import(self):
+        """An opt-in import must not change defaults for the next asset."""
+        builder = newton.ModelBuilder()
+        builder.default_joint_cfg.damping = 0.5
+        builder.default_joint_cfg.target_kd = 3.0
+        parse_urdf(FRICTION_URDF, builder, joint_damping_mode="drive")
+        parse_urdf(FRICTION_URDF, builder, joint_damping_mode="passive")
+        model = builder.finalize(device="cpu")
+        np.testing.assert_allclose(model.joint_target_kd.numpy(), [1.0, 2.0, 3.0, 3.0])
+        np.testing.assert_allclose(model.joint_damping.numpy(), [0.5, 0.5, 1.0, 2.0])
+
     def test_joint_damping_parsed_as_passive_damping(self):
         """Verify URDF joint damping populates passive damping, not drive damping."""
         builder = newton.ModelBuilder()
-        parse_urdf(FRICTION_URDF, builder)
+        parse_urdf(FRICTION_URDF, builder, joint_damping_mode="passive")
         model = builder.finalize()
 
         damping_values = model.joint_damping.numpy()
@@ -2353,7 +2593,7 @@ class TestUrdfJointFriction(unittest.TestCase):
         builder = newton.ModelBuilder()
         builder.default_joint_cfg.damping = 0.5
         builder.default_joint_cfg.target_kd = 3.0
-        parse_urdf(JOINT_URDF, builder)
+        parse_urdf(JOINT_URDF, builder, joint_damping_mode="passive")
         model = builder.finalize()
 
         joint_idx = builder.joint_label.index("joint_test/test_joint")
@@ -2379,7 +2619,7 @@ class TestUrdfJointFriction(unittest.TestCase):
 """
         builder = newton.ModelBuilder()
         builder.default_joint_cfg.target_kd = 3.0
-        parse_urdf(urdf, builder)
+        parse_urdf(urdf, builder, joint_damping_mode="passive")
         model = builder.finalize()
 
         joint_idx = builder.joint_label.index("planar_damping_test/planar_joint")
@@ -2391,7 +2631,7 @@ class TestUrdfJointFriction(unittest.TestCase):
     def test_joint_friction_parsed_from_urdf(self):
         """Joint friction values from <dynamics friction='...'> should be forwarded to the model."""
         builder = newton.ModelBuilder()
-        parse_urdf(FRICTION_URDF, builder)
+        parse_urdf(FRICTION_URDF, builder, joint_damping_mode="passive")
         model = builder.finalize()
 
         friction_values = model.joint_friction.numpy()

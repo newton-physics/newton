@@ -14,8 +14,8 @@ from newton._src.usd.utils import _resolve_asset_path, get_applied_api_schemas
 
 from .clamping import ClampingBase, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
 from .delay import Delay
-from .drives import DriveBase, DriveNeuralLSTM, DriveNeuralMLP, DrivePD, DrivePID
-from .utils import load_metadata
+from .drives import DriveBase, DriveNeuralGRU, DriveNeuralLSTM, DriveNeuralMLP, DrivePD, DrivePID
+from .utils import _looks_like_torch_checkpoint, load_metadata
 
 _DEPRECATED_UNSET = object()
 _COMPONENT_KIND_CONTROLLER_DEPRECATION_MSG = (
@@ -190,13 +190,14 @@ class _SchemaEntry:
     component_class: type | Callable[[dict[str, Any]], type]
     """Concrete class, or a callable that receives the parsed kwargs and
     returns the concrete class (e.g. for neural drives that pick
-    MLP vs LSTM at parse time).  The callable may also validate kwargs
+    MLP, LSTM, or GRU at parse time).  The callable may also validate kwargs
     and raise :class:`ValueError`.
     """
     kind: ComponentKind
 
 
 _NEURAL_DRIVE_TYPES: dict[str, type[DriveBase]] = {
+    "gru": DriveNeuralGRU,
     "mlp": DriveNeuralMLP,
     "lstm": DriveNeuralLSTM,
 }
@@ -206,7 +207,8 @@ def _resolve_neural_drive(kwargs: dict[str, Any]) -> type[DriveBase]:
     """Validate neural-control kwargs and return the concrete drive class.
 
     Inspects the checkpoint's ``model_type`` metadata to choose between
-    :class:`DriveNeuralMLP` and :class:`DriveNeuralLSTM`.
+    :class:`DriveNeuralGRU`, :class:`DriveNeuralMLP`, or
+    :class:`DriveNeuralLSTM`.
 
     Raises:
         ValueError: If ``model_path`` is empty or the checkpoint's
@@ -298,12 +300,19 @@ def register_actuator_component(
     )
 
 
-def parse_actuator_prim(prim) -> ActuatorParsed | None:
+def parse_actuator_prim(prim, *, allow_unsafe_torch_checkpoints: bool = False) -> ActuatorParsed | None:
     """Parse a USD Actuator prim into a composed actuator specification.
 
     Each detected schema directly maps to a component class with its
     extracted params. Returns ``None`` if the prim is not a
     ``NewtonActuator``.
+
+    Args:
+        prim: USD prim to parse.
+        allow_unsafe_torch_checkpoints: Allow ``newton:modelPath`` to reference
+            a Torch checkpoint. Only use this for trusted USD assets and
+            checkpoints: ``torch.export.load`` may execute code during model
+            finalization. Defaults to ``False``.
 
     Raises:
         ValueError: If the prim is a ``NewtonActuator`` but:
@@ -312,7 +321,8 @@ def parse_actuator_prim(prim) -> ActuatorParsed | None:
               ``PhysicsRevoluteJoint`` / ``PhysicsPrismaticJoint``,
             - has multiple drive schemas applied,
             - has no drive schema, or
-            - has a ``NewtonNeuralControlAPI`` with an unsupported model.
+            - has a ``NewtonNeuralControlAPI`` with an unsupported model or an
+              unapproved Torch checkpoint.
     """
     if prim.GetTypeName() != SchemaNames.ACTUATOR:
         return None
@@ -358,6 +368,15 @@ def parse_actuator_prim(prim) -> ActuatorParsed | None:
         detected.append(schema_name)
 
         kwargs = _read_schema_attrs(prim, schema_name)
+        if (
+            schema_name == SchemaNames.NEURAL_CONTROL
+            and not allow_unsafe_torch_checkpoints
+            and _looks_like_torch_checkpoint(kwargs.get("model_path") or "")
+        ):
+            raise ValueError(
+                f"Actuator prim '{prim.GetPath()}' references a Torch checkpoint via newton:modelPath; "
+                "pass allow_unsafe_torch_checkpoints=True only for trusted USD assets and checkpoints"
+            )
 
         if isinstance(entry.component_class, type):
             cls = entry.component_class

@@ -54,8 +54,6 @@ __all__ = [
     "convert_model_joint_transforms",
     "convert_model_materials",
     "convert_rigid_bodies",
-    "convert_target_coords_to_target_dofs",
-    "convert_target_dofs_to_target_coords",
     "refresh_masked_body_inertia",
     "validate_model_structural_updates",
 ]
@@ -993,95 +991,6 @@ def geometry_conversion_kernel(
         wp.atomic_add(model_num_collidable_geoms, 0, 1)
     else:
         geom_material[shape_id] = -1
-
-
-@wp.kernel
-def target_dofs_to_coords_conversion_kernel(
-    # Inputs
-    model_joints_dof_type: wp.array[wp.int32],
-    model_joints_dofs_offset: wp.array[wp.int32],
-    model_joints_coords_offset: wp.array[wp.int32],
-    joint_target_dofs: wp.array[wp.float32],
-    # Outputs
-    joint_target_coords: wp.array[wp.float32],
-):
-    # Read thread id (= joint id)
-    jid = wp.tid()
-
-    # Get dof/coords offsets and number of dofs
-    dof_offset = model_joints_dofs_offset[jid]
-    num_dofs = model_joints_dofs_offset[jid + 1] - dof_offset
-    coord_offset = model_joints_coords_offset[jid]
-
-    # Check whether coords = dofs for this joint
-    dof_type = model_joints_dof_type[jid]
-    orientation_dofs_offset = -1  # Offset of orientation dofs to convert
-    if dof_type == JointDoFType.FREE or dof_type == JointDoFType.SPHERICAL:
-        # Spherical/free joint: the last 3 dofs / 4 coords differ (Euler angles vs unit quaternion)
-        orientation_dofs_offset = num_dofs - 3
-        num_dofs -= 3
-
-    # Copy all dofs/coords that match
-    for k in range(num_dofs):
-        joint_target_coords[coord_offset + k] = joint_target_dofs[dof_offset + k]
-
-    # Convert Euler angles to unit quaternion if needed
-    if orientation_dofs_offset >= 0:
-        angles_offset = dof_offset + orientation_dofs_offset
-        angles = wp.vec3f(
-            joint_target_dofs[angles_offset],
-            joint_target_dofs[angles_offset + 1],
-            joint_target_dofs[angles_offset + 2],
-        )
-        quat = wp.quat_from_euler(angles, 2, 1, 0)
-        quat_offset = coord_offset + orientation_dofs_offset
-        for k in range(4):
-            joint_target_coords[quat_offset + k] = quat[k]
-
-
-@wp.kernel
-def target_coords_to_dofs_conversion_kernel(
-    # Inputs
-    model_joints_dof_type: wp.array[wp.int32],
-    model_joints_dofs_offset: wp.array[wp.int32],
-    model_joints_coords_offset: wp.array[wp.int32],
-    joint_target_coords: wp.array[wp.float32],
-    # Outputs
-    joint_target_dofs: wp.array[wp.float32],
-):
-    # Read thread id (= joint id)
-    jid = wp.tid()
-
-    # Get dof/coords offsets and number of dofs
-    dof_offset = model_joints_dofs_offset[jid]
-    num_dofs = model_joints_dofs_offset[jid + 1] - dof_offset
-    coord_offset = model_joints_coords_offset[jid]
-
-    # Check whether coords = dofs for this joint
-    dof_type = model_joints_dof_type[jid]
-    orientation_dofs_offset = -1  # Offset of orientation dofs to convert
-    if dof_type == JointDoFType.FREE or dof_type == JointDoFType.SPHERICAL:
-        # Spherical/free joint: the last 3 dofs / 4 coords differ (Euler angles vs unit quaternion)
-        orientation_dofs_offset = num_dofs - 3
-        num_dofs -= 3
-
-    # Copy all dofs/coords that match
-    for k in range(num_dofs):
-        joint_target_dofs[dof_offset + k] = joint_target_coords[coord_offset + k]
-
-    # Convert unit quaternion to Euler angles if needed
-    if orientation_dofs_offset >= 0:
-        quat_offset = coord_offset + orientation_dofs_offset
-        quat = wp.quat(
-            joint_target_coords[quat_offset],
-            joint_target_coords[quat_offset + 1],
-            joint_target_coords[quat_offset + 2],
-            joint_target_coords[quat_offset + 3],
-        )
-        angles = wp.quat_to_euler(quat, 2, 1, 0)
-        angles_offset = dof_offset + orientation_dofs_offset
-        for k in range(3):
-            joint_target_dofs[angles_offset + k] = angles[k]
 
 
 @wp.kernel
@@ -2258,7 +2167,7 @@ def convert_geometries(
     )
 
     # Compute total number of required contacts per world
-    if model.rigid_contact_max > 0:
+    if model.rigid_contact_max is not None:
         model_min_contacts = int(model.rigid_contact_max)
         min_contacts_per_world = model.rigid_contact_max // model.world_count
         world_min_contacts = [min_contacts_per_world] * model.world_count
@@ -2305,40 +2214,9 @@ def convert_geometries(
         heightfield_elevations=model.heightfield_elevations,
         collision_aabb_lower=model.shape_collision_aabb_lower,
         collision_aabb_upper=model.shape_collision_aabb_upper,
+        interior_point=model._shape_interior_point,
+        mesh_boundary_flags=model._mesh_boundary_flags,
+        mesh_boundary_start=model._shape_mesh_boundary_start,
         voxel_resolution=model._shape_voxel_resolution,
         collision_radius=model.shape_collision_radius,
-    )
-
-
-def convert_target_dofs_to_target_coords(
-    joint_target_dofs: wp.array[wp.float32], joint_target_coords: wp.array[wp.float32], model: ModelKamino
-):
-    wp.launch(
-        target_dofs_to_coords_conversion_kernel,
-        dim=model.size.sum_of_num_joints,
-        inputs=[
-            model.joints.dof_type,
-            model.joints.dofs_offset,
-            model.joints.coords_offset,
-            joint_target_dofs,
-            joint_target_coords,
-        ],
-        device=model.device,
-    )
-
-
-def convert_target_coords_to_target_dofs(
-    joint_target_coords: wp.array[wp.float32], joint_target_dofs: wp.array[wp.float32], model: ModelKamino
-):
-    wp.launch(
-        target_coords_to_dofs_conversion_kernel,
-        dim=model.size.sum_of_num_joints,
-        inputs=[
-            model.joints.dof_type,
-            model.joints.dofs_offset,
-            model.joints.coords_offset,
-            joint_target_coords,
-            joint_target_dofs,
-        ],
-        device=model.device,
     )

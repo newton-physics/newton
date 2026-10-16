@@ -19,7 +19,9 @@ Newton was initiated by [Disney Research](https://www.disneyresearch.com/), [Goo
 
 - **Python** 3.10+
 - **OS:** Linux (x86-64, aarch64), Windows (x86-64), or macOS (CPU only)
-- **GPU:** NVIDIA GPU (Maxwell or newer), driver 545 or newer (CUDA 12). No local CUDA Toolkit installation required. macOS runs on CPU.
+- **GPU:** Fresh installs currently select Warp 1.18, which requires an NVIDIA Turing GPU (compute capability 7.5+) and driver R580+ for CUDA acceleration.
+  On an R545–R579 driver or an older supported GPU, install with `warp-lang==1.17.0` (see the installation guide).
+  No local CUDA Toolkit is required; macOS runs on CPU.
 
 For detailed system requirements, see the [installation guide](https://newton-physics.github.io/newton/latest/guide/installation.html). For tested configurations and Newton's versioning and deprecation policies, see the [compatibility guide](https://newton-physics.github.io/newton/latest/guide/compatibility.html).
 
@@ -372,6 +374,71 @@ If you run the examples from a source checkout with uv, use
     <td align="center" width="33%">
       <code>python -m newton.examples cable_plectoneme</code>
     </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_initial_rest_pose.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_initial_rest_pose.jpg" alt="Cable Initial and Rest Poses">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples cable_initial_rest_pose</code>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="3"><h3>Tendon Examples</h3></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/tendon/example_tendon_pulley.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_tendon_pulley.jpg" alt="Tendon Pulley">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/tendon/example_tendon_pinhole.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_tendon_pinhole.jpg" alt="Tendon Pinhole">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/tendon/example_tendon_capstan_friction.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_tendon_capstan_friction.jpg" alt="Tendon Capstan Friction">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples tendon_pulley</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples tendon_pinhole</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples tendon_capstan_friction</code>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/tendon/example_tendon_mujoco_switch.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_tendon_mujoco_switch.jpg" alt="Tendon Dynamic Routing">
+      </a>
+    </td>
+    <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/tendon/example_tendon_3d_routing.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_tendon_3d_routing.jpg" alt="Tendon 3D Routing">
+      </a>
+    </td>
+    <td align="center" width="33%"></td>
+  </tr>
+  <tr>
+    <td align="center" width="33%">
+      <code>python -m newton.examples tendon_mujoco_switch</code>
+    </td>
+    <td align="center" width="33%">
+      <code>python -m newton.examples tendon_3d_routing</code>
+    </td>
+    <td align="center" width="33%"></td>
   </tr>
   <tr>
     <td colspan="3"><h3>Cloth Examples</h3></td>
@@ -880,6 +947,9 @@ If you run the examples from a source checkout with uv, use
       </a>
     </td>
     <td align="center" width="33%">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/contacts/example_adaptive_collision.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_adaptive_collision.jpg" alt="Adaptive Collision Scheduling">
+      </a>
     </td>
   </tr>
   <tr>
@@ -890,6 +960,7 @@ If you run the examples from a source checkout with uv, use
       <code>python -m newton.examples domino_spiral</code>
     </td>
     <td align="center" width="33%">
+      <code>python -m newton.examples adaptive_collision</code>
     </td>
   </tr>
   <tr>
@@ -1008,6 +1079,10 @@ python -m newton.examples basic_urdf --device cuda:0
 # Combine options
 python -m newton.examples basic_viewer --viewer gl --num-frames 500 --device cpu
 ```
+
+## Research using Newton
+
+See [PUBLICATIONS.md](https://github.com/newton-physics/newton/blob/main/PUBLICATIONS.md) for research using Newton, inclusion criteria, and instructions for adding your publication.
 
 ## Contributing and Development
 
