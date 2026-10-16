@@ -13,6 +13,7 @@ import types
 import unittest
 import warnings
 from contextlib import nullcontext
+from typing import ClassVar
 from unittest import mock
 from urllib.parse import urlparse
 
@@ -684,6 +685,12 @@ class TestImportUsdPhysics(unittest.TestCase):
         """Import opt-in PhysX limits without merging disconnected components."""
         from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
 
+        class LaterHullResolver(usd.SchemaResolver):
+            name = "later"
+            mapping: ClassVar[dict] = {
+                usd.PrimType.SHAPE: {"max_hull_vertices": usd.SchemaResolver.SchemaAttribute("later:hullVertexLimit")}
+            }
+
         stage = Usd.Stage.CreateInMemory()
         UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
         UsdGeom.SetStageMetersPerUnit(stage, 1.0)
@@ -701,6 +708,7 @@ class TestImportUsdPhysics(unittest.TestCase):
             mesh.CreateFaceVertexIndicesAttr().Set(indices.tolist())
             mesh.CreatePointsAttr().Set([Gf.Vec3f(*point) for point in vertices.tolist()])
             prim = mesh.GetPrim()
+            prim.CreateAttribute("later:hullVertexLimit", Sdf.ValueTypeNames.Int).Set(12)
             UsdPhysics.CollisionAPI.Apply(prim)
             approximation = UsdPhysics.Tokens.convexHull if name == "/Hull" else UsdPhysics.Tokens.convexDecomposition
             UsdPhysics.MeshCollisionAPI.Apply(prim).GetApproximationAttr().Set(approximation)
@@ -726,16 +734,21 @@ class TestImportUsdPhysics(unittest.TestCase):
             return [cmesh]
 
         fake_coacd.run_coacd = run_coacd
-        for physx_resolver in (False, True):
+        for physx_resolver, later_resolver in ((False, False), (True, False), (True, True)):
             for load_visual_shapes in (False, True):
-                with self.subTest(physx_resolver=physx_resolver, load_visual_shapes=load_visual_shapes):
+                with self.subTest(
+                    physx_resolver=physx_resolver, later_resolver=later_resolver, load_visual_shapes=load_visual_shapes
+                ):
                     calls.clear()
                     builder = newton.ModelBuilder()
+                    resolvers = [usd.SchemaResolverPhysx()] if physx_resolver else []
+                    if later_resolver:
+                        resolvers.append(LaterHullResolver())
                     with patch_sys_module("coacd", fake_coacd):
                         builder.add_usd(
                             stage,
                             load_visual_shapes=load_visual_shapes,
-                            schema_resolvers=[usd.SchemaResolverPhysx()] if physx_resolver else [],
+                            schema_resolvers=resolvers,
                         )
                     merged = [call for call in calls if call["merge"]]
                     self.assertEqual(
@@ -746,6 +759,8 @@ class TestImportUsdPhysics(unittest.TestCase):
                     hulls = [i for i, kind in enumerate(builder.shape_type) if kind == newton.GeoType.CONVEX_MESH]
                     self.assertEqual(len(hulls), 6)
                     expected = {"/Plain": 32, "/Physx": 8, "/Default": 64, "/Other": 16, "/Hull": 32}
+                    if later_resolver:
+                        expected["/Default"] = 12
                     for shape in hulls:
                         label = builder.shape_label[shape]
                         path = next(path for path in expected if label.startswith(path))

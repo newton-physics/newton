@@ -44,7 +44,7 @@ def _physx_max_hull_vertices(prim: Usd.Prim) -> int | None:
     if approximation == "convexdecomposition" and usd.has_applied_api_schema(
         prim, "PhysxConvexDecompositionCollisionAPI"
     ):
-        return usd.get_attribute(prim, "physxConvexDecompositionCollision:hullVertexLimit", 64)
+        return usd.get_attribute(prim, "physxConvexDecompositionCollision:hullVertexLimit")
     return usd.get_attribute(prim, "physxConvexHullCollision:hullVertexLimit")
 
 
