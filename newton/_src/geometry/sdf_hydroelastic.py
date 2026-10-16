@@ -39,7 +39,7 @@ import warp as wp
 
 from newton._src.core.types import MAXVAL, Devicelike
 
-from ..exceptions import NewtonDeprecationWarning
+from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..sim.builder import ShapeFlags
 from ..sim.model import Model
 from .collision_core import sat_box_intersection
@@ -1029,7 +1029,7 @@ class HydroelasticSDF:
                     "Hydroelastic reduction dropped contacts due to hashtable insert "
                     f"failures ({hashtable_failures}). Increase rigid_contact_max "
                     "and/or HydroelasticSDF.Config.contact_reduction_hashtable_size_factor.",
-                    RuntimeWarning,
+                    NewtonWarning,
                     stacklevel=2,
                 )
 

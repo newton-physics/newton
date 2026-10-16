@@ -285,7 +285,7 @@ def test_default_capacity_holds_large_batches(test, device):
         with test.subTest(broad_phase=broad_phase, stored_pairs=pairs is not None):
             model.shape_contact_pairs = pairs
             with warnings.catch_warnings():
-                warnings.simplefilter("ignore", RuntimeWarning)
+                warnings.simplefilter("ignore", newton.exceptions.NewtonWarning)
                 pipeline = newton.CollisionPipeline(model, broad_phase=broad_phase, verify_buffers=False)
             contacts = pipeline.contacts()
             pipeline.collide(state, contacts)
@@ -308,14 +308,16 @@ def test_deterministic_limit_applies_only_with_reducer(test, device):
     packing_limit = (1 << 20) - 1
 
     with warnings.catch_warnings():
-        warnings.simplefilter("ignore", RuntimeWarning)
+        warnings.simplefilter("ignore", newton.exceptions.NewtonWarning)
         unreduced = newton.CollisionPipeline(model, reduce_contacts=False, deterministic=True)
     test.assertIsNone(unreduced.narrow_phase.global_contact_reducer)
     test.assertGreater(unreduced.narrow_phase.max_triangle_pairs, packing_limit)
 
     for kwargs in ({"deterministic": True}, {"contact_matching": "latest"}):
         with test.subTest(**kwargs):
-            with test.assertWarnsRegex(RuntimeWarning, r"deterministic contact reduction.*at most 1,048,575"):
+            with test.assertWarnsRegex(
+                newton.exceptions.NewtonWarning, r"deterministic contact reduction.*at most 1,048,575"
+            ):
                 pipeline = newton.CollisionPipeline(model, **kwargs)
             test.assertEqual(pipeline.narrow_phase.max_triangle_pairs, packing_limit)
 

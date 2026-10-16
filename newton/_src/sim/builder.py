@@ -287,11 +287,9 @@ def _convex_hull_adjacency(source: Mesh, *, certify: bool = True) -> list[set[in
             edge_incidence[min(first, second), max(first, second)] += 1
     if not edge_incidence or any(count != 2 for count in edge_incidence.values()):
         if not certify and vertex_count >= _CONVEX_SUPPORT_MIN_VERTICES:
-            warnings.warn(
+            logger.warning(
                 "Convex support acceleration requires complete closed hull topology; "
-                "falling back to exhaustive support mapping.",
-                RuntimeWarning,
-                stacklevel=2,
+                "falling back to exhaustive support mapping."
             )
         return None
 
