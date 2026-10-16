@@ -88,7 +88,6 @@ def try_load(cache_dir: str | os.PathLike[str], key: str) -> list[tuple[np.ndarr
                     or vertices.shape[1] != 3
                     or len(vertices) == 0
                     or vertices.dtype.kind != "f"
-                    or not np.isfinite(vertices).all()
                     or faces.ndim != 2
                     or faces.shape[1] != 3
                     or len(faces) == 0
@@ -97,11 +96,25 @@ def try_load(cache_dir: str | os.PathLike[str], key: str) -> list[tuple[np.ndarr
                     or np.any(faces >= len(vertices))
                 ):
                     raise ValueError(f"invalid geometry in part {i}")
+                # Mesh converts vertices to float32; finite float64 values can overflow.
+                with np.errstate(over="ignore", invalid="ignore"):
+                    vertices = vertices.astype(np.float32, copy=False)
+                if not np.isfinite(vertices).all():
+                    raise ValueError(f"non-finite geometry in part {i}")
                 parts.append((vertices, faces))
             return parts
     except FileNotFoundError:
         return None
-    except (OSError, ValueError, TypeError, KeyError, EOFError, zipfile.BadZipFile, zlib.error) as exc:
+    except (
+        OSError,
+        ValueError,
+        TypeError,
+        KeyError,
+        EOFError,
+        NotImplementedError,
+        zipfile.BadZipFile,
+        zlib.error,
+    ) as exc:
         logger.warning("Convex cache: failed to load %s: %s", path, exc)
         return None
 
@@ -128,7 +141,7 @@ def write(cache_dir: str | os.PathLike[str], key: str, parts: list[tuple[np.ndar
             temporary = Path(stream.name)
             np.savez(stream, **arrays)
         os.replace(temporary, path)
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         logger.warning("Convex cache: failed to write %s: %s", path, exc)
     finally:
         if temporary is not None:

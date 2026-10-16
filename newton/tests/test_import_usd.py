@@ -668,7 +668,7 @@ class TestImportUsdPhysics(unittest.TestCase):
 
         fake_coacd.run_coacd = run_coacd
 
-        with patch_sys_module("coacd", fake_coacd):
+        with patch_sys_module("coacd", fake_coacd), mock.patch.object(newton.config, "cache_dir_meshes", None):
             builder = newton.ModelBuilder()
             builder.add_usd(stage)
             self.assertEqual(captured["threshold"], 0.05)

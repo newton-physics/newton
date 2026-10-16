@@ -10,6 +10,7 @@ newton
 .. rubric:: Submodules
 
 - :doc:`newton.actuators <newton_actuators>`
+- :doc:`newton.config <newton_config>`
 - :doc:`newton.controllers <newton_controllers>`
 - :doc:`newton.geometry <newton_geometry>`
 - :doc:`newton.ik <newton_ik>`
@@ -70,6 +71,11 @@ newton
    eval_rigid_contact_kinematics
    intersect_ray
 
+.. rubric:: Attributes
+
+.. autodata:: use_coord_layout_targets
+   :no-value:
+
 .. rubric:: Constants
 
 .. list-table::
@@ -81,5 +87,3 @@ newton
      - ``10000000000.0``
    * - ``__version__``
      - ``1.8.0.dev0``
-   * - ``use_coord_layout_targets``
-     - ``True``

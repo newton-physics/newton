@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 import numpy as np
 import warp as wp
 
+from ... import config
 from ..core._warnings import _external_warning_stacklevel
 from ..core.types import (
     MAXVAL,
@@ -9295,9 +9296,12 @@ class ModelBuilder:
             shape_indices: The indices of the shapes to simplify. Entries that are not ``MESH`` or ``CONVEX_MESH`` shapes are ignored. If `None`, all mesh shapes that have the :attr:`ShapeFlags.COLLIDE_SHAPES` flag set are simplified.
             raise_on_failure: If `True`, raises an exception if the remeshing fails. If `False`, it will log a warning and continue with the fallback method.
             keep_visual_shapes: If `True`, retain the original geometry as visual-only shapes.
-            cache_dir: Optional directory for persistent ``coacd`` and ``vhacd``
-                decomposition caching. Created if missing; ``None`` disables disk
-                caching. Entries are keyed by mesh geometry, effective backend
+            cache_dir: Directory for persistent ``coacd`` and ``vhacd``
+                decomposition caching. Created if missing; ``None`` uses
+                :attr:`newton.config.cache_dir_meshes`, which defaults to the
+                Newton cache directory's ``meshes`` subdirectory. Set that global
+                setting to ``None`` to disable disk caching. An explicit directory
+                overrides the global setting. Entries are keyed by mesh geometry, effective backend
                 settings, backend versions, and cache format version. Corrupt or
                 incompatible entries are recomputed; cache I/O failures are logged
                 and do not prevent approximation. Other methods ignore this option.
@@ -9390,6 +9394,8 @@ class ModelBuilder:
         remeshed_shapes = set()
 
         if method == "coacd" or method == "vhacd":
+            if cache_dir is None:
+                cache_dir = config.cache_dir_meshes
             empty_decomposition_shape = None
             decomposition_failed = False
             try:

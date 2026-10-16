@@ -6,12 +6,18 @@ import errno
 import hashlib
 import os
 import shutil
+import subprocess
+import sys
 import tempfile
+import textwrap
 import threading
 import time
 import unittest
 from pathlib import Path
 from unittest import mock
+
+import newton
+from newton import config
 
 try:
     import git
@@ -28,6 +34,7 @@ from newton._src.utils.download_assets import (
     _safe_rename,
     _safe_rmtree,
     _temp_cache_path,
+    clear_git_cache,
     download_git_folder,
 )
 
@@ -110,6 +117,102 @@ class TestDownloadAssets(unittest.TestCase):
             cache_dir_3 = cache_dir_3.parent
         self.assertEqual(cache_dir_2, cache_dir_3)
         self.assertEqual((p3 / "foo.txt").read_text(encoding="utf-8"), "v2\n")
+
+    def test_global_asset_cache_directory(self):
+        """Use the configured asset directory and preserve explicit overrides."""
+        configured = Path(self.cache_dir) / "configured"
+        with (
+            mock.patch.object(config, "cache_dir_assets", configured),
+            mock.patch.dict(os.environ, {"NEWTON_CACHE_PATH": self.cache_dir}),
+            mock.patch("newton._src.utils.download_assets.NEWTON_ASSETS_URL", self.remote_dir),
+        ):
+            first = newton.utils.download_asset(self.asset_rel, ref="main")
+            second = newton.utils.download_asset(self.asset_rel, cache_dir=None, ref="main")
+            self.assertTrue(first.is_relative_to(configured))
+            self.assertEqual(first, second)
+            config.cache_dir_assets = None
+            explicit = newton.utils.download_asset(self.asset_rel, cache_dir=configured, ref="main")
+            self.assertEqual(explicit, first)
+            config.cache_dir_assets = Path(self.cache_dir) / "relocated"
+            relocated = newton.utils.download_asset(self.asset_rel, ref="main")
+            self.assertTrue(relocated.is_relative_to(config.cache_dir_assets))
+
+    def test_disabled_asset_cache_downloads_fresh(self):
+        """Return independent usable downloads when persistent asset caching is disabled."""
+        with (
+            mock.patch.object(config, "cache_dir_assets", None),
+            mock.patch.dict(os.environ, {"NEWTON_CACHE_PATH": self.cache_dir}),
+            mock.patch("newton._src.utils.download_assets.NEWTON_ASSETS_URL", self.remote_dir),
+        ):
+            first = newton.utils.download_asset(self.asset_rel, ref="main")
+            second = newton.utils.download_asset(self.asset_rel, ref="main")
+            self.assertNotEqual(first, second)
+            self.assertEqual((first / "foo.txt").read_text(encoding="utf-8"), "v1\n")
+            self.assertEqual((second / "foo.txt").read_text(encoding="utf-8"), "v1\n")
+            self.assertEqual(list(Path(self.cache_dir).iterdir()), [])
+
+    def test_uncached_download_cleanup(self):
+        """Keep uncached assets until their owning process exits, including after a fork."""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                textwrap.dedent("""\
+                    import os
+                    import sys
+                    import newton
+                    from newton._src.utils.download_assets import clear_git_cache, download_git_folder
+
+                    newton.config.cache_dir_assets = None
+                    path = download_git_folder(sys.argv[1], sys.argv[2])
+                    clear_git_cache()
+                    assert (path / "foo.txt").read_text() == "v1\\n"
+                    if hasattr(os, "fork"):
+                        sys.stdout.flush()
+                        pid = os.fork()
+                        if pid == 0:
+                            sys.exit(0)
+                        _, status = os.waitpid(pid, 0)
+                        assert status == 0
+                        assert (path / "foo.txt").read_text() == "v1\\n"
+                    print(path)
+                """),
+                self.remote_dir,
+                self.asset_rel,
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        path = Path(result.stdout.strip().splitlines()[-1])
+        self.assertFalse(path.exists())
+
+    def test_failed_uncached_download_cleanup(self):
+        """Remove temporary asset files immediately when an uncached download fails."""
+        temporary = Path(self.cache_dir) / "temporary"
+        temporary.mkdir()
+        with (
+            mock.patch.object(config, "cache_dir_assets", None),
+            mock.patch("newton._src.utils.download_assets.tempfile.mkdtemp", return_value=str(temporary)),
+            mock.patch("newton._src.utils.download_assets._get_latest_commit_via_git", return_value=None),
+            self.assertRaises(RuntimeError),
+        ):
+            download_git_folder(self.remote_dir, self.asset_rel)
+        self.assertFalse(temporary.exists())
+
+    def test_clear_configured_asset_cache(self):
+        """Clear the configured asset directory while respecting the disabled setting."""
+        configured = Path(self.cache_dir) / "configured"
+        configured.mkdir()
+        with mock.patch.object(config, "cache_dir_assets", configured):
+            clear_git_cache()
+            self.assertFalse(configured.exists())
+            configured.mkdir()
+            config.cache_dir_assets = None
+            clear_git_cache()
+            self.assertTrue(configured.exists())
 
     def test_concurrent_download(self):
         """Multiple threads downloading the same asset do not corrupt the cache."""

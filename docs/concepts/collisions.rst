@@ -1185,21 +1185,33 @@ with convex hulls, bounding boxes, or convex decompositions:
 Supported methods: ``"convex_hull"`` (default), ``"bounding_box"``, ``"bounding_sphere"``,
 ``"coacd"`` (convex decomposition), ``"vhacd"``.
 
-For repeated scene setup, pass ``cache_dir`` to reuse CoACD or V-HACD
-decompositions across builders and processes:
+CoACD and V-HACD decompositions are cached on disk by default and reused across
+builders and processes, including automatic approximation during USD import.
+The default is the ``meshes`` subdirectory of the Newton cache directory used
+for asset downloads (``NEWTON_CACHE_PATH`` or the platform's user cache location).
+Configure the directory or disable caching through :mod:`newton.config` before
+importing a scene:
 
 .. code-block:: python
 
-    builder = newton.ModelBuilder()
-    builder.add_usd("robot.usda", skip_mesh_approximation=True)
-    builder.approximate_meshes(
-        method="coacd",
-        cache_dir=".cache/convex",
-        keep_visual_shapes=True,
-    )
+    import newton
 
-Like :meth:`Mesh.build_sdf`, disk caching is opt-in and the directory is created
-if needed. Entries include the source geometry, effective decomposition options
+    newton.config.cache_dir_meshes = ".cache/convex"
+    builder = newton.ModelBuilder()
+    builder.add_usd("robot.usda")  # Uses this cache for authored convex decompositions.
+
+    # Disable mesh decomposition caching for subsequent calls and imports.
+    newton.config.cache_dir_meshes = None
+
+Explicit ``cache_dir`` directories on :meth:`~ModelBuilder.approximate_meshes`
+override the global setting. Omitting the argument or passing ``None`` uses
+:attr:`config.cache_dir_meshes` at call time. Asset downloads are controlled
+independently by :attr:`config.cache_dir_assets`; setting that to ``None`` keeps
+each download in a fresh temporary directory until process exit. Environment
+defaults are read when Newton is imported. These settings do not affect
+:meth:`Mesh.build_sdf`, which retains its explicit, opt-in cache.
+
+Cache directories are created if needed. Entries include the source geometry, effective decomposition options
 (including the hull-vertex limit), backend versions, and cache format version in
 their keys. Shape scales, transforms, and materials are applied independently,
 so cached parts can be reused by differently configured shapes. Missing, corrupt,
@@ -1208,8 +1220,7 @@ preventing approximation. Backend dependencies must still be installed. Failed
 decompositions and fallback hulls are not cached. Delete the directory to reclaim
 disk space. Other approximation methods ignore ``cache_dir``.
 
-The cache directory is a local preprocessing option passed directly to
-:meth:`~ModelBuilder.approximate_meshes`; it is not authored in USD.
+Cache locations are runtime settings; they are not authored in USD.
 
 .. note::
    ``approximate_meshes()`` modifies the builder's shape geometry in-place. By default

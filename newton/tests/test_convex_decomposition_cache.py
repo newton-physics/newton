@@ -4,8 +4,10 @@
 """Exercise persistent convex decomposition through the public builder API."""
 
 import importlib.metadata
+import struct
 import tempfile
 import unittest
+import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack
 from pathlib import Path
@@ -15,8 +17,9 @@ from unittest import mock
 import numpy as np
 
 import newton
+from newton import config
 from newton._src.geometry import _convex_cache
-from newton.tests.unittest_utils import patch_sys_module
+from newton.tests.unittest_utils import USD_AVAILABLE, patch_sys_module
 
 
 class TestConvexDecompositionCache(unittest.TestCase):
@@ -27,6 +30,7 @@ class TestConvexDecompositionCache(unittest.TestCase):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         self.cache_dir = Path(self.tmp.name) / "cache"
+        self.stack.enter_context(mock.patch.object(config, "cache_dir_meshes", self.cache_dir))
         self.vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
         self.faces = np.array([[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]], dtype=np.int32)
         self.parts = [(self.vertices.copy(), self.faces.copy()), (self.vertices + 2, self.faces.copy())]
@@ -88,13 +92,62 @@ class TestConvexDecompositionCache(unittest.TestCase):
                     np.testing.assert_array_equal(scale, (2, 3, 4))
         self.assertEqual(len(list(self.cache_dir.glob("*.npz"))), 2)
 
-    def test_cache_is_opt_in(self):
+    def test_cache_can_be_disabled_globally(self):
         """Run the backend on each call when caching is disabled."""
+        config.cache_dir_meshes = None
         self._build()
         self._build(cache_dir=None)
         self.assertEqual(self.coacd.call_count, 2)
         self.version.assert_not_called()
         self.assertFalse(self.cache_dir.exists())
+
+    def test_cache_uses_global_directory_by_default(self):
+        """Reuse the global cache without passing a directory to the builder."""
+        for method, backend in (("coacd", self.coacd), ("vhacd", self.vhacd)):
+            with self.subTest(method=method):
+                self._build(method=method)
+                self._build(method=method, cache_dir=None)
+                self.assertEqual(backend.call_count, 1)
+        self.assertEqual(len(list(self.cache_dir.glob("*.npz"))), 2)
+
+    def test_cache_reads_global_directory_at_call_time(self):
+        """Honor runtime configuration changes and explicit directory overrides."""
+        self._build()
+        config.cache_dir_meshes = Path(self.tmp.name) / "other"
+        self._build()
+        self.assertTrue(config.cache_dir_meshes.exists())
+        config.cache_dir_meshes = None
+        self._build()
+        self._build(cache_dir=self.cache_dir)
+        self.assertEqual(self.coacd.call_count, 3)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_usd_import_uses_global_cache(self):
+        """Reuse or disable cached decomposition through automatic USD import."""
+        from pxr import Usd, UsdGeom, UsdPhysics
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        mesh = UsdGeom.Mesh.Define(stage, "/Mesh")
+        mesh.CreatePointsAttr().Set(self.vertices.tolist())
+        mesh.CreateFaceVertexCountsAttr().Set([3] * len(self.faces))
+        mesh.CreateFaceVertexIndicesAttr().Set(self.faces.flatten().tolist())
+        UsdPhysics.CollisionAPI.Apply(mesh.GetPrim())
+        UsdPhysics.MeshCollisionAPI.Apply(mesh.GetPrim()).CreateApproximationAttr().Set(
+            UsdPhysics.Tokens.convexDecomposition
+        )
+        for _ in range(2):
+            builder = newton.ModelBuilder()
+            builder.add_usd(stage)
+            self.assertIn(newton.GeoType.CONVEX_MESH, builder.shape_type)
+        self.assertEqual(self.coacd.call_count, 1)
+        self.assertEqual(len(list(self.cache_dir.glob("*.npz"))), 1)
+        config.cache_dir_meshes = None
+        newton.ModelBuilder().add_usd(stage)
+        newton.ModelBuilder().add_usd(stage)
+        self.assertEqual(self.coacd.call_count, 3)
 
     def test_cache_invalidates_geometry_settings_and_versions(self):
         """Recompute when any geometry, effective option, or backend version changes."""
@@ -122,20 +175,30 @@ class TestConvexDecompositionCache(unittest.TestCase):
         self.assertEqual(self.coacd.call_count, 1)
 
     def test_cache_recovers_from_corrupt_files(self):
-        """Recompute and replace corrupt cache entries."""
+        """Replace corrupt cache entries, including unsupported archive compression."""
         self._build(cache_dir=self.cache_dir)
         cache_file = next(self.cache_dir.glob("*.npz"))
-        cache_file.write_bytes(b"not an npz archive")
-        self._build(cache_dir=self.cache_dir)
-        self._build(cache_dir=self.cache_dir)
-        self.assertEqual(self.coacd.call_count, 2)
+        unsupported = bytearray(cache_file.read_bytes())
+        with zipfile.ZipFile(cache_file) as archive:
+            # Change the compression method in the local and central ZIP headers.
+            struct.pack_into("<H", unsupported, archive.infolist()[0].header_offset + 8, 65535)
+            struct.pack_into("<H", unsupported, archive.start_dir + 10, 65535)
+        for contents in (b"not an npz archive", unsupported):
+            with self.subTest(contents=contents[:16]):
+                cache_file.write_bytes(contents)
+                calls = self.coacd.call_count
+                self._build(cache_dir=self.cache_dir)
+                self._build(cache_dir=self.cache_dir)
+                self.assertEqual(self.coacd.call_count, calls + 1)
 
     def test_cache_write_failure_keeps_decomposition(self):
-        """Use successfully computed parts when the cache directory cannot be created."""
+        """Keep computed parts when the cache directory is blocked or invalid."""
         self.cache_dir.write_text("a file blocks directory creation")
-        builder = self._build(cache_dir=self.cache_dir)
-        self.assertEqual(builder.shape_count, 2)
-        self.assertEqual(builder.shape_type, [newton.GeoType.CONVEX_MESH] * 2)
+        for directory in (self.cache_dir, "invalid\x00cache"):
+            with self.subTest(directory=directory):
+                builder = self._build(cache_dir=directory)
+                self.assertEqual(builder.shape_count, 2)
+                self.assertEqual(builder.shape_type, [newton.GeoType.CONVEX_MESH] * 2)
 
     def test_cache_does_not_store_failures(self):
         """Leave no entry after empty or failed backend results."""
@@ -170,6 +233,7 @@ class TestConvexDecompositionCache(unittest.TestCase):
             {"faces_0": self.faces + 10},
             {"vertices_0": self.vertices.astype(object)},
             {"vertices_0": self.vertices * np.nan},
+            {"vertices_0": self.vertices.astype(np.float64) * 1.0e40},
         ):
             with self.subTest(changes=list(changes)):
                 np.savez(cache_file, **(valid | changes))
