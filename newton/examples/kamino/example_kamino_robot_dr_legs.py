@@ -138,7 +138,7 @@ class Example:
             self.config.dvi.use_schur_complement = getattr(args, "use_schur_complement", None)
         if self.dynamics_solver == "lox":
             # The light articulated links need stronger structural enforcement once their feet make contact.
-            self.config.lox.joint_penalty_scale = 100.0
+            self.config.lox.min_joint_penalty_scale = 100.0
             self.config.lox.max_iterations = self.max_iterations
             self.config.lox.projection_iterations = self.projection_iterations
             self.config.lox.use_graph_conditionals = getattr(args, "use_graph_conditionals", True) if args else True

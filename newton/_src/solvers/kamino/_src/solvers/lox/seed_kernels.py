@@ -435,11 +435,19 @@ def _write_body_scales(
     body_block: wp.array[wp.int32],
     block_row_offset: wp.array[wp.int32],
     block_scale: wp.array[wp.float32],
+    block_status: wp.array[wp.int32],
+    min_scale: wp.float32,
     # Outputs:
     scales: wp.array[wp.float32],
 ):
-    """Give each body of a block with structural rows the penalty scale of its block."""
+    """Give each body of a block with structural rows the larger of the minimum scale and its block seed.
+
+    Blocks whose seed failed take the minimum scale.
+    """
     body = wp.tid()
     block = body_block[body]
     if block >= 0 and block_row_offset[block + 1] > block_row_offset[block]:
-        scales[body] = block_scale[block]
+        if block_status[block] == SEED_STATUS_VALID:
+            scales[body] = wp.max(min_scale, block_scale[block])
+        else:
+            scales[body] = min_scale

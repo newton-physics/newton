@@ -986,7 +986,7 @@ class LOXData:
     Args:
         body_counts: Number of bodies of each world.
         solution: Dual solution container for the solution metrics, or ``None`` without them.
-        joint_penalty_scale: Initial dimensionless structural ALM penalty scale of every body.
+        min_joint_penalty_scale: Initial dimensionless structural ALM penalty scale of every body.
         device: Device of the arrays.
     """
 
@@ -994,7 +994,7 @@ class LOXData:
         self,
         body_counts: Sequence[int],
         solution: DualSolution | None,
-        joint_penalty_scale: float,
+        min_joint_penalty_scale: float,
         device: wp.DeviceLike,
     ):
         num_worlds = len(body_counts)
@@ -1004,7 +1004,7 @@ class LOXData:
         """Per-world residuals of the splitting iterations."""
         self.status = wp.empty(num_worlds, dtype=LOXStatus, device=device)
         """Terminal status of each world."""
-        self.joint_penalty_scale = wp.full(sum(body_counts), joint_penalty_scale, dtype=wp.float32, device=device)
+        self.joint_penalty_scale = wp.full(sum(body_counts), min_joint_penalty_scale, dtype=wp.float32, device=device)
         """Dimensionless structural ALM penalty scale of each body, shared by the bodies of a joint-connected component."""
         self.dual_wrench = wp.zeros(sum(body_counts), dtype=vec6f, device=device)
         """Splitting dual of each body as the generalized wrench ``W u / dt`` [N, N·m], kept across time steps.

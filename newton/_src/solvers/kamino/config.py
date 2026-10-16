@@ -1226,15 +1226,28 @@ class LOXSolverConfig:
     to rigid bodies incident to a unilateral constraint.
     """
 
-    joint_penalty_scale: float = 100.0
-    """Dimensionless scale for effective-mass structural penalties and consensus weights."""
+    min_joint_penalty_scale: float = 100.0
+    """Smallest dimensionless scale for effective-mass structural penalties and consensus weights.
+
+    The solver starts every component at this scale, and the joint penalty seed raises it to the
+    spectral estimate where that is larger. Components whose seed fails keep this scale.
+    """
 
     joint_penalty_condition: float = 1.0e4
     """Largest conditioning added to the smooth system by the seeded structural penalty.
 
-    :meth:`SolverKamino.lox_joint_penalty_scale_seed` sets the penalty scale of each joint-connected
-    component to ``min(1 / mu_min, (joint_penalty_condition - 1) / mu_max)``, with ``mu_min`` and
+    The joint penalty seed sets the penalty scale of each joint-connected component to
+    ``max(min_joint_penalty_scale, min(1 / mu_min, (joint_penalty_condition - 1) / mu_max))``, with ``mu_min`` and
     ``mu_max`` the extreme eigenvalues of the effective-mass-normalized structural Delassus.
+    """
+
+    joint_penalty_seed_time_step: float = 1.0e-3
+    """Reference time step [s] of the joint penalty seed made when the solver is constructed.
+
+    The time step enters the smooth system only through the implicit drive inertia
+    ``dt * k_d + dt^2 * k_p``, so the seed grows with it. The default sits below the time steps of
+    typical simulations, which errs toward a softer penalty. :meth:`SolverKamino.lox_joint_penalty_seed_update`
+    refines the seed with the simulation time step.
     """
 
     projected_twist_fraction: float = 0.0
@@ -1399,6 +1412,10 @@ class LOXSolverConfig:
             raise ValueError(
                 f"Invalid joint_penalty_condition: {self.joint_penalty_condition}. Must be greater than one."
             )
+        if not np.isfinite(self.joint_penalty_seed_time_step) or self.joint_penalty_seed_time_step <= 0.0:
+            raise ValueError(
+                f"Invalid joint_penalty_seed_time_step: {self.joint_penalty_seed_time_step}. Must be positive."
+            )
         if self.projection_acceleration not in ("none", "apgd", "anderson"):
             raise ValueError(
                 f"Invalid projection_acceleration: {self.projection_acceleration}. "
@@ -1427,8 +1444,10 @@ class LOXSolverConfig:
             raise ValueError(f"Invalid velocity_tolerance: {self.velocity_tolerance}. Must be greater than zero.")
         if not isinstance(self.selective_weights, bool):
             raise ValueError(f"Invalid selective_weights: {self.selective_weights}. Must be a boolean.")
-        if not np.isfinite(self.joint_penalty_scale) or self.joint_penalty_scale <= 0.0:
-            raise ValueError(f"Invalid joint_penalty_scale: {self.joint_penalty_scale}. Must be greater than zero.")
+        if not np.isfinite(self.min_joint_penalty_scale) or self.min_joint_penalty_scale <= 0.0:
+            raise ValueError(
+                f"Invalid min_joint_penalty_scale: {self.min_joint_penalty_scale}. Must be greater than zero."
+            )
         if (
             not np.isfinite(self.projected_twist_fraction)
             or self.projected_twist_fraction < 0.0
