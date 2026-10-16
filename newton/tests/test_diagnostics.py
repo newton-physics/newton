@@ -13,16 +13,12 @@ import newton
 from newton.exceptions import NewtonDeprecationWarning, NewtonWarning
 
 _NEWTON_ROOT = pathlib.Path(newton.__file__).parent
-# TODO: Remove once Steel's diagnostics use Newton warning categories.
-_UNMIGRATED = ("_src/solvers/steel/",)
 
 
 def _library_sources():
     for path in sorted(_NEWTON_ROOT.rglob("*.py")):
         relative = path.relative_to(_NEWTON_ROOT)
         if relative.parts[0] in ("tests", "examples") or "tests" in relative.parts or "examples" in relative.parts:
-            continue
-        if relative.as_posix().startswith(_UNMIGRATED):
             continue
         yield relative, ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
