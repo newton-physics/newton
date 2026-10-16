@@ -964,13 +964,31 @@ def transform_normal_with_scale(
 
 @wp.func
 def convex_mesh_interior_point(mesh_id: wp.uint64, scale: wp.vec3) -> wp.vec3:
-    """Return the scaled vertex mean, which always lies inside the convex hull."""
+    """Return the scaled volume centroid of a convex hull, which lies inside it.
+
+    Unlike the vertex mean, the centroid does not depend on how densely each region
+    of the hull is tessellated. Degenerate hulls fall back to the vertex mean.
+    """
     hull = wp.mesh_get(mesh_id)
     num_verts = hull.points.shape[0]
-    center = wp.vec3(0.0, 0.0, 0.0)
+    mean = wp.vec3(0.0, 0.0, 0.0)
     for i in range(num_verts):
-        center += hull.points[i]
-    return wp.cw_mul(center, scale) / float(wp.max(num_verts, 1))
+        mean += hull.points[i]
+    mean = mean / float(wp.max(num_verts, 1))
+    # Fan the faces from the interior vertex mean into tetrahedra.
+    volume = float(0.0)
+    weighted = wp.vec3(0.0, 0.0, 0.0)
+    for tri in range(hull.indices.shape[0] // 3):
+        a = hull.points[hull.indices[3 * tri + 0]] - mean
+        b = hull.points[hull.indices[3 * tri + 1]] - mean
+        c = hull.points[hull.indices[3 * tri + 2]] - mean
+        tet = wp.abs(wp.dot(a, wp.cross(b, c)))
+        volume += tet
+        weighted += tet * (a + b + c)
+    center = mean
+    if volume > 0.0:
+        center = mean + weighted / (4.0 * volume)
+    return wp.cw_mul(center, scale)
 
 
 @wp.func

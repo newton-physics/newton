@@ -93,6 +93,25 @@ else:
 logger = logging.getLogger(__name__)
 
 
+def _convex_hull_interior_point(vertices: np.ndarray, indices: np.ndarray | None) -> np.ndarray:
+    """Return the volume centroid of a convex hull mesh [m], in its unscaled local frame.
+
+    The faces are fanned into tetrahedra from the vertex mean, which is interior, so
+    the result lies inside the hull and does not depend on how densely each region
+    is tessellated. Degenerate hulls fall back to the vertex mean.
+    """
+    vertices = np.asarray(vertices, dtype=np.float64)
+    mean = vertices.mean(axis=0)
+    if indices is None or len(indices) < 3:
+        return mean
+    tris = vertices[np.asarray(indices, dtype=np.int64).reshape(-1, 3)] - mean
+    volumes = np.abs(np.einsum("ij,ij->i", tris[:, 0], np.cross(tris[:, 1], tris[:, 2])))
+    total = volumes.sum()
+    if not np.isfinite(total) or total <= 0.0:
+        return mean
+    return mean + (volumes[:, None] * tris.sum(axis=1)).sum(axis=0) / (4.0 * total)
+
+
 def _validate_opacity(value: Any, value_name: str) -> float:
     """Return a finite display opacity in [0, 1]."""
     opacity = float(value)
@@ -14365,7 +14384,8 @@ class ModelBuilder:
                     aabb_lower, aabb_upper, interior_point, nx, ny, nz = shape_aabb_cache[cache_key]
                 else:
                     # Primitive origins are interior. A hull's AABB center can lie
-                    # outside it, but its vertex mean cannot.
+                    # outside it, and its vertex mean follows the tessellation, so
+                    # hulls use their volume centroid.
                     interior_point = np.zeros(3)
                     # Compute AABB based on shape type
                     if shape_type == GeoType.MESH and shape_src is not None:
@@ -14381,7 +14401,8 @@ class ModelBuilder:
                     elif shape_type == GeoType.CONVEX_MESH and shape_src is not None:
                         lo = shape_src.vertices.min(axis=0) * np.array(shape_scale)
                         hi = shape_src.vertices.max(axis=0) * np.array(shape_scale)
-                        interior_point = shape_src.vertices.mean(axis=0) * np.array(shape_scale)
+                        centroid = _convex_hull_interior_point(shape_src.vertices, shape_src.indices)
+                        interior_point = centroid * np.array(shape_scale)
                         aabb_lower = np.minimum(lo, hi)
                         aabb_upper = np.maximum(lo, hi)
 

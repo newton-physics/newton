@@ -1719,7 +1719,7 @@ def compute_shape_interior_points_kernel(
     """Store an interior point of each shape in its scaled local frame.
 
     Primitive origins are interior. A convex hull's origin and AABB center can
-    both lie outside it, so hulls use their vertex mean instead.
+    both lie outside it, so hulls use their volume centroid instead.
     """
     shape = wp.tid()
     point = wp.vec3(0.0, 0.0, 0.0)
@@ -3083,7 +3083,7 @@ class NarrowPhase:
             shape_voxel_resolution: Voxel grid resolution for each shape (for voxel binning)
             shape_interior_point: Optional scaled local-space point inside each shape [m],
                 used to cull back-facing mesh triangles and seed triangle contacts. If
-                ``None``, convex-mesh vertex means are computed on each launch.
+                ``None``, convex-mesh volume centroids are computed on each launch.
             mesh_edge_indices: Packed array of mesh edge vertex pairs for all shapes.
             mesh_edge_centers: Packed precomputed mesh edge centers (xyz) and radii (w) in
                 unscaled mesh coordinates [m]; the shape scale in ``shape_data`` is applied when read.
@@ -3843,7 +3843,7 @@ class NarrowPhase:
             shape_voxel_resolution: Voxel grid resolution for each shape (for voxel binning)
             shape_interior_point: Optional scaled local-space point inside each shape [m],
                 used to cull back-facing mesh triangles and seed triangle contacts. If
-                ``None``, convex-mesh vertex means are computed on each launch.
+                ``None``, convex-mesh volume centroids are computed on each launch.
             contact_pair: Output array for contact shape pairs
             contact_position: Output array for contact positions (center point)
             contact_normal: Output array for contact normals
