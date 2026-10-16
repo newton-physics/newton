@@ -118,6 +118,30 @@ def test_water_xpbd_resting_bottle(test, device):
     np.testing.assert_array_equal(fluid.inside_bottle.numpy(), np.ones(len(positions), dtype=np.int32))
 
 
+def test_water_xpbd_moving_mouth(test, device):
+    """Release water through the displaced opening below its initial height."""
+    vertices, triangles = _bottle_mesh(32, 28)
+    initial = 100.0 * (vertices + _BOTTLE_CENTER)
+    rotation = np.array([[1.0, 0.0, 0.0], [0.0, np.cos(0.1), -np.sin(0.1)], [0.0, np.sin(0.1), np.cos(0.1)]])
+    mouth = initial[-32:].mean(axis=0)
+    deformed = (initial - mouth) @ rotation.T + mouth - [0.0, 0.0, 0.5]
+    center = deformed[-32:].mean(axis=0)
+    normal = rotation[:, 2]
+    positions = center + np.array([-0.2, 0.2])[:, None] * normal
+    fluid = BottleFluid(
+        positions,
+        0.25,
+        wp.array(initial, dtype=wp.vec3, device=device),
+        triangles,
+        floor=76.0,
+        mouth_height=float(mouth[2]),
+        iterations=2,
+        device=device,
+    )
+    fluid.step(wp.array(deformed, dtype=wp.vec3, device=device), 1.0e-5)
+    np.testing.assert_array_equal(fluid.inside_bottle.numpy(), [1, 0])
+
+
 def test_water_xpbd_substep_reset(test, device):
     """Discard previous substep multipliers while preserving fluid state."""
     points = wp.array([[-16.0, -16.0, -10.0], [16.0, -16.0, -10.0], [0.0, 16.0, -10.0]], dtype=wp.vec3, device=device)
@@ -198,7 +222,7 @@ def test_water_shell_contact(test, device):
             positions,
             wp.zeros_like(positions),
             wp.zeros(len(start), dtype=int, device=device),
-            10.0,
+            wp.array([wp.vec4(0.0, 0.0, 1.0, -10.0)], dtype=wp.vec4, device=device),
             0.1,
             1.0,
             -10.0,
@@ -208,6 +232,30 @@ def test_water_shell_contact(test, device):
     expected = target.copy()
     expected[[0, 1, 2, 3, 6, 7], 2] = [0.1, -0.1, 0.1, -0.1, 0.1, -0.1]
     np.testing.assert_allclose(positions.numpy(), expected, atol=1.0e-6)
+
+    # Continuous wall contact must cancel a predicted escape above the mouth.
+    positions = wp.array([[0.2, 0.2, 2.0]], dtype=wp.vec3, device=device)
+    inside = wp.ones(1, dtype=int, device=device)
+    wp.launch(
+        _shell_contacts,
+        1,
+        inputs=[
+            mesh.id,
+            indices,
+            points,
+            wp.array([[0.2, 0.2, -0.3]], dtype=wp.vec3, device=device),
+            positions,
+            wp.zeros(1, dtype=wp.vec3, device=device),
+            inside,
+            wp.array([wp.vec4(0.0, 0.0, 1.0, -0.5)], dtype=wp.vec4, device=device),
+            0.1,
+            1.0,
+            -10.0,
+        ],
+        device=device,
+    )
+    np.testing.assert_allclose(positions.numpy(), [[0.2, 0.2, -0.1]], atol=1.0e-6)
+    np.testing.assert_array_equal(inside.numpy(), [1])
 
 
 def test_water_boundary_density(test, device):
@@ -369,6 +417,7 @@ for function in (
     test_gripper_plates_follow_fingers,
     test_water_xpbd_pressure_history,
     test_water_xpbd_substep_reset,
+    test_water_xpbd_moving_mouth,
     test_robot_repeated_squeezes,
     test_water_shell_contact,
     test_water_boundary_density,

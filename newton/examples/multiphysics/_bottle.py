@@ -132,33 +132,47 @@ def _density_corrections(
 
 
 @wp.kernel
-def _shell_contacts(
+def _update_mouth_plane(points: wp.array[wp.vec3], indices: wp.array[int], plane: wp.array[wp.vec4]):
+    count = indices.shape[0]
+    if count < 3:
+        return
+    center = wp.vec3(0.0)
+    for j in range(count):
+        center += points[indices[j]] / float(count)
+    normal = wp.vec3(0.0)
+    for j in range(count):
+        normal += wp.cross(points[indices[j]] - center, points[indices[(j + 1) % count]] - center)
+    normal = wp.normalize(normal)
+    plane[0] = wp.vec4(normal[0], normal[1], normal[2], -wp.dot(normal, center))
+
+
+@wp.func
+def _project_shell_contact(
     mesh: wp.uint64,
     shell_indices: wp.array[int],
     shell_previous: wp.array[wp.vec3],
-    previous: wp.array[wp.vec3],
-    positions: wp.array[wp.vec3],
-    corrections: wp.array[wp.vec3],
-    inside_bottle: wp.array[int],
-    mouth_height: float,
+    previous: wp.vec3,
+    p: wp.vec3,
+    inside: int,
+    mouth_plane: wp.vec4,
     radius: float,
     search_radius: float,
     floor: float,
 ):
-    i = wp.tid()
-    p = positions[i] + corrections[i]
-    motion = p - previous[i]
+    motion = p - previous
     travel = wp.length(motion)
     if travel > 1.0e-6:
         direction = motion / travel
-        ray = wp.mesh_query_ray(mesh, previous[i], direction, travel)
+        ray = wp.mesh_query_ray(mesh, previous, direction, travel)
         if ray.result:
             normal_ray = wp.mesh_eval_face_normal(mesh, ray.face)
             side_ray = wp.where(wp.dot(direction, normal_ray) > 0.0, -1.0, 1.0)
-            target = previous[i] + ray.t * direction + radius * side_ray * normal_ray
+            target = previous + ray.t * direction + radius * side_ray * normal_ray
             p = target
-    if p[2] > mouth_height + radius:
-        inside_bottle[i] = 0
+    # A wall hit can cancel a predicted exit through the mouth.
+    normal_mouth = wp.vec3(mouth_plane[0], mouth_plane[1], mouth_plane[2])
+    if wp.dot(normal_mouth, p) + mouth_plane[3] > radius:
+        inside = 0
     query = wp.mesh_query_point_no_sign(mesh, p, search_radius)
     if query.result:
         a = shell_indices[3 * query.face]
@@ -170,14 +184,14 @@ def _shell_contacts(
         closest = wp.mesh_eval_position(mesh, query.face, u, v)
         normal = wp.mesh_eval_face_normal(mesh, query.face)
         closest_previous = u * shell_previous[a] + v * shell_previous[b] + w * shell_previous[c]
-        old_delta = previous[i] - closest_previous
+        old_delta = previous - closest_previous
         normal_previous = wp.normalize(
             wp.cross(shell_previous[b] - shell_previous[a], shell_previous[c] - shell_previous[a])
         )
         side = wp.where(wp.dot(old_delta, normal_previous) >= 0.0, 1.0, -1.0)
         # A local closest-face sign is ambiguous at concave bottle ribs.
         # Interior particles retain their side until they cross the open mouth.
-        if inside_bottle[i] != 0:
+        if inside != 0:
             side = -1.0
         delta = p - closest
         signed_distance = wp.dot(delta, normal)
@@ -187,7 +201,38 @@ def _shell_contacts(
             correction = (radius - side * signed_distance) * side * normal
             p += correction
     p[2] = wp.max(p[2], floor + radius)
+    return p, inside
+
+
+@wp.kernel
+def _shell_contacts(
+    mesh: wp.uint64,
+    shell_indices: wp.array[int],
+    shell_previous: wp.array[wp.vec3],
+    previous: wp.array[wp.vec3],
+    positions: wp.array[wp.vec3],
+    corrections: wp.array[wp.vec3],
+    inside_bottle: wp.array[int],
+    mouth_plane: wp.array[wp.vec4],
+    radius: float,
+    search_radius: float,
+    floor: float,
+):
+    i = wp.tid()
+    p, inside = _project_shell_contact(
+        mesh,
+        shell_indices,
+        shell_previous,
+        previous[i],
+        positions[i] + corrections[i],
+        inside_bottle[i],
+        mouth_plane[0],
+        radius,
+        search_radius,
+        floor,
+    )
     positions[i] = p
+    inside_bottle[i] = inside
 
 
 @wp.kernel
@@ -261,7 +306,6 @@ class BottleFluid:
         self.compliance = self.mass / (0.01 * bulk_modulus * self.volume)
         self.radius = 0.4 * spacing
         self.floor = floor
-        self.mouth_height = mouth_height
         self.inside_bottle = wp.ones(len(positions), dtype=int, device=device)
         self.positions = wp.array(positions, dtype=wp.vec3, device=device)
         self.predicted = wp.empty_like(self.positions)
@@ -278,6 +322,10 @@ class BottleFluid:
         self.shell_points = wp.clone(shell_positions)
         self.shell_previous = wp.clone(shell_positions)
         self.shell_mesh = wp.Mesh(points=self.shell_points, indices=self.shell_indices)
+        mouth_indices = np.flatnonzero(np.isclose(self.shell_points.numpy()[:, 2], mouth_height, rtol=0.0, atol=1.0e-4))
+        self.mouth_indices = wp.array(mouth_indices, dtype=int, device=device)
+        # Without an open rim, retain the supplied horizontal plane.
+        self.mouth_plane = wp.array([wp.vec4(0.0, 0.0, 1.0, -mouth_height)], dtype=wp.vec4, device=device)
         # Sphere volume agrees with the fluid's physical particle volume.
         self.surface_radii = wp.full(
             len(positions),
@@ -290,6 +338,9 @@ class BottleFluid:
         wp.copy(self.shell_previous, self.shell_points)
         wp.copy(self.shell_points, shell_positions)
         self.shell_mesh.refit()
+        wp.launch(
+            _update_mouth_plane, 1, inputs=[self.shell_points, self.mouth_indices, self.mouth_plane], device=self.device
+        )
         count = len(self.positions)
         self.multipliers.zero_()
         wp.launch(_predict, count, inputs=[self.positions, self.velocities, dt, self.predicted], device=self.device)
@@ -337,7 +388,7 @@ class BottleFluid:
                     self.predicted,
                     self.corrections,
                     self.inside_bottle,
-                    self.mouth_height,
+                    self.mouth_plane,
                     self.radius,
                     2.0 * self.h,
                     self.floor,

@@ -157,7 +157,9 @@ Fluid boundaries and reconstruction
 The example-local XPBD solver in ``_bottle.py`` uses PBF density kernels
 with a hash-grid neighbor search. Pressure multipliers accumulate within each
 substep, position corrections use multiplier increments, and history resets
-before the next substep. Clamping the density deficit and projecting the total
+before the next substep. Spill classification follows the deformed neck plane,
+including openings that tilt or move below the initial opening height.
+Clamping the density deficit and projecting the total
 multiplier prevents tensile pressure at the free surface. The default infinite bulk modulus gives zero
 compliance; the finite iteration count controls the remaining density error.
 This density solver is an example helper, separate from Newton's
