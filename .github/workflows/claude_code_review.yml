@@ -17,6 +17,7 @@ name: Claude Auto Review
 # review comments and a summary.
 on:
   pull_request_target:
+    branches: [main]
     types: [opened, synchronize, ready_for_review]
 
 concurrency:
