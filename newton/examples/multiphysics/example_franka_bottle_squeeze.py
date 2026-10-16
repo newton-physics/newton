@@ -816,7 +816,7 @@ class Example:
         parser.add_argument(
             "--minimum-opening",
             type=float,
-            default=0.015,
+            default=0.017,
             help="Final per-finger joint opening [m]; the plate gap is twice this value",
         )
         parser.add_argument("--bottle-opacity", type=float, default=0.55, help="PET shell display opacity [0, 1]")

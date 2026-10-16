@@ -64,11 +64,10 @@ even a stiff shell; this example does not enforce a gripper force limit.
 Each finger carries an aluminum squeeze plate with a 60 mm vertical extent,
 48 mm horizontal extent, and 3 mm thickness. The same body-local box geometry
 is used for collision and rendering. The contact faces are flush with the
-finger pads. At the default 18 mm per-finger joint opening, they are 36 mm
-apart; at the initial 40 mm opening, they are 80 mm apart. This leaves room
-to approach a bottle that is already dented and has bulged sideways.
+finger pads. The initial 40 mm opening per finger provides an 80 mm gap,
+leaving room to approach a bottle that is already dented and has bulged sideways.
 ``--minimum-opening`` controls the joint displacement and half the plate gap.
-The default 15 mm opening per finger gives a 30 mm closed plate gap. Use
+The default 17 mm opening per finger gives a 34 mm closed plate gap. Use
 ``--minimum-opening 0.018`` for the previous 36 mm gap.
 
 Material and permanent creases
