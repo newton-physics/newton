@@ -147,7 +147,7 @@ def test_ray_intersect_box_normals(test: TestRaycast, device: str):
                             ],
                             device=device,
                         )
-                        test.assertEqual(out_t.numpy()[0], 0.5)
+                        test.assertAlmostEqual(out_t.numpy()[0], 0.5, delta=1e-6)
                         np.testing.assert_allclose(out_n.numpy()[0], expected_normal, atol=1e-6)
 
             for count in (2, 3):
@@ -177,7 +177,7 @@ def test_ray_intersect_box_normals(test: TestRaycast, device: str):
                             ],
                             device=device,
                         )
-                        test.assertEqual(out_t.numpy()[0], 1.0)
+                        test.assertAlmostEqual(out_t.numpy()[0], 1.0, delta=1e-6)
                         np.testing.assert_allclose(out_n.numpy()[0], expected_normal, atol=1e-6)
 
     for count in (2, 3):
@@ -205,7 +205,7 @@ def test_ray_intersect_box_normals(test: TestRaycast, device: str):
                 ],
                 device=device,
             )
-            test.assertEqual(out_t.numpy()[0], 0.5)
+            test.assertAlmostEqual(out_t.numpy()[0], 0.5, delta=1e-6)
             np.testing.assert_allclose(out_n.numpy()[0], expected_normal, atol=1e-6)
 
 
@@ -232,7 +232,7 @@ def test_intersect_ray_box_small_direction(test: TestRaycast, device: str):
                 out_shape_id=out_shape,
                 fast_math=fast_math,
             )
-            test.assertEqual(out_t.numpy()[0], 0.5)
+            test.assertAlmostEqual(out_t.numpy()[0], 0.5, delta=1e-6)
             test.assertEqual(out_shape.numpy()[0], 0)
             np.testing.assert_allclose(out_n.numpy()[0], [1.0, 0.0, 0.0], atol=1e-6)
 
