@@ -35,20 +35,36 @@ An actuator is composed from three building blocks, applied in this order:
 .. code-block:: text
 
    Actuator
-   ├── Delay       (optional: delays command inputs by N actuator timesteps)
+   ├── InputProcessor[]  (optional: transform state and command inputs)
+   │   ├── InputProcessorDelay       (delays command inputs by N actuator timesteps)
+   │   └── InputProcessorBacklash   (reads position on the link side of a backlash joint)
    ├── Drive      (control law that computes raw effort)
    └── Clamping[]  (clamps raw effort based on motor-limit modeling)
        ├── ClampingMaxEffort        (±max_effort symmetric clamp)
        ├── ClampingDCMotor         (velocity-dependent saturation)
        └── ClampingPositionBased   (position-dependent lookup table)
 
-**Delay**
-   Optionally delays command inputs (control targets and feedforward terms)
-   by *N* actuator timesteps before they reach the drive, modeling
+**Input processors**
+   Optionally transform the inputs of the drive: the simulation state it
+   reads (positions, velocities) and the commands (control targets and
+   feedforward terms).  Processors run in list order; each one receives the
+   inputs returned by the previous one.
+
+   :class:`InputProcessorDelay` delays command inputs by *N* actuator timesteps, modeling
    communication or processing latency.  The delay always produces output;
    when the buffer is empty or a DOF has ``delay_steps == 0``, the current
    command inputs are used directly.  When underfilled, the lag is clamped
    to the available history so the oldest available entry is returned.
+
+   :class:`InputProcessorBacklash` models an encoder on the link side of a
+   backlash joint.  The backlash itself is a passive joint with a small
+   motion range, placed in series between the actuated joint and the link;
+   the solver handles the dead zone.  The drive reads the sum of the actuated
+   and the backlash joint positions; the velocity stays that of the actuated
+   joint.
+
+   In USD, processors keep the order of the actuator prim's ``apiSchemas``,
+   and a joint parameter is a relationship, e.g. ``rel newton:backlashJoint``.
 
 **Drive**
    Computes raw actuator effort [N or N·m] from the current simulator state
@@ -67,10 +83,23 @@ The per-step pipeline is:
 
 .. code-block:: text
 
-   Delay read → Drive → Clamping → Scatter-add → State updates (drive + delay write)
+   Input processors (read, then write their next state) → Drive → Clamping → Scatter-add → Drive state update
 
-Drives and clamping objects are pluggable: implement the
-:class:`DriveBase` or :class:`ClampingBase` class to add new models.
+Drives, clamping objects, and input processors are pluggable: implement the
+:class:`DriveBase`, :class:`ClampingBase`, or :class:`InputProcessorBase`
+class to add new models.
+
+.. deprecated:: 1.8
+
+   ``Delay`` is renamed :class:`InputProcessorDelay`.  The ``delay``
+   argument of :class:`Actuator`, the ``delay_steps`` argument of
+   :meth:`~newton.ModelBuilder.add_actuator`, :attr:`Actuator.delay`,
+   :attr:`Actuator.State.delay_state`, ``ModelBuilder.ActuatorEntry.delay_args``,
+   ``ComponentKind.DELAY``, and the
+   ``update_state(target_pos, target_vel, feedforward, pos_indices,
+   vel_indices, current_state, next_state)`` form of the delay are
+   deprecated.  Pass the delay in ``input_processors`` and read its state
+   from :attr:`Actuator.State.input_processor_states`.
 
 .. deprecated:: 1.6
 
@@ -101,7 +130,7 @@ when the model is finalized:
    import warp as wp
    import newton
    from newton.actuators import (
-       Actuator, ClampingMaxEffort, DrivePD, Delay,
+       Actuator, ClampingMaxEffort, DrivePD, InputProcessorDelay,
    )
 
    builder = newton.ModelBuilder()
@@ -117,7 +146,7 @@ when the model is finalized:
        index=dof_index,
        kp=100.0,
        kd=10.0,
-       delay_steps=5,
+       input_processors=[(InputProcessorDelay, {"delay_steps": 5})],
        clamping=[(ClampingMaxEffort, {"max_effort": 50.0})],
    )
 
@@ -136,7 +165,7 @@ components directly:
    actuator = Actuator(
        indices,
        drive=DrivePD(kp=kp, kd=kd),
-       delay=Delay(delay_steps=wp.array([5], dtype=wp.int32), max_delay=5),
+       input_processors=[InputProcessorDelay(delay_steps=wp.array([5], dtype=wp.int32), max_delay=5)],
        clamping=[ClampingMaxEffort(max_effort=max_e)],
        control_target_pos_attr="joint_target_q",
        control_target_vel_attr="joint_target_qd",
@@ -177,8 +206,9 @@ Stateful Actuators
 Drives that maintain internal state (e.g. :class:`DrivePID` with an
 integral accumulator, :class:`DriveNeuralGRU` with hidden state, or
 :class:`DriveNeuralLSTM` with hidden/cell state) and
-actuators with a :class:`Delay` require explicit double-buffered state
-management.  Create two state objects with :meth:`Actuator.state` and swap them
+actuators with stateful input processors (e.g. :class:`InputProcessorDelay`)
+require explicit double-buffered state management.  Create two state objects
+with :meth:`Actuator.state` and swap them
 after each step:
 
 .. testcode:: actuator-usage
@@ -386,6 +416,14 @@ The predicted state accounts only for the actuator's own impulse. Gravity, any
 other applied force, other actuators driving the same articulation, and joint
 drive applied without the actuator are all absent from it.
 
+With an :class:`~newton.actuators.InputProcessorBacklash`, the drive reads the
+link side of the backlash joint, but the predicted state still uses the
+response of the actuated joint alone. While the backlash gap is open, the
+motor's effort does not reach the link, yet the solve assumes it does, so it
+applies less effort than needed to close the gap.
+:meth:`~newton.actuators.Actuator.set_effort_mode_implicit` warns about this
+combination.
+
 The implicit effort mode necessarily requires the joint-space inverse mass
 matrix. This is supplied by a :class:`~newton.actuators.JointSpaceResponse`, which
 is refreshed once per step at the current pose:
@@ -485,10 +523,14 @@ captured region.
 Available Components
 --------------------
 
-Delay
-^^^^^
+Input processors
+^^^^^^^^^^^^^^^^
 
-* :class:`Delay` — circular-buffer delay for control targets (stateful).
+* :class:`InputProcessorDelay` — circular-buffer delay for control targets (stateful).
+* :class:`InputProcessorBacklash` — position on the link side of a backlash
+  joint (stateless).  :meth:`~newton.ModelBuilder.add_actuator`
+  takes the backlash joint as a joint index or joint label in
+  ``backlash_joint``.
 
 Drives
 ^^^^^^
@@ -502,8 +544,74 @@ Drives
   (stateful: position/velocity history buffers).
 * :class:`DriveNeuralLSTM` — LSTM neural-network drive
   (stateful: hidden/cell state).
+* :class:`DriveBAM` — BAM servo model: firmware gain, PWM and current
+  limits, DC motor with back-EMF (stateless).  BAM's gearbox friction is not
+  included.
 
 See the API documentation for each drive's control-law equations.
+
+Battery
+^^^^^^^
+
+* :class:`Battery` — supply shared by the actuators of one or more DOFs.  Its
+  voltage sags with the total effort in ``control.joint_f`` on its DOFs, down
+  to a minimum.  Call :meth:`Battery.refresh` once per step, before clearing
+  ``joint_f`` for the next actuator step: it computes the voltage from the
+  previous step's effort and writes it into ``control.supply_voltage``.
+  Drives that read the supply voltage, e.g. :class:`DriveBAM` with
+  ``supply_from_control=True``, declare ``supply_voltage`` as a custom input,
+  so :class:`~newton.ModelBuilder` registers it on :class:`~newton.Control`.
+  ``Battery.dof_battery`` maps each DOF to its battery, or ``-1`` for none;
+  a :class:`DriveBAM` on a DOF without a battery keeps
+  ``supply_from_control=False`` and uses ``vin``.
+
+One :class:`Battery` object holds every supply. Below, DOFs 0 and 1 share
+battery 0 and DOF 2 draws from battery 1:
+
+.. testcode:: actuator-battery
+
+   import warp as wp
+   import newton
+   from newton.actuators import Battery, DriveBAM
+
+   builder = newton.ModelBuilder()
+   for _ in range(3):
+       link = builder.add_link()
+       builder.add_shape_box(link, hx=0.1, hy=0.02, hz=0.02)
+       joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
+       builder.add_articulation([joint])
+       builder.add_actuator(
+           DriveBAM,
+           index=builder.joint_qd_start[joint],
+           kp=5.0,
+           kt=0.5,
+           resistance=2.0,
+           vin=12.0,
+           max_pwm=1.0,
+           supply_from_control=True,
+       )
+   model = builder.finalize()
+
+   battery = Battery(
+       dof_battery=wp.array([0, 0, 1], dtype=wp.int32),
+       nominal_voltage=wp.array([12.0, 12.0], dtype=wp.float32),
+       sag_gain=wp.array([0.5, 0.5], dtype=wp.float32),
+       min_voltage=wp.array([9.0, 9.0], dtype=wp.float32),
+   )
+
+   solver = newton.solvers.SolverFeatherstone(model)
+   state_0, state_1 = model.state(), model.state()
+   control = model.control()
+   control.joint_target_q.fill_(1.0)
+   dt = 0.01
+
+   for _ in range(10):
+       battery.refresh(control)
+       control.joint_f.zero_()
+       for actuator in model.actuators:
+           actuator.step(state_0, control, dt=dt)
+       solver.step(state_0, state_1, control, None, dt)
+       state_0, state_1 = state_1, state_0
 
 Clamping
 ^^^^^^^^
@@ -521,9 +629,10 @@ Customization
 -------------
 
 Any actuator can be assembled from the existing building blocks — mix and
-match drives, clamping stages, and delay to fit a specific use case.
+match drives, clamping stages, and input processors to fit a specific use case.
 When the built-in components are not sufficient, implement new ones by
-subclassing :class:`DriveBase` or :class:`ClampingBase`.
+subclassing :class:`DriveBase`, :class:`ClampingBase`, or
+:class:`InputProcessorBase`.
 
 For example, a custom drive needs to implement
 :meth:`~DriveBase.compute`, :meth:`~DriveBase.resolve_arguments`,
