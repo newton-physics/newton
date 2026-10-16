@@ -32,7 +32,7 @@ class TestCaptureRelease(unittest.TestCase):
         capture_release._pending_releases.extend(self._saved_releases)
 
     def test_release_outside_capture_runs_now_and_drains_the_queue(self):
-        """A release outside a capture runs at once and also runs earlier deferred releases."""
+        """Run a release outside a capture at once, together with earlier deferred releases."""
         ran = []
         capture_release._pending_releases.append(lambda: ran.append("deferred"))
         capture_release._release_or_defer(lambda: ran.append("new"))
@@ -40,7 +40,7 @@ class TestCaptureRelease(unittest.TestCase):
         self.assertEqual(len(capture_release._pending_releases), 0)
 
     def test_release_during_capture_waits_for_the_next_collection(self):
-        """A release during a capture waits, and the first collection after the capture runs it."""
+        """Defer a release during a capture until the first collection after the capture."""
         gc.callbacks.append(capture_release._release_deferred_after_collection)
         self.addCleanup(gc.callbacks.remove, capture_release._release_deferred_after_collection)
         ran = []
@@ -53,7 +53,7 @@ class TestCaptureRelease(unittest.TestCase):
         self.assertEqual(ran, ["texture"])
 
     def test_concurrent_drains_run_each_release_once(self):
-        """Drains running on several threads at once run every release exactly once."""
+        """Run every release exactly once when several threads drain at the same time."""
         count = 2000
         ran = []
         for i in range(count):
@@ -89,7 +89,7 @@ class TestCaptureRelease(unittest.TestCase):
         self.assertEqual(len(capture_release._pending_releases), 0)
 
     def test_reentrant_drain_runs_each_release_once(self):
-        """A drain started from inside a release runs each release, old and new, exactly once."""
+        """Run each release, old and new, exactly once when a release starts a drain."""
         ran = []
 
         def release_a():
@@ -104,7 +104,7 @@ class TestCaptureRelease(unittest.TestCase):
         self.assertEqual(len(capture_release._pending_releases), 0)
 
     def test_capture_beginning_mid_drain_keeps_the_rest_queued(self):
-        """A capture that begins during a release stops the drain until the capture ends."""
+        """Stop the drain while a capture that began during a release is active."""
         ran = []
 
         def release_then_capture():
@@ -120,7 +120,7 @@ class TestCaptureRelease(unittest.TestCase):
         self.assertEqual(ran, ["a", "b"])
 
     def test_raising_release_keeps_later_releases_queued(self):
-        """A release that raises leaves the releases after it queued."""
+        """Keep later releases queued when a release raises."""
         ran = []
 
         def failing_release():

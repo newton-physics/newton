@@ -18,6 +18,7 @@ import collections
 import functools
 import gc
 from collections.abc import Callable
+from typing import Any
 
 import warp as wp
 
@@ -50,7 +51,7 @@ class CaptureSafeTexture3D(wp.Texture3D):
         super().__del__()
 
 
-def make_pinned_release_capture_safe(array: wp.array) -> wp.array:
+def make_pinned_release_capture_safe(array: wp.array[Any]) -> wp.array[Any]:
     """Make a pinned host array's ``cudaFreeHost`` wait until no graph capture is active."""
     free = array.deleter
     array.deleter = lambda ptr, capacity: _release_or_defer(functools.partial(free, ptr, capacity))
