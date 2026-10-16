@@ -4311,10 +4311,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             model: The model to be simulated.
             separate_worlds: If True, each Newton world is mapped to a separate MuJoCo world. Defaults to `not use_mujoco_cpu`.
             njmax: Maximum number of constraints per world. If None, a default
-                value is estimated automatically. An explicit value is preserved
-                unless it cannot hold the initial MuJoCo constraints; in that case,
-                it is increased with a warning.
-            njmax_nnz: Sparse constraint Jacobian nonzero capacity per world. If provided, must be non-negative and large enough for the initial sparse Jacobian. If None, derived from the model's constraint counts and njmax.
+                value is estimated automatically, reserving a friction row for every
+                DOF and tendon so friction can be enabled after construction. An
+                explicit value is preserved unless it cannot hold the initial MuJoCo
+                constraints; in that case, it is increased with a warning.
+            njmax_nnz: Sparse constraint Jacobian nonzero capacity per world. If provided, must be non-negative and large enough for the initial sparse Jacobian. If None, derived from the model's constraint counts and njmax, reserving friction nonzeros for every DOF and tendon.
             nconmax: Number of contact points per world. If None, a default value
                 is estimated automatically. An explicit value is preserved unless
                 it cannot hold the initial MuJoCo contacts; in that case, it is
@@ -8857,6 +8858,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             else:
                 nworld = 1
 
+            from mujoco_warp._src.io import _default_njmax as estimate_mujoco_warp_njmax
+
+            deferred_friction_rows, deferred_friction_nnz = self._get_deferred_friction_capacity()
+
             # TODO find better heuristics to determine nconmax and njmax
             if disable_contacts:
                 nconmax = 0
@@ -8868,8 +8873,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     nconmax = (newton_contact_max + nworld - 1) // nworld
 
                 if njmax is None:
-                    from mujoco_warp._src.io import _default_njmax as estimate_mujoco_warp_njmax
-
                     max_contact_dim = max(
                         1,
                         int(np.max(self.mj_model.geom_condim, initial=1)),
@@ -8888,7 +8891,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     per_world_contact_max = _estimate_rigid_contact_max_per_world(model, nconmax * nworld)
                     njmax = max(
                         estimate_mujoco_warp_njmax(self.mj_model, self.mj_data),
-                        self.mj_data.nefc + per_world_contact_max * constraint_rows_per_contact,
+                        self.mj_data.nefc
+                        + deferred_friction_rows
+                        + per_world_contact_max * constraint_rows_per_contact,
                     )
             elif nconmax is not None and nconmax < self.mj_data.ncon:
                 warnings.warn(
@@ -8898,7 +8903,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 )
                 nconmax = self.mj_data.ncon
 
-            if njmax is not None and njmax < self.mj_data.nefc:
+            if njmax is None:
+                njmax = max(
+                    estimate_mujoco_warp_njmax(self.mj_model, self.mj_data),
+                    self.mj_data.nefc + deferred_friction_rows,
+                )
+            elif njmax < self.mj_data.nefc:
                 warnings.warn(
                     f"[WARNING] Value for njmax is changed from {njmax} to {self.mj_data.nefc} following an MjWarp requirement.",
                     NewtonWarning,
@@ -8917,6 +8927,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         f"of at least {minimum_njmax_nnz}; the initial Jacobian contains "
                         f"{initial_required_nnz} nonzeros."
                     )
+            elif njmax_nnz is None and is_mujoco_warp_sparse(self.mj_model):
+                # MJWarp only counts friction that is nonzero in the compiled model.
+                from mujoco_warp._src.io import _default_nconmax as estimate_mujoco_warp_nconmax
+                from mujoco_warp._src.io import _default_njmax_nnz as estimate_mujoco_warp_njmax_nnz
+
+                resolved_nconmax = (
+                    nconmax if nconmax is not None else estimate_mujoco_warp_nconmax(self.mj_model, self.mj_data)
+                )
+                njmax_nnz = min(
+                    estimate_mujoco_warp_njmax_nnz(self.mj_model, resolved_nconmax, njmax) + deferred_friction_nnz,
+                    njmax * self.mj_model.nv,
+                )
 
             if nvmax is not None:
                 if nvmax > self.mj_model.nv:
@@ -9025,6 +9047,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 with open(target_filename, "w") as f:
                     f.write(spec.to_xml())
                     logger.info("Saved mujoco model to %s", os.path.abspath(target_filename))
+
+    def _get_deferred_friction_capacity(self) -> tuple[int, int]:
+        """Return rows and Jacobian nonzeros for zero friction that :meth:`notify_model_changed` may enable later."""
+        dof_count = int(np.count_nonzero(self.mj_model.dof_frictionloss <= 0.0))
+        tendon_inactive = self.mj_model.tendon_frictionloss <= 0.0
+        rows = dof_count + int(np.count_nonzero(tendon_inactive))
+        nnz = dof_count + int(np.sum(self.mj_model.ten_J_rownnz[tendon_inactive], dtype=np.int64))
+        return rows, nnz
 
     def _get_initial_jacobian_nnz(self) -> int:
         """Return the nonzero count of the initial MuJoCo constraint Jacobian."""

@@ -38,6 +38,7 @@ from newton._src.solvers.mujoco.kernels import convert_solref
 from newton._src.solvers.mujoco.utils import MJC_OBJ_BODY, MJC_OBJ_JOINT, MjcEqualityTargetKind
 from newton.examples import get_asset
 from newton.solvers import SolverMuJoCo
+from newton.solvers import mujoco as mujoco_authoring
 from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, patch_sys_module
 
 
@@ -4359,6 +4360,51 @@ class TestMuJoCoSolverNewtonContacts(unittest.TestCase):
         constraints_per_world = solver.mjw_data.nefc.numpy()
         self.assertEqual(int(constraints_per_world[0]), joint_count)
         self.assertLessEqual(int(np.max(constraints_per_world)), solver.mjw_data.njmax)
+
+    def test_default_capacity_covers_friction_enabled_after_construction(self):
+        """Reserve constraint rows and sparse Jacobian nonzeros for friction enabled at runtime."""
+        try:
+            mujoco, _ = SolverMuJoCo.import_mujoco()
+        except ImportError as e:
+            self.skipTest(f"MuJoCo or deps not installed. Skipping test: {e}")
+
+        # 40 joints fit the default njmax and only overflow sparse nonzeros; 80 also overflow rows.
+        for joint_count, use_mujoco_contacts in itertools.product((40, 80), (True, False)):
+            with self.subTest(joint_count=joint_count, use_mujoco_contacts=use_mujoco_contacts):
+                self._check_friction_enabled_after_construction(joint_count, use_mujoco_contacts, mujoco)
+
+    def _check_friction_enabled_after_construction(self, joint_count, use_mujoco_contacts, mujoco):
+        tendon_count = 4
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        SolverMuJoCo.register_custom_attributes(builder)
+        inertia = wp.mat33(np.eye(3) * 0.1)
+        joints = []
+        for _ in range(joint_count):
+            body = builder.add_link(mass=1.0, com=wp.vec3(0.0, 0.0, 0.0), inertia=inertia)
+            joints.append(builder.add_joint_revolute(parent=-1, child=body, friction=0.0))
+            builder.add_articulation([joints[-1]])
+        for tendon_index in range(tendon_count):
+            mujoco_authoring.add_tendon_fixed(
+                builder, [(joints[2 * tendon_index], 1.0), (joints[2 * tendon_index + 1], -1.0)]
+            )
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, use_mujoco_contacts=use_mujoco_contacts)
+
+        model.joint_friction.fill_(1.0)
+        model.mujoco.tendon_frictionloss.fill_(1.0)
+        solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.TENDON_PROPERTIES)
+
+        contacts = None if use_mujoco_contacts else newton.CollisionPipeline(model).contacts()
+        solver.step(model.state(), model.state(), model.control(), contacts, 1.0 / 240.0)
+
+        nefc = int(solver.mjw_data.nefc.numpy()[0])
+        efc_type = solver.mjw_data.efc.type.numpy()[0, :nefc]
+        self.assertEqual(nefc, joint_count + tendon_count)
+        self.assertLessEqual(nefc, solver.mjw_data.njmax)
+        self.assertEqual(int(np.count_nonzero(efc_type == int(mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF))), joint_count)
+        self.assertEqual(
+            int(np.count_nonzero(efc_type == int(mujoco.mjtConstraint.mjCNSTR_FRICTION_TENDON))), tendon_count
+        )
 
     def test_newton_contact_constraints_cover_uneven_worlds(self):
         """Size per-world constraints for contacts concentrated in one world."""
