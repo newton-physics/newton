@@ -112,7 +112,7 @@ def test_basic_contact_storage(test, device):
     shape_collision_aabb_upper = wp.ones(num_shapes, dtype=wp.vec3, device=device)
     shape_voxel_resolution = wp.full(num_shapes, wp.vec3i(4, 4, 4), dtype=wp.vec3i, device=device)
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def store_contact_kernel(
         reducer_data: GlobalContactReducerData,
         xform: wp.array[wp.transform],
@@ -172,7 +172,7 @@ def test_multiple_contacts_same_pair(test, device):
     shape_collision_aabb_upper = wp.ones(num_shapes, dtype=wp.vec3, device=device)
     shape_voxel_resolution = wp.full(num_shapes, wp.vec3i(4, 4, 4), dtype=wp.vec3i, device=device)
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def store_multiple_contacts_kernel(
         reducer_data: GlobalContactReducerData,
         xform: wp.array[wp.transform],
@@ -234,7 +234,7 @@ def test_different_shape_pairs(test, device):
     shape_collision_aabb_upper = wp.ones(num_shapes, dtype=wp.vec3, device=device)
     shape_voxel_resolution = wp.full(num_shapes, wp.vec3i(4, 4, 4), dtype=wp.vec3i, device=device)
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def store_different_pairs_kernel(
         reducer_data: GlobalContactReducerData,
         xform: wp.array[wp.transform],
@@ -293,7 +293,7 @@ def test_clear(test, device):
     shape_collision_aabb_upper = wp.ones(num_shapes, dtype=wp.vec3, device=device)
     shape_voxel_resolution = wp.full(num_shapes, wp.vec3i(4, 4, 4), dtype=wp.vec3i, device=device)
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def store_one_contact_kernel(
         reducer_data: GlobalContactReducerData,
         xform: wp.array[wp.transform],
@@ -350,7 +350,7 @@ def test_stress_many_contacts(test, device):
     shape_collision_aabb_upper = wp.ones(num_shapes, dtype=wp.vec3, device=device)
     shape_voxel_resolution = wp.full(num_shapes, wp.vec3i(4, 4, 4), dtype=wp.vec3i, device=device)
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def stress_kernel(
         reducer_data: GlobalContactReducerData,
         xform: wp.array[wp.transform],
@@ -430,7 +430,7 @@ def test_clear_active(test, device):
     shape_collision_aabb_upper = wp.ones(num_shapes, dtype=wp.vec3, device=device)
     shape_voxel_resolution = wp.full(num_shapes, wp.vec3i(4, 4, 4), dtype=wp.vec3i, device=device)
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def store_contact_kernel(
         reducer_data: GlobalContactReducerData,
         xform: wp.array[wp.transform],
@@ -616,7 +616,7 @@ def test_export_reduced_contacts_kernel(test, device):
     export_kernel = create_export_reduced_contacts_kernel(test_writer)
 
     # Store some contacts
-    @wp.kernel
+    @wp.kernel(module="unique")
     def store_contacts_kernel(
         reducer_data: GlobalContactReducerData,
         xform: wp.array[wp.transform],
@@ -655,7 +655,7 @@ def test_export_reduced_contacts_kernel(test, device):
         device=device,
     )
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def store_roundoff_duplicate_winners_kernel(reducer_data: GlobalContactReducerData):
         contact_a = export_contact_to_buffer(
             shape_a=10,
@@ -799,7 +799,7 @@ def test_export_reduced_contacts_kernel(test, device):
 def test_key_uniqueness(test, device):
     """Test that different inputs produce different keys."""
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def compute_keys_kernel(
         keys_out: wp.array[wp.uint64],
     ):
@@ -828,7 +828,7 @@ def test_oct_encode_decode_roundtrip(test, device):
         device: Warp device under test.
     """
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def roundtrip_error_kernel(normals: wp.array[wp.vec3], errors: wp.array[wp.float32]):
         tid = wp.tid()
         n = wp.normalize(normals[tid])
@@ -863,7 +863,7 @@ def test_centered_basic_storage_and_reduction(test, device):
     """Test that export_and_reduce_contact_centered stores and reduces contacts correctly."""
     reducer = GlobalContactReducer(capacity=200, device=device)
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def store_centered_contacts_kernel(reducer_data: GlobalContactReducerData):
         tid = wp.tid()
         x = float(tid) - 10.0
@@ -906,7 +906,7 @@ def test_centered_basic_storage_and_reduction(test, device):
 def test_centered_two_spatial_depths_prefers_inner_then_outer(test, device):
     """Test that directional lanes prefer inner contacts and keep outer fallbacks."""
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def store_two_depth_contact_kernel(
         reducer_data: GlobalContactReducerData,
         x: float,
@@ -978,7 +978,7 @@ def test_centered_two_spatial_depths_prefers_inner_then_outer(test, device):
 def test_centered_two_spatial_depths_voxel_only_claim(test, device):
     """A contact without a normal-slot win may claim an unpublished voxel entry; later ties allocate nothing."""
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def reduce_kernel(
         reducer_data: GlobalContactReducerData,
         position_local: wp.vec3,
@@ -1042,7 +1042,7 @@ def test_centered_two_spatial_depths_voxel_only_claim(test, device):
 def test_centered_two_spatial_depths_full_buffer_does_not_publish_voxel_key(test, device):
     """Avoid publishing a voxel key when contact allocation is exhausted."""
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def exhaust_then_reduce_kernel(reducer_data: GlobalContactReducerData, result: wp.array[wp.int32]):
         export_contact_to_buffer(
             shape_a=10,
@@ -1085,7 +1085,7 @@ def test_centered_different_pairs_independent(test, device):
     """Test that different shape pairs are tracked independently in centered reduction."""
     reducer = GlobalContactReducer(capacity=200, device=device)
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def store_different_pairs_centered_kernel(reducer_data: GlobalContactReducerData):
         tid = wp.tid()
         X_ws_shape = wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity())
@@ -1120,7 +1120,7 @@ def test_centered_deepest_wins_max_depth_slot(test, device):
     """Test that the deepest contact always wins the max-depth slot."""
     reducer = GlobalContactReducer(capacity=200, device=device)
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def store_varying_depth_kernel(reducer_data: GlobalContactReducerData):
         tid = wp.tid()
         depth = -0.001 * float(tid + 1)
@@ -1169,7 +1169,7 @@ def test_centered_pre_pruning_reduces_buffer_usage(test, device):
     reducer = GlobalContactReducer(capacity=1000, device=device)
     reducer_data = reducer.get_data_struct()
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def store_extreme_contacts_kernel(reducer_data: GlobalContactReducerData):
         tid = wp.tid()
         positions = wp.vec3(0.0, 0.0, 0.0)
@@ -1202,7 +1202,7 @@ def test_centered_pre_pruning_reduces_buffer_usage(test, device):
     count_after_extremes = get_contact_count(reducer)
     test.assertEqual(count_after_extremes, 4)
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def store_one_dominated_contact_kernel(
         reducer_data: GlobalContactReducerData,
         x_offset: float,
@@ -1650,7 +1650,7 @@ def test_deterministic_identical_across_runs(test, device):
         reducer = GlobalContactReducer(capacity=500, device=device, deterministic=True)
         reducer_data = reducer.get_data_struct()
 
-        @wp.kernel(enable_backward=False)
+        @wp.kernel(enable_backward=False, module="unique")
         def store_contacts_det_kernel(reducer_data: GlobalContactReducerData):
             tid = wp.tid()
             x = float(tid % 10) - 5.0

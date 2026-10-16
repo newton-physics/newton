@@ -38,7 +38,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
         with:
-          version: "0.11.26"
+          version: "0.12.23"
       - name: Test CI tooling
         run: uv run --no-project --with packaging==26.2 -m unittest discover -s scripts/ci/tests
       - name: Check deprecation allowlists
@@ -79,7 +79,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
         with:
-          version: "0.11.26"
+          version: "0.12.23"
       - name: Test dependency resolution (Python 3.10)
         run: uv sync --dry-run --python 3.10 --extra dev
       - name: Test dependency resolution (Python 3.11)
@@ -89,24 +89,22 @@ jobs:
       - name: Test dependency resolution (Python 3.13)
         run: uv sync --dry-run --python 3.13 --extra dev
 
+  # Unsharded legs report their required check names directly.
   newton-unittests:
     needs: dependency-install-test
+    name: newton-unittests (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os:
-          [
-            ubuntu-latest,
-            ubuntu-24.04-arm,
-            windows-latest,
-            macos-latest,
-          ]
+        include:
+          - &unittest-arm { os: ubuntu-24.04-arm, shard-index: 0, shard-count: 1 }
+          - &unittest-macos { os: macos-latest, shard-index: 0, shard-count: 1 }
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.os == 'macos-latest' && 120 || 60 }}
     env:
       OS: ${{ matrix.os }}
 
-    steps:
+    steps: &unittest-steps
       - name: Harden the runner (Audit all outbound calls)
         uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
         with:
@@ -122,22 +120,25 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
         with:
-          version: "0.11.26"
+          version: "0.12.23"
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version-file: ".python-version"
+      # Post-submit (push) runs start cold to catch stale-cache issues without
+      # slowing the merge queue.
       - name: Restore Warp kernel cache
-        if: github.event_name != 'merge_group'
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
+        id: restore-warp-cache
+        if: github.event_name != 'push'
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
         with:
           path: |
             ~/.cache/warp
             ~/Library/Caches/warp
             ~\AppData\Local\NVIDIA\warp\Cache
-          key: warp-kernels-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
+          key: warp-kernels-${{ runner.os }}-${{ runner.arch }}-shard${{ matrix.shard-index }}of${{ matrix.shard-count }}-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
           restore-keys: |
-            warp-kernels-${{ runner.os }}-${{ runner.arch }}-
+            warp-kernels-${{ runner.os }}-${{ runner.arch }}-shard${{ matrix.shard-index }}of${{ matrix.shard-count }}-
       - name: Run Tests
         env:
           PYTHONFAULTHANDLER: "1"
@@ -147,8 +148,10 @@ jobs:
           uv run --extra dev -m newton.tests
           --strict-warnings
           --parallel-timeout ${{ matrix.os == 'macos-latest' && 6900 || 3300 }}
-          ${{ matrix.os == 'macos-latest' && '--disable-process-pooling' || '' }}
+          ${{ matrix.os == 'macos-latest' && '--max-tasks-per-child 10' || '' }}
           --no-cache-clear
+          --shard-count ${{ matrix.shard-count }}
+          --shard-index ${{ matrix.shard-index }}
           --junit-report-xml rspec.xml
           --coverage
           --coverage-xml coverage.xml
@@ -157,8 +160,21 @@ jobs:
           uv run --no-sync -m newton.tests
           --strict-warnings
           --no-cache-clear
+          --shard-count ${{ matrix.shard-count }}
+          --shard-index ${{ matrix.shard-index }}
           --start-directory asv/tests
           --junit-report-xml asv-rspec.xml
+      # Merge queue caches are scoped to throwaway gh-readonly-queue refs.
+      # Cache keys are immutable, so cold runs only save when the key is new.
+      - name: Save Warp kernel cache
+        if: github.event_name != 'merge_group' && steps.restore-warp-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
+        with:
+          path: |
+            ~/.cache/warp
+            ~/Library/Caches/warp
+            ~\AppData\Local\NVIDIA\warp\Cache
+          key: warp-kernels-${{ runner.os }}-${{ runner.arch }}-shard${{ matrix.shard-index }}of${{ matrix.shard-count }}-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
       - name: Test Summary
         uses: test-summary/action@37b508cfee6d4d080eedd00b5bb240a6a784a6a5  # v2.6
         with:
@@ -171,7 +187,7 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: test-results-${{ matrix.os }}
+          name: test-results-${{ matrix.os }}-shard${{ matrix.shard-index }}
           path: |
             rspec.xml
             asv-rspec.xml
@@ -181,25 +197,87 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
-          name: coverage-${{ matrix.os }}
+          name: coverage-${{ matrix.os }}-shard${{ matrix.shard-index }}
           path: coverage.xml
           retention-days: 1
           overwrite: true
 
-  codecov-upload:
-    name: Upload reports to Codecov
-    needs: newton-unittests
-    if: ${{ !cancelled() && needs.newton-unittests.result != 'skipped' }}
+  # Sharded OSes get one job each, so each gate below sees only its own shards.
+  newton-unittests-ubuntu:
+    needs: dependency-install-test
+    name: newton-unittests (${{ matrix.os }}, shard ${{ matrix.shard-index }}/${{ matrix.shard-count }})
     strategy:
       fail-fast: false
       matrix:
-        os:
-          [
-            ubuntu-latest,
-            ubuntu-24.04-arm,
-            windows-latest,
-            macos-latest,
-          ]
+        include:
+          - &unittest-ubuntu-0 { os: ubuntu-latest, shard-index: 0, shard-count: 2 }
+          - &unittest-ubuntu-1 { os: ubuntu-latest, shard-index: 1, shard-count: 2 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      OS: ${{ matrix.os }}
+    steps: *unittest-steps
+
+  newton-unittests-windows:
+    needs: dependency-install-test
+    name: newton-unittests (${{ matrix.os }}, shard ${{ matrix.shard-index }}/${{ matrix.shard-count }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - &unittest-windows-0 { os: windows-latest, shard-index: 0, shard-count: 2 }
+          - &unittest-windows-1 { os: windows-latest, shard-index: 1, shard-count: 2 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      OS: ${{ matrix.os }}
+    steps: *unittest-steps
+
+  # Report the unsharded check names that branch protection requires.
+  newton-unittests-ubuntu-gate:
+    needs: newton-unittests-ubuntu
+    if: ${{ always() && (github.event_name != 'push' || github.repository == 'newton-physics/newton') }}
+    name: newton-unittests (ubuntu-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check shard results
+        env:
+          RESULT: ${{ needs.newton-unittests-ubuntu.result }}
+        run: |
+          if [ "$RESULT" != "success" ]; then
+            echo "::error::Ubuntu unit test shards finished with result '$RESULT'."
+            exit 1
+          fi
+
+  newton-unittests-windows-gate:
+    needs: newton-unittests-windows
+    if: ${{ always() && (github.event_name != 'push' || github.repository == 'newton-physics/newton') }}
+    name: newton-unittests (windows-latest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check shard results
+        env:
+          RESULT: ${{ needs.newton-unittests-windows.result }}
+        run: |
+          if [ "$RESULT" != "success" ]; then
+            echo "::error::Windows unit test shards finished with result '$RESULT'."
+            exit 1
+          fi
+
+  codecov-upload:
+    name: Upload reports to Codecov
+    needs: [newton-unittests, newton-unittests-ubuntu, newton-unittests-windows]
+    if: ${{ !cancelled() && (needs.newton-unittests.result != 'skipped' || needs.newton-unittests-ubuntu.result != 'skipped' || needs.newton-unittests-windows.result != 'skipped') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - *unittest-ubuntu-0
+          - *unittest-ubuntu-1
+          - *unittest-arm
+          - *unittest-windows-0
+          - *unittest-windows-1
+          - *unittest-macos
     runs-on: ubuntu-latest
     # Same-run artifact downloads use the runtime token; contents access is
     # only used to build Codecov's source network for coverage path mapping.
@@ -238,13 +316,13 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
-          name: test-results-${{ matrix.os }}
+          name: test-results-${{ matrix.os }}-shard${{ matrix.shard-index }}
       - name: Download coverage artifact
         id: download-coverage
         continue-on-error: true
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
-          name: coverage-${{ matrix.os }}
+          name: coverage-${{ matrix.os }}-shard${{ matrix.shard-index }}
       - name: Upload test results to Codecov
         if: ${{ steps.download-test-results.outcome == 'success' }}
         uses: codecov/codecov-action@1af58845a975a7985b0beb0cbe6fbbb71a41dbad  # v5.5.3

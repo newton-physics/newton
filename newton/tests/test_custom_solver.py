@@ -3,7 +3,10 @@
 
 """Tests for extending solver change/reset flags with custom integer bits."""
 
+from __future__ import annotations
+
 import unittest
+from dataclasses import dataclass
 
 import numpy as np
 import warp as wp
@@ -14,9 +17,28 @@ import newton
 class DummySolver(newton.solvers.SolverBase):
     """Minimal solver that consumes extension flags and custom attributes."""
 
+    class ObservableKind(newton.solvers.SolverBase.ObservableKind):
+        """Add a custom kind while inheriting the standard observable names."""
+
+        BODY_TEMPERATURE = "body_temperature"
+
+    @dataclass(eq=False)
+    class Observables(newton.solvers.SolverBase.Observables):
+        """Extend the standard observable container with a custom body array."""
+
+        body_temperature: wp.array[wp.float32] | None = newton.solvers.SolverBase.Observables.field(
+            dtype=wp.float32, frequency=newton.Model.AttributeFrequency.BODY
+        )
+
     # These bits intentionally live outside Newton's built-in flag range.
     MODEL_ATTRIBUTE_CHANGED = 1 << 20
     STATE_ATTRIBUTE_RESET = 1 << 21
+    SUPPORTED_OBSERVABLES = frozenset(
+        {
+            ObservableKind.BODY_QDD,
+            ObservableKind.BODY_TEMPERATURE,
+        }
+    )
 
     def __init__(self, model: newton.Model):
         """Initialize bookkeeping used by the tests."""
@@ -143,6 +165,50 @@ class TestCustomSolver(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "world_count \\+ 1"):
             solver.reset(state, world_mask=wp.array((True,), dtype=wp.bool, device=model.device))
+
+    def test_observables_compose_standard_and_custom_flags(self):
+        """Allocate inherited and solver-specific observables from one set."""
+        model = self._build_model()
+        solver = DummySolver(model)
+        requested = {
+            solver.ObservableKind.BODY_QDD,
+            solver.ObservableKind.BODY_TEMPERATURE,
+        }
+
+        observables = solver.observables(kinds=requested)
+
+        self.assertIsInstance(observables, DummySolver.Observables)
+        self.assertEqual(observables.kinds, frozenset(requested))
+        self.assertEqual(observables.body_qdd.shape, (model.body_count,))
+        self.assertEqual(observables.body_temperature.shape, (model.body_count,))
+        self.assertIsNone(observables.body_parent_f)
+
+    def test_observables_reject_invalid_requests(self):
+        """Reject unsupported names, bare strings, and invalid collection entries."""
+        model = self._build_model()
+        solver = DummySolver(model)
+        for kinds, error, message in (
+            ({solver.ObservableKind.BODY_PARENT_F}, ValueError, "body_parent_f"),
+            ({""}, TypeError, "nonempty strings"),
+            ({0}, TypeError, "nonempty strings"),
+            ("body_qdd", TypeError, "collection of strings"),
+        ):
+            with self.subTest(kinds=kinds), self.assertRaisesRegex(error, message):
+                solver.observables(kinds)
+
+    def test_extended_attribute_requests_are_deprecated(self):
+        """Keep legacy allocation requests while directing callers to solver observables."""
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(DeprecationWarning, "SolverBase.Observables"):
+            builder.request_state_attributes("body_qdd")
+        with self.assertWarnsRegex(DeprecationWarning, "SolverBase.Observables"):
+            builder.request_contact_attributes("force")
+
+        model = builder.finalize()
+        with self.assertWarnsRegex(DeprecationWarning, "SolverBase.Observables"):
+            model.request_state_attributes("body_parent_f")
+        with self.assertWarnsRegex(DeprecationWarning, "SolverBase.Observables"):
+            model.request_contact_attributes("force")
 
 
 if __name__ == "__main__":

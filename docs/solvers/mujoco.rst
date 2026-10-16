@@ -101,6 +101,7 @@ at the solver boundary:
   data and remain in MuJoCo's absolute units.
 
 Changing ``mujoco.dof_ref`` at runtime (via
+:attr:`~newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES` or the broad
 :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES`) shifts exported
 ``qpos0``, ``jnt_range``, and position controls with the new reference.
 Native MuJoCo attributes remain absolute and are not shifted.
@@ -143,7 +144,15 @@ Geometry types
      - Heightfield data is stored normalized to ``[0, 1]`` on the Newton
        :class:`~newton.Heightfield` source and forwarded as-is. The geom
        origin is shifted by ``min_z`` so the lowest point is at the
-       correct world height.
+       correct world height. MJCF's base depth is preserved in the per-shape
+       ``mujoco:hfield_base`` custom attribute [m], after import scaling, and
+       multiplied by the shape's Z scale on conversion. This depth extends
+       below the lowest elevation; it does not change the height samples.
+       MJCF import requires exactly four positive ``size`` values, matching
+       MuJoCo; missing, zero, or negative sizes are rejected.
+       For native Newton fields, an absent or negative value (the default) retains the legacy
+       ``1e-4`` m MuJoCo base. This attribute affects only the MuJoCo solver;
+       recreate the solver after changing it.
    * - :attr:`~newton.GeoType.MESH` / :attr:`~newton.GeoType.CONVEX_MESH`
      - ``mjGEOM_MESH``
      - MuJoCo only supports **convex** collision meshes. Non-convex
@@ -155,8 +164,13 @@ Geometry types
      - MuJoCo has no cone primitive, so Newton tessellates the cone into a
        32-segment mesh at conversion time. Collision uses that convex
        polyhedral approximation. Changing :attr:`~newton.Model.shape_scale`
-       after construction raises ``ValueError``; recreate the solver to resize
-       the cone.
+       after construction is unsupported; recreate the solver to resize the
+       cone. Eager shape-property notifications validate cone scales and raise
+       ``ValueError`` on changes. This host-side check is skipped during CUDA
+       graph capture and replay: keep cone scales fixed, and call
+       :meth:`~newton.solvers.SolverMuJoCo.notify_model_changed` with
+       :attr:`~newton.ModelFlags.SHAPE_PROPERTIES` outside capture to validate
+       any preceding edits.
    * - :attr:`~newton.GeoType.GAUSSIAN`
      - *unsupported*
      - Not present in the MuJoCo geom-type map.
@@ -233,6 +247,21 @@ implicit MJCF default. This extra flag is needed because the two-component
 authored native value such as ``solreflimit="0 0"`` or USD
 ``mjc:solreflimit = [0, 0]``.
 
+Authored raw ``solreflimit`` values are validated during solver construction
+and eager :attr:`~newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES` or
+:attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES` notifications on both backends. CUDA graph capture skips this host validation and leaves it
+pending until the next eager solref update. Graph replay does not validate
+values; call :meth:`~newton.solvers.SolverMuJoCo.notify_model_changed` with
+either force-update flag outside capture after reassigning raw values to
+check them. Joint-transform notifications do not validate joint-limit
+parameters or consume pending validation.
+
+On the MuJoCo Warp backend, runtime joint- and tendon-limit updates are
+stored in ``solver.mjw_model.jnt_solref``, ``tendon_solref_lim``, and
+``tendon_range`` per world. The corresponding arrays in the host template
+``solver.mj_model`` are not updated; inspect the Warp arrays for current
+values. The MuJoCo CPU backend keeps the host arrays synchronized.
+
 .. note::
 
    ``SolverMuJoCo(..., save_to_mjcf=path)`` is not a fully semantic
@@ -259,7 +288,15 @@ active mapping. On the force-space Newton-contacts path,
 pair by ``1 - dmax`` and the sum of the bodies' translational
 ``body_invweight0[..., 0]`` values before writing per-contact ``solref``. Here
 ``dmax = solimp[1]``. This inverse-weight scaling is Newton's implemented
-force-space contract, but it is not the full scalar contact effective mass
+force-space contract. For pyramidal contacts with ``condim > 1``, the factor
+also includes ``mu**2 * (1 + mu**2) / (impratio * (condim - 1))`` to account
+for the summed pyramid-edge normal response. Here ``mu`` is the final sliding
+friction after contact overrides. Elliptic and frictionless contacts retain
+the inverse-weight factor alone. The same mapping applies to positive
+per-contact stiffness and damping overrides; zero per-contact damping retains
+the critical-damping fallback.
+
+This resting-contact approximation is not the full scalar contact effective mass
 :math:`(J M^{-1} J^T)^{-1}` for arbitrary articulated or off-center contacts.
 
 ``model.mujoco.solref_mode`` (per shape) records how
@@ -383,9 +420,18 @@ Newton's per-DOF :attr:`~newton.Model.joint_target_mode` creates MuJoCo general 
 The full MuJoCo general-actuator model (arbitrary gain/bias/dynamics types
 and parameters, explicit transmission targets, ctrl/force/act ranges) is
 only reachable through the ``mujoco`` :ref:`custom-attribute namespace <mujoco-custom-attributes>`.
+The :doc:`newton.solvers.mujoco </api/newton_solvers_mujoco>` helpers
+``add_actuator_general``, ``add_actuator_motor``, ``add_actuator_position``,
+and ``add_actuator_velocity`` author complete
+actuator rows from a typed ``ActuatorTarget``. Scalar and D6 joints support
+local or absolute DOF selection. Ball/free joints instead require an explicit
+native MuJoCo gear vector: ball-joint torque is in the child body frame;
+free-joint force is in the world frame at the body origin, and its torque is
+in the child body frame. These are different from Newton's parent-frame,
+COM-based DOF convention. Use :attr:`~newton.Control.joint_f` for forces in
+Newton's DOF convention.
 Additional actuators declared this way are appended after the joint-target
 actuators — see ``SolverMuJoCo._init_actuators``.
-
 
 .. _mujoco-equality-constraints:
 
@@ -425,15 +471,23 @@ array; slot layout depends on the constraint type.
        matching pair of scalar axes.
 
 Newton's core API does not expose equality constraints as a dedicated
-builder call. Construct them through the MuJoCo
-:ref:`custom-attribute namespace <mujoco-custom-attributes>` with
-:meth:`~newton.ModelBuilder.add_custom_values` using the
-``mujoco:equality_constraint_*`` keys, then read or update finalized
-fields via ``model.mujoco.equality_constraint_*``.
+builder call. Construct them with the
+:doc:`newton.solvers.mujoco </api/newton_solvers_mujoco>` helpers
+``add_equality_connect``, ``add_equality_weld``, and ``add_equality_joint``,
+then read or update finalized fields via
+``model.mujoco.equality_constraint_*``:
 
-For example, add a connect constraint between two body indices in the
-active world as follows. Fields that do not apply to connect constraints
-retain their registered defaults.
+.. code-block:: python
+
+   from newton.solvers import mujoco
+
+   mujoco.add_equality_connect(builder, body1, body2, anchor=(0.0, 0.0, 0.0))
+
+The helpers write rows in the MuJoCo
+:ref:`custom-attribute namespace <mujoco-custom-attributes>`. The equivalent
+lower-level form uses :meth:`~newton.ModelBuilder.add_custom_values` with the
+``mujoco:equality_constraint_*`` keys; fields that do not apply to connect
+constraints retain their registered defaults.
 
 .. code-block:: python
 
@@ -449,9 +503,12 @@ retain their registered defaults.
            "mujoco:equality_constraint_body2": body2,
            "mujoco:equality_constraint_anchor": wp.vec3(0.0, 0.0, 0.0),
            "mujoco:equality_constraint_enabled": True,
-           "mujoco:equality_constraint_world": builder.current_world,
        }
    )
+
+``mujoco:equality_constraint_world`` has ``references="world"``, so omitting
+it assigns the row to ``builder.current_world``. Pass an explicit world index,
+including ``-1`` for the global world, when that is the intended owner instead.
 
 .. _mujoco-loop-closures:
 
@@ -488,14 +545,22 @@ are excluded from MuJoCo's ``nq`` / ``nv``.
 Tendons
 -------
 
-Newton's core API does not currently expose tendons (fixed or spatial)
-as first-class concepts. They are implemented through the MuJoCo
+MuJoCo's fixed and spatial tendons use the
 :ref:`custom-attribute namespace <mujoco-custom-attributes>`: populated
 on import from MJCF/USD and parsed into MuJoCo's tendon structures by
-``SolverMuJoCo._init_tendons``. Spatial tendons support ``site``,
+``SolverMuJoCo._init_tendons``. To author tendons programmatically, use
+``add_tendon_fixed`` and ``add_tendon_spatial`` from
+:doc:`newton.solvers.mujoco </api/newton_solvers_mujoco>`. Spatial tendons support ``site``,
 ``geom``, and ``pulley`` wrap elements; any other wrap type and any
 degenerate tendon definition produces a warning and is skipped rather
 than raising.
+
+These provider tendons are separate from Newton's experimental
+:doc:`massless routed tendons </tendons>` used by XPBD and VBD. There is no
+automatic conversion between native ``Model.tendon_*`` routes and
+``model.mujoco.tendon_*`` data. USD ``MjcTendon`` import and tendon-actuator
+target resolution use the provider path; see
+:doc:`/concepts/usd_parsing` for supported path attributes.
 
 For force-based limit gains, set ``model.mujoco.tendon_limit_ke`` (stiffness
 [N/m]) and ``tendon_limit_kd`` (damping [N s/m]), select force-space authoring
@@ -658,7 +723,8 @@ Newton's core API does not expose explicit MuJoCo-style ``<pair>``
 contact overrides. They are implemented through the MuJoCo
 :ref:`custom-attribute namespace <mujoco-custom-attributes>` and
 parsed into MuJoCo's geom-pair contact structures by
-``SolverMuJoCo._init_pairs``.
+``SolverMuJoCo._init_pairs``. To author a pair programmatically, use
+``add_contact_pair`` from :doc:`newton.solvers.mujoco </api/newton_solvers_mujoco>`.
 
 
 Multi-world support
@@ -700,6 +766,47 @@ same three-phase cycle:
 Contacts are **not** pulled back into a Newton ``Contacts`` object
 automatically. Call :meth:`~newton.solvers.SolverMuJoCo.update_contacts`
 when you need contact points, forces, or material indices in Newton form.
+
+Separated speculative contacts
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+With ``use_mujoco_contacts=False``, Newton's collision pipeline can generate
+separated candidates using velocity expansion. By default, MuJoCo activates
+constraints only inside the authored collision margin. Generating a candidate
+alone therefore does not prevent an object from crossing a thin collider in
+one dynamics step.
+
+Set ``use_speculative_contacts=True`` to add frictionless normal constraints
+for separated candidates. Their target bounds closing velocity by the current
+clearance divided by the physics timestep. Collision margins and the material
+response of penetrating contacts retain their authored values. Friction begins
+when the surfaces enter the authored margin.
+
+.. experimental::
+
+   The ``SolverMuJoCo(use_speculative_contacts=True)`` mode may change without
+   prior notice. It requires Newton contacts on the MuJoCo Warp backend and
+   Euler or implicitfast integration. It does not provide continuous collision
+   detection or guarantee zero penetration: candidate coverage, rotation,
+   contact compliance, forces, and timestep still matter.
+
+This is a runtime solver option, like the choice of contact backend. It does
+not add an asset-authoring attribute or change the USD collision schema.
+
+Pass a velocity-expansion horizon to the collision pipeline before each step::
+
+    pipeline = newton.CollisionPipeline(model, speculative_contact_gap_max=0.05)
+    contacts = pipeline.contacts()
+    solver = newton.solvers.SolverMuJoCo(
+        model, use_mujoco_contacts=False, use_speculative_contacts=True
+    )
+    pipeline.collide(state_in, contacts, dt=dt)
+    solver.step(state_in, state_out, control, contacts, dt)
+
+For scheduled collision refreshes, the expansion horizon must cover the
+interval until the next refresh. The solver's velocity bound uses each
+individual dynamics timestep. Speculative constraints can consume additional
+constraint rows, so check contact and constraint capacities for the scene.
 
 Push, pull, and contact-conversion are implemented by
 ``SolverMuJoCo._apply_mjc_control``, ``SolverMuJoCo._update_newton_state``,
@@ -983,6 +1090,76 @@ for a fixed-root articulation after constructing the solver, call
 :meth:`~newton.solvers.SolverBase.notify_model_changed` with the
 :attr:`~newton.ModelFlags.JOINT_PROPERTIES` flag to
 synchronize the updated fixed-root poses into MuJoCo.
+
+
+Updating joint force properties
+-------------------------------
+
+Use :attr:`~newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES` with
+:meth:`~newton.solvers.SolverMuJoCo.notify_model_changed` to publish joint
+friction, damping, target gains/modes, effort limits, passive stiffness, and
+limit coefficients/bounds. This includes the MuJoCo ``solreffriction``,
+``solimpfriction``, ``dof_passive_stiffness``, ``limit_margin``, ``solimplimit``,
+and ``solreflimit`` custom attributes. Optional attributes that are absent
+retain their solver values. General MuJoCo actuator properties still use
+:attr:`~newton.ModelFlags.ACTUATOR_PROPERTIES`.
+
+The force flag skips mass-constant recomputation, reference-pose updates,
+tendon-limit refreshes, and contact-cache invalidation. Joint-limit coefficients
+use the cached inverse weights. Compiled actuator length ranges are preserved,
+and pending tendon-limit edits are left unpublished.
+When sleeping is enabled, updated parameters wake all worlds. The MuJoCo Warp
+path supports CUDA graph capture; the MuJoCo CPU backend copies values to its
+host model and cannot be captured.
+
+Use :attr:`~newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES` for
+:attr:`~newton.Model.joint_armature` changes. Reference-pose changes, including
+MuJoCo ``dof_ref`` and ``dof_springref``, use
+:attr:`~newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES`. These paths recompute constants;
+reference updates also shift limit ranges to the new reference. Both flags
+are intended for reset-time or domain-randomization changes. Constant
+recomputation is substantially more expensive than force updates, so avoid
+using either flag every simulation step.
+:attr:`~newton.ModelFlags.JOINT_PROPERTIES` only publishes joint transforms and
+axes, without recomputing constants or applying pending reference edits. Combine
+flags with ``|`` when several categories change. The existing
+:attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES` flag retains its integer value
+and full-update behavior, including force, armature, and reference properties.
+
+**Tendon-limit dependency:** Notifications that recompute constants also refresh
+tendon limits using the current ``model.mujoco`` limit modes, gains, raw
+``solref`` values, and ranges. Those pending edits are therefore published even
+without :attr:`~newton.ModelFlags.TENDON_PROPERTIES`. This includes joint
+inertial/reference updates and the broad joint-DOF, body, body-inertial, and
+actuator notifications. Publish tendon edits explicitly with
+:attr:`~newton.ModelFlags.TENDON_PROPERTIES` before these updates rather than
+relying on them to preserve pending tendon-limit changes. Force-only joint
+notifications do not recompute constants and leave tendon limits unchanged.
+
+For example, actuator models with load-dependent friction can compute effective
+budgets and publish them in the same graph as the simulation step. Given device
+arrays ``friction_budget`` and ``damping_budget`` with one entry per Newton DOF:
+
+.. code-block:: python
+
+    with wp.ScopedCapture(device=model.device) as capture:
+        wp.copy(model.joint_friction, friction_budget)
+        wp.copy(model.joint_damping, damping_budget)
+        solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+        solver.step(state_in, state_out, control, contacts, dt)
+
+The budget computation can precede these copies in the same graph. For an
+actuator controlling only some DOFs, scatter into those Newton model entries
+before notifying the solver; other entries retain their authored values. No
+MuJoCo DOF mapping or backend array access is needed.
+
+The model arrays hold the **effective total** friction and damping. Publication
+replaces solver values rather than adding an actuator contribution to authored
+passive damping. Retain any authored baseline separately when combining
+contributions. Apply reset-time inertia and configuration changes first, then
+compute and publish the next step's budgets. Full notifications also copy the
+current budgets. This API synchronizes existing runtime model arrays; it does
+not add actuator external-load feedback or authored USD properties.
 
 
 .. _mujoco-code-pointers:

@@ -25,7 +25,7 @@ from newton.viewer import ViewerNull
 ISAACGYM_ENVS_REPO_URL = "https://github.com/isaac-sim/IsaacGymEnvs.git"
 ISAACGYM_NUT_BOLT_FOLDER = "assets/factory/mesh/factory_nut_bolt"
 IRREGULAR_ROCK_VERTEX_COUNTS = (10, 14, 18, 26)
-CONVEX_COLLISION_CASES = (("hulls", 56), ("hulls_duplicate", 192), ("mixed", 191))
+CONVEX_COLLISION_CASES = (("hulls", 56), ("hulls_duplicate", 192), ("mixed", 64), ("mixed", 153), ("mixed", 191))
 # Large enough that the split GJK/MPR path is active and its launch is the
 # limit, which the cases above are an order of magnitude too small to reach.
 SPLIT_CONVEX_COLLISION_CASES = (("hulls_split", 4096),)

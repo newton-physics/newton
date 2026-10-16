@@ -1005,6 +1005,7 @@ ACTUATOR_SKIP_FIELDS: set[str] = {
     "actuator_trntype_body_adr",
     "actuator_actadr",
     "actuator_actnum",
+    "actuator_ctrladr",
     # Position/velocity-shortcut MjcActuator rows targeting single-DOF joints are
     # promoted to CtrlSource.JOINT_TARGET on import (matching MJCF behavior).
     # _init_actuators rebuilds the compiled MuJoCo actuators from joint_target_*,
@@ -1139,6 +1140,8 @@ class TestMenagerieUSD(TestMenagerieBase):
         "dof_",
         # Joint ordering may differ -> compared via _compare_jnt_range
         "jnt_",
+        # Sparse mass matrix structure: DOF-indexed, compared via _compare_mass_matrix_structure
+        "M_",
         # Sparse D-structure CSR arrays (top-level in mujoco_warp >= 3.9); the same
         # sparsity is already verified via _compare_qD_structure (qD_fullm_i/j).
         "D_rownnz",
