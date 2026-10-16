@@ -24,6 +24,7 @@ from ..utils.deprecation import RemovedAttribute
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
 from .contacts import Contacts
 from .control import Control
+from .shape_contact_pairs import _ShapeContactPairs
 from .state import State
 
 logger = logging.getLogger(__name__)
@@ -790,14 +791,11 @@ class Model:
         self._shape_collision_filter_pairs = _ShapeCollisionFilterPairs(np.empty(0, dtype=np.int64))
         self.shape_collision_radius: wp.array[wp.float32] | None = None
         """Collision radius [m] for bounding sphere broadphase, shape [shape_count], float. Not supported by :class:`~newton.solvers.SolverMuJoCo`."""
-        self.shape_contact_pairs: wp.array[wp.vec2i] | None = None
-        """Pairs of shape indices that may collide, shape [contact_pair_count, 2], int.
-
-        Static-static pairs are omitted. Kinematic-kinematic and static-kinematic pairs
-        are retained so consumers can opt into them during contact generation.
-        """
-        self.shape_contact_pair_count: int = 0
-        """Number of shape contact pairs."""
+        self._shape_contact_pairs: wp.array[wp.vec2i] | None = None
+        self._shape_contact_pair_data: _ShapeContactPairs | None = None
+        """Finalized collision topology for lazy pair construction and statistics."""
+        self._shape_contact_pair_count: int = 0
+        self._shape_contact_pair_counts: dict[bytes | tuple[bytes, int | None] | None, np.ndarray] = {}
         self.shape_world: wp.array[wp.int32] | None = None
         """World index for each shape, shape [shape_count], int. -1 for global."""
         self.shape_world_start: wp.array[wp.int32] | None = None
@@ -1439,6 +1437,44 @@ class Model:
 
         self.actuators: list[Actuator] = []
         """List of actuator instances for this model."""
+
+    @property
+    def shape_contact_pairs(self) -> wp.array[wp.vec2i] | None:
+        """Pairs of shape indices that may collide, shape [shape_contact_pair_count], vec2i.
+
+        Constructed on first access; access it before CUDA graph capture if needed.
+
+        Default pairs omit static-static pairs and retain static-kinematic and
+        kinematic-kinematic pairs.
+
+        Assign a replacement array to change pairs, or ``None`` to remove the
+        model's pair array and set its count to zero. In-place edits are unsupported.
+        """
+        pairs = self._shape_contact_pairs
+        if pairs is None and self._shape_contact_pair_data is not None:
+            topology = self._shape_contact_pair_data
+            if self.device.is_cuda and self.device.is_capturing and topology.counts.any():
+                raise RuntimeError(
+                    "Initialize model.shape_contact_pairs before CUDA graph capture, "
+                    "for example by constructing the explicit CollisionPipeline before capture."
+                )
+            pairs = wp.array(topology.build_pairs(), dtype=wp.vec2i, device=self.device, copy=False)
+            self._shape_contact_pairs = pairs
+        return pairs
+
+    @shape_contact_pairs.setter
+    def shape_contact_pairs(self, pairs: wp.array[wp.vec2i] | None) -> None:
+        self._shape_contact_pairs = pairs
+        self._shape_contact_pair_data = None
+        self._shape_contact_pair_count = len(pairs) if pairs is not None else 0
+        self._shape_contact_pair_counts.clear()
+
+    @property
+    def shape_contact_pair_count(self) -> int:
+        """Number of shape pairs. Read-only; does not construct the full pair array."""
+        if self._shape_contact_pairs is not None:
+            return len(self._shape_contact_pairs)
+        return self._shape_contact_pair_count
 
     def _set_shape_collision_filter_packed(self, packed: np.ndarray) -> None:
         """Install the canonical filter store: sorted unique packed pair codes."""

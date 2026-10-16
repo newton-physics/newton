@@ -2165,7 +2165,6 @@ class RendererGL:
             diffuse_scale=self.diffuse_scale,
             specular_scale=self.specular_scale,
             spotlight_enabled=self.spotlight_enabled,
-            shadow_extents=self.shadow_extents,
             exposure=self.exposure,
             oit_depth_reference=self.camera.pivot_distance,
         )

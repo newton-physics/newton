@@ -16,7 +16,7 @@ import warp.examples
 
 import newton
 from newton import GeoType
-from newton._src.geometry import create_mesh_terrain
+from newton._src.geometry import broad_phase_nxn, create_mesh_terrain
 from newton._src.geometry.flags import MeshProperties, MeshSignMethod, ParticleFlags, ShapeFlags
 from newton._src.geometry.kernels import (
     create_soft_contacts,
@@ -60,7 +60,7 @@ from newton._src.sim.collide import (
 )
 from newton._src.utils.heightfield import HeightfieldData
 from newton.examples import test_body_state
-from newton.geometry import BroadPhaseAllPairs, NarrowPhase
+from newton.geometry import BroadPhaseAllPairs, BroadPhaseExplicit, NarrowPhase
 from newton.tests.unittest_utils import (
     USD_AVAILABLE,
     add_function_test,
@@ -379,6 +379,48 @@ def test_expert_narrow_phase_empty_voxel_resolution(test, device):
 
 
 class TestCollisionPipeline(unittest.TestCase):
+    def test_explicit_performance_warning_setup(self):
+        """Reuse explicit setup's readback and warn about the configured list."""
+        builder = newton.ModelBuilder()
+        for _ in range(2):
+            builder.begin_world()
+            for _ in range(2):
+                builder.add_shape_sphere(builder.add_body(), radius=0.1)
+            builder.end_world()
+        for mode in ("explicit", "custom", "expert", "sap", "nxn"):
+            with self.subTest(mode=mode):
+                model = builder.finalize(device="cpu")
+                pairs = wp.array([[0, 1], [1, 0], [0, 1], [2, 3]], dtype=wp.vec2i, device="cpu")
+                kwargs = {}
+                if mode in ("custom", "expert"):
+                    kwargs["shape_pairs_filtered"] = pairs
+                if mode == "expert":
+                    kwargs["narrow_phase"] = NarrowPhase(
+                        max_candidate_pairs=len(pairs),
+                        device="cpu",
+                        has_meshes=False,
+                        shape_aabb_lower=wp.zeros(model.shape_count, dtype=wp.vec3, device="cpu"),
+                        shape_aabb_upper=wp.zeros(model.shape_count, dtype=wp.vec3, device="cpu"),
+                    )
+                    broad_phase = BroadPhaseExplicit()
+                else:
+                    broad_phase = "explicit" if mode == "custom" else mode
+                with (
+                    mock.patch.object(broad_phase_nxn, "_EXPLICIT_LARGE_PAIR_COUNT_TOTAL", 3),
+                    mock.patch.object(broad_phase_nxn, "_EXPLICIT_LARGE_PAIR_COUNT_PER_WORLD", 3),
+                    mock.patch.object(pairs, "numpy", wraps=pairs.numpy) as read_pairs,
+                    warnings.catch_warnings(record=True) as caught,
+                ):
+                    warnings.filterwarnings("always", message="Explicit broad phase tests", category=RuntimeWarning)
+                    newton.CollisionPipeline(model, broad_phase=broad_phase, **kwargs)
+                self.assertEqual(len(caught), int(mode in ("custom", "expert")))
+                self.assertEqual(read_pairs.call_count, int(mode in ("custom", "expert")))
+                if mode in ("sap", "nxn"):
+                    self.assertIsNone(model._shape_contact_pairs)
+                if caught:
+                    self.assertIn("4 shape pairs", str(caught[0].message))
+                    self.assertIn("3 in the busiest world", str(caught[0].message))
+
     def test_legacy_expert_components_ignore_unconfigured_extension_inputs(self):
         """Preserve the Newton 1.5 expert-component call contract by default."""
 
@@ -2538,7 +2580,6 @@ class TestContactCountEstimator(unittest.TestCase):
         """Visual meshes should not affect rigid contact capacity estimates."""
         model = newton.Model()
         model.world_count = 1
-        model.shape_contact_pair_count = 0
 
         shape_type = np.array(
             [int(GeoType.BOX)] * 4 + [int(GeoType.MESH)] * 100,
@@ -2561,7 +2602,6 @@ class TestContactCountEstimator(unittest.TestCase):
         """When pair count is huge, the heuristic provides a tighter bound."""
         model = newton.Model()
         model.world_count = 1
-        model.shape_contact_pair_count = 999999
 
         # 4 primitives (CPP=5), 3 meshes (CPP=40), 2 planes, all in world 0.
         # non-plane: (4*20*5 + 3*20*40) // 2 = (400 + 2400) // 2 = 1400
@@ -2577,14 +2617,16 @@ class TestContactCountEstimator(unittest.TestCase):
         model.shape_type = wp.array(shape_type, dtype=wp.int32)
         model.shape_world = wp.array(shape_world, dtype=wp.int32)
 
-        estimate = _estimate_rigid_contact_max(model)
+        with mock.patch.object(
+            newton.Model, "shape_contact_pair_count", new_callable=mock.PropertyMock, return_value=999999
+        ):
+            estimate = _estimate_rigid_contact_max(model)
         self.assertEqual(estimate, 1680)
 
     def test_world_aware_plane_estimate(self):
         """Per-world plane computation avoids quadratic cross-world overcount."""
         model = newton.Model()
         model.world_count = 4
-        model.shape_contact_pair_count = 0
 
         # 4 worlds, each with 10 boxes (CPP=5) and 10 planes.
         # non-plane: (40*20*5) // 2 = 2000
@@ -2607,7 +2649,6 @@ class TestContactCountEstimator(unittest.TestCase):
         """When precomputed pair count is tighter than the heuristic, it is used."""
         model = newton.Model()
         model.world_count = 4
-        model.shape_contact_pair_count = 300
 
         # 40 boxes (CPP=5) across 4 worlds, no planes.
         # heuristic: (40*20*5) // 2 = 2000
@@ -2623,7 +2664,10 @@ class TestContactCountEstimator(unittest.TestCase):
         model.shape_type = wp.array(shape_type, dtype=wp.int32)
         model.shape_world = wp.array(shape_world, dtype=wp.int32)
 
-        estimate = _estimate_rigid_contact_max(model)
+        with mock.patch.object(
+            newton.Model, "shape_contact_pair_count", new_callable=mock.PropertyMock, return_value=300
+        ):
+            estimate = _estimate_rigid_contact_max(model)
         self.assertEqual(estimate, 1500)
 
 
@@ -2756,10 +2800,11 @@ class TestTrianglePairCapacityEstimator(unittest.TestCase):
         expected = self._capacity(model)
         # Per world: 2 or 3 pairs with the global mesh, plus 2 with a local mesh; global mesh-box once.
         self.assertEqual(expected, (2 * 5 + 2 * 2 + 1) * _TRIANGLE_PAIRS_PER_MESH_PAIR)
-        model.shape_contact_pairs = None
         for broad_phase in ("nxn", "sap"):
             with self.subTest(broad_phase=broad_phase):
+                model = builder.finalize(device="cpu")
                 self.assertEqual(self._capacity(model, broad_phase=broad_phase), expected)
+                self.assertIsNone(model._shape_contact_pairs)
 
     def test_counts_without_stored_pairs_ignore_filters(self):
         """Overcount, never undercount, when filtered pairs cannot be seen without a pair list."""
@@ -2769,10 +2814,13 @@ class TestTrianglePairCapacityEstimator(unittest.TestCase):
         builder.add_shape_collision_filter_pair(mesh, builder.shape_count - 1)
         model = builder.finalize(device="cpu")
 
-        with_pairs = self._capacity(model, broad_phase="nxn")
-        model.shape_contact_pairs = None
+        with_pairs = self._capacity(model)
         self.assertEqual(with_pairs, 2 * _TRIANGLE_PAIRS_PER_MESH_PAIR)
-        self.assertEqual(self._capacity(model, broad_phase="nxn"), 3 * _TRIANGLE_PAIRS_PER_MESH_PAIR)
+        for broad_phase in ("nxn", "sap"):
+            with self.subTest(broad_phase=broad_phase):
+                model = builder.finalize(device="cpu")
+                self.assertEqual(self._capacity(model, broad_phase=broad_phase), 3 * _TRIANGLE_PAIRS_PER_MESH_PAIR)
+                self.assertIsNone(model._shape_contact_pairs)
 
     def test_large_automatic_estimate_warns(self):
         """Warn when the automatic estimate needs large buffers, and stay silent for explicit values."""
