@@ -152,29 +152,25 @@ class TestDownloadAssets(unittest.TestCase):
             self.assertEqual(list(Path(self.cache_dir).iterdir()), [])
 
     def test_uncached_download_cleanup(self):
-        """Keep uncached assets until their owning process exits, including after a fork."""
+        """Ignore cleanup by foreign processes and remove assets when their owner exits."""
         result = subprocess.run(
             [
                 sys.executable,
                 "-c",
                 textwrap.dedent("""\
-                    import os
                     import sys
                     import newton
-                    from newton._src.utils.download_assets import clear_git_cache, download_git_folder
+                    from newton._src.utils.download_assets import (
+                        _cleanup_temporary_cache, clear_git_cache, download_git_folder,
+                    )
 
                     newton.config.cache_dir_assets = None
                     path = download_git_folder(sys.argv[1], sys.argv[2])
                     clear_git_cache()
                     assert (path / "foo.txt").read_text() == "v1\\n"
-                    if hasattr(os, "fork"):
-                        sys.stdout.flush()
-                        pid = os.fork()
-                        if pid == 0:
-                            sys.exit(0)
-                        _, status = os.waitpid(pid, 0)
-                        assert status == 0
-                        assert (path / "foo.txt").read_text() == "v1\\n"
+                    # PID 0 cannot own this download. Avoid forking Warp's native threads.
+                    _cleanup_temporary_cache(str(path), owner_pid=0)
+                    assert (path / "foo.txt").read_text() == "v1\\n"
                     print(path)
                 """),
                 self.remote_dir,
