@@ -11,6 +11,10 @@ inputs:
   instance-type:
     description: Preferred EC2 instance type
     required: true
+  ami-name:
+    description: AWS AMI name override; empty selects the latest matching image
+    required: false
+    default: ''
   fallback-instance-type:
     description: EC2 instance type to try when the preferred type cannot launch; empty disables fallback
     required: false
@@ -63,6 +67,7 @@ runs:
       shell: bash
       env:
         AWS_INSTANCE_TYPE: ${{ inputs.instance-type }}
+        AWS_AMI_NAME: ${{ inputs.ami-name }}
         AWS_REGION_CANDIDATES: ${{ inputs.region-candidates }}
         AWS_RUNNER_RESOURCE_TAG: ${{ inputs.resource-tag }}
       run: python scripts/ci/discover_aws_runner_config.py
@@ -108,6 +113,7 @@ runs:
       shell: bash
       env:
         AWS_INSTANCE_TYPE: ${{ inputs.fallback-instance-type }}
+        AWS_AMI_NAME: ${{ inputs.ami-name }}
         AWS_REGION_CANDIDATES: ${{ inputs.region-candidates }}
         AWS_RUNNER_RESOURCE_TAG: ${{ inputs.resource-tag }}
       run: python scripts/ci/discover_aws_runner_config.py

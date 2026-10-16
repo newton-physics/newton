@@ -78,6 +78,8 @@ class ViewerUSD(ViewerBase):
     and visualization of simulation data.
     """
 
+    _root_path = "/root"
+
     def __init__(
         self,
         output_path: str,
@@ -138,7 +140,7 @@ class ViewerUSD(ViewerBase):
         UsdGeom.SetStageUpAxis(self.stage, axis_token)
         UsdGeom.SetStageMetersPerUnit(self.stage, 1.0)
 
-        self.root = UsdGeom.Xform.Define(self.stage, "/root")
+        self.root = UsdGeom.Xform.Define(self.stage, self._root_path)
 
         # apply root scaling
         self.root.ClearXformOpOrder()
@@ -177,7 +179,7 @@ class ViewerUSD(ViewerBase):
         }.get(self.up_axis.strip().upper())
         UsdGeom.SetStageUpAxis(self.stage, axis_token)
         UsdGeom.SetStageMetersPerUnit(self.stage, 1.0)
-        self.root = UsdGeom.Xform.Define(self.stage, "/root")
+        self.root = UsdGeom.Xform.Define(self.stage, self._root_path)
         self.root.ClearXformOpOrder()
         s = self.root.AddScaleOp()
         s.Set(Gf.Vec3d(float(self.scaling), float(self.scaling), float(self.scaling)), 0.0)
@@ -281,9 +283,9 @@ class ViewerUSD(ViewerBase):
     def _get_path(self, name):
         # Handle both absolute and relative paths correctly
         if name.startswith("/"):
-            return "/root" + name
+            return self._root_path + name
         else:
-            return "/root/" + name
+            return f"{self._root_path}/{name}"
 
     @override
     def log_mesh(
@@ -353,6 +355,7 @@ class ViewerUSD(ViewerBase):
         # honors the supplied shading normals on polygonal meshes.
         mesh_prim.GetSubdivisionSchemeAttr().Set(UsdGeom.Tokens.none)
         mesh_prim.GetPointsAttr().Set(points_np, self._frame_index)
+        mesh_prim.GetExtentAttr().Set(UsdGeom.Mesh.ComputeExtent(points_np), self._frame_index)
 
         valid_texture = texture is not None and uvs is not None
         self._mesh_appearance[name] = {
@@ -549,10 +552,9 @@ class ViewerUSD(ViewerBase):
         UsdShade.MaterialBindingAPI.Apply(prim)
         UsdShade.MaterialBindingAPI(prim).Bind(material)
 
-    @staticmethod
-    def _texture_material_path(mesh_name: str) -> str:
+    def _texture_material_path(self, mesh_name: str) -> str:
         safe = mesh_name.replace("/", "_").lstrip("_")
-        return f"/root/Materials/mat_{safe}"
+        return f"{self._root_path}/Materials/mat_{safe}"
 
     # log a set of instances as individual mesh prims, slower but makes it easier
     # to do post-editing of instance materials etc. default for Newton shapes

@@ -28,6 +28,7 @@ class ClosestHit:
     shape_index: wp.uint32
     bary_u: wp.float32
     bary_v: wp.float32
+    # Mesh face index, or particle index for particle hits.
     face_idx: wp.int32
     color: wp.vec3f
 
@@ -234,6 +235,7 @@ def create_closest_hit_function(config: RenderConfig, state: RenderContext.Rende
                         closest_hit.distance = hit_distance
                         closest_hit.normal = hit_normal
                         closest_hit.shape_index = PARTICLES_SHAPE_ID
+                        closest_hit.face_idx = si
 
         return closest_hit
 

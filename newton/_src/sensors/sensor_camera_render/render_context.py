@@ -14,7 +14,11 @@ from ...geometry import GeoType, Mesh
 from ...sim import Model, State
 from ...utils import load_texture, normalize_texture
 from .render import create_kernel
-from .types import ClearData, LightType, MeshData, RenderConfig, RenderOrder, TextureData
+from .types import AntiAliasing, ClearData, LightType, MeshData, RenderConfig, RenderOrder, TextureData
+
+# Default hemispheric ambient radiance (linear RGB) for surfaces facing up and down.
+DEFAULT_AMBIENT_SKY_COLOR = (0.2, 0.2, 0.225)
+DEFAULT_AMBIENT_GROUND_COLOR = (0.05, 0.05, 0.06)
 
 
 class RenderContext:
@@ -83,19 +87,24 @@ class RenderContext:
         self._lights_cast_shadow: wp.array[wp.bool] | None = None
         self._lights_position: wp.array[wp.vec3f] | None = None
         self._lights_orientation: wp.array[wp.vec3f] | None = None
+        self._lights_color: wp.array[wp.vec3f] | None = None
 
-        # Heightfields are triangulated meshes (their wp.Mesh lives in
-        # shape_source_ptr), so the renderer treats them as meshes: it reuses
-        # the MESH ray-intersection path, which keeps heightfield handling out
-        # of the render kernels entirely (no extra shape-type branch, so no
-        # register/occupancy cost). The remapped type array is what the render
-        # kernel dispatches on; model.shape_type (HFIELD) is left untouched for
-        # collision and BVH bounds.
+        self._ambient_sky_color = wp.vec3f(*DEFAULT_AMBIENT_SKY_COLOR)
+        self._ambient_ground_color = wp.vec3f(*DEFAULT_AMBIENT_GROUND_COLOR)
+        self._ambient_lighting: wp.array[wp.vec3f] | None = None
+
+        # Heightfields and convex hulls are triangle meshes (their wp.Mesh lives
+        # in shape_source_ptr), so the renderer treats them as meshes: it reuses
+        # the MESH ray-intersection path, which keeps them out of the render
+        # kernels entirely (no extra shape-type branch, so no register/occupancy
+        # cost). The remapped type array is what the render kernel dispatches on;
+        # model.shape_type is left untouched for collision and BVH bounds.
         if model.shape_type is not None:
             shape_type_np = model.shape_type.numpy()
-            if np.any(shape_type_np == int(GeoType.HFIELD)):
+            as_mesh = np.isin(shape_type_np, (int(GeoType.HFIELD), int(GeoType.CONVEX_MESH)))
+            if np.any(as_mesh):
                 shape_type_np = shape_type_np.copy()
-                shape_type_np[shape_type_np == int(GeoType.HFIELD)] = int(GeoType.MESH)
+                shape_type_np[as_mesh] = int(GeoType.MESH)
                 self._shape_render_type = wp.array(shape_type_np, dtype=wp.int32, device=model.shape_type.device)
 
         if model.particle_q is not None and model.particle_q.shape[0]:
@@ -168,27 +177,74 @@ class RenderContext:
             self._set_triangle_points(state.particle_q)
             self._sync_triangle_mesh()
 
+    def _up_vector(self) -> wp.vec3f:
+        up = [0.0, 0.0, 0.0]
+        up[int(self.up_axis)] = 1.0
+        return wp.vec3f(*up)
+
+    def _get_ambient_lighting(self) -> wp.array[wp.vec3f]:
+        if self._ambient_lighting is None:
+            self._ambient_lighting = wp.array(
+                [self._ambient_sky_color, self._ambient_ground_color, self._up_vector()],
+                dtype=wp.vec3f,
+                device=self.device,
+            )
+        return self._ambient_lighting
+
+    def set_ambient_light(
+        self,
+        sky_color: Sequence[float] | wp.vec3f,
+        ground_color: Sequence[float] | wp.vec3f | None = None,
+    ) -> None:
+        """Set the hemispheric ambient light.
+
+        Surfaces facing the model's up axis receive *sky_color*, surfaces facing
+        away receive *ground_color*, and other orientations blend between the
+        two. The colors are linear RGB radiance and are passed to the render
+        kernel at runtime, so changing them does not recompile it.
+
+        Args:
+            sky_color: Linear RGB ambient radiance from above.
+            ground_color: Linear RGB ambient radiance from below. If ``None``,
+                *sky_color* is used, which gives uniform ambient light.
+        """
+        sky = wp.vec3f(*(float(c) for c in sky_color))
+        ground = sky if ground_color is None else wp.vec3f(*(float(c) for c in ground_color))
+        self._ambient_sky_color = sky
+        self._ambient_ground_color = ground
+        if self._ambient_lighting is not None:
+            self._ambient_lighting.assign(
+                np.array([list(sky), list(ground), list(self._up_vector())], dtype=np.float32)
+            )
+
     def create_default_light(
         self,
         enable_shadows: bool = True,
         direction: wp.vec3f | None = None,
+        color: Sequence[float] | wp.vec3f | None = None,
     ) -> None:
-        """Create a default directional light oriented at ``(-1, 1, -1)``.
+        """Create a default directional light.
 
         Args:
             enable_shadows: Enable shadow casting for this light.
             direction: Normalized light direction. If ``None``, defaults to
-                (normalized ``(-1, 1, -1)``).
+                normalized ``(-1, 1, -1)`` for a Z-up model, rotated to the
+                model's up axis otherwise, so the light always points down.
+            color: Linear RGB radiance of the light. If ``None``, defaults to
+                white ``(1, 1, 1)``.
         """
+        if direction is None:
+            direction = wp.vec3f(-0.57735026, 0.57735026, -0.57735026)
+            if self.up_axis != Axis.Z:
+                rot = Axis.Z.quat_between_axes(self.up_axis)
+                direction = wp.vec3f(wp.quat_rotate(rot, wp.vec3(direction)))
+        light_color = wp.vec3f(1.0) if color is None else wp.vec3f(*(float(c) for c in color))
         self._lights_active = wp.array([True], dtype=wp.bool, device=self.device)
         self._lights_type = wp.array([LightType.DIRECTIONAL], dtype=wp.int32, device=self.device)
         self._lights_cast_shadow = wp.array([enable_shadows], dtype=wp.bool, device=self.device)
         self._lights_position = wp.array([wp.vec3f(0.0)], dtype=wp.vec3f, device=self.device)
-        self._lights_orientation = wp.array(
-            [direction if direction is not None else wp.vec3f(-0.57735026, 0.57735026, -0.57735026)],
-            dtype=wp.vec3f,
-            device=self.device,
-        )
+        self._lights_orientation = wp.array([direction], dtype=wp.vec3f, device=self.device)
+        self._lights_color = wp.array([light_color], dtype=wp.vec3f, device=self.device)
 
     def assign_checkerboard_material(
         self,
@@ -240,7 +296,7 @@ class RenderContext:
         state: State,
         *,
         camera_transforms: wp.array[wp.transformf],
-        camera_rays: wp.array3d[wp.vec3f],
+        camera_rays: wp.array4d[wp.vec3f],
         world_indices: wp.array[wp.int32] | None = None,
         color_image: wp.array3d[wp.uint32] | None = None,
         hdr_color_image: wp.array3d[wp.vec3f] | None = None,
@@ -271,7 +327,7 @@ class RenderContext:
             camera_transforms: Per-view camera transforms, shape
                 ``(view_count,)``.
             camera_rays: Ray origins and directions, shape
-                ``(height, width, 2)``.
+                ``(height, width, sample_count, 2)``.
             world_indices: Optional per-view world selector, shape
                 ``(view_count,)``, dtype ``int32``. A non-negative entry is the
                 model world index rendered for that view; a negative entry
@@ -296,6 +352,12 @@ class RenderContext:
         model = self.model
         if config is None:
             config = RenderContext.DEFAULT_RENDER_CONFIG
+        try:
+            anti_aliasing = AntiAliasing(config.anti_aliasing)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Invalid anti_aliasing mode: {config.anti_aliasing!r}") from exc
+        if camera_rays.ndim == 4 and camera_rays.shape[2] > 1 and anti_aliasing == AntiAliasing.NONE:
+            raise ValueError("anti_aliasing must be SSAA or MSAA for camera_rays with more than one sample")
 
         if model.shape_count > 0 and model.bvh_shape_enabled is None:
             raise RuntimeError(
@@ -349,8 +411,10 @@ class RenderContext:
                 if image is not None and image.shape != expected:
                     raise ValueError(f"{name} shape must be {expected}, got {tuple(image.shape)}")
 
-            if camera_rays.shape != (height, width, 2):
-                raise ValueError(f"camera_rays shape must be ({height}, {width}, 2), got {tuple(camera_rays.shape)}")
+            if camera_rays.ndim != 4 or camera_rays.shape[2] <= 0 or camera_rays.shape[3] != 2:
+                raise ValueError(
+                    f"camera_rays shape must be ({height}, {width}, sample_count, 2), got {tuple(camera_rays.shape)}"
+                )
             # ``world_indices`` is optional: when ``None`` each view renders its own
             # world (``world_index == view_index``); otherwise validate the mapping.
             if world_indices is not None:
@@ -428,7 +492,7 @@ class RenderContext:
                     model.bvh_shapes_group_roots,
                     # Shapes
                     model.bvh_shape_enabled,
-                    self._get_shape_render_type(),  # HFIELD remapped to MESH; renderer treats heightfields as meshes
+                    self._get_shape_render_type(),  # HFIELD and CONVEX_MESH remapped to MESH
                     model.shape_scale,
                     model.shape_color,
                     model.bvh_shape_world_transforms,
@@ -459,6 +523,8 @@ class RenderContext:
                     self._lights_cast_shadow,
                     self._lights_position,
                     self._lights_orientation,
+                    self._lights_color,
+                    self._get_ambient_lighting(),
                     # Outputs
                     color_image,
                     depth_image,
@@ -543,7 +609,8 @@ class RenderContext:
         mesh_data_ids = []
         texture_data_ids = []
 
-        for shape in model.shape_source:
+        shape_types = model.shape_type.numpy() if model.shape_type is not None else ()
+        for shape, shape_type in zip(model.shape_source, shape_types, strict=True):
             if isinstance(shape, Mesh):
                 if shape.texture is not None and load_textures:
                     if shape.texture_hash not in texture_hashes:
@@ -551,10 +618,12 @@ class RenderContext:
                         if pixels is None:
                             raise ValueError(f"Failed to load texture: {shape.texture}")
 
-                        # Normalize texture to ensure a consistent channel layout and dtype
+                        # Normalize texture to a uint8 array with 3 or 4 channels
                         pixels = normalize_texture(pixels, require_channels=True)
-                        if pixels.dtype != np.uint8:
-                            pixels = pixels.astype(np.uint8, copy=False)
+                        if pixels.shape[2] == 3:
+                            # In-memory RGB (and expanded grayscale) images are opaque; textures have 4 channels.
+                            alpha = np.full((*pixels.shape[:2], 1), 255, dtype=np.uint8)
+                            pixels = np.concatenate((pixels, alpha), axis=2)
 
                         texture_hashes[shape.texture_hash] = len(self._texture_data_source)
 
@@ -575,7 +644,9 @@ class RenderContext:
                 else:
                     texture_data_ids.append(-1)
 
-                if shape.uvs is not None or shape.normals is not None:
+                # A convex hull renders its collision mesh, whose vertices may be deduplicated, so
+                # the per-vertex UVs and normals of its source mesh do not match the hit faces.
+                if shape_type != GeoType.CONVEX_MESH and (shape.uvs is not None or shape.normals is not None):
                     if shape not in mesh_hashes:
                         mesh_hashes[shape] = len(self._mesh_data_source)
 

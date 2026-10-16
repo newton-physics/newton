@@ -1,13 +1,40 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import itertools
 import unittest
 
+import numpy as np
 import warp as wp
 
 import newton
-from newton._src.core import quat_between_axes
+from newton.math import quat_between_axes
 from newton.tests.unittest_utils import add_function_test, get_test_devices
+
+
+class TestQuatBetweenAxes(unittest.TestCase):
+    def test_three_axis_sequence_applies_rotations_in_order(self):
+        """Apply each pairwise rotation to a vector in sequence."""
+        vector = wp.vec3(0.0, 0.0, 1.0)
+        first = quat_between_axes("x", "y")
+        second = quat_between_axes("y", "z")
+        expected = wp.quat_rotate(second, wp.quat_rotate(first, vector))
+
+        rotation = quat_between_axes("x", "y", "z")
+        np.testing.assert_allclose(wp.quat_rotate(rotation, vector), expected, atol=1.0e-6)
+
+    def test_three_axis_sequence_reaches_destination(self):
+        """Rotate the first axis onto the last axis in a three-axis sequence."""
+        axes = {
+            "x": wp.vec3(1.0, 0.0, 0.0),
+            "y": wp.vec3(0.0, 1.0, 0.0),
+            "z": wp.vec3(0.0, 0.0, 1.0),
+        }
+        for source, middle, destination in itertools.permutations(axes):
+            with self.subTest(axes=(source, middle, destination)):
+                rotation = quat_between_axes(source, middle, destination)
+                rotated = wp.quat_rotate(rotation, axes[source])
+                np.testing.assert_allclose(rotated, axes[destination], atol=1.0e-6)
 
 
 class TestControlForce(unittest.TestCase):
@@ -50,6 +77,10 @@ solvers = {
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, angular_damping=0.0),
     "semi_implicit": lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0),
     "kamino": newton.solvers.SolverKamino,
+    # The matrix-free solve is CUDA-only; split is the CPU route.
+    "steel": lambda model: newton.solvers.SolverSteel(
+        model, solve_mode="matrix_free" if model.device.is_cuda else "split"
+    ),
 }
 for device in devices:
     for solver_name, solver_fn in solvers.items():
