@@ -1,0 +1,1 @@
+Fix `SolverSteel` free rigid bodies whose FREE joint has a rotated parent anchor (`joint_X_p`): contact rows and response, free-body velocity limits and the gyroscopic update now use the anchor frame of the joint velocities, so these bodies move as they do with a world-aligned anchor.

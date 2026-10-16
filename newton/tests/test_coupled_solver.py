@@ -1483,7 +1483,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
         joint = builder.add_joint_revolute(parent=parent, child=child, axis=(0.0, 0.0, 1.0))
         model = builder.finalize(device="cpu")
 
-        with self.assertLogs("newton._src.solvers.coupled.solver_coupled", level="INFO") as logs:
+        with self.assertLogs("newton._src.solvers.coupled.solver_coupled", level="DEBUG") as logs:
             coupled = SolverCoupled(
                 model=model,
                 entries=[
@@ -1720,36 +1720,35 @@ class TestSolverCoupledBasic(unittest.TestCase):
         np.testing.assert_allclose(view.mujoco.dof_ref.numpy(), 0.2)
         np.testing.assert_allclose(view.mujoco.dof_springref.numpy(), 0.3)
 
-    def test_joint_properties_refresh_compacted_legacy_targets(self):
-        """Refresh legacy position targets in a compact model view."""
-        with mock.patch("newton.use_coord_layout_targets", False):
-            builder = newton.ModelBuilder()
-            bodies = [builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3))) for _ in range(2)]
-            joints = [builder.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z) for body in bodies]
-            for joint in joints:
-                builder.add_articulation([joint])
-            model = builder.finalize(device="cpu")
-            coupled = SolverCoupled(
-                model=model,
-                entries=[
-                    SolverCoupled.Entry(
-                        name="joint",
-                        solver=_StepCountingCopySolver,
-                        bodies=[bodies[1]],
-                        joints=[joints[1]],
-                    )
-                ],
-            )
-            view = coupled.view("joint")
+    def test_joint_properties_refresh_compacted_targets(self):
+        """Refresh position targets in a compact model view."""
+        builder = newton.ModelBuilder()
+        bodies = [builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3))) for _ in range(2)]
+        joints = [builder.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z) for body in bodies]
+        for joint in joints:
+            builder.add_articulation([joint])
+        model = builder.finalize(device="cpu")
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="joint",
+                    solver=_StepCountingCopySolver,
+                    bodies=[bodies[1]],
+                    joints=[joints[1]],
+                )
+            ],
+        )
+        view = coupled.view("joint")
 
-            model.joint_target_q.assign(np.array([2.0, 3.0], dtype=np.float32))
-            np.testing.assert_array_equal(view.joint_target_q.numpy(), [0.0])
-            coupled.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
-            np.testing.assert_array_equal(view.joint_target_q.numpy(), [3.0])
+        model.joint_target_q.assign(np.array([2.0, 3.0], dtype=np.float32))
+        np.testing.assert_array_equal(view.joint_target_q.numpy(), [0.0])
+        coupled.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+        np.testing.assert_array_equal(view.joint_target_q.numpy(), [3.0])
 
-            model.joint_target_q.assign(np.array([4.0, 5.0], dtype=np.float32))
-            coupled.notify_model_changed(newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES)
-            np.testing.assert_array_equal(view.joint_target_q.numpy(), [5.0])
+        model.joint_target_q.assign(np.array([4.0, 5.0], dtype=np.float32))
+        coupled.notify_model_changed(newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES)
+        np.testing.assert_array_equal(view.joint_target_q.numpy(), [5.0])
 
     def test_custom_control_arrays_are_mapped_to_entries(self):
         """Custom CONTROL attributes should follow their compact frequency map."""
@@ -4169,6 +4168,63 @@ add_function_test(
     _coupled_soft_contact_filter_preserves_unified_fields,
     devices=get_test_devices(mode="basic"),
 )
+
+
+class TestSolverCoupledProxyPipelineCapacity(unittest.TestCase):
+    """Keep parent contact observables independent of proxy-local collision pipelines."""
+
+    def test_proxy_pipeline_keeps_parent_observables(self):
+        """Step parent-model contact observables beside a larger proxy-local pipeline."""
+        _ContactRecordingBodyHarvestSolver.instances.clear()
+        builder = newton.ModelBuilder()
+        ground = builder.add_ground_plane()
+        src_body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.09), wp.quat_identity()))
+        builder.add_shape_sphere(src_body, radius=0.1)
+        dst_body = builder.add_body(xform=wp.transform(wp.vec3(1.0, 0.0, 0.09), wp.quat_identity()))
+        dst_shape = builder.add_shape_sphere(dst_body, radius=0.1)
+        model = builder.finalize(device="cpu")
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=16, soft_contact_max=0)
+        contacts = pipeline.contacts()
+        solver = SolverXPBD(model)
+        observables = solver.observables({SolverBase.ObservableKind.CONTACT_F}, contacts=contacts)
+
+        coupled = SolverCoupledProxy(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(name="src", solver=_StepCountingCopySolver, bodies=[src_body]),
+                SolverCoupled.Entry(
+                    name="dst",
+                    solver=_ContactRecordingBodyHarvestSolver,
+                    bodies=[dst_body],
+                    shapes=[ground, dst_shape],
+                ),
+            ],
+            coupling=SolverCoupledProxy.Config(
+                proxies=[
+                    SolverCoupledProxy.Proxy(
+                        source="src",
+                        destination="dst",
+                        bodies=[src_body],
+                        collision_pipeline=lambda view: newton.CollisionPipeline(
+                            view, rigid_contact_max=128, soft_contact_max=0
+                        ),
+                    ),
+                ],
+            ),
+        )
+        self.assertEqual((model.rigid_contact_max, model.soft_contact_max), (16, 0))
+
+        state_in = model.state()
+        pipeline.collide(state_in, contacts)
+        coupled.step(state_in, model.state(), None, contacts, 1.0 / 60.0)
+        proxy_contacts = _ContactRecordingBodyHarvestSolver.instances["dst"].step_contacts[0]
+        self.assertEqual(proxy_contacts.rigid_contact_max, 128)
+        solver.step(state_in, model.state(), None, contacts, 1.0 / 60.0, observables=observables)
+        self.assertIs(observables.contacts, contacts)
+        self.assertEqual(observables.contact_f.shape, (16,))
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        self.assertGreater(count, 0)
+        self.assertTrue(np.any(observables.contact_f.numpy()[:count, 2] != 0.0))
 
 
 if __name__ == "__main__":
