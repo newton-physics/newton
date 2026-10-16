@@ -93,7 +93,8 @@ jobs:
     needs: start-runner
     if: ${{ !cancelled() && needs.start-runner.result == 'success' }}
     runs-on: ${{ needs.start-runner.outputs.label }}
-    timeout-minutes: 60
+    # Stay below the 90 min runner watchdog.
+    timeout-minutes: 80
     permissions:
       contents: read
     env:

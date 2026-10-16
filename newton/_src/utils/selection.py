@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import operator
 import re
 import warnings
@@ -15,6 +16,7 @@ import numpy as np
 import warp as wp
 from warp.types import is_array, type_size, type_size_in_bytes
 
+from ..exceptions import NewtonDeprecationWarning
 from ..sim import (
     Control,
     JointType,
@@ -30,6 +32,8 @@ from ..solvers.solver import SolverBase
 
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
+
+logger = logging.getLogger(__name__)
 
 AttributeFrequency = Model.AttributeFrequency
 
@@ -773,7 +777,7 @@ class ArticulationView:
         allow_partial_layouts: If True, construct the view when only some selected
             data has a common layout. Access to data without a common layout raises
             :class:`AttributeError`.
-        verbose: If True, prints selection summary.
+        verbose: If True, logs selection summary.
     """
 
     def __init__(
@@ -1225,25 +1229,26 @@ class ArticulationView:
         )
 
         if verbose:
-            print(f"Articulation '{pattern}': {self.count}")
-            print(f"  Link count:     {self.link_count} ({'' if self.links_contiguous else 'non-'}contiguous)")
-            print(f"  Shape count:    {self.shape_count} ({'' if self.shapes_contiguous else 'non-'}contiguous)")
-            print(f"  Joint count:    {self.joint_count} ({'' if self.joints_contiguous else 'non-'}contiguous)")
-            print(
-                f"  DOF count:      {self.joint_dof_count} ({'' if self.joint_dofs_contiguous else 'non-'}contiguous)"
-            )
-            print(f"  Fixed base?     {self.is_fixed_base}")
-            print(f"  Floating base?  {self.is_floating_base}")
-            print("Link names:")
-            print(f"  {self.link_names}")
-            print("Joint names:")
-            print(f"  {self.joint_names}")
-            print("Joint DOF names:")
-            print(f"  {self.joint_dof_names}")
-            print("Shapes:")
+            lines = [
+                f"Articulation '{pattern}': {self.count}",
+                f"  Link count:     {self.link_count} ({'' if self.links_contiguous else 'non-'}contiguous)",
+                f"  Shape count:    {self.shape_count} ({'' if self.shapes_contiguous else 'non-'}contiguous)",
+                f"  Joint count:    {self.joint_count} ({'' if self.joints_contiguous else 'non-'}contiguous)",
+                f"  DOF count:      {self.joint_dof_count} ({'' if self.joint_dofs_contiguous else 'non-'}contiguous)",
+                f"  Fixed base?     {self.is_fixed_base}",
+                f"  Floating base?  {self.is_floating_base}",
+                "Link names:",
+                f"  {self.link_names}",
+                "Joint names:",
+                f"  {self.joint_names}",
+                "Joint DOF names:",
+                f"  {self.joint_dof_names}",
+                "Shapes:",
+            ]
             for link_idx in range(len(self.link_shapes or [])):
                 shape_names = [self.shape_names[shape_idx] for shape_idx in self.link_shapes[link_idx]]
-                print(f"  Link '{self.link_names[link_idx]}': {shape_names}")
+                lines.append(f"  Link '{self.link_names[link_idx]}': {shape_names}")
+            logger.info("%s", "\n".join(lines))
 
     @property
     def body_names(self):
@@ -1941,7 +1946,7 @@ class ArticulationView:
         if not include_armature:
             warnings.warn(
                 _INCLUDE_ARMATURE_DEPRECATION_MSG.format(name="ArticulationView.eval_mass_matrix()"),
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=2,
             )
         articulation_mask = self.get_model_articulation_mask(mask=mask)
@@ -2442,7 +2447,14 @@ class _DeformableViewBase:
             elements = ", ".join(
                 f"{self._counts[k] if self._counts[k] is not None else 'ragged'} {k}(s)" for k in self._kinds
             )
-            print(f"{type(self).__name__} '{pattern}' ({family}): {self.count} deformable object(s) x [{elements}]")
+            logger.info(
+                "%s '%s' (%s): %s deformable object(s) x [%s]",
+                type(self).__name__,
+                pattern,
+                family,
+                self.count,
+                elements,
+            )
 
     # raw ranges -------------------------------------------------------------
 
@@ -3070,7 +3082,7 @@ class DeformableCurveView(_DeformableRodView):
     Args:
         model: Model containing the finalized deformable objects.
         pattern: Label glob, list of label globs, or compiled regular expression.
-        verbose: If True, print a short selection summary. If None, follow Warp's
+        verbose: If True, log a short selection summary. If None, follow Warp's
             logging level.
     """
 
@@ -3102,7 +3114,7 @@ class DeformableSurfaceView(_DeformableParticleView):
     Args:
         model: Model containing the finalized deformable objects.
         pattern: Label glob, list of label globs, or compiled regular expression.
-        verbose: If True, print a short selection summary. If None, follow Warp's
+        verbose: If True, log a short selection summary. If None, follow Warp's
             logging level.
     """
 
@@ -3134,7 +3146,7 @@ class DeformableVolumeView(_DeformableParticleView):
     Args:
         model: Model containing the finalized deformable objects.
         pattern: Label glob, list of label globs, or compiled regular expression.
-        verbose: If True, print a short selection summary. If None, follow Warp's
+        verbose: If True, log a short selection summary. If None, follow Warp's
             logging level.
     """
 

@@ -157,7 +157,7 @@ class TestDeformableFamilyViews(unittest.TestCase):
     """Select each geometric family without a family argument."""
 
     def test_family_views_filter_shared_labels_and_isolate_writes(self):
-        """Select each family and isolate masked writes when all labels are identical."""
+        """Select each family, log a curve summary, and isolate writes with shared labels."""
         builder = newton.ModelBuilder()
         _add_test_cable(builder, label="object")
         _add_test_cloth(builder, label="object")
@@ -166,7 +166,9 @@ class TestDeformableFamilyViews(unittest.TestCase):
         scene.replicate(builder, 2)
         model = scene.finalize(device="cpu")
 
-        view = newton.selection.DeformableCurveView(model, "*")
+        with self.assertLogs("newton", level="INFO") as captured:
+            view = newton.selection.DeformableCurveView(model, "*", verbose=True)
+        self.assertIn("DeformableCurveView '*' (curve): 2 deformable object(s)", captured.output[0])
 
         self.assertEqual((view.family, view.labels, view.worlds), ("curve", ["object", "object"], [0, 1]))
         self.assertEqual(view.ranges("body"), [(0, 3), (3, 6)])

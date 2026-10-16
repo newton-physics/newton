@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 import warnings
@@ -13,6 +14,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Axis, AxisType
+from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..geometry import Gaussian
 from ..sim.model import Model
 from ..utils.color import color_linear_to_srgb
@@ -29,6 +31,8 @@ from ._mesh_loading import (  # noqa: F401
     fan_triangulate_faces,
     get_mesh,
 )
+
+logger = logging.getLogger(__name__)
 
 AttributeAssignment = Model.AttributeAssignment
 AttributeFrequency = Model.AttributeFrequency
@@ -574,14 +578,14 @@ def get_custom_attribute_declarations(prim: Usd.Prim) -> dict[str, ModelBuilder.
                 assignment_val = AttributeAssignment[assignment_meta.upper()]
                 frequency_val = AttributeFrequency[frequency_meta.upper()]
             except KeyError:
-                print(
-                    f"Warning: Custom attribute '{attr_name}' has invalid assignment or frequency in customData. Skipping."
+                logger.warning(
+                    "Custom attribute '%s' has invalid assignment or frequency in customData. Skipping.", attr_name
                 )
                 continue
         else:
             # No metadata found - skip with warning
-            print(
-                f"Warning: Custom attribute '{attr_name}' is missing required customData (assignment and frequency). Skipping."
+            logger.warning(
+                "Custom attribute '%s' is missing required customData (assignment and frequency). Skipping.", attr_name
             )
             continue
 
@@ -776,6 +780,7 @@ def _resolve_deformable_poissons_ratio(value: float, path: str, *, attr_namespac
             )
         warnings.warn(
             f"{path}: {attr_namespace}:poissonsRatio={value:g} {message}.",
+            NewtonWarning,
             stacklevel=2,
         )
         return incompressible_approximation
@@ -783,6 +788,7 @@ def _resolve_deformable_poissons_ratio(value: float, path: str, *, attr_namespac
     warnings.warn(
         f"{path}: invalid {attr_namespace}:poissonsRatio {value:g} "
         "(expected a finite value with -1 < value <= 0.5); treating it as unauthored.",
+        NewtonWarning,
         stacklevel=2,
     )
     return None
@@ -928,7 +934,7 @@ def _get_tetmesh(
                 "PhysicsVolumeDeformableMaterialAPI. Pass compat_namespaces=() to adopt the "
                 "canonical-only behavior now, or compat_namespaces="
                 "newton.usd.DEFORMABLE_LEGACY_NAMESPACES to keep the current behavior explicitly.",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=2,
             )
         compat_namespaces = DEFORMABLE_LEGACY_NAMESPACES
@@ -962,6 +968,7 @@ def _get_tetmesh(
                 warnings.warn(
                     f"{material_prim.GetPath()}: invalid physics:youngsModulus {authored_youngs:g} "
                     f"(outside the finite USD float range); treating it as unauthored.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
                 youngs = None
@@ -976,6 +983,7 @@ def _get_tetmesh(
                 warnings.warn(
                     f"{material_prim.GetPath()}: invalid physics:youngsModulus {E:g} "
                     f"(expected a finite value or the -inf sentinel); treating it as unauthored.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
                 E = None
@@ -995,6 +1003,7 @@ def _get_tetmesh(
                 warnings.warn(
                     f"{material_prim.GetPath()}: invalid volume material density "
                     f"{authored_density}; expected a positive value in the finite USD float range, ignoring it.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
 
@@ -1081,6 +1090,7 @@ def _get_tetmesh(
         if name in result._RESERVED_ATTR_KEYS:
             warnings.warn(
                 f"{prim.GetPath()}: custom attribute '{name}' uses a reserved TetMesh name; skipping the attribute.",
+                NewtonWarning,
                 stacklevel=2,
             )
             continue
@@ -1091,7 +1101,7 @@ def _get_tetmesh(
             try:
                 frequency = result._infer_frequency(arr, result.vertex_count, result.tet_count, tri_count, name)
             except ValueError as exc:
-                warnings.warn(f"{prim.GetPath()}: {exc}; skipping the attribute.", stacklevel=2)
+                warnings.warn(f"{prim.GetPath()}: {exc}; skipping the attribute.", NewtonWarning, stacklevel=2)
                 continue
         result.custom_attributes[name] = (np.asarray(arr), frequency)
     return result
@@ -1146,6 +1156,7 @@ def _coerce_deformable_float(
         warnings.warn(
             f"{prim.GetPath()}: invalid {attr_namespace}:{name} {value!r} (expected a numeric scalar); "
             "treating it as unauthored.",
+            NewtonWarning,
             stacklevel=2,
         )
     return result
@@ -1240,6 +1251,7 @@ def _read_deformable_material(
             warnings.warn(
                 f"{material_prim.GetPath()}: invalid {attr_namespace}:{name} {val:g} (expected {expected}); "
                 f"treating it as unauthored.",
+                NewtonWarning,
                 stacklevel=2,
             )
             continue
@@ -1247,6 +1259,7 @@ def _read_deformable_material(
             warnings.warn(
                 f"{material_prim.GetPath()}: invalid {attr_namespace}:{name} {val:g} "
                 f"(outside the finite USD float range); treating it as unauthored.",
+                NewtonWarning,
                 stacklevel=2,
             )
             continue
@@ -1265,6 +1278,7 @@ def _read_deformable_material(
                 warnings.warn(
                     f"{material_prim.GetPath()}: invalid {attr_namespace}:{name} {val:g} (expected > 0); "
                     f"treating it as unauthored.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
         elif val >= 0.0:
@@ -1273,6 +1287,7 @@ def _read_deformable_material(
             warnings.warn(
                 f"{material_prim.GetPath()}: invalid {attr_namespace}:{name} {val:g} "
                 f"(expected >= 0); treating it as unauthored.",
+                NewtonWarning,
                 stacklevel=2,
             )
     return out
@@ -1437,6 +1452,7 @@ def _get_physics_material_density(material_prim) -> float | None:
         warnings.warn(
             f"{material_prim.GetPath()}: invalid physics material density {density}; "
             f"expected a positive value in the finite USD float range, ignoring it.",
+            NewtonWarning,
             stacklevel=2,
         )
     return None
@@ -1491,6 +1507,7 @@ def _find_deformable_body_prim(prim: Usd.Prim) -> Usd.Prim | None:
                     f"{prim.GetPath()}: PhysicsDeformableBodyAPI on ancestor {p.GetPath()} does not "
                     f"govern this simulation geometry (the deformable proposal allows the body API "
                     f"only on the geometry itself or its direct parent); ignoring it.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
                 break
@@ -1526,6 +1543,7 @@ def _get_deformable_body_overrides(
         warnings.warn(
             f"{body_prim.GetPath()}: invalid physics:{name} {value:g} "
             "(expected a finite positive value or the zero sentinel); treating it as unauthored.",
+            NewtonWarning,
             stacklevel=2,
         )
         return None
@@ -1874,16 +1892,18 @@ def _coerce_opacity(value: Any, *, warn_on_multiple: bool = False) -> float | No
     if value_np.size > 1 and warn_on_multiple:
         warnings.warn(
             f"Opacity data contains {value_np.size} values; using the first value as the shape opacity.",
+            NewtonWarning,
             stacklevel=2,
         )
     opacity = float(value_np[0])
     if not np.isfinite(opacity):
-        warnings.warn(f"Ignoring non-finite imported opacity {opacity!r}.", stacklevel=2)
+        warnings.warn(f"Ignoring non-finite imported opacity {opacity!r}.", NewtonWarning, stacklevel=2)
         return None
     clamped_opacity = float(np.clip(opacity, 0.0, 1.0))
     if clamped_opacity != opacity:
         warnings.warn(
             f"Clamping imported opacity {opacity!r} to {clamped_opacity!r}.",
+            NewtonWarning,
             stacklevel=2,
         )
     return clamped_opacity
@@ -2047,6 +2067,7 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
             if properties["metallic"] is None:
                 warnings.warn(
                     "Metallic texture inputs are not yet supported; using scalar fallback.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
         else:
@@ -2069,6 +2090,7 @@ def _extract_preview_surface_properties(shader: UsdShade.Shader | None, prim: Us
             if properties["roughness"] is None:
                 warnings.warn(
                     "Roughness texture inputs are not yet supported; using scalar fallback.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
         else:

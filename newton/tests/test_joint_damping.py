@@ -198,6 +198,35 @@ def test_featherstone_ball_joint_damping_decays_velocity(test: TestJointDamping,
     test.assertLess(damped_final, damped_initial * 0.85)
 
 
+def test_steel_ball_joint_damping_matches_featherstone(test: TestJointDamping, device):
+    """Decay Steel ball-joint speed with joint damping, as SolverFeatherstone does."""
+
+    def solver_fn(model):
+        return newton.solvers.SolverSteel(model, solve_mode="matrix_free" if model.device.is_cuda else "split")
+
+    def featherstone_fn(model):
+        return newton.solvers.SolverFeatherstone(model, angular_damping=0.0)
+
+    rotated = wp.transform(wp.vec3(0.1, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.3))
+    cases = (
+        ((1.0, 0.0, 0.0), None),
+        ((0.0, 1.0, 0.0), None),
+        ((0.0, 0.0, 1.0), None),
+        ((0.5, -0.25, 1.0), None),
+        ((0.5, -0.25, 1.0), rotated),
+    )
+    for initial_qd, parent_xform in cases:
+        with test.subTest(initial_qd=initial_qd, rotated=parent_xform is not None):
+            kwargs = {"initial_qd": initial_qd, "parent_xform": parent_xform}
+            undamped_initial, undamped_final = _simulate_ball_joint_damping(device, solver_fn, damping=0.0, **kwargs)
+            damped_initial, damped_final = _simulate_ball_joint_damping(device, solver_fn, damping=3.0, **kwargs)
+            _, reference_final = _simulate_ball_joint_damping(device, featherstone_fn, damping=3.0, **kwargs)
+
+            np.testing.assert_allclose(undamped_final, undamped_initial, atol=1.0e-5, rtol=1.0e-5)
+            test.assertLess(damped_final, damped_initial * 0.85)
+            np.testing.assert_allclose(damped_final, reference_final, rtol=0.02)
+
+
 def test_add_joint_ball_sets_passive_damping(test: TestJointDamping, device):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0), up_axis=newton.Axis.Y)
     body = builder.add_link(
@@ -217,6 +246,11 @@ solvers = {
     "featherstone": (lambda model: newton.solvers.SolverFeatherstone(model, angular_damping=0.0), False),
     "semi_implicit": (lambda model: newton.solvers.SolverSemiImplicit(model, angular_damping=0.0), True),
     "kamino": (newton.solvers.SolverKamino, False),
+    # The matrix-free solve is CUDA-only; split is the CPU route.
+    "steel": (
+        lambda model: newton.solvers.SolverSteel(model, solve_mode="matrix_free" if model.device.is_cuda else "split"),
+        False,
+    ),
 }
 
 for device in devices:
@@ -241,6 +275,12 @@ for device in devices:
         TestJointDamping,
         "test_featherstone_ball_joint_damping_decays_velocity",
         test_featherstone_ball_joint_damping_decays_velocity,
+        devices=[device],
+    )
+    add_function_test(
+        TestJointDamping,
+        "test_steel_ball_joint_damping_matches_featherstone",
+        test_steel_ball_joint_damping_matches_featherstone,
         devices=[device],
     )
     add_function_test(
