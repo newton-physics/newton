@@ -1,1 +1,0 @@
-Allow joint, joint DOF, body inertial and shape notifications of ``SolverSteel.notify_model_changed`` to be captured in CUDA graphs: they refresh the effective armature and the friction-patch geometry on the device.

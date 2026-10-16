@@ -13,6 +13,7 @@ import warp as wp
 import newton
 from newton import ModelFlags
 from newton._src.solvers.steel._testing import kernel_overrides
+from newton._src.solvers.steel.friction_patches import _GEOMETRY_FIELDS
 from newton._src.solvers.steel.kernels import accumulate_group_diag_worlds, compute_composite_inertia
 from newton._src.solvers.steel.solver_steel import _get_composite_inertia_warp_kernel, _get_hinv_jt_kernel
 from newton.solvers import SolverSteel
@@ -1163,6 +1164,10 @@ def test_world_mask_limits_warmstart_invalidation(test, device, solve_mode="matr
 
 
 class TestSteelNotifyDevice(unittest.TestCase):
+    def test_geometry_fields_match_the_solver(self):
+        """Keep the host reference's geometry fields equal to the solver's."""
+        self.assertEqual(GEOMETRY_FIELDS, _GEOMETRY_FIELDS)
+
     @unittest.skipUnless(wp.is_cuda_available(), "CUDA graph capture requires a CUDA device")
     def test_armature_and_shape_notify_capture_into_a_graph(self):
         """Replay a captured notify and pick up armature and geometry written in place after the capture."""
