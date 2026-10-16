@@ -733,7 +733,7 @@ class ModelBuilder:
     _BASE_ATTRIBUTES: ClassVar[frozenset[str] | None] = None
     _BASE_LIST_ATTRIBUTES: ClassVar[frozenset[str] | None] = None
     # Per-class merge schema cache; see _builder_merge_attribute_specs().
-    _MERGE_ATTRIBUTE_SPEC_CACHE: ClassVar[dict[bool, dict[str, Model.AttributeSpec]]]
+    _MERGE_ATTRIBUTE_SPEC_CACHE: ClassVar[dict[str, Model.AttributeSpec]]
 
     @staticmethod
     def _shape_palette_color(index: int) -> tuple[float, float, float]:
@@ -3412,50 +3412,11 @@ class ModelBuilder:
         warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=3)
         self._deprecated_joint_twist_upper = value
 
-    def _project_target_q_to_dof(self) -> list[float] | np.ndarray:
-        """Drop the quat-w padding slot for FREE/BALL/DISTANCE/ROD joints to turn
-        the coord-sized :attr:`joint_target_q` buffer into a DOF-shaped one.
-
-        Under :data:`newton.use_coord_layout_targets` ``False`` the builder
-        stores raw per-axis angles (extrinsic ZYX) in the first 3 quat slots
-        and a placeholder ``1.0`` in the 4th — this method just slices the
-        placeholder off to produce the legacy DOF-shaped ``Model.joint_target_q``.
-        """
-        if isinstance(self.joint_target_q, np.ndarray):
-            joint_types = np.asarray(self.joint_type, dtype=np.int32)
-            ball_mask = joint_types == int(JointType.BALL)
-            padding_mask = (
-                ball_mask
-                | (joint_types == int(JointType.FREE))
-                | (joint_types == int(JointType.DISTANCE))
-                | (joint_types == int(JointType.ROD))
-            )
-            padding_indices = np.asarray(self.joint_q_start, dtype=np.int64)[padding_mask]
-            padding_indices += np.where(ball_mask[padding_mask], 3, 6)
-            keep = np.ones(len(self.joint_target_q), dtype=np.bool_)
-            keep[padding_indices] = False
-            return self.joint_target_q[keep]
-
-        result: list[float] = []
-        for j, jtype in enumerate(self.joint_type):
-            q_start = self.joint_q_start[j]
-            if jtype == JointType.BALL:
-                result.extend(self.joint_target_q[q_start : q_start + 3])
-            elif jtype == JointType.FREE or jtype == JointType.DISTANCE or jtype == JointType.ROD:
-                result.extend(self.joint_target_q[q_start : q_start + 6])
-            elif jtype == JointType.FIXED:
-                pass
-            else:
-                num_lin, num_ang = self.joint_dof_dim[j]
-                result.extend(self.joint_target_q[q_start : q_start + num_lin + num_ang])
-        return result
-
     @staticmethod
     def _quat_from_axis_targets(t_x: float, t_y: float, t_z: float) -> tuple[float, float, float, float]:
         """Compose per-axis angles into a unit quaternion using extrinsic ZYX
         (yaw-pitch-roll) — equivalent to
-        ``wp.quat_from_euler(wp.vec3(t_x, t_y, t_z), 2, 1, 0)``. Matches
-        Kamino's ``target_dofs_to_coords_conversion_kernel`` convention.
+        ``wp.quat_from_euler(wp.vec3(t_x, t_y, t_z), 2, 1, 0)``.
 
         Args:
             t_x: Rotation around X [rad].
@@ -3975,34 +3936,22 @@ class ModelBuilder:
 
     @classmethod
     def _builder_merge_attribute_specs(cls) -> dict[str, Model.AttributeSpec]:
-        import newton  # noqa: PLC0415
-
-        use_coord_layout_targets = bool(newton.use_coord_layout_targets)
         # Stored in cls.__dict__ (not functools.cache) so dynamically created
         # subclasses stay collectable.
-        cache = cls.__dict__.get("_MERGE_ATTRIBUTE_SPEC_CACHE")
-        if cache is None:
-            cache = {}
-            cls._MERGE_ATTRIBUTE_SPEC_CACHE = cache
-        specs = cache.get(use_coord_layout_targets)
+        specs = cls.__dict__.get("_MERGE_ATTRIBUTE_SPEC_CACHE")
         if specs is None:
-            specs = cache[use_coord_layout_targets] = cls._build_builder_merge_attribute_specs(use_coord_layout_targets)
+            specs = cls._MERGE_ATTRIBUTE_SPEC_CACHE = cls._build_builder_merge_attribute_specs()
         # Copy: the merge pops entries it handles manually.
         return dict(specs)
 
     @classmethod
-    def _build_builder_merge_attribute_specs(cls, use_coord_layout_targets: bool) -> dict[str, Model.AttributeSpec]:
+    def _build_builder_merge_attribute_specs(cls) -> dict[str, Model.AttributeSpec]:
         """Build and validate the merge schema from class-level constants; cached
-        per (class, target layout) by :meth:`_builder_merge_attribute_specs`."""
+        per class by :meth:`_builder_merge_attribute_specs`."""
         base_attributes, list_attributes = cls._base_builder_attributes()
         specs = {name: spec for name, spec in Model._CORE_ATTRIBUTE_SPECS.items() if name in list_attributes}
         specs.update(cls._BUILDER_ATTRIBUTE_SPECS)
         declared_builder_attributes = set(cls._BUILDER_ATTRIBUTE_SPECS)
-
-        target_q_frequency = (
-            Model.AttributeFrequency.JOINT_COORD if use_coord_layout_targets else Model.AttributeFrequency.JOINT_DOF
-        )
-        specs["joint_target_q"] = Model.AttributeSpec(target_q_frequency)
 
         for group, references in cls._BUILDER_GROUP_REFERENCES.items():
             specs[f"{group}_label"] = Model.AttributeSpec(group)
@@ -5924,22 +5873,15 @@ class ModelBuilder:
                     self.joint_target_q[target_q_offset + i] = dim.target_pos
                 quat_offset = target_q_offset + 3
 
-            import newton  # noqa: PLC0415
-
-            if newton.use_coord_layout_targets:
-                qx, qy, qz, qw = self._quat_from_axis_targets(
-                    angular_axes[0].target_pos,
-                    angular_axes[1].target_pos,
-                    angular_axes[2].target_pos,
-                )
-                self.joint_target_q[quat_offset + 0] = qx
-                self.joint_target_q[quat_offset + 1] = qy
-                self.joint_target_q[quat_offset + 2] = qz
-                self.joint_target_q[quat_offset + 3] = qw
-            else:
-                for i, dim in enumerate(angular_axes):
-                    self.joint_target_q[quat_offset + i] = dim.target_pos
-                self.joint_target_q[quat_offset + 3] = 1.0
+            qx, qy, qz, qw = self._quat_from_axis_targets(
+                angular_axes[0].target_pos,
+                angular_axes[1].target_pos,
+                angular_axes[2].target_pos,
+            )
+            self.joint_target_q[quat_offset + 0] = qx
+            self.joint_target_q[quat_offset + 1] = qy
+            self.joint_target_q[quat_offset + 2] = qz
+            self.joint_target_q[quat_offset + 3] = qw
         elif joint_type != JointType.FIXED:
             for i, dim in enumerate(linear_axes):
                 self.joint_target_q[target_q_offset + i] = dim.target_pos
@@ -6641,15 +6583,8 @@ class ModelBuilder:
         q_start = self.joint_q_start[joint_id]
         if rest_rotation_value is None:
             rest_rotation_value = wp.quat(*self.joint_q[q_start + 3 : q_start + 7])
-        import newton  # noqa: PLC0415
-
         self.joint_target_q[q_start : q_start + 3] = [0.0, 0.0, 0.0]
-        if newton.use_coord_layout_targets:
-            self.joint_target_q[q_start + 3 : q_start + 7] = list(rest_rotation_value)
-        else:
-            angles = wp.quat_to_euler(rest_rotation_value, 2, 1, 0)
-            self.joint_target_q[q_start + 3 : q_start + 6] = list(angles)
-            self.joint_target_q[q_start + 6] = 1.0
+        self.joint_target_q[q_start + 3 : q_start + 7] = list(rest_rotation_value)
         return joint_id
 
     @deprecate_nonkeyword_arguments
@@ -9989,8 +9924,7 @@ class ModelBuilder:
                 link_joints.append(j_loop)
 
         if rest_straight:
-            # Builder targets are coordinate-sized. [0, 0, 0, 1] is the identity quaternion in the
-            # coordinate layout and zero Euler angles plus the padding slot in the legacy layout.
+            # Straight rest uses the identity quaternion in each joint's target coordinates.
             for joint in link_joints:
                 q_start = self.joint_q_start[joint]
                 self.joint_target_q[q_start + 3 : q_start + 7] = [0.0, 0.0, 0.0, 1.0]
@@ -12922,13 +12856,21 @@ class ModelBuilder:
                 # Active if either stiffness or damping is non-zero
                 bending_edge_active_mask = (bending_edge_props[:, 0] != 0.0) | (bending_edge_props[:, 1] != 0.0)
 
+            # Match SolverVBD: an element is active if either Lame parameter is non-zero.
+            tri_active_mask = (
+                (tri_materials[:, 0] != 0.0) | (tri_materials[:, 1] != 0.0) if len(tri_materials) else None
+            )
+            tet_active_mask = (
+                (tet_materials[:, 0] != 0.0) | (tet_materials[:, 1] != 0.0) if len(tet_materials) else None
+            )
+
             graph_edge_indices = construct_particle_graph(
                 tri_indices,
-                tri_materials[:, 0] * tri_materials[:, 1] if len(tri_materials) else None,
+                tri_active_mask,
                 bending_edge_indices,
                 bending_edge_active_mask,
                 tet_indices,
-                tet_materials[:, 0] * tet_materials[:, 1] if len(tet_materials) else None,
+                tet_active_mask,
             )
 
             if len(graph_edge_indices) > 0:
@@ -15228,24 +15170,7 @@ class ModelBuilder:
             m.joint_target_ke = wp.array(self.joint_target_ke, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_kd = wp.array(self.joint_target_kd, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_damping = wp.array(self.joint_damping, dtype=wp.float32, requires_grad=requires_grad)
-            import newton  # noqa: PLC0415
-
-            if newton.use_coord_layout_targets:
-                target_q_values = self.joint_target_q
-            else:
-                if self.joint_coord_count != self.joint_dof_count:
-                    warnings.warn(
-                        "The legacy DOF-shaped joint_target_q layout is deprecated for models "
-                        "whose joint coordinate and DOF counts differ (free/ball/distance/rod "
-                        "joints). In a future release joint_target_q will always use the "
-                        "coordinate layout (matching joint_q) and newton.use_coord_layout_targets "
-                        "will be removed. Set newton.use_coord_layout_targets = True before "
-                        "building models and index targets via Model.joint_target_q_start.",
-                        NewtonDeprecationWarning,
-                        stacklevel=3,
-                    )
-                target_q_values = self._project_target_q_to_dof()
-            m.joint_target_q = wp.array(target_q_values, dtype=wp.float32, requires_grad=requires_grad)
+            m.joint_target_q = wp.array(self.joint_target_q, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_target_qd = wp.array(self.joint_target_qd, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_f = wp.array(self.joint_f, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_act = wp.array(self.joint_act, dtype=wp.float32, requires_grad=requires_grad)
@@ -15415,16 +15340,12 @@ class ModelBuilder:
                     )
                     clamping_objs.append(comp_class(**comp_arrays, **shared_kw))
 
-                target_pos_indices_arg = (
-                    pos_indices_arg if (pos_indices_arg is not None and m.use_coord_layout_targets) else indices
-                )
                 actuator = Actuator(
                     indices=indices,
                     drive=drive,
                     delay=delay_obj,
                     clamping=clamping_objs if clamping_objs else None,
                     pos_indices=pos_indices_arg,
-                    target_pos_indices=target_pos_indices_arg,
                     requires_grad=requires_grad,
                 )
 

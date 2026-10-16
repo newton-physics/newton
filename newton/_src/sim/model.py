@@ -512,6 +512,7 @@ class Model:
         "joint_qd": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_f": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_armature": AttributeSpec(AttributeFrequency.JOINT_DOF),
+        "joint_target_q": AttributeSpec(AttributeFrequency.JOINT_COORD),
         "joint_target_qd": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_act": AttributeSpec(AttributeFrequency.JOINT_DOF),
         "joint_axis": AttributeSpec(AttributeFrequency.JOINT_DOF),
@@ -1093,13 +1094,11 @@ class Model:
         """Default generalized joint forces [N or N·m, depending on joint type] used to initialize :attr:`newton.Control.joint_f`, shape [joint_dof_count], float.
         For FREE, DISTANCE, and ROD joints, the linear entries are world-frame force at the child COM and the angular entries are world-frame torque about the child COM."""
         self.joint_target_q: wp.array[wp.float32] | None = None
-        """Generalized joint position targets [m or rad, depending on joint type] used to initialize :attr:`newton.Control.joint_target_q`, shape ``[joint_coord_count]`` or ``[joint_dof_count]``, float.
+        """Generalized joint position targets [m or rad, depending on joint type] used to initialize :attr:`newton.Control.joint_target_q`, shape ``[joint_coord_count]``, float.
 
-        Shape matches :attr:`joint_q` (``joint_coord_count``) when
-        :attr:`newton.use_coord_layout_targets` is ``True``; otherwise the array
-        is shaped ``(joint_dof_count,)`` (legacy layout). Index via
-        :attr:`joint_target_q_start`, which aliases :attr:`joint_q_start` or
-        :attr:`joint_qd_start` to match the active layout.
+        Shape matches :attr:`joint_q`. Index via :attr:`joint_target_q_start`,
+        which aliases :attr:`joint_q_start`. Ball and free joint rotations use
+        unit quaternions.
 
         For ROD joints, this Model-owned array defines structural rest;
         see :ref:`Rod joints`.
@@ -1402,13 +1401,6 @@ class Model:
         self.device: wp.Device = wp.get_device(device)
         """Device on which the Model was allocated."""
 
-        import newton  # noqa: PLC0415
-
-        self.use_coord_layout_targets: bool = newton.use_coord_layout_targets
-        """Snapshot of :data:`newton.use_coord_layout_targets` taken at
-        :meth:`ModelBuilder.finalize`. All layout decisions for this Model
-        consult this — toggling the global later doesn't change behavior."""
-
         self.custom_frequency_counts: dict[str, int] = {}
         """Counts for custom frequencies (e.g., ``{"mujoco:pair": 5}``). Set during finalize()."""
 
@@ -1423,19 +1415,12 @@ class Model:
         # cached collision pipeline
         self._requested_contact_attributes: set[str] = set()
 
-        target_q_freq = (
-            Model.AttributeFrequency.JOINT_COORD
-            if self.use_coord_layout_targets
-            else Model.AttributeFrequency.JOINT_DOF
-        )
         self.attribute_specs: dict[str, Model.AttributeSpec] = dict(Model._CORE_ATTRIBUTE_SPECS)
         """Semantic metadata keyed by built-in or custom attribute name.
 
         Attribute values remain normal Python attributes on the model. This
         registry describes their indexing, ownership, and reference semantics.
         """
-
-        self.attribute_specs["joint_target_q"] = Model.AttributeSpec(target_q_freq)
 
         # Deprecated solver-produced State attributes remain registered for
         # compatibility with request_state_attributes().
@@ -1640,11 +1625,9 @@ class Model:
     @property
     def joint_target_q_start(self) -> wp.array | None:
         """Per-joint start index into :attr:`joint_target_q`, shape
-        ``(joint_count + 1,)``. Aliases :attr:`joint_q_start` under coord
-        layout, :attr:`joint_qd_start` otherwise. Solvers and actuators should
-        index :attr:`joint_target_q` through this regardless of layout.
+        ``(joint_count + 1,)``. Aliases :attr:`joint_q_start`.
         """
-        return self.joint_q_start if self.use_coord_layout_targets else self.joint_qd_start
+        return self.joint_q_start
 
     def bvh_build_shapes(
         self,

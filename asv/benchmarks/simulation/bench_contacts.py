@@ -144,7 +144,6 @@ def _build_convex_scene(
     triangle_local_vertices: bool = False,
 ) -> newton.Model:
     """Build replicated isolated convex pairs."""
-    newton.use_coord_layout_targets = True
     rocks = [
         _make_irregular_rock(count, 100 + index, triangle_local_vertices)
         for index, count in enumerate(IRREGULAR_ROCK_VERTEX_COUNTS)
@@ -174,7 +173,6 @@ def _build_convex_scene(
 
 def _build_single_world_scene(pair_count: int) -> newton.Model:
     """Build sparse mixed contacts in one large global SAP segment."""
-    newton.use_coord_layout_targets = True
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     shape_cfg = newton.ModelBuilder.ShapeConfig(gap=0.01, margin=0.0)
     rock = _make_irregular_rock(26, seed=701)

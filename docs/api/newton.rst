@@ -82,5 +82,3 @@ newton
      - ``10000000000.0``
    * - ``__version__``
      - ``1.8.0.dev0``
-   * - ``use_coord_layout_targets``
-     - ``True``

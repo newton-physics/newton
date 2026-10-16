@@ -166,20 +166,19 @@ class TestModelBuilderReplicate(unittest.TestCase):
                 self.assertEqual(getattr(expected_entry, field), getattr(actual_entry, field))
 
     def test_replicate_matches_add_world_loop(self):
+        """Match repeated world composition with replicated builder arrays."""
         world_count = 4
-        for use_coord_layout_targets in (False, True):
-            with mock.patch("newton.use_coord_layout_targets", use_coord_layout_targets):
-                source = self._make_source()
-                for spacing in ((0.0, 0.0, 0.0), (2.0, 3.0, 0.0)):
-                    with self.subTest(use_coord_layout_targets=use_coord_layout_targets, spacing=spacing):
-                        expected = self._make_destination()
-                        for offset in compute_world_offsets(world_count, spacing, expected.up_axis):
-                            expected.add_world(source, wp.transform(offset, wp.quat_identity()))
+        source = self._make_source()
+        for spacing in ((0.0, 0.0, 0.0), (2.0, 3.0, 0.0)):
+            with self.subTest(spacing=spacing):
+                expected = self._make_destination()
+                for offset in compute_world_offsets(world_count, spacing, expected.up_axis):
+                    expected.add_world(source, wp.transform(offset, wp.quat_identity()))
 
-                        actual = self._make_destination()
-                        actual.replicate(source, world_count, spacing)
+                actual = self._make_destination()
+                actual.replicate(source, world_count, spacing)
 
-                        self.assert_builder_merge_state_equal(expected, actual)
+                self.assert_builder_merge_state_equal(expected, actual)
 
     def test_copy_rotation_rotates_world_velocities(self):
         """Verify that yaw rotates world-frame position and twist and that a pure translation leaves velocity unchanged."""
@@ -785,70 +784,61 @@ class TestModelBuilderReplicate(unittest.TestCase):
     def test_finalize_matches_materialized_finalize(self):
         """Match materialized finalization for array-backed attributes."""
         for world_count in (1, 3):
-            for use_coord_layout_targets in (False, True):
-                with self.subTest(world_count=world_count, use_coord_layout_targets=use_coord_layout_targets):
-                    with mock.patch("newton.use_coord_layout_targets", use_coord_layout_targets):
-                        source = self._make_source()
+            with self.subTest(world_count=world_count):
+                source = self._make_source()
 
-                        array_backed = self._make_destination()
-                        array_backed.replicate(source, world_count)
-                        array_backed_names = set(array_backed._array_backed_attributes)
-                        self.assertTrue(array_backed_names)
-                        self.assertTrue(
-                            {
-                                "body_inertia",
-                                "joint_target_q",
-                                "muscle_params",
-                                "tri_poses",
-                                "tet_poses",
-                            }.issubset(array_backed_names)
-                        )
+                array_backed = self._make_destination()
+                array_backed.replicate(source, world_count)
+                array_backed_names = set(array_backed._array_backed_attributes)
+                self.assertTrue(array_backed_names)
+                self.assertTrue(
+                    {
+                        "body_inertia",
+                        "joint_target_q",
+                        "muscle_params",
+                        "tri_poses",
+                        "tet_poses",
+                    }.issubset(array_backed_names)
+                )
 
-                        materialized = self._make_destination()
-                        materialized.replicate(source, world_count)
-                        for name in _ARRAY_BACKED_ATTRIBUTE_DTYPES:
-                            getattr(materialized, name)
-                        self.assertFalse(materialized._array_backed_attributes)
+                materialized = self._make_destination()
+                materialized.replicate(source, world_count)
+                for name in _ARRAY_BACKED_ATTRIBUTE_DTYPES:
+                    getattr(materialized, name)
+                self.assertFalse(materialized._array_backed_attributes)
 
-                        with warnings.catch_warnings():
-                            warnings.filterwarnings(
-                                "ignore",
-                                message="The legacy DOF-shaped joint_target_q layout is deprecated.*",
-                                category=DeprecationWarning,
-                            )
-                            expected = materialized.finalize(device="cpu")
-                            actual = array_backed.finalize(device="cpu")
-
-                        self.assertEqual(actual.world_count, expected.world_count)
-                        self.assertEqual(set(array_backed._array_backed_attributes), array_backed_names)
-                        for name in sorted(array_backed_names):
-                            with self.subTest(attribute=name):
-                                expected_array = getattr(expected, name)
-                                actual_array = getattr(actual, name)
-                                self.assertIsInstance(expected_array, wp.array)
-                                self.assertIsInstance(actual_array, wp.array)
-                                self.assertIs(expected_array.dtype, actual_array.dtype)
-                                np.testing.assert_array_equal(expected_array.numpy(), actual_array.numpy())
-
-    def test_array_backed_finalize_projects_rod_target_q_to_legacy_dof_layout(self):
-        """Project replicated Rod targets from coordinate to legacy DOF layout."""
-        with mock.patch("newton.use_coord_layout_targets", False):
-            source = ModelBuilder()
-            source.add_rod(
-                rod=Rod([(0.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.0, 0.0, 2.0)], radius=0.1),
-                body_frame_origin="com",
-            )
-
-            array_backed = ModelBuilder()
-            array_backed.replicate(source, 2)
-            self.assertIn("joint_target_q", array_backed._array_backed_attributes)
-
-            with self.assertWarnsRegex(DeprecationWarning, "legacy DOF-shaped joint_target_q layout"):
+                expected = materialized.finalize(device="cpu")
                 actual = array_backed.finalize(device="cpu")
 
-            # Quaternion-to-Euler conversion may leave float32 roundoff at identity.
-            self.assertEqual(actual.joint_target_q.shape, (actual.joint_dof_count,))
-            np.testing.assert_allclose(actual.joint_target_q.numpy(), 0.0, atol=1.0e-6)
+                self.assertEqual(actual.world_count, expected.world_count)
+                self.assertEqual(set(array_backed._array_backed_attributes), array_backed_names)
+                for name in sorted(array_backed_names):
+                    with self.subTest(attribute=name):
+                        expected_array = getattr(expected, name)
+                        actual_array = getattr(actual, name)
+                        self.assertIsInstance(expected_array, wp.array)
+                        self.assertIsInstance(actual_array, wp.array)
+                        self.assertIs(expected_array.dtype, actual_array.dtype)
+                        np.testing.assert_array_equal(expected_array.numpy(), actual_array.numpy())
+
+    def test_array_backed_finalize_preserves_rod_target_coordinates(self):
+        """Preserve replicated Rod target quaternions during finalization."""
+        source = ModelBuilder()
+        source.add_rod(
+            rod=Rod([(0.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.5, 0.0, 2.0)], radius=0.1),
+            body_frame_origin="com",
+        )
+
+        array_backed = ModelBuilder()
+        array_backed.replicate(source, 2)
+        self.assertIn("joint_target_q", array_backed._array_backed_attributes)
+
+        actual = array_backed.finalize(device="cpu")
+
+        self.assertEqual(actual.joint_target_q.shape, (actual.joint_coord_count,))
+        np.testing.assert_allclose(actual.joint_target_q.numpy(), np.tile(source.joint_target_q, 2), atol=1.0e-6)
+        targets = actual.joint_target_q.numpy().reshape(-1, 7)
+        np.testing.assert_allclose(np.linalg.norm(targets[:, 3:], axis=1), 1.0, atol=1.0e-6)
 
     def test_array_backed_joint_validation_returns_early_when_all_joints_are_articulated(self):
         """Skip orphan-joint validation and keep topology array-backed when every joint is articulated."""
@@ -877,10 +867,12 @@ class TestModelBuilderReplicate(unittest.TestCase):
             scene.finalize(device="cpu")
 
     def test_all_builder_lists_have_merge_metadata(self):
+        """Cover every builder list with valid, coordinate-aware merge metadata."""
         list_attributes = {name for name, value in vars(ModelBuilder()).items() if isinstance(value, list)}
         specs = ModelBuilder._builder_merge_attribute_specs()
         self.assertEqual(set(specs), list_attributes)
         self.assertIs(specs["shape_body"], Model._CORE_ATTRIBUTE_SPECS["shape_body"])
+        self.assertEqual(specs["joint_target_q"].frequency, Model.AttributeFrequency.JOINT_COORD)
 
         base_attributes, base_lists = ModelBuilder._base_builder_attributes()
 
@@ -890,7 +882,7 @@ class TestModelBuilderReplicate(unittest.TestCase):
             mock.patch.object(ModelBuilder, "_BASE_LIST_ATTRIBUTES", base_lists | added),
         ):
             with self.assertRaisesRegex(RuntimeError, "_missing_merge_metadata"):
-                ModelBuilder._build_builder_merge_attribute_specs(False)
+                ModelBuilder._build_builder_merge_attribute_specs()
 
         removed = {"body_lock_inertia"}
         with (
@@ -898,11 +890,11 @@ class TestModelBuilderReplicate(unittest.TestCase):
             mock.patch.object(ModelBuilder, "_BASE_LIST_ATTRIBUTES", base_lists - removed),
         ):
             with self.assertRaisesRegex(RuntimeError, "body_lock_inertia"):
-                ModelBuilder._build_builder_merge_attribute_specs(False)
+                ModelBuilder._build_builder_merge_attribute_specs()
 
         with mock.patch.object(ModelBuilder, "_BASE_LIST_ATTRIBUTES", base_lists - removed):
             with self.assertRaisesRegex(RuntimeError, "body_lock_inertia"):
-                ModelBuilder._build_builder_merge_attribute_specs(False)
+                ModelBuilder._build_builder_merge_attribute_specs()
 
     def test_array_backed_attributes_have_generic_merge_metadata(self):
         """Require generic merge metadata and NumPy-compatible dtypes for array-backed attributes."""

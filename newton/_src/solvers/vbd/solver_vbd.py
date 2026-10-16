@@ -1925,7 +1925,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self.model.joint_type,
                 self.model.joint_target_q_start,
                 self.model.joint_target_q,
-                self.model.use_coord_layout_targets,
             ],
             outputs=[
                 self.joint_rod_rest_kb_local,
