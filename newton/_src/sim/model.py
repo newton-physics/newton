@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 import operator
 import warnings
-from collections.abc import Callable, Container, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, replace
 from enum import IntEnum
@@ -1693,42 +1693,35 @@ class Model:
         else:
             self.attribute_assignment[name] = spec.assignment
 
+    # Keep existing string aliases; new built-in families use enums so their
+    # names remain available to custom frequencies regardless of registration order.
+    _REFERENCE_ALIASES: ClassVar[dict[str, AttributeFrequency]] = {
+        "body": AttributeFrequency.BODY,
+        "shape": AttributeFrequency.SHAPE,
+        "joint": AttributeFrequency.JOINT,
+        "joint_dof": AttributeFrequency.JOINT_DOF,
+        "joint_coord": AttributeFrequency.JOINT_COORD,
+        "joint_constraint": AttributeFrequency.JOINT_CONSTRAINT,
+        "articulation": AttributeFrequency.ARTICULATION,
+        "constraint_mimic": AttributeFrequency.CONSTRAINT_MIMIC,
+        "particle": AttributeFrequency.PARTICLE,
+        "edge": AttributeFrequency.EDGE,
+        "triangle": AttributeFrequency.TRIANGLE,
+        "tetrahedron": AttributeFrequency.TETRAHEDRON,
+        "spring": AttributeFrequency.SPRING,
+        "tendon": AttributeFrequency.TENDON,
+        "tendon_guide": AttributeFrequency.TENDON_GUIDE,
+        "tendon_segment": AttributeFrequency.TENDON_SEGMENT,
+        "attachment_particle_body": AttributeFrequency.ATTACHMENT_PARTICLE_BODY,
+        "world": AttributeFrequency.WORLD,
+    }
+
     @staticmethod
     def _normalize_attribute_reference(
-        references: Model.AttributeFrequency | str | None, custom_frequencies: Container[str]
+        references: Model.AttributeFrequency | str | None,
     ) -> Model.AttributeFrequency | str | None:
-        """Return the frequency domain addressed by a builder reference declaration."""
-        if references is None:
-            return None
-        if isinstance(references, Model.AttributeFrequency):
-            return references
-        # Preserve existing unnamespaced custom frequencies when adding the deformable families.
-        if references in {"curve", "surface", "volume"} and references in custom_frequencies:
-            return references
-        built_in = {
-            "body": Model.AttributeFrequency.BODY,
-            "shape": Model.AttributeFrequency.SHAPE,
-            "joint": Model.AttributeFrequency.JOINT,
-            "joint_dof": Model.AttributeFrequency.JOINT_DOF,
-            "joint_coord": Model.AttributeFrequency.JOINT_COORD,
-            "joint_constraint": Model.AttributeFrequency.JOINT_CONSTRAINT,
-            "articulation": Model.AttributeFrequency.ARTICULATION,
-            "constraint_mimic": Model.AttributeFrequency.CONSTRAINT_MIMIC,
-            "particle": Model.AttributeFrequency.PARTICLE,
-            "edge": Model.AttributeFrequency.EDGE,
-            "triangle": Model.AttributeFrequency.TRIANGLE,
-            "tetrahedron": Model.AttributeFrequency.TETRAHEDRON,
-            "spring": Model.AttributeFrequency.SPRING,
-            "tendon": Model.AttributeFrequency.TENDON,
-            "tendon_guide": Model.AttributeFrequency.TENDON_GUIDE,
-            "tendon_segment": Model.AttributeFrequency.TENDON_SEGMENT,
-            "attachment_particle_body": Model.AttributeFrequency.ATTACHMENT_PARTICLE_BODY,
-            "world": Model.AttributeFrequency.WORLD,
-            "curve": Model.AttributeFrequency.CURVE,
-            "surface": Model.AttributeFrequency.SURFACE,
-            "volume": Model.AttributeFrequency.VOLUME,
-        }
-        return built_in.get(references, references)
+        """Resolve existing built-in aliases without changing the supplied declaration."""
+        return Model._REFERENCE_ALIASES.get(references, references)
 
     # ----- Removed joint-target aliases -------------------------------------
     # Tombstones so that assigning the 1.3-era names fails loudly instead of
@@ -2467,7 +2460,10 @@ class Model:
             references: Entity or custom-frequency domain indexed by the
                 attribute values, or ``None`` when values are not references.
                 Use a Model.AttributeFrequency enum for built-in domains or a
-                string for custom frequencies. Built-in string names are also supported.
+                string for custom frequencies. Existing built-in strings such as
+                ``"body"`` and ``"world"`` are also supported. Use enums for
+                ``CURVE``, ``SURFACE``, and ``VOLUME``; their string names refer
+                to custom frequencies.
 
         Raises:
             AttributeError: If the attribute already exists or is on the wrong device.
@@ -2494,7 +2490,7 @@ class Model:
             setattr(self, name, attrib)
             full_name = name
 
-        reference_frequency = self._normalize_attribute_reference(references, self.custom_frequency_counts)
+        reference_frequency = self._normalize_attribute_reference(references)
         if isinstance(reference_frequency, str) and reference_frequency not in self.custom_frequency_counts:
             raise ValueError(f"Unknown custom attribute reference frequency {references!r}")
         if reference_frequency is not None and isinstance(attrib, wp.array):

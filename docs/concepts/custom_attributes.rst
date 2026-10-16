@@ -502,7 +502,7 @@ While enum frequencies (``BODY``, ``SHAPE``, ``JOINT``, etc.) cover most use cas
 Registering Custom Frequencies
 ------------------------------
 
-Custom frequencies must be **registered before use** via :meth:`~newton.ModelBuilder.add_custom_frequency` using a :class:`~newton.ModelBuilder.CustomFrequency` object. This explicit registration ensures clarity about which entity types exist and enables optional USD parsing support.
+Register a custom frequency with :meth:`~newton.ModelBuilder.add_custom_frequency` before assigning it to an attribute's ``frequency`` field. Use a :class:`~newton.ModelBuilder.CustomFrequency` object to name the frequency and optionally configure USD parsing. An attribute's ``references`` field may name a custom frequency registered later.
 
 .. testsetup:: custom-freqs
 
@@ -922,11 +922,13 @@ or articulation IDs, default references for existing rows follow the same remap
 as explicit values. References to removed objects become ``-1``. These operations
 do not change the declared default for rows added later.
 
-Built-in string aliases are resolved when the attribute is registered. A custom
-frequency already named ``"curve"``, ``"surface"``, or ``"volume"`` keeps that
-string's meaning. Use the enum to refer to the built-in family unambiguously.
-Register such a custom frequency before attributes that reference it. Namespaced
-custom keys such as ``"my_plugin:curve"`` avoid this overlap.
+Use ``Model.AttributeFrequency.CURVE``, ``SURFACE``, or ``VOLUME`` to reference
+built-in deformable objects. The strings ``"curve"``, ``"surface"``, and
+``"volume"`` refer to custom frequencies, regardless of registration order.
+Existing built-in strings such as ``"body"`` and ``"world"`` remain supported.
+Registering an attribute does not rewrite its ``references`` field. Finalized
+model metadata uses enum values for built-in references and strings for custom
+frequencies.
 
 The following example uses string names for shape and world references:
 

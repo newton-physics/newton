@@ -508,7 +508,7 @@ class TestDeformableBuilderObjects(unittest.TestCase):
                             name="curve_source",
                             dtype=wp.int32,
                             frequency=newton.Model.AttributeFrequency.CURVE,
-                            references="curve",
+                            references=newton.Model.AttributeFrequency.CURVE,
                             values={0: 0},
                         )
                     )

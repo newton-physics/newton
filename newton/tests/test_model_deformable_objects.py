@@ -199,6 +199,37 @@ class TestModelDeformableObjects(unittest.TestCase):
             np.testing.assert_array_equal(getattr(model, f"{family}_tag").numpy(), [17, 17])
             np.testing.assert_array_equal(getattr(state, f"{family}_enabled").numpy(), [1, 1])
 
+    def test_custom_reference_registration_order(self):
+        """Keep custom reference names unchanged across registration orders and reused declarations."""
+        for family in ("curve", "surface", "volume"):
+            reference = newton.ModelBuilder.CustomAttribute(
+                name="tag_reference",
+                dtype=wp.int32,
+                frequency=newton.Model.AttributeFrequency.BODY,
+                references=family,
+                values={0: 1},
+            )
+            for custom_first in (False, True):
+                with self.subTest(family=family, custom_first=custom_first):
+                    prototype = newton.ModelBuilder()
+                    prototype.add_body()
+                    if not custom_first:
+                        prototype.add_custom_attribute(reference)
+                    prototype.add_custom_frequency(newton.ModelBuilder.CustomFrequency(name=family))
+                    prototype.add_custom_attribute(
+                        newton.ModelBuilder.CustomAttribute(name="tag", dtype=wp.int32, frequency=family)
+                    )
+                    prototype.add_custom_values(tag=10)
+                    prototype.add_custom_values(tag=20)
+                    if custom_first:
+                        prototype.add_custom_attribute(reference)
+                    scene = newton.ModelBuilder()
+                    scene.replicate(prototype, 2)
+                    model = scene.finalize(device="cpu")
+                    np.testing.assert_array_equal(model.tag_reference.numpy(), [1, 3])
+                    self.assertEqual(reference.references, family)
+                    self.assertEqual(prototype.custom_attributes["tag_reference"].references, family)
+
     def test_deformable_reference_domains_survive_composition(self):
         """Keep built-in references distinct from same-named custom frequencies in either merge direction."""
         for family, add in (("curve", _add_curve), ("surface", _add_surface), ("volume", _add_volume)):
@@ -211,7 +242,7 @@ class TestModelDeformableObjects(unittest.TestCase):
                             name="builtin_reference",
                             dtype=wp.int32,
                             frequency=newton.Model.AttributeFrequency.ONCE,
-                            references=family,
+                            references=getattr(newton.Model.AttributeFrequency, family.upper()),
                             values={0: 0},
                         )
                     )
@@ -259,7 +290,9 @@ class TestModelDeformableObjects(unittest.TestCase):
                                 name="reference",
                                 dtype=wp.int32,
                                 frequency=newton.Model.AttributeFrequency.ONCE,
-                                references=family,
+                                references=family
+                                if builder is custom
+                                else getattr(newton.Model.AttributeFrequency, family.upper()),
                                 values={0: 0},
                             )
                         )
@@ -296,7 +329,7 @@ class TestModelDeformableObjects(unittest.TestCase):
                 name="selected_curve",
                 dtype=wp.int32,
                 frequency=newton.Model.AttributeFrequency.ONCE,
-                references="curve",
+                references=newton.Model.AttributeFrequency.CURVE,
                 values={0: 1},
             )
         )
@@ -371,7 +404,7 @@ class TestModelDeformableObjects(unittest.TestCase):
                         dtype=dtype,
                         frequency=newton.Model.AttributeFrequency.ONCE,
                         references=family
-                        if name == "pair"
+                        if family == "articulation" and name == "pair"
                         else getattr(newton.Model.AttributeFrequency, family.upper()),
                         values={0: value},
                     )
@@ -393,7 +426,7 @@ class TestModelDeformableObjects(unittest.TestCase):
                     name=f"{family}_default_once",
                     dtype=wp.vec2i,
                     frequency=newton.Model.AttributeFrequency.ONCE,
-                    references=family,
+                    references=getattr(newton.Model.AttributeFrequency, family.upper()),
                     default=wp.vec2i(0, 1),
                 )
             )

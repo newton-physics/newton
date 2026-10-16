@@ -1278,11 +1278,11 @@ class ModelBuilder:
             - ``"body"``, ``"shape"``, ``"joint"``, ``"joint_dof"``, ``"joint_coord"``, ``"articulation"``,
               ``"constraint_mimic"``, ``"particle"``, ``"edge"``, ``"triangle"``, ``"tetrahedron"``, ``"spring"``,
               ``"tendon"``, ``"tendon_guide"``, ``"tendon_segment"``
-            - Experimental deformable object types: ``"curve"``, ``"surface"``, ``"volume"``.
-              If a custom frequency with one of these names is already registered,
-              the string refers to that custom frequency; use the enum for the built-in family.
-              Built-in strings are resolved when :meth:`ModelBuilder.add_custom_attribute`
-              registers the attribute, so subsequent merges cannot change their meaning.
+
+        For experimental deformable object types, use ``Model.AttributeFrequency.CURVE``,
+        ``SURFACE``, or ``VOLUME``. The strings ``"curve"``, ``"surface"``, and ``"volume"``
+        refer to custom frequencies, regardless of registration order.
+        Registration preserves the supplied value of this field.
 
         Special handling:
             - ``"world"``: Missing custom-frequency row values are initialized from
@@ -1498,8 +1498,8 @@ class ModelBuilder:
         Represents a custom frequency definition for the ModelBuilder.
 
         Custom frequencies allow defining entity types beyond the built-in ones (BODY, SHAPE, JOINT, etc.).
-        They must be registered via :meth:`ModelBuilder.add_custom_frequency` before any custom attributes
-        using them can be added.
+        They must be registered via :meth:`ModelBuilder.add_custom_frequency` before assigning them
+        to an attribute's :attr:`CustomAttribute.frequency` field.
 
         The optional ``usd_prim_filter`` callback enables automatic USD parsing for this frequency.
         When provided, :meth:`ModelBuilder.add_usd` will call this function for each prim in the USD
@@ -2400,7 +2400,8 @@ class ModelBuilder:
             and existing.dtype == incoming.dtype
             and existing.assignment == incoming.assignment
             and existing.namespace == incoming.namespace
-            and existing.references == incoming.references
+            and Model._normalize_attribute_reference(existing.references)
+            == Model._normalize_attribute_reference(incoming.references)
             and existing.reference_value_transformer is incoming.reference_value_transformer
         )
 
@@ -2465,10 +2466,6 @@ class ModelBuilder:
             )
         key = attribute.key
 
-        # Resolve aliases in their original builder, before a merge can introduce
-        # a same-named custom frequency.
-        attribute.references = Model._normalize_attribute_reference(attribute.references, self.custom_frequencies)
-
         existing = self.custom_attributes.get(key)
         if existing:
             if not self._custom_attribute_specs_match(existing, attribute):
@@ -2498,7 +2495,10 @@ class ModelBuilder:
 
     def _index_custom_world_reference_attribute(self, attribute: CustomAttribute) -> None:
         """Index a custom-frequency world reference for row insertion."""
-        if not attribute.is_custom_frequency or attribute.references != Model.AttributeFrequency.WORLD:
+        if (
+            not attribute.is_custom_frequency
+            or Model._normalize_attribute_reference(attribute.references) != Model.AttributeFrequency.WORLD
+        ):
             return
 
         freq_key = attribute.frequency
@@ -2525,7 +2525,8 @@ class ModelBuilder:
         """
         Register a custom frequency for the builder.
 
-        Custom frequencies must be registered before adding any custom attributes that use them.
+        Custom frequencies must be registered before assigning them to an attribute's
+        :attr:`CustomAttribute.frequency` field.
         This enables explicit declaration of custom entity types and optionally provides USD
         parsing support via the ``usd_prim_filter`` callback.
 
@@ -2674,7 +2675,10 @@ class ModelBuilder:
                     )
                 if owner_attribute.assignment != Model.AttributeAssignment.MODEL:
                     raise ValueError(f"Articulation owner attribute '{owner_key}' must be assigned to Model")
-                if owner_attribute.references != Model.AttributeFrequency.ARTICULATION:
+                if (
+                    Model._normalize_attribute_reference(owner_attribute.references)
+                    != Model.AttributeFrequency.ARTICULATION
+                ):
                     raise ValueError(
                         f"Articulation owner attribute '{owner_key}' must declare references='articulation'"
                     )
@@ -4102,10 +4106,9 @@ class ModelBuilder:
                         f"existing={merged.default}, incoming={attr.default}"
                     )
 
-            reference_key = None if attr.references is None else self._builder_frequency_key(attr.references)
-            reference_domains = (
-                entity_kinds if isinstance(attr.references, Model.AttributeFrequency) else custom_references
-            )
+            reference = Model._normalize_attribute_reference(attr.references)
+            reference_key = None if reference is None else self._builder_frequency_key(reference)
+            reference_domains = entity_kinds if isinstance(reference, Model.AttributeFrequency) else custom_references
             if reference_key not in (None, "world") and reference_key not in reference_domains:
                 raise ValueError(
                     f"Unknown references value '{attr.references}'. "
@@ -5225,6 +5228,7 @@ class ModelBuilder:
 
         source_counts = None
         for full_key, attr in builder.custom_attributes.items():
+            reference = attr.references
             # Empty source frequencies need declarations but no reference remapping.
             # Frequencies with rows must still materialize and remap reference defaults.
             if not attr.values:
@@ -5235,7 +5239,7 @@ class ModelBuilder:
                     )
                     can_skip_remapping = (
                         has_empty_custom_frequency and attr.reference_value_transformer is None
-                    ) or attr.references == Model.AttributeFrequency.WORLD
+                    ) or reference in (Model.AttributeFrequency.WORLD, "world")
                 if can_skip_remapping:
                     if full_key not in self.custom_attributes:
                         freq_key = attr.frequency
@@ -5245,6 +5249,9 @@ class ModelBuilder:
                         self._custom_schema_epoch += 1
                         self._index_custom_world_reference_attribute(merged)
                     continue
+
+            if isinstance(reference, str):
+                reference = Model._normalize_attribute_reference(reference)
 
             freq_key = attr.frequency
             if isinstance(freq_key, str):
@@ -5256,8 +5263,8 @@ class ModelBuilder:
             else:
                 index_offset = get_offset(attr.frequency)
 
-            use_current_world = attr.references == Model.AttributeFrequency.WORLD
-            value_offset = 0 if use_current_world else get_offset(attr.references)
+            use_current_world = reference == Model.AttributeFrequency.WORLD
+            value_offset = 0 if use_current_world else get_offset(reference)
             is_equality_target_attr = full_key == "mujoco:equality_constraint_target"
             is_collision_mask_domain_attr = full_key == collision_mask_domain_key and bool(collision_mask_domain_remap)
             source_values = attr.values
@@ -7938,7 +7945,7 @@ class ModelBuilder:
             Model.AttributeFrequency.CURVE: curve_remap,
         }
         for custom_attr in self.custom_attributes.values():
-            remap = object_remaps.get(custom_attr.references)
+            remap = object_remaps.get(Model._normalize_attribute_reference(custom_attr.references))
             if remap is None or self._custom_attribute_defaults_match(
                 remap_object_reference(custom_attr.default, remap), custom_attr.default
             ):
@@ -7968,7 +7975,7 @@ class ModelBuilder:
                 }
 
         for custom_attr in self.custom_attributes.values():
-            remap = object_remaps.get(custom_attr.references)
+            remap = object_remaps.get(Model._normalize_attribute_reference(custom_attr.references))
             if remap is None or custom_attr.values is None:
                 continue
             if isinstance(custom_attr.values, dict):
@@ -8271,9 +8278,10 @@ class ModelBuilder:
             return joint_remap.get(idx, -1)
 
         for custom_attr in self.custom_attributes.values():
-            if custom_attr.references == Model.AttributeFrequency.BODY:
+            reference = Model._normalize_attribute_reference(custom_attr.references)
+            if reference == Model.AttributeFrequency.BODY:
                 remap_reference = _remap_body_reference
-            elif custom_attr.references == Model.AttributeFrequency.JOINT:
+            elif reference == Model.AttributeFrequency.JOINT:
                 remap_reference = _remap_joint_reference
             else:
                 continue

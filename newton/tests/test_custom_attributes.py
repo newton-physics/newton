@@ -2378,6 +2378,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
                 default=0,
             )
         )
+        self.assertEqual(source.custom_attributes["root_body"].references, "body")
         for values, expected in ((None, 2), ({}, 0), ({0: 1}, 1)):
             with self.subTest(destination_values=values):
                 scene = ModelBuilder()
@@ -2389,7 +2390,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
                             name="root_body",
                             dtype=wp.int32,
                             frequency=AttributeFrequency.ONCE,
-                            references="body",
+                            references=AttributeFrequency.BODY,
                             default=0,
                             values=values.copy(),
                         )
