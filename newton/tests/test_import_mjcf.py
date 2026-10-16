@@ -143,7 +143,7 @@ class TestImportMjcfBasic(unittest.TestCase):
 </mujoco>
 """
                 builder = newton.ModelBuilder()
-                with self.assertWarnsRegex(UserWarning, name):
+                with self.assertWarnsRegex(newton.exceptions.NewtonWarning, name):
                     builder.add_mjcf(mjcf)
                 solver = SolverMuJoCo(builder.finalize())
                 self.assertEqual(solver.mj_model.opt.enableflags, 0)

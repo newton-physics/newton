@@ -530,6 +530,7 @@ def parse_mjcf(
                 if unknown:
                     warnings.warn(
                         f"MJCF option <flag> has unsupported attribute(s) {sorted(unknown)!r}; ignoring.",
+                        NewtonWarning,
                         stacklevel=2,
                     )
                 for key, value in parse_custom_attributes(flag_elem.attrib, flag_attrs, "mjcf").items():
