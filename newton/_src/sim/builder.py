@@ -5371,14 +5371,20 @@ class ModelBuilder:
                     transform_value(attr.default), attr.default
                 ):
                     # Different copies need different reference values, not a shared shifted default.
-                    if source_counts is None:
-                        source_counts = self._builder_merge_counts(builder)
-                        source_counts.update(once=1, world=max(1, builder.world_count))
-                    count = (
-                        builder._custom_frequency_counts.get(freq_key, 0)
-                        if isinstance(freq_key, str)
-                        else source_counts.get(self._builder_frequency_key(freq_key), 0)
-                    )
+                    if freq_key == Model.AttributeFrequency.ONCE:
+                        # Implicit source defaults must not replace an existing global value.
+                        count = int(full_key not in self.custom_attributes)
+                    elif freq_key == Model.AttributeFrequency.WORLD:
+                        # Each copy uses one destination world, or none for global entities.
+                        count = int(world >= 0)
+                    else:
+                        if source_counts is None:
+                            source_counts = self._builder_merge_counts(builder)
+                        count = (
+                            builder._custom_frequency_counts.get(freq_key, 0)
+                            if isinstance(freq_key, str)
+                            else source_counts.get(self._builder_frequency_key(freq_key), 0)
+                        )
                     source_values = attr._values_with_defaults(count)
 
             merged = self.custom_attributes.get(full_key)

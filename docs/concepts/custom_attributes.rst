@@ -910,6 +910,11 @@ support body. During copying, row indices follow the curve count and stored body
 IDs follow the body count. Default references for existing rows are copied just
 like explicit values. The source builder and its declared default stay unchanged.
 
+``ONCE`` attributes have one value for the whole model. A source default does
+not replace an existing destination value; an explicit source value does.
+``WORLD`` reference defaults are copied into the destination world. Adding
+global entities with ``add_builder()`` does not create a world row.
+
 For scalar and integer-vector references, copying offsets each nonnegative
 index and preserves negative ones. Vector values may be lists, tuples, NumPy
 integer arrays, or Warp integer vectors. When fixed-joint collapse changes curve

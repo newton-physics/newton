@@ -2365,9 +2365,49 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         view.set_attribute("test.item_value", model, np.array([[[11.0, 31.0]]], dtype=np.float32))
         np.testing.assert_allclose(model.test.item_value.numpy(), [11.0, 20.0, 31.0])
 
+    def test_once_reference_defaults_preserve_destination(self):
+        """Keep a global reference unless the source explicitly overrides it."""
+        source = ModelBuilder()
+        source.add_body()
+        source.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
+                name="root_body",
+                dtype=wp.int32,
+                frequency=AttributeFrequency.ONCE,
+                references="body",
+                default=0,
+            )
+        )
+        for values, expected in ((None, 2), ({}, 0), ({0: 1}, 1)):
+            with self.subTest(destination_values=values):
+                scene = ModelBuilder()
+                scene.add_body()
+                scene.add_body()
+                if values is not None:
+                    scene.add_custom_attribute(
+                        ModelBuilder.CustomAttribute(
+                            name="root_body",
+                            dtype=wp.int32,
+                            frequency=AttributeFrequency.ONCE,
+                            references="body",
+                            default=0,
+                            values=values.copy(),
+                        )
+                    )
+                scene.add_builder(source)
+                scene.replicate(source, 2)
+                model = scene.finalize(device=self.device)
+                np.testing.assert_array_equal(model.root_body.numpy(), [expected])
+
+        source.custom_attributes["root_body"].values[0] = 0
+        scene.add_builder(source)
+        np.testing.assert_array_equal(scene.finalize(device=self.device).root_body.numpy(), [5])
+
     def test_world_frequency_merge_add_world(self):
-        """Test that WORLD-frequency attributes are correctly indexed when using add_world()."""
+        """Copy world rows without letting a global merge overwrite their reference defaults."""
         sub = ModelBuilder()
+        sub.add_body()
+        sub.add_body()
         sub.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="world_data",
@@ -2380,17 +2420,31 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         # Manually set value at index 0 for the sub-builder's world
         sub.custom_attributes["test:world_data"].values = {0: 42}
 
-        main = ModelBuilder()
-        main.add_world(sub)
-        main.add_world(sub)
-
-        model = main.finalize(device=self.device)
-        arr = model.test.world_data.numpy()
-
-        self.assertEqual(model.world_count, 2)
-        self.assertEqual(len(arr), 2)
-        self.assertEqual(arr[0], 42)
-        self.assertEqual(arr[1], 42)
+        ground = ModelBuilder()
+        ground.add_body()
+        for builder in (sub, ground):
+            builder.add_custom_attribute(
+                ModelBuilder.CustomAttribute(
+                    name="world_root_body",
+                    dtype=wp.int32,
+                    frequency=AttributeFrequency.WORLD,
+                    references="body",
+                    default=0,
+                )
+            )
+        for method in ("add_world", "replicate"):
+            with self.subTest(method=method):
+                main = ModelBuilder()
+                if method == "add_world":
+                    main.add_world(sub)
+                    main.add_world(sub)
+                else:
+                    main.replicate(sub, 2)
+                main.add_builder(ground)
+                model = main.finalize(device=self.device)
+                self.assertEqual(model.world_count, 2)
+                np.testing.assert_array_equal(model.test.world_data.numpy(), [42, 42])
+                np.testing.assert_array_equal(model.world_root_body.numpy(), [0, 2])
 
     def test_custom_attribute_model_finalizer_rejects_conflicting_registration(self):
         builder = ModelBuilder()
