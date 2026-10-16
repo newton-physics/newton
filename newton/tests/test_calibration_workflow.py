@@ -8,6 +8,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import math
+import pickle
 import tempfile
 import unittest
 from pathlib import Path
@@ -238,6 +239,18 @@ class TestCalibrationOrchestration(unittest.TestCase):
         self.assertEqual(outcome.stop_reason, "stopped by the caller")
         self.assertLessEqual(outcome.loss, 1.0)
         self.assertEqual(outcome.iterations, search.iteration)
+
+    def test_pickled_search_continues_like_the_original(self):
+        """Verify a search saved with pickle between iterations gives the same history as the original."""
+        problem = self.Problem()
+        search = CMASettings(seed=1, popsize=4, maxiter=30).start(problem.search_space)
+        for _ in range(3):
+            search.tell(problem.evaluate(search.ask()))
+        resumed = pickle.loads(pickle.dumps(search))
+        for s in (search, resumed):
+            for _ in range(3):
+                s.tell(problem.evaluate(s.ask()))
+        self.assertEqual(resumed.history, search.history)
 
     def test_search_stays_within_the_bounds(self):
         """Verify every evaluated vector respects a lower bound that excludes the unbounded minimum."""

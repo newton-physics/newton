@@ -139,6 +139,11 @@ class Search:
     never the best. The search stops with the stop reason
     ``"all candidates invalid"`` when a whole iteration is invalid.
 
+    To save a checkpoint, pickle the search between iterations. The copy
+    continues exactly like the original. This requires an engine and a space
+    that can be pickled; :class:`CMASettings` and
+    :class:`~.search_space.CableSearchSpace` give such a search.
+
     Create it with the ``start(space)`` of the optimizer settings, for example
     :meth:`CMASettings.start`.
 
