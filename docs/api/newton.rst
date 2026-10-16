@@ -12,6 +12,7 @@ newton
 - :doc:`newton.actuators <newton_actuators>`
 - :doc:`newton.config <newton_config>`
 - :doc:`newton.controllers <newton_controllers>`
+- :doc:`newton.exceptions <newton_exceptions>`
 - :doc:`newton.geometry <newton_geometry>`
 - :doc:`newton.ik <newton_ik>`
 - :doc:`newton.math <newton_math>`
@@ -70,11 +71,6 @@ newton
    eval_mimic
    eval_rigid_contact_kinematics
    intersect_ray
-
-.. rubric:: Attributes
-
-.. autodata:: use_coord_layout_targets
-   :no-value:
 
 .. rubric:: Constants
 
