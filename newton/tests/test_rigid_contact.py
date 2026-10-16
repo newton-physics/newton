@@ -848,6 +848,10 @@ solvers = {
     "xpbd": lambda model: newton.solvers.SolverXPBD(model, iterations=2),
     "semi_implicit": newton.solvers.SolverSemiImplicit,
     "kamino": newton.solvers.SolverKamino,
+    # The matrix-free solve is CUDA-only; split is the CPU route.
+    "steel": lambda model: newton.solvers.SolverSteel(
+        model, solve_mode="matrix_free" if model.device.is_cuda else "split"
+    ),
 }
 
 
@@ -897,7 +901,7 @@ add_function_test(
 # Register box drop tests for MuJoCo and XPBD solvers
 for device in devices:
     for solver_name, solver_fn in solvers.items():
-        if solver_name not in ("mujoco_cpu", "mujoco_warp", "xpbd"):
+        if solver_name not in ("mujoco_cpu", "mujoco_warp", "xpbd", "steel"):
             continue
         if device.is_cpu and solver_name == "mujoco_warp":
             continue

@@ -84,6 +84,7 @@ class TestModelAttributeSpecs(unittest.TestCase):
                 )
 
     def test_core_attribute_specs_cover_entity_indexed_storage(self):
+        """Require metadata for entity-indexed storage, excluding lazy implementation details."""
         model = newton.Model(device="cpu")
 
         prefixes = tuple(
@@ -116,7 +117,11 @@ class TestModelAttributeSpecs(unittest.TestCase):
             if name.startswith(prefixes + private_prefixes) and is_indexed_container:
                 indexed_attributes.add(name)
 
-        missing = sorted(indexed_attributes.difference(model.attribute_specs))
+        excluded_attributes = {
+            "_shape_contact_pairs",  # Covered by the public shape_contact_pairs specification.
+            "_shape_contact_pair_counts",  # Summary cache, not entity-indexed storage.
+        }
+        missing = sorted(indexed_attributes.difference(model.attribute_specs, excluded_attributes))
         self.assertEqual(
             missing,
             [],
@@ -2403,11 +2408,11 @@ class TestModelJoints(unittest.TestCase):
         assert_np_equal(state.body_q.numpy()[child], np.array(child_body_xform), tol=1.0e-5)
 
     def test_joint_target_q_qd_shape_with_free_and_ball_joints(self):
-        """``joint_target_q`` follows ``joint_q`` (coord) under
-        ``use_coord_layout_targets``; ``joint_target_qd`` always follows
-        ``joint_qd`` (DOF). Free and ball joints are where the two layouts
-        diverge. Multi-articulation builder also exercises the per-env start
-        arrays."""
+        """Match position targets to coordinates and velocity targets to DOFs.
+
+        Free and ball joints distinguish the coordinate and DOF counts;
+        multiple articulations also exercise the per-articulation start arrays.
+        """
         builder = ModelBuilder()
         # env 0: free + revolute (7 coords / 6 DOFs from free)
         b0 = builder.add_link(mass=1.0)
@@ -2442,112 +2447,12 @@ class TestModelJoints(unittest.TestCase):
         # env 1 ball joint: w-component at offset 3 (3 quat-xyz)
         self.assertAlmostEqual(float(target_q[int(q_starts[2]) + 3]), 1.0)
 
-    def test_legacy_target_layout_warning_uses_finalize_call_site(self):
-        """Verify the legacy target-layout warning and its call-site attribution."""
-        previous_flag = newton.use_coord_layout_targets
-        newton.use_coord_layout_targets = False
-        try:
-            unaffected_builder = ModelBuilder()
-            child = unaffected_builder.add_link(mass=1.0)
-            joint = unaffected_builder.add_joint_revolute(parent=-1, child=child, axis=newton.Axis.Z)
-            unaffected_builder.add_articulation([joint])
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always", DeprecationWarning)
-                unaffected_builder.finalize()
-            layout_warnings = [
-                warning
-                for warning in caught
-                if issubclass(warning.category, DeprecationWarning)
-                and "legacy DOF-shaped joint_target_q layout" in str(warning.message)
-            ]
-            self.assertEqual(layout_warnings, [])
-
-            affected_builder = ModelBuilder()
-            child = affected_builder.add_link(mass=1.0)
-            joint = affected_builder.add_joint_free(child=child)
-            affected_builder.add_articulation([joint])
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always", DeprecationWarning)
-                warning_line = inspect.currentframe().f_lineno + 1
-                affected_builder.finalize()
-
-            layout_warnings = [
-                warning
-                for warning in caught
-                if issubclass(warning.category, DeprecationWarning)
-                and "legacy DOF-shaped joint_target_q layout" in str(warning.message)
-            ]
-            self.assertEqual(len(layout_warnings), 1)
-            self.assertEqual(layout_warnings[0].filename, __file__)
-            self.assertEqual(layout_warnings[0].lineno, warning_line)
-        finally:
-            newton.use_coord_layout_targets = previous_flag
-
-    def test_legacy_target_layout_shapes_and_values(self):
-        """Verify legacy DOF target layout behavior."""
-        lin_targets = (1.5, -2.5, 3.5)
-        ang_targets = (0.1, 0.2, -0.3)
-
-        def _axes(targets):
-            return [
-                ModelBuilder.JointDofConfig(axis=axis, target_pos=target)
-                for axis, target in zip((newton.Axis.X, newton.Axis.Y, newton.Axis.Z), targets, strict=True)
-            ]
-
-        previous_flag = newton.use_coord_layout_targets
-        newton.use_coord_layout_targets = False
-        try:
-            builder = ModelBuilder()
-            b_free = builder.add_link(mass=1.0)
-            j_free = builder.add_joint(
-                newton.JointType.FREE,
-                parent=-1,
-                child=b_free,
-                linear_axes=_axes(lin_targets),
-                angular_axes=_axes(ang_targets),
-            )
-            b_ball = builder.add_link(mass=1.0)
-            j_ball = builder.add_joint(
-                newton.JointType.BALL,
-                parent=b_free,
-                child=b_ball,
-                angular_axes=_axes(ang_targets),
-            )
-            b_rev = builder.add_link(mass=1.0)
-            j_rev = builder.add_joint_revolute(parent=b_ball, child=b_rev, axis=newton.Axis.Z, target_pos=0.7)
-            builder.add_articulation([j_free, j_ball, j_rev])
-            with self.assertWarnsRegex(DeprecationWarning, "legacy DOF-shaped joint_target_q layout"):
-                model = builder.finalize()
-        finally:
-            newton.use_coord_layout_targets = previous_flag
-
-        self.assertEqual(model.joint_coord_count, 7 + 4 + 1)
-        self.assertEqual(model.joint_dof_count, 6 + 3 + 1)
-        self.assertEqual(model.joint_target_q.shape[0], model.joint_dof_count)
-        self.assertEqual(model.joint_target_qd.shape[0], model.joint_dof_count)
-
-        control = model.control()
-        self.assertEqual(control.joint_target_q.shape[0], model.joint_dof_count)
-        self.assertEqual(control.joint_target_qd.shape[0], model.joint_dof_count)
-
-        np.testing.assert_array_equal(model.joint_target_q_start.numpy(), model.joint_qd_start.numpy())
-
-        # The quat-w padding slot is dropped: angular targets stay raw per-axis angles.
-        target_q = model.joint_target_q.numpy()
-        qd_starts = model.joint_qd_start.numpy()
-        f = int(qd_starts[j_free])
-        np.testing.assert_allclose(target_q[f : f + 3], lin_targets, rtol=0, atol=1e-6)
-        np.testing.assert_allclose(target_q[f + 3 : f + 6], ang_targets, rtol=0, atol=1e-6)
-        b = int(qd_starts[j_ball])
-        np.testing.assert_allclose(target_q[b : b + 3], ang_targets, rtol=0, atol=1e-6)
-        self.assertAlmostEqual(float(target_q[int(qd_starts[j_rev])]), 0.7, places=6)
-
     def test_ball_free_per_axis_target_pos_preserved(self):
         """``JointDofConfig.target_pos`` on BALL/FREE angular axes must flow
         into the ``joint_target_q`` coord slice: the 3 angular scalars are
         interpreted as extrinsic ZYX Euler angles and converted to a unit
-        quaternion via :meth:`ModelBuilder._quat_from_euler_zyx`, matching
-        kamino's DOF→coord conversion. FREE linear targets fill the position
+        quaternion via :meth:`ModelBuilder._quat_from_axis_targets`.
+        FREE linear targets fill the position
         slice verbatim."""
         ang_targets = (0.1, 0.2, -0.3)
 
@@ -3748,9 +3653,8 @@ class TestModelJoints(unittest.TestCase):
         bodies = [builder.add_link() for _ in range(2)]
         reference = builder.add_joint_revolute(parent=-1, child=bodies[0], axis=newton.Axis.Z)
         follower = builder.add_joint_revolute(parent=bodies[0], child=bodies[1], axis=newton.Axis.Z)
-        builder.add_articulation([reference, follower])
-
         builder.set_joint_mimic(follower, reference, coeffs=(0.5, 2.0))
+        builder.add_articulation([reference, follower])
 
         self.assertEqual(builder.joint_mimic_joint, [-1, reference])
         np.testing.assert_allclose(
@@ -3822,8 +3726,52 @@ class TestModelJoints(unittest.TestCase):
         self.assertEqual(builder.joint_mimic_joint[joint1], -1)
         self.assertEqual(builder.joint_mimic_coeffs[joint1], (0.0, 1.0))
 
+    def test_joint_mimic_validates_final_articulations(self):
+        """Reject deferred cross-articulation mimics unless validation is disabled."""
+        for assigned_before_mimic in (None, "reference", "follower"):
+            with self.subTest(assigned_before_mimic=assigned_before_mimic):
+                builder = newton.ModelBuilder()
+                bodies = [builder.add_link() for _ in range(2)]
+                reference = builder.add_joint_revolute(parent=-1, child=bodies[0])
+                follower = builder.add_joint_revolute(parent=-1, child=bodies[1])
+                if assigned_before_mimic == "follower":
+                    reference, follower = follower, reference
+                if assigned_before_mimic == "reference":
+                    builder.add_articulation([reference])
+                elif assigned_before_mimic == "follower":
+                    builder.add_articulation([follower])
+                builder.set_joint_mimic(follower, reference)
+                if assigned_before_mimic != "reference":
+                    builder.add_articulation([reference])
+                if assigned_before_mimic != "follower":
+                    builder.add_articulation([follower])
+                with self.assertRaisesRegex(ValueError, "Mimic joints must belong to the same articulation"):
+                    builder.finalize(device="cpu")
+
+        # Reuse the final rejected builder to exercise both validation opt-outs.
+        for kwargs in ({"skip_validation_joints": True}, {"skip_all_validations": True}):
+            with self.subTest(**kwargs):
+                model = builder.finalize(device="cpu", **kwargs)
+                self.assertEqual(model.joint_mimic_joint.numpy()[follower], reference)
+
+    def test_joint_mimic_preserves_unassigned_articulations(self):
+        """Finalize standalone or mixed mimic pairs without imposing Featherstone's restriction."""
+        for membership in ("neither", "reference", "follower"):
+            with self.subTest(membership=membership):
+                builder = newton.ModelBuilder()
+                bodies = [builder.add_link() for _ in range(2)]
+                reference = builder.add_joint_revolute(parent=-1, child=bodies[0])
+                follower = builder.add_joint_revolute(parent=-1, child=bodies[1])
+                builder.set_joint_mimic(follower, reference)
+                if membership == "reference":
+                    builder.add_articulation([reference])
+                if membership == "follower":
+                    builder.add_articulation([follower])
+                model = builder.finalize(device="cpu")
+                np.testing.assert_array_equal(model.joint_mimic_joint.numpy(), [-1, reference])
+
     def test_joint_mimic_validates_dimensions(self):
-        """Verify mimic relationships accept joint types only when their dimensions match."""
+        """Accept supported mimic types with matching dimensions and reject unsupported types."""
         builder = newton.ModelBuilder()
         bodies = [builder.add_link() for _ in range(3)]
         axis = newton.ModelBuilder.JointDofConfig.create_unlimited
@@ -3843,6 +3791,37 @@ class TestModelJoints(unittest.TestCase):
         self.assertEqual(builder.joint_mimic_joint[d6_scalar], reference)
         with self.assertRaisesRegex(ValueError, "matching position and velocity dimensions"):
             builder.set_joint_mimic(d6_vector, reference)
+
+        prismatic = builder.add_joint_prismatic(parent=-1, child=builder.add_link())
+        builder.set_joint_mimic(prismatic, reference)
+        self.assertEqual(builder.joint_mimic_joint[prismatic], reference)
+
+        for constructor in (
+            builder.add_joint_ball,
+            builder.add_joint_free,
+            builder.add_joint_distance,
+            builder.add_joint_rod,
+            builder.add_joint_fixed,
+        ):
+            joint0 = constructor(parent=-1, child=builder.add_link())
+            joint1 = constructor(parent=-1, child=builder.add_link())
+            for follower, leader in ((joint0, reference), (reference, joint0), (joint1, joint0)):
+                with self.subTest(joint_type=builder.joint_type[joint0], follower=follower, reference=leader):
+                    mimic_joints = list(builder.joint_mimic_joint)
+                    mimic_coeffs = list(builder.joint_mimic_coeffs)
+                    with self.assertRaisesRegex(ValueError, "only support") as caught:
+                        builder.set_joint_mimic(follower, leader, coeffs=(0.0, 2.0))
+                    self.assertIn(
+                        f"Follower joint {follower} has type {builder.joint_type[follower].name}", str(caught.exception)
+                    )
+                    self.assertIn(
+                        f"reference joint {leader} has type {builder.joint_type[leader].name}", str(caught.exception)
+                    )
+                    self.assertEqual(builder.joint_mimic_joint, mimic_joints)
+                    self.assertEqual(builder.joint_mimic_coeffs, mimic_coeffs)
+            builder.set_joint_mimic(joint0, None)
+            self.assertEqual(builder.joint_mimic_joint[joint0], -1)
+            self.assertEqual(builder.joint_mimic_coeffs[joint0], (0.0, 1.0))
 
     def test_add_base_joint_fixed_to_parent(self):
         """Test that add_base_joint with parent creates fixed joint."""

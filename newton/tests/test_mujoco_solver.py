@@ -9,6 +9,9 @@ import time
 import unittest
 import warnings
 import xml.etree.ElementTree as ET
+from copy import deepcopy
+from enum import IntFlag
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np  # For numerical operations and random values
@@ -35,7 +38,7 @@ from newton._src.solvers.mujoco.kernels import convert_solref
 from newton._src.solvers.mujoco.utils import MJC_OBJ_BODY, MJC_OBJ_JOINT, MjcEqualityTargetKind
 from newton.examples import get_asset
 from newton.solvers import SolverMuJoCo
-from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
+from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal, patch_sys_module
 
 
 def _add_deprecated_mimic_constraint(
@@ -5663,6 +5666,32 @@ class TestMuJoCoContactForce(unittest.TestCase):
 class TestMuJoCoValidation(unittest.TestCase):
     """Test cases for SolverMuJoCo._validate_model_for_separate_worlds()."""
 
+    def test_import_rejects_overflow_bits_outside_reserved_range(self):
+        """Accept low upstream bits and reject future flags even when ALL omits them."""
+        try:
+            mujoco, mujoco_warp = SolverMuJoCo.import_mujoco()
+        except ImportError:
+            self.skipTest("MuJoCo Warp not installed")
+
+        low_bits = IntFlag("LowBits", {"NONE": 0, "LAST": 1 << 15, "ALL": 1 << 15})
+        future_bits = IntFlag("FutureBits", {"NONE": 0, "LOW": 1, "FUTURE": 1 << 16, "ALL": 1})
+        for overflow_type, incompatible in ((mujoco_warp.OverflowType, False), (low_bits, False), (future_bits, True)):
+            with (
+                self.subTest(overflow_type=overflow_type.__name__),
+                patch.object(SolverMuJoCo, "_mujoco", None),
+                patch.object(SolverMuJoCo, "_mujoco_warp", None),
+                patch.object(SolverMuJoCo, "_versions_checked", True),
+                patch_sys_module("mujoco", mujoco),
+                patch_sys_module("mujoco_warp", SimpleNamespace(OverflowType=overflow_type)),
+            ):
+                if incompatible:
+                    with self.assertRaisesRegex(RuntimeError, "OverflowType.*bits 0-15"):
+                        SolverMuJoCo.import_mujoco()
+                    self.assertIsNone(SolverMuJoCo._mujoco_warp)
+                else:
+                    _, backend = SolverMuJoCo.import_mujoco()
+                    self.assertIs(backend.OverflowType, overflow_type)
+
     def _create_homogeneous_model(self, world_count=2, with_ground_plane=True):
         """Create a valid homogeneous multi-world model for validation tests."""
         # Create a simple robot template (following pattern from working tests)
@@ -7477,6 +7506,18 @@ class TestMuJoCoOptions(unittest.TestCase):
         self.assertEqual(solver.mj_model.opt.sdf_iterations, 20)
         self.assertEqual(solver.mj_model.opt.sdf_initpoints, 50)
 
+    def test_options_discrete_integrator(self):
+        """Forward the discrete integrator to MuJoCo Warp and step finitely."""
+        model = self._create_multiworld_model(world_count=2)
+        solver = SolverMuJoCo(model, integrator="discrete", disable_contacts=True)
+        mujoco = SolverMuJoCo._mujoco
+        self.assertEqual(solver.mj_model.opt.integrator, mujoco.mjtIntegrator.mjINT_DISCRETE)
+        self.assertEqual(solver.mjw_model.opt.integrator, mujoco.mjtIntegrator.mjINT_DISCRETE)
+
+        state_in, state_out, control = model.state(), model.state(), model.control()
+        solver.step(state_in, state_out, control, None, 0.001)
+        self.assertTrue(np.all(np.isfinite(state_out.joint_q.numpy())))
+
     def test_options_constructor_override(self):
         """Give constructor options precedence over authored values in every world."""
         world_count = 2
@@ -7725,13 +7766,14 @@ class TestMuJoCoOptions(unittest.TestCase):
         self.assertTrue(np.isfinite(observables.qfrc_actuator.numpy()).all())
 
     def test_native_cpu_observable_capabilities(self):
-        """Reject unsupported body/contact exports while retaining native actuator forces."""
+        """Validate native observable support for each integrator family."""
         model = self._create_multiworld_model(world_count=1)
         solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+        for kind in (solver.ObservableKind.BODY_QDD, solver.ObservableKind.BODY_PARENT_F):
+            self.assertIn(kind, solver.supported_observables)
         for flag in (
-            solver.ObservableKind.BODY_QDD,
-            solver.ObservableKind.BODY_PARENT_F,
             solver.ObservableKind.CONTACT_F,
+            solver.ObservableKind.OVERFLOW,
         ):
             with self.subTest(flag=flag):
                 self.assertNotIn(flag, solver.supported_observables)
@@ -7739,14 +7781,133 @@ class TestMuJoCoOptions(unittest.TestCase):
                     solver.observables(kinds={flag})
         flag = SolverMuJoCo.ObservableKind.QFRC_ACTUATOR
         observables = solver.observables(solver.supported_observables)
-        self.assertEqual(observables.kinds, {flag})
-        self.assertIsNone(observables.body_qdd)
-        self.assertIsNone(observables.body_parent_f)
+        self.assertEqual(observables.kinds, {flag, solver.ObservableKind.BODY_QDD, solver.ObservableKind.BODY_PARENT_F})
+        self.assertIsNotNone(observables.body_qdd)
+        self.assertIsNotNone(observables.body_parent_f)
         self.assertIsNone(observables.contact_f)
         observables.qfrc_actuator.fill_(float("nan"))
         solver.mjw_data.qfrc_actuator.fill_(1234.0)
         solver.step(model.state(), model.state(), model.control(), None, 0.01, observables=observables)
         np.testing.assert_allclose(observables.qfrc_actuator.numpy(), solver.mj_data.qfrc_actuator, atol=1e-6)
+
+        # Discrete stepping works, but its native integrator has no Python binding
+        # for inserting body exports before integration.
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True, integrator=int(solver._mujoco.mjtIntegrator.mjINT_DISCRETE))
+        self.assertEqual(solver.supported_observables, {flag})
+        for kind in (solver.ObservableKind.BODY_QDD, solver.ObservableKind.BODY_PARENT_F):
+            with self.subTest(integrator="discrete", kind=kind):
+                with self.assertRaisesRegex(ValueError, "does not support"):
+                    solver.observables({kind})
+        observables = solver.observables(solver.supported_observables)
+        state_out = model.state()
+        control = model.control()
+        control.joint_f.fill_(1.0)
+        solver.step(model.state(), state_out, control, None, 0.01, observables=observables)
+        self.assertEqual(solver.mj_data.time, 0.01)
+        np.testing.assert_allclose(state_out.joint_q.numpy(), solver.mj_data.qpos, atol=1e-6)
+        np.testing.assert_allclose(state_out.joint_qd.numpy(), solver.mj_data.qvel, atol=1e-6)
+        self.assertGreater(np.abs(state_out.joint_qd.numpy()).max(), 0.0)
+        np.testing.assert_allclose(observables.qfrc_actuator.numpy(), solver.mj_data.qfrc_actuator, atol=1e-6)
+
+    def _create_body_observable_builder(self):
+        """Build a moving chain with nonzero velocity-dependent acceleration."""
+        builder = newton.ModelBuilder()
+        link_a = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.1))
+        link_b = builder.add_link(mass=0.5, inertia=wp.mat33(np.eye(3) * 0.05))
+        joint_a = builder.add_joint_revolute(
+            -1,
+            link_a,
+            axis=newton.Axis.Y,
+            child_xform=wp.transform((0.0, 0.0, 0.3), wp.quat_identity()),
+        )
+        joint_b = builder.add_joint_revolute(
+            link_a,
+            link_b,
+            axis=newton.Axis.X,
+            parent_xform=wp.transform((0.0, 0.0, -0.3), wp.quat_identity()),
+            child_xform=wp.transform((0.0, 0.0, 0.3), wp.quat_identity()),
+        )
+        builder.add_articulation([joint_a, joint_b])
+        builder.joint_q[:] = [0.7, -0.4]
+        builder.joint_qd[:] = [2.0, -3.0]
+        return builder
+
+    def test_native_cpu_body_observables_match_mujoco_warp(self):
+        """Match native CPU and Warp diagnostics for a moving chain."""
+        kinds = SolverMuJoCo.ObservableKind
+        model = self._create_body_observable_builder().finalize(device="cpu")
+        results = {}
+        for use_cpu in (True, False):
+            solver = SolverMuJoCo(model, use_mujoco_cpu=use_cpu, disable_contacts=True, disable_sensors=True)
+            observables = solver.observables({kinds.BODY_QDD, kinds.BODY_PARENT_F})
+            observables.body_qdd.fill_(float("nan"))
+            observables.body_parent_f.fill_(float("nan"))
+            solver.step(model.state(), model.state(), model.control(), None, 0.005, observables=observables)
+            results[use_cpu] = (observables.body_qdd.numpy(), observables.body_parent_f.numpy())
+
+        for cpu_values, warp_values in zip(results[True], results[False], strict=True):
+            self.assertTrue(np.isfinite(cpu_values).all())
+            self.assertGreater(np.abs(cpu_values).max(), 1.0e-3)
+            np.testing.assert_allclose(cpu_values, warp_values, rtol=1.0e-4, atol=1.0e-4)
+
+    def test_native_cpu_body_observables_preserve_integrators(self):
+        """Export pre-integration native diagnostics without changing the integrated state.
+
+        Exercise each integrator because RK4 overwrites intermediate kinematics,
+        while the implicit integrators use a separate velocity update. Reuse one
+        model and verify legacy destinations alongside solver observables.
+        """
+        builder = self._create_body_observable_builder()
+        builder.joint_damping[:] = [0.2, 0.3]
+        builder.joint_limit_upper[0] = 0.5
+        model = builder.finalize()
+        for integrator in ("euler", "implicit", "implicitfast", "rk4"):
+            with self.subTest(integrator=integrator):
+                solver = SolverMuJoCo(
+                    model, use_mujoco_cpu=True, disable_contacts=True, disable_sensors=True, integrator=integrator
+                )
+                reference = SolverMuJoCo(
+                    model, use_mujoco_cpu=True, disable_contacts=True, disable_sensors=True, integrator=integrator
+                )
+                mujoco = solver._mujoco
+                data = deepcopy(solver.mj_data)
+                state_in, state_out, reference_out = model.state(), model.state(), model.state()
+                control = model.control()
+                solver._apply_mjc_control(model, state_in, control, data)
+                solver._update_mjc_data(data, model, state_in)
+                solver.mj_model.opt.timestep = 0.005
+                mujoco.mj_forward(solver.mj_model, data)
+                mujoco.mj_rnePostConstraint(solver.mj_model, data)
+                expected_qdd = np.empty((model.body_count, 6))
+                expected_parent_f = np.empty_like(expected_qdd)
+                mapping = solver.mjc_body_to_newton.numpy()[0]
+                for mj_body, body in enumerate(mapping):
+                    if body < 0:
+                        continue
+                    acceleration = np.empty(6)
+                    mujoco.mj_objectAcceleration(
+                        solver.mj_model, data, mujoco.mjtObj.mjOBJ_BODY, mj_body, acceleration, 0
+                    )
+                    expected_qdd[body, :3] = acceleration[3:] + solver.mj_model.opt.gravity
+                    expected_qdd[body, 3:] = acceleration[:3]
+                    wrench = data.cfrc_int[mj_body]
+                    offset = data.xipos[mj_body] - data.subtree_com[solver.mj_model.body_rootid[mj_body]]
+                    expected_parent_f[body, :3] = wrench[3:]
+                    expected_parent_f[body, 3:] = wrench[:3] - np.cross(offset, wrench[3:])
+
+                observables = solver.observables({solver.ObservableKind.BODY_QDD, solver.ObservableKind.BODY_PARENT_F})
+                state_out.body_qdd = wp.empty_like(observables.body_qdd)
+                state_out.body_parent_f = wp.empty_like(observables.body_parent_f)
+                reference.step(state_in, reference_out, control, None, 0.005)
+                solver.step(state_in, state_out, control, None, 0.005, observables=observables)
+                np.testing.assert_allclose(solver.mj_data.qpos, reference.mj_data.qpos, atol=1.0e-12, rtol=1.0e-12)
+                np.testing.assert_allclose(solver.mj_data.qvel, reference.mj_data.qvel, atol=1.0e-12, rtol=1.0e-12)
+                self.assertEqual(solver.mj_data.time, reference.mj_data.time)
+                for source in (observables, state_out):
+                    np.testing.assert_allclose(source.body_qdd.numpy(), expected_qdd, rtol=1.0e-4, atol=1.0e-4)
+                    np.testing.assert_allclose(
+                        source.body_parent_f.numpy(), expected_parent_f, rtol=1.0e-4, atol=1.0e-4
+                    )
 
     def test_enable_multiccd_default_off(self):
         """Verify that multi-CCD is disabled by default (Newton default differs from MuJoCo 3.8+)."""
@@ -9583,7 +9744,7 @@ class TestMuJoCoSolverFreeJointNonWorldParent(unittest.TestCase):
             self.skipTest(f"MuJoCo or deps not installed: {e}")
         mjc_warnings = [w for w in caught if "SolverMuJoCo" in str(w.message)]
         self.assertEqual(len(mjc_warnings), 1)
-        self.assertEqual(mjc_warnings[0].category, UserWarning)
+        self.assertEqual(mjc_warnings[0].category, newton.exceptions.NewtonWarning)
         self.assertIn("floater", str(mjc_warnings[0].message))
 
 
@@ -13310,6 +13471,132 @@ class TestMuJoCoLinesearchBlockDim(unittest.TestCase):
             state_0, state_1 = state_1, state_0
         # Launch failures surface asynchronously, so force them to be raised here.
         wp.synchronize()
+
+
+class TestMuJoCoSolverOverflowObservable(unittest.TestCase):
+    """Tests for the ``OVERFLOW`` solver observable and the contact capacity checks."""
+
+    def setUp(self):
+        try:
+            _, self.mjw = SolverMuJoCo.import_mujoco()
+        except ImportError:
+            self.skipTest("MuJoCo Warp not installed")
+        if not wp.get_device().is_cuda:
+            self.skipTest("overflow observable requires CUDA")
+
+    def _make_scene(self, n_balls=4, nconmax=None, rigid_contact_max=None, **solver_kwargs):
+        """Build a ground plane + ``n_balls`` scene and a solver with the overflow observable allocated."""
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        for i in range(n_balls):
+            b = builder.add_body(xform=wp.transform((i * 0.1, 0.3, 0), wp.quat_identity()), mass=0.1)
+            builder.add_shape_sphere(b, radius=0.05)
+        model = builder.finalize()
+
+        solver_kwargs.setdefault("use_mujoco_contacts", False)
+        if nconmax is not None:
+            solver_kwargs["nconmax"] = nconmax
+        pipeline_kwargs = {}
+        if rigid_contact_max is not None:
+            pipeline_kwargs["rigid_contact_max"] = rigid_contact_max
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            solver = SolverMuJoCo(model, **solver_kwargs)
+        pipeline = newton.CollisionPipeline(model, **pipeline_kwargs)
+
+        state_0, state_1 = model.state(), model.state()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+        contacts = pipeline.contacts()
+        observables = solver.observables({solver.ObservableKind.OVERFLOW})
+        return solver, pipeline, state_0, state_1, model.control(), contacts, observables
+
+    def test_overflow_lifecycle(self):
+        """The mask reports nconmax overflow, resets stale backend flags each step, and survives graph replay."""
+        solver, pipeline, s0, s1, ctrl, contacts, obs = self._make_scene(nconmax=1)
+        bits = solver.OverflowBits
+        dt = 1.0 / 60.0
+
+        pipeline.collide(s0, contacts)
+        self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), solver.mjw_data.naconmax)
+        solver.step(s0, s1, ctrl, contacts, dt, observables=obs)
+        self.assertTrue(int(obs.overflow.numpy()[0]) & bits.SOLVER_NCONMAX)
+
+        # A flag left in MuJoCo Warp's accumulator (bits 0-15, OR-ed in by the backend) must not leak into the next step.
+        stale = self.mjw.OverflowType.NEFC
+        solver.mjw_data.overflow.fill_(int(stale))
+        solver.step(s1, s0, ctrl, pipeline.contacts(), dt, observables=obs)
+        self.assertEqual(int(obs.overflow.numpy()[0]), 0)
+
+        # The graph replays the same computation, including the reset.
+        pipeline.collide(s0, contacts)
+        with wp.ScopedCapture() as capture:
+            solver.step(s0, s1, ctrl, contacts, dt, observables=obs)
+        obs.overflow.zero_()
+        wp.capture_launch(capture.graph)
+        self.assertTrue(int(obs.overflow.numpy()[0]) & bits.SOLVER_NCONMAX)
+
+    def test_pipeline_capacity_overflow(self):
+        """The pipeline bit fires when contacts exceed ``rigid_contact_max``, independently of nconmax."""
+        solver, pipeline, s0, s1, ctrl, contacts, obs = self._make_scene(n_balls=6, nconmax=9999, rigid_contact_max=1)
+        pipeline.collide(s0, contacts)
+        self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), contacts.rigid_contact_max)
+        solver.step(s0, s1, ctrl, contacts, 1.0 / 60.0, observables=obs)
+        mask = int(obs.overflow.numpy()[0])
+        self.assertTrue(mask & solver.OverflowBits.CONTACT_PIPELINE)
+        self.assertFalse(mask & solver.OverflowBits.SOLVER_NCONMAX)
+
+    def test_overflow_contact_source_modes(self):
+        """The Newton bits depend on where the contacts come from, backend bits always pass through, and missing required contacts raise."""
+        newton_bits = int(SolverMuJoCo.OverflowBits.CONTACT_PIPELINE | SolverMuJoCo.OverflowBits.SOLVER_NCONMAX)
+        dt = 1.0 / 60.0
+
+        with self.subTest(source="newton contacts, healthy capacity"):
+            solver, pipeline, s0, s1, ctrl, contacts, obs = self._make_scene(nconmax=9999)
+            pipeline.collide(s0, contacts)
+            solver.step(s0, s1, ctrl, contacts, dt, observables=obs)
+            self.assertEqual(int(obs.overflow.numpy()[0]), 0)
+
+        with self.subTest(source="mujoco contacts, contacts=None"):
+            solver, _, s0, s1, ctrl, _, obs = self._make_scene(nconmax=1, use_mujoco_contacts=True)
+            solver.step(s0, s1, ctrl, None, dt, observables=obs)
+            mask = int(obs.overflow.numpy()[0])
+            self.assertEqual(mask & newton_bits, 0)
+            # MuJoCo Warp's own broadphase overflow (bits 0-15) must reach the observable.
+            self.assertTrue(mask & int(self.mjw.OverflowType.BROADPHASE))
+
+        with self.subTest(source="newton contacts required, contacts=None"):
+            solver, _, s0, s1, ctrl, _, obs = self._make_scene()
+            with self.assertRaises(ValueError):
+                solver.step(s0, s1, ctrl, None, dt, observables=obs)
+
+    def test_cpu_backend_rejects_overflow(self):
+        """The native CPU backend does not populate overflow flags, so the request fails at allocation."""
+        builder = newton.ModelBuilder()
+        builder.add_ground_plane()
+        b = builder.add_body(xform=wp.transform((0, 0.3, 0), wp.quat_identity()), mass=0.1)
+        builder.add_shape_sphere(b, radius=0.05)
+        model = builder.finalize(device="cpu")
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+        with self.assertRaises(ValueError):
+            solver.observables({solver.ObservableKind.OVERFLOW})
+
+    def test_strict_capacity(self):
+        """A ``rigid_contact_max``/``nconmax`` mismatch is silent by default and raises under ``strict_capacity``."""
+        for strict_capacity in (False, True):
+            with self.subTest(strict_capacity=strict_capacity):
+                solver, pipeline, s0, s1, ctrl, contacts, _ = self._make_scene(
+                    n_balls=1, nconmax=100, rigid_contact_max=5000, strict_capacity=strict_capacity
+                )
+                pipeline.collide(s0, contacts)
+                self.assertGreater(contacts.rigid_contact_max, solver.mjw_data.naconmax)
+                if strict_capacity:
+                    with self.assertRaises(RuntimeError):
+                        solver.step(s0, s1, ctrl, contacts, 1.0 / 60.0)
+                else:
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always")
+                        solver.step(s0, s1, ctrl, contacts, 1.0 / 60.0)
+                    self.assertEqual(caught, [])
 
 
 class TestActuatorTypes(unittest.TestCase):

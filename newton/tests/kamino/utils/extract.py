@@ -234,7 +234,7 @@ def extract_delassus_sparse(
     vec_query = wp.empty((sum_max_cts,), dtype=wp.float32, device=delassus._device)
     vec_response = wp.empty((sum_max_cts,), dtype=wp.float32, device=delassus._device)
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def _set_unit_entry(
         # Inputs:
         index: int,

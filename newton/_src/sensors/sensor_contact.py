@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import warnings
 from typing import Literal
@@ -10,10 +11,13 @@ from typing import Literal
 import numpy as np
 import warp as wp
 
+from ..exceptions import NewtonDeprecationWarning
 from ..sim import Contacts, Model, State
 from ..sim.contacts import contact_surface_point
 from ..solvers.solver import SolverBase
 from ..utils.selection import match_labels
+
+logger = logging.getLogger(__name__)
 
 _SENSING_KIND_SHAPE = 1
 _SENSING_KIND_BODY = 2
@@ -422,7 +426,7 @@ class SensorContact:
                 against shape labels, or list of shape indices. Regular expressions use full matching.
             measure_total: If True (default), :attr:`total_force` and :attr:`total_force_friction` are allocated.
                 If False, both are None.
-            verbose: If True, print details. If False, suppress details. If None, print details when
+            verbose: If True, log details. If False, suppress details. If None, log details when
                 ``wp.config.log_level`` is configured for debug logging.
             request_contact_attributes: If True, request the deprecated ``contacts.force`` extended attribute
                 for compatibility. Defaults to True during the deprecation period.
@@ -448,7 +452,7 @@ class SensorContact:
                 "SensorContact(request_contact_attributes=True) is deprecated in Newton 1.7; "
                 "allocate SolverBase.Observables with solver.observables(kinds=sensor.solver_observable_kinds, contacts=contacts) "
                 "and pass them to update(..., observables=...).",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=2,
             )
             model._request_contact_attributes("force")
@@ -598,15 +602,17 @@ class SensorContact:
         self.counterpart_indices = [counterparts_by_world[w] for w in worlds]
 
         if self.verbose:
-            print("SensorContact initialized:")
-            print(f"  Sensing objects: {n_rows} ({self.sensing_type}s)")
-            print(
-                f"  Counterpart columns: {max_readings}"
-                + (f" ({self.counterpart_type}s)" if self.counterpart_type else "")
-            )
-            print(
-                f"  total_force: {'yes' if measure_total else 'no'}, "
-                f"force_matrix: {'yes' if max_readings > 0 else 'no'}"
+            logger.info(
+                "SensorContact initialized:\n"
+                "  Sensing objects: %s (%ss)\n"
+                "  Counterpart columns: %s%s\n"
+                "  total_force: %s, force_matrix: %s",
+                n_rows,
+                self.sensing_type,
+                max_readings,
+                f" ({self.counterpart_type}s)" if self.counterpart_type else "",
+                "yes" if measure_total else "no",
+                "yes" if max_readings > 0 else "no",
             )
 
         self._model = model
@@ -629,13 +635,13 @@ class SensorContact:
             contacts: The contact data to evaluate.
             observables: Solver observable arrays containing :attr:`~newton.solvers.SolverBase.Observables.contact_f`.
                 If omitted, the deprecated ``contacts.force`` array is used when available.
-                Must use the same contacts supplied to :meth:`~newton.solvers.SolverBase.observables`.
+                ``contacts`` must be the buffer that produced ``contact_f`` (``observables.contacts``).
                 Before the first solver step, newly allocated observables report zero contact forces.
                 See :ref:`solver_observables` for allocation and usage examples.
 
         Raises:
             ValueError: If ``observables`` belong to a different model, no contact-force
-                output is available, or the observables are bound to a different ``contacts`` instance.
+                output is available, or ``contact_f`` was produced with a different ``contacts`` instance.
             ValueError: If legacy contacts are on a different device from the sensor.
         """
         if observables is not None and observables.model is not self._model:
@@ -648,7 +654,10 @@ class SensorContact:
             )
         if observables is not None:
             if observables.contacts is not contacts:
-                raise ValueError("Contact solver observables must use the Contacts instance supplied at allocation.")
+                raise ValueError(
+                    "Contact solver observables were produced with a different Contacts instance; "
+                    "pass the Contacts used by the step that produced them."
+                )
         elif contacts.device != self.device:
             raise ValueError(f"Contacts device ({contacts.device}) does not match sensor device ({self.device}).")
 

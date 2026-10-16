@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import warnings
 import weakref
@@ -14,6 +15,7 @@ import numpy as np
 import warp as wp
 from warp.types import is_array
 
+from ..exceptions import NewtonDeprecationWarning
 from ..sim import (
     Control,
     JointType,
@@ -23,12 +25,14 @@ from ..sim import (
     eval_inverse_dynamics_force,
     eval_inverse_dynamics_passive,
     eval_jacobian,
-    eval_mass_matrix,
 )
+from ..sim.articulation import _INCLUDE_ARMATURE_DEPRECATION_MSG, _eval_mass_matrix
 from ..solvers.solver import SolverBase
 
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
+
+logger = logging.getLogger(__name__)
 
 AttributeFrequency = Model.AttributeFrequency
 
@@ -1033,7 +1037,7 @@ class ArticulationView:
             to data without a common layout raises :class:`AttributeError`. If given, it overrides
             ``homogeneous`` with ``not allow_partial_layouts``; combining ``allow_partial_layouts=False`` with
             ``homogeneous=False`` raises :class:`ValueError`.
-        verbose: If True, prints selection summary.
+        verbose: If True, logs selection summary.
 
     .. deprecated:: 1.8
         ``allow_partial_layouts`` is deprecated. Use ``homogeneous=False`` instead,
@@ -1060,7 +1064,7 @@ class ArticulationView:
         if allow_partial_layouts is not None:
             warnings.warn(
                 "`allow_partial_layouts` is deprecated. Use `homogeneous` instead.",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=2,
             )
             if not homogeneous and not allow_partial_layouts:
@@ -1536,25 +1540,26 @@ class ArticulationView:
         )
 
         if verbose:
-            print(f"Articulation '{pattern}': {self.count}")
-            print(f"  Link count:     {self.link_count} ({'' if self.links_contiguous else 'non-'}contiguous)")
-            print(f"  Shape count:    {self.shape_count} ({'' if self.shapes_contiguous else 'non-'}contiguous)")
-            print(f"  Joint count:    {self.joint_count} ({'' if self.joints_contiguous else 'non-'}contiguous)")
-            print(
-                f"  DOF count:      {self.joint_dof_count} ({'' if self.joint_dofs_contiguous else 'non-'}contiguous)"
-            )
-            print(f"  Fixed base?     {self.is_fixed_base}")
-            print(f"  Floating base?  {self.is_floating_base}")
-            print("Link names:")
-            print(f"  {self.link_names}")
-            print("Joint names:")
-            print(f"  {self.joint_names}")
-            print("Joint DOF names:")
-            print(f"  {self.joint_dof_names}")
-            print("Shapes:")
+            lines = [
+                f"Articulation '{pattern}': {self.count}",
+                f"  Link count:     {self.link_count} ({'' if self.links_contiguous else 'non-'}contiguous)",
+                f"  Shape count:    {self.shape_count} ({'' if self.shapes_contiguous else 'non-'}contiguous)",
+                f"  Joint count:    {self.joint_count} ({'' if self.joints_contiguous else 'non-'}contiguous)",
+                f"  DOF count:      {self.joint_dof_count} ({'' if self.joint_dofs_contiguous else 'non-'}contiguous)",
+                f"  Fixed base?     {self.is_fixed_base}",
+                f"  Floating base?  {self.is_floating_base}",
+                "Link names:",
+                f"  {self.link_names}",
+                "Joint names:",
+                f"  {self.joint_names}",
+                "Joint DOF names:",
+                f"  {self.joint_dof_names}",
+                "Shapes:",
+            ]
             for link_idx in range(len(self.link_shapes or [])):
                 shape_names = [self.shape_names[shape_idx] for shape_idx in self.link_shapes[link_idx]]
-                print(f"  Link '{self.link_names[link_idx]}': {shape_names}")
+                lines.append(f"  Link '{self.link_names[link_idx]}': {shape_names}")
+            logger.info("%s", "\n".join(lines))
 
     @property
     def body_names(self):
@@ -2269,13 +2274,16 @@ class ArticulationView:
         articulation_mask = self.get_model_articulation_mask(mask=mask)
         return eval_jacobian(self.model, state, J, joint_S_s=joint_S_s, mask=articulation_mask)
 
-    def eval_mass_matrix(self, state: State, H=None, J=None, body_I_s=None, joint_S_s=None, mask=None):
+    def eval_mass_matrix(
+        self, state: State, H=None, J=None, body_I_s=None, joint_S_s=None, mask=None, *, include_armature=True
+    ):
         """Evaluate generalized mass matrix for articulations in this view.
 
         Computes the generalized mass matrix H = J^T * M * J, where J is the spatial
         Jacobian and M is the block-diagonal spatial mass matrix. The resulting
         matrix is consistent with kinetic energy computed from COM-referenced
-        body twists.
+        body twists. :attr:`~newton.Model.joint_armature` is added to the
+        diagonal. See :func:`~newton.eval_mass_matrix`.
 
         Args:
             state: The state containing body transforms (body_q).
@@ -2285,13 +2293,31 @@ class ArticulationView:
             body_I_s: Optional pre-allocated temp array for spatial inertias.
             joint_S_s: Optional pre-allocated temp array for motion subspaces.
             mask: Optional mask of articulations in this ArticulationView (all by default).
+            include_armature: Deprecated in Newton 1.8. If True (default), add
+               :attr:`~newton.Model.joint_armature` to the diagonal. Passing
+               False returns the rigid-body matrix and emits a
+               :class:`NewtonDeprecationWarning`. This argument will be removed in a
+               future minor release.
 
         Returns:
             The mass matrix array H, or None if the model has no articulations.
         """
+        if not include_armature:
+            warnings.warn(
+                _INCLUDE_ARMATURE_DEPRECATION_MSG.format(name="ArticulationView.eval_mass_matrix()"),
+                NewtonDeprecationWarning,
+                stacklevel=2,
+            )
         articulation_mask = self.get_model_articulation_mask(mask=mask)
-        return eval_mass_matrix(
-            self.model, state, H, J=J, body_I_s=body_I_s, joint_S_s=joint_S_s, mask=articulation_mask
+        return _eval_mass_matrix(
+            self.model,
+            state,
+            H,
+            J=J,
+            body_I_s=body_I_s,
+            joint_S_s=joint_S_s,
+            mask=articulation_mask,
+            include_armature=include_armature,
         )
 
     def eval_inverse_dynamics_passive(

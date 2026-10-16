@@ -331,7 +331,9 @@ checkpoint. This does not rewrite batch sizes embedded in graph operations
 such as ``Reshape``; re-export those models with dynamic batch axes when
 running a different number of actuators.
 
-Torch checkpoints are pt2 archives (``.pt2``) saved with ``torch.export.save``.
+Torch checkpoints must be pt2 archives saved with ``torch.export.save``.
+Use the ``.pt2`` extension; ``.pt`` and ``.pth`` are also accepted for these
+archives.
 Checkpoint metadata (scales and network configuration) is stored as a JSON
 extra file:
 
@@ -343,6 +345,15 @@ extra file:
    exported = torch.export.export(net, example_inputs)
    metadata = {"effort_scale": 2.0, "num_layers": 2, "hidden_size": 8}
    torch.export.save(exported, "policy.pt2", extra_files={"metadata.json": json.dumps(metadata)})
+
+USD neural actuators may reference a checkpoint through ``newton:modelPath``.
+Importing a USD rejects Torch checkpoints (``.pt2``, ``.pt``, or ``.pth``)
+by default because :meth:`~newton.ModelBuilder.finalize` would load them with
+``torch.export.load``, which can execute code from an untrusted checkpoint.
+For a trusted USD asset and checkpoint, pass
+``allow_unsafe_torch_checkpoints=True`` to
+:meth:`newton.ModelBuilder.add_usd`. Programmatic construction of a neural
+drive from a checkpoint path remains the caller's explicit trust decision.
 
 :class:`DriveNeuralLSTM` requires ``num_layers`` and ``hidden_size`` in
 the metadata of both pt2 and ONNX checkpoints.

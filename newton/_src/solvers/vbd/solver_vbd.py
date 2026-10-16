@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import warnings
 import weakref
 from collections.abc import Mapping
@@ -12,6 +13,7 @@ import numpy as np
 import warp as wp
 
 from ...core.types import override
+from ...exceptions import NewtonDeprecationWarning
 from ...geometry import ParticleFlags
 from ...geometry.tri_mesh_collision import (
     TriMeshCollisionDetector,
@@ -112,6 +114,8 @@ from .vbd_coupling_kernels import (
     _harvest_vbd_proxy_wrenches_kernel,
     _update_vbd_body_input_state_kernel,
 )
+
+logger = logging.getLogger(__name__)
 
 __all__ = ["SolverVBD"]
 
@@ -756,7 +760,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 "Use CollisionPipeline(contact_matching='sticky', "
                 "contact_matching_pos_threshold=...) for persistent contact geometry. "
                 "The SolverVBD body-level contact deadzone was removed.",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=2,
             )
 
@@ -784,7 +788,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 "(interaction distance) and particle_self_contact_gap (extra detection reach, "
                 "query radius = margin + gap) instead. With radius set, "
                 "particle_self_contact_margin keeps its legacy meaning (detection query radius).",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=3,
             )
         else:
@@ -802,7 +806,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     "particle_self_contact_margin without particle_self_contact_gap retains its deprecated "
                     "meaning as the detection query radius; pass particle_self_contact_gap explicitly "
                     "to use particle_self_contact_margin as the interaction distance.",
-                    DeprecationWarning,
+                    NewtonDeprecationWarning,
                     stacklevel=3,
                 )
                 _sc_margin = 0.2
@@ -835,7 +839,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 "particle_collision_detection_interval is deprecated; use the self-contact slot of "
                 "collision_frequency / collision_frequency_type instead (PRE_INIT ~ interval < 0, "
                 "PRE_POST_INIT ~ interval == 0, ITERATIONS ~ interval >= 1).",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=3,
             )
         self._deprecated_particle_interval = particle_collision_detection_interval
@@ -852,7 +856,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             warnings.warn(
                 "particle_conservative_bound_relaxation is deprecated and overrides "
                 "dat_conservative_bound_relaxation; pass only dat_conservative_bound_relaxation.",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=3,
             )
         self.dat_conservative_bound_relaxation = dat_conservative_bound_relaxation
@@ -1045,7 +1049,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             warnings.warn(
                 "rigid_compliant_alm=False is deprecated as of Newton 1.6 and will be removed in a future release. "
                 "Omit the argument to use compliant ALM and author finite material stiffness.",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=2,
             )
         elif legacy_controls:
@@ -1054,7 +1058,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 "and will be removed in a future release. "
                 "These controls do not affect compliant-ALM rigid constraints. "
                 "Use the default compliant ALM path and author fixed finite material stiffness.",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=2,
             )
 
@@ -1104,7 +1108,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         # Tile solve settings
         if model.device.is_cpu and particle_enable_tile_solve and wp.config.log_level <= wp.LOG_DEBUG:
-            print("Info: Tiled solve requires model.device='cuda'. Tiled solve is disabled.")
+            logger.info("Tiled solve requires model.device='cuda'. Tiled solve is disabled.")
 
         self.use_particle_tile_solve = particle_enable_tile_solve and model.device.is_cuda
         # One tiled elasticity kernel, specialized at code generation from static model data.
@@ -1921,7 +1925,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self.model.joint_type,
                 self.model.joint_target_q_start,
                 self.model.joint_target_q,
-                self.model.use_coord_layout_targets,
             ],
             outputs=[
                 self.joint_rod_rest_kb_local,
@@ -2066,7 +2069,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         "model.vbd.joint_is_hard (per-slot joint hard/soft mode) is deprecated as of "
                         "Newton 1.6 and will be removed with the legacy path. Under compliant ALM it has "
                         "no solver-mode effect; legacy AVBD still honors it during the migration window.",
-                        DeprecationWarning,
+                        NewtonDeprecationWarning,
                         # Reaches the constructor call site through _init_rigid_system.
                         stacklevel=4,
                     )
@@ -2334,7 +2337,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         REVOLUTE joints and D6 joints with exactly one angular DOF additionally
         select the equivalent absolute angle nearest ``joint_angle_prev``.
-        Multi-angular-axis D6 joints retain the principal projected coordinates.
+        D6 joints with multiple angular DOFs measure absolute coordinates and need no offset.
 
         Only angular DOFs of REVOLUTE and D6 joints need nonzero entries. Linear DOFs
         (PRISMATIC, D6 linear) use absolute geometric measurements (``d_along``) and
@@ -2360,8 +2363,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     qd_start = int(jqd_start[j])
                     lin_count = int(jdof_dim[j, 0])
                     ang_count = int(jdof_dim[j, 1])
-                    for ai in range(ang_count):
-                        rest_angle_np[qd_start + lin_count + ai] = float(jq[q_start + lin_count + ai])
+                    if ang_count == 1:
+                        rest_angle_np[qd_start + lin_count] = float(jq[q_start + lin_count])
 
         return wp.array(rest_angle_np, dtype=float, device=self.device)
 
@@ -2638,7 +2641,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 "SolverVBD.set_joint_constraint_mode (per-slot joint hard/soft mode) is deprecated as of "
                 "Newton 1.6 and will be removed with the legacy path. Under compliant ALM it has no "
                 "solver-mode effect; legacy AVBD still honors it during the migration window.",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=2,
             )
             self._joint_mode_deprecation_warned = True
