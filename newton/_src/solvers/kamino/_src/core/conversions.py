@@ -1556,13 +1556,18 @@ def _warn_ignored_free_joint_friction(
     dof_type_np = joint_dof_type.numpy()
     friction_np = model.joint_friction.numpy()
     qd_start_np = model.joint_qd_start.numpy()
-    for jid in range(model.joint_count):
-        if dof_type_np[jid] != JointDoFType.FREE:
-            continue
-        dof_start = int(qd_start_np[jid])
-        dof_end = int(qd_start_np[jid + 1])
-        if np.any(friction_np[dof_start:dof_end] > 0.0):
-            msg.warning("Ignoring joint friction on FREE joint %d (%r).", jid, model.joint_label[jid])
+    positive_friction = friction_np > 0.0
+    free_joint_ids = np.flatnonzero(dof_type_np == JointDoFType.FREE)
+    positive_friction_prefix = np.empty(positive_friction.size + 1, dtype=np.intp)
+    positive_friction_prefix[0] = 0
+    np.cumsum(positive_friction, dtype=np.intp, out=positive_friction_prefix[1:])
+    # A prefix increase across a joint's range means at least one DoF has friction.
+    free_joint_has_friction = (
+        positive_friction_prefix[qd_start_np[free_joint_ids + 1]]
+        > positive_friction_prefix[qd_start_np[free_joint_ids]]
+    )
+    for jid in free_joint_ids[free_joint_has_friction].tolist():
+        msg.warning("Ignoring joint friction on FREE joint %d (%r).", jid, model.joint_label[jid])
 
 
 def _validate_model_joint_pd_gains(model: Model | ModelView) -> None:
