@@ -72,11 +72,22 @@ to approach a bottle that is already dented and has bulged sideways.
 Material and permanent creases
 -----------------------------
 
-The material inputs are thickness :math:`t = 0.3` mm, Young's modulus
+The body material inputs are thickness :math:`t = 0.3` mm, Young's modulus
 :math:`E = 3` GPa, and yield stress :math:`\sigma_y = 55` MPa. Poisson ratio
 :math:`\nu = 0.38` and PET density 1380 kg/m³ are additional assumptions.
 The membrane uses thickness-integrated plane-stress Lamé coefficients.
 Flexural rigidity is :math:`D = E t^3 / (12 (1 - \nu^2))`.
+
+The neck finish uses a 1.6 mm wall, blended smoothly from the 0.3 mm body
+between 175 and 190 mm above the base. This retains the same PET modulus
+and yield stress while increasing neck membrane stiffness by 5.33 times and
+flexural rigidity by about 152 times. Triangle masses, contact radii and
+hinge yield curvature use the local thickness as well. The neck remains free
+to move with the bottle; it is not pinned or made rigid.
+The thickness is a modeling assumption informed by the 24.94 mm outside and
+21.74 mm bore diameters in a
+`PCO 1881 finish drawing <https://www.wiegand-glas.de/products/pet/5239514.pdf>`_,
+not a calibration of this procedural bottle.
 
 For a hinge with rest dual width :math:`d`, VBD's bending coefficient is
 :math:`D/d`, and the elastic yield angle is
@@ -120,7 +131,8 @@ to avoid overlapping the PET surface. Its texture reuses the project's logo
 and repeats around the bottle; separate triangle corners keep the UV seam
 continuous during deformation. An open rolled lip, closure beads and support
 flange follow the neck's local frame. These details are render geometry and
-add no collision thickness or stiffness; the physical mouth remains open.
+add no further collision thickness or stiffness. The underlying physical
+neck uses the thicker PET wall described above, and the mouth remains open.
 
 The RTX viewer uses separate PET and water materials. The closed water surface
 uses an MDL OmniGlass material with refractive index 1.333, roughness 0.02,

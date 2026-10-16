@@ -348,20 +348,21 @@ class TestBottleSqueeze(unittest.TestCase):
         self.assertTrue(np.all(normals[:, 2] < 0.0))
 
     def test_pet_units_and_refinement(self):
-        """Scale hinge stiffness and yield angles with the rest dual width."""
+        """Scale hinge stiffness and yield angles with thickness and dual width."""
         values = []
-        for width in (1.0, 0.5):
+        for width, thickness in ((1.0, 0.0003), (0.5, 0.0003), (1.0, 0.0012)):
             builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
             for p in [[0.0, width, 0.0], [0.0, -width, 0.0], [0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]:
                 builder.add_particle(wp.vec3(p), wp.vec3(0.0), 1.0)
             builder.add_edge(0, 1, 2, 3)
-            yields = _pet_bending_properties(builder)
+            yields = _pet_bending_properties(builder, thickness=thickness)
             stiffness = builder.edge_bending_properties[0][0]
             values.append((stiffness, yields[0]))
         rigidity_cm = 3.0e9 * 0.0003**3 / (12.0 * (1.0 - 0.38**2)) * 100.0**2
         self.assertAlmostEqual(values[0][0], rigidity_cm / (2.0 / 3.0))
         self.assertAlmostEqual(values[0][1], 2.0 * 55.0e6 / (3.0e9 * 0.0003) / 100.0 * (2.0 / 3.0), places=6)
         np.testing.assert_allclose(values[1], [2.0 * values[0][0], 0.5 * values[0][1]])
+        np.testing.assert_allclose(values[2], [64.0 * values[0][0], 0.25 * values[0][1]])
 
 
 for function in (

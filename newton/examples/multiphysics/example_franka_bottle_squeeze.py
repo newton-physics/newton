@@ -3,8 +3,9 @@
 
 """Squeeze an open PET bottle from three angles and retain permanent dents.
 
-GPU VBD solves a self-contacting 0.3 mm shell with PET inputs of 3 GPa
-Young's modulus and 55 MPa yield stress (assumed nu=0.38, density=1380 kg/m^3).
+GPU VBD solves a self-contacting shell with a 0.3 mm body and 1.6 mm neck,
+using PET inputs of 3 GPa Young's modulus and 55 MPa yield stress
+(assumed nu=0.38, density=1380 kg/m^3).
 Thickness-integrated membrane stiffness and dual-width bending coefficients
 preserve those SI material values. Optional VBD plasticity retains yielded
 bending curvature; it is an ideal bending-only law, not calibrated PET.
@@ -39,6 +40,7 @@ from newton.solvers import SolverBase, SolverVBD
 
 _SCALE = 100.0
 _THICKNESS = 0.0003
+_NECK_THICKNESS = 0.0016
 _YOUNG_MODULUS = 3.0e9
 _YIELD_STRESS = 55.0e6
 _POISSON_RATIO = 0.38
@@ -167,6 +169,13 @@ def _bottle_radius(z):
     return radius + body * 0.0004 * np.cos(2.0 * np.pi * (z - 0.024) / 0.026)
 
 
+def _bottle_thickness(z):
+    """Blend the thin body into a reinforced neck finish over the upper shoulder."""
+    blend = np.clip((z - 0.175) / 0.015, 0.0, 1.0)
+    blend = blend * blend * (3.0 - 2.0 * blend)
+    return _THICKNESS + (_NECK_THICKNESS - _THICKNESS) * blend
+
+
 def _bottle_mesh(segments: int, rings: int):
     """Create a closed bottom, periodic body and genuinely open neck in SI."""
     theta = np.arange(segments) * (2.0 * np.pi / segments)
@@ -235,14 +244,15 @@ def _bottle_neck(vertices, segments):
     )
 
 
-def _pet_bending_properties(builder: newton.ModelBuilder):
+def _pet_bending_properties(builder: newton.ModelBuilder, *, thickness=_THICKNESS):
     """Convert SI flexural rigidity and yield curvature to cm-scale hinges."""
     points = np.asarray(builder.particle_q, dtype=np.float64)
     edges = np.asarray(builder.edge_indices, dtype=np.int32)
     properties = np.asarray(builder.edge_bending_properties, dtype=np.float64)
     yield_angles = np.full(len(edges), np.inf, dtype=np.float32)
-    rigidity = _YOUNG_MODULUS * _THICKNESS**3 / (12.0 * (1.0 - _POISSON_RATIO**2)) * _SCALE**2
-    yield_curvature = 2.0 * _YIELD_STRESS / (_YOUNG_MODULUS * _THICKNESS) / _SCALE
+    thickness = np.broadcast_to(thickness, (len(edges),))
+    rigidity = _YOUNG_MODULUS * thickness**3 / (12.0 * (1.0 - _POISSON_RATIO**2)) * _SCALE**2
+    yield_curvature = 2.0 * _YIELD_STRESS / (_YOUNG_MODULUS * thickness) / _SCALE
     for edge, (i, j, k, l) in enumerate(edges):
         if i < 0 or j < 0:
             properties[edge] = (0.0, 0.0)
@@ -252,8 +262,8 @@ def _pet_bending_properties(builder: newton.ModelBuilder):
         height1 = np.linalg.norm(np.cross(points[l] - points[j], points[k] - points[j])) / length
         dual_width = (height0 + height1) / 3.0
         # VBD's hinge energy is 0.5 * edge_ke * edge_length * delta_angle^2.
-        properties[edge] = (rigidity / dual_width, 1.0e-5)
-        yield_angles[edge] = yield_curvature * dual_width
+        properties[edge] = (rigidity[edge] / dual_width, 1.0e-5)
+        yield_angles[edge] = yield_curvature[edge] * dual_width
     builder.edge_bending_properties = properties.tolist()
     return yield_angles
 
@@ -379,8 +389,6 @@ class Example:
                 builder.shape_flags[shape] &= ~int(newton.ShapeFlags.COLLIDE_PARTICLES)
 
         vertices, triangles = _bottle_mesh(args.segments, args.rings)
-        mu = _YOUNG_MODULUS * _THICKNESS / (2.0 * (1.0 + _POISSON_RATIO))
-        lam = _YOUNG_MODULUS * _THICKNESS * _POISSON_RATIO / (1.0 - _POISSON_RATIO**2)
         builder.add_cloth_mesh(
             pos=wp.vec3(_BOTTLE_CENTER * _SCALE),
             rot=wp.quat_identity(),
@@ -388,9 +396,9 @@ class Example:
             vel=wp.vec3(0.0),
             vertices=vertices.tolist(),
             indices=triangles.flatten().tolist(),
-            density=_PET_DENSITY * _THICKNESS / _SCALE**2,
-            tri_ke=mu,
-            tri_ka=lam,
+            density=0.0,
+            tri_ke=0.0,
+            tri_ka=0.0,
             tri_kd=1.0e-5,
             edge_ke=1.0,
             edge_kd=1.0e-5,
@@ -399,11 +407,24 @@ class Example:
             opacity=self.bottle_opacity,
             validate_mesh=True,
         )
+        # Integrate the same local thickness into membrane stiffness and mass.
+        thickness = _bottle_thickness(vertices[:, 2])
+        triangle_thickness = thickness[triangles].mean(axis=1)
+        materials = np.asarray(builder.tri_materials)
+        materials[:, 0] = _YOUNG_MODULUS * triangle_thickness / (2.0 * (1.0 + _POISSON_RATIO))
+        materials[:, 1] = _YOUNG_MODULUS * triangle_thickness * _POISSON_RATIO / (1.0 - _POISSON_RATIO**2)
+        builder.tri_materials = materials.tolist()
+        corner_mass = _PET_DENSITY * triangle_thickness * np.asarray(builder.tri_areas) / (3.0 * _SCALE**2)
+        builder.particle_mass = np.bincount(
+            triangles.flatten(), weights=np.repeat(corner_mass, 3), minlength=len(vertices)
+        ).tolist()
+        builder.particle_radius = (0.5 * thickness * _SCALE).tolist()
         self.initial_vertices = np.asarray(builder.particle_q, dtype=np.float32)
         self.pinned = np.flatnonzero(vertices[:, 2] == 0.0)
         for i in self.pinned:
             builder.particle_mass[i] = 0.0
-        yield_angles = _pet_bending_properties(builder)
+        edges = np.asarray(builder.edge_indices)
+        yield_angles = _pet_bending_properties(builder, thickness=thickness[edges[:, 2:]].mean(axis=1))
         builder.custom_attributes["vbd:edge_bending_yield_angle"].values = dict(enumerate(yield_angles))
         builder.add_ground_plane(height=_TABLE_HEIGHT * _SCALE)
         builder.color()
