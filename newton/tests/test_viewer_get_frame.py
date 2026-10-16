@@ -55,15 +55,8 @@ def _is_viewer_gl_unavailable_error(test: unittest.TestCase, exc: Exception) -> 
     }
 
 
-def _reset_pyglet_event_loop_exit(test: unittest.TestCase) -> None:
-    _viewer_gl_unavailable_error_types(test)
-    pyglet = sys.modules.get("pyglet")
-    if pyglet is not None:
-        pyglet.app.event_loop.has_exit = False
-
-
 def _make_headless_viewer_gl_or_skip(test: unittest.TestCase, *, width: int = 64, height: int = 48):
-    _reset_pyglet_event_loop_exit(test)
+    _viewer_gl_unavailable_error_types(test)
 
     try:
         return newton.viewer.ViewerGL(width=width, height=height, headless=True)
@@ -380,6 +373,25 @@ class TestViewerGLGetFrame(unittest.TestCase):
             np.testing.assert_array_equal(viewer.get_frame().numpy(), image)
         finally:
             viewer.close()
+
+    def test_recreated_viewer_renders_frame(self):
+        """Verify a viewer renders after a previous viewer was closed."""
+        for cycle in range(2):
+            with self.subTest(cycle=cycle):
+                viewer = _make_headless_viewer_gl_or_skip(self)
+                try:
+                    self.assertTrue(viewer.is_running())
+                    width = viewer.renderer._screen_width
+                    height = viewer.renderer._screen_height
+                    image = np.full((height, width, 3), (31, 127, 223), dtype=np.uint8)
+
+                    viewer.begin_frame(0.0)
+                    viewer.log_image("color", image, fullscreen=True)
+                    viewer.end_frame()
+
+                    np.testing.assert_array_equal(viewer.get_frame().numpy(), image)
+                finally:
+                    viewer.close()
 
     def test_viewer_constructor_known_backend_error_skips(self):
         """Verify unavailable display/backend errors skip GL-dependent coverage."""

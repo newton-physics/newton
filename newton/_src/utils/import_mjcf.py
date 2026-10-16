@@ -121,7 +121,7 @@ def _default_path_resolver(base_dir: str | None, file_path: str) -> str:
 def _load_and_expand_mjcf(
     source: str,
     path_resolver: Callable[[str | None, str], str] = _default_path_resolver,
-    included_files: set[str] | None = None,
+    include_stack: set[str] | None = None,
 ) -> tuple[ET.Element, str | None]:
     """Load MJCF source and recursively expand <include> elements.
 
@@ -131,7 +131,7 @@ def _load_and_expand_mjcf(
             - For <include> elements: either an absolute file path or XML content directly
             - For asset elements (mesh, texture, etc.): must return an absolute file path
             Default resolver joins paths and returns absolute file paths.
-        included_files: Set of already-included file paths for cycle detection
+        include_stack: File paths on the active include stack for cycle detection
 
     Returns:
         Tuple of (root element, base directory or None for XML string input)
@@ -139,8 +139,8 @@ def _load_and_expand_mjcf(
     Raises:
         ValueError: If a circular include is detected
     """
-    if included_files is None:
-        included_files = set()
+    if include_stack is None:
+        include_stack = set()
 
     # Load source
     if is_xml_content(source):
@@ -148,6 +148,10 @@ def _load_and_expand_mjcf(
         root = ET.fromstring(sanitize_xml_content(source))
     else:
         # Treat as file path
+        filename = os.path.realpath(source)
+        if filename in include_stack:
+            raise ValueError(f"Circular include detected: {filename}")
+        include_stack = include_stack | {filename}
         base_dir = os.path.dirname(source) or "."
         root = ET.parse(source).getroot()
 
@@ -189,15 +193,9 @@ def _load_and_expand_mjcf(
 
         resolved = path_resolver(base_dir, file_attr)
 
-        if not is_xml_content(resolved):
-            # Cycle detection for file paths
-            if resolved in included_files:
-                raise ValueError(f"Circular include detected: {resolved}")
-            included_files.add(resolved)
-
         # Recursive call - each included file extracts its own compiler and
         # resolves its own asset paths before returning.
-        included_root, _ = _load_and_expand_mjcf(resolved, path_resolver, included_files)
+        included_root, _ = _load_and_expand_mjcf(resolved, path_resolver, include_stack)
 
         # Replace include element with children of included root
         idx = list(parent).index(include)
@@ -2406,12 +2404,7 @@ def parse_mjcf(
                 I_m[1, 1] = diaginertia[1] * scale**2
                 I_m[2, 2] = diaginertia[2] * scale**2
             else:
-                fullinertia = inertial_attrib.get("fullinertia")
-                if fullinertia is None:
-                    raise ValueError(
-                        f"MJCF inertial element for body '{body_label_path}' must define "
-                        "either diaginertia or fullinertia."
-                    )
+                fullinertia = inertial_attrib.get("fullinertia", "0 0 0 0 0 0")
                 fullinertia = np.array(fullinertia.split(), dtype=np.float32)
                 if fullinertia.shape[0] != 6:
                     raise ValueError(

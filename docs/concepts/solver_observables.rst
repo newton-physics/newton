@@ -130,28 +130,39 @@ Standard observables
      - Solvers
    * - ``BODY_QDD`` / ``observables.body_qdd``
      - Rigid-body center-of-mass spatial accelerations in the world frame
-     - :class:`~newton.solvers.SolverMuJoCo` with MuJoCo Warp and
+     - :class:`~newton.solvers.SolverMuJoCo` with MuJoCo Warp or native MuJoCo CPU, and
        :class:`~newton.solvers.SolverKamino`
    * - ``BODY_PARENT_F`` / ``observables.body_parent_f``
      - Incoming parent-joint wrenches on rigid bodies
-     - :class:`~newton.solvers.SolverMuJoCo` with MuJoCo Warp,
-       :class:`~newton.solvers.SolverFeatherstone`, and
+     - :class:`~newton.solvers.SolverMuJoCo` with MuJoCo Warp or native MuJoCo CPU,
+       :class:`~newton.solvers.SolverFeatherstone`,
+       :class:`~newton.solvers.SolverSteel`, and
        :class:`~newton.solvers.SolverXPBD`
    * - ``CONTACT_F`` / ``observables.contact_f``
      - Contact spatial forces aligned with the bound contacts
      - :class:`~newton.solvers.SolverMuJoCo` with MuJoCo Warp,
-       :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverVBD`, and
-       :class:`~newton.solvers.SolverKamino`
+       :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverVBD`,
+       :class:`~newton.solvers.SolverKamino`, and :class:`~newton.solvers.SolverSteel`
 
 :class:`~newton.solvers.SolverKamino` computes acceleration as the discrete
 step-average ``(body_qd_out - body_qd_in) / dt``. Across an impact, this includes
 the velocity impulse divided by ``dt``. MuJoCo Warp computes ``BODY_QDD`` and
 ``BODY_PARENT_F`` even with ``disable_sensors=True`` by enabling the
 post-constraint RNE stage independently of sensors.
-The native MuJoCo CPU backend (``use_mujoco_cpu=True``) supports only
-``SolverMuJoCo.ObservableKind.QFRC_ACTUATOR``; body, contact, and overflow
-observable requests are rejected. MuJoCo Warp supports body observables on both
-CPU and GPU.
+The native MuJoCo CPU backend (``use_mujoco_cpu=True``) supports ``BODY_QDD``,
+``BODY_PARENT_F``, and ``SolverMuJoCo.ObservableKind.QFRC_ACTUATOR``. It runs
+the post-constraint RNE stage for requested body observables before integration,
+using the step's input dynamics, including with RK4. Contact and overflow
+observable requests are rejected. Native body observables require Euler, RK4,
+implicit, or implicitfast integration; discrete integration supports only
+``QFRC_ACTUATOR``. MuJoCo Warp supports body
+observables on both CPU and GPU.
+
+:class:`~newton.solvers.SolverSteel` reports only the linear part of each rigid
+contact force; the torque part is zero. Contacts without solved rows, such as rows
+dropped for capacity or skipped for sleeping islands, report zero. A sleeping body's
+contacts therefore read as unloaded even though they still support it; use
+``sleep_skip_constraints=False`` or disable sleeping when consumers rely on these forces.
 
 Kamino exports contact points in the step's input body frames and world-frame
 wrenches about the input centers of mass.
