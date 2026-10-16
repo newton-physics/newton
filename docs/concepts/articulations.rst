@@ -781,7 +781,11 @@ By default, :class:`~newton.selection.ArticulationView` requires homogeneous wor
 every world contains the same number of matches, every match has the same joint,
 coordinate, DOF, link, shape, and custom-frequency layout, and every world is laid out
 like the first, offset by a fixed stride, such as after replicating a builder into a
-builder that has no worlds yet (global shapes are permitted).
+builder that has no worlds yet (global shapes are permitted). Shapes are the exception:
+a match's shapes may be interleaved with other shapes or appended after them, at
+positions that differ between matches, as long as every match has the same shape count
+and owning links and the shape rows repeat in every world. Such shapes are addressed
+through explicit model indices.
 
 .. code-block:: python
 
@@ -806,8 +810,8 @@ Construction raises ``ValueError`` when the selection is not homogeneous. Pass
   :attr:`~newton.selection.ArticulationView.world_ids` maps each view world to its
   model world. Every world with matches must hold the same number of them.
 - **Unavailable frequencies.** Selected articulations may differ in structure.
-  Frequencies whose layout differs between them are unavailable, and their counts and
-  names are ``None``.
+  Frequencies whose layout differs between them are unavailable. Their counts and names
+  are ``None`` only when the selected counts differ, as described below.
   For example, articulations that share a joint topology but differ in their shapes
   still provide joint and link data:
 
@@ -824,9 +828,11 @@ Joint, coordinate, DOF, link, and shape layouts are checked independently. Both
 reads and writes raise ``AttributeError`` for an unavailable layout.
 A layout may contain gaps, but every match must have the same selected count and
 relative model positions and ownership (DOF/coordinate to joint and shape to link),
-and the matches' start indices must be uniformly strided within and between worlds.
-Shapes may instead be interleaved with other shapes at different positions, as long
-as every match has the same shape count and owning links.
+and the matches' start indices must be uniformly strided within worlds. With
+``homogeneous=True`` they must also be uniformly strided between worlds;
+``homogeneous=False`` allows irregular spacing between worlds and addresses it through
+explicit model indices. Shapes may instead be interleaved with other shapes at
+different positions, as long as every match has the same shape count and owning links.
 
 Joint and link filters use the first match as their template. A filter selects the
 template position in every match: if another articulation inserts a link or joint

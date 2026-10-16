@@ -591,7 +591,16 @@ class FrequencyLayout:
 
     def __str__(self):
         indices = self.indices if self.indices is not None else self.slice
-        return f"FrequencyLayout(\n    offset: {self.offset}\n    stride_between_worlds: {self.stride_between_worlds}\n    stride_within_worlds: {self.stride_within_worlds}\n    indices: {indices}\n)"
+        if self._model_value_indices is not None:
+            rows = f"    model_indices: shape {self._model_value_indices.shape}\n"
+        elif self._model_starts is not None:
+            rows = f"    model_starts: shape {self._model_starts.shape}\n    indices: {indices}\n"
+        else:
+            rows = (
+                f"    offset: {self.offset}\n    stride_between_worlds: {self.stride_between_worlds}\n"
+                f"    stride_within_worlds: {self.stride_within_worlds}\n    indices: {indices}\n"
+            )
+        return f"FrequencyLayout(\n{rows})"
 
 
 def get_name_from_label(label: str):
@@ -939,8 +948,10 @@ class ArticulationView:
     subsets of articulations and their joints, links, and shapes within a Model.
     It supports pattern-based selection, inclusion/exclusion filters, and convenient
     attribute access and modification for simulation and control. By default,
-    construction fails when any selected data cannot share one batched layout. Set
-    ``homogeneous=False`` to keep using the data that does share a layout.
+    construction fails when any selected data cannot share one batched layout. Shapes
+    interleaved with or appended after other shapes share one through explicit model indices
+    when every match has the same shape count and owning links and the rows repeat in every world.
+    Set ``homogeneous=False`` to keep using the data that does share a layout.
 
     With ``homogeneous=False``, public metadata is ``None`` when it cannot
     describe every selected articulation consistently:
@@ -1030,8 +1041,10 @@ class ArticulationView:
         exclude_joint_types: List of joint types to exclude.
         include_loop_closing_joints: If True, include converted loop-closing joints.
         homogeneous: If True, require matches in every world, the same layout of every frequency
-            for every match, and a fixed stride between worlds. If False, allow sparse views and
-            irregular layouts, and make frequencies whose layout differs between matches unavailable.
+            for every match, and a fixed stride between worlds. Shapes interleaved with or appended
+            after other shapes are addressed through explicit model indices when every match has the
+            same shape count and owning links and the rows repeat in every world. If False, allow sparse
+            views and irregular layouts, and make frequencies whose layout differs between matches unavailable.
         allow_partial_layouts: Deprecated; use ``homogeneous=False`` instead. If True,
             construct the view when only some selected data has a common layout. Access
             to data without a common layout raises :class:`AttributeError`. If given, it overrides
@@ -1505,11 +1518,11 @@ class ArticulationView:
 
         # articulation ids grouped by world
         self.articulation_ids = wp.array(articulation_id_grid, dtype=int, device=self.device)
-        # model world of each view world (-1 for global articulations)
+        #: Model world of each view world, or -1 for a view of global articulations.
         self.world_ids: wp.array[int] = wp.array(selected_world_ids, dtype=int, device=self.device)
-        # whether the view skips model worlds that contain no matching articulation
+        #: Whether the view skips model worlds that contain no matching articulation.
         self.is_sparse: bool = is_sparse
-        # whether any layout gathers and scatters through explicit model indices instead of strided views
+        #: Whether any layout gathers and scatters through explicit model indices instead of strided views.
         self.uses_explicit_model_indices: bool = any(
             layout is not None and layout.uses_explicit_model_indices
             for layout in (*self.frequency_layouts.values(), *self._root_layouts)
@@ -2473,7 +2486,9 @@ class ArticulationView:
         device = wp.get_device(self.device)
         dof_layout = self.frequency_layouts.get(AttributeFrequency.JOINT_DOF)
         if dof_layout is None:
-            reason = getattr(self, "_unavailable_reasons", {}).get(AttributeFrequency.JOINT_DOF)
+            reason = getattr(self, "_unavailable_reasons", {}).get(
+                AttributeFrequency.JOINT_DOF, "the view has no DOF layout"
+            )
             raise AttributeError(f"Actuator parameter access is unavailable: {reason}")
         mapping_shape = (self.world_count, self.count_per_world, dof_layout.selected_value_count)
 
@@ -2483,8 +2498,9 @@ class ArticulationView:
         if device.is_cuda and wp.get_stream(device).is_capturing and not wp.is_mempool_enabled(device):
             raise RuntimeError(
                 "Building the view's DOF mapping for this actuator allocates device memory, which requires "
-                "the CUDA memory pool during graph capture. Enable the memory pool or call "
-                "get_actuator_parameter() or set_actuator_parameter() for this actuator once before capturing."
+                "the CUDA memory pool during graph capture. Enable the memory pool, or call "
+                "set_actuator_parameter() for this actuator once before capturing it; "
+                "get_actuator_parameter() allocates its result on every call and always requires the pool."
             )
 
         lookup = wp.full(
@@ -2540,7 +2556,8 @@ class ArticulationView:
         an actuator builds the view's DOF mapping for it with device kernels and caches it. A call
         captured in a CUDA graph before then builds a mapping that only that graph uses: it
         requires the device's memory pool, and every replay rebuilds it. Call either method once
-        before capturing to keep the build out of the graph.
+        before capturing to keep the build out of the graph. This method allocates its result on
+        every call, so capturing it always requires the memory pool.
 
         Args:
             actuator: Actuator instance whose DOF indices determine which

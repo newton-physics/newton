@@ -1872,6 +1872,8 @@ def test_sparse_world_view_layouts(test, device):
                 if explicit:
                     assert_np_equal(frequency_layout.get_model_indices().numpy(), rows[key][:, None, :])
                     test.assertFalse(frequency_layout.is_contiguous)
+                    test.assertIn("model_starts: shape (3, 1)", str(frequency_layout))
+                    test.assertNotIn("stride", str(frequency_layout))
                 else:
                     with test.assertRaises(RuntimeError):
                         frequency_layout.get_model_indices()
@@ -2692,6 +2694,18 @@ def test_borrowed_view_with_device_alias(test, device):
     assert_np_equal(gathered.numpy(), expected.reshape(2, 3))
 
 
+def test_borrowed_view_without_dof_layout(test, device):
+    """Name the missing DOF layout of a borrowed view that has no unavailable reasons."""
+    view = _BorrowedActuatorView(world_count=2, dof_count=3, device=device)
+    view.frequency_layouts.clear()
+    actuator = Actuator(
+        indices=wp.array(np.arange(6), dtype=wp.uint32, device=device),
+        drive=DrivePD(kp=wp.ones(6, device=device), kd=wp.zeros(6, device=device)),
+    )
+    with test.assertRaisesRegex(AttributeError, "unavailable: the view has no DOF layout"):
+        view.get_actuator_parameter(actuator, actuator.drive, "kp")
+
+
 class TestSelectionActuatorMapping(unittest.TestCase):
     pass
 
@@ -2702,6 +2716,7 @@ for _test, _devices in (
     (test_sparse_world_partial_actuator_parameters, devices),
     (test_actuator_mapping_built_once_and_cached, devices),
     (test_borrowed_view_with_device_alias, devices),
+    (test_borrowed_view_without_dof_layout, devices),
     (test_actuator_parameters_capture_cold, get_cuda_test_devices()),
     (test_actuator_access_after_capture_before_replay, get_cuda_test_devices()),
     (test_actuator_capture_without_mempool_raises, get_cuda_test_devices()),
@@ -2773,6 +2788,8 @@ def _check_shape_rows(test, model, view, device):
     rows = _owned_shape_rows(model, view)
     layout = view.frequency_layouts[newton.Model.AttributeFrequency.SHAPE]
     test.assertTrue(layout.uses_explicit_model_indices)
+    test.assertIn(f"model_indices: shape {rows.shape}", str(layout))
+    test.assertNotIn("stride", str(layout))
     test.assertFalse(view.shapes_contiguous)
     assert_np_equal(layout.get_model_indices().numpy(), rows)
     assert_np_equal(layout.get_absolute_indices(view.world_count, view.count_per_world), rows)
