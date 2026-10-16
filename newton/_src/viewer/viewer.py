@@ -1291,7 +1291,7 @@ class ViewerBase(ABC):
         contacts: newton.Contacts,
         state: newton.State,
         *,
-        observables: newton.solvers.SolverObservables | None = None,
+        observables: newton.solvers.SolverBase.Observables | None = None,
     ):
         """Render contact visualizations.
 
@@ -1322,8 +1322,9 @@ class ViewerBase(ABC):
                 velocities at the contact points.
             observables: Optional solver observables containing ``contact_f``. If
                 omitted, the deprecated ``contacts.force`` array is used.
-                Binds compatible contact storage on first use; newly allocated forces
-                are zero until the solver updates them.
+                ``contacts`` must be the buffer that produced ``contact_f``
+                (``observables.contacts``); newly allocated forces are zero until the
+                solver updates them. See :ref:`solver_observables`.
 
                 .. experimental::
                     The solver observable API may change without prior notice.
@@ -1342,8 +1343,11 @@ class ViewerBase(ABC):
         if observables is not None:
             if observables.model is not self.model:
                 raise ValueError("Solver observables must belong to the viewer's model.")
-            if contact_f is not None:
-                observables.bind_contacts(contacts)
+            if contact_f is not None and observables.contacts is not contacts:
+                raise ValueError(
+                    "Contact solver observables were produced with a different Contacts instance; "
+                    "pass the Contacts used by the step that produced them."
+                )
 
         # Get contact count, clamped to buffer size (counter may exceed max on overflow)
         max_contacts = contacts.rigid_contact_max

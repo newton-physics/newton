@@ -315,6 +315,7 @@ def _setup_quadruped(articulation_builder):
         xform=wp.transform([0.0, 0.0, 0.7], wp.quat_identity()),
         floating=True,
         enable_self_collisions=False,
+        joint_damping_mode="passive",
     )
     armature_inertia = wp.mat33(np.eye(3, dtype=np.float32)) * 0.01
     for i in range(articulation_builder.body_count):
@@ -469,7 +470,13 @@ class Example:
                 self.model, rigid_contact_max=self.solver.get_max_contact_count(), soft_contact_max=0
             )
             self.contacts = self.collision_pipeline.contacts()
-            self.solver_observables = self.solver.observables(self.sensor_contact.solver_observable_flags)
+            # ASV also runs this benchmark against revisions with the older API.
+            if hasattr(self.sensor_contact, "solver_observable_kinds"):
+                self.solver_observables = self.solver.observables(
+                    contacts=self.contacts, kinds=self.sensor_contact.solver_observable_kinds
+                )
+            else:
+                self.solver_observables = self.solver.observables(self.sensor_contact.solver_observable_flags)
 
         self.graph = None
         if self.use_cuda_graph:

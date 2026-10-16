@@ -34,12 +34,15 @@ from newton._src.core.types import MAXVAL
 from newton._src.geometry.kernels import triangle_closest_point
 from newton._src.math import orthonormal_basis, quat_velocity
 from newton._src.sim import JointType
+from newton._src.sim.articulation import eval_angular_coordinates
 from newton._src.sim.contacts import contact_surface_point, contact_surface_separation
 from newton._src.solvers.solver import integrate_rigid_body
 from newton._src.solvers.vbd.interval_arithmetic import (
     rigid_point_plane_signed_distance_derivative_interval,
     rigid_point_plane_signed_distance_interval,
 )
+
+from .tendon_kernels import TendonForceElementAdjacencyInfo, evaluate_tendon_force_hessians
 
 wp.set_module_options({"enable_backward": False})
 
@@ -980,6 +983,33 @@ def compute_kappa_and_jacobian(
 
 
 @wp.func
+def compute_joint_kappa_and_jacobian(
+    joint_axis: wp.array[wp.vec3],
+    ang_start: int,
+    ang_count: int,
+    q_wp: wp.quat,
+    q_wc: wp.quat,
+    q_wp_rest: wp.quat,
+    q_wc_rest: wp.quat,
+):
+    """:func:`compute_kappa_and_jacobian` with D6 coordinates for joints with 2-3 angular axes.
+
+    Such joints use the absolute coordinates of ``eval_fk`` expressed in their joint-axis basis, so
+    ``dot(kappa, a_k)`` is coordinate ``k`` and ``J_world * a_k`` its world-frame covector.
+    """
+    if ang_count < 2:
+        return compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
+    coords, covectors = eval_angular_coordinates(joint_axis, ang_start, ang_count, q_wp, q_wc)
+    a0 = wp.normalize(joint_axis[ang_start])
+    a1 = wp.normalize(joint_axis[ang_start + 1])
+    a2 = wp.cross(a0, a1)
+    if ang_count == 3:
+        a2 = wp.normalize(joint_axis[ang_start + 2])
+    axes = wp.matrix_from_cols(a0, a1, a2)
+    return axes * coords, wp.transpose(covectors) * wp.transpose(axes)
+
+
+@wp.func
 def build_joint_projectors(
     jt: int,
     joint_axis: wp.array[wp.vec3],
@@ -1468,8 +1498,8 @@ def _update_joint_structural_dual(
 def evaluate_angular_constraint_force_hessian(
     q_wp: wp.quat,
     q_wc: wp.quat,
-    q_wp_rest: wp.quat,
-    q_wc_rest: wp.quat,
+    kappa_now_vec: wp.vec3,
+    J_world: wp.mat33,
     q_wp_prev: wp.quat,
     q_wc_prev: wp.quat,
     is_parent: bool,
@@ -1483,7 +1513,7 @@ def evaluate_angular_constraint_force_hessian(
     use_compliant_alm: int,
     dt: float,
 ):
-    """Projected angular constraint force/Hessian using rotation-vector error (kappa).
+    """Projected angular constraint force/Hessian for an angular error ``kappa`` with Jacobian ``J_world``.
 
     Generic evaluator for non-rod angular constraints. Computes force and
     Hessian in the constrained subspace defined by the orthogonal-complement
@@ -1502,13 +1532,10 @@ def evaluate_angular_constraint_force_hessian(
     stiffness in legacy mode. ``material_k`` supplies the finite material stiffness
     used by compliant ALM.
     Returns:
-        (tau_world, H_aa, kappa, J_world) -- constraint torque and Hessian in world
-        frame, plus the rotation vector and world-frame Jacobian for reuse by the
-        drive/limit block.
+        (tau_world, H_aa) -- constraint torque and Hessian in world frame.
     """
     inv_dt = 1.0 / dt
 
-    kappa_now_vec, J_world = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
     kappa_stab = kappa_now_vec - alpha * C0_ang
     kappa_perp = P * kappa_stab
     joint_primal_k, lambda_eff = _material_force_terms(solve_weight, material_k, lambda_ang, use_compliant_alm)
@@ -1537,7 +1564,7 @@ def evaluate_angular_constraint_force_hessian(
     if not is_parent:
         tau_world = -tau_world
 
-    return tau_world, H_aa, kappa_now_vec, J_world
+    return tau_world, H_aa
 
 
 @wp.func
@@ -3265,11 +3292,12 @@ def evaluate_joint_force_hessian(
         solve_weight_ang = _load_solve_weight(joint_penalty_k, joint_rho, c_start + 1, joint_compliant_alm)
         kd_ang = joint_penalty_kd[c_start + 1]
         if solve_weight_ang > 0.0:
-            t_ang, Haa_ang, _ang_kappa, _ang_J = evaluate_angular_constraint_force_hessian(
+            kappa, J_world = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
+            t_ang, Haa_ang = evaluate_angular_constraint_force_hessian(
                 q_wp,
                 q_wc,
-                q_wp_rest,
-                q_wc_rest,
+                kappa,
+                J_world,
                 q_wp_prev,
                 q_wc_prev,
                 is_parent_body,
@@ -3327,16 +3355,14 @@ def evaluate_joint_force_hessian(
         solve_weight_ang = _load_solve_weight(joint_penalty_k, joint_rho, c_start + 1, joint_compliant_alm)
         kd_ang = joint_penalty_kd[c_start + 1]
 
-        kappa_cached = wp.vec3(0.0)
-        J_world_cached = wp.mat33(0.0)
-        has_cached = False
+        kappa, J_world = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
 
         if solve_weight_ang > 0.0:
-            t_ang, Haa_ang, kappa_cached, J_world_cached = evaluate_angular_constraint_force_hessian(
+            t_ang, Haa_ang = evaluate_angular_constraint_force_hessian(
                 q_wp,
                 q_wc,
-                q_wp_rest,
-                q_wc_rest,
+                kappa,
+                J_world,
                 q_wp_prev,
                 q_wc_prev,
                 is_parent_body,
@@ -3350,7 +3376,6 @@ def evaluate_joint_force_hessian(
                 joint_compliant_alm,
                 dt,
             )
-            has_cached = True
         else:
             t_ang = wp.vec3(0.0)
             Haa_ang = wp.mat33(0.0)
@@ -3377,12 +3402,6 @@ def evaluate_joint_force_hessian(
 
         if has_drive or has_limits:
             inv_dt = 1.0 / dt
-
-            if has_cached:
-                kappa = kappa_cached
-                J_world = J_world_cached
-            else:
-                kappa, J_world = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
 
             theta = wp.dot(kappa, a)
             theta_abs = _unwrap_hinge_angle(theta + joint_rest_angle[dof_idx], joint_angle_prev[dof_idx])
@@ -3448,11 +3467,12 @@ def evaluate_joint_force_hessian(
         solve_weight_ang = _load_solve_weight(joint_penalty_k, joint_rho, c_start + 1, joint_compliant_alm)
         kd_ang = joint_penalty_kd[c_start + 1]
         if solve_weight_ang > 0.0:
-            t_ang, Haa_ang, _ang_kappa, _ang_J = evaluate_angular_constraint_force_hessian(
+            kappa, J_world = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
+            t_ang, Haa_ang = evaluate_angular_constraint_force_hessian(
                 q_wp,
                 q_wc,
-                q_wp_rest,
-                q_wc_rest,
+                kappa,
+                J_world,
                 q_wp_prev,
                 q_wc_prev,
                 is_parent_body,
@@ -3592,16 +3612,16 @@ def evaluate_joint_force_hessian(
         solve_weight_ang = _load_solve_weight(joint_penalty_k, joint_rho, c_start + 1, joint_compliant_alm)
         kd_ang = joint_penalty_kd[c_start + 1]
 
-        kappa_cached = wp.vec3(0.0)
-        J_world_cached = wp.mat33(0.0)
-        has_cached = False
+        kappa, J_world = compute_joint_kappa_and_jacobian(
+            joint_axis, qd_start + lin_count, ang_count, q_wp, q_wc, q_wp_rest, q_wc_rest
+        )
 
         if ang_count < 3 and solve_weight_ang > 0.0:
-            t_ang, Haa_ang, kappa_cached, J_world_cached = evaluate_angular_constraint_force_hessian(
+            t_ang, Haa_ang = evaluate_angular_constraint_force_hessian(
                 q_wp,
                 q_wc,
-                q_wp_rest,
-                q_wc_rest,
+                kappa,
+                J_world,
                 q_wp_prev,
                 q_wc_prev,
                 is_parent_body,
@@ -3615,7 +3635,6 @@ def evaluate_joint_force_hessian(
                 joint_compliant_alm,
                 dt,
             )
-            has_cached = True
 
             total_torque = total_torque + t_ang
             total_H_aa = total_H_aa + Haa_ang
@@ -3692,12 +3711,6 @@ def evaluate_joint_force_hessian(
         # Angular drives/limits (per free angular DOF)
         if ang_count > 0:
             inv_dt = 1.0 / dt
-
-            if has_cached:
-                kappa = kappa_cached
-                J_world = J_world_cached
-            else:
-                kappa, J_world = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
 
             omega_p = quat_velocity(q_wp, q_wp_prev, dt)
             omega_c = quat_velocity(q_wc, q_wc_prev, dt)
@@ -3994,14 +4007,25 @@ def refresh_joint_material_params(
 
     if jt == JointType.ROD:
         for s in range(4):  # 0=stretch, 1=shear, 2=bend, 3=twist
-            ke = joint_target_ke[dof0 + s]
+            # ROD material slots are packed from its canonical XYZ velocity axes:
+            # stretch=linear Z, shear=linear X/Y, bend=angular X/Y, twist=angular Z.
+            dof = dof0
+            if s == 0:
+                dof = dof0 + 2
+            elif s == 1:
+                dof = dof0
+            elif s == 2:
+                dof = dof0 + 3
+            else:
+                dof = dof0 + 5
+            ke = joint_target_ke[dof]
             if joint_material_k[c0 + s] != ke:
                 joint_material_k[c0 + s] = ke
                 seed = legacy_lin_k_start if s < 2 else legacy_ang_k_start
                 seeded = wp.min(seed, ke) if seed >= 0.0 else ke
                 joint_penalty_k[c0 + s] = seeded
                 joint_penalty_k_min[c0 + s] = seeded
-            joint_penalty_kd[c0 + s] = joint_target_kd[dof0 + s]
+            joint_penalty_kd[c0 + s] = joint_target_kd[dof]
         return
 
     linear_count = int(0)
@@ -4318,11 +4342,9 @@ def _joint_axis_angular_support(
 @wp.kernel
 def init_rod_rest_bend_twist(
     joint_type: wp.array[int],
-    joint_parent: wp.array[int],
-    joint_child: wp.array[int],
-    joint_X_p: wp.array[wp.transform],
-    joint_X_c: wp.array[wp.transform],
-    body_q_rest: wp.array[wp.transform],
+    joint_target_q_start: wp.array[int],
+    joint_target_q: wp.array[float],
+    target_uses_coord_layout: bool,
     joint_rod_rest_kb_local: wp.array[wp.vec3],
     joint_rod_rest_twist: wp.array[float],
 ):
@@ -4334,24 +4356,27 @@ def init_rod_rest_bend_twist(
     if joint_type[j] != JointType.ROD:
         return
 
-    child = joint_child[j]
-    if child < 0:
-        return
-
-    parent = joint_parent[j]
-    if parent >= 0:
-        X_wp_rest = body_q_rest[parent] * joint_X_p[j]
+    target_start = joint_target_q_start[j]
+    if target_uses_coord_layout:
+        q_wc_rest = wp.quat(
+            joint_target_q[target_start + 3],
+            joint_target_q[target_start + 4],
+            joint_target_q[target_start + 5],
+            joint_target_q[target_start + 6],
+        )
     else:
-        X_wp_rest = joint_X_p[j]
-    X_wc_rest = body_q_rest[child] * joint_X_c[j]
-
-    q_wp_rest = wp.transform_get_rotation(X_wp_rest)
-    q_wc_rest = wp.transform_get_rotation(X_wc_rest)
+        angles = wp.vec3(
+            joint_target_q[target_start + 3],
+            joint_target_q[target_start + 4],
+            joint_target_q[target_start + 5],
+        )
+        q_wc_rest = wp.quat_from_euler(angles, 2, 1, 0)
+    q_wc_rest = wp.normalize(q_wc_rest)
 
     # Rest DER bend (parent-local curvature binormal) and rest twist (transported
     # material spin), measured once so a pre-curved rest yields zero strain.
-    rest_measure = _measure_rod_bend_twist_z(q_wp_rest, q_wc_rest)
-    joint_rod_rest_kb_local[j] = wp.quat_rotate(wp.quat_inverse(q_wp_rest), rest_measure.kb_world)
+    rest_measure = _measure_rod_bend_twist_z(wp.quat_identity(), q_wc_rest)
+    joint_rod_rest_kb_local[j] = rest_measure.kb_world
     joint_rod_rest_twist[j] = rest_measure.twist
 
 
@@ -4554,7 +4579,9 @@ def step_joint_C0_lambda_rho(
                     (body_q_rest[parent] * joint_X_p[j]) if parent >= 0 else joint_X_p[j]
                 )
                 q_wc_rest = wp.transform_get_rotation(body_q_rest[child] * joint_X_c[j])
-                _kappa, angular_jacobian_world = compute_kappa_and_jacobian(q_wp, q_wc, q_wp_rest, q_wc_rest)
+                _kappa, angular_jacobian_world = compute_joint_kappa_and_jacobian(
+                    joint_axis, qd_start + linear_count, angular_count, q_wp, q_wc, q_wp_rest, q_wc_rest
+                )
                 for axis in range(angular_count):
                     dof = qd_start + linear_count + axis
                     if _drive_limit_needs_support(
@@ -4691,7 +4718,13 @@ def step_joint_C0_lambda_rho(
         X_wc_rest = body_q_rest[child] * joint_X_c[j]
         q_wp_rest = wp.transform_get_rotation(X_wp_rest)
         q_wc_rest = wp.transform_get_rotation(X_wc_rest)
-        joint_C0_ang[j] = compute_kappa(q_wp, q_wc, q_wp_rest, q_wc_rest)
+        ang_count = int(0)
+        if jt == JointType.D6:
+            ang_count = joint_dof_dim[j, 1]
+        kappa, _J_world = compute_joint_kappa_and_jacobian(
+            joint_axis, joint_qd_start[j] + joint_dof_dim[j, 0], ang_count, q_wp, q_wc, q_wp_rest, q_wc_rest
+        )
+        joint_C0_ang[j] = kappa
         joint_lambda_ang[j] = joint_lambda_ang[j] * lambda_retention
     else:
         joint_C0_ang[j] = zero
@@ -6215,282 +6248,337 @@ def compute_body_particle_contact_forces(
     contact_force[tid] = wp.spatial_vector(f_body, wp.cross(cp_world - com_world, f_body))
 
 
-@wp.kernel
-def solve_rigid_body(
-    dt: float,
-    body_ids_in_color: wp.array[wp.int32],
-    body_q: wp.array[wp.transform],
-    body_q_prev: wp.array[wp.transform],
-    body_q_rest: wp.array[wp.transform],
-    body_mass: wp.array[float],
-    body_inv_mass: wp.array[float],
-    body_inertia: wp.array[wp.mat33],
-    body_inertia_q: wp.array[wp.transform],
-    body_com: wp.array[wp.vec3],
-    adjacency: RigidForceElementAdjacencyInfo,
-    # Joint data
-    joint_type: wp.array[int],
-    joint_enabled: wp.array[bool],
-    joint_parent: wp.array[int],
-    joint_child: wp.array[int],
-    joint_X_p: wp.array[wp.transform],
-    joint_X_c: wp.array[wp.transform],
-    joint_axis: wp.array[wp.vec3],
-    joint_rod_rest_kb_local: wp.array[wp.vec3],
-    joint_rod_rest_twist: wp.array[float],
-    joint_qd_start: wp.array[int],
-    joint_target_q_start: wp.array[int],
-    joint_constraint_start: wp.array[int],
-    # Joint constraint state (scalar constraints indexed via joint_constraint_start)
-    joint_penalty_k: wp.array[float],
-    joint_rho: wp.array[float],
-    joint_material_k: wp.array[float],
-    joint_penalty_kd: wp.array[float],
-    # Dahl hysteresis parameters (frozen for this timestep, component-wise vec3 per joint)
-    joint_sigma_start: wp.array[wp.vec3],
-    joint_C_fric: wp.array[wp.vec3],
-    # Drive parameters (DOF-indexed via joint_qd_start)
-    joint_target_ke: wp.array[float],
-    joint_target_kd: wp.array[float],
-    joint_target_q: wp.array[float],
-    joint_target_qd: wp.array[float],
-    # Limit parameters (DOF-indexed via joint_qd_start)
-    joint_limit_lower: wp.array[float],
-    joint_limit_upper: wp.array[float],
-    joint_limit_ke: wp.array[float],
-    joint_limit_kd: wp.array[float],
-    joint_drive_limit_support: wp.array[float],
-    joint_drive_lambda: wp.array[float],
-    joint_limit_lambda: wp.array[float],
-    joint_lambda_lin: wp.array[wp.vec3],
-    joint_lambda_ang: wp.array[wp.vec3],
-    joint_C0_lin: wp.array[wp.vec3],
-    joint_C0_ang: wp.array[wp.vec3],
-    joint_is_hard: wp.array[wp.int32],
-    stab_alpha: float,
-    joint_compliant_alm: int,
-    joint_dof_dim: wp.array2d[int],
-    joint_rest_angle: wp.array[float],
-    joint_angle_prev: wp.array[float],
-    external_forces: wp.array[wp.vec3],
-    external_torques: wp.array[wp.vec3],
-    # Preaccumulated rigid-contact Hessian contributions
-    external_hessian_ll: wp.array[wp.mat33],
-    external_hessian_al: wp.array[wp.mat33],
-    external_hessian_aa: wp.array[wp.mat33],
-    # Output
-    body_q_new: wp.array[wp.transform],
-):
-    """
-    AVBD solve step for rigid bodies.
+@functools.cache
+def create_solve_rigid_body(has_tendons: bool):
+    """Specialize the body solve to exclude tendon assembly for tendon-free models."""
 
-    Assembles inertial, joint, and collision contributions into a 6x6 SPD
-    block system and solves via direct LDL^T.
+    @wp.kernel(module="unique", enable_backward=False)
+    def solve_rigid_body(
+        dt: float,
+        body_ids_in_color: wp.array[wp.int32],
+        body_q: wp.array[wp.transform],
+        body_q_prev: wp.array[wp.transform],
+        body_q_rest: wp.array[wp.transform],
+        body_mass: wp.array[float],
+        body_inv_mass: wp.array[float],
+        body_inertia: wp.array[wp.mat33],
+        body_inertia_q: wp.array[wp.transform],
+        body_com: wp.array[wp.vec3],
+        adjacency: RigidForceElementAdjacencyInfo,
+        # Joint data
+        joint_type: wp.array[int],
+        joint_enabled: wp.array[bool],
+        joint_parent: wp.array[int],
+        joint_child: wp.array[int],
+        joint_X_p: wp.array[wp.transform],
+        joint_X_c: wp.array[wp.transform],
+        joint_axis: wp.array[wp.vec3],
+        joint_rod_rest_kb_local: wp.array[wp.vec3],
+        joint_rod_rest_twist: wp.array[float],
+        joint_qd_start: wp.array[int],
+        joint_target_q_start: wp.array[int],
+        joint_constraint_start: wp.array[int],
+        # Joint constraint state (scalar constraints indexed via joint_constraint_start)
+        joint_penalty_k: wp.array[float],
+        joint_rho: wp.array[float],
+        joint_material_k: wp.array[float],
+        joint_penalty_kd: wp.array[float],
+        # Dahl hysteresis parameters (frozen for this timestep, component-wise vec3 per joint)
+        joint_sigma_start: wp.array[wp.vec3],
+        joint_C_fric: wp.array[wp.vec3],
+        # Drive parameters (DOF-indexed via joint_qd_start)
+        joint_target_ke: wp.array[float],
+        joint_target_kd: wp.array[float],
+        joint_target_q: wp.array[float],
+        joint_target_qd: wp.array[float],
+        # Limit parameters (DOF-indexed via joint_qd_start)
+        joint_limit_lower: wp.array[float],
+        joint_limit_upper: wp.array[float],
+        joint_limit_ke: wp.array[float],
+        joint_limit_kd: wp.array[float],
+        joint_drive_limit_support: wp.array[float],
+        joint_drive_lambda: wp.array[float],
+        joint_limit_lambda: wp.array[float],
+        joint_lambda_lin: wp.array[wp.vec3],
+        joint_lambda_ang: wp.array[wp.vec3],
+        joint_C0_lin: wp.array[wp.vec3],
+        joint_C0_ang: wp.array[wp.vec3],
+        joint_is_hard: wp.array[wp.int32],
+        stab_alpha: float,
+        joint_compliant_alm: int,
+        joint_dof_dim: wp.array2d[int],
+        joint_rest_angle: wp.array[float],
+        joint_angle_prev: wp.array[float],
+        external_forces: wp.array[wp.vec3],
+        external_torques: wp.array[wp.vec3],
+        # Preaccumulated rigid-contact Hessian contributions
+        external_hessian_ll: wp.array[wp.mat33],
+        external_hessian_al: wp.array[wp.mat33],
+        external_hessian_aa: wp.array[wp.mat33],
+        # Tendon data
+        tendon_adjacency: TendonForceElementAdjacencyInfo,
+        tendon_guide_body: wp.array[int],
+        tendon_guide_type: wp.array[int],
+        tendon_guide_radius: wp.array[float],
+        tendon_guide_mu: wp.array[float],
+        tendon_guide_offset: wp.array[wp.vec3],
+        tendon_guide_axis: wp.array[wp.vec3],
+        tendon_guide_cone_seg_l: wp.array[int],
+        tendon_guide_cone_seg_r: wp.array[int],
+        tendon_segment_rest_length: wp.array[float],
+        tendon_segment_attachment_l_local: wp.array[wp.vec3],
+        tendon_segment_attachment_r_local: wp.array[wp.vec3],
+        tendon_segment_active_compliance: wp.array[float],
+        tendon_segment_active_damping: wp.array[float],
+        tendon_segment_active: wp.array[int],
+        tendon_segment_active_guide_l: wp.array[int],
+        tendon_segment_active_guide_r: wp.array[int],
+        # Output
+        body_q_new: wp.array[wp.transform],
+    ):
+        """
+        AVBD solve step for rigid bodies.
 
-    Algorithm:
-      1. Compute inertial forces/Hessians
-      2. Accumulate contact and joint forces/Hessians
-      3. Update the pose from one 6x6 LDL^T solve
+        Assembles inertial, joint, and collision contributions into a 6x6 SPD
+        block system and solves via direct LDL^T.
 
-    Args:
-        dt: Time step.
-        body_ids_in_color: Body indices in current color group (for parallel coloring).
-        body_q_prev: Previous body transforms (for damping and friction).
-        body_q_rest: Rest transforms (for joint targets).
-        body_mass: Body masses.
-        body_inv_mass: Inverse masses (0 for kinematic bodies).
-        body_inertia: Inertia tensors (local body frame).
-        body_inertia_q: Inertial target transforms (from forward integration).
-        body_com: Center of mass offsets (local body frame).
-        adjacency: Body-joint adjacency (CSR format).
-        joint_*: Joint configuration arrays.
-        joint_penalty_k: Per-constraint legacy penalty stiffness.
-        joint_sigma_start: Dahl hysteresis state at start of step.
-        joint_C_fric: Dahl friction configuration per joint.
-        external_forces: External linear forces from rigid contacts.
-        external_torques: External angular torques from rigid contacts.
-        external_hessian_ll: Preaccumulated rigid-contact linear block.
-        external_hessian_al: Preaccumulated rigid-contact angular-linear block.
-        external_hessian_aa: Preaccumulated rigid-contact angular block.
-        body_q: Current body transforms (input).
-        body_q_new: Updated body transforms (output) for the current solve sweep.
+        Algorithm:
+          1. Compute inertial forces/Hessians
+          2. Accumulate contact and joint forces/Hessians
+          3. Update the pose from one 6x6 LDL^T solve
 
-    Note:
-      - All forces, torques, and Hessian blocks are expressed in the world frame.
-    """
-    tid = wp.tid()
-    body_index = body_ids_in_color[tid]
+        Args:
+            dt: Time step.
+            body_ids_in_color: Body indices in current color group (for parallel coloring).
+            body_q_prev: Previous body transforms (for damping and friction).
+            body_q_rest: Rest transforms (for joint targets).
+            body_mass: Body masses.
+            body_inv_mass: Inverse masses (0 for kinematic bodies).
+            body_inertia: Inertia tensors (local body frame).
+            body_inertia_q: Inertial target transforms (from forward integration).
+            body_com: Center of mass offsets (local body frame).
+            adjacency: Body-joint adjacency (CSR format).
+            joint_*: Joint configuration arrays.
+            joint_penalty_k: Per-constraint legacy penalty stiffness.
+            joint_sigma_start: Dahl hysteresis state at start of step.
+            joint_C_fric: Dahl friction configuration per joint.
+            external_forces: External linear forces from rigid contacts.
+            external_torques: External angular torques from rigid contacts.
+            external_hessian_ll: Preaccumulated rigid-contact linear block.
+            external_hessian_al: Preaccumulated rigid-contact angular-linear block.
+            external_hessian_aa: Preaccumulated rigid-contact angular block.
+            body_q: Current body transforms (input).
+            body_q_new: Updated body transforms (output) for the current solve sweep.
 
-    q_current = body_q[body_index]
+        Note:
+          - All forces, torques, and Hessian blocks are expressed in the world frame.
+        """
+        tid = wp.tid()
+        body_index = body_ids_in_color[tid]
 
-    # Early exit for kinematic bodies
-    if body_inv_mass[body_index] == 0.0:
-        body_q_new[body_index] = q_current
-        return
+        q_current = body_q[body_index]
 
-    # Inertial force and Hessian
-    dt_sqr_reciprocal = 1.0 / (dt * dt)
+        # Early exit for kinematic bodies
+        if body_inv_mass[body_index] == 0.0:
+            body_q_new[body_index] = q_current
+            return
 
-    # Read body properties
-    q_inertial = body_inertia_q[body_index]
-    body_com_local = body_com[body_index]
-    m = body_mass[body_index]
-    I_body = body_inertia[body_index]
+        # Inertial force and Hessian
+        dt_sqr_reciprocal = 1.0 / (dt * dt)
 
-    # Extract poses
-    pos_current = wp.transform_get_translation(q_current)
-    rot_current = wp.transform_get_rotation(q_current)
-    pos_star = wp.transform_get_translation(q_inertial)
-    rot_star = wp.transform_get_rotation(q_inertial)
+        # Read body properties
+        q_inertial = body_inertia_q[body_index]
+        body_com_local = body_com[body_index]
+        m = body_mass[body_index]
+        I_body = body_inertia[body_index]
 
-    # Compute COM positions
-    com_current = pos_current + wp.quat_rotate(rot_current, body_com_local)
-    com_star = pos_star + wp.quat_rotate(rot_star, body_com_local)
+        # Extract poses
+        pos_current = wp.transform_get_translation(q_current)
+        rot_current = wp.transform_get_rotation(q_current)
+        pos_star = wp.transform_get_translation(q_inertial)
+        rot_star = wp.transform_get_rotation(q_inertial)
 
-    # Linear inertial force and Hessian
-    inertial_coeff = m * dt_sqr_reciprocal
-    f_lin = (com_star - com_current) * inertial_coeff
+        # Compute COM positions
+        com_current = pos_current + wp.quat_rotate(rot_current, body_com_local)
+        com_star = pos_star + wp.quat_rotate(rot_star, body_com_local)
 
-    # Compute relative rotation via quaternion difference
-    # dq = q_current^-1 * q_star
-    q_delta = wp.mul(wp.quat_inverse(rot_current), rot_star)
+        # Linear inertial force and Hessian
+        inertial_coeff = m * dt_sqr_reciprocal
+        f_lin = (com_star - com_current) * inertial_coeff
 
-    # Enforce shortest path (w > 0) to avoid double-cover ambiguity
-    if q_delta[3] < 0.0:
-        q_delta = wp.quat(-q_delta[0], -q_delta[1], -q_delta[2], -q_delta[3])
+        # Compute relative rotation via quaternion difference
+        # dq = q_current^-1 * q_star
+        q_delta = wp.mul(wp.quat_inverse(rot_current), rot_star)
 
-    # Rotation vector
-    axis_body, angle_body = wp.quat_to_axis_angle(q_delta)
-    theta_body = axis_body * angle_body
+        # Enforce shortest path (w > 0) to avoid double-cover ambiguity
+        if q_delta[3] < 0.0:
+            q_delta = wp.quat(-q_delta[0], -q_delta[1], -q_delta[2], -q_delta[3])
 
-    # Angular inertial torque
-    tau_body = I_body * (theta_body * dt_sqr_reciprocal)
-    tau_world = wp.quat_rotate(rot_current, tau_body)
+        # Rotation vector
+        axis_body, angle_body = wp.quat_to_axis_angle(q_delta)
+        theta_body = axis_body * angle_body
 
-    # Angular Hessian in world frame: use full inertia (supports off-diagonal products of inertia)
-    R_cur = wp.quat_to_matrix(rot_current)
-    I_world = R_cur * I_body * wp.transpose(R_cur)
-    angular_hessian = dt_sqr_reciprocal * I_world
+        # Angular inertial torque
+        tau_body = I_body * (theta_body * dt_sqr_reciprocal)
+        tau_world = wp.quat_rotate(rot_current, tau_body)
 
-    # Accumulate external forces (rigid contacts)
-    # Read external contributions
-    ext_torque = external_torques[body_index]
-    ext_force = external_forces[body_index]
-    ext_h_aa = external_hessian_aa[body_index]
-    ext_h_al = external_hessian_al[body_index]
-    ext_h_ll = external_hessian_ll[body_index]
+        # Angular Hessian in world frame: use full inertia (supports off-diagonal products of inertia)
+        R_cur = wp.quat_to_matrix(rot_current)
+        I_world = R_cur * I_body * wp.transpose(R_cur)
+        angular_hessian = dt_sqr_reciprocal * I_world
 
-    f_torque = tau_world + ext_torque
-    f_force = f_lin + ext_force
+        # Accumulate external forces (rigid contacts)
+        # Read external contributions
+        ext_torque = external_torques[body_index]
+        ext_force = external_forces[body_index]
+        ext_h_aa = external_hessian_aa[body_index]
+        ext_h_al = external_hessian_al[body_index]
+        ext_h_ll = external_hessian_ll[body_index]
 
-    h_aa = angular_hessian + ext_h_aa
-    h_al = ext_h_al
-    h_ll = wp.mat33(
-        ext_h_ll[0, 0] + inertial_coeff,
-        ext_h_ll[0, 1],
-        ext_h_ll[0, 2],
-        ext_h_ll[1, 0],
-        ext_h_ll[1, 1] + inertial_coeff,
-        ext_h_ll[1, 2],
-        ext_h_ll[2, 0],
-        ext_h_ll[2, 1],
-        ext_h_ll[2, 2] + inertial_coeff,
-    )
+        f_torque = tau_world + ext_torque
+        f_force = f_lin + ext_force
 
-    # Accumulate joint forces (constraints)
-    num_adj_joints = get_body_num_adjacent_joints(adjacency, body_index)
-    for joint_counter in range(num_adj_joints):
-        joint_idx = get_body_adjacent_joint_id(adjacency, body_index, joint_counter)
-        joint_force, joint_torque, joint_H_ll, joint_H_al, joint_H_aa = evaluate_joint_force_hessian(
-            body_index,
-            joint_idx,
-            body_q,
-            body_q_prev,
-            body_q_rest,
-            body_com,
-            joint_type,
-            joint_enabled,
-            joint_parent,
-            joint_child,
-            joint_X_p,
-            joint_X_c,
-            joint_axis,
-            joint_rod_rest_kb_local,
-            joint_rod_rest_twist,
-            joint_qd_start,
-            joint_target_q_start,
-            joint_constraint_start,
-            joint_penalty_k,
-            joint_rho,
-            joint_material_k,
-            joint_penalty_kd,
-            joint_sigma_start,
-            joint_C_fric,
-            joint_target_ke,
-            joint_target_kd,
-            joint_target_q,
-            joint_target_qd,
-            joint_limit_lower,
-            joint_limit_upper,
-            joint_limit_ke,
-            joint_limit_kd,
-            joint_drive_limit_support,
-            joint_drive_lambda,
-            joint_limit_lambda,
-            joint_lambda_lin,
-            joint_lambda_ang,
-            joint_C0_lin,
-            joint_C0_ang,
-            joint_is_hard,
-            stab_alpha,
-            joint_compliant_alm,
-            joint_dof_dim,
-            joint_rest_angle,
-            joint_angle_prev,
-            dt,
+        h_aa = angular_hessian + ext_h_aa
+        h_al = ext_h_al
+        h_ll = wp.mat33(
+            ext_h_ll[0, 0] + inertial_coeff,
+            ext_h_ll[0, 1],
+            ext_h_ll[0, 2],
+            ext_h_ll[1, 0],
+            ext_h_ll[1, 1] + inertial_coeff,
+            ext_h_ll[1, 2],
+            ext_h_ll[2, 0],
+            ext_h_ll[2, 1],
+            ext_h_ll[2, 2] + inertial_coeff,
         )
 
-        f_force = f_force + joint_force
-        f_torque = f_torque + joint_torque
+        if wp.static(has_tendons):
+            tendon_force, tendon_torque, tendon_h_ll, tendon_h_al, tendon_h_aa = evaluate_tendon_force_hessians(
+                body_index,
+                dt,
+                body_q,
+                body_q_prev,
+                body_com,
+                tendon_adjacency,
+                tendon_guide_body,
+                tendon_guide_type,
+                tendon_guide_radius,
+                tendon_guide_mu,
+                tendon_guide_offset,
+                tendon_guide_axis,
+                tendon_guide_cone_seg_l,
+                tendon_guide_cone_seg_r,
+                tendon_segment_rest_length,
+                tendon_segment_attachment_l_local,
+                tendon_segment_attachment_r_local,
+                tendon_segment_active_compliance,
+                tendon_segment_active_damping,
+                tendon_segment_active,
+                tendon_segment_active_guide_l,
+                tendon_segment_active_guide_r,
+            )
+            f_force = f_force + tendon_force
+            f_torque = f_torque + tendon_torque
+            h_ll = h_ll + tendon_h_ll
+            h_al = h_al + tendon_h_al
+            h_aa = h_aa + tendon_h_aa
 
-        h_ll = h_ll + joint_H_ll
-        h_al = h_al + joint_H_al
-        h_aa = h_aa + joint_H_aa
+        # Accumulate joint forces (constraints)
+        num_adj_joints = get_body_num_adjacent_joints(adjacency, body_index)
+        for joint_counter in range(num_adj_joints):
+            joint_idx = get_body_adjacent_joint_id(adjacency, body_index, joint_counter)
+            joint_force, joint_torque, joint_H_ll, joint_H_al, joint_H_aa = evaluate_joint_force_hessian(
+                body_index,
+                joint_idx,
+                body_q,
+                body_q_prev,
+                body_q_rest,
+                body_com,
+                joint_type,
+                joint_enabled,
+                joint_parent,
+                joint_child,
+                joint_X_p,
+                joint_X_c,
+                joint_axis,
+                joint_rod_rest_kb_local,
+                joint_rod_rest_twist,
+                joint_qd_start,
+                joint_target_q_start,
+                joint_constraint_start,
+                joint_penalty_k,
+                joint_rho,
+                joint_material_k,
+                joint_penalty_kd,
+                joint_sigma_start,
+                joint_C_fric,
+                joint_target_ke,
+                joint_target_kd,
+                joint_target_q,
+                joint_target_qd,
+                joint_limit_lower,
+                joint_limit_upper,
+                joint_limit_ke,
+                joint_limit_kd,
+                joint_drive_limit_support,
+                joint_drive_lambda,
+                joint_limit_lambda,
+                joint_lambda_lin,
+                joint_lambda_ang,
+                joint_C0_lin,
+                joint_C0_ang,
+                joint_is_hard,
+                stab_alpha,
+                joint_compliant_alm,
+                joint_dof_dim,
+                joint_rest_angle,
+                joint_angle_prev,
+                dt,
+            )
 
-    # Regularize angular Hessian
-    trA = wp.trace(h_aa) / 3.0
-    epsA = 1.0e-9 * (trA + 1.0)
-    h_aa[0, 0] = h_aa[0, 0] + epsA
-    h_aa[1, 1] = h_aa[1, 1] + epsA
-    h_aa[2, 2] = h_aa[2, 2] + epsA
+            f_force = f_force + joint_force
+            f_torque = f_torque + joint_torque
 
-    # Solve 6x6 system via direct LDL^T
-    x_inc, w_world = ldlt6_solve(h_ll, h_aa, h_al, f_force, f_torque)
+            h_ll = h_ll + joint_H_ll
+            h_al = h_al + joint_H_al
+            h_aa = h_aa + joint_H_aa
 
-    # Update pose from increments
-    # Convert angular increment to quaternion
-    if _USE_SMALL_ANGLE_APPROX:
-        half_w = w_world * 0.5
-        dq_world = wp.quat(half_w[0], half_w[1], half_w[2], 1.0)
-        dq_world = wp.normalize(dq_world)
-    else:
-        ang_mag = wp.length(w_world)
-        if ang_mag > _SMALL_ANGLE_EPS:
-            dq_world = wp.quat_from_axis_angle(w_world / ang_mag, ang_mag)
-        else:
+        # Regularize angular Hessian
+        trA = wp.trace(h_aa) / 3.0
+        epsA = 1.0e-9 * (trA + 1.0)
+        h_aa[0, 0] = h_aa[0, 0] + epsA
+        h_aa[1, 1] = h_aa[1, 1] + epsA
+        h_aa[2, 2] = h_aa[2, 2] + epsA
+
+        # Solve 6x6 system via direct LDL^T
+        x_inc, w_world = ldlt6_solve(h_ll, h_aa, h_al, f_force, f_torque)
+
+        # Update pose from increments
+        # Convert angular increment to quaternion
+        if _USE_SMALL_ANGLE_APPROX:
             half_w = w_world * 0.5
             dq_world = wp.quat(half_w[0], half_w[1], half_w[2], 1.0)
             dq_world = wp.normalize(dq_world)
+        else:
+            ang_mag = wp.length(w_world)
+            if ang_mag > _SMALL_ANGLE_EPS:
+                dq_world = wp.quat_from_axis_angle(w_world / ang_mag, ang_mag)
+            else:
+                half_w = w_world * 0.5
+                dq_world = wp.quat(half_w[0], half_w[1], half_w[2], 1.0)
+                dq_world = wp.normalize(dq_world)
 
-    # Apply rotation
-    rot_new = wp.mul(dq_world, rot_current)
-    rot_new = wp.normalize(rot_new)
+        # Apply rotation
+        rot_new = wp.mul(dq_world, rot_current)
+        rot_new = wp.normalize(rot_new)
 
-    # Update position
-    com_new = com_current + x_inc
-    pos_new = com_new - wp.quat_rotate(rot_new, body_com_local)
+        # Update position
+        com_new = com_current + x_inc
+        pos_new = com_new - wp.quat_rotate(rot_new, body_com_local)
 
-    body_q_new[body_index] = wp.transform(pos_new, rot_new)
+        body_q_new[body_index] = wp.transform(pos_new, rot_new)
+
+    return solve_rigid_body
 
 
 @wp.kernel
@@ -6978,7 +7066,9 @@ def update_duals_joint(
         q_wc_prev = wp.transform_get_rotation(X_wc_prev)
         q_wp_rest = wp.transform_get_rotation(X_wp_rest)
         q_wc_rest = wp.transform_get_rotation(X_wc_rest)
-        kappa, J_world = compute_kappa_and_jacobian(q_wp_rot, q_wc, q_wp_rest, q_wc_rest)
+        kappa, J_world = compute_joint_kappa_and_jacobian(
+            joint_axis, qd_start + lin_count, ang_count, q_wp_rot, q_wc, q_wp_rest, q_wc_rest
+        )
         omega_p = quat_velocity(q_wp_rot, q_wp_prev, dt)
         omega_c = quat_velocity(q_wc, q_wc_prev, dt)
         dkappa_dt = compute_kappa_dot(J_world, omega_p, omega_c)

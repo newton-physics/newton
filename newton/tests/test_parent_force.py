@@ -68,7 +68,7 @@ def test_parent_force_static_pendulum(test, device, solver_fn):
                 parent_xform=xform,
             )
             solver = solver_fn(model)
-            observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+            observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
             state_0, state_1 = model.state(), model.state()
 
             newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
@@ -89,7 +89,7 @@ def test_parent_force_solver_observables(test, device, solver_fn):
         child_offset=wp.vec3(0, 0, 1),
     )
     solver = solver_fn(model)
-    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+    observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
     state_0, state_1 = model.state(), model.state()
 
     test.assertIsNone(state_1.body_parent_f)
@@ -97,7 +97,7 @@ def test_parent_force_solver_observables(test, device, solver_fn):
     observables.body_parent_f.fill_(wp.spatial_vector(-1.0))
     solver.step(state_0, state_1, None, None, 5e-3, observables=observables.select(set()))
     np.testing.assert_array_equal(observables.body_parent_f.numpy(), np.full((model.body_count, 6), -1.0))
-    solver.step(state_0, state_1, None, None, 5e-3, observables=observables.select(observables.flags))
+    solver.step(state_0, state_1, None, None, 5e-3, observables=observables.select(observables.kinds))
 
     parent_f = observables.body_parent_f.numpy()[0]
     weight = model.body_mass.numpy()[0] * 9.81
@@ -113,14 +113,14 @@ def test_parent_force_solver_observables_xpbd(test, device):
         child_offset=wp.vec3(0, 0, 1),
     )
     solver = newton.solvers.SolverXPBD(model, iterations=8)
-    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+    observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
     state_0, state_1 = model.state(), model.state()
 
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
     observables.body_parent_f.fill_(wp.spatial_vector(-1.0))
     solver.step(state_0, state_1, None, None, 5e-3, observables=observables.select(set()))
     np.testing.assert_array_equal(observables.body_parent_f.numpy(), np.full((model.body_count, 6), -1.0))
-    solver.step(state_0, state_1, None, None, 5e-3, observables=observables.select(observables.flags))
+    solver.step(state_0, state_1, None, None, 5e-3, observables=observables.select(observables.kinds))
 
     test.assertIsNone(state_1.body_parent_f)
     parent_f = observables.body_parent_f.numpy()[0]
@@ -139,7 +139,7 @@ def test_parent_force_centrifugal(test, device, solver_fn):
         child_offset=wp.vec3(-r, 0, 0),
     )
     solver = solver_fn(model)
-    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+    observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
     state_0, state_1 = model.state(), model.state()
 
     omega = 5.0
@@ -194,7 +194,7 @@ def test_apply_body_f(test, device, solver_fn):
     builder.add_articulation([joint0, joint1])
     model = builder.finalize(device=device)
     solver = solver_fn(model)
-    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+    observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
 
     masses = model.body_mass.numpy()
     total_weight = (masses[0] + masses[1]) * 9.81
@@ -305,6 +305,36 @@ for device in devices:
         test_parent_force_solver_observables_xpbd,
         devices=[device],
     )
+
+    if device.is_cuda:
+        # Steel (CUDA only) publishes the same COM-referenced incoming joint wrench.
+        for name, test_fn in (
+            ("test_parent_force_static_pendulum", test_parent_force_static_pendulum),
+            ("test_parent_force_centrifugal", test_parent_force_centrifugal),
+            ("test_apply_body_f", test_apply_body_f),
+            ("test_parent_force_solver_observables", test_parent_force_solver_observables),
+        ):
+            add_function_test(
+                TestParentForce,
+                f"{name}_steel",
+                test_fn,
+                devices=[device],
+                solver_fn=lambda model: newton.solvers.SolverSteel(model, solve_mode="matrix_free"),
+            )
+    # The Steel split solve publishes the same wrench on every device.
+    for name, test_fn in (
+        ("test_parent_force_static_pendulum", test_parent_force_static_pendulum),
+        ("test_parent_force_centrifugal", test_parent_force_centrifugal),
+        ("test_apply_body_f", test_apply_body_f),
+        ("test_parent_force_solver_observables", test_parent_force_solver_observables),
+    ):
+        add_function_test(
+            TestParentForce,
+            f"{name}_steel_split",
+            test_fn,
+            devices=[device],
+            solver_fn=lambda model: newton.solvers.SolverSteel(model, solve_mode="split"),
+        )
 
 
 if __name__ == "__main__":
