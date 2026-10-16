@@ -163,6 +163,8 @@ class ViewerRTX(ViewerUSD):
     and custom mesh instances can also be added after rendering starts.
     """
 
+    # Runtime updates assume mesh prototypes.
+    _export_gprims = False
     _PHASE_BUILD = 0
     _PHASE_RENDER = 1
     _PICKING_LINE_NAME = "picking_line"
