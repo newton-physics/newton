@@ -229,6 +229,8 @@ class _TeleopLoop:
             enable_self_collisions=False,
             hide_collision_shapes=True,
             skip_mesh_approximation=True,
+            # Avoid imported actuators that oppose the IK joint targets.
+            ignore_paths=[".*/Physics/.*_joint$"],
         )
         robot.approximate_meshes("bounding_box")
 
