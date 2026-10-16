@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from functools import cache
+
 import warp as wp
 
 from ...math import transform_twist, velocity_at_point
@@ -1682,54 +1684,52 @@ def dense_gemm(
 #         dense_gemm(p, n, m, True, False, add_to_C, A_start, B_start, C_start, A, wp.adjoint[C], wp.adjoint[B])
 
 
-def _create_inertia_matrix_func(num_joints, num_dofs):
+def _create_inertia_matrix_func(num_joints: int, num_dofs: int):
     @wp.func
-    def eval_inertia_matrix_tile(J_arr: wp.array2d[float], M_arr: wp.array2d[float]):
-        # Accumulate H = J^T M J one 6x6 diagonal block of M at a time. Building the full P = M J
-        # tile via tile_assign() and multiplying with tile_transpose(J) gives wrong adjoints.
+    def eval_inertia_matrix_tile(J: wp.array2d[float], M: wp.array2d[float]):
+        # Accumulate H = J^T M J per 6x6 diagonal block of M; forming P = M J with tile_assign() breaks the adjoint.
         H = wp.tile_zeros(shape=(num_dofs, num_dofs), dtype=float, storage="shared")
         for i in range(num_joints):
-            M_body = wp.tile_load(M_arr, shape=(6, 6), offset=(i * 6, i * 6))
-            J_body = wp.tile_load(J_arr, shape=(6, num_dofs), offset=(i * 6, 0))
+            M_body = wp.tile_load(M, shape=(6, 6), offset=(i * 6, i * 6))
+            J_body = wp.tile_load(J, shape=(6, num_dofs), offset=(i * 6, 0))
             wp.tile_matmul(wp.tile_transpose(J_body), wp.tile_matmul(M_body, J_body), H)
         return H
 
     return eval_inertia_matrix_tile
 
 
-def create_inertia_matrix_kernel(num_joints, num_dofs):
+@cache
+def create_inertia_matrix_kernel(num_joints: int, num_dofs: int):
     eval_inertia_matrix_tile = _create_inertia_matrix_func(num_joints, num_dofs)
 
     @wp.kernel(module="unique")
-    def eval_dense_gemm_tile(J_arr: wp.array3d[float], M_arr: wp.array3d[float], H_arr: wp.array3d[float]):
-        articulation = wp.tid()
-        H = eval_inertia_matrix_tile(J_arr[articulation], M_arr[articulation])
-        wp.tile_store(H_arr[articulation], H)
+    def eval_dense_gemm_tile(J: wp.array3d[float], M: wp.array3d[float], H: wp.array3d[float]):
+        idx = wp.tid()
+        wp.tile_store(H[idx], eval_inertia_matrix_tile(J[idx], M[idx]))
 
     return eval_dense_gemm_tile
 
 
-def create_inertia_matrix_cholesky_kernel(num_joints, num_dofs):
+@cache
+def create_inertia_matrix_cholesky_kernel(num_joints: int, num_dofs: int):
     eval_inertia_matrix_tile = _create_inertia_matrix_func(num_joints, num_dofs)
 
     @wp.kernel(module="unique")
     def eval_dense_gemm_and_cholesky_tile(
-        J_arr: wp.array3d[float],
-        M_arr: wp.array3d[float],
-        R_arr: wp.array[float],
-        dof_start: wp.array[int],
-        H_arr: wp.array3d[float],
-        L_arr: wp.array3d[float],
+        J: wp.array3d[float],
+        M: wp.array3d[float],
+        group_to_art: wp.array[int],
+        articulation_dof_start: wp.array[int],
+        armature: wp.array[float],
+        H: wp.array3d[float],
+        L: wp.array3d[float],
     ):
-        articulation = wp.tid()
-        H = eval_inertia_matrix_tile(J_arr[articulation], M_arr[articulation])
-        wp.tile_store(H_arr[articulation], H)
+        idx = wp.tid()
+        H_tile = eval_inertia_matrix_tile(J[idx], M[idx])
+        wp.tile_store(H[idx], H_tile)
 
-        # cholesky L L^T = (H + diag(R))
-        R = wp.tile_load(R_arr, shape=num_dofs, offset=dof_start[articulation], storage="shared")
-        H_R = wp.tile_diag_add(H, R)
-        L = wp.tile_cholesky(H_R)
-        wp.tile_store(L_arr[articulation], L)
+        R = wp.tile_load(armature, shape=num_dofs, offset=articulation_dof_start[group_to_art[idx]], storage="shared")
+        wp.tile_store(L[idx], wp.tile_cholesky(wp.tile_diag_add(H_tile, R)))
 
     return eval_dense_gemm_and_cholesky_tile
 
