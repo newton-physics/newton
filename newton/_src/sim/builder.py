@@ -7949,6 +7949,8 @@ class ModelBuilder:
         # Built-in frequency attributes use dict storage by construction
         # (see CustomAttribute._create_empty_values_container).
         for frequency, remap in (
+            (Model.AttributeFrequency.BODY, body_remap),
+            (Model.AttributeFrequency.JOINT, joint_remap),
             (Model.AttributeFrequency.ARTICULATION, articulation_remap),
             (Model.AttributeFrequency.CURVE, curve_remap),
         ):

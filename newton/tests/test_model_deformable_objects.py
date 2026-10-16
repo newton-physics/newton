@@ -312,7 +312,8 @@ class TestModelDeformableObjects(unittest.TestCase):
         """Remap vector references to removed and surviving objects, preserving sentinels."""
         builder = newton.ModelBuilder()
         points = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0)]
-        for label in ("removed", "reduced", "unaffected"):
+        body_owners, joint_owners = {}, {}
+        for owner, label in enumerate(("removed", "reduced", "unaffected")):
             bodies, joints = builder.add_rod(
                 rod=newton.Rod(points[:2] if label == "removed" else points, radius=0.02),
                 label=label,
@@ -323,6 +324,9 @@ class TestModelDeformableObjects(unittest.TestCase):
                 builder.add_joint_free(bodies[0]) if label == "unaffected" else builder.add_joint_fixed(-1, bodies[0])
             )
             builder.add_articulation([*joints, root], label=label)
+            if owner:
+                body_owners.update(dict.fromkeys(bodies, owner))
+                joint_owners.update(dict.fromkeys([*joints, root], owner))
 
         vector_cases = (
             ("pair", wp.vec2i, wp.vec2i(1, 2), [[0, 1]]),
@@ -341,6 +345,17 @@ class TestModelDeformableObjects(unittest.TestCase):
             ("negative", wp.int32, -2, {}, [-2, -2]),
         )
         for family in ("curve", "articulation"):
+            for kind, owners in (("body", body_owners), ("joint", joint_owners)):
+                builder.add_custom_attribute(
+                    newton.ModelBuilder.CustomAttribute(
+                        name=f"{family}_{kind}_owner",
+                        dtype=wp.int32,
+                        frequency=getattr(newton.Model.AttributeFrequency, kind.upper()),
+                        references=getattr(newton.Model.AttributeFrequency, family.upper()),
+                        default=0,
+                        values=owners.copy(),
+                    )
+                )
             builder.add_custom_attribute(
                 newton.ModelBuilder.CustomAttribute(
                     name=f"{family}_tag",
@@ -412,6 +427,9 @@ class TestModelDeformableObjects(unittest.TestCase):
             for family in ("curve", "articulation"):
                 self.assertEqual(getattr(model, f"{family}_label"), ["reduced", "unaffected"])
                 np.testing.assert_array_equal(getattr(model, f"{family}_tag").numpy(), [20, 30])
+                for kind in ("body", "joint"):
+                    with self.subTest(device=device, family=family, kind=kind):
+                        np.testing.assert_array_equal(getattr(model, f"{family}_{kind}_owner").numpy(), [0, 1, 1])
                 for name, dtype, _, expected in vector_cases:
                     with self.subTest(device=device, family=family, kind=name):
                         array = getattr(model, f"{family}_{name}")
