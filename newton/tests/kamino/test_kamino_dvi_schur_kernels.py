@@ -13,8 +13,8 @@ from newton._src.solvers.kamino._src.solvers.dvi.sparse_kernels import (
     _apply_small_bilateral_inverse,
     _assemble_compact_unilateral_schur_blocked,
     _invert_small_bilateral_block,
-    _solve_dvi_compact_schur_pgs_cooperative,
     _solve_dvi_sparse_inequalities_pgs_cooperative,
+    make_compact_schur_pgs_kernel,
 )
 from newton._src.solvers.kamino._src.solvers.dvi.sparse_kernels import (
     _prepare_full_sparse_unilateral_schur as kernel,
@@ -77,6 +77,16 @@ class TestKaminoCompactSchur(unittest.TestCase):
         cases = (
             (0, 0, 1, False),
             (2, 2, 3, False),
+            # Exercise partially active vectors around each 32-row boundary.
+            (28, 0, 1, False),
+            (29, 0, 1, False),
+            (30, 0, 1, False),
+            (60, 0, 1, False),
+            (61, 0, 1, False),
+            (62, 0, 1, False),
+            (92, 0, 1, False),
+            (93, 0, 1, False),
+            (94, 0, 1, False),
             (31, 1, 32, False),
             (0, 0, 42, False),
             (7, 0, 2, False),
@@ -147,22 +157,29 @@ class TestKaminoCompactSchur(unittest.TestCase):
                     "block_iteration": 0,
                 }
                 results = []
-                for kernel in (
-                    _solve_dvi_sparse_inequalities_pgs_cooperative,
-                    _solve_dvi_compact_schur_pgs_cooperative,
+                for kernels in (
+                    (_solve_dvi_sparse_inequalities_pgs_cooperative,),
+                    (make_compact_schur_pgs_kernel(64), make_compact_schur_pgs_kernel(128)),
                 ):
                     data["compact_q"] = self.floats(np.concatenate([np.zeros(n), q0]))
                     data["solution_lambdas"] = self.floats(initial)
                     data["solver_status"] = wp.zeros(1, dtype=DVIStatus, device=self.device)
-                    inputs = []
-                    for arg in kernel.adj.args:
-                        if arg.label in data:
-                            inputs.append(data[arg.label])
-                        else:
-                            # Full compact sweeps never read sparse body-space inputs.
-                            shape = (1, 2) if arg.type.ndim == 2 else 1
-                            inputs.append(wp.zeros(shape, dtype=arg.type.dtype, device=self.device))
-                    wp.launch(kernel, dim=32, inputs=inputs, device=self.device, block_dim=32)
+                    for index, kernel in enumerate(kernels):
+                        before = data["solution_lambdas"].numpy(), data["compact_q"].numpy()
+                        inputs = []
+                        for arg in kernel.adj.args:
+                            if arg.label in data:
+                                inputs.append(data[arg.label])
+                            else:
+                                # Full compact sweeps never read sparse body-space inputs.
+                                shape = (1, 2) if arg.type.ndim == 2 else 1
+                                inputs.append(wp.zeros(shape, dtype=arg.type.dtype, device=self.device))
+                        wp.launch(kernel, dim=32, inputs=inputs, device=self.device, block_dim=32)
+                        # Each world must be updated by exactly one specialization,
+                        # including the partially filled vectors at 63/64/65 rows.
+                        if len(kernels) == 2 and (nu > 64 if index == 0 else nu <= 64):
+                            np.testing.assert_array_equal(data["solution_lambdas"].numpy(), before[0])
+                            np.testing.assert_array_equal(data["compact_q"].numpy(), before[1])
                     results.append((data["solution_lambdas"].numpy(), data["compact_q"].numpy()))
                 np.testing.assert_array_equal(results[1][0][:n], initial[:n])
                 np.testing.assert_allclose(results[0][0], results[1][0], atol=3e-6, rtol=3e-6)
@@ -245,7 +262,6 @@ class TestKaminoFullSchurAssembly(unittest.TestCase):
             (600, 513, 0, 0, 600),
             (2, 1, 1, 2, 2),
             (33, 0, 0, 0, 8),
-            (33, 3, 2, 2, 16),
         ]
         data = {
             name: []
@@ -277,14 +293,13 @@ class TestKaminoFullSchurAssembly(unittest.TestCase):
                 "response_stride",
                 "compact_schur",
                 "compact_q",
-                "solver_config",
                 "body_space",
                 "solution_lambdas",
             )
         }
         expected_s, expected_q = [], []
 
-        for wid, (n, nb, nl, nc, stride) in enumerate(cases):
+        for n, nb, nl, nc, stride in cases:
             nu = nb + nl + 3 * nc
             weighted = np.zeros((nu, 12))
             jacobian = np.zeros((nu, 12))
@@ -337,7 +352,7 @@ class TestKaminoFullSchurAssembly(unittest.TestCase):
             body = rng.normal(size=12).astype(np.float32)
             schur = rng.normal(size=n * stride).astype(np.float32)
             expected_matrix, expected_velocity = schur.copy(), q.copy()
-            if wid != len(cases) - 1 and 0 < nu <= 512 and nu * nu <= n * stride:
+            if 0 < nu <= 512 and nu * nu <= n * stride:
                 operator = (weighted @ jacobian.T) * p[None, n:] + np.diag(eta[n:])
                 expected_matrix[: nu * nu] -= operator.T.ravel()
                 expected_velocity[n:] = weighted @ body + eta[n:] * lambdas[n:] + vf[n:]
@@ -353,20 +368,13 @@ class TestKaminoFullSchurAssembly(unittest.TestCase):
                 ("compact_schur", schur),
             ):
                 data[name].extend(values)
-            config = DVIConfigStruct()
-            config.max_alternating_iterations = 0 if wid == len(cases) - 1 else 8
-            data["solver_config"].append(config)
 
         for device in wp.get_devices():
             arrays = {}
             for arg in kernel.adj.args:
                 name = arg.label
-                if name == "enable_compact_schur":
-                    arrays[name] = True
-                elif name == "workers_per_world":
+                if name == "workers_per_world":
                     arrays[name] = 128
-                elif name == "block_iteration":
-                    arrays[name] = 0
                 else:
                     arrays[name] = wp.array(data[name], dtype=arg.type.dtype, device=device)
             reference_s = None

@@ -355,6 +355,7 @@ class ViewerUSD(ViewerBase):
         # honors the supplied shading normals on polygonal meshes.
         mesh_prim.GetSubdivisionSchemeAttr().Set(UsdGeom.Tokens.none)
         mesh_prim.GetPointsAttr().Set(points_np, self._frame_index)
+        mesh_prim.GetExtentAttr().Set(UsdGeom.Mesh.ComputeExtent(points_np), self._frame_index)
 
         valid_texture = texture is not None and uvs is not None
         self._mesh_appearance[name] = {

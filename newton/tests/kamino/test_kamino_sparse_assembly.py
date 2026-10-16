@@ -4,6 +4,7 @@
 """Regressions for captured sparse assembly and numerical ordering."""
 
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 import warp as wp
@@ -11,7 +12,11 @@ import warp as wp
 from newton._src.solvers.kamino._src.core.types import vec6f
 from newton._src.solvers.kamino._src.linalg.core import DenseLinearOperatorData, DenseSquareMultiLinearInfo
 from newton._src.solvers.kamino._src.linalg.factorize.llt_blocked_rcm_solver import LLTBlockedRCMSolver
-from newton._src.solvers.kamino._src.solvers.dvi.sparse import group_bilateral_pairs
+from newton._src.solvers.kamino._src.solvers.dvi.sparse import (
+    _build_sparse_bilateral_pairs,
+    _build_sparse_bilateral_row_nzb_topology,
+    group_bilateral_pairs,
+)
 from newton._src.solvers.kamino._src.solvers.dvi.sparse_kernels import (
     _build_sparse_bilateral_block,
     _set_sparse_bilateral_diagonal,
@@ -33,6 +38,47 @@ def _assemble(
         target_row = inverse[row]
         target_col = inverse[col]
     target[target_row * n + target_col] = source[row * n + col]
+
+
+class TestKaminoSparseTopology(unittest.TestCase):
+    def test_preserve_block_order_across_worlds(self):
+        """Preserve block ordering, bounded rows, and empty worlds in cached topology."""
+        device = wp.get_device("cpu")
+
+        def ints(values):
+            return wp.array(values, dtype=wp.int32, device=device)
+
+        jacobian = SimpleNamespace(
+            nzb_start=ints([2, 8, 9]),
+            nzb_coords=ints(
+                [(-1, -1), (-1, -1), (2, 0), (0, 6), (1, 0), (0, 0), (3, 0), (1, 6), (-1, -1), (1, 0), (0, 0)]
+            ),
+        )
+        problem = SimpleNamespace(
+            delassus=SimpleNamespace(constraint_jacobian=jacobian),
+            data=SimpleNamespace(njc=ints([3, 0, 2]), nbc=ints([1, 0, 0])),
+        )
+        path = SimpleNamespace(
+            device=device,
+            jacobians=SimpleNamespace(joint_constraint_nzb_count=ints([6, 0, 2])),
+            model=SimpleNamespace(info=SimpleNamespace(bodies_offset=ints([0, 2, 5]))),
+        )
+        _build_sparse_bilateral_pairs(path, problem)
+        expected_pairs = [
+            (0, 0, 1, 1, 3, 7),
+            (0, 0, 1, 0, 5, 4),
+            (0, 0, 2, 0, 5, 2),
+            (0, 1, 2, 0, 4, 2),
+            (2, 0, 1, 5, 10, 9),
+        ]
+        np.testing.assert_array_equal(np.stack([a.numpy() for a in path.bilateral_nzb_pairs], axis=1), expected_pairs)
+        np.testing.assert_array_equal(path.bilateral_entry_starts.numpy(), [0, 2, 3, 4, 5])
+
+        _build_sparse_bilateral_row_nzb_topology(path, problem)
+        offsets, starts, indices = path.bilateral_row_nzb_topology
+        np.testing.assert_array_equal(offsets.numpy(), [0, 4, 4])
+        np.testing.assert_array_equal(starts.numpy(), [0, 2, 4, 5, 6, 7, 8])
+        np.testing.assert_array_equal(indices.numpy(), [3, 5, 4, 7, 2, 6, 10, 9])
 
 
 class TestKaminoSparseAssemblyLifecycle(unittest.TestCase):

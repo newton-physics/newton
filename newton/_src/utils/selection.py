@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import re
+import warnings
 import weakref
 from fnmatch import fnmatch
 from types import NoneType
@@ -22,9 +23,9 @@ from ..sim import (
     eval_inverse_dynamics_force,
     eval_inverse_dynamics_passive,
     eval_jacobian,
-    eval_mass_matrix,
 )
-from ..solvers.observables import SolverObservables
+from ..sim.articulation import _INCLUDE_ARMATURE_DEPRECATION_MSG, _eval_mass_matrix
+from ..solvers.solver import SolverBase
 
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
@@ -1262,10 +1263,10 @@ class ArticulationView:
     # Generic attribute API
 
     def _resolve_attribute(
-        self, name: str, source: Model | State | Control | SolverObservables
+        self, name: str, source: Model | State | Control | SolverBase.Observables
     ) -> tuple[wp.array, str]:
         """Return the array currently stored on ``source`` under ``name`` and its frequency name."""
-        is_observable = isinstance(source, SolverObservables)
+        is_observable = isinstance(source, SolverBase.Observables)
         if is_observable and source.model is not self.model:
             raise ValueError("Solver observables and ArticulationView must use the same model.")
         # handle namespaced attributes like "mujoco.tendon_stiffness"
@@ -1289,7 +1290,7 @@ class ArticulationView:
     def _get_attribute_array(
         self,
         name: str,
-        source: Model | State | Control | SolverObservables,
+        source: Model | State | Control | SolverBase.Observables,
         _slice: Slice | int | None = None,
         layout=None,
     ):
@@ -1320,14 +1321,14 @@ class ArticulationView:
     def _create_attribute_array(
         self,
         name: str,
-        source: Model | State | Control | SolverObservables,
+        source: Model | State | Control | SolverBase.Observables,
         _slice: Slice | int | None = None,
         layout=None,
     ):
         attrib, frequency_name = self._resolve_attribute(name, source)
 
         # get frequency info
-        frequency_source = source if isinstance(source, SolverObservables) else self.model
+        frequency_source = source if isinstance(source, SolverBase.Observables) else self.model
         frequency = frequency_source.get_attribute_frequency(frequency_name)
         if frequency in (AttributeFrequency.CONTACT, AttributeFrequency.CONTACT_RIGID, AttributeFrequency.CONTACT_SOFT):
             raise AttributeError(
@@ -1443,7 +1444,11 @@ class ArticulationView:
         return attrib
 
     def _get_attribute_values(
-        self, name: str, source: Model | State | Control | SolverObservables, _slice: slice | None = None, layout=None
+        self,
+        name: str,
+        source: Model | State | Control | SolverBase.Observables,
+        _slice: slice | None = None,
+        layout=None,
     ):
         attrib = self._get_attribute_array(name, source, _slice=_slice, layout=layout)
         if hasattr(attrib, "_staging_array"):
@@ -1469,7 +1474,7 @@ class ArticulationView:
     def _set_attribute_values(
         self,
         name: str,
-        target: Model | State | Control | SolverObservables,
+        target: Model | State | Control | SolverBase.Observables,
         values,
         mask=None,
         _slice: slice | None = None,
@@ -1533,7 +1538,7 @@ class ArticulationView:
             else:
                 raise NotImplementedError(f"Unsupported attribute with ndim={attrib.ndim}")
 
-    def get_attribute(self, name: str, source: Model | State | Control | SolverObservables):
+    def get_attribute(self, name: str, source: Model | State | Control | SolverBase.Observables):
         """
         Get an attribute from a model, state, control, or solver observable container.
 
@@ -1546,7 +1551,7 @@ class ArticulationView:
 
         .. experimental::
 
-            ``SolverObservables`` sources use their declared row frequencies
+            ``SolverBase.Observables`` sources use their declared row frequencies
             and must belong to this view's model. Dynamic contact frequencies
             are not supported; they need endpoint-based filtering or reduction.
         """
@@ -1555,7 +1560,7 @@ class ArticulationView:
     def set_attribute(
         self,
         name: str,
-        target: Model | State | Control | SolverObservables,
+        target: Model | State | Control | SolverBase.Observables,
         values: wp.array[Any],
         mask: wp.array[bool] | wp.array2d[bool] | None = None,
     ) -> None:
@@ -1904,13 +1909,16 @@ class ArticulationView:
         articulation_mask = self.get_model_articulation_mask(mask=mask)
         return eval_jacobian(self.model, state, J, joint_S_s=joint_S_s, mask=articulation_mask)
 
-    def eval_mass_matrix(self, state: State, H=None, J=None, body_I_s=None, joint_S_s=None, mask=None):
+    def eval_mass_matrix(
+        self, state: State, H=None, J=None, body_I_s=None, joint_S_s=None, mask=None, *, include_armature=True
+    ):
         """Evaluate generalized mass matrix for articulations in this view.
 
         Computes the generalized mass matrix H = J^T * M * J, where J is the spatial
         Jacobian and M is the block-diagonal spatial mass matrix. The resulting
         matrix is consistent with kinetic energy computed from COM-referenced
-        body twists.
+        body twists. :attr:`~newton.Model.joint_armature` is added to the
+        diagonal. See :func:`~newton.eval_mass_matrix`.
 
         Args:
             state: The state containing body transforms (body_q).
@@ -1920,13 +1928,31 @@ class ArticulationView:
             body_I_s: Optional pre-allocated temp array for spatial inertias.
             joint_S_s: Optional pre-allocated temp array for motion subspaces.
             mask: Optional mask of articulations in this ArticulationView (all by default).
+            include_armature: Deprecated in Newton 1.8. If True (default), add
+               :attr:`~newton.Model.joint_armature` to the diagonal. Passing
+               False returns the rigid-body matrix and emits a
+               :class:`DeprecationWarning`. This argument will be removed in a
+               future minor release.
 
         Returns:
             The mass matrix array H, or None if the model has no articulations.
         """
+        if not include_armature:
+            warnings.warn(
+                _INCLUDE_ARMATURE_DEPRECATION_MSG.format(name="ArticulationView.eval_mass_matrix()"),
+                DeprecationWarning,
+                stacklevel=2,
+            )
         articulation_mask = self.get_model_articulation_mask(mask=mask)
-        return eval_mass_matrix(
-            self.model, state, H, J=J, body_I_s=body_I_s, joint_S_s=joint_S_s, mask=articulation_mask
+        return _eval_mass_matrix(
+            self.model,
+            state,
+            H,
+            J=J,
+            body_I_s=body_I_s,
+            joint_S_s=joint_S_s,
+            mask=articulation_mask,
+            include_armature=include_armature,
         )
 
     def eval_inverse_dynamics_passive(

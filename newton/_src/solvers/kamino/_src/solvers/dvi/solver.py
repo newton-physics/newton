@@ -131,10 +131,7 @@ class DVISolver:
         self._unilateral_strides_host: list[int] = []
         self._max_unilateral_rows: int = 0
         self._num_joints: int = 0
-        self._joint_wid: wp.array[wp.int32] | None = None
-        self._joint_bid_B: wp.array[wp.int32] | None = None
-        self._joint_bid_F: wp.array[wp.int32] | None = None
-        self._joint_bounded_cts_offset: wp.array[wp.int32] | None = None
+        self._bounded_topology_inputs: list[wp.array[wp.int32]] = []
         self._body_inv_mass: wp.array[wp.float32] | None = None
 
         if model is not None:
@@ -208,17 +205,27 @@ class DVISolver:
         self._size = model.size
         self._device = model.device
         self._num_joints = model.size.sum_of_num_joints
-        self._joint_wid = model.joints.wid
-        self._joint_bid_B = model.joints.bid_B
-        self._joint_bid_F = model.joints.bid_F
-        self._joint_bounded_cts_offset = model.joints.bounded_cts_offset
+        self._bounded_topology_inputs = [
+            model.joints.wid,
+            model.joints.bid_B,
+            model.joints.bid_F,
+            model.joints.num_friction_cts,
+            model.joints.num_effort_cts,
+            model.joints.friction_cts_offset_total_cts,
+            model.joints.effort_cts_offset_total_cts,
+            model.info.total_cts_offset,
+        ]
         self._body_inv_mass = model.bodies.inv_m_i
         self._config = self._check_config(model, config)
         if len({c.unilateral_solver for c in self._config}) != 1:
             raise ValueError("All worlds must use the same DVI unilateral solver.")
         self._apgd = None
-        self._use_schur_complement = self._config[0].use_schur_complement
-        if any(c.use_schur_complement != self._use_schur_complement for c in self._config[1:]):
+        # Account for the bilateral response in every bounded-drive update.
+        # Raw body inverse inertia can dwarf the constrained joint mobility.
+        auto_schur = model.size.sum_of_num_effort_joint_cts > 0
+        schur_modes = [auto_schur if c.use_schur_complement is None else c.use_schur_complement for c in self._config]
+        self._use_schur_complement = schur_modes[0]
+        if any(mode != self._use_schur_complement for mode in schur_modes[1:]):
             raise ValueError("All worlds must use the same DVI Schur-complement configuration.")
         self._warmstart = warmstart
         self._collect_info = collect_info
@@ -341,6 +348,8 @@ class DVISolver:
         else:
             kwargs.setdefault("failed_pivot_shift", BILATERAL_FAILED_PIVOT_SHIFT)
             kwargs.setdefault("capacity_stride", True)
+            if self._device.is_cuda and model.size.num_worlds >= 2048:
+                kwargs.setdefault("solve_block_dim", 128)
             solver_class = LLTBlockedRCMSolver
 
         bilateral_joint_cts_per_world = model.info.num_joint_bilateral_cts.numpy().astype(int).tolist()
@@ -513,8 +522,9 @@ class DVISolver:
         ``D_bb * lambda_b = -(v_f,b + D_bu * lambda_u)``.
 
         The unilateral block is updated iteratively with projection onto the
-        nonnegative and Coulomb cones. By default, direct bilateral solves are
-        alternated with unilateral sweeps. The optional Schur path instead
+        box bounds, nonnegative cone, and Coulomb cones. Without bounded PD
+        drives, the default alternates direct bilateral solves with unilateral
+        sweeps. Bounded PD drives automatically select the Schur path, which
         eliminates the bilateral response through
         ``D_uu - D_ub * D_bb^-1 * D_bu``. The dense path materializes this
         operator for PGS, while sparse PGS applies a compact low-rank
@@ -704,11 +714,8 @@ class DVISolver:
                 kernel=_map_bounded_constraints,
                 dim=self._num_joints,
                 inputs=[
-                    self._joint_wid,
-                    self._joint_bid_B,
-                    self._joint_bid_F,
-                    self._joint_bounded_cts_offset,
-                    problem.data.bcio,
+                    *self._bounded_topology_inputs,
+                    problem.data.njc,
                     problem.data.iio,
                     state.inequality_bodies,
                 ],
@@ -1100,51 +1107,42 @@ class DVISolver:
             ],
             device=self.device,
         )
-        has_intermediate_bilateral_solve = any(self._bilateral_solve_after_block)
-        block_iterations = (
-            range(self._max_alternating_iterations) if has_intermediate_bilateral_solve else (_FUSED_BILATERAL_BLOCK,)
+        wp.launch(
+            kernel=_solve_dvi_inequalities_colored_pgs,
+            dim=self._size.num_worlds * threads_per_world,
+            inputs=[
+                problem.data.dim,
+                self._data.state.projected_mio,
+                problem.data.vio,
+                problem.data.nbc,
+                problem.data.nl,
+                problem.data.nc,
+                problem.data.bcgo,
+                problem.data.lcgo,
+                problem.data.ccgo,
+                problem.data.bcio,
+                problem.data.cio,
+                problem.data.iio,
+                problem.data.mu,
+                problem.data.bound_lower,
+                problem.data.bound_upper,
+                self._data.state.projected_D,
+                problem.data.P,
+                problem.data.v_b,
+                _FUSED_BILATERAL_BLOCK,
+                self._data.state.inequality_num_colors,
+                self._data.state.inequality_ids_by_color,
+                self._data.state.inequality_color_starts,
+                self._data.config,
+                wp.bool(self.device.is_cuda),
+                self._data.status,
+                self._data.state.scratch,
+                self._data.state.v_aug,
+                self._data.solution.lambdas,
+            ],
+            device=self.device,
+            block_dim=threads_per_world,
         )
-        for block_iteration in block_iterations:
-            wp.launch(
-                kernel=_solve_dvi_inequalities_colored_pgs,
-                dim=self._size.num_worlds * threads_per_world,
-                inputs=[
-                    problem.data.dim,
-                    self._data.state.projected_mio,
-                    problem.data.vio,
-                    problem.data.nbc,
-                    problem.data.nl,
-                    problem.data.nc,
-                    problem.data.bcgo,
-                    problem.data.lcgo,
-                    problem.data.ccgo,
-                    problem.data.bcio,
-                    problem.data.cio,
-                    problem.data.iio,
-                    problem.data.mu,
-                    problem.data.bound_lower,
-                    problem.data.bound_upper,
-                    self._data.state.projected_D,
-                    problem.data.P,
-                    problem.data.v_b,
-                    block_iteration,
-                    self._data.state.inequality_num_colors,
-                    self._data.state.inequality_ids_by_color,
-                    self._data.state.inequality_color_starts,
-                    self._data.config,
-                    wp.bool(self.device.is_cuda and not has_intermediate_bilateral_solve),
-                    self._data.status,
-                    self._data.state.scratch,
-                    self._data.state.v_aug,
-                    self._data.solution.lambdas,
-                ],
-                device=self.device,
-                block_dim=threads_per_world,
-            )
-
-            if has_intermediate_bilateral_solve and self._should_solve_bilateral_after_block(block_iteration):
-                self._set_bilateral_active_dim(problem, block_iteration)
-                self._solve_bilateral_block(problem, active_dim=self._data.state.bilateral_active_dim)
 
         self._set_bilateral_active_dim(problem, -1)
         self._solve_bilateral_block(problem, active_dim=self._data.state.bilateral_active_dim)
@@ -1157,7 +1155,7 @@ class DVISolver:
                 problem.data.nl,
                 problem.data.nc,
                 self._data.config,
-                wp.bool(self.device.is_cuda and not has_intermediate_bilateral_solve),
+                wp.bool(self.device.is_cuda),
                 self._data.status,
             ],
             device=self.device,

@@ -1373,6 +1373,7 @@ def test_articulation_contact_drift(test, device):
         floating=True,
         enable_self_collisions=False,
         ignore_inertial_definitions=True,
+        joint_damping_mode="passive",
     )
     armature_inertia = wp.mat33(np.eye(3, dtype=np.float32)) * 0.01
     for i in range(builder.body_count):
@@ -1511,7 +1512,7 @@ def test_xpbd_contact_force_static_equilibrium(test, device):
     control = model.control()
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
-    observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+    observables = solver.observables(contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F})
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
 
     dt = 1.0 / 60.0
@@ -1661,7 +1662,7 @@ def test_xpbd_contact_force_zero_when_no_contact(test, device):
     control = model.control()
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
-    observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+    observables = solver.observables(contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F})
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
 
     dt = 1.0 / 60.0
@@ -1697,7 +1698,7 @@ def test_xpbd_contact_force_zero_when_not_touching(test, device):
     control = model.control()
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
-    observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+    observables = solver.observables(contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F})
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
 
     state_in.clear_forces()
@@ -1801,7 +1802,7 @@ def _run_single_body_steady_state(test, device, joint_kind: str, parent_kinemati
     model = builder.finalize(device=device)
 
     solver = newton.solvers.SolverXPBD(model, iterations=8)
-    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+    observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
     state_in = model.state()
     state_out = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
@@ -1925,7 +1926,7 @@ def test_xpbd_parent_force_chain_weight_propagation(test, device):
     model = builder.finalize(device=device)
 
     solver = newton.solvers.SolverXPBD(model, iterations=32)
-    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+    observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
     state_in = model.state()
     state_out = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
@@ -1983,7 +1984,7 @@ def test_xpbd_parent_force_not_allocated(test, device):
     model = builder.finalize(device=device)
 
     solver = newton.solvers.SolverXPBD(model, iterations=2)
-    observables = solver.observables(set())
+    observables = solver.observables(kinds=set())
     state_in = model.state()
     state_out = model.state()
 
@@ -2010,7 +2011,7 @@ def test_xpbd_parent_force_zero_for_free_body(test, device):
     model = builder.finalize(device=device)
 
     solver = newton.solvers.SolverXPBD(model, iterations=2)
-    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+    observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
     state_in = model.state()
     state_out = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
@@ -2076,7 +2077,7 @@ def test_xpbd_parent_f_centripetal_zero_g(test, device):
         angular_damping=0.0,
         enable_restitution=False,
     )
-    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+    observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
 
     state_in = model.state()
     state_out = model.state()
@@ -2170,7 +2171,7 @@ def test_xpbd_parent_f_consistent_across_solvers(test, device):
     ]:
         model = _build()
         solver = make_solver(model)
-        observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+        observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
         state_0, state_1 = model.state(), model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
         solver.step(state_0, state_1, None, None, dt, observables=observables)
@@ -2260,7 +2261,7 @@ def _newton_second_law_on_child(joint_kind, ic, *, dt, iters, device):
         angular_damping=0.0,
         enable_restitution=False,
     )
-    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+    observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
     state_in = model.state()
     state_out = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
@@ -2559,7 +2560,7 @@ def test_xpbd_mimic_applies_to_compound_d6_rotations(test, device):
 
 
 def test_xpbd_mimic_warns_for_unsupported_joint_types(test, device):
-    """Cap the reported indices when XPBD cannot enforce mimic relationships."""
+    """Cap XPBD's defensive warning for unsupported mimic metadata."""
     builder = newton.ModelBuilder()
     joints = []
     followers = []
@@ -2570,7 +2571,9 @@ def test_xpbd_mimic_warns_for_unsupported_joint_types(test, device):
         builder.add_shape_box(body_1, hx=0.1, hy=0.1, hz=0.1)
         reference = builder.add_joint_fixed(-1, body_0)
         follower = builder.add_joint_fixed(body_0, body_1)
-        builder.set_joint_mimic(follower, reference)
+        # Bypass the authoring guard to exercise defensive solver handling of
+        # unsupported metadata supplied directly by callers.
+        builder.joint_mimic_joint[follower] = reference
         joints.extend((reference, follower))
         followers.append(follower)
     builder.add_articulation(joints)
@@ -2599,6 +2602,15 @@ class TestSolverXPBD(unittest.TestCase):
             solver = newton.solvers.SolverXPBD(model)
 
         self.assertFalse(solver.enable_restitution)
+
+    def test_rejects_rod_joints(self):
+        """Raise at construction instead of silently skipping Rod joints in the constraint kernels."""
+        builder = newton.ModelBuilder()
+        builder.add_rod(
+            rod=newton.Rod([(0.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.0, 0.0, 2.0)], radius=0.1), body_frame_origin="com"
+        )
+        with self.assertRaisesRegex(ValueError, "JointType.ROD"):
+            newton.solvers.SolverXPBD(builder.finalize(device="cpu"))
 
     def test_compute_body_velocity_from_position_delta_is_deprecated(self):
         model = newton.ModelBuilder().finalize()

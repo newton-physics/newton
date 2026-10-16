@@ -17,6 +17,7 @@ from newton.tests._usd_deformable_test_utils import (
     _add_cable_curve,
     _add_physics_attachment,
     _apply_deformable_body_api,
+    _author_cable_rest_shape,
     _author_deformable_element_array,
     _author_newton_curve_damping,
     _bind_deformable_material,
@@ -24,7 +25,7 @@ from newton.tests._usd_deformable_test_utils import (
     group_labels,
     group_range,
 )
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import USD_AVAILABLE, get_test_devices
 from newton.usd import SchemaResolverPhysx
 
 
@@ -394,8 +395,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             )
 
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(UserWarning, "restShapePoints does not establish the simulated rest state"):
-            result = builder.add_usd(stage, return_deformable_results=True)
+        result = builder.add_usd(stage, return_deformable_results=True)
         self.assertIn("graph_component", result["path_cable_attrs"]["/World/CableA"])
 
         body_lengths = {}
@@ -413,21 +413,35 @@ class TestUSDDeformableCable(unittest.TestCase):
             joint_length = 0.5 * (
                 body_lengths[builder.joint_parent[joint_idx]] + body_lengths[builder.joint_child[joint_idx]]
             )
-            expected_ke = tuple(value / joint_length for value in stiffnesses)
-            expected_kd = tuple(value / joint_length for value in dampings)
+            expected_ke = tuple(
+                value / joint_length
+                for value in (
+                    stiffnesses[1],
+                    stiffnesses[1],
+                    stiffnesses[0],
+                    stiffnesses[2],
+                    stiffnesses[2],
+                    stiffnesses[3],
+                )
+            )
+            expected_kd = tuple(
+                value / joint_length
+                for value in (dampings[1], dampings[1], dampings[0], dampings[2], dampings[2], dampings[3])
+            )
             dof_start = builder.joint_qd_start[joint_idx]
-            np.testing.assert_allclose(builder.joint_target_ke[dof_start : dof_start + 4], expected_ke, rtol=1.0e-3)
-            np.testing.assert_allclose(builder.joint_target_kd[dof_start : dof_start + 4], expected_kd, rtol=1.0e-3)
+            np.testing.assert_allclose(builder.joint_target_ke[dof_start : dof_start + 6], expected_ke, rtol=1.0e-3)
+            np.testing.assert_allclose(builder.joint_target_kd[dof_start : dof_start + 6], expected_kd, rtol=1.0e-3)
             self.assertEqual(
-                builder.joint_target_mode[dof_start : dof_start + 4],
-                [int(newton.JointTargetMode.POSITION)] * 4,
+                builder.joint_target_mode[dof_start : dof_start + 6],
+                [int(newton.JointTargetMode.NONE)] * 6,
             )
 
     def test_cable_material_maps_to_rod_stiffness(self):
-        """Verify a bound curve-deformable material maps to radius and four per-joint stiffnesses.
+        """Verify four cable material moduli map to six per-axis joint stiffness slots.
 
         Authored zero stiffness is preserved, direct values override the volumetric fallback,
-        and all authored material values remain available in ``path_cable_attrs``.
+        material stiffness does not enable generic joint actuation, and all authored material
+        values remain available in ``path_cable_attrs``.
         """
         # Graded segment lengths exercise per-joint dual-length normalization.
         pts = [(0.0, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0), (0.6, 0.0, 1.0)]
@@ -454,13 +468,16 @@ class TestUSDDeformableCable(unittest.TestCase):
             joints = result["path_cable_map"]["/World/Cable"][1]
             self.assertEqual(b1 - b0, 3)
 
-            # Split rod joints store target_ke as stretch, shear, bend, twist.
+            # Rod DOFs use local XYZ order, with +Z as the material tangent.
             ke = builder.joint_target_ke
             for joint, joint_length in zip(joints, (0.15, 0.2), strict=True):
                 dof0 = builder.joint_qd_start[joint]
-                expected = tuple(value / joint_length for value in (stretch, shear, bend, twist))
-                np.testing.assert_allclose(ke[dof0 : dof0 + 4], expected, rtol=1.0e-3)
-                self.assertEqual(builder.joint_target_mode[dof0 : dof0 + 4], [int(newton.JointTargetMode.POSITION)] * 4)
+                expected = tuple(value / joint_length for value in (shear, shear, stretch, bend, bend, twist))
+                np.testing.assert_allclose(ke[dof0 : dof0 + 6], expected, rtol=1.0e-3)
+                self.assertEqual(
+                    builder.joint_target_mode[dof0 : dof0 + 6],
+                    [int(newton.JointTargetMode.NONE)] * 6,
+                )
 
             # The as-authored material is also preserved in the import metadata.
             attrs = result["path_cable_attrs"]["/World/Cable"]
@@ -501,8 +518,9 @@ class TestUSDDeformableCable(unittest.TestCase):
             )
             for joint, joint_length in zip(joints, (0.15, 0.2), strict=True):
                 dof0 = builder.joint_qd_start[joint]
-                expected = tuple(value / joint_length for value in structural)
-                np.testing.assert_allclose(builder.joint_target_ke[dof0 : dof0 + 4], expected, rtol=1.0e-3)
+                stretch, shear, bend, twist = structural
+                expected = tuple(value / joint_length for value in (shear, shear, stretch, bend, bend, twist))
+                np.testing.assert_allclose(builder.joint_target_ke[dof0 : dof0 + 6], expected, rtol=1.0e-3)
 
         with self.subTest(material="effective_defaults"):
             stage = _deformable_stage(up_axis="y")
@@ -526,8 +544,9 @@ class TestUSDDeformableCable(unittest.TestCase):
             self.assertAlmostEqual(float(builder.shape_scale[0][0]), radius, places=7)
             for joint, joint_length in zip(joints, (0.15, 0.2), strict=True):
                 dof0 = builder.joint_qd_start[joint]
-                expected = tuple(value / joint_length for value in structural)
-                np.testing.assert_allclose(builder.joint_target_ke[dof0 : dof0 + 4], expected, rtol=1.0e-3)
+                stretch, shear, bend, twist = structural
+                expected = tuple(value / joint_length for value in (shear, shear, stretch, bend, bend, twist))
+                np.testing.assert_allclose(builder.joint_target_ke[dof0 : dof0 + 6], expected, rtol=1.0e-3)
 
         with self.subTest(material="legacy_modulus_compatibility"):
             stage = _deformable_stage(up_axis="y")
@@ -551,9 +570,9 @@ class TestUSDDeformableCable(unittest.TestCase):
             bend = bend_modulus * 0.25 * math.pi * radius**4
             for joint, joint_length in zip(joints, (0.15, 0.2), strict=True):
                 dof0 = builder.joint_qd_start[joint]
-                expected = (stretch, stretch, bend, bend)
+                expected = (stretch, stretch, stretch, bend, bend, bend)
                 np.testing.assert_allclose(
-                    builder.joint_target_ke[dof0 : dof0 + 4],
+                    builder.joint_target_ke[dof0 : dof0 + 6],
                     tuple(value / joint_length for value in expected),
                     rtol=1.0e-3,
                 )
@@ -575,8 +594,8 @@ class TestUSDDeformableCable(unittest.TestCase):
             joint = result["path_cable_map"]["/World/Cable"][1][0]
             # The stretch-slot target_ke is the authored 0.0, not add_rod's 1.0e5 default.
             dof0 = builder.joint_qd_start[joint]
-            self.assertEqual(builder.joint_target_ke[dof0], 0.0)
-            self.assertEqual(builder.joint_target_mode[dof0], int(newton.JointTargetMode.NONE))
+            self.assertEqual(builder.joint_target_ke[dof0 + 2], 0.0)
+            self.assertEqual(builder.joint_target_mode[dof0 + 2], int(newton.JointTargetMode.NONE))
             self.assertEqual(result["path_cable_attrs"]["/World/Cable"]["material"]["curvesStretchStiffness"], 0.0)
 
     def test_rod_material_gain_setter_rejects_incompatible_joint(self):
@@ -591,11 +610,11 @@ class TestUSDDeformableCable(unittest.TestCase):
             "twist_stiffness": 1.0,
         }
 
-        with self.assertRaisesRegex(ValueError, "expected the four-slot ROD layout"):
+        with self.assertRaisesRegex(ValueError, "expected the six-DOF ROD layout"):
             builder._set_joint_rod_material_gains(fixed, **stiffnesses)
 
-        builder.joint_dof_dim[rod] = (3, 3)
-        with self.assertRaisesRegex(ValueError, "expected the four-slot ROD layout"):
+        builder.joint_dof_dim[rod] = (2, 2)
+        with self.assertRaisesRegex(ValueError, "expected the six-DOF ROD layout"):
             builder._set_joint_rod_material_gains(rod, **stiffnesses)
 
     def test_curve_damping_import_is_per_mode_and_honors_sentinel(self):
@@ -624,16 +643,11 @@ class TestUSDDeformableCable(unittest.TestCase):
         joints = result["path_cable_map"]["/World/Cable"][1]
         for joint, joint_length in zip(joints, (0.15, 0.2), strict=True):
             dof0 = builder.joint_qd_start[joint]
-            expected = (6.0 / joint_length, 0.0, 0.0, 8.0 / joint_length)
-            np.testing.assert_allclose(builder.joint_target_kd[dof0 : dof0 + 4], expected, rtol=1.0e-3)
+            expected = (0.0, 0.0, 6.0 / joint_length, 0.0, 0.0, 8.0 / joint_length)
+            np.testing.assert_allclose(builder.joint_target_kd[dof0 : dof0 + 6], expected, rtol=1.0e-3)
             self.assertEqual(
-                builder.joint_target_mode[dof0 : dof0 + 4],
-                [
-                    int(newton.JointTargetMode.VELOCITY),
-                    int(newton.JointTargetMode.NONE),
-                    int(newton.JointTargetMode.NONE),
-                    int(newton.JointTargetMode.VELOCITY),
-                ],
+                builder.joint_target_mode[dof0 : dof0 + 6],
+                [int(newton.JointTargetMode.NONE)] * 6,
             )
 
         material = result["path_cable_attrs"]["/World/Cable"]["material"]
@@ -641,6 +655,494 @@ class TestUSDDeformableCable(unittest.TestCase):
         self.assertEqual(material["curvesTwistDamping"], 8.0)
         self.assertNotIn("curvesShearDamping", material)
         self.assertNotIn("curvesBendDamping", material)
+
+    def test_cable_rest_shape_preserves_initial_pose_and_sets_mass(self):
+        """Use initial lengths when rest points are absent, preserving initial segment centers."""
+        for rest, lengths in ((None, [0.4, 0.4]), ([(0, 0, 0), (0, 0, 0.1), (0, 0, 0.3)], [0.1, 0.2])):
+            with self.subTest(rest=rest):
+                stage = _deformable_stage()
+                curves = _add_cable_curve(stage, "/World/Cable", [(0, 0, 0), (0, 0, 0.4), (0, 0, 0.8)], density=1000.0)
+                _author_cable_rest_shape(curves, points=rest)
+                builder = newton.ModelBuilder()
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error", UserWarning)
+                    result = builder.add_usd(stage, return_deformable_results=True)
+                bodies, joints = result["path_cable_map"]["/World/Cable"]
+                np.testing.assert_allclose(
+                    np.asarray(builder.body_q)[bodies, :3], [(0, 0, 0.2), (0, 0, 0.6)], atol=1e-6
+                )
+                shapes = [builder.body_shapes[body][0] for body in bodies]
+                np.testing.assert_allclose(
+                    np.asarray(builder.shape_scale)[shapes, 1], 0.5 * np.array(lengths), atol=1e-6
+                )
+                np.testing.assert_allclose(
+                    np.asarray(builder.body_mass)[bodies], 0.1 * math.pi * np.array(lengths), rtol=1e-6
+                )
+                joint = joints[0]
+                self.assertAlmostEqual(float(builder.joint_X_p[joint][2]), 0.5 * lengths[0], places=6)
+                self.assertAlmostEqual(float(builder.joint_X_c[joint][2]), -0.5 * lengths[1], places=6)
+
+    def test_cable_rest_normals_and_usd_fallback(self):
+        """Import rest twist and use USD normals against the rest tangents when omitted."""
+        from pxr import Usd, UsdGeom
+
+        self.addCleanup(setattr, newton, "use_coord_layout_targets", newton.use_coord_layout_targets)
+        initial = [(0, 0, 0), (0, 0, 0.1), (0, 0, 0.2)]
+        bent = [(0, 0, 0), (0, 0, 0.1), (0.1, 0, 0.1)]
+        initial_frame = wp.quat_from_axis_angle(wp.vec3(0, 0, 1), -math.pi / 4)
+        turn = wp.quat_from_axis_angle(wp.vec3(0, 1, 0), math.pi / 2)
+        bent_frame = wp.quat_from_axis_angle(wp.vec3(1, 0, 0), math.pi / 2) * turn
+        twisted_frame = wp.quat_from_axis_angle(wp.vec3(0, 0, 1), -math.pi / 2)
+        cases = (
+            ("absent", None, None, [initial_frame] * 2),
+            ("explicit", bent, [(0, 1, 0), (0, 0, 1), (0, 0, 0)], [wp.quat_identity(), bent_frame]),
+            ("fallback", bent, None, [initial_frame, turn]),
+            ("normals_only", None, [(0, 1, 0), (1, 0, 0), (0, 0, 0)], [wp.quat_identity(), twisted_frame]),
+        )
+        for coord_layout in (False, True):
+            newton.use_coord_layout_targets = coord_layout
+            for mode, rest, normals, rest_frames in cases:
+                with self.subTest(coord_layout=coord_layout, mode=mode):
+                    stage = _deformable_stage()
+                    curves = _add_cable_curve(stage, "/World/Cable", initial)
+                    curves.CreateNormalsAttr([(1, 1, 0)] * 3)
+                    curves.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+                    _author_cable_rest_shape(curves, points=rest, normals=normals)
+                    if normals is not None:
+                        curves.GetPrim().GetAttribute("physics:restNormals").Set([(0, 1, 0)] * 3, Usd.TimeCode(1))
+                    native = newton.ModelBuilder()
+                    _, native_joints = native.add_rod(
+                        rod=newton.Rod(
+                            initial,
+                            quaternions=[initial_frame] * 2,
+                            rest_points=initial if rest is None else rest,
+                            rest_quaternions=rest_frames,
+                            radius=0.01,
+                        )
+                    )
+                    builder = newton.ModelBuilder()
+                    result = builder.add_usd(stage, return_deformable_results=True)
+                    bodies, joints = result["path_cable_map"]["/World/Cable"]
+                    np.testing.assert_allclose(np.asarray(builder.body_q)[bodies], np.asarray(native.body_q), atol=1e-6)
+                    q = builder.joint_q_start[joints[0]]
+                    nq = native.joint_q_start[native_joints[0]]
+                    np.testing.assert_allclose(
+                        builder.joint_target_q[q : q + 7], native.joint_target_q[nq : nq + 7], atol=1e-6
+                    )
+                    with warnings.catch_warnings():
+                        warnings.filterwarnings(
+                            "ignore", message=".*legacy DOF-shaped joint_target_q layout.*", category=DeprecationWarning
+                        )
+                        imported_model = builder.finalize(device="cpu")
+                        native_model = native.finalize(device="cpu")
+                    np.testing.assert_allclose(
+                        imported_model.joint_target_q.numpy(), native_model.joint_target_q.numpy(), atol=1e-6
+                    )
+
+    def test_welded_cables_keep_rest_vectors_and_frames(self):
+        """Weld translated rest shapes without changing their lengths or material frames."""
+        from pxr import UsdGeom
+
+        self.addCleanup(setattr, newton, "use_coord_layout_targets", newton.use_coord_layout_targets)
+        newton.use_coord_layout_targets = True
+        stage = self._author_attached_cable_pair(gap=0.0)
+        for name, rest, normal in (
+            ("CableA", [(10, 0, 1), (10.1, 0, 1), (10.3, 0, 1), (10.6, 0, 1)], (0, 1, 0)),
+            ("CableB", [(0, 20, 1), (0, 20.2, 1), (0, 20.4, 1), (0, 20.6, 1)], (0, 0, 1)),
+        ):
+            curves = UsdGeom.BasisCurves(stage.GetPrimAtPath(f"/World/{name}"))
+            curves.CreateNormalsAttr([normal] * 4)
+            curves.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+            _author_cable_rest_shape(curves, points=rest, normals=[normal] * 4)
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, return_deformable_results=True)
+        self.assertIn("graph_component", result["path_cable_attrs"]["/World/CableA"])
+        a = result["path_cable_map"]["/World/CableA"][0]
+        b = result["path_cable_map"]["/World/CableB"][0]
+        lengths = [2 * float(builder.shape_scale[builder.body_shapes[body][0]][1]) for body in a + b]
+        np.testing.assert_allclose(lengths, [0.1, 0.2, 0.3, 0.2, 0.2, 0.2], atol=2e-6)
+        np.testing.assert_allclose(
+            np.asarray(builder.body_mass)[a + b], math.pi * np.array([0.01, 0.02, 0.03, 0.02, 0.02, 0.02]), atol=1e-6
+        )
+
+        turn = wp.quat_from_axis_angle(wp.vec3(0, 1, 0), math.pi / 2)
+        initial_b = wp.quat_from_axis_angle(wp.vec3(1, 0, 0), math.pi / 2) * turn
+        rest_b = wp.quat_from_matrix(wp.mat33(-1, 0, 0, 0, 0, 1, 0, 1, 0))
+        native = newton.ModelBuilder()
+        native.add_rod(
+            rod=newton.Rod(
+                [(0, 0, 1), (0.1, 0, 1), (0.2, 0, 1), (0.3, 0, 1), (0.1, 0, 1), (0.2, 0, 1), (0.3, 0, 1)],
+                edges=[(0, 1), (1, 2), (2, 3), (0, 4), (4, 5), (5, 6)],
+                quaternions=[turn] * 3 + [initial_b] * 3,
+                rest_points=[(0, 0, 0), (0.1, 0, 0), (0.3, 0, 0), (0.6, 0, 0), (0, 0.2, 0), (0, 0.4, 0), (0, 0.6, 0)],
+                rest_quaternions=[turn] * 3 + [rest_b] * 3,
+                radius=0.01,
+            )
+        )
+        np.testing.assert_allclose(builder.body_q, native.body_q, atol=1e-6)
+        np.testing.assert_allclose(builder.joint_target_q, native.joint_target_q, atol=1e-6)
+
+    def test_welded_cable_normals_follow_merged_tangents(self):
+        """Keep authored normals when an accepted weld moves one endpoint slightly."""
+        from pxr import UsdGeom
+
+        stage = self._author_attached_cable_pair(gap=0.0009)
+        for name, y in (("CableA", 0.0), ("CableB", 0.0009)):
+            curves = UsdGeom.BasisCurves(stage.GetPrimAtPath(f"/World/{name}"))
+            curves.GetPointsAttr().Set([(x, y, 1.0) for x in (0.0, 0.005, 0.01, 0.015)])
+            curves.CreateNormalsAttr([(0, 0, 1)] * 4)
+            curves.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, return_deformable_results=True)
+        bodies = result["path_cable_map"]["/World/CableB"][0]
+        self.assertIn("graph_component", result["path_cable_attrs"]["/World/CableB"])
+        rotation = wp.transform_get_rotation(builder.body_q[bodies[0]])
+        np.testing.assert_allclose(
+            wp.quat_rotate(rotation, wp.vec3(0, 0, 1)), wp.normalize(wp.vec3(0.005, 0.0009, 0)), atol=1e-6
+        )
+        np.testing.assert_allclose(wp.quat_rotate(rotation, wp.vec3(0, 1, 0)), [0, 0, 1], atol=1e-6)
+
+    def test_welded_cable_does_not_hide_nonfinite_source_points(self):
+        """Skip a bad source curve even when its invalid point would be merged away."""
+        from pxr import UsdGeom
+
+        stage = self._author_attached_cable_pair(gap=0.0)
+        UsdGeom.BasisCurves(stage.GetPrimAtPath("/World/CableB")).GetPointsAttr().Set(
+            [(math.nan, 0, 1), (0.1, 0, 1), (0.2, 0, 1), (0.3, 0, 1)]
+        )
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "CableB.*non-finite"):
+            result = builder.add_usd(stage, return_deformable_results=True)
+        self.assertEqual(builder.body_count, 3)
+        self.assertIn("/World/CableA", result["path_cable_map"])
+        self.assertNotIn("/World/CableB", result["path_cable_map"])
+
+    def test_cable_bad_initial_normal_keeps_other_authored_frames(self):
+        """Keep per-segment normal fallbacks silent on cables without rest attributes."""
+        from pxr import UsdGeom
+
+        self.addCleanup(setattr, newton, "use_coord_layout_targets", newton.use_coord_layout_targets)
+        newton.use_coord_layout_targets = True
+        for mode in ("single", "periodic", "rooted", "welded", "mixed_rest"):
+            for bad_normal in ((0, 0, 0), (0, 0, 1)):
+                with self.subTest(mode=mode, normal=bad_normal):
+                    stage = _deformable_stage()
+                    curves = _add_cable_curve(
+                        stage, "/World/Cable", [(0, 0, 0), (0, 0, 0.1), (0, 0, 0.2)], periodic=mode == "periodic"
+                    )
+                    curves.CreateNormalsAttr([(1, 0, 0), bad_normal, (0, 1, 0)])
+                    curves.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+                    if mode == "rooted":
+                        _add_physics_attachment(
+                            stage,
+                            "/World/Anchor",
+                            src0="/World/Cable",
+                            type0="point",
+                            indices0=[0],
+                            coords1=[(0, 0, 0)],
+                        )
+                    elif mode in ("welded", "mixed_rest"):
+                        other = _add_cable_curve(stage, "/World/Other", [(0, 0, 0), (0.1, 0, 0), (0.2, 0, 0)])
+                        if mode == "mixed_rest":
+                            _author_cable_rest_shape(
+                                other, points=[(0, 0, 0), (0.05, 0, 0), (0.1, 0, 0)], normals=[(0, 0, 1)] * 3
+                            )
+                        _add_physics_attachment(
+                            stage,
+                            "/World/Weld",
+                            src0="/World/Cable",
+                            type0="point",
+                            indices0=[0],
+                            src1="/World/Other",
+                            type1="point",
+                            indices1=[0],
+                        )
+                    builder = newton.ModelBuilder()
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("error", UserWarning)
+                        result = builder.add_usd(stage, return_deformable_results=True)
+                    if mode in ("welded", "mixed_rest"):
+                        self.assertIn("graph_component", result["path_cable_attrs"]["/World/Cable"])
+                        other_bodies = result["path_cable_map"]["/World/Other"][0]
+                        shapes = [builder.body_shapes[body][0] for body in other_bodies]
+                        np.testing.assert_allclose(
+                            np.asarray(builder.shape_scale)[shapes, 1],
+                            0.025 if mode == "mixed_rest" else 0.05,
+                            atol=1e-6,
+                        )
+                    elif mode == "rooted":
+                        joint = result["path_attachment_map"]["/World/Anchor"][0]
+                        self.assertGreaterEqual(builder.joint_articulation[joint], 0)
+                    bodies = result["path_cable_map"]["/World/Cable"][0]
+                    for body, expected in zip(bodies[:2], ([1, 0, 0], [0, 1, 0]), strict=True):
+                        rotation = wp.transform_get_rotation(builder.body_q[body])
+                        np.testing.assert_allclose(wp.quat_rotate(rotation, wp.vec3(0, 1, 0)), expected, atol=1e-6)
+                    joint = next(j for j, child in enumerate(builder.joint_child) if child == bodies[1])
+                    q = builder.joint_q_start[joint]
+                    np.testing.assert_allclose(
+                        builder.joint_target_q[q : q + 7], [0, 0, 0, 0, 0, math.sqrt(0.5), math.sqrt(0.5)], atol=1e-6
+                    )
+
+    def test_cable_rest_volume_mass_precedence(self):
+        """Use rest volumes for mass weights while preserving explicit segment masses."""
+        for mode, values, expected in (
+            ("constant", [6.0], [2.0, 4.0]),
+            ("curve", [9.0], [3.0, 6.0]),
+            ("segment", [4.0, 5.0], [4.0, 5.0]),
+            ("point", [1.0, 2.0, 3.0], [5.0 / 3.0, 13.0 / 3.0]),
+            ("body", [12.0], [4.0, 8.0]),
+        ):
+            with self.subTest(mode=mode):
+                stage = _deformable_stage()
+                curves = _add_cable_curve(stage, "/World/Cable", [(0, 0, 0), (0, 0, 0.4), (0, 0, 0.8)])
+                _author_cable_rest_shape(curves, points=[(0, 0, 0), (0, 0, 0.1), (0, 0, 0.3)])
+                _apply_deformable_body_api(curves.GetPrim(), mass=12.0, density=500.0)
+                if mode != "body":
+                    _author_deformable_element_array(curves.GetPrim(), "masses", values, mode)
+                builder = newton.ModelBuilder()
+                result = builder.add_usd(stage, return_deformable_results=True)
+                bodies = result["path_cable_map"]["/World/Cable"][0]
+                np.testing.assert_allclose(np.asarray(builder.body_mass)[bodies], expected, rtol=1e-6)
+                self.assertTrue(np.isfinite(np.asarray(builder.body_inertia)[bodies]).all())
+                self.assertTrue(np.isfinite(np.asarray(builder.body_inv_inertia)[bodies]).all())
+
+    def test_periodic_cable_rest_shape_matches_native_rod(self):
+        """Keep the closing segment and its rest rotation on a stretched periodic cable."""
+        from pxr import UsdGeom
+
+        stage = _deformable_stage()
+        initial = [(0, 0, 0), (0, 0, 0.2), (0.2, 0, 0)]
+        rest = [(0, 0, 0), (0, 0, 0.1), (0.1, 0, 0)]
+        curves = _add_cable_curve(stage, "/World/Cable", initial, periodic=True)
+        curves.CreateNormalsAttr([(0, 1, 0)] * 3)
+        curves.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+        _author_cable_rest_shape(curves, points=rest)
+        frames = [wp.quat_from_axis_angle(wp.vec3(0, 1, 0), angle) for angle in (0.0, 3 * math.pi / 4, -math.pi / 2)]
+        native = newton.ModelBuilder()
+        _, native_joints = native.add_rod(
+            rod=newton.Rod(
+                [*initial, initial[0]],
+                quaternions=frames,
+                rest_points=[*rest, rest[0]],
+                rest_quaternions=frames,
+                radius=0.01,
+                closed=True,
+            )
+        )
+        builder = newton.ModelBuilder()
+        result = builder.add_usd(stage, return_deformable_results=True)
+        bodies, joints = result["path_cable_map"]["/World/Cable"]
+        self.assertEqual(len(bodies), 3)
+        self.assertEqual(len(joints), 3)
+        self.assertEqual(builder.joint_articulation[joints[-1]], -1)
+        np.testing.assert_allclose(builder.body_q, native.body_q, atol=1e-6)
+        np.testing.assert_allclose(builder.shape_scale, native.shape_scale, atol=1e-6)
+        np.testing.assert_allclose(builder.joint_target_q, native.joint_target_q, atol=1e-6)
+        np.testing.assert_allclose(builder.joint_X_p[joints[-1]], native.joint_X_p[native_joints[-1]], atol=1e-6)
+
+    def test_cable_rest_arrays_keep_multi_curve_offsets(self):
+        """Keep later rest points, normals, and masses aligned after skipping a curve."""
+
+        self.addCleanup(setattr, newton, "use_coord_layout_targets", newton.use_coord_layout_targets)
+        newton.use_coord_layout_targets = True
+        stage = _deformable_stage()
+        curves = _add_cable_curve(stage, "/World/Cable", [(0, 0, 0)] * 2 + [(0, 0, 0), (0, 0, 0.4), (0, 0, 0.8)])
+        curves.CreateCurveVertexCountsAttr([2, 3])
+        _author_cable_rest_shape(
+            curves,
+            points=[(0, 0, 0)] * 2 + [(0, 0, 0), (0, 0, 0.1), (0, 0, 0.3)],
+            normals=[(0, 0, 0)] * 2 + [(0, 1, 0), (1, 0, 0), (0, 0, 0)],
+        )
+        _author_deformable_element_array(curves.GetPrim(), "masses", [99, 2, 3], "segment")
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(UserWarning, "curve 0 has 2 points"):
+            result = builder.add_usd(stage, return_deformable_results=True)
+        bodies, joints = result["path_cable_map"]["/World/Cable"]
+        np.testing.assert_allclose(np.asarray(builder.body_mass)[bodies], [2, 3])
+        shapes = [builder.body_shapes[body][0] for body in bodies]
+        np.testing.assert_allclose(np.asarray(builder.shape_scale)[shapes, 1], [0.05, 0.1], atol=1e-6)
+        q = builder.joint_q_start[joints[0]]
+        np.testing.assert_allclose(
+            builder.joint_target_q[q : q + 7], [0, 0, 0, 0, 0, -math.sqrt(0.5), math.sqrt(0.5)], atol=1e-6
+        )
+
+    def test_cable_bad_rest_normals_preserve_rest_points(self):
+        """Keep valid rest lengths when rest normals need a fallback."""
+        from pxr import Sdf, UsdGeom
+
+        for bad in ([(0, 1, 0)], [(0, 0, 0)] * 3, [(0, 0, 1)] * 3, [(math.nan, 1, 0)] * 3, ["abc"] * 3):
+            with self.subTest(normals=bad):
+                stage = _deformable_stage()
+                curves = _add_cable_curve(stage, "/World/Cable", [(0, 0, 0), (0, 0, 0.4), (0, 0, 0.8)])
+                curves.CreateNormalsAttr([(0, 1, 0)] * 3)
+                curves.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+                _author_cable_rest_shape(curves, points=[(0, 0, 0), (0, 0, 0.1), (0, 0, 0.3)])
+                normal_type = (
+                    Sdf.ValueTypeNames.StringArray if isinstance(bad[0], str) else Sdf.ValueTypeNames.Normal3fArray
+                )
+                curves.GetPrim().CreateAttribute("physics:restNormals", normal_type).Set(bad)
+                builder = newton.ModelBuilder()
+                with self.assertWarnsRegex(UserWarning, "restNormals"):
+                    result = builder.add_usd(stage, return_deformable_results=True)
+                bodies, joints = result["path_cable_map"]["/World/Cable"]
+                shapes = [builder.body_shapes[body][0] for body in bodies]
+                np.testing.assert_allclose(np.asarray(builder.shape_scale)[shapes, 1], [0.05, 0.1], atol=1e-6)
+                q = builder.joint_q_start[joints[0]]
+                np.testing.assert_allclose(builder.joint_target_q[q : q + 7], [0, 0, 0, 0, 0, 0, 1], atol=1e-6)
+
+    def test_cable_rest_shape_uses_full_affine_transform(self):
+        """Match baked rest geometry under scale, shear, reflection, and an import transform."""
+        from pxr import Gf, Sdf, UsdGeom
+
+        self.addCleanup(setattr, newton, "use_coord_layout_targets", newton.use_coord_layout_targets)
+        newton.use_coord_layout_targets = True
+        transform = Gf.Matrix4d(2, 0, 0.3, 0, 0, -3, 0, 0, 0, 0.5, 4, 0, 1, 2, 3, 1)
+        initial = [(0, 0, 0), (0, 0, 0.2), (0, 0, 0.4)]
+        rest = [(0, 0, 0), (0.1, 0, 0), (0.1, 0.2, 0)]
+        transformed_rest = np.array([transform.Transform(Gf.Vec3d(*p)) for p in rest])
+        # Non-unit stage metadata warns; it does not scale imported points.
+        expected_lengths = np.linalg.norm(np.diff(transformed_rest, axis=0), axis=1)
+        for explicit_rest_normals in (False, True):
+            with self.subTest(explicit_rest_normals=explicit_rest_normals):
+                director = np.array(transform.TransformDir(Gf.Vec3d(0, 0, 1) if explicit_rest_normals else Gf.Vec3d(1)))
+                frames = []
+                for segment in np.diff(transformed_rest, axis=0):
+                    tangent = segment / np.linalg.norm(segment)
+                    x_axis = np.cross(director, tangent)
+                    x_axis /= np.linalg.norm(x_axis)
+                    frames.append(np.column_stack((x_axis, np.cross(tangent, x_axis), tangent)))
+                expected_rotation = frames[0].T @ frames[1]
+                builders = []
+                for baked in (False, True):
+                    stage = _deformable_stage(up_axis="y")
+                    UsdGeom.SetStageMetersPerUnit(stage, 0.01)
+                    parent = UsdGeom.Xform.Define(stage, "/World")
+                    if not baked:
+                        parent.AddTransformOp().Set(transform)
+                    points = [tuple(transform.Transform(Gf.Vec3d(*p))) for p in initial] if baked else initial
+                    rest_points = [tuple(transform.Transform(Gf.Vec3d(*p))) for p in rest] if baked else rest
+                    normal = tuple(transform.TransformDir(Gf.Vec3d(1, 1, 1))) if baked else (1, 1, 1)
+                    rest_normal = tuple(transform.TransformDir(Gf.Vec3d(0, 0, 1))) if baked else (0, 0, 1)
+                    curves = _add_cable_curve(stage, "/World/Cable", points, density=1000.0)
+                    primvar = UsdGeom.PrimvarsAPI(curves).CreatePrimvar(
+                        "normals", Sdf.ValueTypeNames.Normal3fArray, UsdGeom.Tokens.vertex
+                    )
+                    primvar.Set([normal])
+                    primvar.SetIndices([0, 0, 0])
+                    _author_cable_rest_shape(
+                        curves, points=rest_points, normals=[rest_normal] * 3 if explicit_rest_normals else None
+                    )
+                    builder = newton.ModelBuilder()
+                    with self.assertWarnsRegex(UserWarning, "non-unit linear units"):
+                        result = builder.add_usd(
+                            stage,
+                            xform=wp.transform(wp.vec3(0.2, -0.3, 0.4), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), 0.3)),
+                            return_deformable_results=True,
+                        )
+                    builders.append(builder)
+                    np.testing.assert_allclose(
+                        2 * np.asarray(builder.shape_scale)[:, 1], expected_lengths, rtol=2e-5, atol=1e-8
+                    )
+                    joint = result["path_cable_map"]["/World/Cable"][1][0]
+                    q = builder.joint_q_start[joint]
+                    rotation = wp.quat_to_matrix(wp.quat(*builder.joint_target_q[q + 3 : q + 7]))
+                    np.testing.assert_allclose(np.asarray(rotation).reshape(3, 3), expected_rotation, atol=2e-5)
+                for attribute in ("body_q", "shape_scale", "body_mass", "joint_target_q", "joint_X_p", "joint_X_c"):
+                    np.testing.assert_allclose(
+                        getattr(builders[0], attribute), getattr(builders[1], attribute), atol=2e-5, err_msg=attribute
+                    )
+
+    def test_cable_rest_shape_recovers_in_vbd(self):
+        """Relax individual and welded cables while leaving a rest-state control still."""
+        from pxr import UsdGeom, UsdPhysics, UsdShade
+
+        bend, twist = 0.25, 0.2
+        rest = [(0, 0, 0), (0, 0, 0.1), (0.1 * math.sin(bend), 0, 0.1 + 0.1 * math.cos(bend))]
+        rest_rotation = wp.quat_from_axis_angle(wp.vec3(0, 1, 0), bend) * wp.quat_from_axis_angle(
+            wp.vec3(0, 0, 1), twist
+        )
+        rest_normals = [(0, 1, 0), tuple(wp.quat_rotate(rest_rotation, wp.vec3(0, 1, 0))), (0, 1, 0)]
+        for device in get_test_devices():
+            for relaxed, welded in ((False, False), (True, False), (False, True)):
+                with self.subTest(device=device, relaxed=relaxed, welded=welded):
+                    stage = _deformable_stage()
+                    UsdPhysics.Scene.Get(stage, "/PhysicsScene").CreateGravityMagnitudeAttr(0.0)
+                    initial = rest if relaxed else [(0, 0, 0), (0, 0, 0.12), (0, 0, 0.24)]
+                    curves = _add_cable_curve(stage, "/World/Cable", initial, collision=False)
+                    curves.CreateNormalsAttr(rest_normals if relaxed else [(0, 1, 0)] * 3)
+                    curves.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+                    _author_cable_rest_shape(curves, points=rest, normals=rest_normals)
+                    material = _bind_deformable_material(
+                        stage,
+                        curves.GetPrim(),
+                        "/World/Material",
+                        density=1000.0,
+                        curvesStretchStiffness=10.0,
+                        curvesShearStiffness=10.0,
+                        curvesBendStiffness=0.02,
+                        curvesTwistStiffness=0.02,
+                    )
+                    _author_newton_curve_damping(
+                        material,
+                        curvesStretchDamping=0.1,
+                        curvesShearDamping=0.1,
+                        curvesBendDamping=0.001,
+                        curvesTwistDamping=0.001,
+                    )
+                    if welded:
+                        branch = _add_cable_curve(
+                            stage, "/World/Branch", [(x, -z, y) for x, y, z in initial], collision=False
+                        )
+                        branch.CreateNormalsAttr([(0, 0, 1)] * 3)
+                        branch.SetNormalsInterpolation(UsdGeom.Tokens.vertex)
+                        _author_cable_rest_shape(
+                            branch,
+                            points=[(x, -z, y) for x, y, z in rest],
+                            normals=[(x, -z, y) for x, y, z in rest_normals],
+                        )
+                        UsdShade.MaterialBindingAPI.Apply(branch.GetPrim()).Bind(material, materialPurpose="physics")
+                        _add_physics_attachment(
+                            stage,
+                            "/World/Weld",
+                            src0="/World/Cable",
+                            type0="point",
+                            indices0=[0],
+                            src1="/World/Branch",
+                            type1="point",
+                            indices1=[0],
+                        )
+                    builder = newton.ModelBuilder()
+                    result = builder.add_usd(stage, return_deformable_results=True)
+                    bodies = result["path_cable_map"]["/World/Cable"][0]
+                    if welded:
+                        self.assertIn("graph_component", result["path_cable_attrs"]["/World/Cable"])
+                    joints = [j for j, kind in enumerate(builder.joint_type) if kind == newton.JointType.ROD]
+                    builder.color()
+                    model = builder.finalize(device=device)
+                    state, next_state = model.state(), model.state()
+                    control = model.control()
+                    solver = newton.solvers.SolverVBD(model, iterations=5, rigid_compliant_alm=True)
+                    initial_body_q = state.body_q.numpy().copy()
+                    for _ in range(1 if relaxed else 120):
+                        state.clear_forces()
+                        solver.step(state, next_state, control, None, 1.0 / 240.0)
+                        state, next_state = next_state, state
+                    poses = state.body_q.numpy()
+                    self.assertTrue(np.isfinite(poses).all())
+                    if relaxed:
+                        np.testing.assert_allclose(poses, initial_body_q, atol=2e-5)
+                    else:
+                        for joint in joints:
+                            parent = wp.transform(*poses[builder.joint_parent[joint]]) * builder.joint_X_p[joint]
+                            child = wp.transform(*poses[builder.joint_child[joint]]) * builder.joint_X_c[joint]
+                            gap = wp.length(wp.transform_get_translation(child) - wp.transform_get_translation(parent))
+                            self.assertLess(float(gap), 0.005)
+                        joint = next(j for j in joints if builder.joint_child[j] == bodies[1])
+                        parent = wp.transform(*poses[bodies[0]]) * builder.joint_X_p[joint]
+                        child = wp.transform(*poses[bodies[1]]) * builder.joint_X_c[joint]
+                        relative = wp.quat_inverse(wp.transform_get_rotation(parent)) * wp.transform_get_rotation(child)
+                        error = wp.quat_inverse(rest_rotation) * relative
+                        self.assertLess(float(wp.length(wp.vec3(error[0], error[1], error[2]))), 0.04)
 
     def test_cable_rest_length_from_rest_shape_points(self):
         """Verify ``restShapePoints`` supplies each rod joint's local dual rest length.
@@ -671,16 +1173,14 @@ class TestUSDDeformableCable(unittest.TestCase):
         )
 
         builder = newton.ModelBuilder()
-        # restShapePoints does not establish an initial strain state, so it warns.
-        with self.assertWarnsRegex(UserWarning, "restShapePoints does not establish the simulated rest state"):
-            result = builder.add_usd(stage, return_deformable_results=True)
+        result = builder.add_usd(stage, return_deformable_results=True)
         joints = result["path_cable_map"]["/World/Cable"][1]
         # Dual lengths of the rest polyline. Both differ from the 0.2 deformed segments and from
         # the 0.2 rest mean, so this also pins the normalization to each joint's own neighbors.
         for joint, joint_length in zip(joints, (0.15, 0.25), strict=True):
             expected = stretch / joint_length
             dof0 = builder.joint_qd_start[joint]
-            self.assertAlmostEqual(builder.joint_target_ke[dof0], expected, delta=expected * 1.0e-3)
+            self.assertAlmostEqual(builder.joint_target_ke[dof0 + 2], expected, delta=expected * 1.0e-3)
 
         # An invalid rest segment cannot normalize stiffness, so the curve falls back to its
         # current lengths (a uniform 0.2 here) and reports the discard.
@@ -708,7 +1208,7 @@ class TestUSDDeformableCable(unittest.TestCase):
                 expected = stretch / 0.2
                 for joint in joints:
                     dof0 = builder.joint_qd_start[joint]
-                    self.assertAlmostEqual(builder.joint_target_ke[dof0], expected, delta=expected * 1.0e-3)
+                    self.assertAlmostEqual(builder.joint_target_ke[dof0 + 2], expected, delta=expected * 1.0e-3)
 
     def test_non_linear_curve_is_skipped(self):
         """A non-linear (cubic) curve-deformable warns and is skipped (cable import is linear-only)."""
@@ -753,8 +1253,8 @@ class TestUSDDeformableCable(unittest.TestCase):
         self.assertEqual(result["path_cable_attrs"]["/World/Cable"]["material"], {})
         joint = result["path_cable_map"]["/World/Cable"][1][0]
         dof0 = builder.joint_qd_start[joint]
-        self.assertEqual(builder.joint_target_ke[dof0], 1.0e5)  # add_rod default stretch stiffness
-        self.assertEqual(builder.joint_target_kd[dof0], 0.0)
+        self.assertEqual(builder.joint_target_ke[dof0 + 2], 1.0e5)  # add_rod default stretch stiffness
+        self.assertEqual(builder.joint_target_kd[dof0 + 2], 0.0)
 
     def test_geometry_authored_material_attrs_warn_on_standalone_import(self):
         """Verify that standalone import warns about and ignores geometry-authored material attributes."""
@@ -1086,13 +1586,19 @@ class TestUSDDeformableCable(unittest.TestCase):
         (joint,) = result["path_cable_map"]["/World/Cable"][1]
         dof = builder.joint_qd_start[joint]
         shear_modulus = 1.0e6 / (2.0 * (1.0 + 0.3))
+        stretch = 1.0e6 * math.pi * 0.01**2
+        shear = 0.9 * shear_modulus * math.pi * 0.01**2
+        bend = 1.0e6 * math.pi * 0.01**4 / 4.0
+        twist = shear_modulus * math.pi * 0.01**4 / 2.0
         expected = (
-            1.0e6 * math.pi * 0.01**2,
-            0.9 * shear_modulus * math.pi * 0.01**2,
-            1.0e6 * math.pi * 0.01**4 / 4.0,
-            shear_modulus * math.pi * 0.01**4 / 2.0,
+            shear,
+            shear,
+            stretch,
+            bend,
+            bend,
+            twist,
         )
-        np.testing.assert_allclose(builder.joint_target_ke[dof : dof + 4], expected, rtol=1.0e-5)
+        np.testing.assert_allclose(builder.joint_target_ke[dof : dof + 6], expected, rtol=1.0e-5)
 
     def test_cable_material_thickness_is_a_deprecated_fallback(self):
         """Prefer geometry thickness while warning for the removed material attribute."""
@@ -1145,8 +1651,8 @@ class TestUSDDeformableCable(unittest.TestCase):
         dof = builder.joint_qd_start[joint]
         section_stiffnesses = [1.0e6 * math.pi * radius**2 for radius in radii]
         expected_stretch = 1.0 / (0.5 / section_stiffnesses[0] + 0.5 / section_stiffnesses[1])
-        self.assertAlmostEqual(builder.joint_target_ke[dof], expected_stretch, delta=expected_stretch * 1.0e-5)
-        self.assertAlmostEqual(builder.joint_target_kd[dof], 10.0)
+        self.assertAlmostEqual(builder.joint_target_ke[dof + 2], expected_stretch, delta=expected_stretch * 1.0e-5)
+        self.assertAlmostEqual(builder.joint_target_kd[dof + 2], 10.0)
 
         model = builder.finalize(device="cpu")
         model_collision_radii = model.shape_collision_radius.numpy()
@@ -1176,8 +1682,8 @@ class TestUSDDeformableCable(unittest.TestCase):
         dof = builder.joint_qd_start[joint]
         expected_stretch = 1.0e6 * math.pi * 0.02**2
         expected_bend = 1.0e6 * math.pi * 0.03**4 / 4.0
-        self.assertAlmostEqual(builder.joint_target_ke[dof], expected_stretch, delta=expected_stretch * 1.0e-5)
-        self.assertAlmostEqual(builder.joint_target_ke[dof + 2], expected_bend, delta=expected_bend * 1.0e-5)
+        self.assertAlmostEqual(builder.joint_target_ke[dof + 2], expected_stretch, delta=expected_stretch * 1.0e-5)
+        self.assertAlmostEqual(builder.joint_target_ke[dof + 3], expected_bend, delta=expected_bend * 1.0e-5)
 
     def test_cable_mass_element_types_map_to_segments(self):
         """Map constant, curve, segment, and point masses to rigid cable segments."""
@@ -1313,7 +1819,7 @@ class TestUSDDeformableCable(unittest.TestCase):
 
         def cable_stretch(builder, result):
             joint = result["path_cable_map"]["/World/Cable"][1][0]
-            return builder.joint_target_ke[builder.joint_qd_start[joint]]
+            return builder.joint_target_ke[builder.joint_qd_start[joint] + 2]
 
         # Default resolvers ignore the vendor value, so the current material derives from E/nu defaults.
         builder_default = newton.ModelBuilder()
@@ -1346,7 +1852,7 @@ class TestUSDDeformableCable(unittest.TestCase):
             builder = newton.ModelBuilder()
             result = builder.add_usd(stage, schema_resolvers=[SchemaResolverPhysx()], return_deformable_results=True)
             joint = result["path_cable_map"]["/World/Cable"][1][0]
-            return builder.joint_target_ke[builder.joint_qd_start[joint]]
+            return builder.joint_target_ke[builder.joint_qd_start[joint] + 2]
 
         self.assertAlmostEqual(cable_stretch("omniphysics"), 770.0, delta=1.0e-3)
         expected_default = 1.0e6 * math.pi * 0.01**2 / 0.1
@@ -1497,8 +2003,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         UsdGeom.Xformable(curves).AddTransformOp().Set(m)
 
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(UserWarning, "restShapePoints does not establish the simulated rest state"):
-            result = builder.add_usd(stage, return_deformable_results=True)
+        result = builder.add_usd(stage, return_deformable_results=True)
         b0, b1 = group_range(builder, "cable", "/World/Cable", "body")
         joint = result["path_cable_map"]["/World/Cable"][1][0]
         self.assertEqual(b1 - b0, 3)
@@ -1524,7 +2029,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         rest_len = seg_len * math.sqrt(1.0 + k * k)
         expected_ke = stretch / rest_len
         dof0 = builder.joint_qd_start[joint]
-        self.assertAlmostEqual(builder.joint_target_ke[dof0], expected_ke, delta=expected_ke * 1e-3)
+        self.assertAlmostEqual(builder.joint_target_ke[dof0 + 2], expected_ke, delta=expected_ke * 1e-3)
 
     def test_instanced_cable_imports_proxies_not_prototype(self):
         """Instanced cables import once per instance proxy; the prototype master is skipped."""
@@ -1572,7 +2077,7 @@ class TestUSDDeformableCable(unittest.TestCase):
         for joint, joint_length in zip(joints, (0.35, 0.45, 0.4), strict=True):
             expected = stretch / joint_length
             dof0 = builder.joint_qd_start[joint]
-            self.assertAlmostEqual(builder.joint_target_ke[dof0], expected, delta=expected * 1.0e-3)
+            self.assertAlmostEqual(builder.joint_target_ke[dof0 + 2], expected, delta=expected * 1.0e-3)
 
     def test_welded_graph_degenerate_segment_skips_component(self):
         """A welded curve with a zero-length segment is rejected with a warning instead of aborting
