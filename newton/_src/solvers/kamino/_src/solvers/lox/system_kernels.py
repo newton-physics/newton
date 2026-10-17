@@ -543,15 +543,14 @@ def _assemble_structural_joint_rows(
     ):
         penalty[joint_row] = 0.0
         return
-    # Both bodies of a joint share the scale of their component
-    world_penalty_scale = joint_penalty_scale[wp.where(bid_a >= 0, bid_a, bid_b)]
-    if world_penalty_scale <= 0.0:
-        penalty[joint_row] = 0.0
-        return
-
     bid_a_local = body_local[bid_a] if bid_a >= 0 else -1
     bid_b_local = body_local[bid_b] if bid_b >= 0 else -1
     if bid_a_local < 0 and bid_b_local < 0:
+        penalty[joint_row] = 0.0
+        return
+    # The row takes the scale of the component of its dynamic bodies
+    world_penalty_scale = joint_penalty_scale[wp.where(bid_a_local >= 0, bid_a, bid_b)]
+    if world_penalty_scale <= 0.0:
         penalty[joint_row] = 0.0
         return
     block = body_block[bid_a] if bid_a_local >= 0 else body_block[bid_b]
