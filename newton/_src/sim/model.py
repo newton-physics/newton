@@ -18,11 +18,13 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike
+from ..exceptions import NewtonDeprecationWarning
 from ..geometry.flags import ShapeFlags
 from ..utils.deprecation import RemovedAttribute
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
 from .contacts import Contacts
 from .control import Control
+from .shape_contact_pairs import _ShapeContactPairs
 from .state import State
 
 logger = logging.getLogger(__name__)
@@ -619,7 +621,7 @@ class Model:
             warnings.warn(
                 "Model.AttributeNamespace.add_deprecated_alias() is deprecated; "
                 "define an explicit property on a custom namespace instead.",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=2,
             )
             if name in self.__dict__ or name in self._deprecated_aliases:
@@ -630,7 +632,7 @@ class Model:
             aliases = self.__dict__.get("_deprecated_aliases", {})
             if name in aliases:
                 getter, message = aliases[name]
-                warnings.warn(message, DeprecationWarning, stacklevel=2)
+                warnings.warn(message, NewtonDeprecationWarning, stacklevel=2)
                 return getter()
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
 
@@ -639,7 +641,7 @@ class Model:
                 aliases = object.__getattribute__(self, "__dict__").get("_deprecated_aliases", {})
                 if name in aliases:
                     getter, message = aliases[name]
-                    warnings.warn(message, DeprecationWarning, stacklevel=2)
+                    warnings.warn(message, NewtonDeprecationWarning, stacklevel=2)
                     target = getter()
                     if isinstance(target, wp.array):
                         target.assign(value)
@@ -789,14 +791,11 @@ class Model:
         self._shape_collision_filter_pairs = _ShapeCollisionFilterPairs(np.empty(0, dtype=np.int64))
         self.shape_collision_radius: wp.array[wp.float32] | None = None
         """Collision radius [m] for bounding sphere broadphase, shape [shape_count], float. Not supported by :class:`~newton.solvers.SolverMuJoCo`."""
-        self.shape_contact_pairs: wp.array[wp.vec2i] | None = None
-        """Pairs of shape indices that may collide, shape [contact_pair_count, 2], int.
-
-        Static-static pairs are omitted. Kinematic-kinematic and static-kinematic pairs
-        are retained so consumers can opt into them during contact generation.
-        """
-        self.shape_contact_pair_count: int = 0
-        """Number of shape contact pairs."""
+        self._shape_contact_pairs: wp.array[wp.vec2i] | None = None
+        self._shape_contact_pair_data: _ShapeContactPairs | None = None
+        """Finalized collision topology for lazy pair construction and statistics."""
+        self._shape_contact_pair_count: int = 0
+        self._shape_contact_pair_counts: dict[bytes | tuple[bytes, int | None] | None, np.ndarray] = {}
         self.shape_world: wp.array[wp.int32] | None = None
         """World index for each shape, shape [shape_count], int. -1 for global."""
         self.shape_world_start: wp.array[wp.int32] | None = None
@@ -1439,6 +1438,44 @@ class Model:
         self.actuators: list[Actuator] = []
         """List of actuator instances for this model."""
 
+    @property
+    def shape_contact_pairs(self) -> wp.array[wp.vec2i] | None:
+        """Pairs of shape indices that may collide, shape [shape_contact_pair_count], vec2i.
+
+        Constructed on first access; access it before CUDA graph capture if needed.
+
+        Default pairs omit static-static pairs and retain static-kinematic and
+        kinematic-kinematic pairs.
+
+        Assign a replacement array to change pairs, or ``None`` to remove the
+        model's pair array and set its count to zero. In-place edits are unsupported.
+        """
+        pairs = self._shape_contact_pairs
+        if pairs is None and self._shape_contact_pair_data is not None:
+            topology = self._shape_contact_pair_data
+            if self.device.is_cuda and self.device.is_capturing and topology.counts.any():
+                raise RuntimeError(
+                    "Initialize model.shape_contact_pairs before CUDA graph capture, "
+                    "for example by constructing the explicit CollisionPipeline before capture."
+                )
+            pairs = wp.array(topology.build_pairs(), dtype=wp.vec2i, device=self.device, copy=False)
+            self._shape_contact_pairs = pairs
+        return pairs
+
+    @shape_contact_pairs.setter
+    def shape_contact_pairs(self, pairs: wp.array[wp.vec2i] | None) -> None:
+        self._shape_contact_pairs = pairs
+        self._shape_contact_pair_data = None
+        self._shape_contact_pair_count = len(pairs) if pairs is not None else 0
+        self._shape_contact_pair_counts.clear()
+
+    @property
+    def shape_contact_pair_count(self) -> int:
+        """Number of shape pairs. Read-only; does not construct the full pair array."""
+        if self._shape_contact_pairs is not None:
+            return len(self._shape_contact_pairs)
+        return self._shape_contact_pair_count
+
     def _set_shape_collision_filter_packed(self, packed: np.ndarray) -> None:
         """Install the canonical filter store: sorted unique packed pair codes."""
         self._shape_collision_filter_pairs = _ShapeCollisionFilterPairs(packed)
@@ -1598,12 +1635,12 @@ class Model:
         .. deprecated:: 1.7
             Limit joint rotations with the per-DOF :attr:`joint_limit_lower` instead.
         """
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         return self._deprecated_joint_twist_lower
 
     @joint_twist_lower.setter
     def joint_twist_lower(self, value: wp.array[wp.float32] | None) -> None:
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         self._deprecated_joint_twist_lower = value
 
     @property
@@ -1613,12 +1650,12 @@ class Model:
         .. deprecated:: 1.7
             Limit joint rotations with the per-DOF :attr:`joint_limit_upper` instead.
         """
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         return self._deprecated_joint_twist_upper
 
     @joint_twist_upper.setter
     def joint_twist_upper(self, value: wp.array[wp.float32] | None) -> None:
-        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_JOINT_TWIST_LIMIT_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         self._deprecated_joint_twist_upper = value
 
     @property
@@ -2103,7 +2140,7 @@ class Model:
         """
         warnings.warn(
             "Model.contacts() is deprecated; create a CollisionPipeline and call pipeline.contacts() instead.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         if collision_pipeline is not None:
@@ -2149,7 +2186,7 @@ class Model:
         warnings.warn(
             "Model.collide() is deprecated; create a CollisionPipeline and call "
             "pipeline.collide(state, contacts) instead.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         if collision_pipeline is not None:
@@ -2189,7 +2226,7 @@ class Model:
         warnings.warn(
             "Model.request_state_attributes() is deprecated in Newton 1.7; "
             "request SolverBase.Observables from the solver instead.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         self._request_state_attributes(*attributes)
@@ -2213,7 +2250,7 @@ class Model:
         warnings.warn(
             "Model.request_contact_attributes() is deprecated in Newton 1.7; "
             "request SolverBase.Observables from the solver instead.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         self._request_contact_attributes(*attributes)

@@ -11,6 +11,7 @@ newton
 
 - :doc:`newton.actuators <newton_actuators>`
 - :doc:`newton.controllers <newton_controllers>`
+- :doc:`newton.exceptions <newton_exceptions>`
 - :doc:`newton.geometry <newton_geometry>`
 - :doc:`newton.ik <newton_ik>`
 - :doc:`newton.math <newton_math>`
