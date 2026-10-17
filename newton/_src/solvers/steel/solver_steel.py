@@ -36,6 +36,7 @@ from .kernels import (
     CONTACT_GENERATION_NONE,
     PGS_CONSTRAINT_TYPE_CONTACT,
     PGS_CONSTRAINT_TYPE_FRICTION,
+    PGS_CONSTRAINT_TYPE_JOINT_FRICTION,
     PGS_CONSTRAINT_TYPE_JOINT_LIMIT,
     PGS_CONSTRAINT_TYPE_JOINT_TARGET,
     PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT,
@@ -91,6 +92,7 @@ from .kernels import (
     compute_contact_spatial_force_from_impulses,
     compute_delta_and_accumulate,
     compute_dense_contact_bounds,
+    compute_effective_joint_armature,
     compute_free_root_rotation,
     compute_mf_body_Hinv,
     compute_mf_effective_mass_and_rhs,
@@ -121,10 +123,12 @@ from .kernels import (
     finalize_mf_constraint_counts,
     finalize_world_constraint_counts,
     finalize_world_diag_cfm,
+    flag_invalid_joint_friction,
     flatten_propagation_joint_S,
     flush_propagation_free_body_qd_to_vout,
     gather_contact_warmstart,
     gather_free_root_anchors,
+    gather_group_armature,
     gather_JY_to_world,
     gather_propagation_unit_meta,
     gather_tau_to_groups,
@@ -207,6 +211,8 @@ _CONTACT_BUILD_THREAD_CAP = 65536
 _CONTACT_JACOBIAN_WORKER_CAP = 4096
 _CONTACT_JACOBIAN_MAX_DOF = 10
 _JOINT_LIMIT_WARPS_PER_BLOCK = 4
+# Joint types whose DOFs can carry dry joint friction rows.
+_JOINT_FRICTION_TYPES = (int(JointType.PRISMATIC), int(JointType.REVOLUTE), int(JointType.D6))
 # Warps (articulations) per block of the sparse mass-factor kernel, bounded by shared memory.
 _SPARSE_FACTOR_WARPS_PER_BLOCK = 4
 # Warps (articulations) per block of the warp-parallel composite-inertia reduction.
@@ -1221,6 +1227,9 @@ class SolverSteel(SolverBase):
       PRISMATIC, REVOLUTE or D6 DOF is a unilateral row. Joint limits are not enforced by
       default. Joint velocity limits (:attr:`~newton.Model.joint_velocity_limit`) are
       enforced as rows when ``enable_joint_velocity_limits`` is set.
+    - Experimental dry joint friction: with ``enable_joint_friction=True``,
+      :attr:`~newton.Model.joint_friction` of PRISMATIC, REVOLUTE and D6 DOFs bounds one row
+      per DOF.
     - Mimic joints (:meth:`~newton.ModelBuilder.set_joint_mimic`, and the deprecated
       mimic constraints) within one articulation: one bilateral row per follower
       coordinate enforces ``q_follower = coeffs[0] + coeffs[1] * q_leader``. The
@@ -1283,7 +1292,7 @@ class SolverSteel(SolverBase):
 
     With ``solve_mode="matrix_free"``, branched articulations use sparse mass factors when
     every articulated (non-free-body) response group shares one joint topology with at most
-    64 DOFs, joint velocity-limit rows are disabled, the model has no mimic or loop-closing
+    64 DOFs, joint velocity-limit and joint friction rows are disabled, the model has no mimic or loop-closing
     joints, drives are augmented and contacts use hard point friction
     (``friction_anchor_beta=0``, no warm start, regularization, velocity-only iterations,
     friction gap threshold, restitution, contact torsion or compliance): the mass matrix is assembled and factored in
@@ -1372,6 +1381,7 @@ class SolverSteel(SolverBase):
     joint_limit_activation_gap = _ConstructionOption()
     enable_joint_velocity_limits = _ConstructionOption()
     velocity_limit_activation_fraction = _ConstructionOption()
+    enable_joint_friction = _ConstructionOption()
     articulation_constraint_max = _ConstructionOption()
     free_body_constraint_max = _ConstructionOption()
     warn_constraint_overflow = _StepOption(lambda name, value: bool(value))
@@ -1521,6 +1531,7 @@ class SolverSteel(SolverBase):
         joint_limit_activation_gap: float = float("inf"),
         enable_joint_velocity_limits: bool = False,
         velocity_limit_activation_fraction: float = 0.0,
+        enable_joint_friction: bool = False,
         articulation_constraint_max: int = 32,
         free_body_constraint_max: int = 512,
         warn_constraint_overflow: bool = True,
@@ -1619,9 +1630,33 @@ class SolverSteel(SolverBase):
                 them for every limited DOF each step; ``inf`` never creates them. The gate
                 samples the velocity before the solve, so a DOF that crosses the threshold
                 during a step is clamped one step later. Must be in ``[0, 1]`` or ``inf``.
+            enable_joint_friction: Enforce :attr:`~newton.Model.joint_friction` [N or N·m] as dry
+                joint friction (MuJoCo ``frictionloss``). Each PRISMATIC, REVOLUTE or D6 DOF with
+                positive friction adds one row whose impulse is bounded by ``joint_friction * dt``
+                around a zero-velocity target, so the DOF sticks until the required effort exceeds
+                the friction and then slides against it. The rows use the articulated response, so
+                coupled inertia, armature, drives, limits and contacts act jointly; their impulses
+                cold-start each step and count against ``articulation_constraint_max``. The
+                coefficients are read on the device every step, also on graph replay. After
+                editing or replacing them, call ``notify_model_changed`` with
+                :attr:`~newton.ModelFlags.JOINT_DOF_PROPERTIES` (or the narrower
+                :attr:`~newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES`): it checks the values on the
+                device and wakes sleeping islands whose friction changed. Non-finite or negative
+                values, and nonzero friction on other joint types or loop-closing joints, are
+                invalid: such a DOF builds no row, and construction, an eager notification and
+                :meth:`check_joint_friction` raise :class:`ValueError` (see
+                :attr:`joint_friction_invalid`). Requires ``solve_mode="matrix_free"`` and is not
+                supported with ``contact_compliance`` or ``enable_bilateral_preelimination``;
+                those combinations raise :class:`NotImplementedError`. When ``False``,
+                :attr:`~newton.Model.joint_friction` is ignored.
+
+                .. experimental::
+
+                    ``enable_joint_friction`` and its supported combinations may change without
+                    the normal deprecation period.
             articulation_constraint_max: Capacity of rows involving articulated bodies (mimic and
-                connect rows, contacts, enabled joint limits, joint velocity limits and, with
-                ``drive_mode="rows"``, joint drives) per world. Rows beyond it are
+                connect rows, contacts, enabled joint limits, joint velocity limits, joint friction
+                and, with ``drive_mode="rows"``, joint drives) per world. Rows beyond it are
                 dropped and reported, see :attr:`constraint_overflow`. The split solve also
                 stores a ``articulation_constraint_max x articulation_constraint_max`` Delassus matrix per
                 world.
@@ -2043,6 +2078,7 @@ class SolverSteel(SolverBase):
         if np.isnan(self._joint_limit_activation_gap) or self._joint_limit_activation_gap < 0.0:
             raise ValueError("joint_limit_activation_gap must be non-negative or inf")
         self._enable_joint_velocity_limits = bool(enable_joint_velocity_limits)
+        self._enable_joint_friction = bool(enable_joint_friction)
         self._velocity_limit_activation_fraction = float(velocity_limit_activation_fraction)
         frac = self._velocity_limit_activation_fraction
         if np.isnan(frac) or not (0.0 <= frac <= 1.0 or np.isinf(frac)):
@@ -2052,8 +2088,10 @@ class SolverSteel(SolverBase):
         self._requested_dense_max_constraints = int(articulation_constraint_max)
         if self._requested_dense_max_constraints < 1:
             raise ValueError("articulation_constraint_max must be >= 1")
-        if self._requested_dense_max_constraints - 1 > _DENSE_META_MAX_PARENT:
-            raise ValueError(f"articulation_constraint_max must be at most {_DENSE_META_MAX_PARENT + 1}")
+        # Joint-friction rows widen the packed row-type field of the matrix-free sweep by one bit.
+        max_parent = ((2**31 - 1) >> (_DENSE_META_ROW_TYPE_BITS + int(self._enable_joint_friction))) - 1
+        if self._requested_dense_max_constraints - 1 > max_parent:
+            raise ValueError(f"articulation_constraint_max must be at most {max_parent + 1}")
         self._free_body_constraint_max = int(free_body_constraint_max)
         if self._free_body_constraint_max < 1:
             raise ValueError("free_body_constraint_max must be >= 1")
@@ -2139,6 +2177,7 @@ class SolverSteel(SolverBase):
                     ("contact torsion", self._contact_torsion_enabled),
                     ("contact_compliance=True", self._contact_compliance),
                     ("enable_sleeping=True", bool(enable_sleeping)),
+                    ("enable_joint_friction=True", self._enable_joint_friction),
                     (f"row_schedule={self._row_schedule!r}", self._row_schedule != "interleaved"),
                     (f"friction_mode={self._friction_mode!r}", self._friction_mode != "fixed_normal"),
                 )
@@ -2146,6 +2185,17 @@ class SolverSteel(SolverBase):
             ]
             if unsupported:
                 raise NotImplementedError(f"{', '.join(unsupported)} requires solve_mode='matrix_free'")
+        if self._enable_joint_friction:
+            incompatible = [
+                name
+                for name, requested in (
+                    ("contact_compliance=True", self._contact_compliance),
+                    ("enable_bilateral_preelimination=True", self._enable_bilateral_preelimination),
+                )
+                if requested
+            ]
+            if incompatible:
+                raise NotImplementedError(f"enable_joint_friction=True does not support {', '.join(incompatible)}")
         if self._row_schedule != "interleaved":
             incompatible = [
                 name
@@ -2291,6 +2341,9 @@ class SolverSteel(SolverBase):
         self._warn_persistent_row_capacity(model)
         self._build_mimic_plan(model)
         self._build_connect_plan(model)
+        if self._enable_joint_friction:
+            self._validate_joint_friction()
+        self._init_joint_friction_check(model)
         if self._solve_mode == "split" and (self._mimic_count or self._connect_count):
             # The split solve has no bilateral rows; it would project them as contacts.
             raise NotImplementedError("Mimic relationships and loop-closing joints require solve_mode='matrix_free'")
@@ -2386,7 +2439,7 @@ class SolverSteel(SolverBase):
             if self._has_prescribed_response
             else wp.zeros((1, 1), dtype=wp.float32, device=model.device)
         )
-        self._scatter_armature_to_groups()
+        self._update_effective_armature()
         self._init_tiled_kernels(model)
         self._init_streams(model)
         # Free-body groups read their body inertia directly; every other responding
@@ -2474,6 +2527,8 @@ class SolverSteel(SolverBase):
             if enable_sleeping
             else None
         )
+        # Allocated after the step's buffers so it leaves their layout unchanged.
+        self._joint_friction_invalid = wp.zeros(int(model.world_count) + 1, dtype=wp.bool, device=model.device)
 
     def _refresh_shape_materials(self) -> None:
         """Copy the model's current friction and restitution coefficients into the solver's fixed buffers."""
@@ -2547,9 +2602,8 @@ class SolverSteel(SolverBase):
         return self._namespaced_attribute("min_torsional_patch_radius")
 
     def _update_kinematic_state(self) -> None:
-        """Refresh cached kinematic flags and effective joint armature."""
+        """Refresh cached kinematic flags from the host copy of ``body_flags``."""
         model = self.model
-        armature = model.joint_armature.numpy().copy()
         joint_mask = np.zeros(model.joint_count, dtype=np.int32)
         dof_mask = np.zeros(model.joint_dof_count, dtype=np.int32)
 
@@ -2561,12 +2615,7 @@ class SolverSteel(SolverBase):
                 if not kinematic_bodies[joint_child[joint]]:
                     continue
                 joint_mask[joint] = 1
-                dof_start = joint_qd_start[joint]
-                dof_end = joint_qd_start[joint + 1]
-                if dof_end <= dof_start:
-                    continue
-                dof_mask[dof_start:dof_end] = 1
-                armature[dof_start:dof_end] = 1.0e10
+                dof_mask[joint_qd_start[joint] : joint_qd_start[joint + 1]] = 1
 
         self._validate_connect_parent_membership()
         if self._model_plan is not None:
@@ -2580,15 +2629,37 @@ class SolverSteel(SolverBase):
                         "reconstruct the solver and recapture its CUDA graph."
                     )
 
-        self._joint_armature_effective = armature
-        if armature.size:
-            self._joint_armature_device.assign(armature.astype(np.float32))
         self._kinematic_dof_mask_host = dof_mask.copy()
         self._kinematic_joint_mask.assign(joint_mask)
         self._kinematic_dof_mask.assign(dof_mask)
 
+    def _update_effective_armature(self) -> None:
+        """Rebuild the effective joint armature and its size-grouped copies on the device."""
+        model = self.model
+        if model.joint_dof_count:
+            wp.launch(
+                compute_effective_joint_armature,
+                model.joint_dof_count,
+                inputs=[model.joint_armature, self._kinematic_dof_mask],
+                outputs=[self._joint_armature_device],
+                device=model.device,
+            )
+        for size in self._size_groups:
+            wp.launch(
+                gather_group_armature,
+                (self._n_arts_by_size[size], size),
+                inputs=[
+                    self._group_to_art[size],
+                    self._articulation_dof_start,
+                    self._articulation_H_rows,
+                    self._joint_armature_device,
+                ],
+                outputs=[self._R_by_size[size]],
+                device=model.device,
+            )
+
     @override
-    def notify_model_changed(self, flags: ModelFlags | int) -> None:
+    def notify_model_changed(self, flags: ModelFlags | int, *, world_mask: "wp.array[wp.bool] | None" = None) -> None:
         """Refresh cached solver data after model changes.
 
         Joint (frames), joint DOF, DOF force (drive gains), DOF inertial (armature), body
@@ -2604,26 +2675,49 @@ class SolverSteel(SolverBase):
         :attr:`constraint_overflow` is not cleared, see :meth:`reset`.
 
         Body, inertial, joint DOF, DOF inertial and shape changes discard the warm-start
-        impulses. With friction patches, shape changes also discard the anchors of the
-        bodies whose collision geometry changed; this copies the shape geometry to the host,
-        so issue such notifications outside CUDA graph capture.
+        impulses of the worlds selected by ``world_mask``. With friction patches, shape changes
+        also discard the anchors of the bodies whose collision geometry changed, in every world.
+
+        Joint, joint DOF (including the DOF inertial and force flags), body inertial and shape
+        notifications run on the device without host synchronization, so they can be captured
+        in a CUDA graph and replayed after the model arrays are edited in place. A captured
+        notification reads the arrays it was captured with; after replacing a model array,
+        notify eagerly or recapture. Body notifications read ``body_flags`` on the host.
+        Sleeping, and the positive-restitution checks of the split solve and of sparse mass
+        factors (with restitution enabled), also read model data on the host, so issue those
+        notifications outside CUDA graph capture.
+
+        With ``enable_joint_friction``, joint DOF and DOF force notifications check
+        :attr:`~newton.Model.joint_friction` on the device and flag invalid coefficients in
+        :attr:`joint_friction_invalid`; an eager notification then raises through
+        :meth:`check_joint_friction`, after applying every other update.
 
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` indicating which model properties changed.
+            world_mask: Optional boolean mask of shape ``(world_count + 1,)`` in the :meth:`reset`
+                layout, selecting the worlds whose model data changed. Only their warm-start
+                impulses are discarded; cached model data is refreshed for every world. ``None``
+                discards the warm-start impulses of every world.
         """
+        world_mask = self._normalize_reset_world_mask(world_mask)
         if flags & ModelFlags.CONSTRAINT_PROPERTIES:
             _validate_equality_constraints(self.model)
         if self._sleeping is not None:
             self._sleeping.notify(flags)
         dof_inertial = ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
-        if flags & (ModelFlags.BODY_PROPERTIES | dof_inertial):
+        if flags & ModelFlags.BODY_PROPERTIES:
             self._update_kinematic_state()
-            self._scatter_armature_to_groups()
+        if flags & (ModelFlags.BODY_PROPERTIES | dof_inertial):
+            self._update_effective_armature()
             self._mass_update_requested.fill_(1)
-        if flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES):
+        dof_force = ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+        if flags & dof_force:
             self._refresh_passive_joint_damping()
             # Augmented drive gains enter the factored mass-matrix diagonal.
             self._mass_update_requested.fill_(1)
+        check_friction = self._enable_joint_friction and flags & dof_force
+        if check_friction:
+            self._flag_invalid_joint_friction()
         if flags & ModelFlags.SHAPE_PROPERTIES:
             self._refresh_shape_materials()
             self._check_restitution_support()
@@ -2666,7 +2760,98 @@ class SolverSteel(SolverBase):
             | dof_inertial
             | ModelFlags.SHAPE_PROPERTIES
         ):
-            self._clear_warmstart_history(None)
+            self._clear_warmstart_history(world_mask)
+        if check_friction and not wp.get_stream(self.model.device).is_capturing:
+            self.check_joint_friction()
+
+    @property
+    def joint_friction_invalid(self) -> "wp.array[wp.bool]":
+        """Device flags of invalid :attr:`~newton.Model.joint_friction`, in the :attr:`constraint_overflow` layout.
+
+        With ``enable_joint_friction``, every joint DOF notification sets the entry of the world that owns
+        each invalid coefficient (the final entry for global joints), also when replayed from a CUDA graph.
+        The flags persist across :meth:`reset` until :meth:`check_joint_friction` reports them.
+        """
+        return self._joint_friction_invalid
+
+    def check_joint_friction(self) -> None:
+        """Raise :class:`ValueError` if a notification flagged :attr:`joint_friction_invalid`, then clear the flags.
+
+        Call it outside CUDA graph capture, for example after replaying a captured notification; an eager
+        notification calls it itself. Reporting acknowledges the error: the coefficients and the steps
+        taken with them are unchanged, so discard or repair the affected worlds.
+
+        Raises:
+            RuntimeError: If called during graph capture.
+            ValueError: If any entry is flagged.
+        """
+        if self.model.device.is_capturing:
+            raise RuntimeError("check_joint_friction() must run outside CUDA graph capture")
+        flags = self._joint_friction_invalid.numpy()
+        if not flags.any():
+            return
+        self._joint_friction_invalid.zero_()
+        self._validate_joint_friction()
+        flagged = np.flatnonzero(flags)
+        worlds = np.where(flagged == self.model.world_count, -1, flagged)
+        raise ValueError(f"joint_friction was invalid at a notification in worlds {worlds[:16].tolist()}")
+
+    def _flag_invalid_joint_friction(self) -> None:
+        """Latch :attr:`joint_friction_invalid` for coefficients the friction rows cannot represent."""
+        model = self.model
+        if model.joint_friction.shape != (model.joint_dof_count,):
+            raise ValueError(
+                f"joint_friction has shape {model.joint_friction.shape}, expected ({model.joint_dof_count},)"
+            )
+        if model.joint_dof_count:
+            wp.launch(
+                flag_invalid_joint_friction,
+                model.joint_dof_count,
+                inputs=[model.joint_friction, self._friction_dof_supported, self._friction_dof_world],
+                outputs=[self._joint_friction_invalid],
+                device=model.device,
+            )
+
+    def _validate_joint_friction(self) -> None:
+        """Reject joint friction the per-DOF friction rows cannot represent."""
+        model = self.model
+        if model.joint_dof_count == 0:
+            return
+        friction = model.joint_friction.numpy()
+        if friction.shape != (model.joint_dof_count,):
+            raise ValueError(f"joint_friction has shape {friction.shape}, expected ({model.joint_dof_count},)")
+        if not np.all(np.isfinite(friction)) or np.any(friction < 0.0):
+            raise ValueError("joint_friction must be finite and non-negative")
+        supported, _ = self._joint_friction_support(model)
+        unsupported = np.flatnonzero((friction > 0.0) & ~supported)
+        if unsupported.size:
+            joint = int(np.searchsorted(model.joint_qd_start.numpy(), unsupported[0], side="right") - 1)
+            raise ValueError(
+                f"joint_friction is nonzero on joint {joint} "
+                f"({JointType(int(model.joint_type.numpy()[joint])).name} or loop-closing joint)"
+            )
+
+    def _init_joint_friction_check(self, model) -> None:
+        """Upload the per-DOF tables of the device joint-friction check."""
+        if not self._enable_joint_friction or model.joint_dof_count == 0:
+            return
+        supported, world = self._joint_friction_support(model)
+        self._friction_dof_supported = wp.array(supported.astype(np.int32), dtype=wp.int32, device=model.device)
+        self._friction_dof_world = wp.array(world, dtype=wp.int32, device=model.device)
+
+    def _joint_friction_support(self, model) -> tuple[np.ndarray, np.ndarray]:
+        """Return per DOF whether friction rows support it and its :attr:`joint_friction_invalid` entry."""
+        joint_dof_joint = np.repeat(np.arange(model.joint_count), np.diff(model.joint_qd_start.numpy()))
+        loop_articulation = self._model_plan.loop_joint_articulation
+        supported = np.isin(model.joint_type.numpy(), _JOINT_FRICTION_TYPES) & (loop_articulation < 0)
+        # A loop-closing joint belongs to the articulation it closes; other joints keep their model world.
+        articulation = model.joint_articulation.numpy()
+        articulation = np.where(articulation >= 0, articulation, loop_articulation)
+        world = model.joint_world.numpy().astype(np.int32)
+        owned = articulation >= 0
+        world[owned] = model.articulation_world.numpy()[articulation[owned]]
+        world = np.where(world < 0, int(model.world_count), world).astype(np.int32)
+        return supported[joint_dof_joint], world[joint_dof_joint]
 
     def _clear_warmstart_history(self, world_mask: "wp.array[wp.bool] | None") -> None:
         """Discard the carried contact impulses of the selected worlds (all worlds for ``None``)."""
@@ -3526,6 +3711,7 @@ class SolverSteel(SolverBase):
             self._joint_limit_q_index = None
             self._joint_limit_q_index_host = np.zeros(0, dtype=np.int32)
             self._joint_limit_warp_kernels = {}
+            self._joint_friction_warp_kernels = {}
             return
 
         if self._model_plan is None:
@@ -3590,6 +3776,23 @@ class SolverSteel(SolverBase):
                 for size in self._joint_limit_sizes
             }
             if model.device.is_cuda and not model.requires_grad
+            else {}
+        )
+        if self._enable_joint_friction:
+            # Joint types are fixed after finalize, so the DOFs that can carry friction rows are too.
+            self._friction_dof_eligible = wp.array(
+                (limit_q_index >= 0).astype(np.int32), dtype=wp.int32, device=model.device
+            )
+        self._joint_friction_warp_kernels = (
+            {
+                size: _get_joint_friction_warp_kernel(
+                    size,
+                    str(getattr(model.device, "arch", "")),
+                    warps_per_block=_JOINT_LIMIT_WARPS_PER_BLOCK,
+                )
+                for size in self._joint_limit_sizes
+            }
+            if self._enable_joint_friction
             else {}
         )
 
@@ -3704,7 +3907,7 @@ class SolverSteel(SolverBase):
         pre-elimination, when every world holds exactly one articulation of one size of 17 to 26
         DOFs whose H^-1 J^T is tiled in more than one row chunk, plus exactly one free rigid body,
         one warp per row builds the world's rows from the explicit inverse mass matrices of the
-        two. Without joint velocity limits, drive rows, warm start, regularization, velocity-only
+        two. Without joint velocity limits, joint friction, drive rows, warm start, regularization, velocity-only
         iterations and torsion, with ``iterations > 0``, the interleaved
         schedule and the current friction projection, the rows and sweep work in factor
         coordinates ``L^-1 J^T`` instead, for worlds without free-body rows.
@@ -3779,6 +3982,7 @@ class SolverSteel(SolverBase):
             and self._drive_mode == "augmented"
             and self._friction_mode == "fixed_normal"
             and not self._enable_joint_velocity_limits
+            and not self._enable_joint_friction
             # The factor-coordinate solve owns no torsion rows.
             and not self._contact_torsion_enabled
         )
@@ -3886,6 +4090,7 @@ class SolverSteel(SolverBase):
             and self._velocity_iterations == 0
             and self._friction_mode == "fixed_normal"
             and not self._enable_joint_velocity_limits
+            and not self._enable_joint_friction
             and not self._contact_warmstart
             and not self._preelim_active
             and not self._has_free_rigid_bodies
@@ -4006,6 +4211,7 @@ class SolverSteel(SolverBase):
             and self._row_schedule == "interleaved"
             and self._drive_mode == "augmented"
             and not self._enable_joint_velocity_limits
+            and not self._enable_joint_friction
             and self._velocity_iterations == 0
             and self._friction_mode == "fixed_normal"
             and not self._contact_warmstart
@@ -4256,7 +4462,7 @@ class SolverSteel(SolverBase):
         The selection is automatic. It applies when every articulated (non-free-body)
         response group has one size and one joint topology, the factor of that topology has
         fewer nonzeros than a dense lower triangle (the tree branches), the articulation has at
-        most 64 DOFs, joint velocity-limit rows are disabled and the contact options are ones
+        most 64 DOFs, joint velocity-limit and joint friction rows are disabled and the contact options are ones
         the sparse kernels implement (:meth:`_sparse_supports_contact_options`). Free bodies keep
         their dense 6 x 6 factors. Otherwise the dense factors are kept.
 
@@ -4273,7 +4479,9 @@ class SolverSteel(SolverBase):
         # The sparse rows and sweep exist only in the interleaved matrix-free solve, without drive rows.
         if self._solve_mode != "matrix_free" or self._has_drive_rows or self._row_schedule != "interleaved":
             return
-        if self._enable_joint_velocity_limits or self._iterations <= 0 or not self._size_groups:
+        if self._enable_joint_velocity_limits or self._enable_joint_friction:
+            return
+        if self._iterations <= 0 or not self._size_groups:
             return
         if not self._sparse_supports_contact_options(model):
             return
@@ -4949,29 +5157,6 @@ class SolverSteel(SolverBase):
             self._rigid_velocity_limit_slot = None
             self._rigid_velocity_limit_sign = None
 
-    def _scatter_armature_to_groups(self):
-        """Copy armature from model (DOF-ordered) to size-grouped storage."""
-        if not self._size_groups:
-            return
-
-        armature_np = self._joint_armature_effective
-        art_dof_start_np = self._model_plan.articulation_dof_start
-        art_H_rows_np = self._model_plan.articulation_dof_count
-
-        # R_by_size is sized to actual DOF count (matches H_by_size allocation)
-        for size in self._size_groups:
-            n_arts = self._n_arts_by_size[size]
-            R_np = np.zeros((n_arts, size), dtype=np.float32)
-
-            group_to_art_np = np.flatnonzero(self._model_plan.response_dof_count == size)
-            for group_idx in range(n_arts):
-                art_idx = group_to_art_np[group_idx]
-                dof_start = art_dof_start_np[art_idx]
-                dof_count = art_H_rows_np[art_idx]
-                R_np[group_idx, :dof_count] = armature_np[dof_start : dof_start + dof_count]
-
-            self._R_by_size[size].assign(R_np)
-
     def _init_tiled_kernels(self, model):
         """Resolve size-specialized Warp kernels once for this solver shape."""
         device_arch = model.device.arch
@@ -5123,6 +5308,7 @@ class SolverSteel(SolverBase):
                 friction_mode=self._friction_mode,
                 factor_coordinates=self._paired_factor_coordinates,
                 skip_local_internal_worlds=self._local_internal_fast_path,
+                joint_friction=bool(self._joint_friction_warp_kernels),
             )
             self._init_local_solve_kernels(device_arch, mf_rows)
 
@@ -5607,6 +5793,7 @@ class SolverSteel(SolverBase):
         has_internal_rows = bool(
             self._has_drive_rows
             or (self._enable_joint_limits and self._joint_limit_sizes)
+            or self._joint_friction_warp_kernels
             or self._mimic_count
             or self._connect_count
         )
@@ -8083,8 +8270,8 @@ class SolverSteel(SolverBase):
         """Allocate and fill the drive, bilateral, joint-limit, velocity-limit, contact and friction rows.
 
         Dense rows (rows touching an articulated body) are laid out per world as
-        ``[joint drives][mimic][connect][joint limits][joint velocity limits][contacts and
-        friction]``, where drive rows exist only with ``drive_mode="rows"`` and were
+        ``[joint drives][mimic][connect][joint limits][joint friction][joint velocity limits][contacts
+        and friction]``, where drive rows exist only with ``drive_mode="rows"`` and were
         reserved by :meth:`_begin_dense_rows`; free-body rows hold ``[contacts and
         friction][free-body velocity limits]``. Rows past a capacity are dropped, counted and
         latched into :attr:`constraint_overflow`.
@@ -8277,6 +8464,36 @@ class SolverSteel(SolverBase):
                     model.joint_limit_upper,
                     state_in.joint_q,
                     self._joint_limit_activation_gap,
+                    max_constraints,
+                ],
+                outputs=[
+                    self._slot_counter,
+                    self._J_by_size[size],
+                    self._row_type,
+                    self._row_parent,
+                    self._row_mu,
+                    self._phi,
+                    self._target_velocity,
+                ],
+                block_dim=32 * _JOINT_LIMIT_WARPS_PER_BLOCK,
+                device=model.device,
+            )
+
+        for size, kernel in self._joint_friction_warp_kernels.items():
+            n_arts = self._n_arts_by_size[size]
+            wp.launch_tiled(
+                kernel,
+                dim=[(n_arts + _JOINT_LIMIT_WARPS_PER_BLOCK - 1) // _JOINT_LIMIT_WARPS_PER_BLOCK],
+                inputs=[
+                    n_arts,
+                    self._articulation_dof_start,
+                    self._art_to_world,
+                    self._group_to_art[size],
+                    self._constraint_art_active,
+                    self._friction_dof_eligible,
+                    self._kinematic_dof_mask,
+                    model.joint_friction,
+                    dt,
                     max_constraints,
                 ],
                 outputs=[
@@ -9479,6 +9696,7 @@ class SolverSteel(SolverBase):
                 device_arch,
                 has_drive_rows=self._has_drive_rows,
                 fuse_vel_limits=self._velocity_limits_fused,
+                joint_friction=bool(self._joint_friction_warp_kernels),
             )
         elif self._propagation_colored:
             self._init_colored_kernels(model)
@@ -10742,6 +10960,127 @@ def _get_joint_limit_warp_kernel(size: int, device_arch: str, warps_per_block: i
     joint_limit_warp_template.__name__ = name
     joint_limit_warp_template.__qualname__ = name
     return wp.kernel(enable_backward=False, module="unique")(joint_limit_warp_template)
+
+
+@cache
+def _get_joint_friction_warp_kernel(size: int, device_arch: str, warps_per_block: int) -> "wp.Kernel":
+    """Build a deterministic one-warp-per-articulation joint-friction row builder."""
+    _ = device_arch
+    snippet = f"""
+#if defined(__CUDA_ARCH__)
+    constexpr unsigned MASK = 0xffffffffu;
+    const int lane = threadIdx.x & 31;
+    const int group_idx = block * {warps_per_block} + (threadIdx.x >> 5);
+    if (group_idx >= articulation_count) return;
+
+    const int articulation = group_to_art.data[group_idx];
+    if (articulation_rows_active.data[articulation] == 0) return;
+    const int world = art_to_world.data[articulation];
+    const int dof_start = articulation_dof_start.data[articulation];
+    for (int base = 0; base < {size}; base += 32) {{
+        const int local_dof = base + lane;
+        const int dof = dof_start + local_dof;
+        float bound = 0.0f;
+        int active = 0;
+        if (local_dof < {size} && friction_dof_eligible.data[dof] != 0 && kinematic_dof_mask.data[dof] == 0) {{
+            // Honor the stride: callers may replace Model.joint_friction with a strided view.
+            const float friction = *reinterpret_cast<const float*>(
+                reinterpret_cast<const char*>(joint_friction.data) + dof * joint_friction.strides[0]);
+            bound = friction * dt;
+            // Non-finite or negative coefficients build no row; notifications flag them.
+            active = bound > 0.0f && isfinite(friction);
+        }}
+
+        const unsigned active_mask = __ballot_sync(MASK, active != 0);
+        const int active_count = __popc(active_mask);
+        int first_slot = 0;
+        if (lane == 0 && active_count != 0)
+            first_slot = atomicAdd(&world_slot_counter.data[world], active_count);
+        first_slot = __shfl_sync(MASK, first_slot, 0);
+        if (active != 0) {{
+            const unsigned lower_lanes = lane == 0 ? 0u : ((1u << lane) - 1u);
+            const int slot = first_slot + __popc(active_mask & lower_lanes);
+            if (slot < max_constraints) {{
+                J_group.data[(group_idx * max_constraints + slot) * {size} + local_dof] = 1.0f;
+                const int row = world * max_constraints + slot;
+                world_row_type.data[row] = {PGS_CONSTRAINT_TYPE_JOINT_FRICTION};
+                world_row_parent.data[row] = -1;
+                world_row_mu.data[row] = bound;
+                world_phi.data[row] = 0.0f;
+                world_target_velocity.data[row] = 0.0f;
+            }}
+        }}
+    }}
+#endif
+"""
+
+    @wp.func_native(snippet)
+    def joint_friction_warp_native(
+        block: int,
+        articulation_count: int,
+        articulation_dof_start: wp.array[int],
+        art_to_world: wp.array[int],
+        group_to_art: wp.array[int],
+        articulation_rows_active: wp.array[int],
+        friction_dof_eligible: wp.array[int],
+        kinematic_dof_mask: wp.array[int],
+        joint_friction: wp.array[float],
+        dt: float,
+        max_constraints: int,
+        world_slot_counter: wp.array[int],
+        J_group: wp.array3d[float],
+        world_row_type: wp.array2d[int],
+        world_row_parent: wp.array2d[int],
+        world_row_mu: wp.array2d[float],
+        world_phi: wp.array2d[float],
+        world_target_velocity: wp.array2d[float],
+    ): ...
+
+    def joint_friction_warp_template(  # pragma: no cover - compiled by wp.kernel
+        articulation_count: int,
+        articulation_dof_start: wp.array[int],
+        art_to_world: wp.array[int],
+        group_to_art: wp.array[int],
+        articulation_rows_active: wp.array[int],
+        friction_dof_eligible: wp.array[int],
+        kinematic_dof_mask: wp.array[int],
+        joint_friction: wp.array[float],
+        dt: float,
+        max_constraints: int,
+        world_slot_counter: wp.array[int],
+        J_group: wp.array3d[float],
+        world_row_type: wp.array2d[int],
+        world_row_parent: wp.array2d[int],
+        world_row_mu: wp.array2d[float],
+        world_phi: wp.array2d[float],
+        world_target_velocity: wp.array2d[float],
+    ):
+        block, _lane = wp.tid()
+        joint_friction_warp_native(
+            block,
+            articulation_count,
+            articulation_dof_start,
+            art_to_world,
+            group_to_art,
+            articulation_rows_active,
+            friction_dof_eligible,
+            kinematic_dof_mask,
+            joint_friction,
+            dt,
+            max_constraints,
+            world_slot_counter,
+            J_group,
+            world_row_type,
+            world_row_parent,
+            world_row_mu,
+            world_phi,
+            world_target_velocity,
+        )
+
+    name = f"build_joint_friction_rows_warp_{size}_{warps_per_block}"
+    joint_friction_warp_template.__name__ = name
+    joint_friction_warp_template.__qualname__ = name
+    return wp.kernel(enable_backward=False, module="unique")(joint_friction_warp_template)
 
 
 @cache
@@ -13167,6 +13506,7 @@ def _get_pgs_solve_mf_gs_kernel(
     friction_mode: str = "fixed_normal",
     factor_coordinates: bool = False,
     skip_local_internal_worlds: bool = False,
+    joint_friction: bool = False,
 ) -> "wp.Kernel":
     """Build the fused matrix-free projected Gauss-Seidel kernel for one solver shape.
 
@@ -13246,8 +13586,9 @@ def _get_pgs_solve_mf_gs_kernel(
     M_MF = free_body_constraint_max
     D = max_world_dofs
     ELEMS_PER_LANE = (D + 31) // 32
-    type_mask = _DENSE_META_ROW_TYPE_MASK
-    type_bits = _DENSE_META_ROW_TYPE_BITS
+    # Joint-friction rows (type 8) need a fourth row-type bit.
+    type_bits = _DENSE_META_ROW_TYPE_BITS + int(joint_friction)
+    type_mask = (1 << type_bits) - 1
 
     def lanes(template: str) -> str:
         """Repeat a per-lane snippet for each strided DOF element of the lane."""
@@ -13358,6 +13699,14 @@ def _get_pgs_solve_mf_gs_kernel(
     )
     torsion_skip = f"if (row_type == {int(PGS_CONSTRAINT_TYPE_TORSION)}) continue;" if contact_torsion else ""
     torsion_sweep = torque_sweep_source(D) if contact_torsion else ""
+    joint_friction_projection = (
+        f""" else if (row_type == {int(PGS_CONSTRAINT_TYPE_JOINT_FRICTION)}) {{
+                // Joint friction box [-f dt, f dt]; mu holds the bound.
+                new_impulse = fminf(fmaxf(new_impulse, -s_mu_dense[i]), s_mu_dense[i]);
+            }}"""
+        if joint_friction
+        else ""
+    )
 
     if row_phases:
         phase_bounds = """    if (row_phase == 1 || row_phase == 4) {
@@ -13599,7 +13948,7 @@ def _get_pgs_solve_mf_gs_kernel(
                                                row_type == {int(PGS_CONSTRAINT_TYPE_JOINT_LIMIT)})) {{
                 // Contact and joint-limit rows are unilateral; mimic and connect rows are bilateral.
                 new_impulse = 0.0f;
-            }}
+            }}{joint_friction_projection}
             float delta_impulse = new_impulse - old_impulse;
             s_lam_dense[i] = new_impulse;
             if (delta_impulse != 0.0f) {{
@@ -17723,6 +18072,7 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
     device_arch: str,
     has_drive_rows: bool = False,
     fuse_vel_limits: bool = False,
+    joint_friction: bool = False,
 ) -> "wp.Kernel":
     """Build the one-warp-per-world kernel that runs every propagation Gauss-Seidel iteration.
 
@@ -17733,8 +18083,8 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
     articulations of ``target_size`` response DOFs, the only articulated size group the
     fused response supports.
 
-    The internal rows are the drive (with ``has_drive_rows``), mimic, connect and joint-limit
-    rows; ``fuse_vel_limits`` adds the end-of-iteration velocity clamp of driven DOFs to the
+    The internal rows are the drive (with ``has_drive_rows``), mimic, connect, joint-limit and
+    (with ``joint_friction``) joint-friction rows; ``fuse_vel_limits`` adds the end-of-iteration velocity clamp of driven DOFs to the
     velocity-limit stage. With ``regularize`` the contact rows of every family relax toward
     zero with their row weights, and ``freeze_drive_rows`` skips the drive rows.
     """
@@ -17780,6 +18130,14 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
                     delta_impulse = new_impulse - old_impulse;
                 }} else"""
         if has_drive_rows
+        else ""
+    )
+    fused_joint_friction_projection = (
+        f"""                    // Joint friction box [-f dt, f dt]; mu holds the bound.
+                    if (row_type == {int(PGS_CONSTRAINT_TYPE_JOINT_FRICTION)})
+                        new_impulse = fminf(fmaxf(new_impulse, -s_mu_dense[i]), s_mu_dense[i]);
+"""
+        if joint_friction
         else ""
     )
     # Stateless clamp of driven DOFs, after the velocity-limit rows of the same iteration.
@@ -17940,7 +18298,7 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
                     // Contact and joint-limit rows are unilateral; mimic and connect rows are bilateral.
                     if (new_impulse < 0.0f && (row_type == {contact_type} || row_type == {int(PGS_CONSTRAINT_TYPE_JOINT_LIMIT)}))
                         new_impulse = 0.0f;
-                    delta_impulse = new_impulse - old_impulse;
+{fused_joint_friction_projection}                    delta_impulse = new_impulse - old_impulse;
                 }}
                 __syncwarp(MASK);
                 if (lane == 0) s_lam_dense[i] = new_impulse;

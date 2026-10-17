@@ -38,6 +38,10 @@ PGS_CONSTRAINT_TYPE_CONNECT = 6
 # Experimental contact torsion row: one bounded angular row per contact group about the
 # group normal (see ``contact_torsion.py``).
 PGS_CONSTRAINT_TYPE_TORSION = 7
+# Dry joint friction row: ``J = e_dof`` with a zero target velocity and no bias. The
+# impulse is boxed to ``[-f dt, f dt]`` (the bound is stored in the row's ``mu``), so
+# the DOF sticks until the required impulse saturates the box.
+PGS_CONSTRAINT_TYPE_JOINT_FRICTION = 8
 
 # Positive gaps below this slop [m] count as touching: it absorbs float32 residuals of
 # rows that land exactly at contact.
@@ -98,6 +102,52 @@ def compute_com_transforms(
     tid = wp.tid()
     com = body_com[tid]
     body_X_com[tid] = wp.transform(com, wp.quat_identity())
+
+
+@wp.kernel
+def compute_effective_joint_armature(
+    joint_armature: wp.array[float],
+    kinematic_dof_mask: wp.array[wp.int32],
+    # outputs
+    armature_effective: wp.array[float],
+):
+    dof = wp.tid()
+    # Kinematic DOFs take a large armature so the factorization ignores their dynamics.
+    if kinematic_dof_mask[dof] != 0:
+        armature_effective[dof] = 1.0e10
+    else:
+        armature_effective[dof] = joint_armature[dof]
+
+
+@wp.kernel
+def gather_group_armature(
+    group_to_art: wp.array[wp.int32],
+    articulation_dof_start: wp.array[wp.int32],
+    articulation_dof_count: wp.array[wp.int32],
+    armature_effective: wp.array[float],
+    # outputs
+    group_armature: wp.array2d[float],
+):
+    group, column = wp.tid()
+    art = group_to_art[group]
+    value = float(0.0)
+    if column < articulation_dof_count[art]:
+        value = armature_effective[articulation_dof_start[art] + column]
+    group_armature[group, column] = value
+
+
+@wp.kernel
+def flag_invalid_joint_friction(
+    joint_friction: wp.array[float],
+    friction_dof_supported: wp.array[wp.int32],
+    friction_dof_world: wp.array[wp.int32],
+    # outputs
+    joint_friction_invalid: wp.array[wp.bool],
+):
+    dof = wp.tid()
+    friction = joint_friction[dof]
+    if not wp.isfinite(friction) or friction < 0.0 or (friction > 0.0 and friction_dof_supported[dof] == 0):
+        joint_friction_invalid[friction_dof_world[dof]] = True
 
 
 @wp.kernel
