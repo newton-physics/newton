@@ -1,0 +1,1 @@
+Allow `Model.AttributeFrequency` values in custom-attribute `references` to distinguish built-in entity indices from custom-frequency indices. Use the `CURVE`, `SURFACE`, and `VOLUME` enum values for built-in deformable objects; strings with those names continue to refer to custom frequencies regardless of registration order.
