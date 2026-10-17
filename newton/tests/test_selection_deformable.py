@@ -173,7 +173,7 @@ class TestDeformableFamilyViews(unittest.TestCase):
         self.assertEqual((view.family, view.labels, view.worlds), ("curve", ["object", "object"], [0, 1]))
         self.assertEqual(view.ranges("body"), [(0, 3), (3, 6)])
         self.assertEqual(view.deformable_object_ranges(), [(0, 1), (1, 2)])
-        np.testing.assert_array_equal(view.world_ids.numpy(), [0, 1])
+        np.testing.assert_array_equal(view.worlds_device.numpy(), [0, 1])
         self.assertEqual(view.get_body_transforms(model).shape, (2, 3))
         with self.assertRaisesRegex(AttributeError, "no particle elements"):
             view.ranges("particle")
@@ -215,7 +215,7 @@ class TestDeformableSelection(unittest.TestCase):
         self.assertEqual((view.count, view.world_count), (1, 1))
         self.assertEqual(view.deformable_object_ranges(), [(0, 1)])
         np.testing.assert_array_equal(view.deformable_object_boundaries.numpy(), [0, 1])
-        np.testing.assert_array_equal(view.world_ids.numpy(), [-1])
+        np.testing.assert_array_equal(view.worlds_device.numpy(), [-1])
         self.assertEqual(view.get_particle_positions(model.state()).shape, (1, 4))
 
     def test_label_patterns_select_multiple_objects_per_world(self):
@@ -251,7 +251,7 @@ class TestDeformableSelection(unittest.TestCase):
         self.assertEqual(view.worlds, [0, 1, 1])
         self.assertEqual(view.deformable_object_ranges(), [(0, 1), (1, 3), (3, 3)])
         np.testing.assert_array_equal(view.deformable_object_boundaries.numpy(), [0, 1, 3, 3])
-        np.testing.assert_array_equal(view.world_ids.numpy(), [0, 1, 1])
+        np.testing.assert_array_equal(view.worlds_device.numpy(), [0, 1, 1])
         self.assertEqual(view.labels, ["/World/ClothA", "/World/ClothA", "/World/ClothB"])
         self.assertEqual(view.get_particle_positions(view.model.state()).shape, (3, 4))
 
@@ -280,7 +280,7 @@ class TestDeformableSelection(unittest.TestCase):
         cables = DeformableCurveView(model, "cable*")
         self.assertEqual(cables.labels, ["cable", "cable_0", "cable_1", "cable_2", "cable"])
         self.assertEqual(cables.deformable_object_ranges(), [(0, 1), (1, 4), (4, 5)])
-        np.testing.assert_array_equal(cables.world_ids.numpy(), [0, 1, 1, 1, 2])
+        np.testing.assert_array_equal(cables.worlds_device.numpy(), [0, 1, 1, 1, 2])
         np.testing.assert_array_equal(cables.deformable_object_boundaries.numpy(), [0, 1, 4, 5])
 
         deformable_object_index = 2

@@ -2774,7 +2774,11 @@ class _DeformableViewBase:
         self.labels = [labels[i] for i in flat_ids]
         """Label of each selected deformable object, ordered world by world."""
         self.worlds = [object_worlds[i] for i in flat_ids]
-        """World index of each selected deformable object."""
+        """Read-only Python list of model world indices, one per selected deformable object.
+
+        :attr:`worlds_device` holds the same mapping on the model's device.
+        Both are created with the view; editing either does not update the other.
+        """
         deformable_object_boundaries = [0]
         for count in counts_per_world:
             deformable_object_boundaries.append(deformable_object_boundaries[-1] + count)
@@ -2789,8 +2793,12 @@ class _DeformableViewBase:
         selected deformable object count. Treat this array as read-only. See :meth:`deformable_object_ranges`
         for the corresponding Python ranges and the global-only case.
         """
-        self.world_ids: wp.array[wp.int32] = wp.array(self.worlds, dtype=wp.int32, device=self.device)
-        """World index of each selected deformable object, shape ``(count,)``."""
+        self.worlds_device: wp.array[wp.int32] = wp.array(self.worlds, dtype=wp.int32, device=self.device)
+        """Read-only device copy of :attr:`worlds`, shape ``(count,)``.
+
+        Created on the model's device with the view. Each entry is the model world
+        of that selected deformable object, or -1 for a global object.
+        """
 
         # Element ranges are always available; only rectangular operations require homogeneity.
         self._mask_membership = wp.empty(self.count, dtype=wp.int32, device=self.device)
@@ -2841,7 +2849,7 @@ class _DeformableViewBase:
         indices returned by :meth:`ranges`.
 
         A global-only selection has one range, ``(0, count)``, and its
-        :attr:`world_ids` are all ``-1``. This single range is not indexed by a
+        :attr:`worlds_device` entries are all ``-1``. This single range is not indexed by a
         model world ID.
 
         Returns:

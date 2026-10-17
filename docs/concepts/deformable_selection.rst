@@ -181,16 +181,27 @@ gaps in the selected list:
     print(cables.labels)
     # ["cable", "cable_0", "cable_1", "cable_2", "cable"]
 
-    world_ids = cables.world_ids.numpy().tolist()
-    print(world_ids)
+    worlds = cables.worlds
+    print(worlds)
     # [0, 1, 1, 1, 2]
 
     deformable_object_index = 2  # The third selected cable; Python indices start at 0.
     print(cables.labels[deformable_object_index])  # "cable_1"
-    print(world_ids[deformable_object_index])      # 1
+    print(worlds[deformable_object_index])        # 1
 
-``world_ids`` has one entry per selected deformable object. Here, ``"cable_1"`` has
+``worlds`` has one entry per selected deformable object. Here, ``"cable_1"`` has
 deformable object index 2 and belongs to world 1. Index 3 refers to ``"cable_2"``.
+
+``worlds_device`` is a Warp copy of this list on the model's device:
+
+.. code-block:: python
+
+    print(cables.worlds_device.numpy().tolist())
+    # [0, 1, 1, 1, 2]
+
+Both mappings are created with the view. Treat them as read-only: editing one
+does not update the other or change the selection. The ``numpy()`` call above
+only makes the device values easy to inspect in Python.
 
 To find all selected cables in a world, use ``deformable_object_ranges()``:
 
@@ -225,13 +236,11 @@ The same ranges are available on the device as a compact boundaries array:
     # ["cable_0", "cable_1", "cable_2"]
 
 The final 5 marks the end of the selected list. Three worlds need four boundaries.
-``world_ids`` and ``deformable_object_boundaries`` are Warp arrays on the model's device;
-the ``numpy()`` calls above only make their values easy to inspect in Python.
-Treat both arrays as read-only.
+``deformable_object_boundaries`` is also a read-only Warp array on the model's device.
 
 Global deformable objects (world ``-1``) cannot share a view with deformable
 objects assigned to model worlds. A global-only view has one range, ``(0, count)``,
-and all its ``world_ids`` are ``-1``. That single range is not indexed by a model
+and all its ``worlds`` and ``worlds_device`` entries are ``-1``. That single range is not indexed by a model
 world ID.
 
 Simulation element ranges answer a different question: which bodies or particles
