@@ -1742,6 +1742,7 @@ class TestImportMjcfMeshFileCache(unittest.TestCase):
 </mujoco>"""
 
     def test_mesh_file_loaded_once_per_load_args(self):
+        """Verify that each mesh file loads once per distinct set of load arguments."""
         import newton._src.utils.import_mjcf as import_mjcf  # noqa: PLC0415
 
         calls = []
