@@ -88,6 +88,54 @@ class TestMujocoSpatialTendon(unittest.TestCase):
         self.assertGreaterEqual(wrap_sidesite[1], 0)  # side0 for geom
         self.assertEqual(wrap_sidesite[2], -1)  # no sidesite for site
 
+    def test_spatial_tendon_geom_names(self):
+        """Preserve hyphens and underscores in spatial tendon geom references."""
+        # Same root cause as https://github.com/newton-physics/newton/issues/4566,
+        # on the geom wrap path rather than the site path.
+        mjcf = """<mujoco>
+  <worldbody>
+    <body name="upper">
+      <geom name="g-origin" type="capsule" fromto="0 0 0 0 0 -0.3" size="0.03"/>
+      <geom name="g-wrap" type="cylinder" size="0.03 0.05" pos="0 0 -0.15"
+            contype="0" conaffinity="0"/>
+      <site name="m_side" pos="0.02 0 -0.15"/>
+      <body name="lower" pos="0 0 -0.3">
+        <joint name="elbow" axis="0 1 0"/>
+        <geom name="g-insertion" type="capsule" fromto="0 0 0 0 0 -0.25" size="0.025"/>
+      </body>
+    </body>
+  </worldbody>
+  <tendon>
+    <spatial name="flexor">
+      <geom geom="g-origin"/>
+      <geom geom="g-wrap" sidesite="m_side"/>
+      <geom geom="g-insertion"/>
+    </spatial>
+  </tendon>
+</mujoco>"""
+        for separator in ("-", "_"):
+            with self.subTest(separator=separator):
+                builder = newton.ModelBuilder()
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    builder.add_mjcf(mjcf.replace("g-", f"g{separator}"))
+                self.assertEqual([str(w.message) for w in caught], [])
+                model = builder.finalize(device="cpu")
+                np.testing.assert_array_equal(model.mujoco.tendon_wrap_num.numpy(), [3])
+                np.testing.assert_array_equal(model.mujoco.tendon_wrap_type.numpy(), [1, 1, 1])
+                self.assertEqual(
+                    [model.shape_label[i] for i in model.mujoco.tendon_wrap_shape.numpy()],
+                    [
+                        f"worldbody/upper/g{separator}origin",
+                        f"worldbody/upper/g{separator}wrap",
+                        f"worldbody/upper/lower/g{separator}insertion",
+                    ],
+                )
+                sidesites = model.mujoco.tendon_wrap_sidesite.numpy()
+                self.assertEqual(sidesites[0], -1)
+                self.assertEqual(model.shape_label[sidesites[1]], "worldbody/upper/m_side")
+                self.assertEqual(sidesites[2], -1)
+
     def test_spatial_tendon_simulation(self):
         """Verify that a spatial tendon with stiffness exerts forces and moves joints."""
         # Use an explicit springlength shorter than the initial tendon length

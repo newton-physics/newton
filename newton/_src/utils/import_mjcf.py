@@ -3179,8 +3179,6 @@ def parse_mjcf(
 
                 elif child.tag == "geom":
                     geom_name = child.attrib.get("geom", "")
-                    if geom_name:
-                        geom_name = sanitize_name(geom_name)
                     geom_idx = find_shape_by_name(geom_name, want_site=False) if geom_name else -1
                     if geom_idx < 0:
                         warnings.warn(
