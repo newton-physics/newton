@@ -2202,6 +2202,69 @@ Example:
         restitution=0.5,  # Bouncy where supported
     )
 
+.. _Contact friction gain and adhesion:
+
+Friction gain and adhesion
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+``kf`` and ``ka`` are used by the penalty contact model of
+:class:`~newton.solvers.SolverSemiImplicit` and
+:class:`~newton.solvers.SolverFeatherstone`. ``kf`` is also used by
+:class:`~newton.solvers.SolverMuJoCo`; the other built-in solvers ignore both
+(see :ref:`Contact material support`). For a contact between two shapes, the
+penalty solvers average ``ke``, ``kd``, ``kf``, ``ka`` and ``mu`` of the two
+shapes.
+
+With the signed contact distance :math:`d` (negative when the shapes
+penetrate) and the normal and tangential relative velocities :math:`v_n` and
+:math:`v_t`, the penalty model computes:
+
+.. math::
+
+   f_n &= k_e \, d, \qquad f_d = k_d \, \min(v_n, 0) \quad (d < 0) \\
+   \lVert f_t \rVert &= \min\left(k_f \lVert v_t \rVert,\; \mu \, \lvert f_n + f_d \rvert\right) \quad (d < 0)
+
+**Friction gain** ``kf`` **[N·s/m]** is the slope of a viscous regularization
+of Coulomb friction. Below the slip speed :math:`\mu \lvert f_n + f_d \rvert / k_f`
+the friction force is proportional to the sliding speed; above it, the force is
+clamped to the Coulomb limit :math:`\mu \lvert f_n + f_d \rvert`, so ``mu`` sets the
+maximum friction force and ``kf`` sets how quickly it is reached. A body at
+rest on a slope therefore creeps at a speed of roughly
+:math:`m g \sin\theta / k_f` instead of sticking. The norm of :math:`v_t` is
+smoothed near zero by the solver's ``friction_smoothing`` parameter.
+
+- Larger ``kf`` gives less creep and behavior closer to ideal Coulomb
+  friction, but the friction force becomes stiffer. With these explicit
+  solvers, keep ``kf * dt / m`` well below 1 for the lightest body in contact,
+  or reduce the time step.
+- Smaller ``kf`` is more stable but makes contacts slide and objects creep.
+- ``kf = 0`` disables friction.
+
+In :class:`~newton.solvers.SolverMuJoCo`, ``kf`` maps to MuJoCo's per-contact
+``solreffriction`` when the MuJoCo Warp backend uses elliptic friction cones with
+Newton contacts, and a resolved ``kf = 0`` makes the contact frictionless.
+See :ref:`mujoco-contact-friction-solreffriction`.
+
+**Adhesion distance** ``ka`` **[m]** lets the normal force act before the
+shapes touch. Contacts are processed while :math:`d < k_a` instead of
+:math:`d < 0`. For :math:`0 \le d < k_a` the normal force :math:`k_e \, d`
+changes sign and pulls the shapes together, growing linearly with the gap up to
+about :math:`k_e \, k_a`, the largest attractive force per contact, just inside
+:math:`d = k_a`. At :math:`d \ge k_a` the contact applies no force. Damping and friction only act while the shapes
+penetrate.
+
+- ``ka = 0`` (the default) disables adhesion.
+- Use a small nonzero value for sticky or suction-like contacts, for example to
+  hold a light object against a gripper pad. Choose ``ka`` so that
+  :math:`k_e \, k_a` times the number of contacts exceeds the force you want to
+  resist.
+- Adhesion only acts on contacts the collision pipeline reports, so the pair
+  gap ``gap_a + gap_b`` (see :ref:`margin-gap-semantics`) must be at least the
+  pair's averaged ``ka``.
+- The force jumps from about :math:`k_e \, k_a` to zero at the cutoff, so large
+  values inject energy when shapes separate. Keep ``ka`` small relative to the
+  shape size.
+
 .. _USD Collision:
 
 USD Integration
