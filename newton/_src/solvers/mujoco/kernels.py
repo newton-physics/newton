@@ -3312,7 +3312,7 @@ def convert_qfrc_actuator_from_mj_kernel(
 
 @wp.kernel
 def update_pair_properties_kernel(
-    world_pair_stride: int,
+    mjc_pair_to_newton_pair: wp.array2d[wp.int32],
     pair_solref_in: wp.array[wp.vec2],
     pair_solreffriction_in: wp.array[wp.vec2],
     pair_solimp_in: wp.array[vec5],
@@ -3331,30 +3331,33 @@ def update_pair_properties_kernel(
 
     Iterates over MuJoCo pairs [world, pair] and copies solver properties
     (solref, solimp, margin, gap, friction) from Newton custom attributes.
-    ``world_pair_stride`` is how far each world advances into the attribute
-    arrays; 0 means every world reads the same shared rows. Reads past the end
-    of an array are skipped so a row layout the stride cannot express leaves the
-    slot at MuJoCo's own value rather than reading unrelated memory.
+    ``mjc_pair_to_newton_pair`` resolves each slot to the Newton row that produced
+    it, so a slot is read by the world that authored it: template-world rows are
+    offset per world, global rows are read by every world at their absolute index.
+    An unmapped slot is -1 and is left at MuJoCo's own value.
     """
     world, mjc_pair = wp.tid()
-    newton_pair = world * world_pair_stride + mjc_pair
+    newton_pair = mjc_pair_to_newton_pair[world, mjc_pair]
 
-    if pair_solref_in and newton_pair < pair_solref_in.shape[0]:
+    if newton_pair < 0:
+        return
+
+    if pair_solref_in:
         pair_solref_out[world, mjc_pair] = pair_solref_in[newton_pair]
 
-    if pair_solreffriction_in and newton_pair < pair_solreffriction_in.shape[0]:
+    if pair_solreffriction_in:
         pair_solreffriction_out[world, mjc_pair] = pair_solreffriction_in[newton_pair]
 
-    if pair_solimp_in and newton_pair < pair_solimp_in.shape[0]:
+    if pair_solimp_in:
         pair_solimp_out[world, mjc_pair] = pair_solimp_in[newton_pair]
 
-    if pair_margin_in and newton_pair < pair_margin_in.shape[0]:
+    if pair_margin_in:
         pair_margin_out[world, mjc_pair] = pair_margin_in[newton_pair]
 
-    if pair_gap_in and newton_pair < pair_gap_in.shape[0]:
+    if pair_gap_in:
         pair_gap_out[world, mjc_pair] = pair_gap_in[newton_pair]
 
-    if pair_friction_in and newton_pair < pair_friction_in.shape[0]:
+    if pair_friction_in:
         pair_friction_out[world, mjc_pair] = pair_friction_in[newton_pair]
 
 
