@@ -1,0 +1,1 @@
+Raise the default `ImplicitOptions.max_iters` from 4 to 8 so implicit actuation with velocity-dependent clamps such as `ClampingDCMotor` has room to converge; pass `max_iters=4` to restore the previous cost bound.

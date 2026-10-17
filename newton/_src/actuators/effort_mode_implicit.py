@@ -55,7 +55,7 @@ class ImplicitOptions:
         ZERO = "zero"
         """Start from zero impulse."""
 
-    max_iters: int = 4
+    max_iters: int = 8
     """Maximum Newton iterations per articulation group."""
 
     residual_tol: float = 1.0e-5
@@ -128,6 +128,13 @@ def _gather_slot_response_kernel(
 # ---------------------------------------------------------------------------
 
 _coupled_kernel_cache: dict[tuple[Any, Any], wp.Kernel] = {}
+
+_BLOCK_SOLVE_MAX_ROWS = 64
+"""Largest padded group size solved by one thread block; larger groups use one thread each."""
+
+
+_LINE_SEARCH_STEPS = 8
+"""Step lengths tried (halving each time) before the solve stops with the current impulse."""
 
 
 def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Function, cache_key: tuple):
@@ -212,6 +219,7 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
         pbuf: wp.array2d[wp.float64],
         rbuf: wp.array2d[wp.float64],
         sbuf: wp.array2d[wp.float64],
+        vbuf: wp.array2d[wp.float64],
         jbuf: wp.array3d[wp.float64],
         computed_efforts: wp.array[float],
         applied_efforts: wp.array[float],
@@ -246,7 +254,7 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
                     si,
                 )
 
-        for _ in range(max_iters):
+        for it in range(max_iters):
             # Residual at the current impulse guess (state coupled via A_g), plus
             # the row slope s_i = h*df_i/dq + df_i/dqd by one forward difference.
             rn = wp.float64(0.0)
@@ -284,7 +292,9 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
                     si,
                 )
                 sbuf[g, i] = (f_p - f_i) / eps
-            if rn < res_tol * res_tol:
+            # Always take one Newton step: the absolute tolerance would otherwise
+            # accept the explicit warm start whenever the efforts are small.
+            if it > 0 and rn < res_tol * res_tol:
                 break
 
             # Row i depends on p only through u_i = (A p)_i, so the Jacobian is
@@ -298,7 +308,7 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
                         jij += wp.float64(1.0)
                     jbuf[g, i, c] = jij
 
-            # Dense Newton step: solve J dp = -r by Gauss elimination, update p.
+            # Dense Newton step: solve J dp = -r by Gauss elimination.
             for i in range(ng):
                 rbuf[g, i] = -rbuf[g, i]
             for k in range(ng):
@@ -312,15 +322,50 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
                     for j in range(k, ng):
                         jbuf[g, i, j] -= fac * jbuf[g, k, j]
                     rbuf[g, i] -= fac * rbuf[g, k]
-            dpn = wp.float64(0.0)
             for kk in range(ng):
                 i = ng - 1 - kk
                 s = rbuf[g, i]
                 for j in range(i + 1, ng):
                     s -= jbuf[g, i, j] * rbuf[g, j]
-                dv = s / jbuf[g, i, i]
-                rbuf[g, i] = dv
-                pbuf[g, i] += dv
+                rbuf[g, i] = s / jbuf[g, i, i]
+            # Backtrack until the residual drops. A clamp makes the residual
+            # piecewise smooth, and a full step can jump between opposite limits
+            # without ever converging; a shorter step lands in between.
+            alpha = wp.float64(1.0)
+            accepted = int(0)
+            for _ls in range(_LINE_SEARCH_STEPS):
+                for i in range(ng):
+                    vbuf[g, i] = pbuf[g, i] + alpha * rbuf[g, i]
+                rn_t = wp.float64(0.0)
+                for i in range(ng):
+                    si = group_slot[g, i]
+                    qd_i = predict_qd(velocities, vel_indices, inverse_blocks, group_local, vbuf, art, g, i, ng, si)
+                    q_i = wp.float64(positions[pos_indices[si]]) + hd * qd_i
+                    f_i = force_at(
+                        q_i,
+                        qd_i,
+                        target_pos,
+                        target_vel,
+                        feedforward,
+                        target_pos_indices,
+                        target_vel_indices,
+                        params,
+                        clamp_params,
+                        si,
+                    )
+                    ri = vbuf[g, i] - hd * f_i
+                    rn_t += ri * ri
+                if rn_t <= (wp.float64(1.0) - wp.float64(1.0e-4) * alpha) * rn:
+                    accepted = 1
+                    break
+                alpha = alpha * wp.float64(0.5)
+            # No step lowers the residual: keep the current impulse rather than make it worse.
+            if accepted == 0:
+                break
+            dpn = wp.float64(0.0)
+            for i in range(ng):
+                dv = vbuf[g, i] - pbuf[g, i]
+                pbuf[g, i] = vbuf[g, i]
                 dpn += dv * dv
             if dpn < upd_tol * upd_tol:
                 break
@@ -340,6 +385,228 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
             applied_efforts[si] = wp.float32(clamp_chain(pbuf[g, i] / hd, q_i, qd_i, clamp_params, si))
 
     _coupled_kernel_cache[cache_key] = solve
+    return solve
+
+
+@wp.kernel(enable_backward=False)
+def _gather_group_response_kernel(
+    group_size: wp.array[wp.int32],
+    group_art: wp.array[wp.int32],
+    group_local: wp.array2d[wp.int32],
+    inverse_blocks: wp.array3d[float],
+    group_response: wp.array3d[float],
+):
+    """Dense, zero-padded ``A_g`` per group for the block solve."""
+    g, i, j = wp.tid()
+    ng = group_size[g]
+    v = float(0.0)
+    if i < ng and j < ng:
+        v = inverse_blocks[group_art[g], group_local[g, i], group_local[g, j]]
+    group_response[g, i, j] = v
+
+
+def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Function, tile: int, cache_key: tuple):
+    """Build the block-parallel variant of the coupled solve.
+
+    One thread block per group and one thread per row. The Newton system
+    ``J = I - h diag(s) A`` is solved by Gauss elimination with floored pivots,
+    as in the per-thread kernel, one row per lane.
+    """
+    key = (*cache_key, "block", tile)
+    cached = _coupled_kernel_cache.get(key)
+    if cached is not None:
+        return cached
+
+    @wp.func
+    def force_at(
+        q_i: wp.float64,
+        qd_i: wp.float64,
+        tq: wp.float64,
+        tqd: wp.float64,
+        ff: wp.float64,
+        params: wp.array2d[float],
+        clamp_params: wp.array2d[float],
+        si: wp.int32,
+    ) -> wp.float64:
+        """Clamped control law of row *i* at a predicted state."""
+        return clamp_chain(evaluate_force(q_i, qd_i, tq, tqd, ff, params, si), q_i, qd_i, clamp_params, si)
+
+    @wp.func
+    def apply_response(A: Any, x: wp.float64) -> wp.float64:
+        """``(A x)_lane`` for the block's per-lane ``x``; the tile product runs in float32."""
+        return wp.float64(
+            wp.untile(
+                wp.tile_reshape(wp.tile_matmul(A, wp.tile_reshape(wp.tile(float(x)), shape=(tile, 1))), shape=(tile,))
+            )
+        )
+
+    tile_aug = tile + 1
+    lane_row = wp.types.vector(length=tile_aug, dtype=wp.float32)
+
+    @wp.func
+    def gauss_solve(
+        A: Any,
+        S: Any,
+        lane: wp.int32,
+        ng: wp.int32,
+        c: wp.float64,
+        b: wp.float64,
+        dfloor: float,
+    ) -> wp.float64:
+        """Solve ``(I + diag(c) A) x = b`` for the block's per-lane ``c``, ``b``; returns ``x_lane``.
+
+        Lane ``i`` keeps row ``i`` and its right-hand side in registers. Each
+        elimination step publishes the rows to shared memory so every lane below
+        the pivot can read the pivot row; back substitution broadcasts one
+        solved entry per step.
+        """
+        cf = float(c)
+        row = lane_row()
+        for j in range(tile):
+            v = cf * A[lane, j]
+            if j == lane:
+                v += 1.0
+            row[j] = v
+        row[tile] = float(b)
+        my_piv = float(1.0)
+        for k in range(ng):
+            # The extract syncs the block before S is overwritten, so no lane still reads the previous pivot row.
+            piv = wp.tile_extract(wp.tile(row[k]), k)
+            wp.tile_assign(S, wp.tile(row), offset=(0, 0))
+            if wp.abs(piv) < dfloor:
+                piv = wp.where(piv < 0.0, -dfloor, dfloor)
+            if lane == k:
+                my_piv = piv
+            elif lane > k and lane < ng:
+                rowk = lane_row()
+                for j in range(tile_aug):
+                    rowk[j] = S[j, k]
+                row = row - (row[k] / piv) * rowk
+        rhs = row[tile]
+        x = float(0.0)
+        for kk in range(ng):
+            i = ng - 1 - kk
+            xi = float(0.0)
+            if lane == i:
+                xi = rhs / my_piv
+                x = xi
+            xi = wp.tile_extract(wp.tile(xi), i)
+            if lane < i:
+                rhs -= row[i] * xi
+        return wp.float64(x)
+
+    @wp.kernel(
+        enable_backward=False,
+        module="unique",
+        module_options={"block_dim": tile, "max_unroll": tile_aug},
+    )
+    def solve(
+        group_size: wp.array[wp.int32],
+        group_slot: wp.array2d[wp.int32],
+        group_response: wp.array3d[float],
+        pos_indices: wp.array[wp.uint32],
+        vel_indices: wp.array[wp.uint32],
+        target_pos_indices: wp.array[wp.uint32],
+        target_vel_indices: wp.array[wp.uint32],
+        positions: wp.array[float],
+        velocities: wp.array[float],
+        target_pos: wp.array[float],
+        target_vel: wp.array[float],
+        feedforward: wp.array[float],
+        params: wp.array2d[float],
+        h: float,
+        max_iters: int,
+        residual_tol: float,
+        update_tol: float,
+        fd_epsilon: float,
+        derivative_floor: float,
+        warm_zero: int,
+        clamp_params: wp.array2d[float],
+        computed_efforts: wp.array[float],
+        applied_efforts: wp.array[float],
+    ):
+        g, lane = wp.tid()
+        ng = group_size[g]
+        active = lane < ng
+        hd = wp.float64(h)
+        fd_eps = wp.float64(fd_epsilon)
+        res_tol = wp.float64(residual_tol)
+        upd_tol = wp.float64(update_tol)
+
+        A = wp.tile_load(group_response[g], shape=(tile, tile), storage="shared")
+        S = wp.tile_zeros(shape=(tile_aug, tile), dtype=float, storage="shared")
+
+        si = wp.int32(0)
+        q0 = wp.float64(0.0)
+        qd0 = wp.float64(0.0)
+        tq = wp.float64(0.0)
+        tqd = wp.float64(0.0)
+        ff = wp.float64(0.0)
+        p = wp.float64(0.0)
+        if active:
+            si = group_slot[g, lane]
+            q0 = wp.float64(positions[pos_indices[si]])
+            qd0 = wp.float64(velocities[vel_indices[si]])
+            tq = wp.float64(target_pos[target_pos_indices[si]])
+            tqd = wp.float64(target_vel[target_vel_indices[si]])
+            if feedforward:
+                ff = wp.float64(feedforward[target_vel_indices[si]])
+            if warm_zero == 0:
+                p = hd * force_at(q0, qd0, tq, tqd, ff, params, clamp_params, si)
+
+        for it in range(max_iters):
+            u = apply_response(A, p)
+            r = wp.float64(0.0)
+            c_lane = wp.float64(0.0)
+            if active:
+                # Residual and the row slope s_i = h*df_i/dq + df_i/dqd by one forward difference.
+                qd_i = qd0 + u
+                q_i = q0 + hd * qd_i
+                f_i = force_at(q_i, qd_i, tq, tqd, ff, params, clamp_params, si)
+                r = p - hd * f_i
+                eps = fd_eps * (wp.float64(1.0) + wp.abs(qd_i))
+                f_p = force_at(q_i + hd * eps, qd_i + eps, tq, tqd, ff, params, clamp_params, si)
+                c_lane = -hd * (f_p - f_i) / eps
+            rn = wp.tile_extract(wp.tile_sum(wp.tile(r * r)), 0)
+            # Always take one Newton step: the absolute tolerance would otherwise
+            # accept the explicit warm start whenever the efforts are small.
+            if it > 0 and rn < res_tol * res_tol:
+                break
+
+            step = gauss_solve(A, S, lane, ng, c_lane, -r, derivative_floor)
+
+            # Backtrack until the residual drops (see the per-thread kernel).
+            alpha = wp.float64(1.0)
+            accepted = int(0)
+            p_t = p
+            for _ls in range(_LINE_SEARCH_STEPS):
+                p_t = p + alpha * step
+                u_t = apply_response(A, p_t)
+                r_t = wp.float64(0.0)
+                if active:
+                    qd_t = qd0 + u_t
+                    r_t = p_t - hd * force_at(q0 + hd * qd_t, qd_t, tq, tqd, ff, params, clamp_params, si)
+                rn_t = wp.tile_extract(wp.tile_sum(wp.tile(r_t * r_t)), 0)
+                if rn_t <= (wp.float64(1.0) - wp.float64(1.0e-4) * alpha) * rn:
+                    accepted = 1
+                    break
+                alpha = alpha * wp.float64(0.5)
+            if accepted == 0:
+                break
+            dp = p_t - p
+            p = p_t
+            dpn = wp.tile_extract(wp.tile_sum(wp.tile(dp * dp)), 0)
+            if dpn < upd_tol * upd_tol:
+                break
+
+        u = apply_response(A, p)
+        if active:
+            qd_i = qd0 + u
+            q_i = q0 + hd * qd_i
+            computed_efforts[si] = wp.float32(evaluate_force(q_i, qd_i, tq, tqd, ff, params, si))
+            applied_efforts[si] = wp.float32(clamp_chain(p / hd, q_i, qd_i, clamp_params, si))
+
+    _coupled_kernel_cache[key] = solve
     return solve
 
 
@@ -454,6 +721,8 @@ class _EffortModeImplicit:
         chain, entries = self._pack_clamps(clamping)
         key = (drive.evaluate_force, entries)
         self._kernel = _build_coupled_solve_kernel(drive.evaluate_force, chain, key)
+        self._kernel_key = key
+        self._clamp_chain = chain
 
     def _build_groups(self, vel_indices) -> None:
         """Map actuator DOFs to (articulation, local index) and group by articulation."""
@@ -533,10 +802,6 @@ class _EffortModeImplicit:
         self._group_art = wp.array(art_id, dtype=wp.int32, device=device)
         self._group_slot = wp.array(slot, dtype=wp.int32, device=device)
         self._group_local = wp.array(local, dtype=wp.int32, device=device)
-        self._pbuf = wp.zeros((num_groups, max_ng), dtype=wp.float64, device=device)
-        self._rbuf = wp.zeros((num_groups, max_ng), dtype=wp.float64, device=device)
-        self._sbuf = wp.zeros((num_groups, max_ng), dtype=wp.float64, device=device)
-        self._jbuf = wp.zeros((num_groups, max_ng, max_ng), dtype=wp.float64, device=device)
         slot_art = np.zeros(self._num_actuators, dtype=np.int32)
         slot_local = np.zeros(self._num_actuators, dtype=np.int32)
         for a in arts:
@@ -547,6 +812,23 @@ class _EffortModeImplicit:
         self._slot_local = wp.array(slot_local, dtype=wp.int32, device=device)
         self._slot_response = wp.zeros(self._num_actuators, dtype=float, device=device)
         self._num_groups = num_groups
+
+        # One thread block per group on CUDA when the group fits a tile, one
+        # thread per group otherwise.
+        self._block_kernel = None
+        tile = max(32, ((max_ng + 15) // 16) * 16)
+        if wp.get_device(device).is_cuda and tile <= _BLOCK_SOLVE_MAX_ROWS:
+            self._block_tile = tile
+            self._group_response = wp.zeros((num_groups, tile, tile), dtype=float, device=device)
+            self._block_kernel = _build_block_solve_kernel(
+                self._drive.evaluate_force, self._clamp_chain, tile, self._kernel_key
+            )
+        else:
+            self._pbuf = wp.zeros((num_groups, max_ng), dtype=wp.float64, device=device)
+            self._rbuf = wp.zeros((num_groups, max_ng), dtype=wp.float64, device=device)
+            self._sbuf = wp.zeros((num_groups, max_ng), dtype=wp.float64, device=device)
+            self._vbuf = wp.zeros((num_groups, max_ng), dtype=wp.float64, device=device)
+            self._jbuf = wp.zeros((num_groups, max_ng, max_ng), dtype=wp.float64, device=device)
 
     def is_graphable(self) -> bool:
         return self._drive.is_graphable()
@@ -614,6 +896,46 @@ class _EffortModeImplicit:
         inverse_blocks = self._response.inverse_blocks
 
         opts = self._options
+        if self._block_kernel is not None:
+            tile = self._block_tile
+            wp.launch(
+                _gather_group_response_kernel,
+                dim=(self._num_groups, tile, tile),
+                inputs=[self._group_size, self._group_art, self._group_local, inverse_blocks],
+                outputs=[self._group_response],
+                device=self._device,
+            )
+            wp.launch_tiled(
+                self._block_kernel,
+                dim=[self._num_groups],
+                inputs=[
+                    self._group_size,
+                    self._group_slot,
+                    self._group_response,
+                    pos_indices,
+                    vel_indices,
+                    target_pos_indices,
+                    target_vel_indices,
+                    positions,
+                    velocities,
+                    target_pos,
+                    target_vel,
+                    feedforward,
+                    self._params,
+                    float(dt),
+                    int(opts.max_iters),
+                    float(opts.residual_tol),
+                    float(opts.update_tol),
+                    float(opts.fd_epsilon),
+                    float(opts.derivative_floor),
+                    1 if opts.warm_start is ImplicitOptions.WarmStart.ZERO else 0,
+                    self._clamp_params,
+                ],
+                outputs=[computed_forces, applied_forces],
+                block_dim=tile,
+                device=self._device,
+            )
+            return applied_forces
         wp.launch(
             self._kernel,
             dim=self._num_groups,
@@ -644,6 +966,7 @@ class _EffortModeImplicit:
                 self._pbuf,
                 self._rbuf,
                 self._sbuf,
+                self._vbuf,
                 self._jbuf,
             ],
             outputs=[computed_forces, applied_forces],

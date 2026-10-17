@@ -3780,7 +3780,7 @@ class TestActuatorImplicit(unittest.TestCase):
         exact and the iteration count never matters. It starts to matter when
         the solution lies on a different branch of the envelope than the initial
         guess. Starting from zero impulse on a coupled two-link chain does that:
-        one step lands far away, two steps converge, and the result agrees with
+        one step lands far away, three steps converge, and the result agrees with
         a damped Picard iteration -- a genuinely different algorithm -- so both
         ``max_iters`` and the convergence tolerances stay covered.
         """
@@ -3836,10 +3836,78 @@ class TestActuatorImplicit(unittest.TestCase):
             p += 0.02 * (h * f - p)
         np.testing.assert_allclose(converged, p / h, rtol=2e-3, atol=1e-3)
 
-        # One step lands on the wrong branch; two are enough and further ones change nothing.
+        # One step lands on the wrong branch; three are enough and further ones change nothing.
         single, _ = run(1)
         self.assertGreater(np.max(np.abs(single - converged)), 0.5 * np.max(np.abs(converged)))
-        np.testing.assert_allclose(run(2)[0], converged, rtol=1e-6, atol=1e-6)
+        np.testing.assert_allclose(run(3)[0], converged, rtol=1e-6, atol=1e-6)
+
+    def test_dc_motor_solve_converges_where_full_newton_steps_oscillate(self):
+        """The line search lets the solve converge where full Newton steps jump between the DC-motor limits."""
+        device = wp.get_device()
+        h = 0.01
+        kp, kd, sat, vel_lim, max_e = 12.3365, 0.209173, 3.24316, 0.373749, 4.52314
+        q0 = np.array([0.144578, -0.0894171])
+        qd0 = np.array([-1.10118, 0.0430172])
+        target = np.array([-0.747263, -0.989789])
+
+        model = _build_two_link(device)
+        state = model.state()
+        state.joint_q.assign(q0.astype(np.float32))
+        state.joint_qd.assign(qd0.astype(np.float32))
+        control = model.control()
+        control.joint_target_q.assign(target.astype(np.float32))
+        response = JointSpaceResponse(model)
+        actuator = Actuator(
+            indices=wp.array([0, 1], dtype=wp.uint32, device=device),
+            drive=DrivePD(
+                kp=wp.full(2, kp, dtype=float, device=device),
+                kd=wp.full(2, kd, dtype=float, device=device),
+            ),
+            clamping=[
+                ClampingDCMotor(
+                    saturation_effort=wp.full(2, sat, dtype=float, device=device),
+                    velocity_limit=wp.full(2, vel_lim, dtype=float, device=device),
+                    max_motor_effort=wp.full(2, max_e, dtype=float, device=device),
+                )
+            ],
+            control_target_pos_attr="joint_target_q",
+            control_target_vel_attr="joint_target_qd",
+        )
+        actuator.set_effort_mode_implicit(response=response)
+        control.joint_f.zero_()
+        _refresh_and_step(actuator, response, state, control, h)
+
+        effort = control.joint_f.numpy().astype(np.float64)
+        response_matrix = _response_at_state(model, state).astype(np.float64)
+        qd_p = qd0 + response_matrix @ (h * effort)
+        q_p = q0 + h * qd_p
+        bounds = np.array([_dc_bounds(sat, vel_lim, max_e, v) for v in qd_p])
+        expected = np.clip(kp * (target - q_p) - kd * qd_p, bounds[:, 0], bounds[:, 1])
+        np.testing.assert_allclose(effort, expected, rtol=1e-3, atol=1e-3)
+
+    def test_small_efforts_still_take_a_newton_step(self):
+        """Efforts below the residual tolerance are solved implicitly, not returned as the explicit warm start."""
+        device = wp.get_device()
+        h = 0.01
+        model = _build_pendulum(device)
+        state = model.state()
+        alpha = float(_response_at_state(model, state)[0, 0])
+        # kd makes the implicit effort half the explicit one; kp keeps the explicit impulse below residual_tol.
+        kp, kd, target = 1.0, 1.0 / (alpha * h), 1.0e-4
+        control = model.control()
+        control.joint_target_q.assign([target])
+        actuator, response = _make_implicit_actuator(
+            model,
+            device,
+            kp=wp.array([kp], dtype=float, device=device),
+            kd=wp.array([kd], dtype=float, device=device),
+        )
+        control.joint_f.zero_()
+        _refresh_and_step(actuator, response, state, control, h)
+
+        expected = _expected_implicit_pd(model, state, kp, kd, target, h)
+        self.assertLess(h * kp * target, Actuator.ImplicitOptions().residual_tol)
+        np.testing.assert_allclose(control.joint_f.numpy()[0], expected, rtol=1e-3)
 
     def test_warm_start_zero_reaches_the_same_solution(self):
         """``warm_start="zero"`` converges to the same effort as the explicit start.
