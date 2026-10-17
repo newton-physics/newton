@@ -8116,6 +8116,43 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         self.assertEqual(solver.mj_model.neq, 1)
         self.assertEqual(int(solver.mj_model.eq_type[0]), int(solver._mujoco.mjtEq.mjEQ_WELD))
 
+    def test_world_fixed_loop_on_articulated_body_keeps_fk_state(self):
+        """A world loop-closure joint must not overwrite the articulated body state."""
+        builder = newton.ModelBuilder()
+        body = builder.add_link(
+            xform=wp.transform((0.0, 0.0, 2.0), wp.quat_identity()),
+            mass=1.0,
+            inertia=wp.mat33(np.eye(3)),
+        )
+        root_joint = builder.add_joint_free(child=body)
+        builder.add_articulation([root_joint])
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*FREE joint parallel.*", category=UserWarning)
+            loop_joint = builder.add_joint_fixed(parent=-1, child=body)
+
+        self.assertEqual(builder.joint_articulation[loop_joint], -1)
+
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, disable_contacts=True)
+
+        state_in, state_out, control = model.state(), model.state(), model.control()
+        # Move the body through the free joint; a zero-dt step exercises only the
+        # state read-back, so the body pose must track the articulation root and
+        # not snap to the world weld.
+        joint_q = state_in.joint_q.numpy()
+        joint_q[2] = 3.0
+        state_in.joint_q.assign(joint_q)
+        joint_qd = state_in.joint_qd.numpy()
+        joint_qd[2] = 1.0
+        state_in.joint_qd.assign(joint_qd)
+
+        solver.step(state_in, state_out, control, None, 0.0)
+
+        body_q = state_out.body_q.numpy()[0]
+        body_qd = state_out.body_qd.numpy()[0]
+        self.assertAlmostEqual(float(body_q[2]), 3.0, places=5)
+        self.assertAlmostEqual(float(body_qd[2]), 1.0, places=5)
+
     def test_loop_joints_only(self):
         """Testing that loop joints are converted to equality constraints."""
         builder = newton.ModelBuilder()
