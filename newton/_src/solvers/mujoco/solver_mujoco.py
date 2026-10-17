@@ -35,7 +35,7 @@ from ...sim import (
     State,
     StateFlags,
 )
-from ...sim.articulation import eval_fk
+from ...sim.articulation import eval_fk, eval_orphan_joints_fk
 from ...sim.collide import _estimate_rigid_contact_max, _estimate_rigid_contact_max_per_world
 from ...sim.contacts import GENERATION_SENTINEL as _GENERATION_SENTINEL
 from ...sim.graph_coloring import color_graph, plot_graph
@@ -6216,6 +6216,31 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
+        if self._has_orphan_world_root_joints:
+            wp.launch(
+                eval_orphan_joints_fk,
+                dim=model.joint_count,
+                inputs=[
+                    model.joint_articulation,
+                    state.joint_q,
+                    state.joint_qd,
+                    model.joint_q_start,
+                    model.joint_qd_start,
+                    model.joint_type,
+                    model.joint_parent,
+                    model.joint_child,
+                    model.joint_X_p,
+                    model.joint_X_c,
+                    model.joint_axis,
+                    model.joint_dof_dim,
+                    model.body_com,
+                    model.body_flags,
+                    BodyFlags.ALL,
+                ],
+                outputs=[state.body_q, state.body_qd],
+                device=model.device,
+            )
+
         if is_mjwarp:
             self._update_body_observables(model, state, mj_data, observables)
 
@@ -8517,6 +8542,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 )
         self.mj_q_start = wp.array(mj_q_start_np, dtype=wp.int32, device=model.device)
         self.mj_qd_start = wp.array(mj_qd_start_np, dtype=wp.int32, device=model.device)
+
+        # Standalone world-root joints (not part of any articulation) are skipped by
+        # eval_fk, so their body state is updated separately after each eval_fk call.
+        joint_articulation_np = model.joint_articulation.numpy()
+        joint_parent_np = model.joint_parent.numpy()
+        self._has_orphan_world_root_joints = bool(
+            ((joint_articulation_np == -1) & (joint_parent_np == -1)).any()
+        )
         if self.enable_sleeping:
             qpos_treeid_np = np.full(self.mj_model.nq, -1, dtype=np.int32)
             for jointid in range(self.mj_model.njnt):
