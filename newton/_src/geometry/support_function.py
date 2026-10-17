@@ -234,7 +234,8 @@ def _support_map_box(geom: GenericShapeData, direction: wp.vec3) -> wp.vec3:
     return wp.vec3(sx * geom.scale[0], sy * geom.scale[1], sz * geom.scale[2])
 
 
-@wp.func
+# Out of line: GJK/MPR call it at ~150 sites, and inlining each copy dominated compile time.
+@wp.func(inline=False)
 def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Any) -> wp.vec3:
     """
     Return the support point of a primitive in its local frame.
