@@ -918,7 +918,7 @@ class Model:
         Used for broadphase AABB computation and voxel-based contact reduction."""
         self._shape_interior_point: wp.array[wp.vec3] | None = None
         """Scaled local-space point [m] inside each shape, shape [shape_count, 3], float.
-        Convex meshes use their vertex mean; other shapes use their origin."""
+        Convex meshes use their volume centroid; other shapes use their origin."""
         self._shape_voxel_resolution: wp.array[wp.vec3i] | None = None
         """Voxel grid resolution (nx, ny, nz) for each shape, shape [shape_count, 3], int. Used for voxel-based contact reduction."""
 
