@@ -421,7 +421,7 @@ The full MuJoCo general-actuator model (arbitrary gain/bias/dynamics types
 and parameters, explicit transmission targets, ctrl/force/act ranges) is
 only reachable through the ``mujoco`` :ref:`custom-attribute namespace <mujoco-custom-attributes>`.
 The :doc:`newton.solvers.mujoco </api/newton_solvers_mujoco>` helpers
-``add_actuator_general``, ``add_actuator_motor``, ``add_actuator_position``,
+``add_actuator_dcmotor``, ``add_actuator_general``, ``add_actuator_motor``, ``add_actuator_position``,
 and ``add_actuator_velocity`` author complete
 actuator rows from a typed ``ActuatorTarget``. Scalar and D6 joints support
 local or absolute DOF selection. Ball/free joints instead require an explicit
@@ -432,6 +432,76 @@ COM-based DOF convention. Use :attr:`~newton.Control.joint_f` for forces in
 Newton's DOF convention.
 Additional actuators declared this way are appended after the joint-target
 actuators — see ``SolverMuJoCo._init_actuators``.
+
+MJCF ``<dcmotor>`` actuators follow this MuJoCo-specific path. The importer uses
+MuJoCo's native parser to resolve electrical, controller, thermal, cogging, and
+LuGre parameters, including inherited defaults, into the existing actuator
+parameter arrays for both the CPU and MuJoCo-Warp backends. Importing these
+shortcuts requires the optional ``mujoco`` package and raises ``ImportError``
+with installation guidance when it is unavailable. Install ``newton[sim]`` to
+include MuJoCo. Ordinary MJCF and compiled ``<general>`` actuator import do not
+require MuJoCo; parsing DC-motor shortcuts does not require MuJoCo-Warp.
+Commands use the MJCF actuator order in ``control.mujoco.ctrl``. The supported
+``input`` signatures each consume one control value: ``voltage``, ``pos``, or
+``vel``; ``position`` and ``velocity`` are Newton-only aliases, not valid
+native MuJoCo MJCF keywords.
+MuJoCo's ``ff``, ``none``, and combined multi-input signatures are not yet
+supported by Newton's one-control-per-actuator mapping. Compiled MJCF
+``<general>`` and USD ``MjcActuator`` rows preserve the low-level parameter
+arrays and a supported ``input`` or ``mjc:ctrlSpec`` value, respectively.
+
+The MJCF importer and :func:`~newton.solvers.mujoco.add_actuator_dcmotor`
+set :attr:`~newton.solvers.SolverMuJoCo.CtrlType.DCMOTOR`
+to mark resolved DC-motor parameters as construction-time
+properties; do not set ``CtrlType.DCMOTOR`` manually.
+Runtime edits to ``actuator_gainprm``,
+``actuator_biasprm``, ``actuator_dynprm``, and ``actuator_forcerange`` are ignored
+for these rows to preserve the native compiler's output. Compiled MJCF and USD
+DC motors instead use ``CtrlType.GENERAL`` with ``actuator_gaintype`` set to DC motor.
+
+Actuator damping is preserved on both backends. MuJoCo-Warp 3.15 folds it into
+joint and tendon damping; Newton retains that contribution when publishing
+joint or tendon property updates. Actuator armature is preserved only on the
+native MuJoCo CPU backend (``use_mujoco_cpu=True``); the Warp backend emits a
+``RuntimeWarning`` when it is nonzero. This limitation applies to all actuator
+types, not only DC motors. MJCF ``damping`` accepts one, two, or three coefficients:
+the first is stored in ``mujoco:actuator_damping`` and the remaining two in
+``mujoco:actuator_dampingpoly``. Partial overrides retain inherited trailing
+coefficients; otherwise omitted coefficients default to zero. Compiled USD rows can author
+the corresponding ``mjc:damping`` scalar and ``mjc:dampingPoly`` pair. These
+passive properties are set at solver construction, must be uniform across
+replicated worlds, and are not refreshed by ``notify_model_changed(ACTUATOR_PROPERTIES)``.
+Warp's folded damping uses the construction-time transmission gear.
+DC-motor trajectory parity with native MuJoCo is tested with ``integrator="euler"``;
+MuJoCo-Warp's approximate implicit DC-motor derivatives can produce different
+trajectories with ``implicitfast``.
+
+When using ``separate_worlds=True``, corresponding high-level ``<dcmotor>``
+actuators (including those created by the helper) must have identical parameters because MuJoCo-Warp replicates one
+compiled template model across worlds.
+
+This native, stateful MuJoCo actuator is distinct from
+:class:`~newton.actuators.ClampingDCMotor`, which is a stateless Newton
+clamping stage and does not model winding current, thermal effects, cogging, or
+LuGre friction.
+
+For programmatic authoring, use the same typed targets as the other MuJoCo helpers::
+
+    from newton.solvers import mujoco
+
+    actuator = mujoco.add_actuator_dcmotor(
+        builder,
+        target=mujoco.ActuatorTarget.joint(joint),
+        motorconst=(0.05,),
+        resistance=2.0,
+        input="voltage",
+        ctrlrange=(-12.0, 12.0),
+    )
+
+The helper registers MuJoCo custom attributes automatically and returns the
+actuator row index for ``control.mujoco.ctrl``. It requires native MuJoCo to
+resolve shortcut parameters, but does not compile a model or import MuJoCo-Warp.
+
 
 .. _mujoco-equality-constraints:
 
@@ -979,11 +1049,12 @@ enable the namespace, call
     # ...then add anything (e.g. import MJCF / USD, add joints, ...)
     model = builder.finalize()
 
-The authoritative list of registered attributes — names, defaults,
+The authoritative list of unconditionally registered attributes — names, defaults,
 dtypes, MJCF / USD source names, and the category each belongs to —
 is the body of
 :meth:`~newton.solvers.SolverMuJoCo.register_custom_attributes`
-itself. See :doc:`/concepts/custom_attributes` for how Newton's
+itself.
+See :doc:`/concepts/custom_attributes` for how Newton's
 custom-attribute system works in general.
 
 **Direct mapping to Newton built-ins.** Some MuJoCo-specific

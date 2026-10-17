@@ -28,6 +28,7 @@ from .actuators import (
     add_actuator_velocity,
 )
 from .contacts import add_contact_pair
+from .dcmotor import add_actuator_dcmotor
 from .equality import add_equality_connect, add_equality_joint, add_equality_weld
 from .tendons import (
     TendonWrapGeom,
@@ -42,6 +43,7 @@ __all__ = [
     "TendonWrapGeom",
     "TendonWrapPulley",
     "TendonWrapSite",
+    "add_actuator_dcmotor",
     "add_actuator_general",
     "add_actuator_motor",
     "add_actuator_position",

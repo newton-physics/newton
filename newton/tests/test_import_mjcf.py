@@ -1545,6 +1545,18 @@ class TestMjcfSlideCoordinateScale(unittest.TestCase):
                 <position name="angular" joint="hinge" ctrlrange="-0.2 0.2"/>
                 <motor name="motor" joint="slide" ctrlrange="-0.2 0.2"/>
                 <general name="general" joint="slide" ctrlrange="-0.2 0.2"/>
+                <dcmotor name="dc_position" joint="slide" input="pos" motorconst="0.05"
+                         resistance="2" ctrlrange="-0.2 0.2"/>
+                <dcmotor name="dc_velocity" joint="slide" input="vel" motorconst="0.05"
+                         resistance="2" ctrlrange="-0.2 0.2"/>
+                <dcmotor name="dc_voltage" joint="slide" motorconst="0.05"
+                         resistance="2" ctrlrange="-0.2 0.2"/>
+                <dcmotor name="dc_angular" joint="hinge" input="pos" motorconst="0.05"
+                         resistance="2" ctrlrange="-0.2 0.2"/>
+                <general name="dc_compiled_position" joint="slide" gaintype="dcmotor"
+                         input="pos" ctrlrange="-0.2 0.2"/>
+                <general name="dc_compiled_voltage" joint="slide" gaintype="dcmotor"
+                         input="voltage" ctrlrange="-0.2 0.2"/>
             </actuator>
         </mujoco>
         """
@@ -1554,7 +1566,19 @@ class TestMjcfSlideCoordinateScale(unittest.TestCase):
         model = builder.finalize(device="cpu")
         np.testing.assert_allclose(
             model.mujoco.actuator_ctrlrange.numpy(),
-            [[-0.4, 0.4], [-0.6, 0.6], [-0.2, 0.2], [-0.2, 0.2], [-0.2, 0.2]],
+            [
+                [-0.4, 0.4],
+                [-0.6, 0.6],
+                [-0.2, 0.2],
+                [-0.2, 0.2],
+                [-0.2, 0.2],
+                [-0.4, 0.4],
+                [-0.4, 0.4],
+                [-0.2, 0.2],
+                [-0.2, 0.2],
+                [-0.4, 0.4],
+                [-0.2, 0.2],
+            ],
         )
 
     def test_explicit_slide_velocity_ctrlrange_scales(self):
