@@ -8075,7 +8075,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         np.testing.assert_array_equal(solver.mjc_body_to_newton.numpy(), expected_mapping)
 
     def test_orphan_world_joints_separate_worlds_update_body_state(self):
-        """Replicated standalone roots keep their per-world body state in sync."""
+        """Verify that replicated standalone roots keep their per-world body state in sync."""
         template = newton.ModelBuilder()
         dynamic_body = template.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), label="dynamic_body")
         template.add_joint_free(child=dynamic_body, label="dynamic_root")
@@ -8148,7 +8148,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         self.assertEqual(int(solver.mj_model.eq_type[0]), int(solver._mujoco.mjtEq.mjEQ_WELD))
 
     def test_world_fixed_loop_on_articulated_body_keeps_fk_state(self):
-        """A world loop-closure joint must not overwrite the articulated body state."""
+        """Verify that a world loop-closure joint does not overwrite the articulated body state."""
         builder = newton.ModelBuilder()
         body = builder.add_link(
             xform=wp.transform((0.0, 0.0, 2.0), wp.quat_identity()),
