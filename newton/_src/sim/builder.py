@@ -917,7 +917,8 @@ class ModelBuilder:
         Only used by :class:`~newton.solvers.SolverSemiImplicit` and
         :class:`~newton.solvers.SolverFeatherstone`. Shapes closer than ``ka``
         are pulled together by a normal force ``ke * d`` that grows linearly with
-        the separation ``d`` and drops to zero at ``d = ka``. ``0`` disables
+        the separation ``d`` up to about ``ke * ka`` and cuts off to zero at
+        ``d >= ka``. ``0`` disables
         adhesion. See :ref:`Contact friction gain and adhesion`."""
         mu: float = 1.0
         """The coefficient of friction."""

@@ -2248,9 +2248,9 @@ See :ref:`mujoco-contact-friction-solreffriction`.
 **Adhesion distance** ``ka`` **[m]** lets the normal force act before the
 shapes touch. Contacts are processed while :math:`d < k_a` instead of
 :math:`d < 0`. For :math:`0 \le d < k_a` the normal force :math:`k_e \, d`
-changes sign and pulls the shapes together, growing linearly with the gap and
-dropping to zero at :math:`d = k_a`, so the largest attractive force per contact
-is about :math:`k_e \, k_a`. Damping and friction only act while the shapes
+changes sign and pulls the shapes together, growing linearly with the gap up to
+about :math:`k_e \, k_a`, the largest attractive force per contact, just inside
+:math:`d = k_a`. At :math:`d \ge k_a` the contact applies no force. Damping and friction only act while the shapes
 penetrate.
 
 - ``ka = 0`` (the default) disables adhesion.
@@ -2258,8 +2258,9 @@ penetrate.
   hold a light object against a gripper pad. Choose ``ka`` so that
   :math:`k_e \, k_a` times the number of contacts exceeds the force you want to
   resist.
-- Adhesion only acts on contacts the collision pipeline reports, so the
-  contact ``gap`` must be at least ``ka``.
+- Adhesion only acts on contacts the collision pipeline reports, so the pair
+  gap ``gap_a + gap_b`` (see :ref:`margin-gap-semantics`) must be at least the
+  pair's averaged ``ka``.
 - The force jumps from about :math:`k_e \, k_a` to zero at the cutoff, so large
   values inject energy when shapes separate. Keep ``ka`` small relative to the
   shape size.
