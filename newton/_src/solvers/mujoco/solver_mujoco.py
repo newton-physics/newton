@@ -4314,7 +4314,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 value is estimated automatically. An explicit value is preserved
                 unless it cannot hold the initial MuJoCo constraints; in that case,
                 it is increased with a warning.
-            njmax_nnz: Sparse constraint Jacobian nonzero capacity per world. If provided, must be non-negative and large enough for the initial sparse Jacobian. If None, derived from the model's constraint counts and njmax.
+            njmax_nnz: Sparse constraint Jacobian nonzero capacity per world. If provided, must be non-negative and large enough for the initial sparse Jacobian. If None, derived from the model's constraint counts and njmax, plus friction nonzeros for every DOF and tendon.
             nconmax: Number of contact points per world. If None, a default value
                 is estimated automatically. An explicit value is preserved unless
                 it cannot hold the initial MuJoCo contacts; in that case, it is
@@ -8917,6 +8917,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         f"of at least {minimum_njmax_nnz}; the initial Jacobian contains "
                         f"{initial_required_nnz} nonzeros."
                     )
+            elif njmax_nnz is None and is_mujoco_warp_sparse(self.mj_model):
+                from mujoco_warp._src.io import _default_nconmax, _default_njmax, _default_njmax_nnz
+
+                # MJWarp only counts friction that is nonzero at construction, but
+                # notify_model_changed() can enable it on any DOF or tendon later.
+                njmax_nnz = (
+                    _default_njmax_nnz(
+                        self.mj_model,
+                        nconmax if nconmax is not None else _default_nconmax(self.mj_model, self.mj_data),
+                        njmax if njmax is not None else _default_njmax(self.mj_model, self.mj_data),
+                    )
+                    + self.mj_model.nv
+                    + int(self.mj_model.ten_J_rownnz.sum())
+                )
 
             if nvmax is not None:
                 if nvmax > self.mj_model.nv:

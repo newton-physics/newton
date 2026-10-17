@@ -59,7 +59,7 @@ importers = [
     "meshio>=5.3.5",               # alternative mesh file loader (fallback)
     "pycollada>=0.9",              # transitive dependency of trimesh for COLLADA (.dae) mesh support
     "Pillow>=11.3.0",
-    "resolve-robotics-uri-py>=0.4.0",  # for resolving ROS/Gazebo-style URIs (package://, model://)
+    "resolve-robotics-uri-py>=0.5.1",  # for resolving file://, package://, and model:// URIs
     "open3d>=0.20.0; sys_platform != 'darwin' or platform_machine == 'arm64'",  # no Intel macOS wheels
 
     # USD core libraries
