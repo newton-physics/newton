@@ -1143,6 +1143,24 @@ call outside graph capture raises :class:`RuntimeError`; graph replays alone do 
 Mesh-plane and mesh-convex contacts read the current scale directly and do not trigger
 this diagnostic.
 
+Changing :attr:`~newton.Model.shape_scale` on mesh, convex-mesh, or heightfield shapes also
+requires updating :attr:`~newton.Model.shape_collision_radius`,
+:attr:`~newton.Model.shape_collision_aabb_lower`, and
+:attr:`~newton.Model.shape_collision_aabb_upper` to match the new scale. The local collision
+bounds already include scale, and collision does not rescale them again; stale bounds can
+cause broadphase culling to omit candidate pairs. ``dynamic_shape_scale=True`` changes only
+unbaked texture-SDF queries and does not update these bounds or rebuild baked SDFs or
+heightfield collision data. Rebuild the baked geometry when its scale changes.
+
+.. deprecated:: 1.8
+
+   The packed collision-edge fields ``Model.mesh_edge_indices``, ``Model.mesh_edge_centers``,
+   ``Model.mesh_edge_halves``, and ``Model.shape_edge_range`` are internal acceleration data.
+   Their public aliases remain readable and writable with a :class:`~newton.exceptions.NewtonDeprecationWarning`
+   through Newton 1.8 and will be removed in 1.9. Use :class:`~newton.CollisionPipeline` for
+   model collision detection. Expert callers of :class:`~newton.geometry.NarrowPhase` can
+   supply their own edge arrays; centers and half-vectors must use unscaled mesh coordinates.
+
 **Edge simplification.** ``mesh.build_sdf(...)`` also runs a dihedral-angle pre-filter over
 the mesh's manifold edges and caches the surviving subset on the mesh; the SDF-mesh contact
 pipeline picks up that cached set in preference to the unfiltered :attr:`~Mesh.edges`,

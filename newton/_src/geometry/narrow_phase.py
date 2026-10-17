@@ -3087,10 +3087,10 @@ class NarrowPhase:
             mesh_edge_indices: Packed array of mesh edge vertex pairs for all shapes.
             mesh_edge_centers: Packed precomputed mesh edge centers (xyz) and radii (w) in
                 unscaled mesh coordinates [m]; the shape scale in ``shape_data`` is applied when read.
-                Layout matches :attr:`~newton.Model.mesh_edge_centers`.
+                Each radius is the length of the corresponding unscaled half-vector.
             mesh_edge_halves: Packed precomputed mesh edge half-vectors (xyz) in unscaled mesh
-                coordinates [m] and endpoint-ownership codes (w). Layout matches
-                :attr:`~newton.Model.mesh_edge_halves`.
+                coordinates [m] and endpoint-ownership codes (w). Set the ownership code to zero
+                to allow both endpoints.
             shape_edge_range: Per-shape (start, count) into mesh_edge_indices.
             hydroelastic_shape_sdf_data_prepared: Whether finalized hydroelastic SDF descriptors were cached upstream.
             shape_linear_velocity: Shape-origin linear velocities [m/s]. Required in speculative mode.

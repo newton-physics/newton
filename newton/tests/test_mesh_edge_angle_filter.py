@@ -223,11 +223,11 @@ class TestModelBuilderEdgeAngleThreshold(unittest.TestCase):
             builder.add_shape_mesh(body=body, mesh=mesh, scale=scale)
         model = builder.finalize()
 
-        edge_ranges = model.shape_edge_range.numpy()
+        edge_ranges = model._shape_edge_range.numpy()
         np.testing.assert_array_equal(edge_ranges[0], edge_ranges[1])
-        edges = model.mesh_edge_indices.numpy()
-        packed_centers = model.mesh_edge_centers.numpy()
-        packed_halves = model.mesh_edge_halves.numpy()
+        edges = model._mesh_edge_indices.numpy()
+        packed_centers = model._mesh_edge_centers.numpy()
+        packed_halves = model._mesh_edge_halves.numpy()
         self.assertEqual(len(edges), edge_ranges[0, 1])
         vertices = np.asarray(mesh.vertices, dtype=np.float32)
         edge_v0 = vertices[edges[:, 0]]
@@ -259,10 +259,10 @@ class TestModelBuilderEdgeAngleThreshold(unittest.TestCase):
         body = builder.add_body()
         builder.add_shape_mesh(body=body, mesh=mesh)
         model = builder.finalize()
-        ranges = model.shape_edge_range.numpy()
+        ranges = model._shape_edge_range.numpy()
         # No build_sdf() -> builder packs all 18 unique cube edges.
         self.assertEqual(int(ranges[0][1]), 18)
-        self.assertEqual(int(model.mesh_edge_indices.shape[0]), 18)
+        self.assertEqual(int(model._mesh_edge_indices.shape[0]), 18)
 
     def test_finalize_shares_edges_across_shapes_referencing_same_mesh(self):
         mesh = newton.Mesh.create_box(0.5, compute_inertia=False)
@@ -273,13 +273,13 @@ class TestModelBuilderEdgeAngleThreshold(unittest.TestCase):
         builder.add_shape_mesh(body=body_b, mesh=mesh)
         model = builder.finalize()
 
-        ranges = model.shape_edge_range.numpy()
+        ranges = model._shape_edge_range.numpy()
         # Two mesh shapes, both referencing the same Mesh -> identical (start, count) slice.
         mesh_ranges = [tuple(int(x) for x in r) for r in ranges if int(r[1]) > 0]
         self.assertEqual(len(mesh_ranges), 2)
         self.assertEqual(mesh_ranges[0], mesh_ranges[1])
         # Packed array stores only one copy.
-        self.assertEqual(int(model.mesh_edge_indices.shape[0]), mesh_ranges[0][1])
+        self.assertEqual(int(model._mesh_edge_indices.shape[0]), mesh_ranges[0][1])
 
 
 def _open_top_box_mesh() -> newton.Mesh:
@@ -514,9 +514,9 @@ class TestBuildCollisionEdges(unittest.TestCase):
         builder.add_shape_mesh(body=body, mesh=mesh)
         model = builder.finalize()
 
-        ranges = model.shape_edge_range.numpy()
+        ranges = model._shape_edge_range.numpy()
         self.assertEqual(int(ranges[0][1]), len(seeded))
-        np.testing.assert_array_equal(model.mesh_edge_indices.numpy(), seeded)
+        np.testing.assert_array_equal(model._mesh_edge_indices.numpy(), seeded)
 
     def test_empty_mesh_produces_empty_collision_edges(self):
         mesh = newton.Mesh(np.zeros((0, 3), dtype=np.float32), np.zeros(0, dtype=np.int32), compute_inertia=False)

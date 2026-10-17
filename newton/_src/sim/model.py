@@ -35,6 +35,12 @@ _JOINT_TWIST_LIMIT_DEPRECATION_MSG = (
     "per-DOF Model.joint_limit_lower and Model.joint_limit_upper instead."
 )
 
+_COLLISION_EDGE_DEPRECATION_MSG = (
+    "Model.{name} is deprecated in Newton 1.8 and will be removed in Newton 1.9. "
+    "Packed collision edges are internal acceleration data; use CollisionPipeline for collision detection. "
+    "Custom NarrowPhase callers can supply their own edge arrays."
+)
+
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
     from ..utils.heightfield import HeightfieldData
@@ -384,7 +390,22 @@ class Model:
             AttributeFrequency.SHAPE,
             requires_empty_sentinel=True,
         ),
-        "shape_edge_range": AttributeSpec(AttributeFrequency.SHAPE, requires_empty_sentinel=True),
+        "_shape_edge_range": AttributeSpec(AttributeFrequency.SHAPE, requires_empty_sentinel=True),
+        "shape_edge_range": AttributeSpec(
+            AttributeFrequency.SHAPE, alias_of="_shape_edge_range", deprecated=True, requires_empty_sentinel=True
+        ),
+        "_mesh_edge_indices": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "_mesh_edge_centers": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "_mesh_edge_halves": AttributeSpec(AttributeFrequency.ONCE, compaction_policy="passthrough"),
+        "mesh_edge_indices": AttributeSpec(
+            AttributeFrequency.ONCE, alias_of="_mesh_edge_indices", deprecated=True, compaction_policy="passthrough"
+        ),
+        "mesh_edge_centers": AttributeSpec(
+            AttributeFrequency.ONCE, alias_of="_mesh_edge_centers", deprecated=True, compaction_policy="passthrough"
+        ),
+        "mesh_edge_halves": AttributeSpec(
+            AttributeFrequency.ONCE, alias_of="_mesh_edge_halves", deprecated=True, compaction_policy="passthrough"
+        ),
         "_shape_support_data": AttributeSpec(AttributeFrequency.SHAPE, requires_empty_sentinel=True),
         "_shape_sdf_index": AttributeSpec(AttributeFrequency.SHAPE),
         "_shape_mesh_properties": AttributeSpec(AttributeFrequency.SHAPE),
@@ -856,23 +877,23 @@ class Model:
         self._mesh_keep_alive: list[wp.Mesh] = []
         """wp.Mesh objects referenced by :attr:`shape_source_ptr`, kept alive for the model's lifetime."""
 
-        # Mesh edge data (packed arrays + per-shape slice)
-        self.mesh_edge_indices: wp.array[wp.vec2i] | None = None
+        # Internal collision edges; public names remain as deprecated property aliases.
+        self._mesh_edge_indices: wp.array[wp.vec2i] | None = None
         """Packed unique edge vertex pairs for all mesh shapes, shape [total_edge_count]."""
-        self.mesh_edge_centers: wp.array[wp.vec4] | None = None
+        self._mesh_edge_centers: wp.array[wp.vec4] | None = None
         """Packed collision-edge centers and radii, shape [total_edge_count, 4] [m].
 
         Components ``xyz`` are edge centers and ``w`` is the edge half-length, both in
         unscaled mesh coordinates; collision applies :attr:`shape_scale` when reading them.
         """
-        self.mesh_edge_halves: wp.array[wp.vec4] | None = None
+        self._mesh_edge_halves: wp.array[wp.vec4] | None = None
         """Packed collision-edge half-vectors and corner ownership, shape [total_edge_count, 4].
 
         Components ``xyz`` are half-vectors in unscaled mesh coordinates [m];
         collision applies :attr:`shape_scale` when reading them. Component ``w``
         is a unitless internal endpoint-ownership code.
         """
-        self.shape_edge_range: wp.array[wp.vec2i] | None = None
+        self._shape_edge_range: wp.array[wp.vec2i] | None = None
         """Per-shape (start, count) into mesh edge arrays, shape [shape_count]. (-1,0) if no edges."""
         self._shape_mesh_properties: wp.array[wp.int32] | None = None
         """Per-shape mesh property bitfield used by collision kernels, shape [shape_count]."""
@@ -1627,6 +1648,92 @@ class Model:
 
     joint_target_pos = RemovedAttribute("joint_target_q", removed_in="1.5")
     joint_target_vel = RemovedAttribute("joint_target_qd", removed_in="1.5")
+
+    @property
+    def mesh_edge_indices(self) -> wp.array[wp.vec2i] | None:
+        """Packed collision-edge vertex pairs, shape [total_edge_count].
+
+        .. deprecated:: 1.8
+            This acceleration data is internal and the public alias will be removed in 1.9.
+            Use :class:`CollisionPipeline` or supply edge arrays to :class:`geometry.NarrowPhase`.
+        """
+        warnings.warn(
+            _COLLISION_EDGE_DEPRECATION_MSG.format(name="mesh_edge_indices"), NewtonDeprecationWarning, stacklevel=2
+        )
+        return self._mesh_edge_indices
+
+    @mesh_edge_indices.setter
+    def mesh_edge_indices(self, value: wp.array[wp.vec2i] | None) -> None:
+        warnings.warn(
+            _COLLISION_EDGE_DEPRECATION_MSG.format(name="mesh_edge_indices"), NewtonDeprecationWarning, stacklevel=2
+        )
+        self._mesh_edge_indices = value
+
+    @property
+    def mesh_edge_centers(self) -> wp.array[wp.vec4] | None:
+        """Packed collision-edge centers (xyz) and half-lengths (w), shape [total_edge_count, 4] [m].
+
+        Centers and half-lengths are in unscaled mesh coordinates.
+
+        .. deprecated:: 1.8
+            This acceleration data is internal and the public alias will be removed in 1.9.
+            Use :class:`CollisionPipeline` or supply edge arrays to :class:`geometry.NarrowPhase`.
+        """
+        warnings.warn(
+            _COLLISION_EDGE_DEPRECATION_MSG.format(name="mesh_edge_centers"), NewtonDeprecationWarning, stacklevel=2
+        )
+        return self._mesh_edge_centers
+
+    @mesh_edge_centers.setter
+    def mesh_edge_centers(self, value: wp.array[wp.vec4] | None) -> None:
+        warnings.warn(
+            _COLLISION_EDGE_DEPRECATION_MSG.format(name="mesh_edge_centers"), NewtonDeprecationWarning, stacklevel=2
+        )
+        self._mesh_edge_centers = value
+
+    @property
+    def mesh_edge_halves(self) -> wp.array[wp.vec4] | None:
+        """Packed collision-edge half-vectors (xyz) [m] and unitless endpoint-ownership codes (w).
+
+        Shape [total_edge_count, 4]. Half-vectors are in unscaled mesh coordinates.
+
+        .. deprecated:: 1.8
+            This acceleration data is internal and the public alias will be removed in 1.9.
+            Use :class:`CollisionPipeline` or supply edge arrays to :class:`geometry.NarrowPhase`.
+        """
+        warnings.warn(
+            _COLLISION_EDGE_DEPRECATION_MSG.format(name="mesh_edge_halves"), NewtonDeprecationWarning, stacklevel=2
+        )
+        return self._mesh_edge_halves
+
+    @mesh_edge_halves.setter
+    def mesh_edge_halves(self, value: wp.array[wp.vec4] | None) -> None:
+        warnings.warn(
+            _COLLISION_EDGE_DEPRECATION_MSG.format(name="mesh_edge_halves"), NewtonDeprecationWarning, stacklevel=2
+        )
+        self._mesh_edge_halves = value
+
+    @property
+    def shape_edge_range(self) -> wp.array[wp.vec2i] | None:
+        """Per-shape (start, count) into packed collision-edge arrays, shape [shape_count].
+
+        A range of (-1, 0) means no edges.
+
+        .. deprecated:: 1.8
+            This acceleration data is internal and the public alias will be removed in 1.9.
+            Use :class:`CollisionPipeline` or supply edge arrays to :class:`geometry.NarrowPhase`.
+        """
+        warnings.warn(
+            _COLLISION_EDGE_DEPRECATION_MSG.format(name="shape_edge_range"), NewtonDeprecationWarning, stacklevel=2
+        )
+        return self._shape_edge_range
+
+    @shape_edge_range.setter
+    def shape_edge_range(self, value: wp.array[wp.vec2i] | None) -> None:
+        warnings.warn(
+            _COLLISION_EDGE_DEPRECATION_MSG.format(name="shape_edge_range"), NewtonDeprecationWarning, stacklevel=2
+        )
+        self._shape_edge_range = value
 
     @property
     def joint_twist_lower(self) -> wp.array[wp.float32] | None:

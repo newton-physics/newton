@@ -14902,22 +14902,22 @@ class ModelBuilder:
                 else:
                     shape_edge_ranges.append((-1, 0))
 
-            m.shape_edge_range = wp.array(
+            m._shape_edge_range = wp.array(
                 shape_edge_ranges if shape_edge_ranges else [(-1, 0)],
                 dtype=wp.vec2i,
                 device=device,
             )
-            m.mesh_edge_indices = (
+            m._mesh_edge_indices = (
                 wp.array(np.concatenate(edge_chunks), dtype=wp.vec2i, device=device)
                 if edge_offset > 0
                 else wp.zeros(1, dtype=wp.vec2i, device=device)
             )
-            m.mesh_edge_centers = (
+            m._mesh_edge_centers = (
                 wp.array(np.concatenate(edge_center_chunks), dtype=wp.vec4, device=device)
                 if edge_offset > 0
                 else wp.zeros(1, dtype=wp.vec4, device=device)
             )
-            m.mesh_edge_halves = (
+            m._mesh_edge_halves = (
                 wp.array(np.concatenate(edge_half_chunks), dtype=wp.vec4, device=device)
                 if edge_offset > 0
                 else wp.zeros(1, dtype=wp.vec4, device=device)
