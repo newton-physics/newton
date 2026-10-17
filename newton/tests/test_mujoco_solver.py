@@ -11196,8 +11196,9 @@ class TestUsdActuatorTypeAttributes(unittest.TestCase):
         stage = _create_actuator_test_stage(extra_actuator_attrs=set_actuator_attrs)
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        with self.assertWarnsRegex(RuntimeWarning, r"gaintype 'pid' on prim '/World/actuator'"):
+        with self.assertLogs("newton", level="WARNING") as logs:
             builder.add_usd(stage)
+        self.assertTrue(any("gaintype 'pid' on prim '/World/actuator'" in line for line in logs.output), logs.output)
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -13656,8 +13657,11 @@ class TestActuatorTypes(unittest.TestCase):
         for gaintype in ("dcmotor", "so3", "pid", "bogus"):
             with self.subTest(gaintype=gaintype):
                 builder = newton.ModelBuilder()
-                with self.assertWarnsRegex(RuntimeWarning, rf"gaintype '{gaintype}' on actuator 'a'"):
+                with self.assertLogs("newton", level="WARNING") as logs:
                     builder.add_mjcf(self._mjcf(gaintype=gaintype))
+                self.assertTrue(
+                    any(f"gaintype '{gaintype}' on actuator 'a'" in line for line in logs.output), logs.output
+                )
 
 
 if __name__ == "__main__":

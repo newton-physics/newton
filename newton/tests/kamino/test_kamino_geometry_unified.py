@@ -21,6 +21,7 @@ from newton._src.solvers.kamino._src.core.model import ModelKamino
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.geometry.unified import CollisionPipelineUnifiedKamino
 from newton._src.solvers.kamino._src.utils import logger as msg
+from newton.exceptions import NewtonWarning
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.test_kamino_geometry_primitive import check_contacts
 from newton.tests.utils import basics, testing
@@ -585,7 +586,7 @@ class TestCollisionPipelineUnified(unittest.TestCase):
                 mock.patch.object(model.geoms.wid, "numpy", wraps=model.geoms.wid.numpy) as read_worlds,
                 warnings.catch_warnings(record=True) as caught,
             ):
-                warnings.filterwarnings("always", message="Explicit broad phase tests", category=RuntimeWarning)
+                warnings.filterwarnings("always", message="Explicit broad phase tests", category=NewtonWarning)
                 CollisionPipelineUnifiedKamino(model, broadphase=broadphase)
             self.assertEqual(len(caught), int(broadphase == "explicit"))
             self.assertEqual(read_pairs.call_count, int(broadphase == "explicit"))
