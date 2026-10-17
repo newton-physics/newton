@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 # commit.  Update these SHAs when assets change upstream and the new versions
 # have been validated against Newton's test suite.
 NEWTON_ASSETS_URL = "https://github.com/newton-physics/newton-assets.git"
-NEWTON_ASSETS_REF = "f8fb7abcbeba2318814a74f3eeb02780ad7925d6"
+NEWTON_ASSETS_REF = "df79441462ae5fa0fe0b8d5cdbaf0b95a2919307"
 
 MENAGERIE_URL = "https://github.com/google-deepmind/mujoco_menagerie.git"
 MENAGERIE_REF = "da76818e269b82289eba39808e2fb91d679d6994"
