@@ -408,6 +408,10 @@ raise ``RuntimeError`` during capture. Getters that reuse buffers can also be
 captured after their first call. Mask and value contents can change between
 inference replays without rebuilding the graph.
 
+Getter buffers first allocated during capture belong to that graph. They are
+not reused by ordinary reads or other captures. Warm up before capturing to
+reuse buffers without allocating inside the graph.
+
 ``set_mask_from_indices()`` also supports capture with preallocated device
 indices and a mask. Host indices raise ``RuntimeError`` during capture.
 

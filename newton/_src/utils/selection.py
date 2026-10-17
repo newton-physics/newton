@@ -2977,7 +2977,9 @@ class _DeformableViewBase:
         if entry is not None and entry[1] is src and entry[2] is src_grad:
             return entry[0]
         result = self._create_attribute_array(kind, src)
-        entries[key] = (result, src, src_grad)
+        # Captured allocations belong to their graph, not the ordinary getter cache.
+        if not wp.get_device(self.device).is_capturing:
+            entries[key] = (result, src, src_grad)
         return result
 
     def _create_attribute_array(self, kind: str, src: wp.array[Any]):

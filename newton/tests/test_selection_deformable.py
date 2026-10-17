@@ -1062,6 +1062,34 @@ class TestDeformableStateReads(unittest.TestCase):
         np.testing.assert_allclose(first.numpy(), moved, atol=1.0e-6)
 
     @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA graph capture")
+    def test_irregular_getter_cold_capture_keeps_buffers_separate(self):
+        """Read eagerly before replaying independent first-use getter captures."""
+        device = wp.get_device("cuda:0")
+        if not wp.is_mempool_enabled(device):
+            self.skipTest("CUDA graph capture of allocations requires the mempool")
+        model = _irregular_model(device=device)
+        state = model.state()
+        warm_view = DeformableSurfaceView(model, "selected_cloth_*")
+        expected = warm_view.get_particle_positions(state).numpy().copy()
+        view = DeformableSurfaceView(model, "selected_cloth_*")
+
+        with wp.ScopedCapture(device) as first:
+            first_result = view.get_particle_positions(state)
+        with wp.ScopedCapture(device) as second:
+            second_result = view.get_particle_positions(state)
+        # Independent graphs must not borrow storage allocated by an unreplayed graph.
+        self.assertIsNot(first_result, second_result)
+
+        eager_result = view.get_particle_positions(state)
+        np.testing.assert_array_equal(eager_result.numpy(), expected)
+        for capture, result, offset in ((second, second_result, 1.0), (first, first_result, 2.0)):
+            values = expected + offset
+            view.set_particle_positions(state, wp.array(values, dtype=wp.vec3, device=device))
+            wp.capture_launch(capture.graph)
+            np.testing.assert_array_equal(result.numpy(), values)
+            np.testing.assert_array_equal(view.get_particle_positions(state).numpy(), values)
+
+    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA graph capture")
     def test_irregular_getters_capture_all_state_dtypes(self):
         """Internally staged vec3, transform, and spatial-vector reads replay in a CUDA graph."""
         device = wp.get_device("cuda:0")
