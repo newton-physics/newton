@@ -1613,6 +1613,28 @@ class TestMeshIsWatertight(unittest.TestCase):
         mesh.indices = mesh.indices[:30]  # 5 faces instead of 6
         self.assertFalse(mesh.is_watertight)
 
+    def test_in_place_vertex_edit_refreshes_welding(self):
+        """invalidate_cache() must drop cached vertex welding, not only the edge results."""
+        verts = np.array(
+            [[-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1], [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]],
+            dtype=np.float32,
+        )
+        # vertex 8 duplicates vertex 0 and replaces it in the three side faces that touch that corner
+        verts = np.vstack([verts, verts[:1]])
+        tris = [
+            (0, 2, 1), (0, 3, 2), (4, 5, 6), (4, 6, 7), (8, 1, 5), (8, 5, 4),
+            (2, 3, 7), (2, 7, 6), (8, 4, 7), (8, 7, 3), (1, 2, 6), (1, 6, 5),
+        ]  # fmt: skip
+        indices = np.array(tris, dtype=np.int32).reshape(-1)
+        mesh = Mesh(verts, indices, compute_inertia=False)
+        self.assertTrue(mesh.is_watertight)
+        self.assertEqual(len(mesh.edges), 18)
+
+        mesh.vertices[8] += 0.5  # split the duplicate off in place
+        mesh.invalidate_cache()
+        self.assertFalse(mesh.is_watertight)
+        self.assertGreater(len(mesh.edges), 18)
+
 
 @wp.kernel
 def _sample_texture_sdf_kernel(
