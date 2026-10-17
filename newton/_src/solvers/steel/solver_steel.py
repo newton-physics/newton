@@ -16,6 +16,7 @@ import warp as wp
 
 from ...core.reset import reset_world_selected
 from ...core.types import override
+from ...exceptions import NewtonWarning
 from ...geometry.flags import ShapeFlags
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelBuilder, ModelFlags, State, StateFlags
 from ...sim.articulation import eval_fk
@@ -2015,7 +2016,7 @@ class SolverSteel(SolverBase):
                     "The contact_compliance material law uses point friction; it does not support "
                     "persistent friction patches. Set friction_anchor_beta=0 to select point friction "
                     "without this warning.",
-                    UserWarning,
+                    NewtonWarning,
                     stacklevel=2,
                 )
             elif (
@@ -2027,7 +2028,7 @@ class SolverSteel(SolverBase):
                 warnings.warn(
                     f"friction_mode={friction_mode!r} uses point friction; it does not support persistent "
                     "friction patches. Set friction_anchor_beta=0 to select point friction without this warning.",
-                    UserWarning,
+                    NewtonWarning,
                     stacklevel=2,
                 )
             else:
@@ -2161,7 +2162,7 @@ class SolverSteel(SolverBase):
                 "Patch friction selects its own friction locations and carries tangential displacement. "
                 "contact_shared_anchor still applies to normal rows; set friction_anchor_beta=0 "
                 "to apply shared-anchor flags to point friction rows as well.",
-                UserWarning,
+                NewtonWarning,
                 stacklevel=2,
             )
         configure_contact_torsion(self)
@@ -3020,7 +3021,7 @@ class SolverSteel(SolverBase):
                 "other than 0. Global articulations are solved in world 0, so such contacts cannot be solved: "
                 "they are dropped, counted and flagged in constraint_overflow. Use world geometry or a "
                 "kinematic free body for shared scenery, or add the body to every world.",
-                UserWarning,
+                NewtonWarning,
                 stacklevel=3,
             )
 
@@ -3065,7 +3066,7 @@ class SolverSteel(SolverBase):
                 f"{capacity}. Rows beyond the capacity are dropped and flagged in constraint_overflow. Raise "
                 "articulation_constraint_max, set a finite joint_limit_activation_gap so that only limits near the "
                 "joint position create rows, or set unbounded limits to +/-inf.",
-                UserWarning,
+                NewtonWarning,
                 stacklevel=3,
             )
 
@@ -3334,6 +3335,7 @@ class SolverSteel(SolverBase):
             warnings.warn(
                 "SolverSteel: bilateral pre-elimination does not support the propagation contact responses; "
                 "pre-elimination is disabled and the mimic rows stay iterative.",
+                NewtonWarning,
                 stacklevel=3,
             )
             return
@@ -3343,6 +3345,7 @@ class SolverSteel(SolverBase):
                 "SolverSteel: enable_bilateral_preelimination does not support velocity_iterations > 0; "
                 "pre-elimination is disabled for the whole solver and every articulation keeps iterative mimic "
                 "and connect rows.",
+                NewtonWarning,
                 stacklevel=3,
             )
             return
@@ -3351,6 +3354,7 @@ class SolverSteel(SolverBase):
                 "SolverSteel: enable_bilateral_preelimination does not support loop closures with a "
                 "kinematic or world parent; pre-elimination is disabled for the whole solver and every "
                 "articulation keeps iterative mimic and connect rows.",
+                NewtonWarning,
                 stacklevel=3,
             )
             return
@@ -3372,6 +3376,7 @@ class SolverSteel(SolverBase):
                 f"capacity of {PREELIM_MAX_ROWS}; pre-elimination is disabled for the whole solver and every "
                 "articulation keeps iterative mimic and connect rows. Set "
                 "bilateral_preelimination_include_mimics=False to pre-eliminate only the connect rows.",
+                NewtonWarning,
                 stacklevel=3,
             )
             return
@@ -3589,7 +3594,7 @@ class SolverSteel(SolverBase):
             warnings.warn(
                 "SolverSteel does not support passive joint springs yet and ignores nonzero "
                 "mujoco:dof_passive_stiffness (see newton-physics/newton#4516).",
-                UserWarning,
+                NewtonWarning,
                 stacklevel=3,
             )
 

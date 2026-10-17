@@ -620,7 +620,9 @@ def _jointed_kinematic_floor_model(device):
 def _construct(test, model, expect_warning, **kwargs):
     """Construct the solver, requiring exactly the unsolvable-global-contact warning or no warning."""
     if expect_warning:
-        return _expect_one_warning(test, UserWarning, _UNSOLVABLE_GLOBAL_WARNING, lambda: SolverSteel(model, **kwargs))
+        return _expect_one_warning(
+            test, newton.exceptions.NewtonWarning, _UNSOLVABLE_GLOBAL_WARNING, lambda: SolverSteel(model, **kwargs)
+        )
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         solver = SolverSteel(model, **kwargs)

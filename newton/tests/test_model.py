@@ -84,6 +84,7 @@ class TestModelAttributeSpecs(unittest.TestCase):
                 )
 
     def test_core_attribute_specs_cover_entity_indexed_storage(self):
+        """Require metadata for entity-indexed storage, excluding lazy implementation details."""
         model = newton.Model(device="cpu")
 
         prefixes = tuple(
@@ -116,7 +117,11 @@ class TestModelAttributeSpecs(unittest.TestCase):
             if name.startswith(prefixes + private_prefixes) and is_indexed_container:
                 indexed_attributes.add(name)
 
-        missing = sorted(indexed_attributes.difference(model.attribute_specs))
+        excluded_attributes = {
+            "_shape_contact_pairs",  # Covered by the public shape_contact_pairs specification.
+            "_shape_contact_pair_counts",  # Summary cache, not entity-indexed storage.
+        }
+        missing = sorted(indexed_attributes.difference(model.attribute_specs, excluded_attributes))
         self.assertEqual(
             missing,
             [],
