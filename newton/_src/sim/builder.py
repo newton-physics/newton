@@ -900,9 +900,25 @@ class ModelBuilder:
         kd: float = 100.0
         """The normal contact damping coefficient [N·s/m]."""
         kf: float = 1000.0
-        """The contact friction gain [N·s/m]."""
+        """The contact friction gain [N·s/m].
+
+        In :class:`~newton.solvers.SolverSemiImplicit` and
+        :class:`~newton.solvers.SolverFeatherstone` the tangential force is
+        ``min(kf * |v_t|, mu * |f_n|)``: viscous friction with slope ``kf``
+        below the slip speed ``mu * |f_n| / kf``, Coulomb friction above it.
+        Larger values approach ideal Coulomb friction but stiffen the system and
+        may need a smaller time step. :class:`~newton.solvers.SolverMuJoCo` maps
+        it to ``solreffriction`` (elliptic cones with Newton contacts only), and
+        ``kf = 0`` makes the contact frictionless there. See
+        :ref:`Contact friction gain and adhesion`."""
         ka: float = 0.0
-        """The contact adhesion distance [m]."""
+        """The contact adhesion distance [m].
+
+        Only used by :class:`~newton.solvers.SolverSemiImplicit` and
+        :class:`~newton.solvers.SolverFeatherstone`. Shapes closer than ``ka``
+        are pulled together by a normal force ``ke * d`` that grows linearly with
+        the separation ``d`` and drops to zero at ``d = ka``. ``0`` disables
+        adhesion. See :ref:`Contact friction gain and adhesion`."""
         mu: float = 1.0
         """The coefficient of friction."""
         restitution: float = 0.0
