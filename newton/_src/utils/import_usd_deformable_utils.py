@@ -1440,5 +1440,7 @@ class _DeformableImportContext:
     path_soft_attrs: dict
     path_attachment_map: dict
     path_attachment_attrs: dict
+    # Articulation index -> self-collision flag, consumed by the importer's filter pass.
+    articulation_has_self_collision: dict[int, bool]
     # Filled by _scout_deformable_prims so the passes iterate buckets instead of the stage.
     prims: _DeformablePrimBuckets = field(default_factory=_DeformablePrimBuckets)

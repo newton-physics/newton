@@ -1674,6 +1674,9 @@ def parse_usd(
                     break
                 current_prim = current_prim.GetParent()
 
+    # maps from articulation_id to bool indicating if self-collisions are enabled
+    articulation_has_self_collision = {}
+
     _deformable_ctx = _DeformableImportContext(
         builder=builder,
         stage=stage,
@@ -1702,6 +1705,7 @@ def parse_usd(
         path_soft_attrs=path_soft_attrs,
         path_attachment_map=path_attachment_map,
         path_attachment_attrs=path_attachment_attrs,
+        articulation_has_self_collision=articulation_has_self_collision,
         prims=_deformable_prims,
     )
 
@@ -1746,9 +1750,6 @@ def parse_usd(
         if prim.HasAPI(UsdPhysics.ArticulationRootAPI)
     ]
     authored_articulation_root_paths.sort(key=len, reverse=True)
-
-    # maps from articulation_id to bool indicating if self-collisions are enabled
-    articulation_has_self_collision = {}
 
     if UsdPhysics.ObjectType.Articulation in ret_dict:
         paths, articulation_descs = ret_dict[UsdPhysics.ObjectType.Articulation]
