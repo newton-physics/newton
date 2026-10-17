@@ -3669,11 +3669,64 @@ class ModelBuilder:
         if counts["particle"]:
             self.particle_max_velocity = builder.particle_max_velocity
             particle_q = np.tile(np.asarray(builder.particle_q, dtype=np.float32), (world_count, 1))
+            if not translations_only:
+                attribute_specs.pop("particle_qd")
+                source_qd = np.asarray(builder.particle_qd)
+                particle_qd = np.tile(
+                    source_qd.astype(np.result_type(source_qd.dtype, np.float32), copy=False), (world_count, 1)
+                )
+                for world_index, xform in enumerate(xforms):
+                    if xform is None or np.array_equal(np.asarray(xform.q), _IDENTITY_ROTATION):
+                        continue
+                    sl = slice(world_index * counts["particle"], (world_index + 1) * counts["particle"])
+                    rotate_vectors(xform.q, particle_q[sl])
+                    rotate_vectors(xform.q, particle_qd[sl])
+                if "particle_qd" in array_starts:
+                    self.particle_qd[array_starts["particle_qd"] :] = particle_qd
+                else:
+                    source_velocities = builder.particle_qd
+                    if all(type(velocity) is type(source_velocities[0]) for velocity in source_velocities):
+                        descriptor = _describe_array_backed_list(source_velocities[0])
+                        self.particle_qd.extend(_materialize_array_backed_list(particle_qd, descriptor))
+                    else:
+                        # List-backed composition can mix tuples, lists, and native vectors.
+                        velocity_groups = {}
+                        for index in range(len(particle_qd)):
+                            velocity_type = type(source_velocities[index % counts["particle"]])
+                            velocity_groups.setdefault(velocity_type, []).append(index)
+                        velocities = [None] * len(particle_qd)
+                        for indices in velocity_groups.values():
+                            descriptor = _describe_array_backed_list(source_velocities[indices[0] % counts["particle"]])
+                            values = _materialize_array_backed_list(particle_qd[indices], descriptor)
+                            for index, velocity in zip(indices, values, strict=True):
+                                velocities[index] = velocity
+                        self.particle_qd.extend(velocities)
             particle_q += np.repeat(offsets, counts["particle"], axis=0)
             if "particle_q" in array_starts:
                 self.particle_q[array_starts["particle_q"] :] = particle_q
             else:
                 self.particle_q.extend(particle_q.tolist())
+
+        if counts["tetrahedron"] and not translations_only:
+            attribute_specs.pop("tet_poses")
+            tet_source = np.asarray(builder.tet_poses)
+            tet_poses = np.tile(
+                tet_source.astype(np.result_type(tet_source.dtype, np.float32), copy=False).reshape((-1, 3, 3)),
+                (world_count, 1, 1),
+            )
+            for world_index, xform in enumerate(xforms):
+                if xform is None or np.array_equal(np.asarray(xform.q), _IDENTITY_ROTATION):
+                    continue
+                sl = slice(world_index * counts["tetrahedron"], (world_index + 1) * counts["tetrahedron"])
+                # Q = inverse(Dm); rotating the reference gives Q' = Q R^T.
+                rotate_vectors(xform.q, tet_poses[sl].reshape((-1, 3)))
+            if "tet_poses" in array_starts:
+                destination = self.tet_poses[array_starts["tet_poses"] :]
+                destination[:] = tet_poses.reshape(destination.shape)
+            else:
+                descriptor = _describe_array_backed_list(builder.tet_poses[0])
+                values = tet_poses.reshape((-1, *tet_source.shape[1:]))
+                self.tet_poses.extend(_materialize_array_backed_list(values, descriptor))
 
         shape_starts = starts("shape")
         body_starts = starts("body")
@@ -3708,6 +3761,8 @@ class ModelBuilder:
         attribute_specs.pop("joint_X_p")
         attribute_specs.pop("joint_q")
         attribute_specs.pop("joint_qd")
+        attribute_specs.pop("joint_target_q")
+        attribute_specs.pop("joint_target_qd")
         joint_X_p_start = array_starts.get("joint_X_p", int(bases["joint"]))
         if "joint_X_p" not in array_starts:
             self.joint_X_p.extend(source_list("joint_X_p") * world_count)
@@ -3716,6 +3771,8 @@ class ModelBuilder:
         # (xform conjugated by joint_X_p). Other joint velocities are unchanged.
         joint_qd_source = np.asarray(builder.joint_qd, dtype=np.float32)
         joint_qd = np.tile(joint_qd_source, world_count)
+        joint_target_q = np.tile(np.asarray(builder.joint_target_q, dtype=float), world_count)
+        joint_target_qd = np.tile(np.asarray(builder.joint_target_qd, dtype=float), world_count)
         if counts["joint"]:
             joint_types = np.asarray(builder.joint_type, dtype=np.int64)
             joint_parents = np.asarray(builder.joint_parent, dtype=np.int64)
@@ -3731,6 +3788,10 @@ class ModelBuilder:
 
             free_roots = np.flatnonzero((joint_parents == -1) & (joint_types == int(JointType.FREE)))
             if len(free_roots) and any(xform is not None for xform in xforms):
+                import newton  # noqa: PLC0415
+
+                translated_worlds = np.flatnonzero(np.any(offsets != 0.0, axis=1))
+                target_positions = joint_target_q.reshape((world_count, counts["joint_coord"]))
                 # Per-joint frames are invariant across worlds; compute them once.
                 free_root_frames = []
                 for joint in free_roots.tolist():
@@ -3738,21 +3799,50 @@ class ModelBuilder:
                     source_qd = builder.joint_qd_start[joint]
                     xform_prev = wp.transform(*builder.joint_q[source_q : source_q + 7])
                     X_pj = wp.transform(*builder.joint_X_p[joint])
-                    free_root_frames.append((source_q, source_qd, X_pj, wp.transform_inverse(X_pj), xform_prev))
+                    if len(translated_worlds):
+                        anchor_rotation = np.asarray(wp.quat_to_matrix(X_pj.q)).reshape((3, 3))
+                        target_positions[translated_worlds, source_q : source_q + 3] += (
+                            offsets[translated_worlds] @ anchor_rotation
+                        )
+                    xform_target = None
+                    if not translations_only:
+                        target_values = builder.joint_target_q[source_q : source_q + 7]
+                        target_rotation = (
+                            wp.quat(*target_values[3:])
+                            if newton.use_coord_layout_targets
+                            else wp.quat_from_euler(wp.vec3(*target_values[3:6]), 2, 1, 0)
+                        )
+                        xform_target = wp.transform(wp.vec3(*target_values[:3]), target_rotation)
+                    free_root_frames.append(
+                        (source_q, source_qd, X_pj, wp.transform_inverse(X_pj), xform_prev, xform_target)
+                    )
                 for world_index, xform in enumerate(xforms):
                     if xform is None:
                         continue
                     coord_base = world_index * counts["joint_coord"]
                     dof_base = world_index * len(joint_qd_source)
                     rotate_qd = not np.array_equal(np.asarray(xform.q), _IDENTITY_ROTATION)
-                    for source_q, source_qd, X_pj, X_pj_inv, xform_prev in free_root_frames:
+                    for source_q, source_qd, X_pj, X_pj_inv, xform_prev, xform_target in free_root_frames:
                         xform_local = transform_mul(transform_mul(X_pj_inv, xform), X_pj)
                         transformed = transform_mul(xform_local, xform_prev)
                         target_q = coord_base + source_q
                         joint_q[target_q : target_q + 7] = np.asarray(transformed, dtype=np.float32)
                         if rotate_qd:
+                            local_rotation = xform_local.q
                             twist = joint_qd[dof_base + source_qd : dof_base + source_qd + 6].reshape(2, 3)
-                            rotate_vectors(wp.transform_get_rotation(xform_local), twist)
+                            rotate_vectors(local_rotation, twist)
+                            target_twist = joint_target_qd[dof_base + source_qd : dof_base + source_qd + 6].reshape(
+                                2, 3
+                            )
+                            rotate_vectors(local_rotation, target_twist)
+                            transformed_target = transform_mul(xform_local, xform_target)
+                            if newton.use_coord_layout_targets:
+                                joint_target_q[target_q : target_q + 7] = np.asarray(transformed_target)
+                            else:
+                                joint_target_q[target_q : target_q + 3] = np.asarray(transformed_target.p)
+                                joint_target_q[target_q + 3 : target_q + 6] = np.asarray(
+                                    wp.quat_to_euler(transformed_target.q, 2, 1, 0)
+                                )
 
         if "joint_q" in array_starts:
             self.joint_q[array_starts["joint_q"] :] = joint_q
@@ -3762,6 +3852,11 @@ class ModelBuilder:
             self.joint_qd[array_starts["joint_qd"] :] = joint_qd
         elif len(joint_qd):
             self.joint_qd.extend(joint_qd.tolist())
+        for attr, values in (("joint_target_q", joint_target_q), ("joint_target_qd", joint_target_qd)):
+            if attr in array_starts:
+                getattr(self, attr)[array_starts[attr] :] = values
+            elif len(values):
+                getattr(self, attr).extend(values.tolist())
 
         for world_index, joint_start in enumerate(joint_starts.tolist()):
             body_start = int(body_starts[world_index])
@@ -5443,7 +5538,9 @@ class ModelBuilder:
 
         Args:
             builder: The model builder to copy data from.
-            xform: Optional offset transform applied to root bodies.
+            xform: Optional transform applied to body poses, particle positions, and
+                tetrahedral rest poses. Rotates world-space velocities and transforms
+                free-root joint state and pose/velocity targets in the parent frame.
             label_prefix: Optional prefix prepended to all entity labels
                 from the source builder. Labels are joined with ``/``
                 (e.g., ``"left/panda/base_link"``).
