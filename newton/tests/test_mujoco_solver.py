@@ -8074,6 +8074,37 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         expected_mapping = np.array([[-1, 0, 1], [-1, 2, 3], [-1, 4, 5]], dtype=np.int32)
         np.testing.assert_array_equal(solver.mjc_body_to_newton.numpy(), expected_mapping)
 
+    def test_orphan_world_joints_separate_worlds_update_body_state(self):
+        """Replicated standalone roots keep their per-world body state in sync."""
+        template = newton.ModelBuilder()
+        dynamic_body = template.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), label="dynamic_body")
+        template.add_joint_free(child=dynamic_body, label="dynamic_root")
+
+        world_count = 3
+        builder = newton.ModelBuilder()
+        builder.replicate(template, world_count)
+        model = builder.finalize()
+        with self.assertWarnsRegex(UserWarning, "standalone world roots"):
+            solver = SolverMuJoCo(model, separate_worlds=True, disable_contacts=True)
+
+        state_in, state_out, control = model.state(), model.state(), model.control()
+        joint_q = state_in.joint_q.numpy()
+        joint_q_start = model.joint_q_start.numpy()
+        dynamic_joints = [i for i, label in enumerate(model.joint_label) if "dynamic_root" in label]
+        self.assertEqual(len(dynamic_joints), world_count)
+        for world, joint in enumerate(dynamic_joints):
+            joint_q[joint_q_start[joint] + 2] = 1.0 + world
+        state_in.joint_q.assign(joint_q)
+
+        # Zero-dt step: exercises only the state read-back, so each world's body
+        # pose must track its own standalone root joint.
+        solver.step(state_in, state_out, control, None, 0.0)
+
+        body_q = state_out.body_q.numpy()
+        joint_child = model.joint_child.numpy()
+        for world, joint in enumerate(dynamic_joints):
+            self.assertAlmostEqual(float(body_q[joint_child[joint]][2]), 1.0 + world, places=5)
+
     def test_orphan_world_fixed_body_can_participate_in_loop_joint(self):
         """A standalone static body remains available to loop constraints."""
         builder = newton.ModelBuilder()
