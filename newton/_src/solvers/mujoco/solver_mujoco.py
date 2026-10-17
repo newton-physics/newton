@@ -7103,10 +7103,33 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         # Only the joints that own a standalone body may update body state after
         # eval_fk; every other unassigned joint is a loop closure whose child is
-        # already posed through its articulation or standalone root.
+        # already posed through its articulation or standalone root. The mask is
+        # indexed by global joint index and launched over every joint, so classify
+        # over the whole model: with separate_worlds the conversion sets above only
+        # cover the template world, but replica worlds hold copies of the same roots.
         orphan_world_root_joint_mask_np = np.zeros(model.joint_count, dtype=np.int32)
-        if standalone_root_set:
-            orphan_world_root_joint_mask_np[sorted(standalone_root_set)] = 1
+        all_articulated_joints = np.where(joint_articulation >= 0)[0]
+        all_articulated_bodies = {int(body) for body in joint_child[all_articulated_joints]}
+        all_articulated_bodies.update(int(body) for body in joint_parent[all_articulated_joints] if body >= 0)
+        all_equality_loop_joints = set()
+        if eq_constraint_target_kind is not None and eq_constraint_target is not None:
+            for i in range(len(eq_constraint_target)):
+                if (
+                    int(eq_constraint_target_kind[i]) == int(MjcEqualityTargetKind.JOINT)
+                    and eq_constraint_target[i] >= 0
+                ):
+                    all_equality_loop_joints.add(int(eq_constraint_target[i]))
+        mask_root_bodies = set()
+        for joint in np.where(joint_articulation == -1)[0]:
+            child = int(joint_child[joint])
+            if (
+                joint_parent[joint] == -1
+                and child not in all_articulated_bodies
+                and child not in mask_root_bodies
+                and int(joint) not in all_equality_loop_joints
+            ):
+                orphan_world_root_joint_mask_np[int(joint)] = 1
+                mask_root_bodies.add(child)
 
         # Once each standalone body has a world root, its other unassigned joints are loop closures.
         joints_loop = np.asarray(
