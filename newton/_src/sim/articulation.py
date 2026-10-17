@@ -475,7 +475,7 @@ def eval_single_articulation_fk(
 
 @wp.kernel
 def eval_orphan_joints_fk(
-    joint_articulation: wp.array[int],
+    joint_orphan_root_mask: wp.array[wp.int32],
     joint_q: wp.array[float],
     joint_qd: wp.array[float],
     joint_q_start: wp.array[int],
@@ -494,20 +494,18 @@ def eval_orphan_joints_fk(
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
 ):
-    """Evaluates forward kinematics for world-root joints that do not belong to any articulation.
+    """Evaluates forward kinematics for standalone world-root joints outside articulations.
 
     :func:`eval_fk` only walks articulations, so bodies attached to the world by a
     standalone joint (``joint_articulation == -1``) are never posed. This kernel
-    fills that gap for world-root orphan joints (``joint_parent == -1``).
+    fills that gap, but only for joints that own a standalone body
+    (``joint_orphan_root_mask != 0``). Loop-closure joints to the world are
+    excluded so they cannot overwrite body state owned by an articulation or
+    standalone root.
     """
     i = wp.tid()
 
-    if joint_articulation[i] != -1:
-        return
-
-    if joint_parent[i] != -1:
-        # Orphan joints hanging below another body would need their parent posed
-        # first; only standalone world roots are handled here.
+    if joint_orphan_root_mask[i] == 0:
         return
 
     child = joint_child[i]
