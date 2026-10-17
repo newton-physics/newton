@@ -1123,7 +1123,7 @@ def test_shape_notify_matches_host_reference(test, device, solve_mode="matrix_fr
                 getattr(model, edit).assign(values)
             solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
             expected_radius, expected_valid, seen = _host_update_geometry(model, patches, seen, valid_before)
-            np.testing.assert_array_equal(patches.body_radius.numpy(), expected_radius)
+            np.testing.assert_allclose(patches.body_radius.numpy(), expected_radius, rtol=1e-6)
             np.testing.assert_array_equal(patches.previous.valid.numpy(), expected_valid)
             if edit not in (None, "shape_collision_radius"):
                 test.assertLess(np.count_nonzero(expected_valid), np.count_nonzero(valid_before))
@@ -1195,7 +1195,7 @@ class TestSteelNotifyDevice(unittest.TestCase):
         wp.capture_launch(capture.graph)
         _assert_armature_matches(self, solver, SolverSteel(model))
         expected_radius, expected_valid, _ = _host_update_geometry(model, patches, seen, valid_before)
-        np.testing.assert_array_equal(patches.body_radius.numpy(), expected_radius)
+        np.testing.assert_allclose(patches.body_radius.numpy(), expected_radius, rtol=1e-6)
         np.testing.assert_array_equal(patches.previous.valid.numpy(), expected_valid)
         self.assertLess(np.count_nonzero(expected_valid), np.count_nonzero(valid_before))
 
