@@ -1226,19 +1226,24 @@ class LOXSolverConfig:
     to rigid bodies incident to a unilateral constraint.
     """
 
-    min_joint_penalty_scale: float = 100.0
-    """Smallest dimensionless scale for effective-mass structural penalties and consensus weights.
+    min_joint_penalty_ratio: float = 1.0e2
+    """Smallest ratio of the seeded structural penalty to the effective mass of the lightest structural mode.
 
-    The solver starts every component at this scale, and the joint penalty seed raises it to the
-    spectral estimate where that is larger. Components whose seed fails keep this scale.
+    The joint penalty seed gives each joint-connected component the penalty scale
+    ``s = clamp(mu_max / mu_min, min_joint_penalty_ratio, max_joint_penalty_ratio) / mu_max``,
+    with ``mu_min`` and ``mu_max`` the extreme eigenvalues of the effective-mass-normalized structural
+    Delassus. ``s mu`` is the ratio of the penalty to the effective mass of the structural mode of
+    eigenvalue ``mu``, so the ratio ``s mu_max`` of the lightest structural mode is the conditioning
+    ``mu_max / mu_min`` of the structural Delassus, clamped to the two bounds. Within the bounds, the
+    penalty matches the effective mass of the heaviest structural mode. Every component starts at the
+    scale ``min_joint_penalty_ratio``, which components whose seed fails keep.
     """
 
-    joint_penalty_condition: float = 1.0e4
-    """Largest conditioning added to the smooth system by the seeded structural penalty.
+    max_joint_penalty_ratio: float = 1.0e5
+    """Largest ratio of the seeded structural penalty to the effective mass of the lightest structural mode.
 
-    The joint penalty seed sets the penalty scale of each joint-connected component to
-    ``max(min_joint_penalty_scale, min(1 / mu_min, (joint_penalty_condition - 1) / mu_max))``, with ``mu_min`` and
-    ``mu_max`` the extreme eigenvalues of the effective-mass-normalized structural Delassus.
+    The penalty adds at most ``1 + max_joint_penalty_ratio`` to the conditioning of the smooth system.
+    See :attr:`min_joint_penalty_ratio` for the seed of the penalty scale.
     """
 
     joint_penalty_seed_time_step: float = 1.0e-3
@@ -1408,9 +1413,14 @@ class LOXSolverConfig:
             raise ValueError(f"Invalid weight_sigma: {self.weight_sigma}. Must be in range [0, 1].")
         if not np.isfinite(self.consensus_fraction) or not (0.0 <= self.consensus_fraction <= 1.0):
             raise ValueError(f"Invalid consensus_fraction: {self.consensus_fraction}. Must be in range [0, 1].")
-        if not np.isfinite(self.joint_penalty_condition) or self.joint_penalty_condition <= 1.0:
+        if not np.isfinite(self.min_joint_penalty_ratio) or self.min_joint_penalty_ratio <= 0.0:
             raise ValueError(
-                f"Invalid joint_penalty_condition: {self.joint_penalty_condition}. Must be greater than one."
+                f"Invalid min_joint_penalty_ratio: {self.min_joint_penalty_ratio}. Must be greater than zero."
+            )
+        if not np.isfinite(self.max_joint_penalty_ratio) or self.max_joint_penalty_ratio < self.min_joint_penalty_ratio:
+            raise ValueError(
+                f"Invalid max_joint_penalty_ratio: {self.max_joint_penalty_ratio}. "
+                f"Must be at least min_joint_penalty_ratio ({self.min_joint_penalty_ratio})."
             )
         if not np.isfinite(self.joint_penalty_seed_time_step) or self.joint_penalty_seed_time_step <= 0.0:
             raise ValueError(
@@ -1444,10 +1454,6 @@ class LOXSolverConfig:
             raise ValueError(f"Invalid velocity_tolerance: {self.velocity_tolerance}. Must be greater than zero.")
         if not isinstance(self.selective_weights, bool):
             raise ValueError(f"Invalid selective_weights: {self.selective_weights}. Must be a boolean.")
-        if not np.isfinite(self.min_joint_penalty_scale) or self.min_joint_penalty_scale <= 0.0:
-            raise ValueError(
-                f"Invalid min_joint_penalty_scale: {self.min_joint_penalty_scale}. Must be greater than zero."
-            )
         if (
             not np.isfinite(self.projected_twist_fraction)
             or self.projected_twist_fraction < 0.0

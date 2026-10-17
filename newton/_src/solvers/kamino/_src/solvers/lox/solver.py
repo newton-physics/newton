@@ -238,7 +238,7 @@ class LOXSolver:
         self._data = LOXData(
             model.info.num_bodies.numpy().tolist(),
             DualSolution(model, config) if compute_solution_metrics else None,
-            config.min_joint_penalty_scale,
+            config.min_joint_penalty_ratio,
             self._device,
         )
         self._build_projection_schedule()
@@ -298,12 +298,13 @@ class LOXSolver:
 
         The estimate is the reciprocal of the smallest positive eigenvalue of the
         effective-mass-normalized structural Delassus, independently for each joint-connected component,
-        capped so that the penalty adds at most :attr:`LOXSolverConfig.joint_penalty_condition` to the
-        conditioning, and at least :attr:`LOXSolverConfig.min_joint_penalty_scale`. Components whose
-        estimate fails keep the minimum scale. The smooth operator excludes the body splitting weights.
+        clamped so that the ratio of the penalty to the effective mass of the lightest structural mode
+        lies between :attr:`LOXSolverConfig.min_joint_penalty_ratio` and
+        :attr:`LOXSolverConfig.max_joint_penalty_ratio`. Components whose estimate fails take the
+        scale ``min_joint_penalty_ratio``. The smooth operator excludes the body splitting weights.
 
         This operation prepares the LOX problem from the initial rigid state and
-        runs a one-time Lanczos estimate on the device that synchronizes with
+        runs a one-time Golub-Kahan estimate on the device that synchronizes with
         the host, so it is intended for initialization, outside the captured
         simulation loop.
 
@@ -333,8 +334,8 @@ class LOXSolver:
                         problem.system,
                         problem.data.structural_rows,
                         self._data.joint_penalty_scale,
-                        self._config.joint_penalty_condition,
-                        self._config.min_joint_penalty_scale,
+                        self._config.min_joint_penalty_ratio,
+                        self._config.max_joint_penalty_ratio,
                     )
                 finally:
                     self.reset()

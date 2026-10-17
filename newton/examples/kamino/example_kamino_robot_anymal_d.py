@@ -96,9 +96,6 @@ class Example:
             self.config.padmm.warmstart_mode = "none"
             self.config.padmm.use_graph_conditionals = getattr(args, "use_graph_conditionals", True) if args else True
         else:
-            # The simple row metric settles the passive robot more reliably
-            # with a moderate penalty and projected structural feedback.
-            self.config.lox.min_joint_penalty_scale = 20.0
             self.config.lox.max_iterations = self.max_iterations
             self.config.lox.projection_iterations = self.projection_iterations
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
