@@ -1,19 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Cable Y-Junction
-#
-# This example shows how to simulate a Y-junction using `newton.Rod` with
-# explicit graph topology and a shared junction node.
-#
-# Run interactively:
-#   uv run --extra examples python -m newton.examples.cable.example_cable_y_junction
-#
-# Run as a test:
-#   uv run --extra examples python -m newton.examples.cable.example_cable_y_junction --test --viewer null
-#
-###########################################################################
+"""Example Cable Y-Junction
+
+This example shows how to simulate a Y-junction using `newton.Rod` with
+explicit graph topology and a shared junction node.
+
+Run interactively:
+  uv run --extra examples python -m newton.examples.cable.example_cable_y_junction
+
+Run as a test:
+  uv run --extra examples python -m newton.examples.cable.example_cable_y_junction --test --viewer null
+"""
 
 from __future__ import annotations
 
@@ -223,6 +221,17 @@ class Example:
         q_now = self.state_0.body_q.numpy()[self.pinned_body]
         if np.max(np.abs(q_now[0:3] - self.pinned_body_q0[0:3])) > 1.0e-4:
             raise ValueError("Pinned tip body moved unexpectedly.")
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A suspended Y-shaped cable oscillates and reaches a stable hanging configuration.",
+        "Right-drag a free part of the cable and release it; motion damps back toward a stable configuration.",
+        "The junction remains connected and the pinned tip stays fixed throughout the interaction.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

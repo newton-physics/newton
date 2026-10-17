@@ -1,17 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example SDF RJ45 Plug-Socket Insertion
-#
-# Use the translation gizmo to move the plug toward the socket.
-# Click an axis arrow to slide along one axis, or a plane square
-# for two-axis motion. The latch deflects on entry and locks
-# the plug once fully inserted.
-#
-# Command: uv run -m newton.examples contacts_rj45_plug
-#
-###########################################################################
+"""Example SDF RJ45 Plug-Socket Insertion
+
+Use the translation gizmo to move the plug toward the socket.
+Click an axis arrow to slide along one axis, or a plane square
+for two-axis motion. The latch deflects on entry and locks
+the plug once fully inserted.
+
+Command: uv run -m newton.examples contacts_rj45_plug
+"""
 
 import dataclasses
 
@@ -517,6 +515,19 @@ class Example:
             assert np.all(np.isfinite(body_q[i])), f"Body {i} has non-finite transform"
             drift = np.linalg.norm(body_q[i] - initial_q[i])
             assert drift < 1.0, f"Body {i} drifted {drift:.4f} from initial transform"
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A cable-attached RJ45 plug and matching socket appear.",
+        "Drag the translation gizmo along the insertion axis: the latch deflects and the plug seats in the socket.",
+        "The seated latch prevents simply withdrawing the plug.",
+        "Depress the latch and withdraw the plug using the gizmo; the plug releases without "
+        "passing through the socket walls.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

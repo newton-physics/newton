@@ -1,32 +1,30 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Cable Michell Threshold Validation
-#
-# Twisted-ring threshold verification for elastic rod stability.
-#
-# A closed isotropic ring with bend stiffness and twist stiffness should lose
-# planar stability when the imposed total material-frame twist exceeds
-#
-#   critical_twist = 2*pi*sqrt(3*bend_stiffness/twist_stiffness)
-#
-# The example fixes the imposed twist to one full material-frame turn and
-# sweeps twist_stiffness / bend_stiffness. This moves the analytical critical
-# twist around the fixed one-turn load and matches the report protocol.
-#
-# Rows at or below the threshold are fixed planar references. Rows above the
-# threshold remain dynamic; the sweep verifies that supercritical rings develop
-# a visible out-of-plane response, while exact post-buckling branch and
-# amplitude are not treated as monotonic calibration targets.
-#
-# Run interactively:
-#   uv run --extra examples python -m newton.examples.vbd.example_cable_michell_threshold
-#
-# Run as a test:
-#   uv run --extra examples python -m newton.examples.vbd.example_cable_michell_threshold --test --viewer null
-#
-###########################################################################
+"""Cable Michell Threshold Validation
+
+Twisted-ring threshold verification for elastic rod stability.
+
+A closed isotropic ring with bend stiffness and twist stiffness should lose
+planar stability when the imposed total material-frame twist exceeds
+
+  critical_twist = 2*pi*sqrt(3*bend_stiffness/twist_stiffness)
+
+The example fixes the imposed twist to one full material-frame turn and
+sweeps twist_stiffness / bend_stiffness. This moves the analytical critical
+twist around the fixed one-turn load and matches the report protocol.
+
+Rows at or below the threshold are fixed planar references. Rows above the
+threshold remain dynamic; the sweep verifies that supercritical rings develop
+a visible out-of-plane response, while exact post-buckling branch and
+amplitude are not treated as monotonic calibration targets.
+
+Run interactively:
+  uv run --extra examples python -m newton.examples.vbd.example_cable_michell_threshold
+
+Run as a test:
+  uv run --extra examples python -m newton.examples.vbd.example_cable_michell_threshold --test --viewer null
+"""
 
 import math
 
@@ -406,6 +404,19 @@ class Example:
         assert max_above_threshold_coplanarity > 10.0 * max(max_stable_coplanarity, 1.0e-8), (
             f"above-threshold rings should become much less planar than stable rings: {metrics}"
         )
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "The fixed planar reference rings remain planar; do not count these kinematic "
+        "references as evidence of dynamic stability.",
+        "The above-threshold dynamic sweep develops a visible out-of-plane writhe response.",
+        "Rings remain finite and connected; neither the post-buckling shape nor amplitude is "
+        "required to vary monotonically with stiffness.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

@@ -1,22 +1,21 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Robot control via keyboard
-#
-# Shows how to control robots pretrained in IsaacLab with RL. Policies are
-# loaded from ONNX files and run with Warp-NN's Warp-backed runtime, so PyTorch
-# is not required for policy inference.
-#
-# Press "p" to reset the robot.
-# Press "i", "j", "k", "l", "u", "o" to move the robot.
-# Run this example with:
-# python -m newton.examples robot_policy --robot g1_29dof
-# python -m newton.examples robot_policy --robot g1_23dof
-# python -m newton.examples robot_policy --robot go2
-# python -m newton.examples robot_policy --robot anymal
-# python -m newton.examples robot_policy --robot anymal --physx
-###########################################################################
+"""Example Robot control via keyboard
+
+Shows how to control robots pretrained in IsaacLab with RL. Policies are
+loaded from ONNX files and run with Warp-NN's Warp-backed runtime, so PyTorch
+is not required for policy inference.
+
+Press "p" to reset the robot.
+Press "i", "j", "k", "l", "u", "o" to move the robot.
+Run this example with:
+python -m newton.examples robot_policy --robot g1_29dof
+python -m newton.examples robot_policy --robot g1_23dof
+python -m newton.examples robot_policy --robot go2
+python -m newton.examples robot_policy --robot anymal
+python -m newton.examples robot_policy --robot anymal --physx
+"""
 
 from dataclasses import dataclass
 from typing import Any
@@ -457,6 +456,24 @@ class Example:
             help="Run physX policy instead of MJWarp.",
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "The selected robot appears on the ground and responds to forward/back, lateral, and "
+        "turning keyboard commands.",
+        "For ordinary commands the robot moves without falling; pressing P resets it.",
+    ),
+    "runs": (
+        {"args": ("--robot", "anymal"), "success_criteria": ()},
+        {"args": ("--robot", "go2"), "success_criteria": ()},
+        {"args": ("--robot", "go2", "--physx"), "success_criteria": ()},
+        {"args": ("--robot", "g1_23dof"), "success_criteria": ()},
+        {"args": ("--robot", "g1_23dof", "--physx"), "success_criteria": ()},
+        {"args": ("--robot", "g1_29dof"), "success_criteria": ()},
+    ),
+}
 
 
 if __name__ == "__main__":

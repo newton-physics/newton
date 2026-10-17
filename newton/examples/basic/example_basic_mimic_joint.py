@@ -1,17 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Basic Mimic Joint
-#
-# Models a lead screw by making a prismatic nut joint mimic a revolute screw
-# joint. The relationship converts screw rotation to linear travel:
-#
-#     q_nut = pitch / (2 * pi) * q_screw
-#
-# Command: python -m newton.examples basic_mimic_joint
-#
-###########################################################################
+"""Example Basic Mimic Joint
+
+Models a lead screw by making a prismatic nut joint mimic a revolute screw
+joint. The relationship converts screw rotation to linear travel:
+
+    q_nut = pitch / (2 * pi) * q_screw
+
+Command: python -m newton.examples basic_mimic_joint
+"""
 
 import math
 
@@ -318,6 +316,25 @@ class Example:
         )
         parser.set_defaults(num_frames=360)
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "The screw visibly rotates and the nut translates along its axis according to the signed pitch.",
+        "The displayed screw angle, nut travel, and mimic-error diagnostics update with motion.",
+        "The nut remains constrained to the screw mechanism without visible separation.",
+    ),
+    "runs": (
+        {"args": (), "success_criteria": ()},
+        {
+            "args": ("--pitch", "-1.2"),
+            "success_criteria": (
+                "Nut travel reverses for the same sign of screw rotation compared with positive pitch.",
+            ),
+        },
+    ),
+}
 
 
 if __name__ == "__main__":

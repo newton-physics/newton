@@ -1,16 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Robot H1
-#
-# Shows how to set up a simulation of a H1 articulation
-# from a USD file using newton.ModelBuilder.add_usd().
-#
-# Command: python -m newton.examples robot_h1 --world-count 16
-#          python -m newton.examples robot_h1 --solver kamino
-#
-###########################################################################
+"""Example Robot H1
+
+Shows how to set up a simulation of a H1 articulation
+from a USD file using newton.ModelBuilder.add_usd().
+
+Command: python -m newton.examples robot_h1 --world-count 16
+         python -m newton.examples robot_h1 --solver kamino
+"""
 
 import warp as wp
 
@@ -216,6 +214,17 @@ class Example:
         parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
         parser.set_defaults(world_count=4)
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "5 H1 humanoid robots appear standing on the ground and then collapse on the ground.",
+        "The user can grasp every robot with a right click and move them around.",
+        "The robots do not interact with each other but collide properly with the ground plane.",
+    ),
+    "runs": ({"args": ("--world-count", "5"), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

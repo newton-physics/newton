@@ -1,17 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Proxy Joint Gripper
-#
-# A MuJoCo-driven palm and two prismatic cube fingers grip a VBD soft grid.
-# The VBD entry receives the gripper bodies as body proxies and keeps the
-# fixed/prismatic joints enabled as proxy joints whose targets track the
-# MuJoCo source joint configuration.
-#
-# Command: python -m newton.examples proxy_joint_gripper
-#
-###########################################################################
+"""Example Proxy Joint Gripper
+
+A MuJoCo-driven palm and two prismatic cube fingers grip a VBD soft grid.
+The VBD entry receives the gripper bodies as body proxies and keeps the
+fixed/prismatic joints enabled as proxy joints whose targets track the
+MuJoCo source joint configuration.
+
+Command: python -m newton.examples proxy_joint_gripper
+"""
 
 from __future__ import annotations
 
@@ -401,6 +399,19 @@ class Example:
             help="Disable graph capture.",
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A MuJoCo-driven palm with two prismatic cube fingers appears around a VBD soft grid.",
+        "The gripper fingers close around the soft object.",
+        "The soft object deforms under the grip.",
+        "Proxy bodies and proxy joints make the VBD gripper view track the MuJoCo gripper configuration.",
+        "The soft object should stay bounded and should not drift unexpectedly from the gripper.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

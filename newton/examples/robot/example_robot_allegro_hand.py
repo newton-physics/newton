@@ -1,22 +1,19 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Robot Allegro Hand
-#
-# Shows how to set up a simulation of a Allegro hand articulation
-# from a USD file using newton.ModelBuilder.add_usd().
-# We also apply a sinusoidal trajectory to the joint targets and
-# apply a continuous rotation to the fixed root joint in the form
-# of the joint parent transform. The solver is updated
-# about this change in the joint parent transform by calling
-# self.solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES).
-#
-# Command: python -m newton.examples robot_allegro_hand --world-count 16
-#          python -m newton.examples robot_allegro_hand --solver kamino
-#
-###########################################################################
+"""Example Robot Allegro Hand
 
+Shows how to set up a simulation of a Allegro hand articulation
+from a USD file using newton.ModelBuilder.add_usd().
+We also apply a sinusoidal trajectory to the joint targets and
+apply a continuous rotation to the fixed root joint in the form
+of the joint parent transform. The solver is updated
+about this change in the joint parent transform by calling
+self.solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES).
+
+Command: python -m newton.examples robot_allegro_hand --world-count 16
+         python -m newton.examples robot_allegro_hand --solver kamino
+"""
 
 import numpy as np
 import warp as wp
@@ -277,6 +274,17 @@ class Example:
         parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
         parser.set_defaults(world_count=None)
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "18 floating Allegro hands appear with a cube on their palm.",
+        "The hands are manipulating the cube to make it turn.",
+        "All hands have the same movement.",
+    ),
+    "runs": ({"args": ("--world-count", "18"), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

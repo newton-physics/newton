@@ -1,6 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+"""Twist an MPM beam and visualize its stress field."""
+
 import warnings
 
 import numpy as np
@@ -320,6 +322,17 @@ class Example:
             jitter=0.0 * radius,
             radius_mean=radius,
         )
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A beam made of particles twists under the driven boundary motion.",
+        "Particle stress colors develop during twisting; disabling Show Stress removes the stress coloring.",
+        "When the drive stops twisting, the beam remains in the twisted configuration without unbounded deformation.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

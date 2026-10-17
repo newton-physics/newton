@@ -594,6 +594,18 @@ class Example:
         return parser
 
 
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "The initial water column spreads horizontally through the tank after release.",
+        "A continuous visible water surface follows the flowing material rather than remaining at its initial shape.",
+        "Water remains contained by the tank floor and walls without explosive particle escape.",
+        "With --show-particles, the extracted surface tracks the dense flowing particle volume; sparse spray may remain visible outside the reconstructed surface.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()}, {"args": ("--show-particles",), "success_criteria": ()}),
+}
+
+
 if __name__ == "__main__":
     viewer, args = newton.examples.init(Example.create_parser())
     newton.examples.run(Example(viewer, args), args)

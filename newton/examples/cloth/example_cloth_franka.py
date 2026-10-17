@@ -1,21 +1,19 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Cloth Franka
-#
-# This simulation demonstrates a coupled robot-cloth simulation
-# using the VBD solver for the cloth and Featherstone for the robot,
-# showcasing its ability to handle complex contacts while ensuring it
-# remains intersection-free.
-#
-# The simulation runs in centimeter scale for better numerical behavior
-# of the VBD solver. A vis_state is used to convert back to meter scale
-# for visualization.
-#
-# Command: python -m newton.examples cloth_franka
-#
-###########################################################################
+"""Example Cloth Franka
+
+This simulation demonstrates a coupled robot-cloth simulation
+using the VBD solver for the cloth and Featherstone for the robot,
+showcasing its ability to handle complex contacts while ensuring it
+remains intersection-free.
+
+The simulation runs in centimeter scale for better numerical behavior
+of the VBD solver. A vis_state is used to convert back to meter scale
+for visualization.
+
+Command: python -m newton.examples cloth_franka
+"""
 
 from __future__ import annotations
 
@@ -651,6 +649,17 @@ class Example:
             "body velocities are within a reasonable range",
             lambda q, qd: max(abs(qd)) < 70.0,
         )
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A setup appears with a Franka robotic arm and a table with a shirt on it.",
+        "The Franka arm starts to move and fold the shirt properly.",
+        "The shirt should be folded in a reasonable state at the end of the demo.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

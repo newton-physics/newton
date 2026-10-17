@@ -1,34 +1,32 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Cable Bend Stiffness Validation
-#
-# Three horizontal cantilever cables sit side by side along Y. Each cable has
-# the same geometry, stretch stiffness, and load, but a different bend
-# stiffness. The root body is kinematic; the tip body receives the same
-# transverse force in -Z.
-#
-# After settling, the example asserts the bend response:
-#
-#     delta_i * k_bend_i  must be approximately constant across cables.
-#
-# This is the primary check. It avoids depending on a continuum constant-factor
-# calibration and verifies the discrete cable path behaves like a linear bend
-# spring with the correct stiffness ratios.
-#
-# Other assertions:
-#   - Deflection decreases monotonically as bend stiffness increases.
-#   - Tip stays close to its original Y, so the bend load does not leak sideways.
-#   - Tip X foreshortening remains within a geometric bound.
-#
-# Run interactively:
-#   uv run --extra examples python -m newton.examples.vbd.example_cable_bend_stiffness
-#
-# Run as a test:
-#   uv run --extra examples python -m newton.examples.vbd.example_cable_bend_stiffness --test --viewer null
-#
-###########################################################################
+"""Cable Bend Stiffness Validation
+
+Three horizontal cantilever cables sit side by side along Y. Each cable has
+the same geometry, stretch stiffness, and load, but a different bend
+stiffness. The root body is kinematic; the tip body receives the same
+transverse force in -Z.
+
+After settling, the example asserts the bend response:
+
+    delta_i * k_bend_i  must be approximately constant across cables.
+
+This is the primary check. It avoids depending on a continuum constant-factor
+calibration and verifies the discrete cable path behaves like a linear bend
+spring with the correct stiffness ratios.
+
+Other assertions:
+  - Deflection decreases monotonically as bend stiffness increases.
+  - Tip stays close to its original Y, so the bend load does not leak sideways.
+  - Tip X foreshortening remains within a geometric bound.
+
+Run interactively:
+  uv run --extra examples python -m newton.examples.vbd.example_cable_bend_stiffness
+
+Run as a test:
+  uv run --extra examples python -m newton.examples.vbd.example_cable_bend_stiffness --test --viewer null
+"""
 
 import numpy as np
 import warp as wp
@@ -233,6 +231,19 @@ class Example:
                 f"cable {i}: tip X displacement {x:+.4f} m outside expected "
                 f"foreshortening range [-{geometric_bound:.4f}, {0.005 * self.cable_length:.4f}]"
             )
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Three cantilever cables receive the same transverse tip load while their roots remain fixed.",
+        "After the load ramp and hold, larger bend stiffness produces smaller deflection; tip "
+        "deflection times bend stiffness is approximately equal across the cables.",
+        "The tips bend downward without appreciable sideways drift or axial stretching; "
+        "inspect the held response for persistent jitter.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

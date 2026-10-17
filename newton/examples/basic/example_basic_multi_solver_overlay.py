@@ -1,30 +1,28 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Basic Multi-Solver Overlay
-#
-# Demonstrates the viewer "layer" system by running four simulations of
-# the same quadruple-pendulum chain in a single viewer window, each driven
-# by a different solver (XPBD, Featherstone, MuJoCo Warp, Kamino DVI). By default the
-# layers overlay exactly so the per-solver divergence is obvious; bumping
-# the ``spacing`` constant lays them out side-by-side along the world
-# X-axis via ``viewer.set_layer_transform``. Layers can also be toggled
-# independently via the "Layers" group in the viewer sidebar.
-#
-# Layers are created via ``viewer.activate(layer_id)``. Each layer owns its
-# own model, state, and shape batches; the viewer accumulates the render
-# objects from all layers and draws them together every frame. Each layer
-# also captures its own CUDA graph so per-solver stepping stays fast.
-# The per-layer transform applied via ``set_layer_transform`` is a pure
-# render-time displacement: it shifts every drawn object in the layer
-# without changing the underlying physics state, so passing
-# ``wp.transform_identity()`` (or a zero-translation transform) makes the
-# layers overlay exactly.
-#
-# Command: python -m newton.examples basic_multi_solver_overlay
-#
-###########################################################################
+"""Example Basic Multi-Solver Overlay
+
+Demonstrates the viewer "layer" system by running four simulations of
+the same quadruple-pendulum chain in a single viewer window, each driven
+by a different solver (XPBD, Featherstone, MuJoCo Warp, Kamino DVI). By default the
+layers overlay exactly so the per-solver divergence is obvious; bumping
+the ``spacing`` constant lays them out side-by-side along the world
+X-axis via ``viewer.set_layer_transform``. Layers can also be toggled
+independently via the "Layers" group in the viewer sidebar.
+
+Layers are created via ``viewer.activate(layer_id)``. Each layer owns its
+own model, state, and shape batches; the viewer accumulates the render
+objects from all layers and draws them together every frame. Each layer
+also captures its own CUDA graph so per-solver stepping stays fast.
+The per-layer transform applied via ``set_layer_transform`` is a pure
+render-time displacement: it shifts every drawn object in the layer
+without changing the underlying physics state, so passing
+``wp.transform_identity()`` (or a zero-translation transform) makes the
+layers overlay exactly.
+
+Command: python -m newton.examples basic_multi_solver_overlay
+"""
 
 import warnings
 
@@ -275,6 +273,18 @@ class Example:
             if layer.contacts is not None:
                 self.viewer.log_contacts(layer.contacts, layer.state_1, observables=layer.solver_observables)
         self.viewer.end_frame()
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Four solver layers show connected four-link pendulum chains initially overlaid in the same view.",
+        "The chains swing; solver-dependent trajectories can diverge while links remain "
+        "connected and within their pendulum planes.",
+        "Toggling a layer in the Layers panel hides or shows only that solver layer without removing the others.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

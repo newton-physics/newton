@@ -1,22 +1,21 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Franka Cable IK Pick-and-Place (proxy coupling)
-#
-# A fixed-base Franka FR3 arm uses Newton's GPU IK solver to pick up a
-# deformable cable and move it to a target location. The arm is simulated
-# by MuJoCo (PD position targets driven from the IK result), the cable is
-# a VBD rod, and SolverCoupledProxy couples the two: the gripper bodies are
-# exposed to VBD as virtual proxies so the cable detects them as contacts.
-#
-# Cable geometry/material, Franka joint gains, contact parameters and the
-# proxy coupling solver settings mirror IsaacLab's franka_cable_env_cfg.
-#
-# Standalone: depends only on newton + warp (no IsaacLab).
-#
-# Command: python -m newton.examples franka_cable_ik_pick_place
-###########################################################################
+"""Example Franka Cable IK Pick-and-Place (proxy coupling)
+
+A fixed-base Franka FR3 arm uses Newton's GPU IK solver to pick up a
+deformable cable and move it to a target location. The arm is simulated
+by MuJoCo (PD position targets driven from the IK result), the cable is
+a VBD rod, and SolverCoupledProxy couples the two: the gripper bodies are
+exposed to VBD as virtual proxies so the cable detects them as contacts.
+
+Cable geometry/material, Franka joint gains, contact parameters and the
+proxy coupling solver settings mirror IsaacLab's franka_cable_env_cfg.
+
+Standalone: depends only on newton + warp (no IsaacLab).
+
+Command: python -m newton.examples franka_cable_ik_pick_place
+"""
 
 from __future__ import annotations
 
@@ -31,6 +30,8 @@ import newton.utils
 from newton.solvers import SolverMuJoCo, SolverVBD
 
 # Initial Franka joint configuration (7 arm + 2 finger).
+
+
 FRANKA_Q = [
     -3.6802115e-03,
     2.3901723e-02,
@@ -554,6 +555,19 @@ class Example:
             help="Disable graph capture.",
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A fixed-base Franka FR3 arm and a deformable cable appear on a working surface.",
+        "The Franka arm approaches the cable, descends to the cable, and closes the gripper around it.",
+        "The arm lifts the cable, moves it to a target location, lowers it, releases it, and retracts.",
+        "The cable behaves as a deformable VBD rod and interacts with the gripper through proxy contacts.",
+        "The grasped cable segment should be placed close to the target location.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

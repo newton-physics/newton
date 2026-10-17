@@ -1,17 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Brick Stacking
-#
-# Demonstrates a Franka Panda robot picking up bricks from a table
-# and stacking them, using SDF-based mesh collision and the MuJoCo solver.
-# The arm is controlled with IK and a finite-state machine that sequences
-# approach, grasp, lift, move, place and release for each brick.
-#
-# Command: python -m newton.examples brick_stacking
-#
-###########################################################################
+"""Example Brick Stacking
+
+Demonstrates a Franka Panda robot picking up bricks from a table
+and stacking them, using SDF-based mesh collision and the MuJoCo solver.
+The arm is controlled with IK and a finite-state machine that sequences
+approach, grasp, lift, move, place and release for each brick.
+
+Command: python -m newton.examples brick_stacking
+"""
 
 import enum
 
@@ -23,6 +21,8 @@ import newton.examples
 import newton.ik as ik
 
 # Brick dimensions [m]
+
+
 PITCH = 0.008
 BRICK_HEIGHT = 0.0096
 
@@ -1038,6 +1038,17 @@ class Example:
 
         if errors:
             raise ValueError("Brick stacking verification failed:\n  " + "\n  ".join(errors))
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A Franka gripper and three bricks appear on a table.",
+        "The gripper stacks the red brick on the green one, then places the pair on the blue brick.",
+        "After release, all three bricks remain aligned in a stable stack without sustained jitter.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

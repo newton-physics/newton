@@ -1,16 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Box Pyramid
-#
-# Builds pyramids of box-shaped cubes with a wrecking ball on a ramp
-# to stress-test narrow-phase contact generation.
-#
-# Command: python -m newton.examples pyramid
-# Kamino DVI: python -m newton.examples pyramid --solver kamino
-#
-###########################################################################
+"""Example Box Pyramid
+
+Builds pyramids of box-shaped cubes with a wrecking ball on a ramp
+to stress-test narrow-phase contact generation.
+
+Command: python -m newton.examples pyramid
+Kamino DVI: python -m newton.examples pyramid --solver kamino
+"""
 
 import numpy as np
 import warp as wp
@@ -263,6 +261,21 @@ class Example:
             help=f"Number of rows in each pyramid base (default: {DEFAULT_PYRAMID_SIZE}).",
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Box pyramids and a large sphere on a ramp appear; pyramid count and height match the selected options.",
+        "The sphere rolls down the ramp and knocks boxes from the stacks.",
+        "Boxes respond through contact without explosive motion.",
+    ),
+    "runs": (
+        {"args": ("--broad-phase", "nxn"), "success_criteria": ()},
+        {"args": ("--broad-phase", "sap", "--num-pyramids", "5", "--pyramid-size", "40"), "success_criteria": ()},
+        {"args": ("--broad-phase", "explicit", "--num-pyramids", "40", "--pyramid-size", "5"), "success_criteria": ()},
+    ),
+}
 
 
 if __name__ == "__main__":

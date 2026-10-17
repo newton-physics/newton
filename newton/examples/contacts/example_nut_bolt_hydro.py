@@ -1,15 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example SDF Mesh Collision
-#
-# Demonstrates nut/bolt mesh collision using hydroelastic contacts.
-#
-# Command: python -m newton.examples nut_bolt_hydro
-#          python -m newton.examples nut_bolt_hydro --solver kamino
-#
-###########################################################################
+"""Example SDF Mesh Collision
+
+Demonstrates nut/bolt mesh collision using hydroelastic contacts.
+
+Command: python -m newton.examples nut_bolt_hydro
+         python -m newton.examples nut_bolt_hydro --solver kamino
+"""
 
 import argparse
 import tempfile
@@ -24,6 +22,8 @@ import newton.examples
 from newton.geometry import HydroelasticSDF
 
 # Assembly type for the nut and bolt
+
+
 ASSEMBLY_STR = "m20_loose"
 
 ISAACGYM_ENVS_REPO_URL = "https://github.com/isaac-sim/IsaacGymEnvs.git"
@@ -518,6 +518,16 @@ class Example:
             help="Number of assemblies per world.",
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "20 identical setups appear consisting of a nut and bolt system.",
+        "The nut is slowly screwing into the bolt until reaching the end of the bolt.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

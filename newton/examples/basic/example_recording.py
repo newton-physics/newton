@@ -1,18 +1,16 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Recording
-#
-# Shows how to record a simulation using ViewerFile for automatic recording
-# of model structure and state data during simulation.
-#
-# Recording happens automatically - ViewerFile captures all logged states
-# and saves them when the viewer is closed.
-#
-# Command: python -m newton.examples recording
-#
-###########################################################################
+"""Example Recording
+
+Shows how to record a simulation using ViewerFile for automatic recording
+of model structure and state data during simulation.
+
+Recording happens automatically - ViewerFile captures all logged states
+and saves them when the viewer is closed.
+
+Command: python -m newton.examples recording
+"""
 
 import numpy as np
 import warp as wp
@@ -114,6 +112,16 @@ class Example:
         parser.add_argument("recording_file", nargs="?", default="humanoid_recording.bin")
         parser.set_defaults(num_frames=1000, world_count=100)
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "The command finishes after its configured simulation frames and writes humanoid_recording.bin by default.",
+        "The default recording contains 1000 frames of 100 humanoid worlds and can be loaded by replay_viewer.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

@@ -672,6 +672,53 @@ Every example must implement ``test_final()``; it may additionally implement
 after the example completes. An example without a callable ``test_final()``
 raises ``NotImplementedError`` in CI.
 
+Embedded success criteria
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Every runnable example must have a non-empty module docstring and a literal
+``_EXAMPLE_SPEC`` dictionary. Keep teaching explanations in the docstring and
+plain-text QA expectations in the dictionary. Common criteria apply to every
+listed run; run-specific criteria are additional:
+
+.. code-block:: python
+
+    """Demonstrate an example behavior."""
+
+    _EXAMPLE_SPEC = {
+        "schema_version": 1,
+        "success_criteria": ("The mechanism remains upright.",),
+        "runs": (
+            {"args": (), "success_criteria": ()},
+            {
+                "args": ("--solver", "xpbd"),
+                "success_criteria": ("The XPBD solver completes the same motion.",),
+            },
+        ),
+    }
+
+Place ``_EXAMPLE_SPEC`` after the simulation definitions, immediately before
+the ``if __name__ == "__main__":`` launch block.
+
+Validate metadata with ``uv run --extra dev -m newton.tests -k test_example_spec``.
+Shared visual QA procedures live in ``.agents/skills/example-testing/``;
+these human criteria do not imply equivalent automated assertions.
+
+Extract the description and criteria without importing the example. Output is
+Markdown by default, or JSON with ``--format json``:
+
+.. code-block:: console
+
+    python -m newton.examples --describe <example_name>
+    python -m newton.examples --describe <example_name> --format json
+
+JSON v1 contains ``schema_version`` (integer ``1``), ``name`` (the CLI example
+name), ``description`` (the module docstring), ``success_criteria`` (an ordered,
+non-empty array of non-empty strings), and ``runs`` (a non-empty ordered array).
+Each run contains ``args`` (ordered argument strings), ``command`` (the complete
+shell command), and additional ``success_criteria`` (which may be empty).
+Consumers should ignore unknown fields; removing fields or changing their types
+or meanings requires a new schema version.
+
 Discovery and registration
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 

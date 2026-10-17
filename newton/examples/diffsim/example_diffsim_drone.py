@@ -1,16 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Diffsim Drone
-#
-# A drone and its 4 propellers is simulated with the goal of reaching
-# different targets via model-predictive control (MPC) that continuously
-# optimizes the control trajectory.
-#
-# Command: python -m newton.examples diffsim_drone
-#
-###########################################################################
+"""Example Diffsim Drone
+
+A drone and its 4 propellers is simulated with the goal of reaching
+different targets via model-predictive control (MPC) that continuously
+optimizes the control trajectory.
+
+Command: python -m newton.examples diffsim_drone
+"""
 
 import os
 
@@ -786,6 +784,18 @@ class Example:
             help="Add rollout trajectories to the output stage.",
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A simplified drone appears close to a long pole.",
+        "A target red sphere is present and the drone is moving toward its direction.",
+        "The red sphere alternates between scheduled target positions, and the drone repeatedly approaches the active target.",
+        "The loss is plotted on the right side of the window.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

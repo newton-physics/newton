@@ -46,6 +46,15 @@ If you run the examples from a source checkout with uv, use
 `uv run --extra examples -m newton.examples <example_name>` instead of the
 `python -m newton.examples <example_name>` commands below.
 
+Every example keeps its general description and success criteria beside its
+implementation. Inspect the resulting specification without running the
+example:
+
+```bash
+python -m newton.examples --describe robot_omniwheel
+python -m newton.examples --describe robot_omniwheel --format json
+```
+
 <table>
   <tr>
     <td colspan="3"><h3>Basic Examples</h3></td>

@@ -1,15 +1,13 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Robot Cartpole
-#
-# Shows how to set up a simulation of a rigid-body cartpole articulation
-# from a USD stage using newton.ModelBuilder.add_usd().
-#
-# Command: python -m newton.examples robot_cartpole --world-count 100
-#
-###########################################################################
+"""Example Robot Cartpole
+
+Shows how to set up a simulation of a rigid-body cartpole articulation
+from a USD stage using newton.ModelBuilder.add_usd().
+
+Command: python -m newton.examples robot_cartpole --world-count 100
+"""
 
 import numpy as np
 import warp as wp
@@ -225,6 +223,16 @@ class Example:
         parser.add_argument("--solver", choices=["mujoco", "kamino"], default="mujoco")
         parser.set_defaults(world_count=100)
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "2 identical setups appear consisting of a double pendulum attached to a rail.",
+        "The double pendulum is consistently moving.",
+    ),
+    "runs": ({"args": ("--world-count", "2"), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

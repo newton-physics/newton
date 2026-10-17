@@ -272,6 +272,17 @@ class Example:
         )
 
 
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A static funnel is floating above the ground and a flow of particles is going out of the funnel.",
+        "The flow of particles is behaving as a viscous flow and creates a pile on the ground.",
+        "The pile of particles is slowly spreading.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
+
+
 if __name__ == "__main__":
     parser = Example.create_parser()
 

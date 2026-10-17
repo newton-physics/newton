@@ -1,36 +1,35 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Controllers — Operational Space Hybrid Force/Motion
-#
-# Demonstrates ControllerOperationalSpace on two real, heterogeneous robots
-# at once -- a 7-DOF Franka Panda arm (redundant against the 6D task) and a
-# 6-DOF UR10 arm (not redundant) -- each independently pressing a tool into
-# its own table, with its position along the table steered interactively.
-# The Franka's table is tilted 45 degrees toward it; the UR10's is flat.
-# One controller call handles both, each robot resolved through its own
-# tool site, Jacobian, and operational frame.
-#
-# Each operational frame is placed on its table's top surface, oriented so
-# its Z axis is normal to the table -- so the same operational-frame-relative
-# command works regardless of the table's tilt, and the axis triad drawn
-# each frame lets you see exactly where the controller thinks "the table"
-# and "into the table" are.
-#
-# Each operational frame's local Z (into its table) is wrench-controlled
-# with a feedforward press force plus feedback from the measured contact
-# force, plus a light superimposed motion-control term damping out
-# bounce; the other five task axes are purely motion-controlled, tracking
-# a desired (x, y) on the table's surface.
-#
-# Two sets of three sliders (x, y, press force) let you steer each robot's
-# commanded task directly; a SensorContact reads back the actual contact
-# force each tool exerts on its table, fed into the controller as wrench
-# feedback and shown in the GUI alongside the commanded force.
-#
-# Command: python -m newton.examples controller_operational_space_hybrid_force_motion
-###########################################################################
+"""Example Controllers — Operational Space Hybrid Force/Motion
+
+Demonstrates ControllerOperationalSpace on two real, heterogeneous robots
+at once -- a 7-DOF Franka Panda arm (redundant against the 6D task) and a
+6-DOF UR10 arm (not redundant) -- each independently pressing a tool into
+its own table, with its position along the table steered interactively.
+The Franka's table is tilted 45 degrees toward it; the UR10's is flat.
+One controller call handles both, each robot resolved through its own
+tool site, Jacobian, and operational frame.
+
+Each operational frame is placed on its table's top surface, oriented so
+its Z axis is normal to the table -- so the same operational-frame-relative
+command works regardless of the table's tilt, and the axis triad drawn
+each frame lets you see exactly where the controller thinks "the table"
+and "into the table" are.
+
+Each operational frame's local Z (into its table) is wrench-controlled
+with a feedforward press force plus feedback from the measured contact
+force, plus a light superimposed motion-control term damping out
+bounce; the other five task axes are purely motion-controlled, tracking
+a desired (x, y) on the table's surface.
+
+Two sets of three sliders (x, y, press force) let you steer each robot's
+commanded task directly; a SensorContact reads back the actual contact
+force each tool exerts on its table, fed into the controller as wrench
+feedback and shown in the GUI alongside the commanded force.
+
+Command: python -m newton.examples controller_operational_space_hybrid_force_motion
+"""
 
 from dataclasses import dataclass
 
@@ -50,6 +49,8 @@ from newton.sensors import SensorContact
 # ---------------------------------------------------------------------------
 
 # Franka's standard "ready" pose.
+
+
 FRANKA_READY_POSE = [0.0, -0.785, 0.0, -2.356, 0.0, 1.571, 0.785]
 FRANKA_ARM_DOFS = len(FRANKA_READY_POSE)  # 7; all controlled by the OSC controller
 FRANKA_BASE_POSITION = wp.vec3(0.0, 0.0, 0.0)
@@ -673,6 +674,19 @@ class Example:
         # still leaves ample margin while catching real divergence.
         ur10_qd = joint_qd[self._ur10_coords]
         assert np.all(np.abs(ur10_qd) < 1.0), f"UR10 arm joints diverged: {ur10_qd}"
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Two arms press against their respective tables: the Franka table is tilted and the UR10 table is flat.",
+        "Changing desired X/Y sliders moves each tool along its own table while maintaining contact.",
+        "Changing desired press force changes the measured normal force; displayed actual "
+        "position and force respond to the commands.",
+        "At fixed targets, both arms remain bounded without growing oscillations.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

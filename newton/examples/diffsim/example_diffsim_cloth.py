@@ -1,19 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Example Diffsim Cloth
-#
-# Shows how to use Newton to optimize the initial velocities of a piece of
-# cloth such that its center of mass hits a target after a specified time.
-#
-# This example uses the built-in wp.Tape() object to compute gradients of
-# the distance to target (loss) w.r.t the initial velocity, followed by
-# a simple gradient-descent optimization step.
-#
-# Command: python -m newton.examples diffsim_cloth
-#
-###########################################################################
+"""Example Diffsim Cloth
+
+Shows how to use Newton to optimize the initial velocities of a piece of
+cloth such that its center of mass hits a target after a specified time.
+
+This example uses the built-in wp.Tape() object to compute gradients of
+the distance to target (loss) w.r.t the initial velocity, followed by
+a simple gradient-descent optimization step.
+
+Command: python -m newton.examples diffsim_cloth
+"""
+
 import numpy as np
 import warp as wp
 
@@ -213,6 +212,17 @@ class Example:
             "--verbose", action="store_true", help="Print out additional status messages during execution."
         )
         return parser
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "A piece of cloth is thrown and tries to reach a floating target (red box).",
+        "Previously displayed rollout trajectories remain visible while newer trajectories are added.",
+        "The cloth is becoming increasingly good at reaching the target.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":

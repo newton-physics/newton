@@ -1,22 +1,20 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-###########################################################################
-# Cloth Poker Cards
-#
-# This simulation demonstrates 52 poker cards (13 ranks x 4 suits) dropping
-# and stacking on a cube, then being knocked off by a sphere. The cards use
-# high bending stiffness to maintain their rigid shape while still being
-# flexible enough to interact naturally.
-#
-# Standard poker card dimensions:
-# - Width: 6.35 cm (2.5 inches) = 0.0635 m
-# - Height: 8.89 cm (3.5 inches) = 0.0889 m
-# - Resolution: 4x6 cells per card
-#
-# Command: uv run -m newton.examples cloth_poker_cards
-#
-###########################################################################
+"""Cloth Poker Cards
+
+This simulation demonstrates 52 poker cards (13 ranks x 4 suits) dropping
+and stacking on a cube, then being knocked off by a sphere. The cards use
+high bending stiffness to maintain their rigid shape while still being
+flexible enough to interact naturally.
+
+Standard poker card dimensions:
+- Width: 6.35 cm (2.5 inches) = 0.0635 m
+- Height: 8.89 cm (3.5 inches) = 0.0889 m
+- Resolution: 4x6 cells per card
+
+Command: uv run -m newton.examples cloth_poker_cards
+"""
 
 import numpy as np
 import warp as wp
@@ -306,6 +304,18 @@ class Example:
 
         # Check no excessive penetration
         assert min_pos[2] > -0.1, f"Excessive penetration: z_min={min_pos[2]:.4f}"
+
+
+_EXAMPLE_SPEC = {
+    "schema_version": 1,
+    "success_criteria": (
+        "Cards initially stack on top of a large cube.",
+        "A moving sphere strikes the stack and knocks cards off; cards retain their overall "
+        "shape while flexing on contact.",
+        "After the impact, cards settle without explosive motion or excessive ground penetration.",
+    ),
+    "runs": ({"args": (), "success_criteria": ()},),
+}
 
 
 if __name__ == "__main__":
