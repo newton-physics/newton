@@ -6221,7 +6221,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 eval_orphan_joints_fk,
                 dim=model.joint_count,
                 inputs=[
-                    model.joint_articulation,
+                    self._orphan_world_root_joint_mask,
                     state.joint_q,
                     state.joint_qd,
                     model.joint_q_start,
@@ -7100,6 +7100,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         joints_static_roots = np.asarray(joints_static_roots, dtype=np.int32)
         joints_dynamic_roots = np.asarray(joints_dynamic_roots, dtype=np.int32)
         standalone_root_set = set(joints_static_roots) | set(joints_dynamic_roots)
+
+        # Only the joints that own a standalone body may update body state after
+        # eval_fk; every other unassigned joint is a loop closure whose child is
+        # already posed through its articulation or standalone root.
+        orphan_world_root_joint_mask_np = np.zeros(model.joint_count, dtype=np.int32)
+        if standalone_root_set:
+            orphan_world_root_joint_mask_np[sorted(standalone_root_set)] = 1
 
         # Once each standalone body has a world root, its other unassigned joints are loop closures.
         joints_loop = np.asarray(
@@ -8545,9 +8552,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         # Standalone world-root joints (not part of any articulation) are skipped by
         # eval_fk, so their body state is updated separately after each eval_fk call.
-        joint_articulation_np = model.joint_articulation.numpy()
-        joint_parent_np = model.joint_parent.numpy()
-        self._has_orphan_world_root_joints = bool(((joint_articulation_np == -1) & (joint_parent_np == -1)).any())
+        self._orphan_world_root_joint_mask = wp.array(
+            orphan_world_root_joint_mask_np, dtype=wp.int32, device=model.device
+        )
+        self._has_orphan_world_root_joints = bool(orphan_world_root_joint_mask_np.any())
         if self.enable_sleeping:
             qpos_treeid_np = np.full(self.mj_model.nq, -1, dtype=np.int32)
             for jointid in range(self.mj_model.njnt):
