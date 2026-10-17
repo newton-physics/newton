@@ -8547,9 +8547,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # eval_fk, so their body state is updated separately after each eval_fk call.
         joint_articulation_np = model.joint_articulation.numpy()
         joint_parent_np = model.joint_parent.numpy()
-        self._has_orphan_world_root_joints = bool(
-            ((joint_articulation_np == -1) & (joint_parent_np == -1)).any()
-        )
+        self._has_orphan_world_root_joints = bool(((joint_articulation_np == -1) & (joint_parent_np == -1)).any())
         if self.enable_sleeping:
             qpos_treeid_np = np.full(self.mj_model.nq, -1, dtype=np.int32)
             for jointid in range(self.mj_model.njnt):
