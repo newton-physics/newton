@@ -19,6 +19,8 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import numpy as np
 import warp as wp
 from pxr import Usd
@@ -126,7 +128,6 @@ class Example:
         self.table_hy_cm = 40.0
         self.table_hz_cm = 10.0
         self.table_pos_cm = wp.vec3(0.0, -50.0, 10.0)
-        self.table_shape_idx = self.scene.shape_count
         self.scene.add_shape_box(
             -1,
             xform=wp.transform(
@@ -136,6 +137,7 @@ class Example:
             hx=self.table_hx_cm,
             hy=self.table_hy_cm,
             hz=self.table_hz_cm,
+            color=(0.5, 0.5, 0.5),
         )
 
         # add the T-shirt
@@ -169,34 +171,6 @@ class Example:
         self.scene.add_ground_plane()
 
         self.model = self.scene.finalize(requires_grad=False)
-
-        # Hide the table box from automatic shape rendering -- the GL viewer
-        # bakes primitive dimensions into the mesh and ignores shape_scale,
-        # so we render it manually at meter scale in render() instead.
-        flags = self.model.shape_flags.numpy()
-        flags[self.table_shape_idx] &= ~int(newton.ShapeFlags.VISIBLE)
-        self.model.shape_flags = wp.array(flags, dtype=self.model.shape_flags.dtype, device=self.model.device)
-
-        # Pre-compute meter-scale table viz data
-        self.table_viz_xform = wp.array(
-            [
-                wp.transform(
-                    (
-                        float(self.table_pos_cm[0]) * self.viz_scale,
-                        float(self.table_pos_cm[1]) * self.viz_scale,
-                        float(self.table_pos_cm[2]) * self.viz_scale,
-                    ),
-                    wp.quat_identity(),
-                )
-            ],
-            dtype=wp.transform,
-        )
-        self.table_viz_scale = (
-            self.table_hx_cm * self.viz_scale,
-            self.table_hy_cm * self.viz_scale,
-            self.table_hz_cm * self.viz_scale,
-        )
-        self.table_viz_color = wp.array([wp.vec3(0.5, 0.5, 0.5)], dtype=wp.vec3)
 
         self.model.soft_contact_ke = self.soft_contact_ke
         self.model.soft_contact_kd = self.soft_contact_kd
@@ -258,18 +232,12 @@ class Example:
                 },
             )
 
-        self.viewer.set_model(self.model)
-        self.viewer.set_camera(wp.vec3(-0.6, 0.6, 1.24), -42.0, -58.0)
-
         # Visualization state for meter-scale rendering
         self.viz_state = self.model.state()
 
         # Pre-compute scaled shape data for meter-scale visualization.
-        # Two paths need updating:
-        #   1) The GL viewer's CUDA path reads model.shape_transform / model.shape_scale
-        #      directly, so we swap them temporarily in render().
-        #   2) The base viewer path caches shapes.xforms / shapes.scales during
-        #      set_model(), so we permanently scale those cached copies here.
+        # The viewer reads model.shape_transform / model.shape_scale, so
+        # viz_units() swaps these in whenever the viewer accesses the model.
         self.sim_shape_transform = self.model.shape_transform
         self.sim_shape_scale = self.model.shape_scale
 
@@ -290,16 +258,11 @@ class Example:
         else:
             self.viz_particle_radius = None
 
-        # Scale the viewer's cached shape instance data (base viewer / GL fallback path)
-        if hasattr(self.viewer, "_shape_instances"):
-            for shapes in self.viewer._shape_instances.values():
-                xi = shapes.xforms.numpy()
-                xi[:, :3] *= self.viz_scale
-                shapes.xforms = wp.array(xi, dtype=wp.transform, device=shapes.device)
-
-                sc = shapes.scales.numpy()
-                sc *= self.viz_scale
-                shapes.scales = wp.array(sc, dtype=wp.vec3, device=shapes.device)
+        # The viewer bakes primitive shape dimensions (e.g. box half-extents)
+        # into its geometry here, so the model must already be in meters.
+        with self.viz_units():
+            self.viewer.set_model(self.model)
+        self.viewer.set_camera(wp.vec3(-0.6, 0.6, 1.24), -42.0, -58.0)
 
         # gravity arrays for swapping during simulation
         self.gravity_zero = wp.zeros(self.model.gravity.shape[0], dtype=wp.vec3, device=self.model.device)
@@ -609,23 +572,19 @@ class Example:
                 outputs=[self.viz_state.body_q],
             )
 
-        # Swap model shape and particle data to meter-scale for rendering
+        with self.viz_units():
+            self.viewer.begin_frame(self.sim_time)
+            self.viewer.log_state(self.viz_state)
+            self.viewer.end_frame()
+
+    @contextmanager
+    def viz_units(self):
+        """Temporarily swap the model's shape and particle data to meter scale for the viewer."""
         self.model.shape_transform = self.viz_shape_transform
         self.model.shape_scale = self.viz_shape_scale
         self.model.particle_radius = self.viz_particle_radius
-
         try:
-            self.viewer.begin_frame(self.sim_time)
-            self.viewer.log_state(self.viz_state)
-            # Render the table box manually at meter scale
-            self.viewer.log_shapes(
-                "/table",
-                newton.GeoType.BOX,
-                self.table_viz_scale,
-                self.table_viz_xform,
-                self.table_viz_color,
-            )
-            self.viewer.end_frame()
+            yield
         finally:
             # Restore simulation shape and particle data
             self.model.shape_transform = self.sim_shape_transform
