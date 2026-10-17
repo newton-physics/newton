@@ -36,6 +36,10 @@ COS_TILT_ANGLE = wp.static(math.cos(TILT_ANGLE_RAD))
 
 COS_DEEPEST_CONTACT_THRESHOLD_ANGLE = wp.static(math.cos(0.1 * math.pi / 180.0))
 
+# Sampled support points of one shape (one row per sample) and their contact distances.
+_SamplePoints = wp.types.matrix(shape=(5, 3), dtype=wp.float32)
+_SampleDistances = wp.types.vector(length=5, dtype=wp.float32)
+
 
 @wp.func
 def should_include_deepest_contact(normal_dot: float) -> bool:
@@ -831,6 +835,129 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
         return loop_count, normal_dot
 
     @wp.func
+    def point_in_contact_polygon(
+        point: wp.vec3,
+        polygon: _SamplePoints,
+        count: int,
+        cross_vector_1: wp.vec3,
+        cross_vector_2: wp.vec3,
+    ) -> bool:
+        """Return whether a point projects inside a convex polygon of any winding, within EPS [m].
+
+        The point and the polygon vertices are projected onto the contact plane spanned by
+        the cross vectors.
+        """
+        planar = wp.vec2(wp.dot(cross_vector_1, point), wp.dot(cross_vector_2, point))
+        side = float(0.0)
+        inside = count >= 3
+        for k in range(count):
+            start = wp.vec2(wp.dot(cross_vector_1, polygon[k]), wp.dot(cross_vector_2, polygon[k]))
+            end_point = polygon[(k + 1) % count]
+            edge = wp.vec2(wp.dot(cross_vector_1, end_point), wp.dot(cross_vector_2, end_point)) - start
+            cross = edge[0] * (planar[1] - start[1]) - edge[1] * (planar[0] - start[0])
+            if cross * cross > EPS * EPS * wp.length_sq(edge):
+                if side == 0.0:
+                    side = wp.sign(cross)
+                elif cross * side < 0.0:
+                    inside = False
+        return inside
+
+    @wp.func
+    def write_vertex_face_contacts(
+        vertex_points: _SamplePoints,
+        vertex_count: int,
+        vertex_anchor: wp.vec3,
+        vertex_on_a: bool,
+        face_projector: BodyProjector,
+        face_points: _SamplePoints,
+        face_count: int,
+        normal_local: wp.vec3,
+        cross_vector_1: wp.vec3,
+        cross_vector_2: wp.vec3,
+        orientation_a: wp.quat,
+        position_a_world: wp.vec3,
+        normal_world: wp.vec3,
+        writer_data: Any,
+        contact_template: Any,
+        geom_a: Any,
+        geom_b: Any,
+        position_a: wp.vec3,
+        position_b: wp.vec3,
+        quaternion_a: wp.quat,
+        quaternion_b: wp.quat,
+    ) -> int:
+        """
+        Write contacts between the sampled support points of a non-planar feature and a verified face.
+
+        Each sampled support point lies on its shape's surface. Its projection along the contact
+        normal onto the face plane lies on the face when it falls inside the face's sampled
+        polygon, so both witnesses stay on their surfaces and each depth is exact. Only
+        penetrating samples are written, at most four, skipping the deepest witness, which
+        the caller writes.
+
+        Args:
+            vertex_points: Sampled support points of the non-planar feature in A-local frame.
+            vertex_count: Number of valid rows in ``vertex_points``.
+            vertex_anchor: Deepest witness on the non-planar shape in A-local frame.
+            vertex_on_a: True when the non-planar feature belongs to shape A.
+            face_projector: Plane of the verified face in A-local frame.
+            face_points: Sampled support points of the face in A-local frame.
+            face_count: Number of valid rows in ``face_points``.
+
+        Returns:
+            Number of contact points written (0-4).
+        """
+        separation_needed = (
+            contact_template.radius_eff_a
+            + contact_template.radius_eff_b
+            + contact_template.margin_a
+            + contact_template.margin_b
+        )
+        distances = _SampleDistances()
+        candidates = int(0)
+        for i in range(5):
+            distances[i] = 1.0e30
+            if i < vertex_count:
+                vertex = vertex_points[i]
+                if wp.length_sq(vertex - vertex_anchor) > EPS * EPS and point_in_contact_polygon(
+                    vertex, face_points, face_count, cross_vector_1, cross_vector_2
+                ):
+                    on_face = body_projector_project(face_projector, vertex, normal_local)
+                    signed_distance = wp.dot(on_face - vertex, normal_local)
+                    if not vertex_on_a:
+                        signed_distance = -signed_distance
+                    if signed_distance < separation_needed:
+                        distances[i] = signed_distance
+                        candidates += 1
+        # Five candidates means every sample penetrates; keep the four deepest.
+        if candidates > 4:
+            shallowest = int(0)
+            for i in range(1, 5):
+                if distances[i] > distances[shallowest]:
+                    shallowest = i
+            distances[shallowest] = 1.0e30
+        written = int(0)
+        for i in range(5):
+            if distances[i] < 1.0e30:
+                vertex = vertex_points[i]
+                on_face = body_projector_project(face_projector, vertex, normal_local)
+                contact_point_local = 0.5 * (vertex + on_face)
+                contact_point_world = wp.quat_rotate(orientation_a, contact_point_local) + position_a_world
+
+                contact_data = contact_template
+                contact_data.contact_point_center = contact_point_world
+                contact_data.contact_normal_a_to_b = normal_world
+                contact_data.contact_distance = distances[i]
+                contact_data.sort_sub_key = (contact_template.sort_sub_key << 3) | written
+
+                contact_data = post_process_contact(
+                    contact_data, geom_a, position_a, quaternion_a, geom_b, position_b, quaternion_b
+                )
+                writer_func(contact_data, writer_data, -1)
+                written += 1
+        return written
+
+    @wp.func
     def build_manifold(
         geom_a: Any,
         geom_b: Any,
@@ -910,6 +1037,8 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
 
         plane_tracker_a = IncrementalPlaneTracker()
         plane_tracker_b = IncrementalPlaneTracker()
+        points_a = _SamplePoints()
+        points_b = _SamplePoints()
         planar_a = has_planar_contact_feature(geom_a)
         planar_b = has_planar_contact_feature(geom_b)
 
@@ -954,6 +1083,7 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
             pt_a_2d = wp.vec2(wp.dot(tangent_a, projected_a), wp.dot(tangent_b, projected_a))
             a_count, was_added_a = add_avoid_duplicates_vec2(a_buffer, a_count, pt_a_2d, EPS)
             if was_added_a:
+                points_a[a_count - 1] = pt_a_3d
                 plane_tracker_a = update_incremental_plane_tracker(plane_tracker_a, pt_a_3d, a_count - 1, planar_a)
 
             # Shape B: direction in B-local, result transformed to A-local.
@@ -964,6 +1094,7 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
             pt_b_2d = wp.vec2(wp.dot(tangent_a, projected_b), wp.dot(tangent_b, projected_b))
             b_count, was_added_b = add_avoid_duplicates_vec2(b_buffer, b_count, pt_b_2d, EPS)
             if was_added_b:
+                points_b[b_count - 1] = pt_b_3d
                 plane_tracker_b = update_incremental_plane_tracker(plane_tracker_b, pt_b_3d, b_count - 1, planar_b)
 
         # World-space normal (computed once for all output contacts)
@@ -975,14 +1106,78 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
         quaternion_a_ws = orientation_a
         quaternion_b_ws = orientation_a * relative_orientation_b
 
-        if (
-            a_count < 2
-            or b_count < 2
-            or (planar_a and not contact_feature_supports_anchor(plane_tracker_a, p_a))
-            or (planar_b and not contact_feature_supports_anchor(plane_tracker_b, p_b))
-        ):
+        feature_a_flat = not planar_a or contact_feature_supports_anchor(plane_tracker_a, p_a)
+        feature_b_flat = not planar_b or contact_feature_supports_anchor(plane_tracker_b, p_b)
+        if a_count < 2 or b_count < 2 or not feature_a_flat or not feature_b_flat:
             count_out = 0
             normal_dot = 0.0
+            # A tessellated feature that is not flat to EPS can still rest on a
+            # verified face. Its sampled support points then give exact
+            # vertex-face contacts instead of a single deepest contact.
+            if planar_a and planar_b and feature_a_flat != feature_b_flat:
+                face_on_b = feature_b_flat
+                vertex_points = points_a
+                vertex_count = a_count
+                vertex_anchor = p_a
+                face_points = points_b
+                face_count = b_count
+                face_tracker = plane_tracker_b
+                face_anchor = p_b
+                if not face_on_b:
+                    vertex_points = points_b
+                    vertex_count = b_count
+                    vertex_anchor = p_b
+                    face_points = points_a
+                    face_count = a_count
+                    face_tracker = plane_tracker_a
+                    face_anchor = p_a
+                if face_tracker.largest_area_sq > 0.0:
+                    face_projector = BodyProjector()
+                    face_projector.normal = face_tracker.normal * (1.0 / wp.sqrt(face_tracker.largest_area_sq))
+                    face_projector.plane_d = -wp.dot(face_anchor, face_projector.normal)
+                    face_supported = not excess_normal_deviation(normal, face_projector.normal)
+                    if face_supported:
+                        # Certify the face plane against the complete shape, as for manifolds.
+                        direction = face_projector.normal
+                        plane_d = face_projector.plane_d
+                        if face_on_b:
+                            if wp.dot(direction, normal) > 0.0:
+                                direction = -direction
+                                plane_d = -plane_d
+                            local_direction_b = wp.quat_rotate_inv(relative_orientation_b, direction)
+                            local_plane_d_b = plane_d + wp.dot(direction, relative_position_b)
+                            face_supported = contact_plane_is_supporting(
+                                geom_b, local_direction_b, local_plane_d_b, data_provider
+                            )
+                        else:
+                            if wp.dot(direction, normal) < 0.0:
+                                direction = -direction
+                                plane_d = -plane_d
+                            face_supported = contact_plane_is_supporting(geom_a, direction, plane_d, data_provider)
+                    if face_supported:
+                        count_out = write_vertex_face_contacts(
+                            vertex_points,
+                            vertex_count,
+                            vertex_anchor,
+                            face_on_b,
+                            face_projector,
+                            face_points,
+                            face_count,
+                            normal,
+                            tangent_a,
+                            tangent_b,
+                            orientation_a,
+                            position_a_world,
+                            normal_world,
+                            writer_data,
+                            contact_template,
+                            geom_a,
+                            geom_b,
+                            position_a_ws,
+                            position_b_ws,
+                            quaternion_a_ws,
+                            quaternion_b_ws,
+                        )
         else:
             projector_a, projector_b = create_body_projectors(plane_tracker_a, p_a, plane_tracker_b, p_b, normal)
 
