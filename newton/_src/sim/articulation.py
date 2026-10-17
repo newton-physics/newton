@@ -474,6 +474,79 @@ def eval_single_articulation_fk(
 
 
 @wp.kernel
+def eval_orphan_joints_fk(
+    joint_orphan_root_mask: wp.array[wp.int32],
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+    joint_q_start: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_axis: wp.array[wp.vec3],
+    joint_dof_dim: wp.array2d[int],
+    body_com: wp.array[wp.vec3],
+    body_flags: wp.array[wp.int32],
+    body_flag_filter: int,
+    # outputs
+    body_q: wp.array[wp.transform],
+    body_qd: wp.array[wp.spatial_vector],
+):
+    """Evaluates forward kinematics for standalone world-root joints outside articulations.
+
+    :func:`eval_fk` only walks articulations, so bodies attached to the world by a
+    standalone joint (``joint_articulation == -1``) are never posed. This kernel
+    fills that gap, but only for joints that own a standalone body
+    (``joint_orphan_root_mask != 0``). Loop-closure joints to the world are
+    excluded so they cannot overwrite body state owned by an articulation or
+    standalone root.
+    """
+    i = wp.tid()
+
+    if joint_orphan_root_mask[i] == 0:
+        return
+
+    child = joint_child[i]
+    type = joint_type[i]
+    X_pj = joint_X_p[i]
+    X_cj = joint_X_c[i]
+    q_start = joint_q_start[i]
+    qd_start = joint_qd_start[i]
+    lin_axis_count = joint_dof_dim[i, 0]
+    ang_axis_count = joint_dof_dim[i, 1]
+
+    X_j, v_j = eval_joint_motion(
+        type,
+        q_start,
+        qd_start,
+        lin_axis_count,
+        ang_axis_count,
+        joint_q,
+        joint_qd,
+        joint_axis,
+    )
+
+    X_wc, v_wc = eval_joint_child_state(
+        type,
+        -1,
+        child,
+        wp.transform_identity(),
+        X_pj,
+        X_cj,
+        X_j,
+        v_j,
+        body_qd,
+        body_com,
+    )
+
+    if (body_flags[child] & body_flag_filter) != 0:
+        body_q[child] = X_wc
+        body_qd[child] = v_wc
+
+
+@wp.kernel
 def eval_articulation_fk(
     articulation_start: wp.array[int],
     articulation_end: wp.array[int],

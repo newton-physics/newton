@@ -35,7 +35,7 @@ from ...sim import (
     State,
     StateFlags,
 )
-from ...sim.articulation import eval_fk
+from ...sim.articulation import eval_fk, eval_orphan_joints_fk
 from ...sim.collide import _estimate_rigid_contact_max, _estimate_rigid_contact_max_per_world
 from ...sim.contacts import GENERATION_SENTINEL as _GENERATION_SENTINEL
 from ...sim.graph_coloring import color_graph, plot_graph
@@ -6216,6 +6216,31 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
+        if self._has_orphan_world_root_joints:
+            wp.launch(
+                eval_orphan_joints_fk,
+                dim=model.joint_count,
+                inputs=[
+                    self._orphan_world_root_joint_mask,
+                    state.joint_q,
+                    state.joint_qd,
+                    model.joint_q_start,
+                    model.joint_qd_start,
+                    model.joint_type,
+                    model.joint_parent,
+                    model.joint_child,
+                    model.joint_X_p,
+                    model.joint_X_c,
+                    model.joint_axis,
+                    model.joint_dof_dim,
+                    model.body_com,
+                    model.body_flags,
+                    BodyFlags.ALL,
+                ],
+                outputs=[state.body_q, state.body_qd],
+                device=model.device,
+            )
+
         if is_mjwarp:
             self._update_body_observables(model, state, mj_data, observables)
 
@@ -7075,6 +7100,36 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         joints_static_roots = np.asarray(joints_static_roots, dtype=np.int32)
         joints_dynamic_roots = np.asarray(joints_dynamic_roots, dtype=np.int32)
         standalone_root_set = set(joints_static_roots) | set(joints_dynamic_roots)
+
+        # Only the joints that own a standalone body may update body state after
+        # eval_fk; every other unassigned joint is a loop closure whose child is
+        # already posed through its articulation or standalone root. The mask is
+        # indexed by global joint index and launched over every joint, so classify
+        # over the whole model: with separate_worlds the conversion sets above only
+        # cover the template world, but replica worlds hold copies of the same roots.
+        orphan_world_root_joint_mask_np = np.zeros(model.joint_count, dtype=np.int32)
+        all_articulated_joints = np.where(joint_articulation >= 0)[0]
+        all_articulated_bodies = {int(body) for body in joint_child[all_articulated_joints]}
+        all_articulated_bodies.update(int(body) for body in joint_parent[all_articulated_joints] if body >= 0)
+        all_equality_loop_joints = set()
+        if eq_constraint_target_kind is not None and eq_constraint_target is not None:
+            for i in range(len(eq_constraint_target)):
+                if (
+                    int(eq_constraint_target_kind[i]) == int(MjcEqualityTargetKind.JOINT)
+                    and eq_constraint_target[i] >= 0
+                ):
+                    all_equality_loop_joints.add(int(eq_constraint_target[i]))
+        mask_root_bodies = set()
+        for joint in np.where(joint_articulation == -1)[0]:
+            child = int(joint_child[joint])
+            if (
+                joint_parent[joint] == -1
+                and child not in all_articulated_bodies
+                and child not in mask_root_bodies
+                and int(joint) not in all_equality_loop_joints
+            ):
+                orphan_world_root_joint_mask_np[int(joint)] = 1
+                mask_root_bodies.add(child)
 
         # Once each standalone body has a world root, its other unassigned joints are loop closures.
         joints_loop = np.asarray(
@@ -8517,6 +8572,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 )
         self.mj_q_start = wp.array(mj_q_start_np, dtype=wp.int32, device=model.device)
         self.mj_qd_start = wp.array(mj_qd_start_np, dtype=wp.int32, device=model.device)
+
+        # Standalone world-root joints (not part of any articulation) are skipped by
+        # eval_fk, so their body state is updated separately after each eval_fk call.
+        self._orphan_world_root_joint_mask = wp.array(
+            orphan_world_root_joint_mask_np, dtype=wp.int32, device=model.device
+        )
+        self._has_orphan_world_root_joints = bool(orphan_world_root_joint_mask_np.any())
         if self.enable_sleeping:
             qpos_treeid_np = np.full(self.mj_model.nq, -1, dtype=np.int32)
             for jointid in range(self.mj_model.njnt):

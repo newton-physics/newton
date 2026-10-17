@@ -8028,6 +8028,31 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
                 self.assertEqual(solver.mj_model.nv, expected_nv)
                 self.assertEqual(solver.mj_model.neq, 0)
 
+    def test_orphan_world_joint_updates_body_state(self):
+        """Stepping a standalone world root updates state.body_q/body_qd (issue #4544)."""
+        builder = newton.ModelBuilder()
+        body = builder.add_link(
+            xform=wp.transform((0.0, 0.0, 2.0), wp.quat_identity()),
+            mass=1.0,
+            inertia=wp.mat33(np.eye(3)),
+        )
+        joint = builder.add_joint_free(child=body)
+        self.assertEqual(builder.joint_articulation[joint], -1)
+        model = builder.finalize()
+        with self.assertWarnsRegex(UserWarning, "standalone world roots"):
+            solver = SolverMuJoCo(model, disable_contacts=True)
+
+        state_0, state_1, control = model.state(), model.state(), model.control()
+        for _ in range(100):  # 0.5 s of free fall
+            solver.step(state_0, state_1, control, None, 0.005)
+            state_0, state_1 = state_1, state_0
+
+        joint_z = state_0.joint_q.numpy()[2]
+        body_z = state_0.body_q.numpy()[0][2]
+        self.assertAlmostEqual(float(body_z), float(joint_z), places=5)
+        self.assertLess(body_z, 2.0)  # the body actually fell
+        self.assertGreater(float(np.linalg.norm(state_0.body_qd.numpy()[0])), 0.0)
+
     def test_orphan_world_joints_support_separate_worlds(self):
         """Standalone roots retain body mappings when worlds are replicated."""
         template = newton.ModelBuilder()
@@ -8048,6 +8073,37 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         self.assertEqual(solver.mj_model.njnt, 1)
         expected_mapping = np.array([[-1, 0, 1], [-1, 2, 3], [-1, 4, 5]], dtype=np.int32)
         np.testing.assert_array_equal(solver.mjc_body_to_newton.numpy(), expected_mapping)
+
+    def test_orphan_world_joints_separate_worlds_update_body_state(self):
+        """Replicated standalone roots keep their per-world body state in sync."""
+        template = newton.ModelBuilder()
+        dynamic_body = template.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)), label="dynamic_body")
+        template.add_joint_free(child=dynamic_body, label="dynamic_root")
+
+        world_count = 3
+        builder = newton.ModelBuilder()
+        builder.replicate(template, world_count)
+        model = builder.finalize()
+        with self.assertWarnsRegex(UserWarning, "standalone world roots"):
+            solver = SolverMuJoCo(model, separate_worlds=True, disable_contacts=True)
+
+        state_in, state_out, control = model.state(), model.state(), model.control()
+        joint_q = state_in.joint_q.numpy()
+        joint_q_start = model.joint_q_start.numpy()
+        dynamic_joints = [i for i, label in enumerate(model.joint_label) if "dynamic_root" in label]
+        self.assertEqual(len(dynamic_joints), world_count)
+        for world, joint in enumerate(dynamic_joints):
+            joint_q[joint_q_start[joint] + 2] = 1.0 + world
+        state_in.joint_q.assign(joint_q)
+
+        # Zero-dt step: exercises only the state read-back, so each world's body
+        # pose must track its own standalone root joint.
+        solver.step(state_in, state_out, control, None, 0.0)
+
+        body_q = state_out.body_q.numpy()
+        joint_child = model.joint_child.numpy()
+        for world, joint in enumerate(dynamic_joints):
+            self.assertAlmostEqual(float(body_q[joint_child[joint]][2]), 1.0 + world, places=5)
 
     def test_orphan_world_fixed_body_can_participate_in_loop_joint(self):
         """A standalone static body remains available to loop constraints."""
@@ -8090,6 +8146,43 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         self.assertEqual(solver.mj_model.njnt, 1)
         self.assertEqual(solver.mj_model.neq, 1)
         self.assertEqual(int(solver.mj_model.eq_type[0]), int(solver._mujoco.mjtEq.mjEQ_WELD))
+
+    def test_world_fixed_loop_on_articulated_body_keeps_fk_state(self):
+        """A world loop-closure joint must not overwrite the articulated body state."""
+        builder = newton.ModelBuilder()
+        body = builder.add_link(
+            xform=wp.transform((0.0, 0.0, 2.0), wp.quat_identity()),
+            mass=1.0,
+            inertia=wp.mat33(np.eye(3)),
+        )
+        root_joint = builder.add_joint_free(child=body)
+        builder.add_articulation([root_joint])
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=".*FREE joint parallel.*", category=UserWarning)
+            loop_joint = builder.add_joint_fixed(parent=-1, child=body)
+
+        self.assertEqual(builder.joint_articulation[loop_joint], -1)
+
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, disable_contacts=True)
+
+        state_in, state_out, control = model.state(), model.state(), model.control()
+        # Move the body through the free joint; a zero-dt step exercises only the
+        # state read-back, so the body pose must track the articulation root and
+        # not snap to the world weld.
+        joint_q = state_in.joint_q.numpy()
+        joint_q[2] = 3.0
+        state_in.joint_q.assign(joint_q)
+        joint_qd = state_in.joint_qd.numpy()
+        joint_qd[2] = 1.0
+        state_in.joint_qd.assign(joint_qd)
+
+        solver.step(state_in, state_out, control, None, 0.0)
+
+        body_q = state_out.body_q.numpy()[0]
+        body_qd = state_out.body_qd.numpy()[0]
+        self.assertAlmostEqual(float(body_q[2]), 3.0, places=5)
+        self.assertAlmostEqual(float(body_qd[2]), 1.0, places=5)
 
     def test_loop_joints_only(self):
         """Testing that loop joints are converted to equality constraints."""
