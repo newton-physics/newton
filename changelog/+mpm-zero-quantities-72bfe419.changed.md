@@ -1,0 +1,1 @@
+Improve the implicit MPM solver's handling of partly filled grid cells and particles with different material properties. Existing `strain_basis` settings remain valid, but simulation results may change.

@@ -1,0 +1,1 @@
+Improve implicit MPM robustness in partially filled cells by retaining positive-mass strain modes with cancelled integrals and safely normalizing material parameters. Fix mesh collider distance signs with angle-weighted pseudonormals, sliver rejection, and a closest-face fallback for cancelled normals, and avoid viscosity division by zero on empty strain modes.

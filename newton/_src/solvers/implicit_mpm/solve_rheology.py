@@ -21,12 +21,17 @@ from .contact_solver_kernels import (
     apply_nodal_impulse_warmstart,
     apply_subgrid_impulse,
     apply_subgrid_impulse_warmstart,
+    build_boundary_cell_colors,
     compute_collider_delassus_diagonal,
     compute_collider_inv_mass,
+    compute_collider_unsplit_diagonal,
+    make_boundary_contact_gs_kernel,
     solve_nodal_friction,
     solve_subgrid_friction,
 )
 from .rheology_solver_kernels import (
+    StrainMatrixRows,
+    StrainMatrixRowsSoA,
     YieldParamVec,
     apply_stress_delta_jacobi,
     apply_stress_gs,
@@ -44,10 +49,8 @@ from .rheology_solver_kernels import (
     fill_batch_transpose,
     globalize_batch_offsets,
     jacobi_preconditioner,
-    make_batched_solve_kernel,
     make_gs_solve_kernel,
     make_jacobi_solve_kernel,
-    make_reordered_gs_solve_kernel,
     mat13,
     mat55,
     postprocess_stress_and_strain,
@@ -387,6 +390,7 @@ class RheologyData:
     has_viscosity: bool = False
     has_dilatancy: bool = False
     strain_velocity_node_count: int = -1
+    strain_nodes_per_cell: int = 0
 
 
 @dataclass
@@ -423,6 +427,9 @@ class CollisionData:
     rigidity_operator: tuple[sp.BsrMatrix, sp.BsrMatrix] | None
     collider_impulse: wp.array[wp.vec3]
     has_colliders: bool = False
+    colored_cell_offsets: wp.array[int] | None = None
+    colored_cell_rows: wp.array[int] | None = None
+    colored_velocity_nodes_per_cell: int = 0
 
 
 class _DelassusOperator:
@@ -683,148 +690,18 @@ class _RheologySolver:
         self._evaluate_strain_residual_launch.launch()
         return self._residual_squared_norm_computer.compute_squared_norm(self.strain_residual)
 
-    def release(self):
-        self.delta_stress.release()
-        self.strain_residual.release()
-        self._residual_squared_norm_computer.release()
-
-
-class _GaussSeidelSolver(_RheologySolver):
-    def __init__(
-        self,
-        delassus_operator: _DelassusOperator,
-        temporary_store: fem.TemporaryStore | None = None,
-    ) -> None:
-        super().__init__(delassus_operator, split_mass=False, temporary_store=temporary_store)
-
-        self.color_count = self.rheology.color_offsets.shape[0] - 1
-
-        if self.device.is_cuda:
-            color_block_count = self.device.sm_count * 2
-        else:
-            color_block_count = 1
-        color_block_dim = 64
-        color_launch_dim = color_block_count * color_block_dim
-
-        self.apply_stress_launch = wp.launch(
-            kernel=apply_stress_gs,
-            dim=color_launch_dim,
-            inputs=[
-                0,  # color
-                color_launch_dim,
-                self.rheology.color_offsets,
-                self.rheology.color_blocks,
-                self.rheology.strain_mat.offsets,
-                self.rheology.strain_mat.columns,
-                self.rheology.strain_mat.values.view(dtype=mat13),
-                self.momentum.inv_volume,
-                self.rheology.stress,
-            ],
-            outputs=[
-                self.momentum.velocity,
-            ],
-            block_dim=color_block_dim,
-            max_blocks=color_block_count,
-            record_cmd=True,
-        )
-
-        # Solve kernel
-        gs_kernel = make_gs_solve_kernel(
-            has_viscosity=self.rheology.has_viscosity,
-            has_dilatancy=self.rheology.has_dilatancy,
-            has_compliance_mat=self.rheology.compliance_mat.nnz > 0,
-            strain_velocity_node_count=self.rheology.strain_velocity_node_count,
-        )
-        self.solve_local_launch = wp.launch(
-            kernel=gs_kernel,
-            dim=color_launch_dim,
-            inputs=[
-                0,  # color
-                color_launch_dim,
-                self.rheology.color_offsets,
-                self.rheology.color_blocks,
-                self.rheology.yield_params,
-                self.rheology.strain_node_volume,
-                self.rheology.compliance_mat.offsets,
-                self.rheology.compliance_mat.columns,
-                self.rheology.compliance_mat.values,
-                self.rheology.strain_mat.offsets,
-                self.rheology.strain_mat.columns,
-                self.rheology.strain_mat.values.view(dtype=mat13),
-                self.delassus_operator.delassus_diagonal,
-                self.delassus_operator.delassus_rotation,
-                self.momentum.inv_volume,
-                self.rheology.elastic_strain_delta,
-            ],
-            outputs=[
-                self.momentum.velocity,
-                self.rheology.stress,
-                self.delta_stress,
-            ],
-            block_dim=color_block_dim,
-            max_blocks=color_block_count,
-            record_cmd=True,
-        )
-
-    @property
-    def name(self):
-        return "Gauss-Seidel"
-
-    @property
-    def solve_granularity(self):
-        return 25
-
-    def apply_initial_guess(self):
-        for color in range(self.color_count):
-            self.apply_stress_launch.set_param_at_index(0, color)
-            self.apply_stress_launch.launch()
-
-    def solve(self):
-        for color in range(self.color_count):
-            self.solve_local_launch.set_param_at_index(0, color)
-            self.solve_local_launch.launch()
-
-
-class _ReorderedGaussSeidelSolver(_RheologySolver):
-    """Gauss-Seidel solver with entry-major SoA strain matrix layout.
-
-    Reorders the BSR strain matrix into a flat, entry-major SoA layout at
-    construction time.  The solve kernel statically unrolls the velocity
-    gather loop for coalesced memory access, giving significant speedups
-    on higher-order bases at the cost of increased memory usage.
-    """
-
-    def __init__(
-        self,
-        delassus_operator: _DelassusOperator,
-        temporary_store: fem.TemporaryStore | None = None,
-    ) -> None:
-        super().__init__(delassus_operator, split_mass=False, temporary_store=temporary_store)
-
-        self.color_count = self.rheology.color_offsets.shape[0] - 1
-
-        # ── Determine max_entries without synchronization ────────────────
-        # Use strain_velocity_node_count if known; otherwise fall back to
-        # the number of colors (upper bound for regular grids).
-
-        svnc = self.rheology.strain_velocity_node_count
-        if svnc > 0:
-            max_entries = svnc
-        else:
-            max_entries = self.color_count
-
-        # ── Build flat ordering + SoA reordered buffers ──────────────────
-        # All operations are GPU kernel launches — no host synchronization.
-
+    def _prepare_strain_rows_soa(self, temporary_store, max_entries):
+        """Build shared flat cell ordering and entry-major strain matrices."""
         n_total = self.size
         # color_blocks.shape[1] is pre-allocated capacity; the actual valid
         # block count is color_offsets[-1], read on device to avoid sync.
         num_blocks_capacity = self.rheology.color_blocks.shape[1]
 
         # Flat offsets: prefix sum over color-block sizes (fully written by kernel)
-        block_flat_offsets = fem.borrow_temporary(
+        self._block_flat_offsets = fem.borrow_temporary(
             temporary_store, shape=(num_blocks_capacity + 1,), dtype=int, device=self.device
         )
+        block_flat_offsets = self._block_flat_offsets
         wp.launch(
             kernel=build_flat_offsets,
             dim=1,
@@ -896,57 +773,64 @@ class _ReorderedGaussSeidelSolver(_RheologySolver):
             ],
             device=self.device,
         )
+        return self._strain_rows_soa(block_flat_offsets)
 
-        # ── Launch config ────────────────────────────────────────────────
+    def _strain_rows_soa(self, block_offsets):
+        rows = StrainMatrixRowsSoA()
+        rows.node_indices = self._flat_constraint_ids
+        rows.entry_count = self._reordered_n_entries
+        rows.columns = self._reordered_cols
+        rows.values_x = self._reordered_vals_x
+        rows.values_y = self._reordered_vals_y
+        rows.values_z = self._reordered_vals_z
+        rows.block_offsets = block_offsets
+        return rows
 
+    def _release_strain_rows_soa(self):
+        self._block_flat_offsets.release()
+        self._flat_color_offsets.release()
+        self._flat_constraint_ids.release()
+        self._reordered_n_entries.release()
+        self._reordered_cols.release()
+        self._reordered_vals_x.release()
+        self._reordered_vals_y.release()
+        self._reordered_vals_z.release()
+
+    def _gs_launch_dimensions(self, colors_per_batch=1):
+        block_count = self.device.sm_count * 2 if self.device.is_cuda else 1
+        block_dim = 64
         if self.device.is_cuda:
-            color_block_count = self.device.sm_count * 2
-        else:
-            color_block_count = 1
-        color_block_dim = 64
-        color_launch_dim = color_block_count * color_block_dim
+            capacity = self.rheology.color_blocks.shape[1]
+            if self.rheology.strain_nodes_per_cell > 0:
+                capacity = math.ceil(capacity / self.rheology.strain_nodes_per_cell)
+            groups = math.ceil(self.color_count / colors_per_batch)
+            threads = max(1, math.ceil(capacity / (groups * block_count)))
+            block_dim = min(64, 1 << (threads - 1).bit_length())
+        return block_count * block_dim, block_dim, block_count
 
-        # Initial guess uses the existing AoS apply_stress_gs kernel (runs once)
-        self.apply_stress_launch = wp.launch(
-            kernel=apply_stress_gs,
-            dim=color_launch_dim,
-            inputs=[
-                0,
-                color_launch_dim,
-                self.rheology.color_offsets,
-                self.rheology.color_blocks,
-                self.rheology.strain_mat.offsets,
-                self.rheology.strain_mat.columns,
-                self.rheology.strain_mat.values.view(dtype=mat13),
-                self.momentum.inv_volume,
-                self.rheology.stress,
-            ],
-            outputs=[self.momentum.velocity],
-            block_dim=color_block_dim,
-            max_blocks=color_block_count,
-            record_cmd=True,
-        )
-
-        # Solve kernel: reordered SoA layout
-        gs_kernel = make_reordered_gs_solve_kernel(
+    def _make_gs_solve_launch(
+        self, rows, launch_dim, block_dim, block_count, *, soa=False, colors_per_batch=1, batched=False
+    ):
+        kernel = make_gs_solve_kernel(
             has_viscosity=self.rheology.has_viscosity,
             has_dilatancy=self.rheology.has_dilatancy,
             has_compliance_mat=self.rheology.compliance_mat.nnz > 0,
-            max_entries=max_entries,
+            strain_velocity_node_count=self.rheology.strain_velocity_node_count,
+            strain_nodes_per_cell=self.rheology.strain_nodes_per_cell,
+            max_entries=rows.columns.shape[0] if soa else self.rheology.strain_velocity_node_count,
+            soa=soa,
+            batched=batched,
         )
-        self.solve_local_launch = wp.launch(
-            kernel=gs_kernel,
-            dim=color_launch_dim,
+        return wp.launch(
+            kernel,
+            dim=launch_dim,
             inputs=[
                 0,
-                color_launch_dim,
-                self._flat_color_offsets,
-                self._flat_constraint_ids,
-                self._reordered_n_entries,
-                self._reordered_cols,
-                self._reordered_vals_x,
-                self._reordered_vals_y,
-                self._reordered_vals_z,
+                launch_dim,
+                self.rheology.color_offsets,
+                self.rheology.color_blocks,
+                rows,
+                colors_per_batch,
                 self.rheology.yield_params,
                 self.rheology.strain_node_volume,
                 self.rheology.compliance_mat.offsets,
@@ -956,20 +840,118 @@ class _ReorderedGaussSeidelSolver(_RheologySolver):
                 self.delassus_operator.delassus_rotation,
                 self.momentum.inv_volume,
                 self.rheology.elastic_strain_delta,
-                self.momentum.velocity,
+            ],
+            outputs=[self.momentum.velocity, self.rheology.stress, self.delta_stress],
+            block_dim=block_dim,
+            max_blocks=block_count,
+            record_cmd=True,
+        )
+
+    def release(self):
+        self.delta_stress.release()
+        self.strain_residual.release()
+        self._residual_squared_norm_computer.release()
+
+
+class _GaussSeidelSolver(_RheologySolver):
+    def __init__(
+        self,
+        delassus_operator: _DelassusOperator,
+        temporary_store: fem.TemporaryStore | None = None,
+        contact_solver: _SubgridContactSolver | None = None,
+    ) -> None:
+        super().__init__(delassus_operator, split_mass=False, temporary_store=temporary_store)
+
+        self.color_count = self.rheology.color_offsets.shape[0] - 1
+
+        color_launch_dim, color_block_dim, color_block_count = self._gs_launch_dimensions()
+
+        self.apply_stress_launch = wp.launch(
+            kernel=apply_stress_gs,
+            dim=color_launch_dim,
+            inputs=[
+                0,  # color
+                color_launch_dim,
+                self.rheology.color_offsets,
+                self.rheology.color_blocks,
+                self.rheology.strain_mat.offsets,
+                self.rheology.strain_mat.columns,
+                self.rheology.strain_mat.values.view(dtype=mat13),
+                self.momentum.inv_volume,
                 self.rheology.stress,
             ],
             outputs=[
-                self.delta_stress,
+                self.momentum.velocity,
             ],
             block_dim=color_block_dim,
             max_blocks=color_block_count,
             record_cmd=True,
         )
 
+        self.contact_solver = contact_solver
+        self.contact_launch = None
+        self.boundary_counts = None
+        self.boundary_cells = None
+        if contact_solver is not None:
+            c = contact_solver.collision
+            contact_inputs = [
+                c.colored_cell_offsets,
+                c.colored_cell_rows,
+                c.collider_mat.offsets,
+                c.collider_mat.columns,
+                c.collider_mat.values,
+                c.collider_friction,
+                c.collider_adhesion,
+                c.collider_normals,
+                contact_solver.collider_delassus_diagonal,
+                c.collider_velocities,
+                c.collider_impulse,
+                contact_solver.delta_impulse,
+            ]
+            self.boundary_counts = fem.borrow_temporary(temporary_store, shape=self.color_count, dtype=int)
+            self.boundary_cells = fem.borrow_temporary(
+                temporary_store, shape=(self.color_count, c.colored_cell_offsets.shape[0] - 1), dtype=int
+            )
+            self.boundary_counts.zero_()
+            wp.launch(
+                build_boundary_cell_colors,
+                dim=(self.color_count, 256),
+                inputs=[
+                    self.rheology.color_offsets,
+                    self.rheology.color_blocks,
+                    c.colored_cell_offsets,
+                    self.boundary_counts,
+                    self.boundary_cells,
+                ],
+            )
+            self.contact_launch = wp.launch(
+                make_boundary_contact_gs_kernel(c.colored_velocity_nodes_per_cell == 8),
+                dim=256,
+                block_dim=1,
+                inputs=[
+                    0,
+                    self.boundary_counts,
+                    self.boundary_cells,
+                    *contact_inputs,
+                    self.momentum.inv_volume,
+                    self.momentum.velocity,
+                ],
+                record_cmd=True,
+            )
+        self.solve_local_launch = self._make_solve_launch(
+            temporary_store, color_launch_dim, color_block_dim, color_block_count
+        )
+
+    def _make_solve_launch(self, temporary_store, launch_dim, block_dim, block_count):
+        rows = StrainMatrixRows()
+        rows.offsets = self.rheology.strain_mat.offsets
+        rows.columns = self.rheology.strain_mat.columns
+        rows.values = self.rheology.strain_mat.values.view(dtype=mat13)
+        return self._make_gs_solve_launch(rows, launch_dim, block_dim, block_count)
+
     @property
     def name(self):
-        return "Gauss-Seidel (reordered)"
+        return "Gauss-Seidel"
 
     @property
     def solve_granularity(self):
@@ -981,19 +963,42 @@ class _ReorderedGaussSeidelSolver(_RheologySolver):
             self.apply_stress_launch.launch()
 
     def solve(self):
+        if self.contact_solver is not None and self.contact_solver.collision.rigidity_operator is not None:
+            # Rows outside the active boundary cells must contribute no feedback.
+            self.contact_solver.delta_impulse.zero_()
         for color in range(self.color_count):
             self.solve_local_launch.set_param_at_index(0, color)
             self.solve_local_launch.launch()
+            # Material updates can reintroduce inward contact velocity.
+            if self.contact_launch is not None:
+                self.contact_launch.set_param_at_index(0, color)
+                self.contact_launch.launch()
+        if self.contact_solver is not None:
+            self.contact_solver.apply_rigidity_operator()
+
+    def release(self):
+        if self.boundary_counts is not None:
+            self.boundary_counts.release()
+            self.boundary_cells.release()
+        super().release()
+
+
+class _ReorderedGaussSeidelSolver(_GaussSeidelSolver):
+    """Use entry-major SoA strain rows with the same colored GS/contact sweep."""
+
+    def _make_solve_launch(self, temporary_store, launch_dim, block_dim, block_count):
+        svnc = self.rheology.strain_velocity_node_count
+        max_entries = svnc if svnc > 0 else self.color_count
+        rows = self._prepare_strain_rows_soa(temporary_store, max_entries)
+        return self._make_gs_solve_launch(rows, launch_dim, block_dim, block_count, soa=True)
+
+    @property
+    def name(self):
+        return "Gauss-Seidel (reordered)"
 
     def release(self):
         super().release()
-        self._flat_color_offsets.release()
-        self._flat_constraint_ids.release()
-        self._reordered_n_entries.release()
-        self._reordered_cols.release()
-        self._reordered_vals_x.release()
-        self._reordered_vals_y.release()
-        self._reordered_vals_z.release()
+        self._release_strain_rows_soa()
 
 
 class _BatchedGaussSeidelSolver(_RheologySolver):
@@ -1026,81 +1031,8 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
         else:
             max_entries = self.color_count
 
-        # ── Build flat ordering + SoA reordered buffers ──────────────────
-        # (same as _ReorderedGaussSeidelSolver)
-
+        rows = self._prepare_strain_rows_soa(temporary_store, max_entries)
         n_total = self.size
-        num_blocks_capacity = self.rheology.color_blocks.shape[1]
-
-        block_flat_offsets = fem.borrow_temporary(
-            temporary_store, shape=(num_blocks_capacity + 1,), dtype=int, device=self.device
-        )
-        wp.launch(
-            kernel=build_flat_offsets,
-            dim=1,
-            inputs=[self.rheology.color_blocks, self.rheology.color_offsets],
-            outputs=[block_flat_offsets],
-            device=self.device,
-        )
-
-        self._flat_color_offsets = fem.borrow_temporary(
-            temporary_store, shape=(self.color_count + 1,), dtype=int, device=self.device
-        )
-        wp.launch(
-            kernel=build_flat_color_offsets,
-            dim=self.color_count + 1,
-            inputs=[self.rheology.color_offsets, block_flat_offsets],
-            outputs=[self._flat_color_offsets],
-            device=self.device,
-        )
-
-        self._flat_constraint_ids = fem.borrow_temporary(
-            temporary_store, shape=(n_total,), dtype=int, device=self.device
-        )
-        wp.launch(
-            kernel=expand_flat_ids,
-            dim=num_blocks_capacity,
-            inputs=[self.rheology.color_blocks, self.rheology.color_offsets, block_flat_offsets],
-            outputs=[self._flat_constraint_ids],
-            device=self.device,
-        )
-
-        self._reordered_n_entries = fem.borrow_temporary(
-            temporary_store, shape=(n_total,), dtype=int, device=self.device
-        )
-        self._reordered_cols = fem.borrow_temporary(
-            temporary_store, shape=(max_entries, n_total), dtype=int, device=self.device
-        )
-        self._reordered_cols.zero_()
-        self._reordered_vals_x = fem.borrow_temporary(
-            temporary_store, shape=(max_entries, n_total), dtype=float, device=self.device
-        )
-        self._reordered_vals_x.zero_()
-        self._reordered_vals_y = fem.borrow_temporary(
-            temporary_store, shape=(max_entries, n_total), dtype=float, device=self.device
-        )
-        self._reordered_vals_y.zero_()
-        self._reordered_vals_z = fem.borrow_temporary(
-            temporary_store, shape=(max_entries, n_total), dtype=float, device=self.device
-        )
-        self._reordered_vals_z.zero_()
-        wp.launch(
-            kernel=reorder_strain_mat,
-            dim=n_total,
-            inputs=[
-                self._flat_color_offsets,
-                self._flat_constraint_ids,
-                self.rheology.strain_mat.offsets,
-                self.rheology.strain_mat.columns,
-                self.rheology.strain_mat.values.view(dtype=mat13),
-                self._reordered_cols,
-                self._reordered_vals_x,
-                self._reordered_vals_y,
-                self._reordered_vals_z,
-                self._reordered_n_entries,
-            ],
-            device=self.device,
-        )
 
         # ── Build per-batch mass-split Delassus diagonal ───────────
 
@@ -1144,54 +1076,19 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
 
         # ── Launch config ────────────────────────────────────────────────
 
-        if self.device.is_cuda:
-            color_block_count = self.device.sm_count * 2
-        else:
-            color_block_count = 1
-        color_block_dim = 64
-        color_launch_dim = color_block_count * color_block_dim
+        color_launch_dim, color_block_dim, color_block_count = self._gs_launch_dimensions(self.colors_per_batch)
 
         # (apply_stress_launch is set up after the per-batch transposed matrices)
 
-        # Phase 1: solve kernel
-        solve_kernel = make_batched_solve_kernel(
-            has_viscosity=self.rheology.has_viscosity,
-            has_dilatancy=self.rheology.has_dilatancy,
-            has_compliance_mat=self.rheology.compliance_mat.nnz > 0,
-            max_entries=max_entries,
+        self._solve_launch = self._make_gs_solve_launch(
+            rows,
+            color_launch_dim,
+            color_block_dim,
+            color_block_count,
+            soa=True,
+            colors_per_batch=self.colors_per_batch,
+            batched=True,
         )
-        self._solve_launch = wp.launch(
-            kernel=solve_kernel,
-            dim=color_launch_dim,
-            inputs=[
-                0,
-                color_launch_dim,
-                self._flat_color_offsets,
-                self.colors_per_batch,
-                self._flat_constraint_ids,
-                self._reordered_cols,
-                self._reordered_vals_x,
-                self._reordered_vals_y,
-                self._reordered_vals_z,
-                self.rheology.yield_params,
-                self.rheology.strain_node_volume,
-                self.rheology.compliance_mat.offsets,
-                self.rheology.compliance_mat.columns,
-                self.rheology.compliance_mat.values,
-                self.delassus_operator.delassus_diagonal,
-                self.delassus_operator.delassus_rotation,
-                self.rheology.elastic_strain_delta,
-                self.momentum.velocity,
-                self.rheology.stress,
-            ],
-            outputs=[
-                self.delta_stress,
-            ],
-            block_dim=color_block_dim,
-            max_blocks=color_block_count,
-            record_cmd=True,
-        )
-
         # ── Precompute per-batch transposed matrices (all on device) ─
 
         n_vel = self.momentum.velocity.shape[0]
@@ -1314,13 +1211,7 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
 
     def release(self):
         super().release()
-        self._flat_color_offsets.release()
-        self._flat_constraint_ids.release()
-        self._reordered_n_entries.release()
-        self._reordered_cols.release()
-        self._reordered_vals_x.release()
-        self._reordered_vals_y.release()
-        self._reordered_vals_z.release()
+        self._release_strain_rows_soa()
         self._strain_batch.release()
         self._batch_global_offsets.release()
         self._batch_columns.release()
@@ -1712,21 +1603,35 @@ class _SubgridContactSolver(_ContactSolver):
 
         sp.bsr_set_transpose(dest=self.collision.transposed_collider_mat, src=self.collision.collider_mat)
 
-        wp.launch(
-            compute_collider_delassus_diagonal,
-            dim=self.collision.collider_impulse.shape[0],
-            inputs=[
-                self.collision.collider_mat.offsets,
-                self.collision.collider_mat.columns,
-                self.collision.collider_mat.values,
-                self.collider_inv_mass,
-                self.collision.transposed_collider_mat.offsets,
-                self.momentum.inv_volume,
-            ],
-            outputs=[
-                self.collider_delassus_diagonal,
-            ],
-        )
+        if self.collision.colored_cell_offsets is not None:
+            wp.launch(
+                compute_collider_unsplit_diagonal,
+                dim=self.collision.collider_impulse.shape[0],
+                inputs=[
+                    self.collision.collider_mat.offsets,
+                    self.collision.collider_mat.columns,
+                    self.collision.collider_mat.values,
+                    self.momentum.inv_volume,
+                    self.collider_inv_mass,
+                    self.collider_delassus_diagonal,
+                ],
+            )
+        else:
+            wp.launch(
+                compute_collider_delassus_diagonal,
+                dim=self.collision.collider_impulse.shape[0],
+                inputs=[
+                    self.collision.collider_mat.offsets,
+                    self.collision.collider_mat.columns,
+                    self.collision.collider_mat.values,
+                    self.collider_inv_mass,
+                    self.collision.transposed_collider_mat.offsets,
+                    self.momentum.inv_volume,
+                ],
+                outputs=[
+                    self.collider_delassus_diagonal,
+                ],
+            )
 
         # define solve operation
         self.apply_collider_impulse_launch = wp.launch(
@@ -1778,6 +1683,8 @@ class _SubgridContactSolver(_ContactSolver):
         self.apply_rigidity_operator()
 
     def solve(self):
+        if self.collision.colored_cell_offsets is not None:
+            return
         self.solve_collider_launch.launch()
         self.apply_collider_impulse_launch.launch()
         self.apply_rigidity_operator()
@@ -1981,7 +1888,7 @@ def solve_rheology(
     """
 
     verbose = verbose if verbose is not None else wp.config.log_level <= wp.LOG_DEBUG
-    subgrid_collisions = collision.collider_mat.nnz > 0
+    subgrid_collisions = collision.colored_cell_offsets is not None or collision.collider_mat.nnz > 0
     if subgrid_collisions:
         contact_solver = _SubgridContactSolver(momentum, collision, temporary_store)
     else:
@@ -2061,7 +1968,12 @@ def solve_rheology(
     if rheology_solver_class is None:
         raise ValueError(f"Invalid solver {solvers[0]!r}. Accepted values: {list(_RHEOLOGY_SOLVERS)}.")
 
-    rheology_solver = rheology_solver_class(delassus_operator, temporary_store)
+    if collision.colored_cell_offsets is not None:
+        if not issubclass(rheology_solver_class, _GaussSeidelSolver):
+            raise ValueError("Colored cell contact requires GS or GS-SOA")
+        rheology_solver = rheology_solver_class(delassus_operator, temporary_store, contact_solver=contact_solver)
+    else:
+        rheology_solver = rheology_solver_class(delassus_operator, temporary_store)
     rheology_solver.apply_initial_guess()
 
     solve_graph = _run_solver_loop(
