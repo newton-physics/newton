@@ -1,0 +1,6 @@
+﻿newton.geometry.compute\_offset\_mesh
+=====================================
+
+.. currentmodule:: newton.geometry
+
+.. autofunction:: compute_offset_mesh

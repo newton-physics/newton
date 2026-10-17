@@ -1,0 +1,1833 @@
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>newton.solvers.mujoco &#8212; Newton Physics</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  <!--
+    this give us a css class that will be invisible only if js is disabled
+  -->
+  <noscript>
+    <style>
+      .pst-js-only { display: none !important; }
+
+    </style>
+  </noscript>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=64cc4de3f052d77215f0" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=64cc4de3f052d77215f0" rel="stylesheet" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/sphinx-design.min.css?v=95c83b7e" />
+    <link rel="stylesheet" type="text/css" href="../_static/custom.css?v=6036a7ed" />
+  
+  <!-- So that users can add custom icons -->
+  <script defer src="../_static/scripts/fontawesome.js?digest=64cc4de3f052d77215f0"></script>
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=64cc4de3f052d77215f0" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=64cc4de3f052d77215f0" />
+
+    <script src="../_static/documentation_options.js?v=300cecfb"></script>
+    <script src="../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/design-tabs.js?v=f930bc37"></script>
+    <script crossorigin="anonymous" integrity="sha256-Ae2Vz/4ePdIu6ZyI/5ZGsYnb+m0JlOmKPjt6XZ9JJkA=" src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.4/require.min.js"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'api/newton_solvers_mujoco';</script>
+    <script>
+        DOCUMENTATION_OPTIONS.theme_version = '0.22.0';
+        DOCUMENTATION_OPTIONS.theme_switcher_json_url = 'https://newton-physics.github.io/newton/switcher.json';
+        DOCUMENTATION_OPTIONS.theme_switcher_version_match = 'dev';
+        DOCUMENTATION_OPTIONS.show_version_warning_banner =
+            false;
+        </script>
+    <script>DOCUMENTATION_OPTIONS.search_as_you_type = false;</script>
+    <script src="../_static/mermaid-nbsphinx.js?v=613f558e"></script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+    <link rel="next" title="newton.solvers.style3d" href="newton_solvers_style3d.html" />
+    <link rel="prev" title="newton.solvers.experimental.coupled" href="newton_solvers_experimental_coupled.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  <meta name="docsearch:version" content="" />
+  
+    
+    <script src="../_static/searchtools.js"></script>
+    <script src="../_static/language_data.js"></script>
+    <script src="../searchindex.js"></script>
+  
+  </head>
+  <body data-default-mode="">
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+  
+  
+  
+  
+  <dialog id="pst-search-dialog">
+    
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         placeholder="Search the docs ..."
+         aria-label="Search the docs ..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form>
+  </dialog>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header id="pst-header" class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+<div class="bd-header__inner bd-page-width">
+  <button type="button" class="pst-navbar-icon sidebar-toggle primary-toggle" aria-label="Site navigation">
+    <span class="fa-solid fa-bars"></span>
+  </button>
+  
+  
+  <div class="col-lg-3 navbar-header-items__start">
+    
+      <div class="navbar-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+    
+    
+      
+    
+    
+    <img src="../_static/newton-logo-light.png" class="logo__image only-light" alt="Newton Physics Logo"/>
+    <img src="../_static/newton-logo-dark.png" class="logo__image only-dark pst-js-only" alt="Newton Physics Logo"/>
+  
+  
+    <p class="title logo__title">Newton Physics <span style='font-size: 0.8em; color: #888;'>(1.8.0.dev0)</span></p>
+  
+</a></div>
+    
+  </div>
+  
+  <div class="col-lg-9 navbar-header-items">
+    
+    <div class="me-auto navbar-header-items__center">
+      
+        <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/compatibility.html">
+    Compatibility and Support
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Viewers and Debugging
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/diagnostics.html">
+    Logging and Warnings
+  </a>
+</li>
+
+            <li class="nav-item dropdown">
+                <button class="btn dropdown-toggle nav-item" type="button"
+                data-bs-toggle="dropdown" aria-expanded="false"
+                aria-controls="pst-nav-more-links">
+                    More
+                </button>
+                <ul id="pst-nav-more-links" class="dropdown-menu">
+                    
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/source_code_guidelines.html">
+    Source Code Guidelines
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../guide/review_guidelines.html">
+    Review Guidelines
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/deformable_objects.html">
+    Deformable Objects
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/mass_inertia.html">
+    Mass and Inertia
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/solver_observables.html">
+    Solver Observables
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/simulation_tuning.html">
+    Simulation Tuning
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/coupling.html">
+    Coupled Solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../concepts/actuators.html">
+    Actuators
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../solvers/index.html">
+    Overview
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../solvers/mujoco.html">
+    MuJoCo
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../solvers/kamino.html">
+    Kamino
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../solvers/vbd.html">
+    VBD
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="newton_actuators.html">
+    newton.actuators
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="newton_controllers.html">
+    newton.controllers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="newton_exceptions.html">
+    newton.exceptions
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class=" current active">
+  <a class="nav-link dropdown-item nav-internal" href="newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../tendons.html">
+    Massless Routed Tendons
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-internal" href="../lab/isaac-lab.html">
+    Isaac Lab
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+
+<li class=" ">
+  <a class="nav-link dropdown-item nav-external" href="https://github.com/newton-physics/newton/blob/main/PUBLICATIONS.md">
+     Publications
+  </a>
+</li>
+
+                </ul>
+            </li>
+            
+  </ul>
+</nav></div>
+      
+    </div>
+    
+    
+    <div class="navbar-header-items__end">
+      
+        <div class="navbar-item navbar-persistent--container">
+          
+
+<button type="button" class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+        </div>
+      
+      
+        <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button type="button" class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+      
+        <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-2"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-2"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-2"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-2">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+      
+    </div>
+    
+  </div>
+  
+  
+    <div class="navbar-persistent--mobile">
+
+<button type="button" class="btn search-button-field search-button__button pst-js-only" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+ <i class="fa-solid fa-magnifying-glass"></i>
+ <span class="search-button__default-text">Search</span>
+ <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+</button>
+    </div>
+  
+
+  
+    <button type="button" class="pst-navbar-icon sidebar-toggle secondary-toggle" aria-label="On this page">
+      <span class="fa-solid fa-outdent"></span>
+    </button>
+  
+</div>
+
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+      <dialog id="pst-primary-sidebar-modal"></dialog>
+      <div id="pst-primary-sidebar" class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+      <div class="sidebar-header-items__center">
+        
+          
+          
+            <div class="navbar-item">
+<nav>
+  <ul class="bd-navbar-elements navbar-nav">
+    
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/overview.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/installation.html">
+    Installation
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/compatibility.html">
+    Compatibility and Support
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/visualization.html">
+    Viewers and Debugging
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/diagnostics.html">
+    Logging and Warnings
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/tutorials.html">
+    Tutorials
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/development.html">
+    Development
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/source_code_guidelines.html">
+    Source Code Guidelines
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../guide/review_guidelines.html">
+    Review Guidelines
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/worlds.html">
+    Worlds
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/articulations.html">
+    Articulations
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/deformable_objects.html">
+    Deformable Objects
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/mass_inertia.html">
+    Mass and Inertia
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/sites.html">
+    Sites
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/sensors.html">
+    Sensors
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/conventions.html">
+    Conventions
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/usd_parsing.html">
+    USD Parsing
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/custom_attributes.html">
+    Custom Attributes
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/solver_observables.html">
+    Solver Observables
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/collisions.html">
+    Collisions and Contacts
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/simulation_tuning.html">
+    Simulation Tuning
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/coupling.html">
+    Coupled Solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../concepts/actuators.html">
+    Actuators
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../solvers/index.html">
+    Overview
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../solvers/mujoco.html">
+    MuJoCo
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../solvers/kamino.html">
+    Kamino
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../solvers/vbd.html">
+    VBD
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="newton.html">
+    newton
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="newton_actuators.html">
+    newton.actuators
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="newton_controllers.html">
+    newton.controllers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="newton_exceptions.html">
+    newton.exceptions
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="newton_geometry.html">
+    newton.geometry
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="newton_ik.html">
+    newton.ik
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="newton_math.html">
+    newton.math
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="newton_selection.html">
+    newton.selection
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="newton_sensors.html">
+    newton.sensors
+  </a>
+</li>
+
+
+<li class="nav-item current active">
+  <a class="nav-link nav-internal" href="newton_solvers.html">
+    newton.solvers
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="newton_usd.html">
+    newton.usd
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="newton_utils.html">
+    newton.utils
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="newton_viewer.html">
+    newton.viewer
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../faq.html">
+    FAQ
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../tendons.html">
+    Massless Routed Tendons
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../migration.html">
+    Migration Guide
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-internal" href="../lab/isaac-lab.html">
+    Isaac Lab
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton">
+     GitHub
+  </a>
+</li>
+
+
+<li class="nav-item ">
+  <a class="nav-link nav-external" href="https://github.com/newton-physics/newton/blob/main/PUBLICATIONS.md">
+     Publications
+  </a>
+</li>
+
+  </ul>
+</nav></div>
+          
+        
+      </div>
+    
+    
+    
+      <div class="sidebar-header-items__end">
+        
+          <div class="navbar-item">
+
+<div class="theme-switch-container dropdown pst-js-only" data-bs-toggle="tooltip" data-bs-placement="bottom" title="Color mode">
+  <button type="button" class="btn btn-sm nav-link pst-navbar-icon theme-switch-button dropdown-toggle" aria-label="Color mode" data-bs-toggle="dropdown">
+    <i class="theme-switch fa-solid fa-sun fa-lg fa-fw" data-mode="light" title="Light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg fa-fw" data-mode="dark" title="Dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg fa-fw" data-mode="auto" title="System Settings"></i>
+  </button>
+  <ul class="dropdown-menu dropdown-menu-end">
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="auto"><i class="fa-solid fa-circle-half-stroke fa-lg fa-fw me-1"></i>System Settings</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="light"><i class="fa-solid fa-sun fa-lg fa-fw me-1"></i>Light</button></li>
+    <li><button type="button" class="dropdown-item d-flex align-items-center theme-change-button" data-mode="dark"><i class="fa-solid fa-moon fa-lg fa-fw me-1"></i>Dark</button></li>
+  </ul>
+</div></div>
+        
+          <div class="navbar-item">
+<div class="version-switcher__container dropdown pst-js-only">
+  <button id="pst-version-switcher-button-3"
+    type="button"
+    class="version-switcher__button btn btn-sm dropdown-toggle"
+    data-bs-toggle="dropdown"
+    aria-haspopup="listbox"
+    aria-controls="pst-version-switcher-list-3"
+    aria-label="Version switcher list"
+  >
+    Choose version  <!-- this text may get changed later by javascript -->
+    <span class="caret"></span>
+  </button>
+  <div id="pst-version-switcher-list-3"
+    class="version-switcher__menu dropdown-menu list-group-flush py-0"
+    role="listbox" aria-labelledby="pst-version-switcher-button-3">
+    <!-- dropdown will be populated by javascript on page load -->
+  </div>
+</div></div>
+        
+      </div>
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+<nav class="bd-docs-nav bd-links"
+     aria-label="Table of Contents">
+  <p class="bd-links__title" role="heading" aria-level="1">Table of Contents</p>
+  <div class="bd-toc-item navbar-nav"><p aria-level="2" class="caption" role="heading"><span class="caption-text">User Guide</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../guide/overview.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/installation.html">Installation</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/compatibility.html">Compatibility and Support</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/visualization.html">Viewers and Debugging</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/diagnostics.html">Logging and Warnings</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/tutorials.html">Tutorials</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/development.html">Development</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/source_code_guidelines.html">Source Code Guidelines</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../guide/review_guidelines.html">Review Guidelines</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Concepts</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../concepts/worlds.html">Worlds</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/articulations.html">Articulations</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/deformable_objects.html">Deformable Objects</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/mass_inertia.html">Mass and Inertia</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/sites.html">Sites</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/sensors.html">Sensors</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/conventions.html">Conventions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/usd_parsing.html">USD Parsing</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/custom_attributes.html">Custom Attributes</a></li>
+
+<li class="toctree-l1"><a class="reference internal" href="../concepts/solver_observables.html">Solver Observables</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/collisions.html">Collisions and Contacts</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/simulation_tuning.html">Simulation Tuning</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/coupling.html">Coupled Solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../concepts/actuators.html">Actuators</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Solvers</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../solvers/index.html">Overview</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../solvers/mujoco.html">MuJoCo</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../solvers/kamino.html">Kamino</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../solvers/vbd.html">VBD</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">API Reference</span></p>
+<ul class="current nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="newton.html">newton</a></li>
+<li class="toctree-l1"><a class="reference internal" href="newton_actuators.html">newton.actuators</a></li>
+<li class="toctree-l1"><a class="reference internal" href="newton_controllers.html">newton.controllers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="newton_exceptions.html">newton.exceptions</a></li>
+<li class="toctree-l1"><a class="reference internal" href="newton_geometry.html">newton.geometry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="newton_ik.html">newton.ik</a></li>
+<li class="toctree-l1"><a class="reference internal" href="newton_math.html">newton.math</a></li>
+<li class="toctree-l1"><a class="reference internal" href="newton_selection.html">newton.selection</a></li>
+<li class="toctree-l1"><a class="reference internal" href="newton_sensors.html">newton.sensors</a></li>
+<li class="toctree-l1 current active"><a class="reference internal" href="newton_solvers.html">newton.solvers</a></li>
+<li class="toctree-l1"><a class="reference internal" href="newton_usd.html">newton.usd</a></li>
+<li class="toctree-l1"><a class="reference internal" href="newton_utils.html">newton.utils</a></li>
+<li class="toctree-l1"><a class="reference internal" href="newton_viewer.html">newton.viewer</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Further Reading</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference internal" href="../faq.html">FAQ</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../tendons.html">Massless Routed Tendons</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../migration.html">Migration Guide</a></li>
+<li class="toctree-l1"><a class="reference internal" href="../lab/isaac-lab.html">Isaac Lab</a></li>
+</ul>
+<p aria-level="2" class="caption" role="heading"><span class="caption-text">Project Links</span></p>
+<ul class="nav bd-sidenav">
+<li class="toctree-l1"><a class="reference external" href="https://github.com/newton-physics/newton"> GitHub</a></li>
+<li class="toctree-l1"><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/PUBLICATIONS.md"> Publications</a></li>
+</ul>
+</div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+      <div class="sidebar-primary-item">
+<div id="ethical-ad-placement"
+      class="flat"
+      data-ea-publisher="readthedocs"
+      data-ea-type="readthedocs-sidebar"
+      data-ea-manual="true">
+</div></div>
+  </div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item">
+
+<nav aria-label="Breadcrumb" class="d-print-none">
+  <ul class="bd-breadcrumbs">
+    
+    <li class="breadcrumb-item breadcrumb-home">
+      <a href="../index.html" class="nav-link" aria-label="Home">
+        <i class="fa-solid fa-home"></i>
+      </a>
+    </li>
+    
+    <li class="breadcrumb-item"><a href="newton_solvers.html" class="nav-link">newton.solvers</a></li>
+    
+    <li class="breadcrumb-item active" aria-current="page"><span class="ellipsis">newton.solvers.mujoco</span></li>
+  </ul>
+</nav>
+</div>
+      
+    </div>
+  
+  
+</div>
+</div>
+              
+              
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="newton-solvers-mujoco">
+<h1>newton.solvers.mujoco<a class="headerlink" href="#newton-solvers-mujoco" title="Link to this heading">#</a></h1>
+<p>Programmatic model-authoring helpers for <a class="reference internal" href="_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a>.</p>
+<p>The module-level helpers create MuJoCo-specific actuators, tendons, contact
+pairs, and equality constraints on a <a class="reference internal" href="_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton.ModelBuilder"><code class="xref py py-class docutils literal notranslate"><span class="pre">ModelBuilder</span></code></a> without
+exposing custom-frequency storage details. Use
+<a class="reference internal" href="_generated/newton.solvers.SolverMuJoCo.html#newton.solvers.SolverMuJoCo" title="newton.solvers.SolverMuJoCo"><code class="xref py py-class docutils literal notranslate"><span class="pre">SolverMuJoCo</span></code></a> as the canonical public solver class.</p>
+<p>Example:</p>
+<div class="highlight-default notranslate"><div class="highlight"><pre><span></span><span class="kn">from</span><span class="w"> </span><span class="nn">newton.solvers</span><span class="w"> </span><span class="kn">import</span> <span class="n">mujoco</span>
+
+<span class="n">actuator</span> <span class="o">=</span> <span class="n">mujoco</span><span class="o">.</span><span class="n">add_actuator_position</span><span class="p">(</span>
+    <span class="n">builder</span><span class="p">,</span>
+    <span class="n">target</span><span class="o">=</span><span class="n">mujoco</span><span class="o">.</span><span class="n">ActuatorTarget</span><span class="o">.</span><span class="n">joint</span><span class="p">(</span><span class="n">joint</span><span class="p">),</span>
+    <span class="n">kp</span><span class="o">=</span><span class="mf">10.0</span><span class="p">,</span>
+    <span class="n">kv</span><span class="o">=</span><span class="mf">2.0</span><span class="p">,</span>
+<span class="p">)</span>
+</pre></div>
+</div>
+<div class="admonition note">
+<p class="admonition-title">Note</p>
+<p>This page documents helper functions exposed through the <code class="docutils literal notranslate"><span class="pre">newton.solvers.mujoco</span></code> attribute.
+Because <code class="docutils literal notranslate"><span class="pre">newton.solvers</span></code> is a module rather than a package, use
+<code class="docutils literal notranslate"><span class="pre">from</span> <span class="pre">newton.solvers</span> <span class="pre">import</span> <span class="pre">mujoco</span></code> instead of <code class="docutils literal notranslate"><span class="pre">import</span> <span class="pre">newton.solvers.mujoco</span></code>.</p>
+</div>
+<p class="rubric" id="module-newton.solvers.mujoco">Classes</p>
+<dl class="py class">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.ActuatorTarget">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.solvers.mujoco.</span></span><span class="sig-name descname"><span class="pre">ActuatorTarget</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">kind</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">index</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">secondary_index</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">-1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dof</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/solvers/mujoco/actuators.py#L22"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.solvers.mujoco.ActuatorTarget" title="Link to this definition">#</a></dt>
+<dd><p>A typed MuJoCo actuator transmission target.</p>
+<p>Construct targets with <a class="reference internal" href="#newton.solvers.mujoco.ActuatorTarget.joint" title="newton.solvers.mujoco.ActuatorTarget.joint"><code class="xref py py-meth docutils literal notranslate"><span class="pre">joint()</span></code></a>, <a class="reference internal" href="#newton.solvers.mujoco.ActuatorTarget.joint_dof" title="newton.solvers.mujoco.ActuatorTarget.joint_dof"><code class="xref py py-meth docutils literal notranslate"><span class="pre">joint_dof()</span></code></a>, <a class="reference internal" href="#newton.solvers.mujoco.ActuatorTarget.tendon" title="newton.solvers.mujoco.ActuatorTarget.tendon"><code class="xref py py-meth docutils literal notranslate"><span class="pre">tendon()</span></code></a>,
+<a class="reference internal" href="#newton.solvers.mujoco.ActuatorTarget.site" title="newton.solvers.mujoco.ActuatorTarget.site"><code class="xref py py-meth docutils literal notranslate"><span class="pre">site()</span></code></a>, <a class="reference internal" href="#newton.solvers.mujoco.ActuatorTarget.body" title="newton.solvers.mujoco.ActuatorTarget.body"><code class="xref py py-meth docutils literal notranslate"><span class="pre">body()</span></code></a>, or <a class="reference internal" href="#newton.solvers.mujoco.ActuatorTarget.slider_crank" title="newton.solvers.mujoco.ActuatorTarget.slider_crank"><code class="xref py py-meth docutils literal notranslate"><span class="pre">slider_crank()</span></code></a>. The authoring helper
+resolves the target to MuJoCo’s heterogeneous <code class="docutils literal notranslate"><span class="pre">trnid</span></code> representation.</p>
+<p>Targets must belong to the builder’s current world or the global world
+(<code class="docutils literal notranslate"><span class="pre">-1</span></code>). For ball and free joints, the native MuJoCo transmission requires an explicit three- or six-component gear,
+respectively, and does not select a Newton DOF. Ball gears express torque
+in the child body frame; free gears combine world-frame force at the body
+origin with child-frame torque. Use <a class="reference internal" href="_generated/newton.Control.html#newton.Control.joint_f" title="newton.Control.joint_f"><code class="xref py py-attr docutils literal notranslate"><span class="pre">joint_f</span></code></a> to apply forces in
+Newton’s DOF convention.</p>
+<dl class="field-list simple">
+</dl>
+<dl class="py class">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.ActuatorTarget.Kind">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">Kind</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="o"><span class="pre">*</span></span><span class="n"><span class="pre">values</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.mujoco.ActuatorTarget.Kind" title="Link to this definition">#</a></dt>
+<dd><p>Transmission target kinds supported by <a class="reference internal" href="#newton.solvers.mujoco.ActuatorTarget" title="newton.solvers.mujoco.ActuatorTarget"><code class="xref py py-class docutils literal notranslate"><span class="pre">ActuatorTarget</span></code></a>.</p>
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.ActuatorTarget.Kind.BODY">
+<span class="sig-name descname"><span class="pre">BODY</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">'body'</span></em><a class="headerlink" href="#newton.solvers.mujoco.ActuatorTarget.Kind.BODY" title="Link to this definition">#</a></dt>
+<dd><p>A Newton body.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.ActuatorTarget.Kind.JOINT">
+<span class="sig-name descname"><span class="pre">JOINT</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">'joint'</span></em><a class="headerlink" href="#newton.solvers.mujoco.ActuatorTarget.Kind.JOINT" title="Link to this definition">#</a></dt>
+<dd><p>A Newton joint, optionally restricted to one local DOF.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.ActuatorTarget.Kind.JOINT_DOF">
+<span class="sig-name descname"><span class="pre">JOINT_DOF</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">'joint_dof'</span></em><a class="headerlink" href="#newton.solvers.mujoco.ActuatorTarget.Kind.JOINT_DOF" title="Link to this definition">#</a></dt>
+<dd><p>An absolute Newton joint-DOF index.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.ActuatorTarget.Kind.SITE">
+<span class="sig-name descname"><span class="pre">SITE</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">'site'</span></em><a class="headerlink" href="#newton.solvers.mujoco.ActuatorTarget.Kind.SITE" title="Link to this definition">#</a></dt>
+<dd><p>A Newton site shape, optionally relative to a reference site.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.ActuatorTarget.Kind.SLIDER_CRANK">
+<span class="sig-name descname"><span class="pre">SLIDER_CRANK</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">'slider_crank'</span></em><a class="headerlink" href="#newton.solvers.mujoco.ActuatorTarget.Kind.SLIDER_CRANK" title="Link to this definition">#</a></dt>
+<dd><p>The crank and slider sites of a slider-crank transmission.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.ActuatorTarget.Kind.TENDON">
+<span class="sig-name descname"><span class="pre">TENDON</span></span><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">'tendon'</span></em><a class="headerlink" href="#newton.solvers.mujoco.ActuatorTarget.Kind.TENDON" title="Link to this definition">#</a></dt>
+<dd><p>A <code class="docutils literal notranslate"><span class="pre">mujoco:tendon</span></code> row.</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.ActuatorTarget.body">
+<em class="property"><span class="k"><span class="pre">classmethod</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">body</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">body</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.mujoco.ActuatorTarget.body" title="Link to this definition">#</a></dt>
+<dd><p>Target a Newton body.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>body</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a>) – Newton body index.</p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>A typed body target.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference internal" href="#newton.solvers.mujoco.ActuatorTarget" title="newton._src.solvers.mujoco.actuators.ActuatorTarget"><em>ActuatorTarget</em></a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.ActuatorTarget.joint">
+<em class="property"><span class="k"><span class="pre">classmethod</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">joint</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">joint</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">dof</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.mujoco.ActuatorTarget.joint" title="Link to this definition">#</a></dt>
+<dd><p>Target a Newton joint, selecting a scalar axis for D6 joints.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>joint</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a>) – Newton joint index.</p></li>
+<li><p><strong>dof</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a><em> | </em><em>None</em>) – Local DOF within a scalar or D6 joint. Required for multi-axis
+D6 joints. Omit for ball/free joints and supply an explicit
+native MuJoCo gear to the actuator helper.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>A typed joint target.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference internal" href="#newton.solvers.mujoco.ActuatorTarget" title="newton._src.solvers.mujoco.actuators.ActuatorTarget"><em>ActuatorTarget</em></a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.ActuatorTarget.joint_dof">
+<em class="property"><span class="k"><span class="pre">classmethod</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">joint_dof</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">dof</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.mujoco.ActuatorTarget.joint_dof" title="Link to this definition">#</a></dt>
+<dd><p>Target an absolute Newton joint-DOF index.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>dof</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a>) – Absolute Newton joint-DOF index for a scalar or D6 joint.
+Ball/free joints require <a class="reference internal" href="#newton.solvers.mujoco.ActuatorTarget.joint" title="newton.solvers.mujoco.ActuatorTarget.joint"><code class="xref py py-meth docutils literal notranslate"><span class="pre">joint()</span></code></a> with native gear instead.</p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>A typed joint-DOF target.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference internal" href="#newton.solvers.mujoco.ActuatorTarget" title="newton._src.solvers.mujoco.actuators.ActuatorTarget"><em>ActuatorTarget</em></a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.ActuatorTarget.site">
+<em class="property"><span class="k"><span class="pre">classmethod</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">site</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">site</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">refsite</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.mujoco.ActuatorTarget.site" title="Link to this definition">#</a></dt>
+<dd><p>Target a Newton site shape, optionally relative to another site.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>site</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a>) – Newton site-shape index.</p></li>
+<li><p><strong>refsite</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a><em> | </em><em>None</em>) – Optional reference site-shape index.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>A typed site target.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference internal" href="#newton.solvers.mujoco.ActuatorTarget" title="newton._src.solvers.mujoco.actuators.ActuatorTarget"><em>ActuatorTarget</em></a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.ActuatorTarget.slider_crank">
+<em class="property"><span class="k"><span class="pre">classmethod</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">slider_crank</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">cranksite</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">slidersite</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.mujoco.ActuatorTarget.slider_crank" title="Link to this definition">#</a></dt>
+<dd><p>Target the crank and slider sites of a slider-crank transmission.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>cranksite</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a>) – Newton crank site-shape index.</p></li>
+<li><p><strong>slidersite</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a>) – Newton slider site-shape index.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>A typed slider-crank target.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference internal" href="#newton.solvers.mujoco.ActuatorTarget" title="newton._src.solvers.mujoco.actuators.ActuatorTarget"><em>ActuatorTarget</em></a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.ActuatorTarget.tendon">
+<em class="property"><span class="k"><span class="pre">classmethod</span></span><span class="w"> </span></em><span class="sig-name descname"><span class="pre">tendon</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">tendon</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.mujoco.ActuatorTarget.tendon" title="Link to this definition">#</a></dt>
+<dd><p>Target a <code class="docutils literal notranslate"><span class="pre">mujoco:tendon</span></code> row.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><p><strong>tendon</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a>) – Row index returned by <a class="reference internal" href="#newton.solvers.mujoco.add_tendon_fixed" title="newton.solvers.mujoco.add_tendon_fixed"><code class="xref py py-func docutils literal notranslate"><span class="pre">add_tendon_fixed()</span></code></a> or
+<a class="reference internal" href="#newton.solvers.mujoco.add_tendon_spatial" title="newton.solvers.mujoco.add_tendon_spatial"><code class="xref py py-func docutils literal notranslate"><span class="pre">add_tendon_spatial()</span></code></a>.</p>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>A typed tendon target.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference internal" href="#newton.solvers.mujoco.ActuatorTarget" title="newton._src.solvers.mujoco.actuators.ActuatorTarget"><em>ActuatorTarget</em></a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.ActuatorTarget.__init__">
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">kind</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">index</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">secondary_index</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">-1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dof</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.mujoco.ActuatorTarget.__init__" title="Link to this definition">#</a></dt>
+<dd><dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.ActuatorTarget.dof">
+<span class="sig-name descname"><span class="pre">dof</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><span class="pre">int</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/constants.html#None" title="(in Python v3.15)"><span class="pre">None</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">None</span></em><a class="headerlink" href="#newton.solvers.mujoco.ActuatorTarget.dof" title="Link to this definition">#</a></dt>
+<dd><p>Local joint DOF, when <a class="reference internal" href="#newton.solvers.mujoco.ActuatorTarget.kind" title="newton.solvers.mujoco.ActuatorTarget.kind"><code class="xref py py-attr docutils literal notranslate"><span class="pre">kind</span></code></a> is <a class="reference internal" href="#newton.solvers.mujoco.ActuatorTarget.Kind.JOINT" title="newton.solvers.mujoco.ActuatorTarget.Kind.JOINT"><code class="xref py py-attr docutils literal notranslate"><span class="pre">Kind.JOINT</span></code></a>.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.ActuatorTarget.index">
+<span class="sig-name descname"><span class="pre">index</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><span class="pre">int</span></a></em><a class="headerlink" href="#newton.solvers.mujoco.ActuatorTarget.index" title="Link to this definition">#</a></dt>
+<dd><p>Primary Newton entity index.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.ActuatorTarget.kind">
+<span class="sig-name descname"><span class="pre">kind</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference internal" href="#newton.solvers.mujoco.ActuatorTarget.Kind" title="newton._src.solvers.mujoco.actuators.ActuatorTarget.Kind"><span class="pre">Kind</span></a></em><a class="headerlink" href="#newton.solvers.mujoco.ActuatorTarget.kind" title="Link to this definition">#</a></dt>
+<dd><p>Transmission target kind.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.ActuatorTarget.secondary_index">
+<span class="sig-name descname"><span class="pre">secondary_index</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><span class="pre">int</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">-1</span></em><a class="headerlink" href="#newton.solvers.mujoco.ActuatorTarget.secondary_index" title="Link to this definition">#</a></dt>
+<dd><p>Secondary Newton entity index, or <code class="docutils literal notranslate"><span class="pre">-1</span></code> if unused.</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.TendonWrapGeom">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.solvers.mujoco.</span></span><span class="sig-name descname"><span class="pre">TendonWrapGeom</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">geom</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sidesite</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/solvers/mujoco/tendons.py#L25"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.solvers.mujoco.TendonWrapGeom" title="Link to this definition">#</a></dt>
+<dd><p>A geometry wrapping entry in a spatial tendon path.</p>
+<dl class="field-list simple">
+</dl>
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.TendonWrapGeom.__init__">
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">geom</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">sidesite</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.mujoco.TendonWrapGeom.__init__" title="Link to this definition">#</a></dt>
+<dd><dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.TendonWrapGeom.geom">
+<span class="sig-name descname"><span class="pre">geom</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><span class="pre">int</span></a></em><a class="headerlink" href="#newton.solvers.mujoco.TendonWrapGeom.geom" title="Link to this definition">#</a></dt>
+<dd><p>Newton non-site shape index.</p>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.TendonWrapGeom.sidesite">
+<span class="sig-name descname"><span class="pre">sidesite</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><span class="pre">int</span></a><span class="w"> </span><span class="p"><span class="pre">|</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/constants.html#None" title="(in Python v3.15)"><span class="pre">None</span></a></em><em class="property"><span class="w"> </span><span class="p"><span class="pre">=</span></span><span class="w"> </span><span class="pre">None</span></em><a class="headerlink" href="#newton.solvers.mujoco.TendonWrapGeom.sidesite" title="Link to this definition">#</a></dt>
+<dd><p>Optional Newton site-shape index selecting the wrapping side.</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.TendonWrapPulley">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.solvers.mujoco.</span></span><span class="sig-name descname"><span class="pre">TendonWrapPulley</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">divisor</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/solvers/mujoco/tendons.py#L36"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.solvers.mujoco.TendonWrapPulley" title="Link to this definition">#</a></dt>
+<dd><p>A pulley entry in a spatial tendon path.</p>
+<dl class="field-list simple">
+</dl>
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.TendonWrapPulley.__init__">
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">divisor</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.mujoco.TendonWrapPulley.__init__" title="Link to this definition">#</a></dt>
+<dd><dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.TendonWrapPulley.divisor">
+<span class="sig-name descname"><span class="pre">divisor</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><span class="pre">float</span></a></em><a class="headerlink" href="#newton.solvers.mujoco.TendonWrapPulley.divisor" title="Link to this definition">#</a></dt>
+<dd><p>Positive pulley divisor.</p>
+</dd></dl>
+
+</dd></dl>
+
+<dl class="py class">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.TendonWrapSite">
+<em class="property"><span class="k"><span class="pre">class</span></span><span class="w"> </span></em><span class="sig-prename descclassname"><span class="pre">newton.solvers.mujoco.</span></span><span class="sig-name descname"><span class="pre">TendonWrapSite</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">site</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/solvers/mujoco/tendons.py#L17"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.solvers.mujoco.TendonWrapSite" title="Link to this definition">#</a></dt>
+<dd><p>A site entry in a spatial tendon path.</p>
+<dl class="field-list simple">
+</dl>
+<dl class="py method">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.TendonWrapSite.__init__">
+<span class="sig-name descname"><span class="pre">__init__</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">site</span></span></em><span class="sig-paren">)</span><a class="headerlink" href="#newton.solvers.mujoco.TendonWrapSite.__init__" title="Link to this definition">#</a></dt>
+<dd><dl class="field-list simple">
+</dl>
+</dd></dl>
+
+<dl class="py attribute">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.TendonWrapSite.site">
+<span class="sig-name descname"><span class="pre">site</span></span><em class="property"><span class="p"><span class="pre">:</span></span><span class="w"> </span><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><span class="pre">int</span></a></em><a class="headerlink" href="#newton.solvers.mujoco.TendonWrapSite.site" title="Link to this definition">#</a></dt>
+<dd><p>Newton site-shape index.</p>
+</dd></dl>
+
+</dd></dl>
+
+<p class="rubric">Functions</p>
+<dl class="py function">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.add_actuator_general">
+<span class="sig-prename descclassname"><span class="pre">newton.solvers.mujoco.</span></span><span class="sig-name descname"><span class="pre">add_actuator_general</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">builder</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">target</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">dyntype</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'none'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gaintype</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'fixed'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">biastype</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'none'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dynprm</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(1.0,)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gainprm</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(1.0,)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">biasprm</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(0.0,)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gear</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(1.0,)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ctrlrange</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ctrllimited</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'auto'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">forcerange</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">forcelimited</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'auto'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">actrange</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">actlimited</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'auto'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">actdim</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">actearly</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">False</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cranklength</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ctrl</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">custom_attributes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/solvers/mujoco/actuators.py#L376"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.solvers.mujoco.add_actuator_general" title="Link to this definition">#</a></dt>
+<dd><p>Add a MuJoCo-native general actuator controlled through <code class="docutils literal notranslate"><span class="pre">control.mujoco.ctrl</span></code>.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>builder</strong> (<a class="reference internal" href="_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton._src.sim.builder.ModelBuilder"><em>ModelBuilder</em></a>) – Model builder receiving the actuator.</p></li>
+<li><p><strong>target</strong> (<a class="reference internal" href="#newton.solvers.mujoco.ActuatorTarget" title="newton._src.solvers.mujoco.actuators.ActuatorTarget"><em>ActuatorTarget</em></a>) – Typed actuator transmission target.</p></li>
+<li><p><strong>dyntype</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><em>str</em></a>) – MuJoCo activation dynamics type.</p></li>
+<li><p><strong>gaintype</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><em>str</em></a>) – MuJoCo gain type.</p></li>
+<li><p><strong>biastype</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><em>str</em></a>) – MuJoCo bias type.</p></li>
+<li><p><strong>dynprm</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>]</em>) – Activation dynamics parameters, padded to ten values.</p></li>
+<li><p><strong>gainprm</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>]</em>) – Gain parameters, padded to ten values.</p></li>
+<li><p><strong>biasprm</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>]</em>) – Bias parameters, padded to ten values.</p></li>
+<li><p><strong>gear</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>]</em>) – Native MuJoCo transmission gear, padded to six values. Ball/free
+joints require at least three/six components; these use MuJoCo’s
+frames and force reference point, as described in <a class="reference internal" href="#newton.solvers.mujoco.ActuatorTarget" title="newton.solvers.mujoco.ActuatorTarget"><code class="xref py py-class docutils literal notranslate"><span class="pre">ActuatorTarget</span></code></a>.</p></li>
+<li><p><strong>ctrlrange</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Optional control range.</p></li>
+<li><p><strong>ctrllimited</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><em>str</em></a>) – Control-limit tri-state (false, true, or auto).</p></li>
+<li><p><strong>forcerange</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Optional actuator force range [N or N·m].</p></li>
+<li><p><strong>forcelimited</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><em>str</em></a>) – Force-limit tri-state (false, true, or auto).</p></li>
+<li><p><strong>actrange</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Optional activation-state range.</p></li>
+<li><p><strong>actlimited</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><em>str</em></a>) – Activation-limit tri-state (false, true, or auto).</p></li>
+<li><p><strong>actdim</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a><em> | </em><em>None</em>) – Activation-state dimension, or <code class="docutils literal notranslate"><span class="pre">None</span></code> for automatic selection.</p></li>
+<li><p><strong>actearly</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a>) – Whether force uses the next activation state.</p></li>
+<li><p><strong>cranklength</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em> | </em><em>None</em>) – Slider-crank length [m]. Required for slider-crank targets.</p></li>
+<li><p><strong>ctrl</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a>) – Initial MuJoCo control value.</p></li>
+<li><p><strong>custom_attributes</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#dict" title="(in Python v3.15)"><em>dict</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><em>str</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Any" title="(in Python v3.15)"><em>Any</em></a><em>] </em><em>| </em><em>None</em>) – Additional registered <code class="docutils literal notranslate"><span class="pre">mujoco:actuator</span></code> attributes.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>The <code class="docutils literal notranslate"><span class="pre">mujoco:actuator</span></code> row index.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)">int</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.add_actuator_motor">
+<span class="sig-prename descclassname"><span class="pre">newton.solvers.mujoco.</span></span><span class="sig-name descname"><span class="pre">add_actuator_motor</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">builder</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">target</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">gear</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(1.0,)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ctrlrange</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ctrllimited</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'auto'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">forcerange</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">forcelimited</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'auto'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cranklength</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ctrl</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">custom_attributes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/solvers/mujoco/actuators.py#L455"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.solvers.mujoco.add_actuator_motor" title="Link to this definition">#</a></dt>
+<dd><p>Add a MuJoCo motor shortcut controlled through <code class="docutils literal notranslate"><span class="pre">control.mujoco.ctrl</span></code>.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>builder</strong> (<a class="reference internal" href="_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton._src.sim.builder.ModelBuilder"><em>ModelBuilder</em></a>) – Model builder receiving the actuator.</p></li>
+<li><p><strong>target</strong> (<a class="reference internal" href="#newton.solvers.mujoco.ActuatorTarget" title="newton._src.solvers.mujoco.actuators.ActuatorTarget"><em>ActuatorTarget</em></a>) – Typed actuator transmission target.</p></li>
+<li><p><strong>gear</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>]</em>) – Native MuJoCo transmission gear, padded to six values. Ball/free
+joints require at least three/six components; these use MuJoCo’s
+frames and force reference point, as described in <a class="reference internal" href="#newton.solvers.mujoco.ActuatorTarget" title="newton.solvers.mujoco.ActuatorTarget"><code class="xref py py-class docutils literal notranslate"><span class="pre">ActuatorTarget</span></code></a>.</p></li>
+<li><p><strong>ctrlrange</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Optional control range.</p></li>
+<li><p><strong>ctrllimited</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><em>str</em></a>) – Control-limit tri-state (false, true, or auto).</p></li>
+<li><p><strong>forcerange</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Optional actuator force range [N or N·m].</p></li>
+<li><p><strong>forcelimited</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><em>str</em></a>) – Force-limit tri-state (false, true, or auto).</p></li>
+<li><p><strong>cranklength</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em> | </em><em>None</em>) – Slider-crank length [m]. Required for slider-crank targets.</p></li>
+<li><p><strong>ctrl</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a>) – Initial MuJoCo control value.</p></li>
+<li><p><strong>custom_attributes</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#dict" title="(in Python v3.15)"><em>dict</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><em>str</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Any" title="(in Python v3.15)"><em>Any</em></a><em>] </em><em>| </em><em>None</em>) – Additional registered <code class="docutils literal notranslate"><span class="pre">mujoco:actuator</span></code> attributes.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>The <code class="docutils literal notranslate"><span class="pre">mujoco:actuator</span></code> row index.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)">int</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.add_actuator_position">
+<span class="sig-prename descclassname"><span class="pre">newton.solvers.mujoco.</span></span><span class="sig-name descname"><span class="pre">add_actuator_position</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">builder</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">target</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">kp</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">kv</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">dampratio</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gear</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(1.0,)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ctrlrange</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ctrllimited</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'auto'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">forcerange</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">forcelimited</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'auto'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cranklength</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ctrl</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">custom_attributes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/solvers/mujoco/actuators.py#L503"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.solvers.mujoco.add_actuator_position" title="Link to this definition">#</a></dt>
+<dd><p>Add a MuJoCo position shortcut controlled through <code class="docutils literal notranslate"><span class="pre">control.mujoco.ctrl</span></code>.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>builder</strong> (<a class="reference internal" href="_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton._src.sim.builder.ModelBuilder"><em>ModelBuilder</em></a>) – Model builder receiving the actuator.</p></li>
+<li><p><strong>target</strong> (<a class="reference internal" href="#newton.solvers.mujoco.ActuatorTarget" title="newton._src.solvers.mujoco.actuators.ActuatorTarget"><em>ActuatorTarget</em></a>) – Typed actuator transmission target.</p></li>
+<li><p><strong>kp</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a>) – Position feedback gain.</p></li>
+<li><p><strong>kv</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a>) – Velocity feedback gain.</p></li>
+<li><p><strong>dampratio</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a>) – Damping ratio used when <code class="docutils literal notranslate"><span class="pre">kv</span></code> is zero.</p></li>
+<li><p><strong>gear</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>]</em>) – Native MuJoCo transmission gear, padded to six values. Ball/free
+joints require at least three/six components; these use MuJoCo’s
+frames and force reference point, as described in <a class="reference internal" href="#newton.solvers.mujoco.ActuatorTarget" title="newton.solvers.mujoco.ActuatorTarget"><code class="xref py py-class docutils literal notranslate"><span class="pre">ActuatorTarget</span></code></a>.</p></li>
+<li><p><strong>ctrlrange</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Optional control range.</p></li>
+<li><p><strong>ctrllimited</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><em>str</em></a>) – Control-limit tri-state (false, true, or auto).</p></li>
+<li><p><strong>forcerange</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Optional actuator force range [N or N·m].</p></li>
+<li><p><strong>forcelimited</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><em>str</em></a>) – Force-limit tri-state (false, true, or auto).</p></li>
+<li><p><strong>cranklength</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em> | </em><em>None</em>) – Slider-crank length [m]. Required for slider-crank targets.</p></li>
+<li><p><strong>ctrl</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a>) – Initial MuJoCo control value.</p></li>
+<li><p><strong>custom_attributes</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#dict" title="(in Python v3.15)"><em>dict</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><em>str</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Any" title="(in Python v3.15)"><em>Any</em></a><em>] </em><em>| </em><em>None</em>) – Additional registered <code class="docutils literal notranslate"><span class="pre">mujoco:actuator</span></code> attributes.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>The <code class="docutils literal notranslate"><span class="pre">mujoco:actuator</span></code> row index.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)">int</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.add_actuator_velocity">
+<span class="sig-prename descclassname"><span class="pre">newton.solvers.mujoco.</span></span><span class="sig-name descname"><span class="pre">add_actuator_velocity</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">builder</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">target</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">kv</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gear</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(1.0,)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ctrlrange</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ctrllimited</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'auto'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">forcerange</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">forcelimited</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'auto'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">cranklength</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">ctrl</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">custom_attributes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/solvers/mujoco/actuators.py#L569"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.solvers.mujoco.add_actuator_velocity" title="Link to this definition">#</a></dt>
+<dd><p>Add a MuJoCo velocity shortcut controlled through <code class="docutils literal notranslate"><span class="pre">control.mujoco.ctrl</span></code>.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>builder</strong> (<a class="reference internal" href="_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton._src.sim.builder.ModelBuilder"><em>ModelBuilder</em></a>) – Model builder receiving the actuator.</p></li>
+<li><p><strong>target</strong> (<a class="reference internal" href="#newton.solvers.mujoco.ActuatorTarget" title="newton._src.solvers.mujoco.actuators.ActuatorTarget"><em>ActuatorTarget</em></a>) – Typed actuator transmission target.</p></li>
+<li><p><strong>kv</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a>) – Velocity feedback gain.</p></li>
+<li><p><strong>gear</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>]</em>) – Native MuJoCo transmission gear, padded to six values. Ball/free
+joints require at least three/six components; these use MuJoCo’s
+frames and force reference point, as described in <a class="reference internal" href="#newton.solvers.mujoco.ActuatorTarget" title="newton.solvers.mujoco.ActuatorTarget"><code class="xref py py-class docutils literal notranslate"><span class="pre">ActuatorTarget</span></code></a>.</p></li>
+<li><p><strong>ctrlrange</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Optional control range.</p></li>
+<li><p><strong>ctrllimited</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><em>str</em></a>) – Control-limit tri-state (false, true, or auto).</p></li>
+<li><p><strong>forcerange</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Optional actuator force range [N or N·m].</p></li>
+<li><p><strong>forcelimited</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><em>str</em></a>) – Force-limit tri-state (false, true, or auto).</p></li>
+<li><p><strong>cranklength</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em> | </em><em>None</em>) – Slider-crank length [m]. Required for slider-crank targets.</p></li>
+<li><p><strong>ctrl</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a>) – Initial MuJoCo control value.</p></li>
+<li><p><strong>custom_attributes</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#dict" title="(in Python v3.15)"><em>dict</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><em>str</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Any" title="(in Python v3.15)"><em>Any</em></a><em>] </em><em>| </em><em>None</em>) – Additional registered <code class="docutils literal notranslate"><span class="pre">mujoco:actuator</span></code> attributes.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>The <code class="docutils literal notranslate"><span class="pre">mujoco:actuator</span></code> row index.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)">int</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.add_contact_pair">
+<span class="sig-prename descclassname"><span class="pre">newton.solvers.mujoco.</span></span><span class="sig-name descname"><span class="pre">add_contact_pair</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">builder</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">shape1</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">condim</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">3</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">solref</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(0.02,</span> <span class="pre">1.0)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">solreffriction</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(0.02,</span> <span class="pre">1.0)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">solimp</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(0.9,</span> <span class="pre">0.95,</span> <span class="pre">0.001,</span> <span class="pre">0.5,</span> <span class="pre">2.0)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">margin</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">gap</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">friction</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(1.0,</span> <span class="pre">1.0,</span> <span class="pre">0.005,</span> <span class="pre">0.0001,</span> <span class="pre">0.0001)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">custom_attributes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/solvers/mujoco/contacts.py#L16"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.solvers.mujoco.add_contact_pair" title="Link to this definition">#</a></dt>
+<dd><p>Add an explicit MuJoCo contact pair.</p>
+<p>The pair belongs to <a class="reference internal" href="_generated/newton.ModelBuilder.html#newton.ModelBuilder.current_world" title="newton.ModelBuilder.current_world"><code class="xref py py-attr docutils literal notranslate"><span class="pre">current_world</span></code></a>. Both shapes
+must belong to that world or to the global world (<code class="docutils literal notranslate"><span class="pre">-1</span></code>).</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>builder</strong> (<a class="reference internal" href="_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton._src.sim.builder.ModelBuilder"><em>ModelBuilder</em></a>) – Model builder receiving the pair.</p></li>
+<li><p><strong>shape0</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a>) – First Newton shape index.</p></li>
+<li><p><strong>shape1</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a>) – Second Newton shape index.</p></li>
+<li><p><strong>condim</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a>) – MuJoCo contact dimensionality.</p></li>
+<li><p><strong>solref</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>]</em>) – Normal constraint reference parameters.</p></li>
+<li><p><strong>solreffriction</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>]</em>) – Friction constraint reference parameters.</p></li>
+<li><p><strong>solimp</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>]</em>) – Constraint impedance parameters.</p></li>
+<li><p><strong>margin</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a>) – Contact inclusion margin [m].</p></li>
+<li><p><strong>gap</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a>) – Inactive contact gap [m].</p></li>
+<li><p><strong>friction</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>]</em>) – Sliding, torsional, and rolling friction coefficients.</p></li>
+<li><p><strong>custom_attributes</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#dict" title="(in Python v3.15)"><em>dict</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><em>str</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Any" title="(in Python v3.15)"><em>Any</em></a><em>] </em><em>| </em><em>None</em>) – Additional registered <code class="docutils literal notranslate"><span class="pre">mujoco:pair</span></code> attributes.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>The <code class="docutils literal notranslate"><span class="pre">mujoco:pair</span></code> row index.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)">int</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.add_equality_connect">
+<span class="sig-prename descclassname"><span class="pre">newton.solvers.mujoco.</span></span><span class="sig-name descname"><span class="pre">add_equality_connect</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">builder</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">body1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">body2</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">-1</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">anchor</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">label</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">enabled</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">solref</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">solimp</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">custom_attributes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/solvers/mujoco/equality.py#L390"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.solvers.mujoco.add_equality_connect" title="Link to this definition">#</a></dt>
+<dd><p>Add a MuJoCo connect equality between two bodies.</p>
+<p>Both operands must belong to the current world or the global world (<code class="docutils literal notranslate"><span class="pre">-1</span></code>).</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>builder</strong> (<a class="reference internal" href="_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton.ModelBuilder"><em>ModelBuilder</em></a>) – Model builder receiving the constraint.</p></li>
+<li><p><strong>body1</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a>) – First body index, or <code class="docutils literal notranslate"><span class="pre">-1</span></code> for the world.</p></li>
+<li><p><strong>body2</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a>) – Second body index, or <code class="docutils literal notranslate"><span class="pre">-1</span></code> for the world.</p></li>
+<li><p><strong>anchor</strong> (<em>Vec3</em><em> | </em><em>None</em>) – Anchor point in the first body’s frame [m].</p></li>
+<li><p><strong>label</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><em>str</em></a><em> | </em><em>None</em>) – Optional constraint label.</p></li>
+<li><p><strong>enabled</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a>) – Whether the constraint is active.</p></li>
+<li><p><strong>solref</strong> (<em>Sequence</em><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Optional MuJoCo constraint reference parameters.</p></li>
+<li><p><strong>solimp</strong> (<em>Sequence</em><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Optional MuJoCo constraint impedance parameters.</p></li>
+<li><p><strong>custom_attributes</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#dict" title="(in Python v3.15)"><em>dict</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><em>str</em></a><em>, </em><em>Any</em><em>] </em><em>| </em><em>None</em>) – Additional registered equality-frequency attributes.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>The <code class="docutils literal notranslate"><span class="pre">mujoco:equality_constraint</span></code> row index.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)">int</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.add_equality_joint">
+<span class="sig-prename descclassname"><span class="pre">newton.solvers.mujoco.</span></span><span class="sig-name descname"><span class="pre">add_equality_joint</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">builder</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joint2</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">polycoef</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(0.0,</span> <span class="pre">1.0)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">label</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">enabled</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">solref</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">solimp</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">custom_attributes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/solvers/mujoco/equality.py#L497"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.solvers.mujoco.add_equality_joint" title="Link to this definition">#</a></dt>
+<dd><p>Add a MuJoCo polynomial equality between two scalar joints.</p>
+<p>Both joints must belong to the current world or the global world (<code class="docutils literal notranslate"><span class="pre">-1</span></code>).</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>builder</strong> (<a class="reference internal" href="_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton.ModelBuilder"><em>ModelBuilder</em></a>) – Model builder receiving the constraint.</p></li>
+<li><p><strong>joint1</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a>) – Dependent Newton joint index.</p></li>
+<li><p><strong>joint2</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a>) – Reference Newton joint index.</p></li>
+<li><p><strong>polycoef</strong> (<em>Sequence</em><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>]</em>) – Up to five polynomial coefficients.</p></li>
+<li><p><strong>label</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><em>str</em></a><em> | </em><em>None</em>) – Optional constraint label.</p></li>
+<li><p><strong>enabled</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a>) – Whether the constraint is active.</p></li>
+<li><p><strong>solref</strong> (<em>Sequence</em><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Optional MuJoCo constraint reference parameters.</p></li>
+<li><p><strong>solimp</strong> (<em>Sequence</em><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Optional MuJoCo constraint impedance parameters.</p></li>
+<li><p><strong>custom_attributes</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#dict" title="(in Python v3.15)"><em>dict</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><em>str</em></a><em>, </em><em>Any</em><em>] </em><em>| </em><em>None</em>) – Additional registered equality-frequency attributes.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>The <code class="docutils literal notranslate"><span class="pre">mujoco:equality_constraint</span></code> row index.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)">int</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.add_equality_weld">
+<span class="sig-prename descclassname"><span class="pre">newton.solvers.mujoco.</span></span><span class="sig-name descname"><span class="pre">add_equality_weld</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">builder</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">body1</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">body2</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">-1</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">relpose</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">torquescale</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">1.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">label</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">enabled</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">True</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">solref</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">solimp</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">custom_attributes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/solvers/mujoco/equality.py#L440"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.solvers.mujoco.add_equality_weld" title="Link to this definition">#</a></dt>
+<dd><p>Add a MuJoCo weld equality between two bodies.</p>
+<p>Both operands must belong to the current world or the global world (<code class="docutils literal notranslate"><span class="pre">-1</span></code>).</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>builder</strong> (<a class="reference internal" href="_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton.ModelBuilder"><em>ModelBuilder</em></a>) – Model builder receiving the constraint.</p></li>
+<li><p><strong>body1</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a>) – First body index, or <code class="docutils literal notranslate"><span class="pre">-1</span></code> for the world.</p></li>
+<li><p><strong>body2</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a>) – Second body index, or <code class="docutils literal notranslate"><span class="pre">-1</span></code> for the world.</p></li>
+<li><p><strong>relpose</strong> (<em>Transform</em><em> | </em><em>None</em>) – Relative pose of the second body in the first body’s frame.
+If omitted, preserve the bodies’ initial relative pose.</p></li>
+<li><p><strong>torquescale</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a>) – Angular residual length scale [m].</p></li>
+<li><p><strong>label</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><em>str</em></a><em> | </em><em>None</em>) – Optional constraint label.</p></li>
+<li><p><strong>enabled</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a>) – Whether the constraint is active.</p></li>
+<li><p><strong>solref</strong> (<em>Sequence</em><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Optional MuJoCo constraint reference parameters.</p></li>
+<li><p><strong>solimp</strong> (<em>Sequence</em><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>] </em><em>| </em><em>None</em>) – Optional MuJoCo constraint impedance parameters.</p></li>
+<li><p><strong>custom_attributes</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#dict" title="(in Python v3.15)"><em>dict</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><em>str</em></a><em>, </em><em>Any</em><em>] </em><em>| </em><em>None</em>) – Additional registered equality-frequency attributes.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>The <code class="docutils literal notranslate"><span class="pre">mujoco:equality_constraint</span></code> row index.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)">int</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.add_tendon_fixed">
+<span class="sig-prename descclassname"><span class="pre">newton.solvers.mujoco.</span></span><span class="sig-name descname"><span class="pre">add_tendon_fixed</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">builder</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">joints</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">label</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">stiffness</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">damping</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">frictionloss</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">limited</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'auto'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">limit_range</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(0.0,</span> <span class="pre">0.0)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">margin</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">solref_limit</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(0.02,</span> <span class="pre">1.0)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">solimp_limit</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(0.9,</span> <span class="pre">0.95,</span> <span class="pre">0.001,</span> <span class="pre">0.5,</span> <span class="pre">2.0)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">solref_friction</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(0.02,</span> <span class="pre">1.0)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">solimp_friction</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(0.9,</span> <span class="pre">0.95,</span> <span class="pre">0.001,</span> <span class="pre">0.5,</span> <span class="pre">2.0)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">armature</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">springlength</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(-1.0,</span> <span class="pre">-1.0)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">custom_attributes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/solvers/mujoco/tendons.py#L105"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.solvers.mujoco.add_tendon_fixed" title="Link to this definition">#</a></dt>
+<dd><p>Add a fixed tendon as a linear combination of Newton joints.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>builder</strong> (<a class="reference internal" href="_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton._src.sim.builder.ModelBuilder"><em>ModelBuilder</em></a>) – Model builder receiving the tendon.</p></li>
+<li><p><strong>joints</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#tuple" title="(in Python v3.15)"><em>tuple</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>]</em><em>]</em>) – Ordered <code class="docutils literal notranslate"><span class="pre">(joint_index,</span> <span class="pre">coefficient)</span></code> entries for revolute or
+prismatic joints in the current world or the global world (<code class="docutils literal notranslate"><span class="pre">-1</span></code>).</p></li>
+<li><p><strong>label</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><em>str</em></a><em> | </em><em>None</em>) – Optional tendon label.</p></li>
+<li><p><strong>stiffness</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a>) – Tendon stiffness [N/m].</p></li>
+<li><p><strong>damping</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a>) – Tendon damping [N·s/m].</p></li>
+<li><p><strong>frictionloss</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a>) – Tendon friction loss [N].</p></li>
+<li><p><strong>limited</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><em>str</em></a>) – Tendon-limit tri-state (false, true, or auto).</p></li>
+<li><p><strong>limit_range</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>]</em>) – Tendon length range [m].</p></li>
+<li><p><strong>margin</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a>) – Tendon limit margin [m].</p></li>
+<li><p><strong>solref_limit</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>]</em>) – Limit constraint reference parameters.</p></li>
+<li><p><strong>solimp_limit</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>]</em>) – Limit constraint impedance parameters.</p></li>
+<li><p><strong>solref_friction</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>]</em>) – Friction constraint reference parameters.</p></li>
+<li><p><strong>solimp_friction</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>]</em>) – Friction constraint impedance parameters.</p></li>
+<li><p><strong>armature</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a>) – Tendon armature [kg].</p></li>
+<li><p><strong>springlength</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>]</em>) – Tendon spring length range [m].</p></li>
+<li><p><strong>custom_attributes</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#dict" title="(in Python v3.15)"><em>dict</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><em>str</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Any" title="(in Python v3.15)"><em>Any</em></a><em>] </em><em>| </em><em>None</em>) – Additional registered <code class="docutils literal notranslate"><span class="pre">mujoco:tendon</span></code> attributes.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>The <code class="docutils literal notranslate"><span class="pre">mujoco:tendon</span></code> row index.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)">int</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+<dl class="py function">
+<dt class="sig sig-object py" id="newton.solvers.mujoco.add_tendon_spatial">
+<span class="sig-prename descclassname"><span class="pre">newton.solvers.mujoco.</span></span><span class="sig-name descname"><span class="pre">add_tendon_spatial</span></span><span class="sig-paren">(</span><em class="sig-param"><span class="n"><span class="pre">builder</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">path</span></span></em>, <em class="sig-param"><span class="keyword-only-separator o"><abbr title="Keyword-only parameters separator (PEP 3102)"><span class="pre">*</span></abbr></span></em>, <em class="sig-param"><span class="n"><span class="pre">label</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">stiffness</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">damping</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">frictionloss</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">limited</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">'auto'</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">limit_range</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(0.0,</span> <span class="pre">0.0)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">margin</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">solref_limit</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(0.02,</span> <span class="pre">1.0)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">solimp_limit</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(0.9,</span> <span class="pre">0.95,</span> <span class="pre">0.001,</span> <span class="pre">0.5,</span> <span class="pre">2.0)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">solref_friction</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(0.02,</span> <span class="pre">1.0)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">solimp_friction</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(0.9,</span> <span class="pre">0.95,</span> <span class="pre">0.001,</span> <span class="pre">0.5,</span> <span class="pre">2.0)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">armature</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">0.0</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">springlength</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">(-1.0,</span> <span class="pre">-1.0)</span></span></em>, <em class="sig-param"><span class="n"><span class="pre">custom_attributes</span></span><span class="o"><span class="pre">=</span></span><span class="default_value"><span class="pre">None</span></span></em><span class="sig-paren">)</span><a class="reference external" href="https://github.com/newton-physics/newton/blob/main/newton/_src/solvers/mujoco/tendons.py#L194"><span class="viewcode-link"><span class="pre">[source]</span></span></a><a class="headerlink" href="#newton.solvers.mujoco.add_tendon_spatial" title="Link to this definition">#</a></dt>
+<dd><p>Add a spatial tendon from typed site, geometry, and pulley entries.</p>
+<dl class="field-list simple">
+<dt class="field-odd">Parameters<span class="colon">:</span></dt>
+<dd class="field-odd"><ul class="simple">
+<li><p><strong>builder</strong> (<a class="reference internal" href="_generated/newton.ModelBuilder.html#newton.ModelBuilder" title="newton._src.sim.builder.ModelBuilder"><em>ModelBuilder</em></a>) – Model builder receiving the tendon.</p></li>
+<li><p><strong>path</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference internal" href="#newton.solvers.mujoco.TendonWrapSite" title="newton._src.solvers.mujoco.tendons.TendonWrapSite"><em>TendonWrapSite</em></a><em> | </em><a class="reference internal" href="#newton.solvers.mujoco.TendonWrapGeom" title="newton._src.solvers.mujoco.tendons.TendonWrapGeom"><em>TendonWrapGeom</em></a><em> | </em><a class="reference internal" href="#newton.solvers.mujoco.TendonWrapPulley" title="newton._src.solvers.mujoco.tendons.TendonWrapPulley"><em>TendonWrapPulley</em></a><em>]</em>) – Ordered spatial tendon path entries. All sites, geoms, and sidesites
+must belong to the current world or the global world (<code class="docutils literal notranslate"><span class="pre">-1</span></code>).</p></li>
+<li><p><strong>label</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><em>str</em></a><em> | </em><em>None</em>) – Optional tendon label.</p></li>
+<li><p><strong>stiffness</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a>) – Tendon stiffness [N/m].</p></li>
+<li><p><strong>damping</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a>) – Tendon damping [N·s/m].</p></li>
+<li><p><strong>frictionloss</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a>) – Tendon friction loss [N].</p></li>
+<li><p><strong>limited</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#bool" title="(in Python v3.15)"><em>bool</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)"><em>int</em></a><em> | </em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><em>str</em></a>) – Tendon-limit tri-state (false, true, or auto).</p></li>
+<li><p><strong>limit_range</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>]</em>) – Tendon length range [m].</p></li>
+<li><p><strong>margin</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a>) – Tendon limit margin [m].</p></li>
+<li><p><strong>solref_limit</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>]</em>) – Limit constraint reference parameters.</p></li>
+<li><p><strong>solimp_limit</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>]</em>) – Limit constraint impedance parameters.</p></li>
+<li><p><strong>solref_friction</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>]</em>) – Friction constraint reference parameters.</p></li>
+<li><p><strong>solimp_friction</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>]</em>) – Friction constraint impedance parameters.</p></li>
+<li><p><strong>armature</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a>) – Tendon armature [kg].</p></li>
+<li><p><strong>springlength</strong> (<a class="reference external" href="https://docs.python.org/3/library/collections.abc.html#collections.abc.Sequence" title="(in Python v3.15)"><em>Sequence</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#float" title="(in Python v3.15)"><em>float</em></a><em>]</em>) – Tendon spring length range [m].</p></li>
+<li><p><strong>custom_attributes</strong> (<a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#dict" title="(in Python v3.15)"><em>dict</em></a><em>[</em><a class="reference external" href="https://docs.python.org/3/builtins/stdtypes.html#str" title="(in Python v3.15)"><em>str</em></a><em>, </em><a class="reference external" href="https://docs.python.org/3/library/typing.html#typing.Any" title="(in Python v3.15)"><em>Any</em></a><em>] </em><em>| </em><em>None</em>) – Additional registered <code class="docutils literal notranslate"><span class="pre">mujoco:tendon</span></code> attributes.</p></li>
+</ul>
+</dd>
+<dt class="field-even">Returns<span class="colon">:</span></dt>
+<dd class="field-even"><p>The <code class="docutils literal notranslate"><span class="pre">mujoco:tendon</span></code> row index.</p>
+</dd>
+<dt class="field-odd">Return type<span class="colon">:</span></dt>
+<dd class="field-odd"><p><a class="reference external" href="https://docs.python.org/3/builtins/functions.html#int" title="(in Python v3.15)">int</a></p>
+</dd>
+</dl>
+</dd></dl>
+
+</section>
+
+
+                </article>
+              
+              
+              
+              
+              
+            </div>
+            
+            
+              
+                <dialog id="pst-secondary-sidebar-modal"></dialog>
+                <div id="pst-secondary-sidebar" class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+<div
+    id="pst-page-navigation-heading-2"
+    class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> On this page
+  </div>
+  <nav id="pst-page-toc-nav" class="page-toc" aria-labelledby="pst-page-navigation-heading-2">
+    <ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.ActuatorTarget"><code class="docutils literal notranslate"><span class="pre">ActuatorTarget</span></code></a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.ActuatorTarget.Kind"><code class="docutils literal notranslate"><span class="pre">Kind</span></code></a><ul class="nav section-nav flex-column">
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.ActuatorTarget.Kind.BODY"><code class="docutils literal notranslate"><span class="pre">BODY</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.ActuatorTarget.Kind.JOINT"><code class="docutils literal notranslate"><span class="pre">JOINT</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.ActuatorTarget.Kind.JOINT_DOF"><code class="docutils literal notranslate"><span class="pre">JOINT_DOF</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.ActuatorTarget.Kind.SITE"><code class="docutils literal notranslate"><span class="pre">SITE</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.ActuatorTarget.Kind.SLIDER_CRANK"><code class="docutils literal notranslate"><span class="pre">SLIDER_CRANK</span></code></a></li>
+<li class="toc-h4 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.ActuatorTarget.Kind.TENDON"><code class="docutils literal notranslate"><span class="pre">TENDON</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.ActuatorTarget.body"><code class="docutils literal notranslate"><span class="pre">body()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.ActuatorTarget.joint"><code class="docutils literal notranslate"><span class="pre">joint()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.ActuatorTarget.joint_dof"><code class="docutils literal notranslate"><span class="pre">joint_dof()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.ActuatorTarget.site"><code class="docutils literal notranslate"><span class="pre">site()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.ActuatorTarget.slider_crank"><code class="docutils literal notranslate"><span class="pre">slider_crank()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.ActuatorTarget.tendon"><code class="docutils literal notranslate"><span class="pre">tendon()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.ActuatorTarget.__init__"><code class="docutils literal notranslate"><span class="pre">__init__()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.ActuatorTarget.dof"><code class="docutils literal notranslate"><span class="pre">dof</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.ActuatorTarget.index"><code class="docutils literal notranslate"><span class="pre">index</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.ActuatorTarget.kind"><code class="docutils literal notranslate"><span class="pre">kind</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.ActuatorTarget.secondary_index"><code class="docutils literal notranslate"><span class="pre">secondary_index</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.TendonWrapGeom"><code class="docutils literal notranslate"><span class="pre">TendonWrapGeom</span></code></a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.TendonWrapGeom.__init__"><code class="docutils literal notranslate"><span class="pre">__init__()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.TendonWrapGeom.geom"><code class="docutils literal notranslate"><span class="pre">geom</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.TendonWrapGeom.sidesite"><code class="docutils literal notranslate"><span class="pre">sidesite</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.TendonWrapPulley"><code class="docutils literal notranslate"><span class="pre">TendonWrapPulley</span></code></a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.TendonWrapPulley.__init__"><code class="docutils literal notranslate"><span class="pre">__init__()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.TendonWrapPulley.divisor"><code class="docutils literal notranslate"><span class="pre">divisor</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.TendonWrapSite"><code class="docutils literal notranslate"><span class="pre">TendonWrapSite</span></code></a><ul class="pst-show_toc_level nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.TendonWrapSite.__init__"><code class="docutils literal notranslate"><span class="pre">__init__()</span></code></a></li>
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.TendonWrapSite.site"><code class="docutils literal notranslate"><span class="pre">site</span></code></a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.add_actuator_general"><code class="docutils literal notranslate"><span class="pre">add_actuator_general()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.add_actuator_motor"><code class="docutils literal notranslate"><span class="pre">add_actuator_motor()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.add_actuator_position"><code class="docutils literal notranslate"><span class="pre">add_actuator_position()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.add_actuator_velocity"><code class="docutils literal notranslate"><span class="pre">add_actuator_velocity()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.add_contact_pair"><code class="docutils literal notranslate"><span class="pre">add_contact_pair()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.add_equality_connect"><code class="docutils literal notranslate"><span class="pre">add_equality_connect()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.add_equality_joint"><code class="docutils literal notranslate"><span class="pre">add_equality_joint()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.add_equality_weld"><code class="docutils literal notranslate"><span class="pre">add_equality_weld()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.add_tendon_fixed"><code class="docutils literal notranslate"><span class="pre">add_tendon_fixed()</span></code></a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#newton.solvers.mujoco.add_tendon_spatial"><code class="docutils literal notranslate"><span class="pre">add_tendon_spatial()</span></code></a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+          </footer>
+        
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script defer src="../_static/scripts/bootstrap.js?digest=64cc4de3f052d77215f0"></script>
+<script defer src="../_static/scripts/pydata-sphinx-theme.js?digest=64cc4de3f052d77215f0"></script>
+
+  <footer class="bd-footer">
+<div class="bd-footer__inner bd-page-width">
+  
+    <div class="footer-items__start">
+      
+        <div class="footer-item">
+
+  <p class="copyright">
+    
+      © Copyright 2026, The Newton Developers. Documentation licensed under CC-BY-4.0.
+      <br/>
+    
+  </p>
+</div>
+      
+    </div>
+  
+  
+  
+    <div class="footer-items__end">
+      
+        <div class="footer-item">
+<p class="theme-version">
+  <!-- # L10n: Setting the PST URL as an argument as this does not need to be localized -->
+  Built with the <a href="https://pydata-sphinx-theme.readthedocs.io/en/stable/index.html">PyData Sphinx Theme</a> 0.22.0.
+</p></div>
+      
+    </div>
+  
+</div>
+
+  </footer>
+  </body>
+</html>
