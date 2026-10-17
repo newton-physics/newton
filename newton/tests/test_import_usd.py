@@ -44,9 +44,7 @@ devices = get_test_devices()
 _MIRRORED_BODY_WARNING = (
     r"Rigid body prim /World/Negative/Complete has a mirrored \(negative-determinant\) world transform\."
 )
-_PARTIAL_EQ_SOLREF_WARNING = (
-    r"Custom attribute 'mujoco:eq_solref' has 1 values but frequency 'mujoco:equality_constraint' expects 2\."
-)
+_PARTIAL_EQ_SOLREF_WARNING = r"Custom attribute 'mujoco:eq_solref' has \d+ values but frequency"
 
 
 class TestImportUsdPhysics(unittest.TestCase):
@@ -8350,13 +8348,11 @@ def Xform "Articulation" (
         self.assertEqual(builder.joint_coord_count, 14)
         with warnings.catch_warnings(record=True) as caught:
             # The body-to-world row intentionally omits solref to exercise the
-            # registered default. Keep all unrelated warnings under the ambient policy.
+            # registered default, which must not be reported as a missed row.
             warnings.filterwarnings("always", message=_PARTIAL_EQ_SOLREF_WARNING, category=UserWarning)
             model = builder.finalize()
 
-        self.assertEqual(len(caught), 1)
-        self.assertEqual(caught[0].category, newton.exceptions.NewtonWarning)
-        self.assertRegex(str(caught[0].message), _PARTIAL_EQ_SOLREF_WARNING)
+        self.assertEqual(caught, [])
 
         self.assertNotIn("/World/EqualityConnect", result["path_joint_map"])
         self.assertNotIn("/World/EqualityConnectBodyToWorld", result["path_joint_map"])
