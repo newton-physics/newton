@@ -738,37 +738,70 @@ class TestDeformableAndArticulationViews(unittest.TestCase):
         np.testing.assert_allclose(rigid.get_root_transforms(state).numpy(), rigid_values, atol=1e-6)
         np.testing.assert_array_equal(cloth.get_particle_positions(state).numpy(), cloth_values)
 
-    def test_heterogeneous_deformables_keep_rigid_selection_uniform(self):
-        """Family views retain empty worlds beside one common rigid articulation."""
+    def test_sparse_rigid_and_uneven_deformable_masks(self):
+        """Reset world 2 through sparse robot and uneven deformable selections."""
         world_0 = newton.ModelBuilder()
         _add_test_articulation(world_0)
+        _add_test_cable(world_0)
         _add_test_cloth(world_0)
         world_1 = newton.ModelBuilder()
         _add_test_articulation(world_1)
+        world_1.articulation_label[0] = "other"
         _add_test_soft_body(world_1)
         world_2 = newton.ModelBuilder()
         _add_test_articulation(world_2)
-        _add_test_cloth(world_2)
-        world_2.add_rod(
-            rod=newton.Rod([(0.0, 2.0, 1.0), (0.1, 2.0, 1.0), (0.2, 2.0, 1.0)], radius=0.02),
-            label="cable",
-            body_frame_origin="com",
-        )
+        for _ in range(2):
+            _add_test_cable(world_2)
+        for _ in range(2):
+            _add_test_cloth(world_2)
+        _add_test_soft_body(world_2)
         scene = newton.ModelBuilder()
         scene.add_world(world_0)
         scene.add_world(world_1)
         scene.add_world(world_2)
-        model = scene.finalize()
 
-        rigid = ArticulationView(model, "robot")
-        cloth = DeformableSurfaceView(model, "cloth")
-        soft = DeformableVolumeView(model, "soft")
-        cable = DeformableCurveView(model, "cable")
-        self.assertEqual((rigid.count, rigid.world_count, rigid.count_per_world), (3, 3, 1))
-        self.assertEqual(rigid.get_root_transforms(model).shape, (3, 1))
-        np.testing.assert_array_equal(cloth.deformable_object_boundaries.numpy(), [0, 1, 1, 2])
-        np.testing.assert_array_equal(soft.deformable_object_boundaries.numpy(), [0, 0, 1, 1])
-        np.testing.assert_array_equal(cable.deformable_object_boundaries.numpy(), [0, 0, 0, 1])
+        for device in get_test_devices():
+            with self.subTest(device=device):
+                model = scene.finalize(device=device)
+                state = model.state()
+                rigid = ArticulationView(model, "robot", homogeneous=False)
+                all_rigid = ArticulationView(model, ["robot", "other"], homogeneous=False)
+                cable = DeformableCurveView(model, "cable")
+                cloth = DeformableSurfaceView(model, "cloth")
+                soft = DeformableVolumeView(model, "soft")
+
+                np.testing.assert_array_equal(rigid.world_ids.numpy(), [0, 2])
+                self.assertEqual((rigid.world_count, rigid.count_per_world), (2, 1))
+                values = wp.ones_like(rigid.get_dof_velocities(state))
+                mask_worlds = wp.array([False, True], dtype=bool, device=device)
+                rigid.set_dof_velocities(state, values, mask=mask_worlds)
+                expected_rigid = np.zeros((3, 1, 6), dtype=np.float32)
+                expected_rigid[2] = 1.0
+                np.testing.assert_array_equal(all_rigid.get_dof_velocities(state).numpy(), expected_rigid)
+
+                expected = {
+                    name: getattr(state, name).numpy().copy() for name in ("body_qd", "particle_qd", "joint_qd")
+                }
+                for view, kind, name, worlds, boundaries, setter in (
+                    (cable, "body", "body_qd", [0, 2, 2], [0, 1, 1, 3], cable.set_body_velocities),
+                    (cloth, "particle", "particle_qd", [0, 2, 2], [0, 1, 1, 3], cloth.set_particle_velocities),
+                    (soft, "particle", "particle_qd", [1, 2], [0, 0, 1, 2], soft.set_particle_velocities),
+                ):
+                    with self.subTest(family=view.family):
+                        self.assertEqual((view.world_count, view.count_per_world), (3, None))
+                        self.assertEqual(view.worlds, worlds)
+                        np.testing.assert_array_equal(view.worlds_device.numpy(), worlds)
+                        np.testing.assert_array_equal(view.deformable_object_boundaries.numpy(), boundaries)
+                        array = getattr(state, name)
+                        shape = (view.count, view.elements_per_deformable_object(kind), *expected[name].shape[1:])
+                        values = wp.array(np.full(shape, 2.0, dtype=np.float32), dtype=array.dtype, device=device)
+                        mask = wp.array([world == 2 for world in worlds], dtype=bool, device=device)
+                        setter(state, values, mask=mask)
+                        for world, (start, end) in zip(worlds, view.ranges(kind), strict=True):
+                            if world == 2:
+                                expected[name][start:end] = 2.0
+                        for field, expected_values in expected.items():
+                            np.testing.assert_array_equal(getattr(state, field).numpy(), expected_values)
 
     def test_rigid_view_coexists_with_reduced_curve_object(self):
         """Keep an unrelated rigid view valid alongside a partially collapsed rod."""
