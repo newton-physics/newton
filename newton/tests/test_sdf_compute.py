@@ -1614,7 +1614,7 @@ class TestMeshIsWatertight(unittest.TestCase):
         self.assertFalse(mesh.is_watertight)
 
     def test_in_place_vertex_edit_refreshes_welding(self):
-        """invalidate_cache() must drop cached vertex welding, not only the edge results."""
+        """Verify that invalidate_cache() drops cached vertex welding, not only the edge results."""
         verts = np.array(
             [[-1, -1, -1], [1, -1, -1], [1, 1, -1], [-1, 1, -1], [-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]],
             dtype=np.float32,
