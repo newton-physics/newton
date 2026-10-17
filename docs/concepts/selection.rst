@@ -129,11 +129,14 @@ entry selects one deformable object. In the cloth example from the table, rows
 1, 2, and 3 belong to world 1; a single mask entry does not select that whole world.
 Use :ref:`deformable-selection-worlds` to map worlds to selected rows.
 
-Articulation views require equal selected articulation counts per world and
-compatible layouts for the requested data. Deformable views allow different
-object counts per world and irregular spacing in the model arrays. Their
-batched reads and writes still require equal counts of the requested element
-kind, such as particles per cloth. Neither view pads incompatible data.
+Deformable views allow different object counts per world and gaps between objects
+in the model arrays. They keep empty worlds in their object ranges, while
+``worlds`` and ``worlds_device`` map each selected deformable object to its model world.
+Batched reads and writes still require equal counts of the requested element
+kind, such as particles per cloth.
+
+For articulation layout requirements and world mapping, see
+:class:`~newton.selection.ArticulationView`.
 
 Further reading
 ---------------

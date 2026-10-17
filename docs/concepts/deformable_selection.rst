@@ -62,7 +62,9 @@ State getters read either a :class:`~newton.State` or the initial values stored 
 
 Each row contains one selected deformable object's values. All selected
 deformable objects must have the same count of the requested element kind.
-For example, three cloths with four particles each produce a Warp array with
+For example, cloth particle reads require matching particle counts, but triangle
+counts can differ.
+Three cloths with four particles each produce a Warp array with
 shape ``(3, 4)`` and ``wp.vec3`` elements. Its NumPy representation has shape
 ``(3, 4, 3)`` because each position has three coordinates.
 
@@ -314,11 +316,12 @@ identical worlds, each with one robot, two cables, and one cloth:
 
 See :ref:`selection-array-shapes` for the data and mask layouts. Both views use
 Boolean masks with full-sized input arrays. Deformable masks have one entry per
-selected object, so resetting a world may require several mask entries.
+selected deformable object, in the order shown by ``view.labels``. Selecting a
+world with several selected deformable objects requires several mask entries.
 ArticulationView also provides :meth:`~newton.selection.ArticulationView.get_attribute`;
 generic attribute access remains a follow-up for deformable views.
 
-For example, these calls reset velocities in world 1 of a three-world model.
+These calls reset velocities in world 1.
 ``robot_velocities`` has the full shape returned by ``get_dof_velocities()``.
 ``cable_velocities`` also has the full shape returned by its getter:
 
