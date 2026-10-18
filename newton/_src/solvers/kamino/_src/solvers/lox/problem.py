@@ -520,6 +520,7 @@ class LOXProblem:
         self._neighbor_row_side = int_array([entry[2] for entry in neighbor_rows])
         self._free_block = wp.zeros(max(body_count, 1), dtype=mat66f, device=device)
         self._free_lower = wp.zeros(max(body_count, 1), dtype=mat66f, device=device)
+        self._diagonal_lower = wp.zeros(max(body_count, 1), dtype=mat66f, device=device)
         # The Woodbury form handles up to six joint rows between two bodies
         self._patch_weights_kernel = make_patch_weights_kernel(
             woodbury=max((len(rows) for rows in pair_rows_flat), default=0) <= 6
@@ -575,7 +576,7 @@ class LOXProblem:
                 self._incidence_side,
                 *rows,
             ],
-            outputs=[self._free_block, self._free_lower],
+            outputs=[self._free_block, self._free_lower, self._diagonal_lower],
             device=self.device,
         )
         wp.launch(
@@ -590,6 +591,7 @@ class LOXProblem:
                 self._data.body_weight_enabled,
                 self._free_block,
                 self._free_lower,
+                self._diagonal_lower,
                 self._neighbor_offset,
                 self._neighbor_body,
                 self._neighbor_row_offset,

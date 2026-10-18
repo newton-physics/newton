@@ -419,9 +419,11 @@ def _assemble_body_inertial_systems(
     for row in range(6):
         right_hand_side[vector_offset + body_offset + row] = contribution.right_hand_side[row]
         for col in range(6):
-            matrix[_matrix_index(matrix_offset, dimension, body_offset + row, body_offset + col)] = contribution.matrix[
-                row, col
-            ]
+            # The assembly starts from a cleared matrix, so the entries of the mass and inertia blocks suffice
+            if row == col or (row >= 3 and col >= 3):
+                matrix[_matrix_index(matrix_offset, dimension, body_offset + row, body_offset + col)] = (
+                    contribution.matrix[row, col]
+                )
 
 
 @wp.kernel
@@ -657,17 +659,24 @@ def _compute_free_body_blocks(
     # Outputs:
     free_block: wp.array[mat66f],
     free_lower: wp.array[mat66f],
+    diagonal_lower: wp.array[mat66f],
 ):
     """Return the diagonal block of each body without its joint rows to other dynamic bodies, and its Cholesky factor.
 
     The incidence lists only hold these rows; the rows to static bodies stay in the block. The factor is zero
-    when the block is not positive definite, e.g. for a massless body.
+    when the block is not positive definite, e.g. for a massless body. ``diagonal_lower`` receives the Cholesky
+    factor of the full diagonal block, or zero, which the pinned patches of the joint neighbors share.
     """
     bid = wp.tid()
     block = body_block[bid]
     if block < 0:
         return
     result = _read_body_block(matrix, matrix_offsets[block], dimensions[block], body_local[bid], body_local[bid])
+    lower, valid = _cholesky_mat66(0.5 * (result + wp.transpose(result)))
+    if valid:
+        diagonal_lower[bid] = lower
+    else:
+        diagonal_lower[bid] = mat66f(0.0)
     for incident in range(incidence_offset[bid], incidence_offset[bid + 1]):
         result -= _joint_row_side_block(
             incidence_kind[incident],
@@ -963,6 +972,7 @@ def make_patch_weights_kernel(woodbury: bool):
         body_weight_enabled: wp.array[wp.int32],
         free_block: wp.array[mat66f],
         free_lower: wp.array[mat66f],
+        diagonal_lower: wp.array[mat66f],
         neighbor_offset: wp.array[wp.int32],
         neighbor_body: wp.array[wp.int32],
         neighbor_row_offset: wp.array[wp.int32],
@@ -1033,11 +1043,11 @@ def make_patch_weights_kernel(woodbury: bool):
         local = body_local[bid]
         pinned = _read_body_block(matrix, offset, dimension, local, local)
         for entry in range(neighbor_offset[bid], neighbor_offset[bid + 1]):
-            neighbor_local = body_local[neighbor_body[entry]]
-            neighbor_matrix = _read_body_block(matrix, offset, dimension, neighbor_local, neighbor_local)
-            neighbor_lower, neighbor_valid = _cholesky_mat66(0.5 * (neighbor_matrix + wp.transpose(neighbor_matrix)))
-            if not neighbor_valid:
+            neighbor = neighbor_body[entry]
+            neighbor_lower = diagonal_lower[neighbor]
+            if not (neighbor_lower[0, 0] > 0.0):
                 continue
+            neighbor_local = body_local[neighbor]
             # Y = L_j^-1 A_ji, then A_ij A_jj^-1 A_ji = Y^T Y
             coupling = _read_body_block(matrix, offset, dimension, neighbor_local, local)
             solved = mat66f(0.0)
