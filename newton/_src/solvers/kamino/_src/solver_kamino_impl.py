@@ -179,9 +179,13 @@ class SolverKaminoImpl(SolverBase):
                 f"{list(LinearSolverNameToType.keys())}, got '{linear_solver_type}'."
             )
 
+        # The dual backends solve the dual problem; LOX solves its own primal problem
+        # and builds the dual problem only for its metrics, without a linear solver.
+        uses_lox = self._config.dynamics_solver == "lox"
+
         # Override the linear solver type to an iterative solver if
         # sparsity is enabled but the provided solver is not iterative
-        if self._config.sparse_dynamics and not issubclass(linear_solver_type, IterativeSolver):
+        if not uses_lox and self._config.sparse_dynamics and not issubclass(linear_solver_type, IterativeSolver):
             msg.warning(
                 f"Sparse dynamics requires an iterative solver, but got '{linear_solver_type.__name__}'."
                 " Defaulting to 'ConjugateResidualSolver' as the PADMM linear solver."
@@ -190,7 +194,7 @@ class SolverKaminoImpl(SolverBase):
 
         # ConjugateResidualSolverFused requires a BlockSparseMatrixFreeDelassusOperator,
         # which is only built when both sparse_dynamics and sparse_jacobian are enabled.
-        if issubclass(linear_solver_type, ConjugateResidualSolverFused):
+        if not uses_lox and issubclass(linear_solver_type, ConjugateResidualSolverFused):
             if not self._config.sparse_dynamics:
                 msg.warning(
                     "ConjugateResidualSolverFused requires sparse dynamics. Enabling sparse_dynamics automatically."
@@ -243,9 +247,7 @@ class SolverKaminoImpl(SolverBase):
                 contacts=contacts,
             )
 
-        # Allocate the dual problem data on the device. The dual backends solve it; LOX
-        # solves its own primal problem and only builds the dual problem for its metrics.
-        uses_lox = self._config.dynamics_solver == "lox"
+        # Allocate the dual problem data on the device
         self._problem_fd: DualProblem | None = None
         if not uses_lox or (self._config.compute_solution_metrics and self._model.size.sum_of_max_total_cts > 0):
             self._problem_fd = DualProblem(
@@ -255,9 +257,9 @@ class SolverKaminoImpl(SolverBase):
                 contacts=contacts,
                 jacobians=self._jacobians,
                 config=problem_fd_config,
-                solver=linear_solver_type,
-                solver_kwargs=linear_solver_kwargs,
-                sparse=self._config.sparse_dynamics and not uses_lox,
+                solver=None if uses_lox else linear_solver_type,
+                solver_kwargs=None if uses_lox else linear_solver_kwargs,
+                sparse=self._config.sparse_dynamics,
             )
 
         # Allocate the forward dynamics solver on the device

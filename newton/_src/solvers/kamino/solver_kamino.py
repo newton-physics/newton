@@ -487,11 +487,6 @@ class SolverKamino(SolverBase, CouplingInterface):
                 and self.padmm.penalty_update_method != "fixed"
             ):
                 raise ValueError("Adaptive PADMM penalty updates require `sparse_dynamics=True`.")
-            if self.dynamics_solver == "lox":
-                if self.sparse_dynamics:
-                    raise ValueError("The LOX solver requires dense dynamics.")
-                if self.dynamics.linear_solver_type != "LLTB":
-                    raise ValueError("The LOX solver requires the LLTB linear solver.")
 
             # Conversion to JointCorrectionMode will raise an error if the input string is invalid.
             JointCorrectionMode.from_string(self.rotation_correction)
