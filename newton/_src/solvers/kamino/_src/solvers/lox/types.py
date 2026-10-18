@@ -14,8 +14,8 @@ import warp as wp
 
 from ......core.types import override
 from ...core.types import mat36f, mat66f, to_warp_int32_array, vec6f
+from ...linalg.core import DenseSquareMultiLinearInfo
 from .contact import mat55f, vec5f
-from .llt.info import DenseBlockInfo
 from .spatial_warmstart import WarmstarterAngularContacts
 
 if TYPE_CHECKING:
@@ -33,6 +33,7 @@ __all__ = [
     "ColoredRowsData",
     "ColoringData",
     "ContactRows",
+    "DenseBlockInfo",
     "DynamicRows",
     "EffortRows",
     "LOXData",
@@ -890,6 +891,41 @@ class ProjectionData:
         """APGD acceleration state, if selected."""
 
 
+class DenseBlockInfo(DenseSquareMultiLinearInfo):
+    """Kamino's square multi-linear system info, with offsets from prefix sums.
+
+    Kamino computes the block offsets with a loop that is quadratic in the
+    number of blocks, which dominates setup when LOX has many factor blocks.
+    """
+
+    def finalize(
+        self,
+        dimensions: list[int],
+        dtype: type = wp.float32,
+        itype: type = wp.int32,
+        device: wp.DeviceLike = None,
+    ) -> None:
+        """Allocate the block dimensions and offsets on the specified device."""
+        self.dimensions = self._check_dimensions(dimensions)
+        self.dtype = dtype
+        self.itype = itype
+        if device is not None:
+            self.device = device
+
+        dimensions_np = np.asarray(self.dimensions, dtype=np.int64)
+        mat_offsets = np.concatenate(([0], np.cumsum(dimensions_np * dimensions_np)))
+        vec_offsets = np.concatenate(([0], np.cumsum(dimensions_np)))
+        self.num_blocks = len(self.dimensions)
+        self.max_dimension = max(self.dimensions)
+        self.total_mat_size = int(mat_offsets[-1])
+        self.total_vec_size = int(vec_offsets[-1])
+        with wp.ScopedDevice(self.device):
+            self.maxdim = wp.array(self.dimensions, dtype=self.itype)
+            self.dim = wp.array(self.dimensions, dtype=self.itype)
+            self.mio = wp.array(mat_offsets[:-1], dtype=self.itype)
+            self.vio = wp.array(vec_offsets[:-1], dtype=self.itype)
+
+
 class LOXSystemData:
     """Arrays of the batched smooth body system.
 
@@ -923,7 +959,8 @@ class LOXSystemData:
         """Dense layout of the factor blocks."""
         self.matrix = wp.zeros(info.total_mat_size, dtype=wp.float32, device=device)
         """Dense matrix of each factor block: the smooth matrix ``A`` once assembled, then ``A + alpha W``
-        once the consensus fraction ``alpha`` of the splitting weights is added."""
+        once the consensus fraction ``alpha`` of the splitting weights is added. Captured steps assemble
+        into the matrix of the factorization, in its row order."""
         self.right_hand_side = wp.zeros(info.total_vec_size, dtype=wp.float32, device=device)
         """Smooth right-hand side ``f``, frozen during the iterations."""
         self.candidate_right_hand_side = wp.zeros(info.total_vec_size, dtype=wp.float32, device=device)
@@ -934,14 +971,6 @@ class LOXSystemData:
         """Splitting weight ``W`` of each body."""
         self.inverse_weight = wp.zeros(num_bodies, dtype=mat66f, device=device)
         """Inverse splitting weight of each body."""
-
-    def zero(self) -> None:
-        """Clear the matrix before an assembly.
-
-        The joint rows accumulate into the matrix. The body terms overwrite the diagonal blocks and
-        the right-hand side, and the other arrays are overwritten before they are read.
-        """
-        self.matrix.zero_()
 
 
 class LOXResiduals:

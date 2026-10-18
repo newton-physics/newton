@@ -5,7 +5,8 @@
 
 Each factor block is one connected dynamic-body component and each dynamic body
 contributes six linear-first velocity unknowns; prescribed bodies map to ``-1`` in the
-matrix layout. The consensus body weights use the body mass matrix
+matrix layout. The matrix entries of a body are read and written through its matrix rows, which follow
+the row order of the factorization once it is known. The consensus body weights use the body mass matrix
 ``M = diag(m I_3, I_world)``, referenced at the body's center of mass.
 """
 
@@ -18,7 +19,7 @@ import warp as wp
 from warp.fem.linalg import symmetric_eigenvalues_qr
 
 from ...core.math import compute_gyroscopic_torque
-from ...core.types import mat36f, mat66f, vec6f
+from ...core.types import mat36f, mat66f, vec6f, vec6i
 
 ###
 # Module interface
@@ -321,6 +322,23 @@ def _matrix_index(
 
 
 @wp.func
+def _body_matrix_rows(
+    vector_offset: wp.int32,
+    inverse_permutation: wp.array[wp.int32],
+    body: wp.int32,
+) -> vec6i:
+    """Return the matrix rows of the six unknowns of a local body, in the row order of the factorization
+    when an inverse permutation is given."""
+    rows = vec6i()
+    for axis in range(6):
+        row = 6 * body + axis
+        if inverse_permutation:
+            row = inverse_permutation[vector_offset + row]
+        rows[axis] = row
+    return rows
+
+
+@wp.func
 def _atomic_add_body_vector(
     vector: wp.array[wp.float32],
     vector_offset: wp.int32,
@@ -337,15 +355,13 @@ def _atomic_add_body_block(
     matrix: wp.array[wp.float32],
     matrix_offset: wp.int32,
     dimension: wp.int32,
-    row_body: wp.int32,
-    col_body: wp.int32,
+    rows: vec6i,
+    cols: vec6i,
     value: mat66f,
 ):
-    row_offset = 6 * row_body
-    col_offset = 6 * col_body
     for row in range(6):
         for col in range(6):
-            index = _matrix_index(matrix_offset, dimension, row_offset + row, col_offset + col)
+            index = _matrix_index(matrix_offset, dimension, rows[row], cols[col])
             wp.atomic_add(matrix, index, value[row, col])
 
 
@@ -388,6 +404,7 @@ def _assemble_body_inertial_systems(
     data_bodies_w_a_i: wp.array[vec6f],
     model_gravity_vector: wp.array[wp.vec3f],
     model_time_dt: wp.array[wp.float32],
+    inverse_permutation: wp.array[wp.int32],
     # Outputs:
     matrix: wp.array[wp.float32],
     right_hand_side: wp.array[wp.float32],
@@ -416,14 +433,13 @@ def _assemble_body_inertial_systems(
     )
 
     body_offset = 6 * local_body
+    rows = _body_matrix_rows(vector_offset, inverse_permutation, local_body)
     for row in range(6):
         right_hand_side[vector_offset + body_offset + row] = contribution.right_hand_side[row]
         for col in range(6):
             # The assembly starts from a cleared matrix, so the entries of the mass and inertia blocks suffice
             if row == col or (row >= 3 and col >= 3):
-                matrix[_matrix_index(matrix_offset, dimension, body_offset + row, body_offset + col)] = (
-                    contribution.matrix[row, col]
-                )
+                matrix[_matrix_index(matrix_offset, dimension, rows[row], rows[col])] = contribution.matrix[row, col]
 
 
 @wp.kernel
@@ -455,6 +471,7 @@ def _assemble_joint_rows(
     joint_max_correction: wp.float32,
     joint_translation_dead_zone: wp.float32,
     joint_rotation_dead_zone: wp.float32,
+    inverse_permutation: wp.array[wp.int32],
     # Outputs:
     structural_penalty: wp.array[wp.float32],
     matrix: wp.array[wp.float32],
@@ -569,26 +586,30 @@ def _assemble_joint_rows(
     dimension = dimensions[block]
     matrix_offset = matrix_offsets[block]
     vector_offset = vector_offsets[block]
+    a_rows = vec6i()
+    b_rows = vec6i()
     if bid_a_local >= 0:
-        _atomic_add_body_block(matrix, matrix_offset, dimension, bid_a_local, bid_a_local, a_matrix)
+        a_rows = _body_matrix_rows(vector_offset, inverse_permutation, bid_a_local)
+        _atomic_add_body_block(matrix, matrix_offset, dimension, a_rows, a_rows, a_matrix)
         _atomic_add_body_vector(right_hand_side, vector_offset, bid_a_local, a_right_hand_side)
     if bid_b_local >= 0:
-        _atomic_add_body_block(matrix, matrix_offset, dimension, bid_b_local, bid_b_local, b_matrix)
+        b_rows = _body_matrix_rows(vector_offset, inverse_permutation, bid_b_local)
+        _atomic_add_body_block(matrix, matrix_offset, dimension, b_rows, b_rows, b_matrix)
         _atomic_add_body_vector(right_hand_side, vector_offset, bid_b_local, b_right_hand_side)
     if bid_a_local >= 0 and bid_b_local >= 0:
-        _atomic_add_body_block(matrix, matrix_offset, dimension, bid_a_local, bid_b_local, cross_matrix)
-        _atomic_add_body_block(matrix, matrix_offset, dimension, bid_b_local, bid_a_local, wp.transpose(cross_matrix))
+        _atomic_add_body_block(matrix, matrix_offset, dimension, a_rows, b_rows, cross_matrix)
+        _atomic_add_body_block(matrix, matrix_offset, dimension, b_rows, a_rows, wp.transpose(cross_matrix))
 
 
 @wp.func
 def _read_body_block(
-    matrix: wp.array[wp.float32], offset: wp.int32, dimension: wp.int32, row_body: wp.int32, col_body: wp.int32
+    matrix: wp.array[wp.float32], offset: wp.int32, dimension: wp.int32, rows: vec6i, cols: vec6i
 ) -> mat66f:
-    """Read the ``6 x 6`` block of two local bodies from a dense block matrix."""
+    """Read the ``6 x 6`` block of two bodies from a dense block matrix, given their matrix rows."""
     block = mat66f(0.0)
     for row in range(6):
         for col in range(6):
-            block[row, col] = matrix[_matrix_index(offset, dimension, 6 * row_body + row, 6 * col_body + col)]
+            block[row, col] = matrix[_matrix_index(offset, dimension, rows[row], cols[col])]
     return block
 
 
@@ -643,6 +664,8 @@ def _compute_free_body_blocks(
     body_local: wp.array[wp.int32],
     dimensions: wp.array[wp.int32],
     matrix_offsets: wp.array[wp.int32],
+    vector_offsets: wp.array[wp.int32],
+    inverse_permutation: wp.array[wp.int32],
     matrix: wp.array[wp.float32],
     incidence_offset: wp.array[wp.int32],
     incidence_kind: wp.array[wp.int32],
@@ -671,7 +694,8 @@ def _compute_free_body_blocks(
     block = body_block[bid]
     if block < 0:
         return
-    result = _read_body_block(matrix, matrix_offsets[block], dimensions[block], body_local[bid], body_local[bid])
+    rows = _body_matrix_rows(vector_offsets[block], inverse_permutation, body_local[bid])
+    result = _read_body_block(matrix, matrix_offsets[block], dimensions[block], rows, rows)
     lower, valid = _cholesky_mat66(0.5 * (result + wp.transpose(result)))
     if valid:
         diagonal_lower[bid] = lower
@@ -968,6 +992,8 @@ def make_patch_weights_kernel(woodbury: bool):
         body_local: wp.array[wp.int32],
         dimensions: wp.array[wp.int32],
         matrix_offsets: wp.array[wp.int32],
+        vector_offsets: wp.array[wp.int32],
+        inverse_permutation: wp.array[wp.int32],
         matrix: wp.array[wp.float32],
         body_weight_enabled: wp.array[wp.int32],
         free_block: wp.array[mat66f],
@@ -1040,16 +1066,17 @@ def make_patch_weights_kernel(woodbury: bool):
             )
         offset = matrix_offsets[block]
         dimension = dimensions[block]
-        local = body_local[bid]
-        pinned = _read_body_block(matrix, offset, dimension, local, local)
+        vector_offset = vector_offsets[block]
+        rows = _body_matrix_rows(vector_offset, inverse_permutation, body_local[bid])
+        pinned = _read_body_block(matrix, offset, dimension, rows, rows)
         for entry in range(neighbor_offset[bid], neighbor_offset[bid + 1]):
             neighbor = neighbor_body[entry]
             neighbor_lower = diagonal_lower[neighbor]
             if not (neighbor_lower[0, 0] > 0.0):
                 continue
-            neighbor_local = body_local[neighbor]
+            neighbor_rows = _body_matrix_rows(vector_offset, inverse_permutation, body_local[neighbor])
             # Y = L_j^-1 A_ji, then A_ij A_jj^-1 A_ji = Y^T Y
-            coupling = _read_body_block(matrix, offset, dimension, neighbor_local, local)
+            coupling = _read_body_block(matrix, offset, dimension, neighbor_rows, rows)
             solved = mat66f(0.0)
             for axis in range(6):
                 for col in range(6):
@@ -1107,6 +1134,8 @@ def _add_body_weights_to_matrix(
     body_local: wp.array[wp.int32],
     dimensions: wp.array[wp.int32],
     matrix_offsets: wp.array[wp.int32],
+    vector_offsets: wp.array[wp.int32],
+    inverse_permutation: wp.array[wp.int32],
     weight: wp.array[mat66f],
     scale: wp.float32,
     # Outputs:
@@ -1119,11 +1148,11 @@ def _add_body_weights_to_matrix(
         return
     dimension = dimensions[block]
     matrix_offset = matrix_offsets[block]
-    body_offset = 6 * body_local[bid]
+    rows = _body_matrix_rows(vector_offsets[block], inverse_permutation, body_local[bid])
     body_weight = scale * weight[bid]
     for row in range(6):
         for col in range(6):
-            index = _matrix_index(matrix_offset, dimension, body_offset + row, body_offset + col)
+            index = _matrix_index(matrix_offset, dimension, rows[row], rows[col])
             matrix[index] += body_weight[row, col]
 
 

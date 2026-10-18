@@ -281,3 +281,5 @@ def estimate_joint_penalty_scale(
         outputs=[scales],
         device=device,
     )
+    # Each time step orders its factorization from its own matrix
+    system.linear_solver.reset()

@@ -11,22 +11,29 @@ global packed body indices but map to ``-1`` in the matrix layout.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from functools import lru_cache
+from collections.abc import Callable, Sequence
 
 import numpy as np
 import warp as wp
 
 from ...core.types import vec6f
 from ...linalg import DenseLinearOperatorData
-from .llt import DenseBlockInfo, HybridLLTBlockedSolver
+from ...linalg.factorize.llt_blocked_rcm_solver import LLTBlockedRCMSolver
 from .system_kernels import (
     _add_body_weights_to_matrix,
     _assemble_body_inertial_systems,
     _assemble_joint_rows,
     _build_candidate_right_hand_side,
 )
-from .types import DynamicRows, EffortRows, LOXSystemData, StructuralRows, capacity_offsets, segment_local_indices
+from .types import (
+    DenseBlockInfo,
+    DynamicRows,
+    EffortRows,
+    LOXSystemData,
+    StructuralRows,
+    capacity_offsets,
+    segment_local_indices,
+)
 
 ###
 # Module interface
@@ -44,36 +51,6 @@ wp.set_module_options({"enable_backward": False})
 
 
 ###
-# Constants
-###
-
-
-# Blocks of two or more bodies use the RCM-reordered semi-sparse factorization.
-_RCM_MIN_DIMENSION = 12
-
-
-###
-# Functions
-###
-
-
-@lru_cache(maxsize=32)
-def _expand_body_symbolic_adjacency(
-    body_count: int,
-    body_edges: tuple[tuple[int, int], ...],
-) -> tuple[tuple[int, ...], ...]:
-    """Expand a reusable body graph into its six-DoF scalar adjacency."""
-    body_adjacency = np.eye(body_count, dtype=bool)
-    if body_edges:
-        edges = np.asarray(body_edges, dtype=np.int32)
-        body_adjacency[edges[:, 0], edges[:, 1]] = True
-        body_adjacency[edges[:, 1], edges[:, 0]] = True
-    scalar_adjacency = np.kron(body_adjacency, np.ones((6, 6), dtype=bool))
-    np.fill_diagonal(scalar_adjacency, False)
-    return tuple(tuple(np.flatnonzero(row).tolist()) for row in scalar_adjacency)
-
-
-###
 # Interfaces
 ###
 
@@ -83,8 +60,9 @@ class LOXSystem:
 
     World-level bookkeeping remains in model body order. The dense matrices and
     vectors are packed by ``body_components`` so disconnected articulations can
-    be factorized independently. When every body is prescribed, the system holds
-    one empty placeholder block.
+    be factorized independently. Once the factorization has ordered the rows of
+    each block, the matrices are assembled directly in that order. When every
+    body is prescribed, the system holds one empty placeholder block.
     The arrays live in :class:`LOXSystemData`, exposed as :attr:`data`.
     """
 
@@ -131,15 +109,16 @@ class LOXSystem:
         body_local = np.full(self.num_bodies, -1, dtype=np.int32)
         body_block[packed_bodies] = np.repeat(np.arange(self.num_blocks, dtype=np.int32), block_body_counts)
         body_local[packed_bodies] = segment_local_indices(block_body_counts, block_offsets)
-        body_vector_index = np.where(body_block >= 0, 6 * (block_offsets[body_block.clip(min=0)] + body_local), -1)
-        self.body_block_host = tuple(body_block.tolist())
-        self.body_local_host = tuple(body_local.tolist())
-        self.body_vector_index_host = tuple(body_vector_index.tolist())
 
         edges = np.asarray(body_edges, dtype=np.int32).reshape((-1, 2))
         edges.sort(axis=1)
         edges = np.unique(edges, axis=0)
         self._body_edge_keys_host = edges[:, 0].astype(np.int64) * self.num_bodies + edges[:, 1]
+
+        body_vector_index = np.where(body_block >= 0, 6 * (block_offsets[body_block.clip(min=0)] + body_local), -1)
+        self.body_block_host = tuple(body_block.tolist())
+        self.body_local_host = tuple(body_local.tolist())
+        self.body_vector_index_host = tuple(body_vector_index.tolist())
 
         info = DenseBlockInfo()
         info.finalize(dimensions=storage_dimensions, dtype=wp.float32, itype=wp.int32, device=self.device)
@@ -149,17 +128,23 @@ class LOXSystem:
         self.operator = DenseLinearOperatorData(info=info, mat=self._data.matrix)
         # Small tiles skip most of the zero blocks of a tree-like body graph,
         # and one warp per world matches the work of a single-RHS tile solve.
-        self.linear_solver = HybridLLTBlockedSolver(
+        self.linear_solver = LLTBlockedRCMSolver(
             operator=self.operator,
-            factorize_block_size=64,
-            solve_block_size=16,
+            block_size=16,
             solve_block_dim=32,
-            rcm_min_dimension=_RCM_MIN_DIMENSION,
-            rcm_block_size=16,
-            symbolic_adjacency=self._build_symbolic_adjacency(edges),
+            reuse_permutation=True,
             dtype=wp.float32,
             device=self.device,
         )
+        # The body blocks of the joints bound the entries that the assembly writes
+        pair_block, pair_row, pair_col = self._structural_pairs(edges, body_block, body_local)
+        self.linear_solver.configure_sparse_assembly(
+            wp.array(pair_block, dtype=wp.int32, device=self.device),
+            wp.array(pair_row, dtype=wp.int32, device=self.device),
+            wp.array(pair_col, dtype=wp.int32, device=self.device),
+        )
+        self._matrix = self._data.matrix
+        self._inverse_permutation: wp.array[wp.int32] | None = None
 
     ###
     # Properties
@@ -169,6 +154,17 @@ class LOXSystem:
     def data(self) -> LOXSystemData:
         """Returns the arrays of the smooth body systems."""
         return self._data
+
+    @property
+    def matrix(self) -> wp.array[wp.float32]:
+        """Matrix that the assembly writes: :attr:`LOXSystemData.matrix`, or the matrix of the factorization
+        during :meth:`assemble_and_factorize`."""
+        return self._matrix
+
+    @property
+    def inverse_permutation(self) -> wp.array[wp.int32] | None:
+        """Row of each packed vector entry in :attr:`matrix`, or ``None`` for the packed order."""
+        return self._inverse_permutation
 
     ###
     # Public API
@@ -225,8 +221,9 @@ class LOXSystem:
                 actuation_wrench,
                 gravity,
                 time_step,
+                self._inverse_permutation,
             ],
-            outputs=[self._data.matrix, self._data.right_hand_side],
+            outputs=[self._matrix, self._data.right_hand_side],
             device=self.device,
         )
 
@@ -306,8 +303,9 @@ class LOXSystem:
                 joint_max_correction,
                 joint_translation_dead_zone,
                 joint_rotation_dead_zone,
+                self._inverse_permutation,
             ],
-            outputs=[structural_rows.penalty, self._data.matrix, self._data.right_hand_side],
+            outputs=[structural_rows.penalty, self._matrix, self._data.right_hand_side],
             device=self.device,
         )
 
@@ -327,16 +325,36 @@ class LOXSystem:
                 self._data.body_local,
                 self._data.info.dim,
                 self._data.info.mio,
+                self._data.info.vio,
+                self._inverse_permutation,
                 self._data.weight,
                 scale,
             ],
-            outputs=[self._data.matrix],
+            outputs=[self._matrix],
             device=self.device,
         )
 
     def factorize(self) -> None:
         """Factorize the current weighted matrices with batched dense LLT."""
         self.linear_solver.compute(self._data.matrix)
+
+    def assemble_and_factorize(self, assemble: Callable[[], None]) -> None:
+        """Assemble the weighted matrices with ``assemble`` and factorize them with the RCM-ordered semi-sparse LLT.
+
+        ``assemble`` writes and reads the matrix through :attr:`matrix` and :attr:`inverse_permutation`.
+        Once the factorization has ordered the rows, captured steps assemble directly in that order.
+        """
+
+        def assemble_into(matrix: wp.array[wp.float32], inverse_permutation: wp.array[wp.int32] | None) -> None:
+            self._matrix = matrix
+            self._inverse_permutation = inverse_permutation
+            try:
+                assemble()
+            finally:
+                self._matrix = self._data.matrix
+                self._inverse_permutation = None
+
+        self.linear_solver.compute_sparse(assemble_into)
 
     def build_candidate_right_hand_side(
         self,
@@ -397,37 +415,31 @@ class LOXSystem:
 
     def _reset(self) -> None:
         """Clear the matrix before an assembly; the factorization overwrites its buffers."""
-        self._data.zero()
+        self._matrix.zero_()
 
-    def _build_symbolic_adjacency(self, edges: np.ndarray) -> tuple[tuple[tuple[int, ...], ...], ...]:
-        """Expand fixed body topology into scalar adjacency per factor block."""
-        body_block = np.asarray(self.body_block_host, dtype=np.int32)
-        body_local = np.asarray(self.body_local_host, dtype=np.int32)
+    def _structural_pairs(
+        self,
+        edges: np.ndarray,
+        body_block: np.ndarray,
+        body_local: np.ndarray,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Return the factor block, row and column of every matrix entry that the assembly can write.
+
+        These are the entries of the diagonal block of each dynamic body and of the off-diagonal
+        blocks of its body edges.
+        """
         if edges.size:
             edge_blocks = body_block[edges]
             dynamic_edge = np.all(edge_blocks >= 0, axis=1)
             if np.any(edge_blocks[dynamic_edge, 0] != edge_blocks[dynamic_edge, 1]):
                 raise ValueError("A body edge cannot span factor blocks.")
             edges = edges[dynamic_edge]
-            edge_block = edge_blocks[dynamic_edge, 0]
-            local_edges = body_local[edges]
-            local_edges.sort(axis=1)
-            order = np.lexsort((local_edges[:, 1], local_edges[:, 0], edge_block))
-            edge_block = edge_block[order]
-            local_edges = local_edges[order]
-            edge_counts = np.bincount(edge_block, minlength=self.num_blocks).astype(np.int32, copy=False)
-            edge_offsets = capacity_offsets(edge_counts)
-        else:
-            local_edges = edges
-            edge_offsets = np.zeros(self.num_blocks + 1, dtype=np.int32)
-
-        adjacency_blocks = []
-        for block, body_count in enumerate(self.block_body_counts):
-            if 6 * body_count < _RCM_MIN_DIMENSION:
-                adjacency_blocks.append(())
-                continue
-            begin = edge_offsets[block]
-            end = edge_offsets[block + 1]
-            block_edges = tuple(map(tuple, local_edges[begin:end].tolist()))
-            adjacency_blocks.append(_expand_body_symbolic_adjacency(body_count, block_edges))
-        return tuple(adjacency_blocks)
+        dynamic_bodies = np.flatnonzero(body_block >= 0)
+        body_a = np.concatenate((dynamic_bodies, edges[:, 0])).astype(np.int32)
+        body_b = np.concatenate((dynamic_bodies, edges[:, 1])).astype(np.int32)
+        axes = np.arange(6, dtype=np.int32)
+        rows = 6 * body_local[body_a][:, None, None] + axes[None, :, None]
+        cols = 6 * body_local[body_b][:, None, None] + axes[None, None, :]
+        rows, cols = np.broadcast_arrays(rows, cols)
+        pair_block = np.repeat(body_block[body_a], 36)
+        return pair_block, rows.reshape(-1), cols.reshape(-1)
