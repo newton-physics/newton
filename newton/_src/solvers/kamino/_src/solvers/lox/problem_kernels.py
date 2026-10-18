@@ -49,7 +49,6 @@ __all__ = [
     "_reset_effort_rows",
     "_reset_effort_worlds",
     "_reset_row_reactions",
-    "_scatter_structural_impulses",
     "_update_effort_counters",
     "_update_structural_multipliers",
     "_write_contact_outputs",
@@ -581,46 +580,6 @@ def _load_structural_rows(
     jacobian_a[row] = _load_sparse_jacobian_row(sparse_a_index[row], sparse_jacobian_data)
     jacobian_b[row] = _load_sparse_jacobian_row(sparse_b_index[row], sparse_jacobian_data)
     reaction[row] *= warmstart_factor
-
-
-@wp.kernel
-def _scatter_structural_impulses(
-    # Inputs:
-    model_time_dt: wp.array[wp.float32],
-    row_world: wp.array[wp.int32],
-    body_a: wp.array[wp.int32],
-    body_b: wp.array[wp.int32],
-    jacobian_a: wp.array[vec6f],
-    jacobian_b: wp.array[vec6f],
-    penalty: wp.array[wp.float32],
-    reaction: wp.array[wp.float32],
-    # Outputs:
-    body_impulse: wp.array[vec6f],
-):
-    """Accumulate the multiplier impulse ``h J^T lambda`` of each penalized structural row on its bodies.
-
-    The first row of each run of rows on the same bodies within a warp adds the impulses of the run.
-    """
-    row = wp.tid()
-    bid_a = body_a[row]
-    bid_b = body_b[row]
-    impulse_a = vec6f(0.0)
-    impulse_b = vec6f(0.0)
-    if penalty[row] > 0.0:
-        impulse = model_time_dt[row_world[row]] * reaction[row]
-        impulse_a = impulse * jacobian_a[row]
-        impulse_b = impulse * jacobian_b[row]
-
-    # Every row of the launch reaches the run reductions
-    row_count = jacobian_a.shape[0]
-    impulse_a = _sum_over_body_run(bid_a, bid_b, impulse_a, row, row_count)
-    impulse_b = _sum_over_body_run(bid_a, bid_b, impulse_b, row, row_count)
-    if not _begins_body_run(bid_a, bid_b, row, row_count):
-        return
-    if bid_a >= 0:
-        wp.atomic_add(body_impulse, bid_a, impulse_a)
-    if bid_b >= 0:
-        wp.atomic_add(body_impulse, bid_b, impulse_b)
 
 
 @wp.kernel

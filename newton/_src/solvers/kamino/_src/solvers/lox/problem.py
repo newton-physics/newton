@@ -47,7 +47,6 @@ from .problem_kernels import (
     _reset_effort_rows,
     _reset_effort_worlds,
     _reset_row_reactions,
-    _scatter_structural_impulses,
     _update_effort_counters,
     _update_structural_multipliers,
     _write_contact_outputs,
@@ -428,6 +427,8 @@ class LOXProblem:
                 outputs=[self._data.structural_rows.effective_mass],
                 device=self.device,
             )
+            # The joint assembly adds the multiplier impulses of the penalized structural rows
+            self._data.structural_rows.body_impulse.zero_()
         self.system.add_joint_rows(
             self.model.joints.wid,
             self.model.joints.bid_B,
@@ -443,25 +444,6 @@ class LOXProblem:
             joint_translation_dead_zone=self._joint_translation_dead_zone,
             joint_rotation_dead_zone=self._joint_rotation_dead_zone,
         )
-        if self._data.structural_rows.count > 0:
-            rows = self._data.structural_rows
-            rows.body_impulse.zero_()
-            wp.launch(
-                _scatter_structural_impulses,
-                dim=rows.count,
-                inputs=[
-                    time_step,
-                    rows.world,
-                    rows.body_a,
-                    rows.body_b,
-                    rows.jacobian_a,
-                    rows.jacobian_b,
-                    rows.penalty,
-                    rows.reaction,
-                ],
-                outputs=[rows.body_impulse],
-                device=self.device,
-            )
 
     def prepare_patch_schur(self) -> None:
         """Build the joint neighbors and joint rows of each body for the patch Schur weights.

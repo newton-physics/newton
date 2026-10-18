@@ -63,10 +63,8 @@ __all__ = [
     "_compute_box_residuals",
     "_compute_contact_residuals",
     "_compute_spatial_contact_residuals",
-    "_prepare_box_rows",
-    "_prepare_contacts",
-    "_prepare_physical_box_rows",
-    "_prepare_physical_contacts",
+    "_prepare_box_blocks",
+    "_prepare_contact_blocks",
     "_prepare_physical_spatial_contacts",
     "_prepare_spatial_contacts",
     "_project_box_row",
@@ -618,69 +616,70 @@ def scatter_contact_impulse(
 ###
 
 
-@wp.kernel
-def _prepare_box_responses(
-    # Inputs:
-    box_world: wp.array[wp.int32],
-    box_local: wp.array[wp.int32],
-    world_box_count: wp.array[wp.int32],
-    box_body_a: wp.array[wp.int32],
-    box_body_b: wp.array[wp.int32],
-    box_jacobian_a: wp.array[vec6f],
-    box_jacobian_b: wp.array[vec6f],
-    inverse_weight: wp.array[mat66f],
-    # Outputs:
-    box_response: wp.array2d[vec6f],
+@wp.func
+def _split_box_delassus(
+    jacobian_a: vec6f,
+    response_a: vec6f,
+    bid_a: wp.int32,
+    jacobian_b: vec6f,
+    response_b: vec6f,
+    bid_b: wp.int32,
+    color: wp.int32,
+    occupancy: wp.array2d[wp.int32],
 ):
-    """Prepare the twist response ``W^-1 J^T`` of each box row on its two bodies, zero for a missing body."""
-    row = wp.tid()
-    if box_local[row] >= world_box_count[box_world[row]]:
-        return
-    bid_a = box_body_a[row]
-    bid_b = box_body_b[row]
-    response_a = vec6f(0.0)
-    response_b = vec6f(0.0)
-    if bid_a >= 0:
-        response_a = apply_body_weight(inverse_weight[bid_a], box_jacobian_a[row])
-    if bid_b >= 0:
-        response_b = apply_body_weight(inverse_weight[bid_b], box_jacobian_b[row])
-    box_response[row, 0] = response_a
-    box_response[row, 1] = response_b
+    """Return the mass-split Delassus coefficient of a box row and whether it is valid, zero without bodies."""
+    if bid_a < 0 and bid_b < 0:
+        return wp.float32(0.0), True
+    value = _compute_box_delassus(
+        jacobian_a,
+        response_a,
+        _split_factor(bid_a, color, occupancy),
+        jacobian_b,
+        response_b,
+        _split_factor(bid_b, color, occupancy),
+    )
+    return value, wp.isfinite(value) and value > 0.0
 
 
-@wp.kernel
-def _prepare_contact_responses(
-    # Inputs:
-    contact_world: wp.array[wp.int32],
-    contact_local: wp.array[wp.int32],
-    world_contact_count: wp.array[wp.int32],
-    contact_body_a: wp.array[wp.int32],
-    contact_body_b: wp.array[wp.int32],
-    contact_jacobian_a: wp.array[mat36f],
-    contact_jacobian_b: wp.array[mat36f],
-    inverse_weight: wp.array[mat66f],
-    # Outputs:
-    contact_response: wp.array2d[mat36f],
+@wp.func
+def _split_contact_delassus(
+    cid: wp.int32,
+    jacobian_a: mat36f,
+    response_a: mat36f,
+    bid_a: wp.int32,
+    jacobian_b: mat36f,
+    response_b: mat36f,
+    bid_b: wp.int32,
+    bias: wp.vec3f,
+    friction: wp.float32,
+    compliance: wp.array[wp.float32],
+    color: wp.int32,
+    occupancy: wp.array2d[wp.int32],
 ):
-    """Prepare the transposed twist response ``J W^-1`` of each contact on its two bodies, zero for a missing body."""
-    cid = wp.tid()
-    if contact_local[cid] >= world_contact_count[contact_world[cid]]:
-        return
-    bid_a = contact_body_a[cid]
-    bid_b = contact_body_b[cid]
-    response_a = mat36f(0.0)
-    response_b = mat36f(0.0)
-    for row in range(3):
-        if bid_a >= 0:
-            response_a[row] = apply_body_weight(inverse_weight[bid_a], contact_jacobian_a[cid][row])
-        if bid_b >= 0:
-            response_b[row] = apply_body_weight(inverse_weight[bid_b], contact_jacobian_b[cid][row])
-    contact_response[cid, 0] = response_a
-    contact_response[cid, 1] = response_b
+    """Return the regularized mass-split Delassus block of a contact and whether it is valid, zero without bodies.
+
+    A non-finite Jacobian or response makes the block non-finite, which is invalid.
+    """
+    if bid_a < 0 and bid_b < 0:
+        return wp.mat33f(0.0), True
+    delassus, valid = _regularize_contact_delassus(
+        _compute_contact_delassus(
+            jacobian_a,
+            response_a,
+            _split_factor(bid_a, color, occupancy),
+            jacobian_b,
+            response_b,
+            _split_factor(bid_b, color, occupancy),
+        ),
+        bias,
+        friction,
+    )
+    delassus[2, 2] += _contact_normal_compliance(cid, compliance)
+    return delassus, valid
 
 
 @wp.kernel
-def _prepare_box_rows(
+def _prepare_box_blocks(
     # Inputs:
     box_world: wp.array[wp.int32],
     box_local: wp.array[wp.int32],
@@ -690,37 +689,55 @@ def _prepare_box_rows(
     box_body_b: wp.array[wp.int32],
     box_jacobian_a: wp.array[vec6f],
     box_jacobian_b: wp.array[vec6f],
-    box_response: wp.array2d[vec6f],
+    inverse_weight: wp.array[mat66f],
     occupancy: wp.array2d[wp.int32],
+    smoothing_occupancy: wp.array2d[wp.int32],
     # Outputs:
+    box_response: wp.array2d[vec6f],
     box_delassus: wp.array[wp.float32],
+    box_smoothing_delassus: wp.array[wp.float32],
+    physical_delassus: wp.array[wp.float32],
     world_failed: wp.array[wp.bool],
 ):
+    """Prepare the twist response ``W^-1 J^T`` and the Delassus coefficients of each box row.
+
+    The split coefficient divides each body over the rows of the row color in ``occupancy``, the
+    optional smoothing coefficient over all rows of the body in ``smoothing_occupancy``, and the
+    unsplit coefficient scales the residuals. The response of a missing body is zero.
+    """
     row = wp.tid()
     wid = box_world[row]
     if box_local[row] >= world_box_count[wid]:
         return
     bid_a = box_body_a[row]
     bid_b = box_body_b[row]
-    if bid_a < 0 and bid_b < 0:
-        box_delassus[row] = 0.0
-        return
-    color = row_color(row, box_color)
-    value = _compute_box_delassus(
-        box_jacobian_a[row],
-        box_response[row, 0],
-        _split_factor(bid_a, color, occupancy),
-        box_jacobian_b[row],
-        box_response[row, 1],
-        _split_factor(bid_b, color, occupancy),
+    jacobian_a = box_jacobian_a[row]
+    jacobian_b = box_jacobian_b[row]
+    response_a = vec6f(0.0)
+    response_b = vec6f(0.0)
+    if bid_a >= 0:
+        response_a = apply_body_weight(inverse_weight[bid_a], jacobian_a)
+    if bid_b >= 0:
+        response_b = apply_body_weight(inverse_weight[bid_b], jacobian_b)
+    box_response[row, 0] = response_a
+    box_response[row, 1] = response_b
+    physical_delassus[row] = _compute_box_delassus(jacobian_a, response_a, 1.0, jacobian_b, response_b, 1.0)
+    value, valid = _split_box_delassus(
+        jacobian_a, response_a, bid_a, jacobian_b, response_b, bid_b, row_color(row, box_color), occupancy
     )
     box_delassus[row] = value
-    if not wp.isfinite(value) or value <= 0.0:
+    if box_smoothing_delassus:
+        smoothing_value, smoothing_valid = _split_box_delassus(
+            jacobian_a, response_a, bid_a, jacobian_b, response_b, bid_b, 0, smoothing_occupancy
+        )
+        box_smoothing_delassus[row] = smoothing_value
+        valid = valid and smoothing_valid
+    if not valid:
         world_failed[wid] = True
 
 
 @wp.kernel
-def _prepare_contacts(
+def _prepare_contact_blocks(
     # Inputs:
     contact_world: wp.array[wp.int32],
     contact_local: wp.array[wp.int32],
@@ -733,37 +750,76 @@ def _prepare_contacts(
     contact_bias: wp.array[wp.vec3f],
     contact_friction: wp.array[wp.float32],
     contact_compliance: wp.array[wp.float32],
-    contact_response: wp.array2d[mat36f],
+    inverse_weight: wp.array[mat66f],
     occupancy: wp.array2d[wp.int32],
+    smoothing_occupancy: wp.array2d[wp.int32],
     # Outputs:
+    contact_response: wp.array2d[mat36f],
     contact_delassus: wp.array[wp.mat33f],
+    contact_smoothing_delassus: wp.array[wp.mat33f],
+    physical_delassus: wp.array[wp.mat33f],
     world_failed: wp.array[wp.bool],
 ):
+    """Prepare the transposed twist response ``J W^-1`` and the compliant Delassus blocks of each contact.
+
+    The split block divides each body over the rows of the contact color in ``occupancy``, the
+    optional smoothing block over all rows of the body in ``smoothing_occupancy``, and the unsplit
+    block scales the residuals. The response of a missing body is zero.
+    """
     cid = wp.tid()
     wid = contact_world[cid]
     if contact_local[cid] >= world_contact_count[wid]:
         return
     bid_a = contact_body_a[cid]
     bid_b = contact_body_b[cid]
-    if bid_a < 0 and bid_b < 0:
-        contact_delassus[cid] = wp.mat33f(0.0)
-        return
-    color = row_color(cid, contact_color)
-    # A non-finite Jacobian or response makes the block non-finite, which fails the world
-    delassus, valid = _regularize_contact_delassus(
-        _compute_contact_delassus(
-            contact_jacobian_a[cid],
-            contact_response[cid, 0],
-            _split_factor(bid_a, color, occupancy),
-            contact_jacobian_b[cid],
-            contact_response[cid, 1],
-            _split_factor(bid_b, color, occupancy),
-        ),
-        contact_bias[cid],
-        contact_friction[cid],
+    jacobian_a = contact_jacobian_a[cid]
+    jacobian_b = contact_jacobian_b[cid]
+    response_a = mat36f(0.0)
+    response_b = mat36f(0.0)
+    for row in range(3):
+        if bid_a >= 0:
+            response_a[row] = apply_body_weight(inverse_weight[bid_a], jacobian_a[row])
+        if bid_b >= 0:
+            response_b[row] = apply_body_weight(inverse_weight[bid_b], jacobian_b[row])
+    contact_response[cid, 0] = response_a
+    contact_response[cid, 1] = response_b
+    physical = _compute_contact_delassus(jacobian_a, response_a, 1.0, jacobian_b, response_b, 1.0)
+    physical[2, 2] += _contact_normal_compliance(cid, contact_compliance)
+    physical_delassus[cid] = physical
+    bias = contact_bias[cid]
+    friction = contact_friction[cid]
+    delassus, valid = _split_contact_delassus(
+        cid,
+        jacobian_a,
+        response_a,
+        bid_a,
+        jacobian_b,
+        response_b,
+        bid_b,
+        bias,
+        friction,
+        contact_compliance,
+        row_color(cid, contact_color),
+        occupancy,
     )
-    delassus[2, 2] += _contact_normal_compliance(cid, contact_compliance)
     contact_delassus[cid] = delassus
+    if contact_smoothing_delassus:
+        smoothing_delassus, smoothing_valid = _split_contact_delassus(
+            cid,
+            jacobian_a,
+            response_a,
+            bid_a,
+            jacobian_b,
+            response_b,
+            bid_b,
+            bias,
+            friction,
+            contact_compliance,
+            0,
+            smoothing_occupancy,
+        )
+        contact_smoothing_delassus[cid] = smoothing_delassus
+        valid = valid and smoothing_valid
     if not valid:
         world_failed[wid] = True
 
@@ -820,62 +876,6 @@ def _prepare_spatial_contacts(
     eigenvalues[cid] = contact_eigenvalues
     if not valid:
         world_failed[wid] = True
-
-
-@wp.kernel
-def _prepare_physical_box_rows(
-    # Inputs:
-    box_world: wp.array[wp.int32],
-    box_local: wp.array[wp.int32],
-    world_box_count: wp.array[wp.int32],
-    box_jacobian_a: wp.array[vec6f],
-    box_jacobian_b: wp.array[vec6f],
-    box_response: wp.array2d[vec6f],
-    # Outputs:
-    physical_delassus: wp.array[wp.float32],
-):
-    """Prepare the unsplit Delassus coefficient of each box row, used by the residuals.
-
-    The response of a missing body is zero.
-    """
-    row = wp.tid()
-    if box_local[row] >= world_box_count[box_world[row]]:
-        return
-    physical_delassus[row] = _compute_box_delassus(
-        box_jacobian_a[row], box_response[row, 0], 1.0, box_jacobian_b[row], box_response[row, 1], 1.0
-    )
-
-
-@wp.kernel
-def _prepare_physical_contacts(
-    # Inputs:
-    contact_world: wp.array[wp.int32],
-    contact_local: wp.array[wp.int32],
-    world_contact_count: wp.array[wp.int32],
-    contact_jacobian_a: wp.array[mat36f],
-    contact_jacobian_b: wp.array[mat36f],
-    normal_compliance: wp.array[wp.float32],
-    contact_response: wp.array2d[mat36f],
-    # Outputs:
-    physical_delassus: wp.array[wp.mat33f],
-):
-    """Prepare the unsplit compliant Delassus block of each contact, used by the residuals.
-
-    The response of a missing body is zero.
-    """
-    cid = wp.tid()
-    if contact_local[cid] >= world_contact_count[contact_world[cid]]:
-        return
-    delassus = _compute_contact_delassus(
-        contact_jacobian_a[cid],
-        contact_response[cid, 0],
-        1.0,
-        contact_jacobian_b[cid],
-        contact_response[cid, 1],
-        1.0,
-    )
-    delassus[2, 2] += _contact_normal_compliance(cid, normal_compliance)
-    physical_delassus[cid] = delassus
 
 
 @wp.kernel

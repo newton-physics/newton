@@ -26,12 +26,8 @@ from .apgd import APGDAcceleration
 from .coloring import RowColoring
 from .projection_kernels import (
     _apply_twist_delta,
-    _prepare_box_responses,
-    _prepare_box_rows,
-    _prepare_contact_responses,
-    _prepare_contacts,
-    _prepare_physical_box_rows,
-    _prepare_physical_contacts,
+    _prepare_box_blocks,
+    _prepare_contact_blocks,
     _prepare_physical_spatial_contacts,
     _prepare_spatial_contacts,
     _warmstart_box_rows,
@@ -159,42 +155,20 @@ class ProjectionSchedule:
             world_failed: Failure flag of each world, set for worlds with an invalid local block.
         """
         p = self.problem_data
-        # The local blocks of the box rows and normal-last contacts read the twist responses
         self._weights = self._prepare_weights(inverse_weight)
         if self.coloring is not None:
             self.coloring.build()
+            # The colored sweeps split each body over the rows of a color, the smoothing sweep over all its rows
             self._prepare_blocks(
                 inverse_weight,
                 self._data.coloring.occupancy,
                 self._data.coloring.box.color,
                 self._data.coloring.contact.color,
-                self._data.box_delassus,
-                self._data.contact_delassus,
-                self._data.spatial_blocks,
-                world_failed,
-            )
-            self._prepare_blocks(
-                inverse_weight,
                 p.body_incidence,
-                None,
-                None,
-                self._data.box_smoothing_delassus,
-                self._data.contact_smoothing_delassus,
-                self._data.spatial_smoothing_blocks,
                 world_failed,
             )
         else:
-            self._prepare_blocks(
-                inverse_weight,
-                p.body_incidence,
-                None,
-                None,
-                self._data.box_delassus,
-                self._data.contact_delassus,
-                self._data.spatial_blocks,
-                world_failed,
-            )
-        self._prepare_physical_blocks(inverse_weight)
+            self._prepare_blocks(inverse_weight, p.body_incidence, None, None, None, world_failed)
         if self.anderson is not None:
             self.anderson.reset()
 
@@ -251,23 +225,52 @@ class ProjectionSchedule:
     # Internals
     ###
 
-    def _prepare_physical_blocks(self, inverse_weight: wp.array[mat66f]) -> None:
-        """Prepare the unsplit Delassus blocks that scale the residuals of the convergence check."""
+    def _begin_outer_iteration(self, world_active: wp.array[wp.bool], recycle: bool) -> None:
+        """Restart the Anderson samples of a new splitting iteration."""
+        if self.anderson is not None:
+            self.anderson.begin_outer_iteration(world_active, recycle=recycle)
+
+    def _prepare_weights(self, inverse_weight: wp.array[mat66f]) -> ProjectionWeights:
+        """Return the weights of the projection kernels; :meth:`_prepare_blocks` fills the twist responses."""
         p = self.problem_data
+        weights = ProjectionWeights()
+        weights.inverse_weight = inverse_weight
+        weights.box_response = p.box_rows.response
+        weights.contact_response = p.contact_rows.response
+        return weights
+
+    def _prepare_blocks(self, inverse_weight, occupancy, box_color, contact_color, smoothing_occupancy, world_failed):
+        """Prepare the twist responses, the split and smoothing local blocks, and the unsplit residual blocks.
+
+        The smoothing blocks are prepared with ``smoothing_occupancy``, or skipped when it is ``None``.
+        """
+        p = self.problem_data
+        smoothing = smoothing_occupancy is not None
         if p.box_rows.capacity > 0:
             rows = p.box_rows
             wp.launch(
-                _prepare_physical_box_rows,
+                _prepare_box_blocks,
                 dim=rows.capacity,
                 inputs=[
                     rows.world,
                     rows.local,
                     rows.world_count,
+                    box_color,
+                    rows.body_a,
+                    rows.body_b,
                     rows.jacobian_a,
                     rows.jacobian_b,
-                    rows.response,
+                    inverse_weight,
+                    occupancy,
+                    smoothing_occupancy,
                 ],
-                outputs=[rows.physical_delassus],
+                outputs=[
+                    rows.response,
+                    self._data.box_delassus,
+                    self._data.box_smoothing_delassus if smoothing else None,
+                    rows.physical_delassus,
+                    world_failed,
+                ],
                 device=self.device,
             )
         if p.contact_rows.capacity == 0:
@@ -275,124 +278,7 @@ class ProjectionSchedule:
         rows = p.contact_rows
         if self._data.spatial_blocks is None:
             wp.launch(
-                _prepare_physical_contacts,
-                dim=rows.capacity,
-                inputs=[
-                    rows.world,
-                    rows.local,
-                    rows.world_count,
-                    rows.jacobian_a,
-                    rows.jacobian_b,
-                    rows.normal_compliance,
-                    rows.response,
-                ],
-                outputs=[rows.physical_delassus],
-                device=self.device,
-            )
-        else:
-            wp.launch(
-                _prepare_physical_spatial_contacts,
-                dim=rows.capacity,
-                inputs=[
-                    rows.world,
-                    rows.local,
-                    rows.world_count,
-                    rows.body_a,
-                    rows.body_b,
-                    rows.jacobian_a,
-                    rows.jacobian_b,
-                    rows.frame,
-                    rows.normal_compliance,
-                    inverse_weight,
-                ],
-                outputs=[rows.physical_delassus],
-                device=self.device,
-            )
-
-    def _begin_outer_iteration(self, world_active: wp.array[wp.bool], recycle: bool) -> None:
-        """Restart the Anderson samples of a new splitting iteration."""
-        if self.anderson is not None:
-            self.anderson.begin_outer_iteration(world_active, recycle=recycle)
-
-    def _prepare_weights(self, inverse_weight: wp.array[mat66f]) -> ProjectionWeights:
-        """Prepare the twist responses of the rows and return the weights of the projection kernels."""
-        p = self.problem_data
-        if p.box_rows.capacity > 0:
-            wp.launch(
-                _prepare_box_responses,
-                dim=p.box_rows.capacity,
-                inputs=[
-                    p.box_rows.world,
-                    p.box_rows.local,
-                    p.box_rows.world_count,
-                    p.box_rows.body_a,
-                    p.box_rows.body_b,
-                    p.box_rows.jacobian_a,
-                    p.box_rows.jacobian_b,
-                    inverse_weight,
-                ],
-                outputs=[p.box_rows.response],
-                device=self.device,
-            )
-        # Spatial contacts apply the inverse weights directly
-        if p.contact_rows.capacity > 0 and self._data.spatial_blocks is None:
-            wp.launch(
-                _prepare_contact_responses,
-                dim=p.contact_rows.capacity,
-                inputs=[
-                    p.contact_rows.world,
-                    p.contact_rows.local,
-                    p.contact_rows.world_count,
-                    p.contact_rows.body_a,
-                    p.contact_rows.body_b,
-                    p.contact_rows.jacobian_a,
-                    p.contact_rows.jacobian_b,
-                    inverse_weight,
-                ],
-                outputs=[p.contact_rows.response],
-                device=self.device,
-            )
-        weights = ProjectionWeights()
-        weights.inverse_weight = inverse_weight
-        weights.box_response = p.box_rows.response
-        weights.contact_response = p.contact_rows.response
-        return weights
-
-    def _prepare_blocks(
-        self,
-        inverse_weight,
-        occupancy,
-        box_color,
-        contact_color,
-        box_delassus,
-        contact_delassus,
-        spatial_blocks,
-        world_failed,
-    ):
-        p = self.problem_data
-        if p.box_rows.capacity > 0:
-            wp.launch(
-                _prepare_box_rows,
-                dim=p.box_rows.capacity,
-                inputs=[
-                    p.box_rows.world,
-                    p.box_rows.local,
-                    p.box_rows.world_count,
-                    box_color,
-                    p.box_rows.body_a,
-                    p.box_rows.body_b,
-                    p.box_rows.jacobian_a,
-                    p.box_rows.jacobian_b,
-                    p.box_rows.response,
-                    occupancy,
-                ],
-                outputs=[box_delassus, world_failed],
-                device=self.device,
-            )
-        if spatial_blocks is not None and p.contact_rows.capacity > 0:
-            rows = p.contact_rows
-            wp.launch(
-                _prepare_spatial_contacts,
+                _prepare_contact_blocks,
                 dim=rows.capacity,
                 inputs=[
                     rows.world,
@@ -403,43 +289,77 @@ class ProjectionSchedule:
                     rows.body_b,
                     rows.jacobian_a,
                     rows.jacobian_b,
-                    rows.frame,
+                    rows.bias,
                     rows.friction,
-                    rows.angular_friction,
                     rows.normal_compliance,
-                    occupancy,
                     inverse_weight,
+                    occupancy,
+                    smoothing_occupancy,
                 ],
                 outputs=[
-                    spatial_blocks.delassus,
-                    spatial_blocks.eigenvectors,
-                    spatial_blocks.eigenvalues,
+                    rows.response,
+                    self._data.contact_delassus,
+                    self._data.contact_smoothing_delassus if smoothing else None,
+                    rows.physical_delassus,
                     world_failed,
                 ],
                 device=self.device,
             )
-        elif p.contact_rows.capacity > 0:
-            wp.launch(
-                _prepare_contacts,
-                dim=p.contact_rows.capacity,
-                inputs=[
-                    p.contact_rows.world,
-                    p.contact_rows.local,
-                    p.contact_rows.world_count,
-                    contact_color,
-                    p.contact_rows.body_a,
-                    p.contact_rows.body_b,
-                    p.contact_rows.jacobian_a,
-                    p.contact_rows.jacobian_b,
-                    p.contact_rows.bias,
-                    p.contact_rows.friction,
-                    p.contact_rows.normal_compliance,
-                    p.contact_rows.response,
-                    occupancy,
-                ],
-                outputs=[contact_delassus, world_failed],
-                device=self.device,
+            return
+        # Spatial contacts apply the inverse weights directly
+        self._prepare_spatial_blocks(inverse_weight, occupancy, contact_color, self._data.spatial_blocks, world_failed)
+        if smoothing:
+            self._prepare_spatial_blocks(
+                inverse_weight, smoothing_occupancy, None, self._data.spatial_smoothing_blocks, world_failed
             )
+        wp.launch(
+            _prepare_physical_spatial_contacts,
+            dim=rows.capacity,
+            inputs=[
+                rows.world,
+                rows.local,
+                rows.world_count,
+                rows.body_a,
+                rows.body_b,
+                rows.jacobian_a,
+                rows.jacobian_b,
+                rows.frame,
+                rows.normal_compliance,
+                inverse_weight,
+            ],
+            outputs=[rows.physical_delassus],
+            device=self.device,
+        )
+
+    def _prepare_spatial_blocks(self, inverse_weight, occupancy, contact_color, spatial_blocks, world_failed):
+        rows = self.problem_data.contact_rows
+        wp.launch(
+            _prepare_spatial_contacts,
+            dim=rows.capacity,
+            inputs=[
+                rows.world,
+                rows.local,
+                rows.world_count,
+                contact_color,
+                rows.body_a,
+                rows.body_b,
+                rows.jacobian_a,
+                rows.jacobian_b,
+                rows.frame,
+                rows.friction,
+                rows.angular_friction,
+                rows.normal_compliance,
+                occupancy,
+                inverse_weight,
+            ],
+            outputs=[
+                spatial_blocks.delassus,
+                spatial_blocks.eigenvectors,
+                spatial_blocks.eigenvalues,
+                world_failed,
+            ],
+            device=self.device,
+        )
 
     def _warmstart(self, world_active, weights, world_failed) -> None:
         p = self.problem_data

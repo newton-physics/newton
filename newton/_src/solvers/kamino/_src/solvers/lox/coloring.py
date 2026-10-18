@@ -127,37 +127,21 @@ def _assign_initial_colors(
     body_b: wp.array[wp.int32],
     # Outputs:
     row_color: wp.array[wp.int32],
+    occupancy: wp.array2d[wp.int32],
+    world_color_count: wp.array2d[wp.int32],
 ):
+    """Assign the hashed initial color of each active row and count it on its bodies and world."""
     row = wp.tid()
     wid = row_world[row]
     if row_local[row] >= world_row_count[wid]:
         row_color[row] = _NO_COLOR
         return
-    row_color[row] = _initial_color(wid, row_local[row], body_a[row], body_b[row], family, color_count)
-
-
-@wp.kernel
-def _count_occupancy(
-    # Inputs:
-    row_world: wp.array[wp.int32],
-    row_local: wp.array[wp.int32],
-    world_row_count: wp.array[wp.int32],
-    body_a: wp.array[wp.int32],
-    body_b: wp.array[wp.int32],
-    row_color: wp.array[wp.int32],
-    # Outputs:
-    occupancy: wp.array2d[wp.int32],
-    world_color_count: wp.array2d[wp.int32],
-):
-    row = wp.tid()
-    wid = row_world[row]
-    if row_local[row] >= world_row_count[wid]:
-        return
-    color = row_color[row]
-    if world_color_count:
-        wp.atomic_add(world_color_count, wid, color, 1)
     bid_a = body_a[row]
     bid_b = body_b[row]
+    color = _initial_color(wid, row_local[row], bid_a, bid_b, family, color_count)
+    row_color[row] = color
+    if world_color_count:
+        wp.atomic_add(world_color_count, wid, color, 1)
     if bid_a >= 0:
         wp.atomic_add(occupancy, bid_a, color, 1)
     if bid_b >= 0 and bid_b != bid_a:
@@ -377,7 +361,7 @@ class RowColoring:
     ###
 
     def build(self) -> None:
-        """Color the active rows and sort each family by color."""
+        """Color the active rows and sort them by color, per world for the per-world sweeps or else per family."""
         self._data.occupancy.zero_()
         if self._data.world_color_count is not None:
             self._data.world_color_count.zero_()
@@ -388,14 +372,7 @@ class RowColoring:
                 _assign_initial_colors,
                 dim=family.capacity,
                 inputs=[salt, self.color_count, world, local, count, bid_a, bid_b],
-                outputs=[family.color],
-                device=self.device,
-            )
-            wp.launch(
-                _count_occupancy,
-                dim=family.capacity,
-                inputs=[world, local, count, bid_a, bid_b, family.color],
-                outputs=[self._data.occupancy, self._data.world_color_count],
+                outputs=[family.color, self._data.occupancy, self._data.world_color_count],
                 device=self.device,
             )
         for _repair in range(_REPAIR_PASSES):
@@ -432,10 +409,12 @@ class RowColoring:
                         device=self.device,
                     )
                 key_offset += family.capacity
-        compact_colored_rows(self._data.box, self.color_count, self.device)
-        compact_colored_rows(self._data.contact, self.color_count, self.device)
+        # The per-world sweeps read the rows of each world by color, the global sweeps the rows of each family
         if self._data.world_order is not None:
             self._build_world_order()
+        else:
+            compact_colored_rows(self._data.box, self.color_count, self.device)
+            compact_colored_rows(self._data.contact, self.color_count, self.device)
 
     ###
     # Internals

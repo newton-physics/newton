@@ -319,13 +319,14 @@ class LOXSystem:
                 structural_rows.jacobian_b,
                 structural_rows.residual,
                 structural_rows.effective_mass,
+                structural_rows.reaction,
                 joint_penalty_scale,
                 joint_max_correction,
                 joint_translation_dead_zone,
                 joint_rotation_dead_zone,
                 self._inverse_permutation,
             ],
-            outputs=[structural_rows.penalty, self._matrix, self._data.right_hand_side],
+            outputs=[structural_rows.penalty, structural_rows.body_impulse, self._matrix, self._data.right_hand_side],
             device=self.device,
         )
 

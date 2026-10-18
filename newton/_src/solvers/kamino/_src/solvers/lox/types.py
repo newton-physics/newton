@@ -692,6 +692,9 @@ class SpatialContactBlocks:
 class ColoredRowsData:
     """Colors of one row family and its active rows ordered by color.
 
+    The per-world sweeps read :attr:`ColoringData.world_order`; the color counts, offsets and
+    order of a family are filled for the global sweeps.
+
     Args:
         capacity: Number of rows.
         color_count: Number of colors.

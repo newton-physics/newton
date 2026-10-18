@@ -469,6 +469,7 @@ def _assemble_joint_rows(
     structural_jacobian_b: wp.array[vec6f],
     structural_residual: wp.array[wp.float32],
     structural_effective_mass: wp.array[wp.float32],
+    structural_reaction: wp.array[wp.float32],
     joint_penalty_scale: wp.array[wp.float32],
     joint_max_correction: wp.float32,
     joint_translation_dead_zone: wp.float32,
@@ -476,6 +477,7 @@ def _assemble_joint_rows(
     inverse_permutation: wp.array[wp.int32],
     # Outputs:
     structural_penalty: wp.array[wp.float32],
+    structural_body_impulse: wp.array[vec6f],
     matrix: wp.array[wp.float32],
     right_hand_side: wp.array[wp.float32],
 ):
@@ -483,7 +485,8 @@ def _assemble_joint_rows(
 
     The rows of a joint share its two bodies, so their blocks are summed in registers and added
     to the matrix once per joint. With a ``joint_penalty_scale``, each structural row also writes
-    its penalty, zero for the rows left out.
+    its penalty, zero for the rows left out, and the penalized rows add their multiplier impulse
+    ``h J^T lambda`` to ``structural_body_impulse``.
     """
     jid = wp.tid()
     bid_a = joint_body_a[jid]
@@ -553,6 +556,8 @@ def _assemble_joint_rows(
         row_count += 1
 
     if world_penalty_scale > 0.0:
+        a_impulse = vec6f(0.0)
+        b_impulse = vec6f(0.0)
         for row in range(structural_start, structural_end):
             if structural_effective_mass[row] <= 0.0:
                 structural_penalty[row] = 0.0
@@ -561,6 +566,9 @@ def _assemble_joint_rows(
             structural_penalty[row] = row_penalty
             a_jacobian = structural_jacobian_a[row]
             b_jacobian = structural_jacobian_b[row]
+            if row_penalty > 0.0:
+                a_impulse += structural_reaction[row] * a_jacobian
+                b_impulse += structural_reaction[row] * b_jacobian
             # A small violation is left to average out, and a large one is corrected by at most
             # joint_max_correction per step
             dead_zone = joint_translation_dead_zone
@@ -582,6 +590,10 @@ def _assemble_joint_rows(
                 b_right_hand_side += b_contribution.right_hand_side
             cross_matrix += wp.outer((dt * dt * row_penalty) * a_jacobian, b_jacobian)
             row_count += 1
+        if bid_a >= 0:
+            wp.atomic_add(structural_body_impulse, bid_a, dt * a_impulse)
+        if bid_b >= 0:
+            wp.atomic_add(structural_body_impulse, bid_b, dt * b_impulse)
 
     if row_count == 0:
         return
