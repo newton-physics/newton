@@ -615,6 +615,7 @@ class LOXProblemData:
         num_bodies: Total number of bodies.
         world_body_offset: First body of each world (Kamino's ``bodies_offset``).
         world_body_count: Number of bodies of each world (Kamino's ``num_bodies``).
+        max_world_body_count: Largest number of bodies of a world.
         device: Device of the arrays.
     """
 
@@ -624,6 +625,7 @@ class LOXProblemData:
         num_bodies: int,
         world_body_offset: wp.array[wp.int32],
         world_body_count: wp.array[wp.int32],
+        max_world_body_count: int,
         device: wp.DeviceLike,
     ):
         self.num_worlds = num_worlds
@@ -636,6 +638,8 @@ class LOXProblemData:
         """First body of each world."""
         self.world_body_count = world_body_count
         """Number of bodies of each world."""
+        self.max_world_body_count = max_world_body_count
+        """Largest number of bodies of a world."""
         self.dynamic_rows: DynamicRows | None = None
         """Implicit joint-dynamics rows."""
         self.structural_rows: StructuralRows | None = None
@@ -740,6 +744,9 @@ class ColoringData:
         """Number of active rows of each color in each world, or ``None`` unless the sweeps run per world."""
         self.world_color_cursor = wp.zeros_like(self.world_color_count)
         """Next row of each color of each world in :attr:`world_order`, or ``None`` unless the sweeps run per world."""
+        self.world_color_box_count = wp.zeros_like(self.world_color_count)
+        """Number of active box rows of each color in each world, which precede the contacts of the color in
+        :attr:`world_order`, or ``None`` unless the sweeps run per world."""
         self.world_order = wp.zeros(box_capacity + contact_capacity, dtype=wp.int32, device=device)
         """Active rows of each world sorted by color, or ``None`` unless the sweeps run per world.
 

@@ -193,6 +193,7 @@ class LOXProblem:
             model.size.sum_of_num_bodies,
             model.info.bodies_offset,
             model.info.num_bodies,
+            model.size.max_of_num_bodies,
             self.device,
         )
         self.rebuild_dynamic_body_topology()

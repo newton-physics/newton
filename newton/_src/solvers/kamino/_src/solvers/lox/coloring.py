@@ -443,6 +443,9 @@ class RowColoring:
                     outputs=[self._data.world_color_cursor, self._data.world_order],
                     device=self.device,
                 )
+            if family is self._data.box:
+                # The cursors hold the box rows of each color, which precede its contacts
+                wp.copy(self._data.world_color_box_count, self._data.world_color_cursor)
             family_offset += family.capacity
 
     def _families(self):

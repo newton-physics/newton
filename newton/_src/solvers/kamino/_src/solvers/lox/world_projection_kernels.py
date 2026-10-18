@@ -81,6 +81,27 @@ _WORLD_ROWS_PER_THREAD = 16
 """Largest number of rows per thread of a world block for which the sweeps run per world."""
 
 
+_WORLD_SHARED_BODY_CAPACITY = 1024
+"""Largest number of bodies of a world for which the sweeps run per world.
+
+The block of a world holds the twists of its bodies in shared memory, at most 24 KiB, which is half of the
+48 KiB that a thread block addresses by default.
+"""
+
+
+_WARP_SIZE = 32
+"""Number of threads of a warp, which runs one code path at a time."""
+
+
+_CONTACT_ROW_COST = 3
+"""Cost of one contact update relative to one box row update, from their sm86 SASS: about 1090 to 330 instructions."""
+
+
+_SPATIAL_CONTACT_ROW_COST = 7
+"""Cost of one spatial contact update relative to one box row update, from their sm86 SASS: about 2190 to 330
+instructions."""
+
+
 ###
 # Types
 ###
@@ -107,12 +128,116 @@ def _sync_threads(): ...
 
 
 @wp.func
+def _box_threads(box_count: wp.int32, contact_count: wp.int32, contact_cost: wp.int32) -> wp.int32:
+    """Return the number of leading threads of a world block that visit its box rows; the others visit its contacts.
+
+    The block has at least two warps. A family without the other takes the whole block. Otherwise each family
+    takes a group of warps, at least one, in proportion to its cost, so that the different updates of the two
+    families run concurrently. A box row costs one and a contact ``contact_cost``.
+    """
+    block = wp.block_dim()
+    if contact_count == 0:
+        return block
+    if box_count == 0:
+        return 0
+    warps = block // _WARP_SIZE
+    cost = box_count + contact_count * contact_cost
+    return wp.clamp((warps * box_count + cost // 2) // cost, 1, warps - 1) * _WARP_SIZE
+
+
+@wp.func
+def _first_box_row(tid: wp.int32, box_count: wp.int32, contact_count: wp.int32, contact_cost: wp.int32):
+    """Return the first box row of one thread of a world block and the stride between its box rows.
+
+    Threads outside the box group start past the last box row.
+    """
+    box_threads = _box_threads(box_count, contact_count, contact_cost)
+    if tid < box_threads:
+        return tid, box_threads
+    return box_count, box_threads
+
+
+@wp.func
+def _first_contact(tid: wp.int32, box_count: wp.int32, contact_count: wp.int32, contact_cost: wp.int32):
+    """Return the first contact of one thread of a world block and the stride between its contacts.
+
+    Threads outside the contact group start past the last contact.
+    """
+    box_threads = _box_threads(box_count, contact_count, contact_cost)
+    if tid < box_threads:
+        return contact_count, wp.block_dim() - box_threads
+    return tid - box_threads, wp.block_dim() - box_threads
+
+
+@cache
+def _make_shared_world_twists(body_capacity: int):
+    """Create the function returning the address of the shared twists of one world block.
+
+    The address is shifted back by the first body of the world, so that the twists of the block take the
+    global body indices.
+    """
+    snippet = f"""
+#if defined(__CUDA_ARCH__)
+__shared__ wp::vec_t<6, wp::float32> twists[{body_capacity}];
+return (uint64_t)twists - uint64_t(body_offset) * sizeof(wp::vec_t<6, wp::float32>);
+#else
+return 0;
+#endif
+"""
+
+    @wp.func_native(snippet)
+    def shared_world_twists(body_offset: wp.int32) -> wp.uint64: ...
+
+    return shared_world_twists
+
+
+@wp.func
+def _load_world_twists(
+    wid: wp.int32,
+    tid: wp.int32,
+    world_body_offset: wp.array[wp.int32],
+    world_body_count: wp.array[wp.int32],
+    projected_twist: wp.array[vec6f],
+    world_twist: wp.array[vec6f],
+):
+    """Copy the projected twists of one world into the twists of its block."""
+    local = tid
+    while local < world_body_count[wid]:
+        bid = world_body_offset[wid] + local
+        world_twist[bid] = projected_twist[bid]
+        local += wp.block_dim()
+    _sync_threads()
+
+
+@wp.func
+def _store_world_twists(
+    wid: wp.int32,
+    tid: wp.int32,
+    world_body_offset: wp.array[wp.int32],
+    world_body_count: wp.array[wp.int32],
+    world_twist: wp.array[vec6f],
+    projected_twist: wp.array[vec6f],
+):
+    """Copy the twists of one world block back to the projected twists.
+
+    Each thread stores the bodies that it updates in :func:`_apply_world_delta`.
+    """
+    local = tid
+    while local < world_body_count[wid]:
+        bid = world_body_offset[wid] + local
+        projected_twist[bid] = world_twist[bid]
+        local += wp.block_dim()
+
+
+@wp.func
 def _sweep_world_box_rows(
     wid: wp.int32,
     tid: wp.int32,
     color: wp.int32,
+    contact_cost: wp.int32,
     world_box_offset: wp.array[wp.int32],
     world_box_count: wp.array[wp.int32],
+    world_contact_count: wp.array[wp.int32],
     box_body_a: wp.array[wp.int32],
     box_body_b: wp.array[wp.int32],
     box_jacobian_a: wp.array[vec6f],
@@ -127,8 +252,8 @@ def _sweep_world_box_rows(
     projected_twist: wp.array[vec6f],
     twist_delta: wp.array[vec6f],
 ):
-    """Project every box row of one world with the threads of one block."""
-    local = tid
+    """Project every box row of one world with the box threads of one block."""
+    local, stride = _first_box_row(tid, world_box_count[wid], world_contact_count[wid], contact_cost)
     while local < world_box_count[wid]:
         _project_box_row(
             world_box_offset[wid] + local,
@@ -147,7 +272,7 @@ def _sweep_world_box_rows(
             projected_twist,
             twist_delta,
         )
-        local += wp.block_dim()
+        local += stride
 
 
 @wp.func
@@ -160,14 +285,17 @@ def _apply_world_delta(
     twist_delta: wp.array[vec6f],
     projected_twist: wp.array[vec6f],
 ):
-    """Apply the accumulated body deltas of one world between block barriers."""
+    """Apply the accumulated body deltas of one world between block barriers.
+
+    Each body has a single thread, which updates its twist with a plain add.
+    """
     _sync_threads()
     valid = not world_failed[wid]
     local = tid
     while local < world_body_count[wid]:
         bid = world_body_offset[wid] + local
         if valid:
-            projected_twist[bid] += twist_delta[bid]
+            projected_twist[bid] = projected_twist[bid] + twist_delta[bid]
         twist_delta[bid] = vec6f(0.0)
         local += wp.block_dim()
     _sync_threads()
@@ -179,7 +307,9 @@ def _apply_world_delta(
 
 
 @cache
-def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: ProjectionAcceleration):
+def make_project_by_world_kernel(
+    spatial: bool, colored: bool, acceleration: ProjectionAcceleration, body_capacity: int
+):
     """Build the kernel that projects one world per block.
 
     Args:
@@ -187,10 +317,13 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
         colored: Whether the rows are swept by colored Gauss--Seidel; Jacobi otherwise.
         acceleration: Acceleration of the projection maps, whose state the kernel takes as one struct:
             :class:`.AndersonWorldState`, :class:`.APGDRowState`, or :class:`NoAccelerationState`.
+        body_capacity: Largest number of bodies of a world, at most :data:`_WORLD_SHARED_BODY_CAPACITY`.
     """
     anderson = acceleration == ProjectionAcceleration.ANDERSON
     apgd = acceleration == ProjectionAcceleration.APGD
     AccelerationState = AndersonWorldState if anderson else APGDRowState if apgd else NoAccelerationState
+    contact_row_cost = _SPATIAL_CONTACT_ROW_COST if spatial else _CONTACT_ROW_COST
+    shared_world_twists = _make_shared_world_twists(max(body_capacity, 1))
 
     @wp.func
     def project_contact_row(
@@ -270,6 +403,7 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
         wid: wp.int32,
         tid: wp.int32,
         color: wp.int32,
+        world_box_count: wp.array[wp.int32],
         world_contact_offset: wp.array[wp.int32],
         world_contact_count: wp.array[wp.int32],
         contact_body_a: wp.array[wp.int32],
@@ -294,8 +428,8 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
         twist_delta: wp.array[vec6f],
         world_failed: wp.array[wp.bool],
     ):
-        """Project every contact of one world with the threads of one block."""
-        local = tid
+        """Project every contact of one world with the contact threads of one block."""
+        local, stride = _first_contact(tid, world_box_count[wid], world_contact_count[wid], contact_row_cost)
         while local < world_contact_count[wid]:
             project_contact_row(
                 world_contact_offset[wid] + local,
@@ -323,7 +457,7 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
                 twist_delta,
                 world_failed,
             )
-            local += wp.block_dim()
+            local += stride
 
     @wp.func
     def sweep_world_color(
@@ -334,6 +468,7 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
         world_box_offset: wp.array[wp.int32],
         world_contact_offset: wp.array[wp.int32],
         world_color_count: wp.array2d[wp.int32],
+        world_color_box_count: wp.array2d[wp.int32],
         world_order: wp.array[wp.int32],
         box_body_a: wp.array[wp.int32],
         box_body_b: wp.array[wp.int32],
@@ -366,59 +501,64 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
         twist_delta: wp.array[vec6f],
         world_failed: wp.array[wp.bool],
     ):
-        """Project the rows of one color of one world, read from its color-sorted rows, with the threads of one block."""
+        """Project the rows of one color of one world, read from its color-sorted rows, with the threads of one block.
+
+        The box rows of the color precede its contacts.
+        """
         start = world_box_offset[wid] + world_contact_offset[wid]
         for previous in range(color):
             start += world_color_count[wid, previous]
-        local = tid
-        while local < world_color_count[wid, color]:
-            row = world_order[start + local]
-            if row < box_capacity:
-                _project_box_row(
-                    row,
-                    color,
-                    box_body_a,
-                    box_body_b,
-                    box_jacobian_a,
-                    box_jacobian_b,
-                    box_bias,
-                    box_lower,
-                    box_upper,
-                    box_delassus,
-                    box_reaction,
-                    weights,
-                    occupancy,
-                    projected_twist,
-                    twist_delta,
-                )
-            else:
-                project_contact_row(
-                    row - box_capacity,
-                    wid,
-                    color,
-                    contact_body_a,
-                    contact_body_b,
-                    contact_jacobian_a,
-                    contact_jacobian_b,
-                    contact_bias,
-                    contact_friction,
-                    contact_delassus,
-                    contact_compliance,
-                    contact_restitution,
-                    contact_frame,
-                    angular_friction,
-                    spatial_delassus,
-                    spatial_eigenvectors,
-                    spatial_eigenvalues,
-                    contact_reaction,
-                    angular_reaction,
-                    weights,
-                    occupancy,
-                    projected_twist,
-                    twist_delta,
-                    world_failed,
-                )
-            local += wp.block_dim()
+        box_count = world_color_box_count[wid, color]
+        contact_count = world_color_count[wid, color] - box_count
+        local, stride = _first_box_row(tid, box_count, contact_count, contact_row_cost)
+        while local < box_count:
+            _project_box_row(
+                world_order[start + local],
+                color,
+                box_body_a,
+                box_body_b,
+                box_jacobian_a,
+                box_jacobian_b,
+                box_bias,
+                box_lower,
+                box_upper,
+                box_delassus,
+                box_reaction,
+                weights,
+                occupancy,
+                projected_twist,
+                twist_delta,
+            )
+            local += stride
+        local, stride = _first_contact(tid, box_count, contact_count, contact_row_cost)
+        while local < contact_count:
+            project_contact_row(
+                world_order[start + box_count + local] - box_capacity,
+                wid,
+                color,
+                contact_body_a,
+                contact_body_b,
+                contact_jacobian_a,
+                contact_jacobian_b,
+                contact_bias,
+                contact_friction,
+                contact_delassus,
+                contact_compliance,
+                contact_restitution,
+                contact_frame,
+                angular_friction,
+                spatial_delassus,
+                spatial_eigenvectors,
+                spatial_eigenvalues,
+                contact_reaction,
+                angular_reaction,
+                weights,
+                occupancy,
+                projected_twist,
+                twist_delta,
+                world_failed,
+            )
+            local += stride
 
     @wp.func
     def store_world_map_input(
@@ -435,18 +575,19 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
         contact_input: wp.array[wp.vec3f],
         angular_input: wp.array[wp.vec3f],
     ):
-        """Store the reactions of one world as the input of its next Anderson map."""
-        local = tid
+        """Store the reactions of one world as the input of its next Anderson map, before the sweeps update them."""
+        local, stride = _first_box_row(tid, world_box_count[wid], world_contact_count[wid], contact_row_cost)
         while local < world_box_count[wid]:
             row = world_box_offset[wid] + local
             box_input[row] = box_reaction[row]
-            local += wp.block_dim()
-        local = tid
+            local += stride
+        local, stride = _first_contact(tid, world_box_count[wid], world_contact_count[wid], contact_row_cost)
         while local < world_contact_count[wid]:
             store_contact_map_input(
                 world_contact_offset[wid] + local, contact_reaction, angular_reaction, contact_input, angular_input
             )
-            local += wp.block_dim()
+            local += stride
+        _sync_threads()
 
     @wp.func
     def finish_world_map(
@@ -485,7 +626,7 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
         had_sample = state.sample_valid[wid] == 1
         had_direction = state.direction_valid[wid] == 1
         term = wp.vec3f(0.0)
-        local = tid
+        local, stride = _first_box_row(tid, world_box_count[wid], world_contact_count[wid], contact_row_cost)
         while local < world_box_count[wid]:
             term += store_box_anderson_sample(
                 world_box_offset[wid] + local,
@@ -498,8 +639,8 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
                 state.box_direction_residual,
                 state.box_direction_image,
             )
-            local += wp.block_dim()
-        local = tid
+            local += stride
+        local, stride = _first_contact(tid, world_box_count[wid], world_contact_count[wid], contact_row_cost)
         while local < world_contact_count[wid]:
             term += store_contact_anderson_sample(
                 world_contact_offset[wid] + local,
@@ -519,7 +660,7 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
                 state.angular_direction_image,
                 angular_friction,
             )
-            local += wp.block_dim()
+            local += stride
         secant = wp.tile_sum(wp.tile(term), axis=1)
         if tid == 0:
             finalize_anderson_world(
@@ -537,7 +678,7 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
             )
         _sync_threads()
         mixing = state.coefficient[wid]
-        local = tid
+        local, stride = _first_box_row(tid, world_box_count[wid], world_contact_count[wid], contact_row_cost)
         while local < world_box_count[wid]:
             mix_box_anderson_row(
                 world_box_offset[wid] + local,
@@ -554,8 +695,8 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
                 box_reaction,
                 twist_delta,
             )
-            local += wp.block_dim()
-        local = tid
+            local += stride
+        local, stride = _first_contact(tid, world_box_count[wid], world_contact_count[wid], contact_row_cost)
         while local < world_contact_count[wid]:
             mix_contact_anderson_row(
                 world_contact_offset[wid] + local,
@@ -576,7 +717,7 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
                 angular_reaction,
                 twist_delta,
             )
-            local += wp.block_dim()
+            local += stride
 
     @wp.func
     def initialize_world_apgd(
@@ -601,13 +742,13 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
 
         The rows are visited in the order of the warm start, so that each thread applies its own clamped rows.
         """
-        local = tid
+        local, stride = _first_box_row(tid, world_box_count[wid], world_contact_count[wid], contact_row_cost)
         while local < world_box_count[wid]:
             initialize_box_apgd_row(
                 world_box_offset[wid] + local, box_lower, box_upper, box_reaction, state.box_trial, state.box_previous
             )
-            local += wp.block_dim()
-        local = tid
+            local += stride
+        local, stride = _first_contact(tid, world_box_count[wid], world_contact_count[wid], contact_row_cost)
         while local < world_contact_count[wid]:
             initialize_contact_apgd_row(
                 world_contact_offset[wid] + local,
@@ -622,7 +763,7 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
                 state.angular_trial,
                 state.angular_previous,
             )
-            local += wp.block_dim()
+            local += stride
 
     @wp.func
     def extrapolate_world(
@@ -656,11 +797,11 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
         Every thread of the block must call this function, which reduces the restart test over the block.
         """
         dot = wp.float32(0.0)
-        local = tid
+        local, stride = _first_box_row(tid, world_box_count[wid], world_contact_count[wid], contact_row_cost)
         while local < world_box_count[wid]:
             dot += box_restart_dot(world_box_offset[wid] + local, box_reaction, state.box_trial, state.box_previous)
-            local += wp.block_dim()
-        local = tid
+            local += stride
+        local, stride = _first_contact(tid, world_box_count[wid], world_contact_count[wid], contact_row_cost)
         while local < world_contact_count[wid]:
             dot += contact_restart_dot(
                 world_contact_offset[wid] + local,
@@ -673,10 +814,10 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
                 contact_friction,
                 angular_friction,
             )
-            local += wp.block_dim()
+            local += stride
         restart_dot = wp.tile_sum(wp.tile(dot))
         next_theta, beta = apgd_momentum(theta, restart_dot[0])
-        local = tid
+        local, stride = _first_box_row(tid, world_box_count[wid], world_contact_count[wid], contact_row_cost)
         while local < world_box_count[wid]:
             extrapolate_box_apgd_row(
                 world_box_offset[wid] + local,
@@ -691,8 +832,8 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
                 state.box_previous,
                 twist_delta,
             )
-            local += wp.block_dim()
-        local = tid
+            local += stride
+        local, stride = _first_contact(tid, world_box_count[wid], world_contact_count[wid], contact_row_cost)
         while local < world_contact_count[wid]:
             extrapolate_contact_apgd_row(
                 world_contact_offset[wid] + local,
@@ -711,7 +852,7 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
                 state.angular_previous,
                 twist_delta,
             )
-            local += wp.block_dim()
+            local += stride
         return next_theta
 
     @wp.kernel(module="unique", enable_backward=False)
@@ -757,6 +898,7 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
         acceleration_state: AccelerationState,
         # Colored sweeps:
         world_color_count: wp.array2d[wp.int32],
+        world_color_box_count: wp.array2d[wp.int32],
         world_order: wp.array[wp.int32],
         occupancy: wp.array2d[wp.int32],
         # Common:
@@ -777,13 +919,21 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
         smoothing sweep; Jacobi worlds sweep all their rows at once. With
         Anderson acceleration, each iteration is one map whose
         image is mixed along the stored direction; with APGD, every Jacobi sweep
-        but the last is extrapolated.
+        but the last is extrapolated. Each block sweeps the projected twists of its
+        world in shared memory, and runs box rows and contacts on separate warps.
         """
         wid, tid = wp.tid()
         if not world_active[wid]:
             return
         if world_failed[wid]:
             return
+
+        world_twist = wp.array(
+            ptr=shared_world_twists(world_body_offset[wid]),
+            shape=(world_body_offset[wid] + world_body_count[wid],),
+            dtype=vec6f,
+        )
+        _load_world_twists(wid, tid, world_body_offset, world_body_count, projected_twist, world_twist)
 
         if wp.static(apgd):
             initialize_world_apgd(
@@ -806,7 +956,7 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
             )
 
         # Apply the existing reactions before the first sweep, clamping the spatial reactions into their cone.
-        local = tid
+        local, stride = _first_box_row(tid, world_box_count[wid], world_contact_count[wid], contact_row_cost)
         while local < world_box_count[wid]:
             row = world_box_offset[wid] + local
             scatter_box_impulse(
@@ -819,8 +969,8 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
                 weights,
                 twist_delta,
             )
-            local += wp.block_dim()
-        local = tid
+            local += stride
+        local, stride = _first_contact(tid, world_box_count[wid], world_contact_count[wid], contact_row_cost)
         while local < world_contact_count[wid]:
             cid = world_contact_offset[wid] + local
             if wp.static(spatial):
@@ -852,8 +1002,8 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
                     weights,
                     twist_delta,
                 )
-            local += wp.block_dim()
-        _apply_world_delta(wid, tid, world_body_offset, world_body_count, world_failed, twist_delta, projected_twist)
+            local += stride
+        _apply_world_delta(wid, tid, world_body_offset, world_body_count, world_failed, twist_delta, world_twist)
         if wp.static(anderson):
             store_world_map_input(
                 wid,
@@ -884,6 +1034,7 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
                         world_box_offset,
                         world_contact_offset,
                         world_color_count,
+                        world_color_box_count,
                         world_order,
                         box_body_a,
                         box_body_b,
@@ -912,22 +1063,25 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
                         angular_reaction,
                         weights,
                         occupancy,
-                        projected_twist,
+                        world_twist,
                         twist_delta,
                         world_failed,
                     )
                     _apply_world_delta(
-                        wid, tid, world_body_offset, world_body_count, world_failed, twist_delta, projected_twist
+                        wid, tid, world_body_offset, world_body_count, world_failed, twist_delta, world_twist
                     )
                     if world_failed[wid]:
+                        _store_world_twists(wid, tid, world_body_offset, world_body_count, world_twist, projected_twist)
                         return
             else:
                 _sweep_world_box_rows(
                     wid,
                     tid,
                     0,
+                    contact_row_cost,
                     world_box_offset,
                     world_box_count,
+                    world_contact_count,
                     box_body_a,
                     box_body_b,
                     box_jacobian_a,
@@ -939,13 +1093,14 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
                     box_reaction,
                     weights,
                     body_incidence,
-                    projected_twist,
+                    world_twist,
                     twist_delta,
                 )
                 sweep_world_contacts(
                     wid,
                     tid,
                     0,
+                    world_box_count,
                     world_contact_offset,
                     world_contact_count,
                     contact_body_a,
@@ -966,14 +1121,15 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
                     angular_reaction,
                     weights,
                     body_incidence,
-                    projected_twist,
+                    world_twist,
                     twist_delta,
                     world_failed,
                 )
                 _apply_world_delta(
-                    wid, tid, world_body_offset, world_body_count, world_failed, twist_delta, projected_twist
+                    wid, tid, world_body_offset, world_body_count, world_failed, twist_delta, world_twist
                 )
                 if world_failed[wid]:
+                    _store_world_twists(wid, tid, world_body_offset, world_body_count, world_twist, projected_twist)
                     return
             if wp.static(anderson):
                 finish_world_map(
@@ -1006,7 +1162,7 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
                     twist_delta,
                 )
                 _apply_world_delta(
-                    wid, tid, world_body_offset, world_body_count, world_failed, twist_delta, projected_twist
+                    wid, tid, world_body_offset, world_body_count, world_failed, twist_delta, world_twist
                 )
             if wp.static(apgd):
                 if iteration + 1 < iterations:
@@ -1037,7 +1193,7 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
                         twist_delta,
                     )
                     _apply_world_delta(
-                        wid, tid, world_body_offset, world_body_count, world_failed, twist_delta, projected_twist
+                        wid, tid, world_body_offset, world_body_count, world_failed, twist_delta, world_twist
                     )
 
         if wp.static(colored):
@@ -1047,8 +1203,10 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
                 wid,
                 tid,
                 0,
+                contact_row_cost,
                 world_box_offset,
                 world_box_count,
+                world_contact_count,
                 box_body_a,
                 box_body_b,
                 box_jacobian_a,
@@ -1060,13 +1218,14 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
                 box_reaction,
                 weights,
                 body_incidence,
-                projected_twist,
+                world_twist,
                 twist_delta,
             )
             sweep_world_contacts(
                 wid,
                 tid,
                 0,
+                world_box_count,
                 world_contact_offset,
                 world_contact_count,
                 contact_body_a,
@@ -1087,13 +1246,13 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
                 angular_reaction,
                 weights,
                 body_incidence,
-                projected_twist,
+                world_twist,
                 twist_delta,
                 world_failed,
             )
-            _apply_world_delta(
-                wid, tid, world_body_offset, world_body_count, world_failed, twist_delta, projected_twist
-            )
+            _apply_world_delta(wid, tid, world_body_offset, world_body_count, world_failed, twist_delta, world_twist)
+
+        _store_world_twists(wid, tid, world_body_offset, world_body_count, world_twist, projected_twist)
 
     return project_by_world
 
@@ -1106,23 +1265,26 @@ def make_project_by_world_kernel(spatial: bool, colored: bool, acceleration: Pro
 def can_project_by_world(
     device: wp.Device,
     world_count: int,
+    max_world_body_count: int,
     rows_per_world_pass: int,
     block_dim: int,
     min_blocks_per_sm: int = _WORLD_MIN_BLOCKS_PER_SM,
 ) -> bool:
     """Return whether one block per world beats row-parallel launches.
 
-    The worlds must fill the device, or their row capacity must stay within a few rows per thread
-    of their blocks. The capacity bounds the active rows, often by far, e.g. for hydroelastic contacts.
+    The twists of every world must fit in the shared memory of its block. The worlds must also fill the
+    device, or their row capacity must stay within a few rows per thread of their blocks. The capacity
+    bounds the active rows, often by far, e.g. for hydroelastic contacts.
 
     Args:
         device: The device running the projection.
         world_count: Number of worlds, one block each.
+        max_world_body_count: Largest number of bodies of a world.
         rows_per_world_pass: Rows processed in parallel by one pass over all worlds.
         block_dim: Threads per world block.
         min_blocks_per_sm: World blocks per SM that keep the device occupied.
     """
-    if not device.is_cuda or world_count == 0:
+    if not device.is_cuda or world_count == 0 or max_world_body_count > _WORLD_SHARED_BODY_CAPACITY:
         return False
     enough_world_blocks = world_count >= device.sm_count * min_blocks_per_sm
     small_world_work = rows_per_world_pass <= world_count * block_dim * _WORLD_ROWS_PER_THREAD

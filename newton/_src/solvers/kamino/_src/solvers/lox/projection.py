@@ -119,6 +119,7 @@ class ProjectionSchedule:
             self._by_world = can_project_by_world(
                 self.device,
                 problem_data.num_worlds,
+                problem_data.max_world_body_count,
                 (row_capacity + self.color_count - 1) // self.color_count,
                 _COLORED_WORLD_BLOCK_DIM,
                 min_blocks_per_sm=1,
@@ -126,12 +127,17 @@ class ProjectionSchedule:
         else:
             self._world_block_dim = _JACOBI_WORLD_BLOCK_DIM
             self._by_world = can_project_by_world(
-                self.device, problem_data.num_worlds, row_capacity, _JACOBI_WORLD_BLOCK_DIM
+                self.device,
+                problem_data.num_worlds,
+                problem_data.max_world_body_count,
+                row_capacity,
+                _JACOBI_WORLD_BLOCK_DIM,
             )
         if data.coloring is not None and not self._by_world:
             # Only the per-world sweeps read the rows of each color of each world
             data.coloring.world_color_count = None
             data.coloring.world_color_cursor = None
+            data.coloring.world_color_box_count = None
             data.coloring.world_order = None
 
     ###
@@ -513,7 +519,9 @@ class ProjectionSchedule:
         elif self.apgd is not None:
             acceleration_state = self.apgd.row_state
         wp.launch(
-            make_project_by_world_kernel(spatial is not None, self.coloring is not None, self._acceleration),
+            make_project_by_world_kernel(
+                spatial is not None, self.coloring is not None, self._acceleration, p.max_world_body_count
+            ),
             dim=(p.num_worlds, self._world_block_dim),
             block_dim=self._world_block_dim,
             inputs=[
@@ -555,6 +563,7 @@ class ProjectionSchedule:
                 smoothing.eigenvalues if smoothing is not None else None,
                 acceleration_state,
                 coloring.world_color_count if coloring is not None else None,
+                coloring.world_color_box_count if coloring is not None else None,
                 coloring.world_order if coloring is not None else None,
                 coloring.occupancy if coloring is not None else None,
                 p.body_incidence,
