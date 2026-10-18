@@ -49,7 +49,8 @@ wp.set_module_options({"enable_backward": False})
 ###
 
 
-_RCM_MIN_DIMENSION = 256
+# Blocks of two or more bodies use the RCM-reordered semi-sparse factorization.
+_RCM_MIN_DIMENSION = 12
 
 
 ###
@@ -147,13 +148,15 @@ class LOXSystem:
             info.dim = wp.array(active_dimensions, dtype=wp.int32, device=self.device)
         self._data = LOXSystemData(body_block, body_local, body_vector_index, info, self.device)
         self.operator = DenseLinearOperatorData(info=info, mat=self._data.matrix)
-        # Factorization benefits from fewer wide dense panels, while repeated
-        # single-RHS solves retain the smaller tile for better occupancy.
+        # Small tiles skip most of the zero blocks of a tree-like body graph,
+        # and one warp per world matches the work of a single-RHS tile solve.
         self.linear_solver = HybridLLTBlockedSolver(
             operator=self.operator,
             factorize_block_size=64,
-            solve_block_dim=256,
+            solve_block_size=16,
+            solve_block_dim=32,
             rcm_min_dimension=_RCM_MIN_DIMENSION,
+            rcm_block_size=16,
             symbolic_adjacency=self._build_symbolic_adjacency(edges),
             dtype=wp.float32,
             device=self.device,
