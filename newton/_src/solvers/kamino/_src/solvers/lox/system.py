@@ -24,6 +24,7 @@ from .system_kernels import (
     _assemble_body_inertial_systems,
     _assemble_joint_rows,
     _build_candidate_right_hand_side,
+    _solve_single_body_blocks,
 )
 from .types import (
     DenseBlockInfo,
@@ -81,8 +82,10 @@ class LOXSystem:
         self.num_bodies = sum(body_counts)
         body_world_host = np.repeat(np.arange(self.num_worlds, dtype=np.int32), np.asarray(body_counts, dtype=np.int32))
 
-        # Pack each joint-connected component of dynamic bodies into one dense factor block.
+        # Pack each joint-connected component of dynamic bodies into one dense factor block. The
+        # multi-body blocks come first, so that the sparse factorization holds a prefix of the blocks.
         components = [np.asarray(component, dtype=np.int32) for component in body_components]
+        components.sort(key=lambda component: component.size == 1)
         if components:
             block_body_counts = np.asarray([component.size for component in components], dtype=np.int32)
             block_offsets = capacity_offsets(block_body_counts)
@@ -104,6 +107,8 @@ class LOXSystem:
         self.block_body_counts = tuple(block_body_counts.tolist())
         """Number of bodies of each factor block."""
         self.num_blocks = len(self.block_body_counts)
+        # Single-body blocks keep a direct 6 x 6 inverse; the sparse LLT factorizes the other blocks
+        self.num_sparse_blocks = self.num_blocks - sum(count == 1 for count in self.block_body_counts)
 
         body_block = np.full(self.num_bodies, -1, dtype=np.int32)
         body_local = np.full(self.num_bodies, -1, dtype=np.int32)
@@ -125,24 +130,39 @@ class LOXSystem:
         if active_dimensions != storage_dimensions:
             info.dim = wp.array(active_dimensions, dtype=wp.int32, device=self.device)
         self._data = LOXSystemData(body_block, body_local, body_vector_index, info, self.device)
-        self.operator = DenseLinearOperatorData(info=info, mat=self._data.matrix)
-        # Small tiles skip most of the zero blocks of a tree-like body graph,
-        # and one warp per world matches the work of a single-RHS tile solve.
-        self.linear_solver = LLTBlockedRCMSolver(
-            operator=self.operator,
-            block_size=16,
-            solve_block_dim=32,
-            reuse_permutation=True,
-            dtype=wp.float32,
-            device=self.device,
-        )
-        # The body blocks of the joints bound the entries that the assembly writes
-        pair_block, pair_row, pair_col = self._structural_pairs(edges, body_block, body_local)
-        self.linear_solver.configure_sparse_assembly(
-            wp.array(pair_block, dtype=wp.int32, device=self.device),
-            wp.array(pair_row, dtype=wp.int32, device=self.device),
-            wp.array(pair_col, dtype=wp.int32, device=self.device),
-        )
+        self.linear_solver: LLTBlockedRCMSolver | None = None
+        """Sparse LLT of the multi-body blocks, or ``None`` when every block holds a single body."""
+        if self.num_sparse_blocks > 0:
+            # The totals of the sparse prefix cover the single-body blocks, so that captured steps
+            # assemble every block into the matrix of the factorization.
+            sparse_info = DenseBlockInfo()
+            sparse_info.finalize(
+                dimensions=storage_dimensions[: self.num_sparse_blocks],
+                dtype=wp.float32,
+                itype=wp.int32,
+                device=self.device,
+            )
+            if active_dimensions != storage_dimensions:
+                sparse_info.dim = wp.array(active_dimensions, dtype=wp.int32, device=self.device)
+            sparse_info.total_mat_size = info.total_mat_size
+            sparse_info.total_vec_size = info.total_vec_size
+            # Small tiles skip most of the zero blocks of a tree-like body graph,
+            # and one warp per world matches the work of a single-RHS tile solve.
+            self.linear_solver = LLTBlockedRCMSolver(
+                operator=DenseLinearOperatorData(info=sparse_info, mat=self._data.matrix),
+                block_size=16,
+                solve_block_dim=32,
+                reuse_permutation=True,
+                dtype=wp.float32,
+                device=self.device,
+            )
+            # The body blocks of the joints bound the entries that the assembly writes
+            pair_block, pair_row, pair_col = self._structural_pairs(edges, body_block, body_local)
+            self.linear_solver.configure_sparse_assembly(
+                wp.array(pair_block, dtype=wp.int32, device=self.device),
+                wp.array(pair_row, dtype=wp.int32, device=self.device),
+                wp.array(pair_col, dtype=wp.int32, device=self.device),
+            )
         self._matrix = self._data.matrix
         self._inverse_permutation: wp.array[wp.int32] | None = None
 
@@ -310,7 +330,7 @@ class LOXSystem:
         )
 
     def add_weights_to_matrix(self, scale: float = 1.0) -> None:
-        """Add the current splitting weights ``scale * W`` to the matrix ``A``.
+        """Add the current splitting weights ``scale * W`` to the matrix ``A`` and invert the single-body blocks.
 
         Args:
             scale: Factor of the weights added to the matrix.
@@ -330,20 +350,26 @@ class LOXSystem:
                 self._data.weight,
                 scale,
             ],
-            outputs=[self._matrix],
+            outputs=[self._matrix, self._data.single_body_inverse],
             device=self.device,
         )
 
     def factorize(self) -> None:
-        """Factorize the current weighted matrices with batched dense LLT."""
-        self.linear_solver.compute(self._data.matrix)
+        """Invert the single-body blocks of the current matrices and factorize the others with the sparse LLT."""
+        self.add_weights_to_matrix(0.0)
+        if self.linear_solver is not None:
+            self.linear_solver.compute(self._data.matrix)
 
     def assemble_and_factorize(self, assemble: Callable[[], None]) -> None:
         """Assemble the weighted matrices with ``assemble`` and factorize them with the RCM-ordered semi-sparse LLT.
 
-        ``assemble`` writes and reads the matrix through :attr:`matrix` and :attr:`inverse_permutation`.
-        Once the factorization has ordered the rows, captured steps assemble directly in that order.
+        ``assemble`` writes and reads the matrix through :attr:`matrix` and :attr:`inverse_permutation`,
+        and inverts the single-body blocks through :meth:`add_weights_to_matrix`. Once the factorization
+        has ordered the rows, captured steps assemble directly in that order.
         """
+        if self.linear_solver is None:
+            assemble()
+            return
 
         def assemble_into(matrix: wp.array[wp.float32], inverse_permutation: wp.array[wp.int32] | None) -> None:
             self._matrix = matrix
@@ -369,7 +395,7 @@ class LOXSystem:
 
         Adds the splitting target ``W (s p + u)`` and the current row impulses to the frozen
         right-hand side ``f``: the structural multiplier impulses ``h J_s^T lambda`` and the
-        effort-limit counter-impulses ``J_d^T c``.
+        effort-limit counter-impulses ``J_d^T c``. The single-body blocks also write their solution.
 
         Args:
             projected_twist: Anchor twist ``p`` of each body, or ``None`` for no anchor.
@@ -397,8 +423,11 @@ class LOXSystem:
                 dynamic_rows.jacobian_b,
                 effort_rows.counter,
                 structural_rows.body_impulse,
+                self._data.body_block,
+                self._data.info.dim,
+                self._data.single_body_inverse,
             ],
-            outputs=[self._data.candidate_right_hand_side],
+            outputs=[self._data.candidate_right_hand_side, self._data.packed_solution],
             device=self.device,
         )
 
@@ -407,7 +436,31 @@ class LOXSystem:
 
         Read the twist of each body with :func:`.system_kernels.unpack_body_solution`.
         """
-        self.linear_solver.solve(self._data.candidate_right_hand_side, self._data.packed_solution)
+        if self.linear_solver is not None:
+            self.linear_solver.solve(self._data.candidate_right_hand_side, self._data.packed_solution)
+
+    def solve(self, right_hand_side: wp.array[wp.float32], solution: wp.array[wp.float32]) -> None:
+        """Solve the factorized matrices for a packed right-hand side.
+
+        The candidate solve of the iterations uses :meth:`solve_candidate`, whose right-hand-side
+        assembly already applies the single-body inverses.
+        """
+        if self.num_sparse_blocks < self.num_blocks:
+            wp.launch(
+                _solve_single_body_blocks,
+                dim=self.num_bodies,
+                inputs=[
+                    self._data.body_block,
+                    self._data.body_vector_index,
+                    self._data.info.dim,
+                    self._data.single_body_inverse,
+                    right_hand_side,
+                ],
+                outputs=[solution],
+                device=self.device,
+            )
+        if self.linear_solver is not None:
+            self.linear_solver.solve(right_hand_side, solution)
 
     ###
     # Internals
@@ -434,7 +487,7 @@ class LOXSystem:
             if np.any(edge_blocks[dynamic_edge, 0] != edge_blocks[dynamic_edge, 1]):
                 raise ValueError("A body edge cannot span factor blocks.")
             edges = edges[dynamic_edge]
-        dynamic_bodies = np.flatnonzero(body_block >= 0)
+        dynamic_bodies = np.flatnonzero((body_block >= 0) & (body_block < self.num_sparse_blocks))
         body_a = np.concatenate((dynamic_bodies, edges[:, 0])).astype(np.int32)
         body_b = np.concatenate((dynamic_bodies, edges[:, 1])).astype(np.int32)
         axes = np.arange(6, dtype=np.int32)

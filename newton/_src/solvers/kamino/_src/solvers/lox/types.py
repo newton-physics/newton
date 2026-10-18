@@ -971,6 +971,8 @@ class LOXSystemData:
         """Splitting weight ``W`` of each body."""
         self.inverse_weight = wp.zeros(num_bodies, dtype=mat66f, device=device)
         """Inverse splitting weight of each body."""
+        self.single_body_inverse = wp.zeros(num_bodies, dtype=mat66f, device=device)
+        """Inverse of the weighted matrix of each body alone in its factor block."""
 
 
 class LOXResiduals:

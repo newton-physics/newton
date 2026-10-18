@@ -201,7 +201,7 @@ def estimate_joint_penalty_scale(
             outputs=[right_hand_side],
             device=device,
         )
-        system.linear_solver.solve(right_hand_side, solution)
+        system.solve(right_hand_side, solution)
 
     # Start from S v of a pseudo-random v, which lies in the range of S
     wp.launch(
@@ -282,4 +282,5 @@ def estimate_joint_penalty_scale(
         device=device,
     )
     # Each time step orders its factorization from its own matrix
-    system.linear_solver.reset()
+    if system.linear_solver is not None:
+        system.linear_solver.reset()

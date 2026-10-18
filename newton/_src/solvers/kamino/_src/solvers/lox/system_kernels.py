@@ -32,6 +32,7 @@ __all__ = [
     "_assemble_joint_rows",
     "_build_candidate_right_hand_side",
     "_compute_free_body_blocks",
+    "_solve_single_body_blocks",
     "apply_body_weight",
     "compute_body_explicit_wrench",
     "compute_structural_correction",
@@ -326,13 +327,14 @@ def _body_matrix_rows(
     vector_offset: wp.int32,
     inverse_permutation: wp.array[wp.int32],
     body: wp.int32,
+    dimension: wp.int32,
 ) -> vec6i:
     """Return the matrix rows of the six unknowns of a local body, in the row order of the factorization
-    when an inverse permutation is given."""
+    when an inverse permutation is given. Single-body blocks keep their packed rows."""
     rows = vec6i()
     for axis in range(6):
         row = 6 * body + axis
-        if inverse_permutation:
+        if inverse_permutation and dimension > 6:
             row = inverse_permutation[vector_offset + row]
         rows[axis] = row
     return rows
@@ -433,7 +435,7 @@ def _assemble_body_inertial_systems(
     )
 
     body_offset = 6 * local_body
-    rows = _body_matrix_rows(vector_offset, inverse_permutation, local_body)
+    rows = _body_matrix_rows(vector_offset, inverse_permutation, local_body, dimension)
     for row in range(6):
         right_hand_side[vector_offset + body_offset + row] = contribution.right_hand_side[row]
         for col in range(6):
@@ -589,11 +591,11 @@ def _assemble_joint_rows(
     a_rows = vec6i()
     b_rows = vec6i()
     if bid_a_local >= 0:
-        a_rows = _body_matrix_rows(vector_offset, inverse_permutation, bid_a_local)
+        a_rows = _body_matrix_rows(vector_offset, inverse_permutation, bid_a_local, dimension)
         _atomic_add_body_block(matrix, matrix_offset, dimension, a_rows, a_rows, a_matrix)
         _atomic_add_body_vector(right_hand_side, vector_offset, bid_a_local, a_right_hand_side)
     if bid_b_local >= 0:
-        b_rows = _body_matrix_rows(vector_offset, inverse_permutation, bid_b_local)
+        b_rows = _body_matrix_rows(vector_offset, inverse_permutation, bid_b_local, dimension)
         _atomic_add_body_block(matrix, matrix_offset, dimension, b_rows, b_rows, b_matrix)
         _atomic_add_body_vector(right_hand_side, vector_offset, bid_b_local, b_right_hand_side)
     if bid_a_local >= 0 and bid_b_local >= 0:
@@ -694,7 +696,7 @@ def _compute_free_body_blocks(
     block = body_block[bid]
     if block < 0:
         return
-    rows = _body_matrix_rows(vector_offsets[block], inverse_permutation, body_local[bid])
+    rows = _body_matrix_rows(vector_offsets[block], inverse_permutation, body_local[bid], dimensions[block])
     result = _read_body_block(matrix, matrix_offsets[block], dimensions[block], rows, rows)
     lower, valid = _cholesky_mat66(0.5 * (result + wp.transpose(result)))
     if valid:
@@ -1067,14 +1069,14 @@ def make_patch_weights_kernel(woodbury: bool):
         offset = matrix_offsets[block]
         dimension = dimensions[block]
         vector_offset = vector_offsets[block]
-        rows = _body_matrix_rows(vector_offset, inverse_permutation, body_local[bid])
+        rows = _body_matrix_rows(vector_offset, inverse_permutation, body_local[bid], dimension)
         pinned = _read_body_block(matrix, offset, dimension, rows, rows)
         for entry in range(neighbor_offset[bid], neighbor_offset[bid + 1]):
             neighbor = neighbor_body[entry]
             neighbor_lower = diagonal_lower[neighbor]
             if not (neighbor_lower[0, 0] > 0.0):
                 continue
-            neighbor_rows = _body_matrix_rows(vector_offset, inverse_permutation, body_local[neighbor])
+            neighbor_rows = _body_matrix_rows(vector_offset, inverse_permutation, body_local[neighbor], dimension)
             # Y = L_j^-1 A_ji, then A_ij A_jj^-1 A_ji = Y^T Y
             coupling = _read_body_block(matrix, offset, dimension, neighbor_rows, rows)
             solved = mat66f(0.0)
@@ -1140,20 +1142,29 @@ def _add_body_weights_to_matrix(
     scale: wp.float32,
     # Outputs:
     matrix: wp.array[wp.float32],
+    single_body_inverse: wp.array[mat66f],
 ):
-    """Add the scaled splitting weight of each body to its diagonal block of the matrix."""
+    """Add the scaled splitting weight of each body to its diagonal block of the matrix.
+
+    A body alone in its block also stores the inverse of its weighted block, which is its whole factorization.
+    """
     bid = wp.tid()
     block = body_block[bid]
     if block < 0:
         return
     dimension = dimensions[block]
     matrix_offset = matrix_offsets[block]
-    rows = _body_matrix_rows(vector_offsets[block], inverse_permutation, body_local[bid])
+    rows = _body_matrix_rows(vector_offsets[block], inverse_permutation, body_local[bid], dimension)
     body_weight = scale * weight[bid]
-    for row in range(6):
-        for col in range(6):
-            index = _matrix_index(matrix_offset, dimension, rows[row], rows[col])
-            matrix[index] += body_weight[row, col]
+    if scale != 0.0:
+        for row in range(6):
+            for col in range(6):
+                index = _matrix_index(matrix_offset, dimension, rows[row], rows[col])
+                matrix[index] += body_weight[row, col]
+    if dimension == 6:
+        block_matrix = _read_body_block(matrix, matrix_offset, dimension, rows, rows)
+        inverse, _valid = _invert_spd_mat66(0.5 * (block_matrix + wp.transpose(block_matrix)))
+        single_body_inverse[bid] = inverse
 
 
 @wp.kernel
@@ -1173,10 +1184,17 @@ def _build_candidate_right_hand_side(
     dynamic_jacobian_b: wp.array[vec6f],
     effort_counter: wp.array[wp.float32],
     structural_impulse: wp.array[vec6f],
+    body_block: wp.array[wp.int32],
+    dimensions: wp.array[wp.int32],
+    single_body_inverse: wp.array[mat66f],
     # Outputs:
     candidate_right_hand_side: wp.array[wp.float32],
+    packed_solution: wp.array[wp.float32],
 ):
-    """Add the splitting target and the current row impulses of each body to the frozen right-hand side."""
+    """Add the splitting target and the current row impulses of each body to the frozen right-hand side.
+
+    A body alone in its block writes its solution through the inverse of its block.
+    """
     bid = wp.tid()
     body_offset = body_vector_index[bid]
     if body_offset < 0:
@@ -1197,5 +1215,36 @@ def _build_candidate_right_hand_side(
         if body_effort_side[incidence] != 0:
             jacobian = dynamic_jacobian_b[dynamic_row]
         target += effort_counter[effort] * jacobian
+    candidate = vec6f(0.0)
     for row in range(6):
-        candidate_right_hand_side[body_offset + row] = smooth_right_hand_side[body_offset + row] + target[row]
+        candidate[row] = smooth_right_hand_side[body_offset + row] + target[row]
+        candidate_right_hand_side[body_offset + row] = candidate[row]
+    if dimensions[body_block[bid]] == 6:
+        solution = single_body_inverse[bid] * candidate
+        for row in range(6):
+            packed_solution[body_offset + row] = solution[row]
+
+
+@wp.kernel
+def _solve_single_body_blocks(
+    # Inputs:
+    body_block: wp.array[wp.int32],
+    body_vector_index: wp.array[wp.int32],
+    dimensions: wp.array[wp.int32],
+    single_body_inverse: wp.array[mat66f],
+    right_hand_side: wp.array[wp.float32],
+    # Outputs:
+    solution: wp.array[wp.float32],
+):
+    """Solve the blocks that hold a single body with their inverses."""
+    bid = wp.tid()
+    block = body_block[bid]
+    if block < 0 or dimensions[block] != 6:
+        return
+    body_offset = body_vector_index[bid]
+    value = vec6f(0.0)
+    for row in range(6):
+        value[row] = right_hand_side[body_offset + row]
+    value = single_body_inverse[bid] * value
+    for row in range(6):
+        solution[body_offset + row] = value[row]
