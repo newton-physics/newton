@@ -7,7 +7,7 @@ Parameters:
     Description: Existing SNS topic ARN for watchdog alarm transitions.
   TerminateAfterMinutes:
     Type: Number
-    Default: 90
+    Default: 120
     MinValue: 1
     MaxValue: 120
     Description: Age at which an owned running instance becomes a cleanup candidate.
@@ -125,7 +125,7 @@ Resources:
 
           CREATED_BY = "github-actions-newton-role"
           METRIC_NAMESPACE = "Newton/GitHubRunnerWatchdog"
-          PRODUCTION_TERMINATE_AFTER_MINUTES = 90
+          PRODUCTION_TERMINATE_AFTER_MINUTES = 120
 
 
           def parse_bool(value):

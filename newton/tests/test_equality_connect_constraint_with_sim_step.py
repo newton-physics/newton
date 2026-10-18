@@ -10,8 +10,8 @@ import warp as wp
 
 import newton
 from newton import ModelFlags
+from newton._src.solvers.mujoco.constants import HINGE_CONNECT_HALF_SPAN
 from newton._src.solvers.mujoco.equality import _add_equality_constraint
-from newton._src.solvers.mujoco.solver_mujoco import HINGE_CONNECT_AXIS_OFFSET
 from newton.solvers import SolverMuJoCo
 
 
@@ -578,11 +578,10 @@ class TestLoopJointConnectConstraintBase(TestEqualityConstraintWithSimStepBase):
         )
         hinge_axis = wp.quat_rotate(parent_quat, hinge_axis_local)
 
-        # First CONNECT anchor1 = parent_anchor (in body_b frame)
-        anchor1_a = parent_anchor
-        # Second CONNECT anchor1 = parent_anchor + offset * hinge_axis (in body_b frame)
-        d = HINGE_CONNECT_AXIS_OFFSET
-        anchor1_b = parent_anchor + wp.vec3(d * hinge_axis[0], d * hinge_axis[1], d * hinge_axis[2])
+        # CONNECT anchor1 = parent_anchor -/+ half span * hinge_axis (in body_b frame)
+        half_offset = HINGE_CONNECT_HALF_SPAN * hinge_axis
+        anchor1_a = parent_anchor - half_offset
+        anchor1_b = parent_anchor + half_offset
 
         # Compute anchor2 using relative transform between parent (body_b) and child (root_body)
         # q_rel = inv(q_child) * q_parent

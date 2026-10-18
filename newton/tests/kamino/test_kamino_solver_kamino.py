@@ -14,6 +14,7 @@ import warp as wp
 
 import newton
 import newton._src.solvers.kamino.config as kamino_config
+from newton._src.sim.shape_contact_pairs import _ShapeContactPairs
 from newton._src.solvers.kamino._src.core.control import ControlKamino
 from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.joints import JointActuationType
@@ -440,6 +441,61 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
         builder.replicate(source_builder, world_count=3)
         return builder.finalize(device=self.default_device, skip_validation_joints=True)
 
+    def test_pair_tables_match_collision_mode(self):
+        """Retain pair identities only for collision modes that consume them."""
+        for mode, use_detector, pipeline, broadphase, needs_pairs in (
+            ("external", False, "unified", "explicit", False),
+            ("unified_sap", True, "unified", "sap", False),
+            ("unified_nxn", True, "unified", "nxn", False),
+            ("default", True, None, None, True),
+            ("unified_explicit", True, "unified", "explicit", True),
+            ("primitive_sap", True, "primitive", "sap", True),
+        ):
+            with self.subTest(mode=mode):
+                if pipeline == "primitive":
+                    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+                    SolverKamino.register_custom_attributes(builder)
+                    builder.begin_world()
+                    for height in (0.0, 0.15):
+                        body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, height)))
+                        builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+                    builder.end_world()
+                    model = builder.finalize(device=self.default_device)
+                else:
+                    model = self._make_three_world_model()
+                self.assertIsNone(model._shape_contact_pairs)
+                detector_config = (
+                    None
+                    if pipeline is None
+                    else kamino_config.CollisionDetectorConfig(pipeline=pipeline, broadphase=broadphase)
+                )
+                config = SolverKamino.Config(use_collision_detector=use_detector, collision_detector=detector_config)
+                with mock.patch.object(
+                    _ShapeContactPairs,
+                    "build_pairs",
+                    autospec=True,
+                    side_effect=_ShapeContactPairs.build_pairs if needs_pairs else AssertionError("Enumerated pairs"),
+                ) as build:
+                    solver = SolverKamino(model, config=config)
+                    self.assertEqual(solver._model_kamino.geoms.collidable_pairs is not None, needs_pairs)
+                    self.assertEqual(model._shape_contact_pairs is not None, needs_pairs)
+                    if needs_pairs:
+                        build.assert_called_once()
+                        np.testing.assert_array_equal(
+                            solver._model_kamino.geoms.collidable_pairs.numpy(), model.shape_contact_pairs.numpy()
+                        )
+                    if use_detector:
+                        solver._collision_detector_kamino.collide(
+                            data=solver._solver_kamino._data, contacts=solver._contacts_kamino
+                        )
+                    else:
+                        collision_pipeline = newton.CollisionPipeline(model, broad_phase="sap", shape_pairs_max=64)
+                        contacts = collision_pipeline.contacts()
+                        state = model.state()
+                        collision_pipeline.collide(state, contacts)
+                        solver.update_contacts(contacts, state)
+                    self.assertEqual(model._shape_contact_pairs is not None, needs_pairs)
+
     def test_capacity_allocation_for_pipeline_allocated_after_kamino(self):
         """Verify capacity allocation for a pipeline allocated after Kamino."""
         model = self._make_three_world_model()
@@ -481,18 +537,20 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
 
         self.assertIsInstance(solver._solver_kamino._integrator, IntegratorMoreauJean)
 
-    def test_eager_contact_outputs_bind_during_step(self):
-        """Allocate from published native capacity and populate bound contacts."""
+    def test_contact_observables_bind_at_allocation(self):
+        """Allocate from the supplied contacts and populate them with native geometry."""
         model = self._make_three_world_model()
         solver = SolverKamino(model, config=SolverKamino.Config(use_collision_detector=True))
-        flags = {newton.solvers.SolverObservableFlags.CONTACT_F}
-        with self.assertRaisesRegex(RuntimeError, "CollisionPipeline"):
-            solver.observables(flags)
+        flags = {newton.solvers.SolverBase.ObservableKind.CONTACT_F}
+        with self.assertRaisesRegex(ValueError, "Contacts"):
+            solver.observables(solver.supported_observables)
         pipeline = newton.CollisionPipeline(model)
-        observables = solver.observables(flags)
-        self.assertEqual(observables.contact_f.shape, (pipeline.rigid_contact_max + pipeline.soft_contact_max,))
-        self.assertIsNone(observables.contacts)
         contacts = pipeline.contacts()
+        observables = solver.observables(solver.supported_observables, contacts=contacts)
+        self.assertEqual(observables.kinds, solver.supported_observables)
+        self.assertEqual(observables.body_qdd.shape, (model.body_count,))
+        self.assertEqual(observables.contact_f.shape, (pipeline.rigid_contact_max + pipeline.soft_contact_max,))
+        self.assertIs(observables.contacts, contacts)
         pointer = observables.contact_f.ptr
         solver.step(model.state(), model.state(), model.control(), contacts, SIM_DT, observables=observables)
         self.assertIs(observables.contacts, contacts)
@@ -567,7 +625,9 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
                     )
                     pipeline = newton.CollisionPipeline(model)
                     contacts = pipeline.contacts()
-                    observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+                    observables = solver.observables(
+                        contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F}
+                    )
                     state_in = model.state()
                     state_in.body_qd.assign(
                         np.array([[1.0, 0.0, -0.2, 0.0, 3.0, 0.0], [-1.0, 0.0, 0.2, 0.0, -3.0, 0.0]], dtype=np.float32)

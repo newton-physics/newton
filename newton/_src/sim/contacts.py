@@ -9,6 +9,7 @@ from typing import Literal
 import warp as wp
 from warp import DeviceLike as Devicelike
 
+from ..exceptions import NewtonDeprecationWarning
 from ..geometry.tri_mesh_collision import TriMeshCollisionInfo, build_tri_mesh_collision_info
 
 GENERATION_SENTINEL = -1
@@ -32,7 +33,7 @@ def _warn_rigid_contact_diff_deprecated(name: str) -> None:
     replacement = _RIGID_CONTACT_DIFF_REPLACEMENTS[name]
     warnings.warn(
         f"Contacts.{name} is deprecated in Newton 1.6 and will be removed in a future release; {replacement}.",
-        DeprecationWarning,
+        NewtonDeprecationWarning,
         stacklevel=3,
     )
 
@@ -135,7 +136,7 @@ class Contacts:
 
     .. deprecated:: 1.7
 
-        Request :attr:`newton.solvers.SolverObservableFlags.CONTACT_F` from the
+        Request :attr:`newton.solvers.SolverBase.ObservableKind.CONTACT_F` from the
         solver instead.
     """
 
@@ -351,8 +352,18 @@ class Contacts:
                 Non-negative elements index matching contacts in the previous sorted contact buffer.
                 Negative elements indicate new or broken contacts.
                 Shape (rigid_contact_max,), dtype int32."""
+                self.rigid_contact_match_generation = wp.full(1, GENERATION_SENTINEL, dtype=wp.int32)
+                """:attr:`contact_generation` of this buffer's contact set that
+                :attr:`rigid_contact_match_index` refers to.
+
+                ``-1`` when the indices refer to no earlier contact set of this buffer:
+                the pipeline's previous collision pass wrote another buffer, or wrote none,
+                or the buffer was written without matching. Consumers that carry
+                per-contact state across frames can compare it with the generation they
+                saved. Shape (1,), dtype int32."""
             else:
                 self.rigid_contact_match_index = None
+                self.rigid_contact_match_generation = None
 
             if contact_report:
                 self.rigid_contact_new_indices = wp.zeros(rigid_contact_max, dtype=wp.int32)
@@ -444,8 +455,8 @@ class Contacts:
             is documented by its ``update_contacts`` method; unpopulated rows are left unwritten.
 
             .. deprecated:: 1.7
-                Request :attr:`newton.solvers.SolverObservableFlags.CONTACT_F` and read
-                :attr:`newton.solvers.SolverObservables.contact_f` instead.
+                Request :attr:`newton.solvers.SolverBase.ObservableKind.CONTACT_F` and read
+                :attr:`newton.solvers.SolverBase.Observables.contact_f` instead.
             """
             if requested_attributes and "force" in requested_attributes:
                 total_contacts = rigid_contact_max + soft_contact_max
@@ -539,6 +550,7 @@ class Contacts:
 
             if self.rigid_contact_match_index is not None:
                 self.rigid_contact_match_index.fill_(-1)
+                self.rigid_contact_match_generation.fill_(GENERATION_SENTINEL)
 
             self.soft_contact_indices.fill_(wp.vec3i(-1, -1, -1))
             self.soft_contact_particle.fill_(-1)

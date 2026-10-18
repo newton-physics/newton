@@ -11,11 +11,13 @@ Imports ``UsdGeom.TetMesh`` prims as soft bodies via :meth:`ModelBuilder.add_sof
 from __future__ import annotations
 
 import copy
+import logging
 import warnings
 
 import numpy as np
 import warp as wp
 
+from ..exceptions import NewtonWarning
 from ..sim.model import Model
 from .import_usd_deformable_utils import (
     _AOUSD_DEFAULT_POISSONS_RATIO,
@@ -36,6 +38,8 @@ from .import_usd_deformable_utils import (
     _warn_unsupported_rest_fields,
     _world_matrix_reflects,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
@@ -78,13 +82,14 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
                 warnings.warn(
                     f"{path}: non-simulation TetMesh under deformable body {owner_body.GetPath()}; "
                     f"treated as graphics/collision geometry (not simulated).",
+                    NewtonWarning,
                     stacklevel=2,
                 )
                 continue
 
         skip_reason = _deformable_body_skip_reason(prim, deformable_read)
         if skip_reason is not None:
-            warnings.warn(f"{path}: {skip_reason}; skipping soft-body import.", stacklevel=2)
+            warnings.warn(f"{path}: {skip_reason}; skipping soft-body import.", NewtonWarning, stacklevel=2)
             continue
         # One simulation geometry per deformable body across ALL families (the scout picks the
         # first candidate in traversal order), so a body-level mass is applied exactly once.
@@ -109,7 +114,7 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
         except ValueError as exc:
             # Malformed authored topology (e.g. out-of-range tet indices) must not abort the
             # whole import; skip the prim like other broken deformable geometry.
-            warnings.warn(f"{path}: invalid TetMesh; skipping soft-body import ({exc}).", stacklevel=2)
+            warnings.warn(f"{path}: invalid TetMesh; skipping soft-body import ({exc}).", NewtonWarning, stacklevel=2)
             continue
         supported_frequencies = {
             Model.AttributeFrequency.PARTICLE,
@@ -133,6 +138,7 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
                 warnings.warn(
                     f"{path}: registered TetMesh attribute '{attr.usd_attribute_name}' has ONCE frequency, "
                     "which cannot be attached per soft body and is not imported.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
         frequency_counts = {
@@ -152,6 +158,7 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
                     f"{path}: registered TetMesh attribute '{attr.usd_attribute_name}' has array length "
                     f"{actual_count}, which does not match {frequency_name} count {expected_count}; "
                     "skipping the attribute.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
                 continue
@@ -262,4 +269,6 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             }
 
         if verbose:
-            print(f"Added soft mesh {path} with {tetmesh.vertex_count} vertices and {tetmesh.tet_count} tetrahedra.")
+            logger.info(
+                "Added soft mesh %s with %s vertices and %s tetrahedra.", path, tetmesh.vertex_count, tetmesh.tet_count
+            )

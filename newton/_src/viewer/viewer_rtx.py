@@ -32,6 +32,7 @@ import warp as wp
 import newton
 
 from ..core.types import Axis, override
+from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..utils.mesh import compute_vertex_normals
 
 try:
@@ -1030,6 +1031,7 @@ void main() {
             warnings.warn(
                 f"ViewerRTX: {len(unbound)} of {model.body_count} bodies have no prim at their label in the "
                 f"borrowed stage and are not rendered, e.g. {unbound[:3]}",
+                NewtonWarning,
                 stacklevel=3,
             )
         if not paths:
@@ -1079,6 +1081,7 @@ void main() {
             warnings.warn(
                 "ViewerRTX: body poses in the model and the borrowed stage differ by more than one rigid "
                 "transform; rendering bodies at their model poses",
+                NewtonWarning,
                 stacklevel=4,
             )
             return None
@@ -1377,7 +1380,7 @@ void main() {
             except Exception as exc:
                 warnings.warn(
                     f"ViewerRTX: Failed to precompile Warp kernels for device {model.device}: {exc}",
-                    category=RuntimeWarning,
+                    category=NewtonWarning,
                     stacklevel=2,
                 )
 
@@ -1776,7 +1779,7 @@ void main() {
                 except Exception as exc:
                     warnings.warn(
                         f"ViewerRTX: error dispatching window events: {exc}",
-                        category=RuntimeWarning,
+                        category=NewtonWarning,
                         stacklevel=2,
                     )
                     self._should_close = True
@@ -2787,9 +2790,7 @@ void main() {
             self._window.flip()
 
     @override
-    def get_frame(
-        self, target_image: wp.array3d[wp.uint8] | None = None, *, render_ui: bool = False
-    ) -> wp.array3d[wp.uint8]:
+    def get_frame(self, *, output: wp.array3d[wp.uint8] | None = None, render_ui: bool = False) -> wp.array3d[wp.uint8]:
         """Retrieve the last rendered frame as RGB image data.
 
         Like :meth:`ViewerGL.get_frame`, this returns a Warp array on the
@@ -2804,7 +2805,7 @@ void main() {
         resumes after the next scene render.
 
         Args:
-            target_image: Optional pre-allocated Warp array on the viewer
+            output: Optional pre-allocated Warp array on the viewer
                 device with shape ``(height, width, 3)`` and dtype ``wp.uint8``.
                 If ``None``, a new array is created.
             render_ui: Whether to include UI overlays. Only ``False`` is
@@ -2814,11 +2815,11 @@ void main() {
             RGB image data on the viewer device with shape
             ``(height, width, 3)`` and dtype ``wp.uint8``. The origin is
             top-left and the dimensions are the fixed render resolution.
-            If supplied, returns ``target_image``.
+            If supplied, returns ``output``.
 
         Raises:
             RuntimeError: No rendered frame or color output is available.
-            ValueError: The target shape, dtype, or device is incompatible.
+            ValueError: The output shape, dtype, or device is incompatible.
             NotImplementedError: ``render_ui`` is ``True`` or the last frame
                 displayed a fullscreen logged image.
         """
@@ -2828,23 +2829,23 @@ void main() {
             raise NotImplementedError("ViewerRTX.get_frame() does not support capturing fullscreen logged images")
 
         h, w = self._render_height, self._render_width
-        if target_image is None:
-            target_image = wp.empty(shape=(h, w, 3), dtype=wp.uint8, device=self.device)
+        if output is None:
+            output = wp.empty(shape=(h, w, 3), dtype=wp.uint8, device=self.device)
         else:
-            if target_image.shape != (h, w, 3):
-                raise ValueError(f"Shape of `target_image` must be ({h}, {w}, 3), got {target_image.shape}")
-            if target_image.dtype != wp.uint8:
-                raise ValueError(f"The dtype of `target_image` must be wp.uint8, got {target_image.dtype}")
-            if target_image.device != self.device:
-                raise ValueError(f"The device of `target_image` must be {self.device}, got {target_image.device}")
+            if output.shape != (h, w, 3):
+                raise ValueError(f"Shape of `output` must be ({h}, {w}, 3), got {output.shape}")
+            if output.dtype != wp.uint8:
+                raise ValueError(f"The dtype of `output` must be wp.uint8, got {output.dtype}")
+            if output.device != self.device:
+                raise ValueError(f"The device of `output` must be {self.device}, got {output.device}")
 
         # Async presentation retains the previous frame; capture needs the latest.
         if not self.is_rendering_paused() and self._render_result is not None:
             self._render_products = self._render_result.wait().fetch()
 
         pixels = self._capture_screenshot_pixels()
-        target_image.assign(np.ascontiguousarray(pixels[:, :, :3]))
-        return target_image
+        output.assign(np.ascontiguousarray(pixels[:, :, :3]))
+        return output
 
     def _capture_screenshot_pixels(self) -> np.ndarray:
         if self.is_rendering_paused():
@@ -2895,7 +2896,7 @@ void main() {
         warnings.warn(
             "ViewerRTX.save_screenshot() is deprecated in Newton 1.7; "
             "use get_frame().numpy() and an image library such as Pillow to save the image instead.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         from PIL import Image
