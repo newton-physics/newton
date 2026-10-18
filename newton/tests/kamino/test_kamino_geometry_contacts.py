@@ -751,6 +751,9 @@ class TestGeometryContactConversions(unittest.TestCase):
             msg.reset_log_level()
 
     def tearDown(self):
+        # Flush the device printf buffer so capacity-overflow warnings are
+        # not flushed during whichever test happens to synchronize next.
+        wp.synchronize()
         self.default_device = None
         if self.verbose:
             msg.reset_log_level()
@@ -1605,10 +1608,6 @@ class TestGeometryContactConversions(unittest.TestCase):
         self.assertEqual(int(kamino.model_active_contacts.numpy()[0]), 2)
         bid_AB = kamino.bid_AB.numpy()[:2]
         self.assertTrue(np.all(bid_AB[:, 1] >= 0))
-
-        # Flush the device printf buffer (the capacity warning above) so it is
-        # not flushed during whichever test happens to synchronize next.
-        wp.synchronize()
 
     def test_10_speculative_contacts_culled(self):
         """Speculative box-plane contacts are dropped by default.
