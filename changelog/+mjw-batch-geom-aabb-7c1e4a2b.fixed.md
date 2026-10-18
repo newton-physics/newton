@@ -1,0 +1,1 @@
+Recompute per-world `geom_aabb` and `geom_rbound` in `SolverMuJoCo` from each world's shape sizes (and batch `geom_aabb` when `separate_worlds=True`), so MuJoCo Warp's broadphase no longer culls every world with world 0's bounds when shapes differ in size or are resized at runtime.

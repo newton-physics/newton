@@ -2454,6 +2454,14 @@ def update_geom_properties_kernel(
     geom_type: wp.array[int],
     GEOM_TYPE_MESH: int,
     GEOM_TYPE_HFIELD: int,
+    GEOM_TYPE_SDF: int,
+    GEOM_TYPE_PLANE: int,
+    GEOM_TYPE_SPHERE: int,
+    GEOM_TYPE_CAPSULE: int,
+    GEOM_TYPE_ELLIPSOID: int,
+    GEOM_TYPE_CYLINDER: int,
+    GEOM_TYPE_BOX: int,
+    mj_maxval: float,
     geom_dataid: wp.array2d[int],
     mesh_pos: wp.array[wp.vec3],
     mesh_quat: wp.array[wp.quat],
@@ -2477,15 +2485,18 @@ def update_geom_properties_kernel(
     geom_solmix: wp.array2d[float],
     geom_gap: wp.array2d[float],
     geom_margin: wp.array2d[float],
+    geom_aabb: wp.array3d[wp.vec3f],
+    geom_rbound: wp.array2d[float],
 ):
     """Update MuJoCo geom properties from Newton shape properties.
 
     Iterates over MuJoCo geoms [world, geom], looks up Newton shape index,
     and copies shape properties to geom properties.
 
-    Note: geom_rbound (collision radius) is not updated here. MuJoCo computes
-    this internally based on the geometry, and Newton's shape_collision_radius
-    is not compatible with MuJoCo's bounding sphere calculation.
+    Note: geom_aabb and geom_rbound (the broadphase bounds) are recomputed here
+    for primitive geoms from the per-world size, the way mj_setConst does, so
+    worlds with different shape sizes are not culled with another world's
+    bounds. Mesh, SDF and height field geoms keep the bounds from put_model.
 
     Note: geom_gap is forwarded from shape_gap (MuJoCo 3.9 semantics:
     gap widens the detection envelope without affecting force generation).
@@ -2535,9 +2546,41 @@ def update_geom_properties_kernel(
     else:
         geom_margin[world, geom_idx] = shape_margin[shape_idx]
 
+    # update size and the broadphase bounds that follow from it
+    size = shape_size[shape_idx]
+    gtype = geom_type[geom_idx]
     # Per-world mesh bounds are compiled from the scaled vertices.
-    if geom_type[geom_idx] != GEOM_TYPE_MESH or geom_dataid.shape[0] == 1:
-        geom_size[world, geom_idx] = shape_size[shape_idx]
+    if gtype != GEOM_TYPE_MESH or geom_dataid.shape[0] == 1:
+        geom_size[world, geom_idx] = size
+    if gtype != GEOM_TYPE_MESH and gtype != GEOM_TYPE_SDF and gtype != GEOM_TYPE_HFIELD:
+        lo = wp.vec3f(0.0)
+        hi = wp.vec3f(0.0)
+        rbound = float(0.0)
+        if gtype == GEOM_TYPE_PLANE:
+            lo = wp.vec3f(-mj_maxval)
+            hi = wp.vec3f(mj_maxval, mj_maxval, 0.0)
+        else:
+            if gtype == GEOM_TYPE_SPHERE:
+                hi = wp.vec3f(size[0])
+                rbound = size[0]
+            elif gtype == GEOM_TYPE_CAPSULE:
+                hi = wp.vec3f(size[0], size[0], size[0] + size[1])
+                rbound = size[0] + size[1]
+            elif gtype == GEOM_TYPE_CYLINDER:
+                hi = wp.vec3f(size[0], size[0], size[1])
+                rbound = wp.sqrt(size[0] * size[0] + size[1] * size[1])
+            elif gtype == GEOM_TYPE_ELLIPSOID:
+                hi = size
+                rbound = wp.max(wp.max(size[0], size[1]), size[2])
+            elif gtype == GEOM_TYPE_BOX:
+                hi = size
+                rbound = wp.length(size)
+            else:
+                hi = size
+            lo = -hi
+        geom_aabb[world, geom_idx, 0] = 0.5 * (hi + lo)
+        geom_aabb[world, geom_idx, 1] = 0.5 * (hi - lo)
+        geom_rbound[world, geom_idx] = rbound
 
     # update position and orientation
 

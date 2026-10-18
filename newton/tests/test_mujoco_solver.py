@@ -3437,6 +3437,46 @@ class TestMuJoCoSolverGeomProperties(unittest.TestCase):
                     msg=f"Updated geom_gap mismatch for shape {shape_idx} in world {world_idx}",
                 )
 
+    def test_separate_worlds_batches_geom_bounds_per_world(self):
+        """Per-world geom sizes need per-world geom_aabb/geom_rbound, or every world writes the same row."""
+        half_extents = [(0.1, 0.2, 0.3), (0.2, 0.4, 0.6)]
+        builder = newton.ModelBuilder()
+        for i, (hx, hy, hz) in enumerate(half_extents):
+            world = newton.ModelBuilder()
+            body = world.add_link(mass=1.0, com=wp.vec3(0.0), inertia=wp.mat33(np.eye(3)))
+            world.add_shape_box(body=body, hx=hx, hy=hy, hz=hz)
+            world.add_articulation([world.add_joint_free(body)])
+            builder.add_world(world, xform=wp.transform((2.0 * i, 0.0, 0.0), wp.quat_identity()))
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, separate_worlds=True, iterations=1, disable_contacts=True)
+
+        # set_const_fixed writes the bounds once per world of geom_size, so the derived fields
+        # must carry one row per world too.
+        self.assertEqual(solver.mjw_model.geom_size.shape[0], 2)
+        self.assertEqual(solver.mjw_model.geom_aabb.shape[0], 2)
+        self.assertEqual(solver.mjw_model.geom_rbound.shape[0], 2)
+
+        mapping = solver.mjc_geom_to_newton_shape.numpy()
+
+        def check_bounds(expected_half_extents):
+            aabb = solver.mjw_model.geom_aabb.numpy()
+            rbound = solver.mjw_model.geom_rbound.numpy()
+            for world_idx, extents in enumerate(expected_half_extents):
+                geom_idx = next(g for g in range(solver.mj_model.ngeom) if mapping[world_idx, g] >= 0)
+                assert_np_equal(aabb[world_idx, geom_idx, 0], np.zeros(3), tol=1e-6)
+                assert_np_equal(aabb[world_idx, geom_idx, 1], np.array(extents), tol=1e-6)
+                self.assertAlmostEqual(float(rbound[world_idx, geom_idx]), float(np.linalg.norm(extents)), places=6)
+
+        check_bounds(half_extents)
+
+        # Resizing one world's shape at runtime must move only that world's bounds.
+        scale = model.shape_scale.numpy()
+        scale[1] = np.array(half_extents[1]) * 0.5
+        model.shape_scale.assign(scale)
+        solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
+        check_bounds([half_extents[0], tuple(0.5 * np.array(half_extents[1]))])
+
 
 class TestMuJoCoSolverEqualityConstraintProperties(unittest.TestCase):
     def test_connect_reference_anchors_use_free_joint_coordinates(self):
