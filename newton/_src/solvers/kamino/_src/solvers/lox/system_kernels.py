@@ -27,17 +27,18 @@ from ...core.types import mat36f, mat66f, vec6f, vec6i
 
 __all__ = [
     "ProjectionWeights",
-    "_add_body_weights_to_matrix",
     "_assemble_body_inertial_systems",
     "_assemble_joint_rows",
     "_build_candidate_right_hand_side",
     "_compute_free_body_blocks",
+    "_compute_patch_weights",
+    "_invert_single_body_blocks",
     "_solve_single_body_blocks",
     "apply_body_weight",
     "compute_body_explicit_wrench",
     "compute_structural_correction",
     "is_rotational_structural_row",
-    "make_patch_weights_kernel",
+    "make_patch_schur_kernel",
     "normalize_symmetric_matrix",
     "unpack_body_solution",
 ]
@@ -628,6 +629,43 @@ def _read_body_block(
 
 
 @wp.func
+def _store_lower_mat66(array: wp.array2d[wp.float32], index: wp.int32, matrix: mat66f):
+    """Store the lower triangle of a ``6 x 6`` matrix in column ``index`` of an array of ``21`` rows.
+
+    Consecutive bodies hold consecutive entries of each row, so the threads of consecutive bodies access
+    contiguous memory.
+    """
+    for row in range(6):
+        for col in range(6):
+            if col <= row:
+                array[row * (row + 1) // 2 + col, index] = matrix[row, col]
+
+
+@wp.func
+def _load_lower_mat66(array: wp.array2d[wp.float32], index: wp.int32) -> mat66f:
+    """Load a lower triangular ``6 x 6`` matrix stored by :func:`_store_lower_mat66`."""
+    matrix = mat66f(0.0)
+    for row in range(6):
+        for col in range(6):
+            if col <= row:
+                matrix[row, col] = array[row * (row + 1) // 2 + col, index]
+    return matrix
+
+
+@wp.func
+def _load_symmetric_mat66(array: wp.array2d[wp.float32], index: wp.int32) -> mat66f:
+    """Load a symmetric ``6 x 6`` matrix whose lower triangle is stored by :func:`_store_lower_mat66`."""
+    matrix = mat66f(0.0)
+    for row in range(6):
+        for col in range(6):
+            if col <= row:
+                value = array[row * (row + 1) // 2 + col, index]
+                matrix[row, col] = value
+                matrix[col, row] = value
+    return matrix
+
+
+@wp.func
 def _joint_row_side_block(
     kind: wp.int32,
     row: wp.int32,
@@ -694,15 +732,18 @@ def _compute_free_body_blocks(
     dynamic_effective_inertia: wp.array[wp.float32],
     model_time_dt: wp.array[wp.float32],
     # Outputs:
-    free_block: wp.array[mat66f],
-    free_lower: wp.array[mat66f],
-    diagonal_lower: wp.array[mat66f],
+    diagonal_block: wp.array2d[wp.float32],
+    diagonal_lower: wp.array2d[wp.float32],
+    free_block: wp.array2d[wp.float32],
+    free_lower: wp.array2d[wp.float32],
 ):
     """Return the diagonal block of each body without its joint rows to other dynamic bodies, and its Cholesky factor.
 
     The incidence lists only hold these rows; the rows to static bodies stay in the block. The factor is zero
-    when the block is not positive definite, e.g. for a massless body. ``diagonal_lower`` receives the Cholesky
-    factor of the full diagonal block, or zero, which the pinned patches of the joint neighbors share.
+    when the block is not positive definite, e.g. for a massless body. ``diagonal_block`` and
+    ``diagonal_lower`` receive the full diagonal block and its Cholesky factor, or zero, which the pinned
+    patches of the joint neighbors share. The outputs hold the lower triangles of symmetric and lower
+    triangular blocks, see :func:`_store_lower_mat66`.
     """
     bid = wp.tid()
     block = body_block[bid]
@@ -710,11 +751,12 @@ def _compute_free_body_blocks(
         return
     rows = _body_matrix_rows(vector_offsets[block], inverse_permutation, body_local[bid], dimensions[block])
     result = _read_body_block(matrix, matrix_offsets[block], dimensions[block], rows, rows)
-    lower, valid = _cholesky_mat66(0.5 * (result + wp.transpose(result)))
-    if valid:
-        diagonal_lower[bid] = lower
-    else:
-        diagonal_lower[bid] = mat66f(0.0)
+    diagonal = 0.5 * (result + wp.transpose(result))
+    _store_lower_mat66(diagonal_block, bid, diagonal)
+    lower, valid = _cholesky_mat66(diagonal)
+    if not valid:
+        lower = mat66f(0.0)
+    _store_lower_mat66(diagonal_lower, bid, lower)
     for incident in range(incidence_offset[bid], incidence_offset[bid + 1]):
         result -= _joint_row_side_block(
             incidence_kind[incident],
@@ -729,12 +771,12 @@ def _compute_free_body_blocks(
             dynamic_effective_inertia,
             model_time_dt,
         )
-    free_block[bid] = result
-    lower, valid = _cholesky_mat66(0.5 * (result + wp.transpose(result)))
-    if valid:
-        free_lower[bid] = lower
-    else:
-        free_lower[bid] = mat66f(0.0)
+    symmetric = 0.5 * (result + wp.transpose(result))
+    _store_lower_mat66(free_block, bid, symmetric)
+    lower, valid = _cholesky_mat66(symmetric)
+    if not valid:
+        lower = mat66f(0.0)
+    _store_lower_mat66(free_lower, bid, lower)
 
 
 @wp.func
@@ -758,23 +800,26 @@ def _joint_row(
 
 
 @wp.func
-def _finish_body_weight(bid: wp.int32, schur: mat66f, weight: wp.array[mat66f], inverse_weight: wp.array[mat66f]):
-    """Store the symmetrized weight and its inverse, or zero when it is not positive definite."""
+def _finish_body_weight(
+    bid: wp.int32, schur: mat66f, weight: wp.array[mat66f], inverse_weight: wp.array[mat66f]
+) -> mat66f:
+    """Store and return the symmetrized weight, with its inverse, or zero when it is not positive definite."""
     symmetric = 0.5 * (schur + wp.transpose(schur))
     inverse, ok = _invert_spd_mat66(symmetric)
     if not ok:
         weight[bid] = mat66f(0.0)
         inverse_weight[bid] = mat66f(0.0)
-        return
+        return mat66f(0.0)
     weight[bid] = symmetric
     inverse_weight[bid] = inverse
+    return symmetric
 
 
 @wp.func
 def _free_patch_schur(
     bid: wp.int32,
-    free_block: wp.array[mat66f],
-    free_lower: wp.array[mat66f],
+    free_block: wp.array2d[wp.float32],
+    free_lower: wp.array2d[wp.float32],
     neighbor_offset: wp.array[wp.int32],
     neighbor_body: wp.array[wp.int32],
     neighbor_row_offset: wp.array[wp.int32],
@@ -802,11 +847,12 @@ def _free_patch_schur(
     inertia of the patch. A neighbor whose ``F_j`` is not positive definite, e.g. a massless body, adds
     nothing. The result bounds ``[(A^-1)_ii]^-1`` from below.
     """
-    schur = free_block[bid]
+    schur = _load_symmetric_mat66(free_block, bid)
     for entry in range(neighbor_offset[bid], neighbor_offset[bid + 1]):
-        lower = free_lower[neighbor_body[entry]]
-        if not (lower[0, 0] > 0.0):
+        neighbor = neighbor_body[entry]
+        if not (free_lower[0, neighbor] > 0.0):
             continue
+        lower = _load_lower_mat66(free_lower, neighbor)
         # Joint rows on the body and rows of L_j^-1 J_ej^T in fixed slots; an unused slot is a zero row with a
         # unit diagonal in K = C^-1 + J_ej F_j^-1 J_ej^T
         row_begin = neighbor_row_offset[entry]
@@ -879,7 +925,7 @@ def _free_patch_schur(
 @wp.func
 def _free_patch_schur_subtraction(
     bid: wp.int32,
-    free_block: wp.array[mat66f],
+    free_block: wp.array2d[wp.float32],
     neighbor_offset: wp.array[wp.int32],
     neighbor_body: wp.array[wp.int32],
     neighbor_row_offset: wp.array[wp.int32],
@@ -899,9 +945,9 @@ def _free_patch_schur_subtraction(
 
     Equivalent to :func:`_free_patch_schur` for joints with more than six rows between two bodies.
     """
-    schur = free_block[bid]
+    schur = _load_symmetric_mat66(free_block, bid)
     for entry in range(neighbor_offset[bid], neighbor_offset[bid + 1]):
-        neighbor_matrix = free_block[neighbor_body[entry]]
+        neighbor_matrix = _load_symmetric_mat66(free_block, neighbor_body[entry])
         coupling = mat66f(0.0)
         for row_entry in range(neighbor_row_offset[entry], neighbor_row_offset[entry + 1]):
             coefficient, jacobian_a, jacobian_b = _joint_row(
@@ -940,9 +986,9 @@ def _free_patch_schur_subtraction(
 @wp.func
 def _geometric_mean_mat66(
     lower_bound: mat66f, upper_bound: mat66f, beta: wp.float32, sigma: wp.float32
-) -> tuple[mat66f, wp.bool]:
+) -> tuple[mat66f, mat66f, wp.bool]:
     """Return the matrix geometric mean ``A # B = L (L^-1 B L^-T)^1/2 L^T`` of two symmetric positive-definite
-    ``6 x 6`` matrices, with ``A = L L^T``, and whether it is defined.
+    ``6 x 6`` matrices, with ``A = L L^T``, its inverse, and whether it is defined.
 
     ``A`` is the lower bound, so the eigenvalues of ``L^-1 B L^-T`` are clamped at one, which keeps the
     mean at least ``A`` against round-off in ``B``. A positive ``beta`` clamps each eigenvalue ``r`` of the
@@ -951,7 +997,7 @@ def _geometric_mean_mat66(
     """
     lower, valid = _cholesky_mat66(lower_bound)
     if not valid:
-        return lower_bound, False
+        return lower_bound, lower_bound, False
     # X = L^-1 B, then M = L^-1 X^T = L^-1 B L^-T
     solved = mat66f(0.0)
     for axis in range(6):
@@ -970,29 +1016,41 @@ def _geometric_mean_mat66(
             congruent[axis, col] = value / lower[axis, axis]
     normalized, scale = normalize_symmetric_matrix(0.5 * (congruent + wp.transpose(congruent)), 6)
     if not wp.isfinite(scale) or scale <= 0.0:
-        return lower_bound, False
-    # M = P^T D P, with one eigenvector per row of P
+        return lower_bound, lower_bound, False
+    # M = P^T D P, with one eigenvector per row of P. With U = P L^T and its inverse transpose V = P L^-1,
+    # the mean is U^T D^1/2 U and its inverse V^T D^-1/2 V
     eigenvalues, eigenvectors = symmetric_eigenvalues_qr(normalized, _EIGENVALUE_TOLERANCE)
-    root = mat66f(0.0)
+    factor = eigenvectors @ wp.transpose(lower)
+    inverse_factor = eigenvectors @ _invert_lower_mat66(lower)
+    mean = mat66f(0.0)
+    inverse = mat66f(0.0)
     for index in range(6):
-        vector = eigenvectors[index]
         ratio = wp.sqrt(wp.max(scale * eigenvalues[index], 1.0))
         if beta > 0.0:
             ratio = wp.max(sigma * ratio, wp.min(ratio, beta))
-        root += ratio * wp.outer(vector, vector)
-    return lower @ root @ wp.transpose(lower), True
+        inverse_ratio = 1.0 / ratio
+        # Each pair of entries is evaluated once, which keeps both results exactly symmetric
+        for row in range(6):
+            for col in range(6):
+                if col <= row:
+                    value = ratio * (factor[index, row] * factor[index, col])
+                    inverse_value = inverse_ratio * (inverse_factor[index, row] * inverse_factor[index, col])
+                    mean[row, col] += value
+                    inverse[row, col] += inverse_value
+                    if col < row:
+                        mean[col, row] += value
+                        inverse[col, row] += inverse_value
+    return mean, inverse, True
 
 
 @cache
-def make_patch_weights_kernel(woodbury: bool):
-    """Build the kernel of the body weights ``W``.
+def make_patch_schur_kernel(woodbury: bool):
+    """Build the kernel of the free and pinned patch Schur complements of each body.
 
-    ``W_i`` is the geometric mean of the Schur complements of body ``i`` in its free and pinned patches. The
-    free complement :func:`_free_patch_schur` bounds ``[(A^-1)_ii]^-1`` from below. In the pinned patch, the
-    joint neighbors ``j`` keep their full rows of ``A`` with the other bodies held fixed, so
-    ``S_pinned = A_ii - sum_j A_ij A_jj^-1 A_ji`` bounds it from above. The weight
-    ``S_free # S_pinned`` lies between both bounds. A positive ``beta`` caps it at ``beta S_free``, and
-    ``sigma`` keeps at least that fraction of the mean, see :func:`_geometric_mean_mat66`.
+    The free complement :func:`_free_patch_schur` bounds ``[(A^-1)_ii]^-1`` from below. In the pinned patch,
+    the joint neighbors ``j`` keep their full rows of ``A`` with the other bodies held fixed, so
+    ``S_pinned = A_ii - sum_j A_ij A_jj^-1 A_ji`` bounds it from above. Both complements are stored as the
+    lower triangles of symmetric blocks, see :func:`_store_lower_mat66`.
 
     Args:
         woodbury: Whether the free complement takes the Woodbury form, for at most six joint rows between two
@@ -1000,7 +1058,7 @@ def make_patch_weights_kernel(woodbury: bool):
     """
 
     @wp.kernel
-    def _compute_patch_weights(
+    def _compute_patch_schur(
         # Inputs:
         body_block: wp.array[wp.int32],
         body_local: wp.array[wp.int32],
@@ -1010,9 +1068,10 @@ def make_patch_weights_kernel(woodbury: bool):
         inverse_permutation: wp.array[wp.int32],
         matrix: wp.array[wp.float32],
         body_weight_enabled: wp.array[wp.int32],
-        free_block: wp.array[mat66f],
-        free_lower: wp.array[mat66f],
-        diagonal_lower: wp.array[mat66f],
+        diagonal_block: wp.array2d[wp.float32],
+        diagonal_lower: wp.array2d[wp.float32],
+        free_block: wp.array2d[wp.float32],
+        free_lower: wp.array2d[wp.float32],
         neighbor_offset: wp.array[wp.int32],
         neighbor_body: wp.array[wp.int32],
         neighbor_row_offset: wp.array[wp.int32],
@@ -1027,17 +1086,13 @@ def make_patch_weights_kernel(woodbury: bool):
         dynamic_jacobian_b: wp.array[vec6f],
         dynamic_effective_inertia: wp.array[wp.float32],
         model_time_dt: wp.array[wp.float32],
-        beta: wp.float32,
-        sigma: wp.float32,
         # Outputs:
-        weight: wp.array[mat66f],
-        inverse_weight: wp.array[mat66f],
+        free_schur: wp.array2d[wp.float32],
+        pinned_schur: wp.array2d[wp.float32],
     ):
         bid = wp.tid()
         block = body_block[bid]
         if block < 0 or body_weight_enabled[bid] == 0:
-            weight[bid] = mat66f(0.0)
-            inverse_weight[bid] = mat66f(0.0)
             return
         if wp.static(woodbury):
             free = _free_patch_schur(
@@ -1078,16 +1133,17 @@ def make_patch_weights_kernel(woodbury: bool):
                 dynamic_effective_inertia,
                 model_time_dt,
             )
+        _store_lower_mat66(free_schur, bid, 0.5 * (free + wp.transpose(free)))
         offset = matrix_offsets[block]
         dimension = dimensions[block]
         vector_offset = vector_offsets[block]
         rows = _body_matrix_rows(vector_offset, inverse_permutation, body_local[bid], dimension)
-        pinned = _read_body_block(matrix, offset, dimension, rows, rows)
+        pinned = _load_symmetric_mat66(diagonal_block, bid)
         for entry in range(neighbor_offset[bid], neighbor_offset[bid + 1]):
             neighbor = neighbor_body[entry]
-            neighbor_lower = diagonal_lower[neighbor]
-            if not (neighbor_lower[0, 0] > 0.0):
+            if not (diagonal_lower[0, neighbor] > 0.0):
                 continue
+            neighbor_lower = _load_lower_mat66(diagonal_lower, neighbor)
             neighbor_rows = _body_matrix_rows(vector_offset, inverse_permutation, body_local[neighbor], dimension)
             # Y = L_j^-1 A_ji, then A_ij A_jj^-1 A_ji = Y^T Y
             coupling = _read_body_block(matrix, offset, dimension, neighbor_rows, rows)
@@ -1099,14 +1155,88 @@ def make_patch_weights_kernel(woodbury: bool):
                         value -= neighbor_lower[axis, inner] * solved[inner, col]
                     solved[axis, col] = value / neighbor_lower[axis, axis]
             pinned -= wp.transpose(solved) @ solved
-        mean, valid = _geometric_mean_mat66(
-            0.5 * (free + wp.transpose(free)), 0.5 * (pinned + wp.transpose(pinned)), beta, sigma
-        )
-        if not valid:
-            mean = free
-        _finish_body_weight(bid, mean, weight, inverse_weight)
+        _store_lower_mat66(pinned_schur, bid, 0.5 * (pinned + wp.transpose(pinned)))
 
-    return _compute_patch_weights
+    return _compute_patch_schur
+
+
+@wp.kernel
+def _compute_patch_weights(
+    # Inputs:
+    body_block: wp.array[wp.int32],
+    body_local: wp.array[wp.int32],
+    dimensions: wp.array[wp.int32],
+    matrix_offsets: wp.array[wp.int32],
+    vector_offsets: wp.array[wp.int32],
+    inverse_permutation: wp.array[wp.int32],
+    body_weight_enabled: wp.array[wp.int32],
+    diagonal_block: wp.array2d[wp.float32],
+    free_schur: wp.array2d[wp.float32],
+    pinned_schur: wp.array2d[wp.float32],
+    beta: wp.float32,
+    sigma: wp.float32,
+    matrix_weight_scale: wp.float32,
+    # Outputs:
+    matrix: wp.array[wp.float32],
+    weight: wp.array[mat66f],
+    inverse_weight: wp.array[mat66f],
+    single_body_inverse: wp.array[mat66f],
+):
+    """Set the body weights ``W`` to the geometric means of the free and pinned patch Schur complements.
+
+    ``S_free # S_pinned`` lies between both complements, see :func:`make_patch_schur_kernel`. A positive
+    ``beta`` caps it at ``beta S_free``, and ``sigma`` keeps at least that fraction of the mean, see
+    :func:`_geometric_mean_mat66`. A positive ``matrix_weight_scale`` sets the diagonal block of each body in
+    the matrix to the symmetrized ``diagonal_block`` plus that multiple of the weight. A body alone in its
+    block also stores the inverse of its weighted block, which is its whole factorization.
+    """
+    bid = wp.tid()
+    block = body_block[bid]
+    if block < 0:
+        weight[bid] = mat66f(0.0)
+        inverse_weight[bid] = mat66f(0.0)
+        return
+    mean = mat66f(0.0)
+    enabled = body_weight_enabled[bid] != 0
+    if enabled:
+        free = _load_symmetric_mat66(free_schur, bid)
+        mean, inverse, valid = _geometric_mean_mat66(free, _load_symmetric_mat66(pinned_schur, bid), beta, sigma)
+        if valid:
+            weight[bid] = mean
+            inverse_weight[bid] = inverse
+        else:
+            mean = _finish_body_weight(bid, free, weight, inverse_weight)
+    else:
+        weight[bid] = mat66f(0.0)
+        inverse_weight[bid] = mat66f(0.0)
+    dimension = dimensions[block]
+    write_matrix = enabled and matrix_weight_scale > 0.0
+    if write_matrix or dimension == 6:
+        weighted = _load_symmetric_mat66(diagonal_block, bid) + matrix_weight_scale * mean
+        if write_matrix:
+            offset = matrix_offsets[block]
+            rows = _body_matrix_rows(vector_offsets[block], inverse_permutation, body_local[bid], dimension)
+            for row in range(6):
+                for col in range(6):
+                    matrix[_matrix_index(offset, dimension, rows[row], rows[col])] = weighted[row, col]
+        if dimension == 6:
+            inverse_block, _valid = _invert_spd_mat66(weighted)
+            single_body_inverse[bid] = inverse_block
+
+
+@wp.func
+def _invert_lower_mat66(lower: mat66f) -> mat66f:
+    """Invert a lower triangular ``6 x 6`` matrix with a positive diagonal by forward substitution of each column."""
+    inverse_lower = mat66f(0.0)
+    for col in range(6):
+        for row in range(6):
+            if row >= col:
+                value = wp.where(row == col, wp.float32(1.0), wp.float32(0.0))
+                for inner in range(6):
+                    if inner >= col and inner < row:
+                        value -= lower[row, inner] * inverse_lower[inner, col]
+                inverse_lower[row, col] = value / lower[row, row]
+    return inverse_lower
 
 
 @wp.func
@@ -1119,16 +1249,7 @@ def _invert_spd_mat66(matrix: mat66f) -> tuple[mat66f, wp.bool]:
     inverse = mat66f(0.0)
     if not valid:
         return inverse, False
-    # Inverse factor L^-1, lower triangular, by forward substitution of each column
-    inverse_lower = mat66f(0.0)
-    for col in range(6):
-        for row in range(6):
-            if row >= col:
-                value = wp.where(row == col, wp.float32(1.0), wp.float32(0.0))
-                for inner in range(6):
-                    if inner >= col and inner < row:
-                        value -= lower[row, inner] * inverse_lower[inner, col]
-                inverse_lower[row, col] = value / lower[row, row]
+    inverse_lower = _invert_lower_mat66(lower)
     for row in range(6):
         for col in range(6):
             if col <= row:
@@ -1139,44 +1260,6 @@ def _invert_spd_mat66(matrix: mat66f) -> tuple[mat66f, wp.bool]:
                 inverse[row, col] = value
                 inverse[col, row] = value
     return inverse, True
-
-
-@wp.kernel
-def _add_body_weights_to_matrix(
-    # Inputs:
-    body_block: wp.array[wp.int32],
-    body_local: wp.array[wp.int32],
-    dimensions: wp.array[wp.int32],
-    matrix_offsets: wp.array[wp.int32],
-    vector_offsets: wp.array[wp.int32],
-    inverse_permutation: wp.array[wp.int32],
-    weight: wp.array[mat66f],
-    scale: wp.float32,
-    # Outputs:
-    matrix: wp.array[wp.float32],
-    single_body_inverse: wp.array[mat66f],
-):
-    """Add the scaled splitting weight of each body to its diagonal block of the matrix.
-
-    A body alone in its block also stores the inverse of its weighted block, which is its whole factorization.
-    """
-    bid = wp.tid()
-    block = body_block[bid]
-    if block < 0:
-        return
-    dimension = dimensions[block]
-    matrix_offset = matrix_offsets[block]
-    rows = _body_matrix_rows(vector_offsets[block], inverse_permutation, body_local[bid], dimension)
-    body_weight = scale * weight[bid]
-    if scale != 0.0:
-        for row in range(6):
-            for col in range(6):
-                index = _matrix_index(matrix_offset, dimension, rows[row], rows[col])
-                matrix[index] += body_weight[row, col]
-    if dimension == 6:
-        block_matrix = _read_body_block(matrix, matrix_offset, dimension, rows, rows)
-        inverse, _valid = _invert_spd_mat66(0.5 * (block_matrix + wp.transpose(block_matrix)))
-        single_body_inverse[bid] = inverse
 
 
 @wp.kernel
@@ -1235,6 +1318,30 @@ def _build_candidate_right_hand_side(
         solution = single_body_inverse[bid] * candidate
         for row in range(6):
             packed_solution[body_offset + row] = solution[row]
+
+
+@wp.kernel
+def _invert_single_body_blocks(
+    # Inputs:
+    body_block: wp.array[wp.int32],
+    body_local: wp.array[wp.int32],
+    dimensions: wp.array[wp.int32],
+    matrix_offsets: wp.array[wp.int32],
+    matrix: wp.array[wp.float32],
+    # Outputs:
+    single_body_inverse: wp.array[mat66f],
+):
+    """Invert the matrix of each body alone in its factor block."""
+    bid = wp.tid()
+    block = body_block[bid]
+    if block < 0 or dimensions[block] != 6:
+        return
+    rows = vec6i()
+    for axis in range(6):
+        rows[axis] = 6 * body_local[bid] + axis
+    block_matrix = _read_body_block(matrix, matrix_offsets[block], 6, rows, rows)
+    inverse_block, _valid = _invert_spd_mat66(0.5 * (block_matrix + wp.transpose(block_matrix)))
+    single_body_inverse[bid] = inverse_block
 
 
 @wp.kernel

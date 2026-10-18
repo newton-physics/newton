@@ -528,8 +528,9 @@ class LOXSolver:
                 joint_penalty_scale=self._data.joint_penalty_scale,
             )
             # The patch weights W of A, of which the matrix A + alpha W takes the fraction alpha
-            problem.compute_patch_schur_weights(self._config.weight_beta or 0.0, self._config.weight_sigma)
-            system.add_weights_to_matrix(self._config.consensus_fraction)
+            problem.compute_patch_schur_weights(
+                self._config.weight_beta or 0.0, self._config.weight_sigma, self._config.consensus_fraction
+            )
 
         system.assemble_and_factorize(assemble)
         if system.dynamic_bodies:

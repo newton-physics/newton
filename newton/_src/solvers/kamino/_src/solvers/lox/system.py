@@ -20,10 +20,10 @@ from ...core.types import vec6f
 from ...linalg import DenseLinearOperatorData
 from ...linalg.factorize.llt_blocked_rcm_solver import LLTBlockedRCMSolver
 from .system_kernels import (
-    _add_body_weights_to_matrix,
     _assemble_body_inertial_systems,
     _assemble_joint_rows,
     _build_candidate_right_hand_side,
+    _invert_single_body_blocks,
     _solve_single_body_blocks,
 )
 from .types import (
@@ -330,34 +330,22 @@ class LOXSystem:
             device=self.device,
         )
 
-    def add_weights_to_matrix(self, scale: float = 1.0) -> None:
-        """Add the current splitting weights ``scale * W`` to the matrix ``A`` and invert the single-body blocks.
-
-        Args:
-            scale: Factor of the weights added to the matrix.
-        """
-        if self.num_bodies == 0:
-            return
-        wp.launch(
-            _add_body_weights_to_matrix,
-            dim=self.num_bodies,
-            inputs=[
-                self._data.body_block,
-                self._data.body_local,
-                self._data.info.dim,
-                self._data.info.mio,
-                self._data.info.vio,
-                self._inverse_permutation,
-                self._data.weight,
-                scale,
-            ],
-            outputs=[self._matrix, self._data.single_body_inverse],
-            device=self.device,
-        )
-
     def factorize(self) -> None:
         """Invert the single-body blocks of the current matrices and factorize the others with the sparse LLT."""
-        self.add_weights_to_matrix(0.0)
+        if self.num_sparse_blocks < self.num_blocks:
+            wp.launch(
+                _invert_single_body_blocks,
+                dim=self.num_bodies,
+                inputs=[
+                    self._data.body_block,
+                    self._data.body_local,
+                    self._data.info.dim,
+                    self._data.info.mio,
+                    self._data.matrix,
+                ],
+                outputs=[self._data.single_body_inverse],
+                device=self.device,
+            )
         if self.linear_solver is not None:
             self.linear_solver.compute(self._data.matrix)
 
@@ -365,7 +353,7 @@ class LOXSystem:
         """Assemble the weighted matrices with ``assemble`` and factorize them with the RCM-ordered semi-sparse LLT.
 
         ``assemble`` writes and reads the matrix through :attr:`matrix` and :attr:`inverse_permutation`,
-        and inverts the single-body blocks through :meth:`add_weights_to_matrix`. Once the factorization
+        and inverts the single-body blocks with the patch weights. Once the factorization
         has ordered the rows, captured steps assemble directly in that order.
         """
         if self.linear_solver is None:

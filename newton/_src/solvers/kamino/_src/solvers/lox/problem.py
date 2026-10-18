@@ -24,7 +24,7 @@ from ...core.bodies import update_body_inertias
 from ...core.data import DataKamino
 from ...core.joints import DofActuationPath, JointActuationType, JointCorrectionMode
 from ...core.model import ModelKamino
-from ...core.types import mat66f, to_warp_int32_array, vec6f
+from ...core.types import to_warp_int32_array, vec6f
 from ...geometry.contacts import ContactsKamino
 from ...kinematics.constraints import update_constraints_info
 from ...kinematics.jacobians import SparseSystemJacobians
@@ -58,7 +58,8 @@ from .problem_kernels import (
 from .system import LOXSystem
 from .system_kernels import (
     _compute_free_body_blocks,
-    make_patch_weights_kernel,
+    _compute_patch_weights,
+    make_patch_schur_kernel,
 )
 from .types import (
     BoxRows,
@@ -501,11 +502,15 @@ class LOXProblem:
         self._neighbor_row_kind = int_array([entry[0] for entry in neighbor_rows])
         self._neighbor_row = int_array([entry[1] for entry in neighbor_rows])
         self._neighbor_row_side = int_array([entry[2] for entry in neighbor_rows])
-        self._free_block = wp.zeros(max(body_count, 1), dtype=mat66f, device=device)
-        self._free_lower = wp.zeros(max(body_count, 1), dtype=mat66f, device=device)
-        self._diagonal_lower = wp.zeros(max(body_count, 1), dtype=mat66f, device=device)
+        # Lower triangles of the 6 x 6 body blocks, one column per body
+        self._diagonal_block = wp.zeros((21, max(body_count, 1)), dtype=wp.float32, device=device)
+        self._diagonal_lower = wp.zeros_like(self._diagonal_block)
+        self._free_block = wp.zeros_like(self._diagonal_block)
+        self._free_lower = wp.zeros_like(self._diagonal_block)
+        self._free_schur = wp.zeros_like(self._diagonal_block)
+        self._pinned_schur = wp.zeros_like(self._diagonal_block)
         # The Woodbury form handles up to six joint rows between two bodies
-        self._patch_weights_kernel = make_patch_weights_kernel(
+        self._patch_schur_kernel = make_patch_schur_kernel(
             woodbury=max((len(rows) for rows in pair_rows_flat), default=0) <= 6
         )
         # Placeholders of the joint row arrays of a problem without structural or dynamic rows
@@ -513,15 +518,16 @@ class LOXProblem:
         self._empty_float = wp.zeros(1, dtype=wp.float32, device=device)
         self._empty_int = wp.zeros(1, dtype=wp.int32, device=device)
 
-    def compute_patch_schur_weights(self, beta: float = 0.0, sigma: float = 0.0) -> None:
+    def compute_patch_schur_weights(self, beta: float = 0.0, sigma: float = 0.0, matrix_scale: float = 0.0) -> None:
         """Set the body weights to the geometric means of the free and pinned patch Schur complements in ``A``.
 
-        See :func:`.system_kernels.make_patch_weights_kernel`.
+        See :func:`.system_kernels.make_patch_schur_kernel` and :func:`.system_kernels._compute_patch_weights`.
 
         Args:
             beta: Largest eigenvalue of each weight relative to the free patch Schur complement of its body,
                 or zero for no cap.
             sigma: Smallest fraction of the geometric mean that the ``beta`` cap keeps.
+            matrix_scale: Factor of the weights added to the matrix ``A``, or zero to leave it unchanged.
         """
         system = self.system
         if system.num_bodies == 0:
@@ -561,11 +567,11 @@ class LOXProblem:
                 self._incidence_side,
                 *rows,
             ],
-            outputs=[self._free_block, self._free_lower, self._diagonal_lower],
+            outputs=[self._diagonal_block, self._diagonal_lower, self._free_block, self._free_lower],
             device=self.device,
         )
         wp.launch(
-            self._patch_weights_kernel,
+            self._patch_schur_kernel,
             dim=system.num_bodies,
             inputs=[
                 data.body_block,
@@ -576,9 +582,10 @@ class LOXProblem:
                 system.inverse_permutation,
                 system.matrix,
                 self._data.body_weight_enabled,
+                self._diagonal_block,
+                self._diagonal_lower,
                 self._free_block,
                 self._free_lower,
-                self._diagonal_lower,
                 self._neighbor_offset,
                 self._neighbor_body,
                 self._neighbor_row_offset,
@@ -586,10 +593,29 @@ class LOXProblem:
                 self._neighbor_row,
                 self._neighbor_row_side,
                 *rows,
+            ],
+            outputs=[self._free_schur, self._pinned_schur],
+            device=self.device,
+        )
+        wp.launch(
+            _compute_patch_weights,
+            dim=system.num_bodies,
+            inputs=[
+                data.body_block,
+                data.body_local,
+                data.info.dim,
+                data.info.mio,
+                data.info.vio,
+                system.inverse_permutation,
+                self._data.body_weight_enabled,
+                self._diagonal_block,
+                self._free_schur,
+                self._pinned_schur,
                 beta,
                 sigma,
+                matrix_scale,
             ],
-            outputs=[data.weight, data.inverse_weight],
+            outputs=[system.matrix, data.weight, data.inverse_weight, data.single_body_inverse],
             device=self.device,
         )
 
