@@ -1606,6 +1606,10 @@ class TestGeometryContactConversions(unittest.TestCase):
         bid_AB = kamino.bid_AB.numpy()[:2]
         self.assertTrue(np.all(bid_AB[:, 1] >= 0))
 
+        # Flush the device printf buffer (the capacity warning above) so it is
+        # not flushed during whichever test happens to synchronize next.
+        wp.synchronize()
+
     def test_10_speculative_contacts_culled(self):
         """Speculative box-plane contacts are dropped by default.
 
