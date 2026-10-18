@@ -405,16 +405,6 @@ class LOXProblem:
                 ],
                 device=self.device,
             )
-            self.system.add_dynamic_rows(
-                self._data.dynamic_rows.world,
-                self._data.dynamic_rows.body_a,
-                self._data.dynamic_rows.body_b,
-                self._data.dynamic_rows.jacobian_a,
-                self._data.dynamic_rows.jacobian_b,
-                self._data.dynamic_rows.effective_inertia,
-                self._data.dynamic_rows.free_velocity,
-                prescribed_twist=self.body_velocity_begin,
-            )
         if self._data.structural_rows.count > 0:
             wp.launch(
                 _compute_structural_effective_mass,
@@ -437,23 +427,22 @@ class LOXProblem:
                 outputs=[self._data.structural_rows.effective_mass],
                 device=self.device,
             )
-            if joint_penalty_scale is not None:
-                self.system.add_structural_rows(
-                    self._data.structural_rows.world,
-                    self._data.structural_rows.body_a,
-                    self._data.structural_rows.body_b,
-                    self._data.structural_rows.jacobian_a,
-                    self._data.structural_rows.jacobian_b,
-                    self._data.structural_rows.residual,
-                    self._data.structural_rows.effective_mass,
-                    time_step,
-                    joint_penalty_scale,
-                    self._data.structural_rows.penalty,
-                    prescribed_twist=self.body_velocity_begin,
-                    joint_max_correction=self._joint_max_correction,
-                    joint_translation_dead_zone=self._joint_translation_dead_zone,
-                    joint_rotation_dead_zone=self._joint_rotation_dead_zone,
-                )
+        self.system.add_joint_rows(
+            self.model.joints.wid,
+            self.model.joints.bid_B,
+            self.model.joints.bid_F,
+            self._data.dynamic_rows,
+            self._data.structural_rows,
+            self.model.joints.kinematic_cts_offset,
+            self.model.joints.num_kinematic_cts,
+            time_step,
+            joint_penalty_scale,
+            prescribed_twist=self.body_velocity_begin,
+            joint_max_correction=self._joint_max_correction,
+            joint_translation_dead_zone=self._joint_translation_dead_zone,
+            joint_rotation_dead_zone=self._joint_rotation_dead_zone,
+        )
+        if self._data.structural_rows.count > 0:
             rows = self._data.structural_rows
             rows.body_impulse.zero_()
             wp.launch(

@@ -28,8 +28,7 @@ __all__ = [
     "ProjectionWeights",
     "_add_body_weights_to_matrix",
     "_assemble_body_inertial_systems",
-    "_assemble_dynamic_joint_rows",
-    "_assemble_structural_joint_rows",
+    "_assemble_joint_rows",
     "_build_candidate_right_hand_side",
     "_compute_free_body_blocks",
     "apply_body_weight",
@@ -426,183 +425,157 @@ def _assemble_body_inertial_systems(
 
 
 @wp.kernel
-def _assemble_dynamic_joint_rows(
+def _assemble_joint_rows(
     # Inputs:
     dimensions: wp.array[wp.int32],
     matrix_offsets: wp.array[wp.int32],
     vector_offsets: wp.array[wp.int32],
-    body_a: wp.array[wp.int32],
-    body_b: wp.array[wp.int32],
+    joint_world: wp.array[wp.int32],
+    joint_body_a: wp.array[wp.int32],
+    joint_body_b: wp.array[wp.int32],
     body_block: wp.array[wp.int32],
     body_local: wp.array[wp.int32],
-    jacobian_a: wp.array[vec6f],
-    jacobian_b: wp.array[vec6f],
-    effective_inertia: wp.array[wp.float32],
-    free_velocity: wp.array[wp.float32],
-    prescribed_twist: wp.array[vec6f],
-    # Outputs:
-    matrix: wp.array[wp.float32],
-    right_hand_side: wp.array[wp.float32],
-):
-    joint_row = wp.tid()
-    bid_a = body_a[joint_row]
-    bid_b = body_b[joint_row]
-    body_count = body_block.shape[0]
-    if effective_inertia[joint_row] <= 0.0 or (bid_a < 0 and bid_b < 0) or bid_a >= body_count or bid_b >= body_count:
-        return
-
-    bid_a_local = body_local[bid_a] if bid_a >= 0 else -1
-    bid_b_local = body_local[bid_b] if bid_b >= 0 else -1
-    if bid_a_local < 0 and bid_b_local < 0:
-        return
-    block = body_block[bid_a] if bid_a_local >= 0 else body_block[bid_b]
-    if block < 0 or block >= dimensions.shape[0] or (bid_b_local >= 0 and body_block[bid_b] != block):
-        return
-    dimension = dimensions[block]
-
-    matrix_offset = matrix_offsets[block]
-    vector_offset = vector_offsets[block]
-    inertia = effective_inertia[joint_row]
-    velocity = free_velocity[joint_row]
-    a_jacobian = jacobian_a[joint_row]
-    b_jacobian = jacobian_b[joint_row]
-    if prescribed_twist and bid_a >= 0 and bid_a_local < 0:
-        velocity -= wp.dot(a_jacobian, prescribed_twist[bid_a])
-    if prescribed_twist and bid_b >= 0 and bid_b_local < 0:
-        velocity -= wp.dot(b_jacobian, prescribed_twist[bid_b])
-
-    if bid_a_local >= 0:
-        a_contribution = _compute_dynamic_joint_row(a_jacobian, inertia, velocity)
-        _atomic_add_body_block(matrix, matrix_offset, dimension, bid_a_local, bid_a_local, a_contribution.matrix)
-        _atomic_add_body_vector(right_hand_side, vector_offset, bid_a_local, a_contribution.right_hand_side)
-    if bid_b_local >= 0:
-        b_contribution = _compute_dynamic_joint_row(b_jacobian, inertia, velocity)
-        _atomic_add_body_block(matrix, matrix_offset, dimension, bid_b_local, bid_b_local, b_contribution.matrix)
-        _atomic_add_body_vector(right_hand_side, vector_offset, bid_b_local, b_contribution.right_hand_side)
-    if bid_a_local >= 0 and bid_b_local >= 0:
-        _atomic_add_body_block(
-            matrix,
-            matrix_offset,
-            dimension,
-            bid_a_local,
-            bid_b_local,
-            wp.outer(inertia * a_jacobian, b_jacobian),
-        )
-        _atomic_add_body_block(
-            matrix,
-            matrix_offset,
-            dimension,
-            bid_b_local,
-            bid_a_local,
-            wp.outer(inertia * b_jacobian, a_jacobian),
-        )
-
-
-@wp.kernel
-def _assemble_structural_joint_rows(
-    # Inputs:
-    dimensions: wp.array[wp.int32],
-    matrix_offsets: wp.array[wp.int32],
-    vector_offsets: wp.array[wp.int32],
-    row_world: wp.array[wp.int32],
-    body_a: wp.array[wp.int32],
-    body_b: wp.array[wp.int32],
-    body_block: wp.array[wp.int32],
-    body_local: wp.array[wp.int32],
-    jacobian_a: wp.array[vec6f],
-    jacobian_b: wp.array[vec6f],
-    residual: wp.array[wp.float32],
-    effective_mass: wp.array[wp.float32],
     prescribed_twist: wp.array[vec6f],
     model_time_dt: wp.array[wp.float32],
+    dynamic_offset: wp.array[wp.int32],
+    dynamic_count: wp.array[wp.int32],
+    dynamic_jacobian_a: wp.array[vec6f],
+    dynamic_jacobian_b: wp.array[vec6f],
+    dynamic_effective_inertia: wp.array[wp.float32],
+    dynamic_free_velocity: wp.array[wp.float32],
+    structural_offset: wp.array[wp.int32],
+    structural_count: wp.array[wp.int32],
+    structural_jacobian_a: wp.array[vec6f],
+    structural_jacobian_b: wp.array[vec6f],
+    structural_residual: wp.array[wp.float32],
+    structural_effective_mass: wp.array[wp.float32],
     joint_penalty_scale: wp.array[wp.float32],
     joint_max_correction: wp.float32,
     joint_translation_dead_zone: wp.float32,
     joint_rotation_dead_zone: wp.float32,
     # Outputs:
-    penalty: wp.array[wp.float32],
+    structural_penalty: wp.array[wp.float32],
     matrix: wp.array[wp.float32],
     right_hand_side: wp.array[wp.float32],
 ):
-    """Assemble the frozen penalty terms of each structural row, or a zero penalty for rows left out."""
-    joint_row = wp.tid()
-    wid = row_world[joint_row]
-    if wid < 0:
-        penalty[joint_row] = 0.0
-        return
-    dt = model_time_dt[wid]
-    bid_a = body_a[joint_row]
-    bid_b = body_b[joint_row]
+    """Assemble the dynamic rows and the frozen penalty terms of the structural rows of each joint.
+
+    The rows of a joint share its two bodies, so their blocks are summed in registers and added
+    to the matrix once per joint. With a ``joint_penalty_scale``, each structural row also writes
+    its penalty, zero for the rows left out.
+    """
+    jid = wp.tid()
+    bid_a = joint_body_a[jid]
+    bid_b = joint_body_b[jid]
     body_count = body_block.shape[0]
-    if (
-        dt <= 0.0
-        or effective_mass[joint_row] <= 0.0
-        or (bid_a < 0 and bid_b < 0)
-        or bid_a >= body_count
-        or bid_b >= body_count
-    ):
-        penalty[joint_row] = 0.0
+    bid_a_local = wp.int32(-1)
+    bid_b_local = wp.int32(-1)
+    block = wp.int32(-1)
+    if (bid_a >= 0 or bid_b >= 0) and bid_a < body_count and bid_b < body_count:
+        if bid_a >= 0:
+            bid_a_local = body_local[bid_a]
+        if bid_b >= 0:
+            bid_b_local = body_local[bid_b]
+        if bid_a_local >= 0 or bid_b_local >= 0:
+            block = body_block[bid_a] if bid_a_local >= 0 else body_block[bid_b]
+            if block >= dimensions.shape[0] or (bid_b_local >= 0 and body_block[bid_b] != block):
+                block = -1
+
+    structural_start = structural_offset[jid]
+    structural_end = structural_start + structural_count[jid]
+    # The rows take the scale of the component of their dynamic bodies
+    wid = joint_world[jid]
+    dt = wp.float32(0.0)
+    world_penalty_scale = wp.float32(0.0)
+    if block >= 0 and wid >= 0:
+        dt = model_time_dt[wid]
+        if joint_penalty_scale and dt > 0.0:
+            world_penalty_scale = joint_penalty_scale[wp.where(bid_a_local >= 0, bid_a, bid_b)]
+    if joint_penalty_scale and world_penalty_scale <= 0.0:
+        for row in range(structural_start, structural_end):
+            structural_penalty[row] = 0.0
+    if block < 0:
         return
-    bid_a_local = body_local[bid_a] if bid_a >= 0 else -1
-    bid_b_local = body_local[bid_b] if bid_b >= 0 else -1
-    if bid_a_local < 0 and bid_b_local < 0:
-        penalty[joint_row] = 0.0
-        return
-    # The row takes the scale of the component of its dynamic bodies
-    world_penalty_scale = joint_penalty_scale[wp.where(bid_a_local >= 0, bid_a, bid_b)]
-    if world_penalty_scale <= 0.0:
-        penalty[joint_row] = 0.0
-        return
-    block = body_block[bid_a] if bid_a_local >= 0 else body_block[bid_b]
-    if block < 0 or block >= dimensions.shape[0] or (bid_b_local >= 0 and body_block[bid_b] != block):
-        penalty[joint_row] = 0.0
+
+    # The rows are linearized about zero dynamic twists and the prescribed twists of the other bodies.
+    a_twist = vec6f(0.0)
+    b_twist = vec6f(0.0)
+    if prescribed_twist and bid_a >= 0 and bid_a_local < 0:
+        a_twist = prescribed_twist[bid_a]
+    if prescribed_twist and bid_b >= 0 and bid_b_local < 0:
+        b_twist = prescribed_twist[bid_b]
+
+    a_matrix = mat66f(0.0)
+    b_matrix = mat66f(0.0)
+    cross_matrix = mat66f(0.0)
+    a_right_hand_side = vec6f(0.0)
+    b_right_hand_side = vec6f(0.0)
+    row_count = wp.int32(0)
+
+    dynamic_start = dynamic_offset[jid]
+    for row in range(dynamic_start, dynamic_start + dynamic_count[jid]):
+        inertia = dynamic_effective_inertia[row]
+        if inertia <= 0.0:
+            continue
+        a_jacobian = dynamic_jacobian_a[row]
+        b_jacobian = dynamic_jacobian_b[row]
+        velocity = dynamic_free_velocity[row] - wp.dot(a_jacobian, a_twist) - wp.dot(b_jacobian, b_twist)
+        if bid_a_local >= 0:
+            a_contribution = _compute_dynamic_joint_row(a_jacobian, inertia, velocity)
+            a_matrix += a_contribution.matrix
+            a_right_hand_side += a_contribution.right_hand_side
+        if bid_b_local >= 0:
+            b_contribution = _compute_dynamic_joint_row(b_jacobian, inertia, velocity)
+            b_matrix += b_contribution.matrix
+            b_right_hand_side += b_contribution.right_hand_side
+        cross_matrix += wp.outer(inertia * a_jacobian, b_jacobian)
+        row_count += 1
+
+    if world_penalty_scale > 0.0:
+        for row in range(structural_start, structural_end):
+            if structural_effective_mass[row] <= 0.0:
+                structural_penalty[row] = 0.0
+                continue
+            row_penalty = world_penalty_scale * structural_effective_mass[row] / (dt * dt)
+            structural_penalty[row] = row_penalty
+            a_jacobian = structural_jacobian_a[row]
+            b_jacobian = structural_jacobian_b[row]
+            # A small violation is left to average out, and a large one is corrected by at most
+            # joint_max_correction per step
+            dead_zone = joint_translation_dead_zone
+            if is_rotational_structural_row(a_jacobian, b_jacobian):
+                dead_zone = joint_rotation_dead_zone
+            row_residual = compute_structural_correction(structural_residual[row], dead_zone, joint_max_correction)
+            linearization_velocity = -wp.dot(a_jacobian, a_twist) - wp.dot(b_jacobian, b_twist)
+            if bid_a_local >= 0:
+                a_contribution = _compute_augmented_joint_row(
+                    a_jacobian, row_residual, row_penalty, dt, linearization_velocity
+                )
+                a_matrix += a_contribution.matrix
+                a_right_hand_side += a_contribution.right_hand_side
+            if bid_b_local >= 0:
+                b_contribution = _compute_augmented_joint_row(
+                    b_jacobian, row_residual, row_penalty, dt, linearization_velocity
+                )
+                b_matrix += b_contribution.matrix
+                b_right_hand_side += b_contribution.right_hand_side
+            cross_matrix += wp.outer((dt * dt * row_penalty) * a_jacobian, b_jacobian)
+            row_count += 1
+
+    if row_count == 0:
         return
     dimension = dimensions[block]
-
-    row_penalty = world_penalty_scale * effective_mass[joint_row] / (dt * dt)
-    penalty[joint_row] = row_penalty
     matrix_offset = matrix_offsets[block]
     vector_offset = vector_offsets[block]
-    a_jacobian = jacobian_a[joint_row]
-    b_jacobian = jacobian_b[joint_row]
-    # A small violation is left to average out, and a large one is corrected by at most joint_max_correction per step
-    dead_zone = joint_translation_dead_zone
-    if is_rotational_structural_row(a_jacobian, b_jacobian):
-        dead_zone = joint_rotation_dead_zone
-    row_residual = compute_structural_correction(residual[joint_row], dead_zone, joint_max_correction)
-    # The rows are linearized about zero dynamic twists and the prescribed twists of the other bodies.
-    linearization_velocity = wp.float32(0.0)
-    if prescribed_twist and bid_a >= 0 and bid_a_local < 0:
-        linearization_velocity -= wp.dot(a_jacobian, prescribed_twist[bid_a])
-    if prescribed_twist and bid_b >= 0 and bid_b_local < 0:
-        linearization_velocity -= wp.dot(b_jacobian, prescribed_twist[bid_b])
-
     if bid_a_local >= 0:
-        a_contribution = _compute_augmented_joint_row(a_jacobian, row_residual, row_penalty, dt, linearization_velocity)
-        _atomic_add_body_block(matrix, matrix_offset, dimension, bid_a_local, bid_a_local, a_contribution.matrix)
-        _atomic_add_body_vector(right_hand_side, vector_offset, bid_a_local, a_contribution.right_hand_side)
+        _atomic_add_body_block(matrix, matrix_offset, dimension, bid_a_local, bid_a_local, a_matrix)
+        _atomic_add_body_vector(right_hand_side, vector_offset, bid_a_local, a_right_hand_side)
     if bid_b_local >= 0:
-        b_contribution = _compute_augmented_joint_row(b_jacobian, row_residual, row_penalty, dt, linearization_velocity)
-        _atomic_add_body_block(matrix, matrix_offset, dimension, bid_b_local, bid_b_local, b_contribution.matrix)
-        _atomic_add_body_vector(right_hand_side, vector_offset, bid_b_local, b_contribution.right_hand_side)
+        _atomic_add_body_block(matrix, matrix_offset, dimension, bid_b_local, bid_b_local, b_matrix)
+        _atomic_add_body_vector(right_hand_side, vector_offset, bid_b_local, b_right_hand_side)
     if bid_a_local >= 0 and bid_b_local >= 0:
-        cross_scale = dt * dt * row_penalty
-        _atomic_add_body_block(
-            matrix,
-            matrix_offset,
-            dimension,
-            bid_a_local,
-            bid_b_local,
-            wp.outer(cross_scale * a_jacobian, b_jacobian),
-        )
-        _atomic_add_body_block(
-            matrix,
-            matrix_offset,
-            dimension,
-            bid_b_local,
-            bid_a_local,
-            wp.outer(cross_scale * b_jacobian, a_jacobian),
-        )
+        _atomic_add_body_block(matrix, matrix_offset, dimension, bid_a_local, bid_b_local, cross_matrix)
+        _atomic_add_body_block(matrix, matrix_offset, dimension, bid_b_local, bid_a_local, wp.transpose(cross_matrix))
 
 
 @wp.func

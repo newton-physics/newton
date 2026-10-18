@@ -23,8 +23,7 @@ from .llt import DenseBlockInfo, HybridLLTBlockedSolver
 from .system_kernels import (
     _add_body_weights_to_matrix,
     _assemble_body_inertial_systems,
-    _assemble_dynamic_joint_rows,
-    _assemble_structural_joint_rows,
+    _assemble_joint_rows,
     _build_candidate_right_hand_side,
 )
 from .types import DynamicRows, EffortRows, LOXSystemData, StructuralRows, capacity_offsets, segment_local_indices
@@ -231,93 +230,84 @@ class LOXSystem:
             device=self.device,
         )
 
-    def add_dynamic_rows(
+    def add_joint_rows(
         self,
-        row_world: wp.array[wp.int32],
-        body_a: wp.array[wp.int32],
-        body_b: wp.array[wp.int32],
-        jacobian_a: wp.array[vec6f],
-        jacobian_b: wp.array[vec6f],
-        effective_inertia: wp.array[wp.float32],
-        free_velocity: wp.array[wp.float32],
-        prescribed_twist: wp.array[vec6f] | None = None,
-    ) -> None:
-        """Add implicit joint-dynamics rows to the smooth system."""
-        row_count = row_world.shape[0]
-        if row_count == 0:
-            return
-        wp.launch(
-            _assemble_dynamic_joint_rows,
-            dim=row_count,
-            inputs=[
-                self._data.info.dim,
-                self._data.info.mio,
-                self._data.info.vio,
-                body_a,
-                body_b,
-                self._data.body_block,
-                self._data.body_local,
-                jacobian_a,
-                jacobian_b,
-                effective_inertia,
-                free_velocity,
-                prescribed_twist,
-            ],
-            outputs=[self._data.matrix, self._data.right_hand_side],
-            device=self.device,
-        )
-
-    def add_structural_rows(
-        self,
-        row_world: wp.array[wp.int32],
-        body_a: wp.array[wp.int32],
-        body_b: wp.array[wp.int32],
-        jacobian_a: wp.array[vec6f],
-        jacobian_b: wp.array[vec6f],
-        residual: wp.array[wp.float32],
-        effective_mass: wp.array[wp.float32],
+        joint_world: wp.array[wp.int32],
+        joint_body_a: wp.array[wp.int32],
+        joint_body_b: wp.array[wp.int32],
+        dynamic_rows: DynamicRows,
+        structural_rows: StructuralRows,
+        structural_offset: wp.array[wp.int32],
+        structural_count: wp.array[wp.int32],
         time_step: wp.array[wp.float32],
-        joint_penalty_scale: wp.array[wp.float32],
-        penalty: wp.array[wp.float32],
+        joint_penalty_scale: wp.array[wp.float32] | None,
         joint_max_correction: float,
         joint_translation_dead_zone: float,
         joint_rotation_dead_zone: float,
         prescribed_twist: wp.array[vec6f] | None = None,
     ) -> None:
-        """Add the frozen augmented penalty terms of the structural rows and write their penalties.
+        """Add the implicit joint-dynamics rows and the frozen augmented penalty terms of the structural rows.
 
-        The multiplier terms are added to the candidate right-hand side of each iteration.
-        Each row corrects the part of its residual beyond ``joint_translation_dead_zone``, or
+        Each joint adds its rows to the blocks of its two bodies at once. The structural rows enter
+        the system with a ``joint_penalty_scale``, which also writes their penalties. The multiplier
+        terms are added to the candidate right-hand side of each iteration. Each structural row
+        corrects the part of its residual beyond ``joint_translation_dead_zone``, or
         ``joint_rotation_dead_zone`` for the rotational rows, by at most ``joint_max_correction``
         in one step.
+
+        Args:
+            joint_world: World of each joint.
+            joint_body_a: Body A of each joint, or ``-1``.
+            joint_body_b: Body B of each joint.
+            dynamic_rows: Dynamic rows, with their Jacobians, effective inertias and free velocities.
+            structural_rows: Structural rows, with their Jacobians, residuals and effective masses.
+            structural_offset: First structural row of each joint.
+            structural_count: Number of structural rows of each joint.
+            time_step: Time step of each world [s].
+            joint_penalty_scale: Dimensionless structural ALM penalty scale of each body, or ``None``
+                to leave the structural rows out of the system.
+            joint_max_correction: Largest joint residual corrected in one step [m or rad].
+            joint_translation_dead_zone: Translational joint residual left uncorrected [m].
+            joint_rotation_dead_zone: Rotational joint residual left uncorrected [rad].
+            prescribed_twist: Twist of each body outside the system, or ``None`` for zero twists.
         """
-        row_count = row_world.shape[0]
-        if row_count == 0:
+        joint_count = joint_world.shape[0]
+        if joint_count == 0 or (
+            dynamic_rows.count == 0 and (structural_rows.count == 0 or joint_penalty_scale is None)
+        ):
             return
         wp.launch(
-            _assemble_structural_joint_rows,
-            dim=row_count,
+            _assemble_joint_rows,
+            dim=joint_count,
             inputs=[
                 self._data.info.dim,
                 self._data.info.mio,
                 self._data.info.vio,
-                row_world,
-                body_a,
-                body_b,
+                joint_world,
+                joint_body_a,
+                joint_body_b,
                 self._data.body_block,
                 self._data.body_local,
-                jacobian_a,
-                jacobian_b,
-                residual,
-                effective_mass,
                 prescribed_twist,
                 time_step,
+                dynamic_rows.joint_offset,
+                dynamic_rows.joint_count,
+                dynamic_rows.jacobian_a,
+                dynamic_rows.jacobian_b,
+                dynamic_rows.effective_inertia,
+                dynamic_rows.free_velocity,
+                structural_offset,
+                structural_count,
+                structural_rows.jacobian_a,
+                structural_rows.jacobian_b,
+                structural_rows.residual,
+                structural_rows.effective_mass,
                 joint_penalty_scale,
                 joint_max_correction,
                 joint_translation_dead_zone,
                 joint_rotation_dead_zone,
             ],
-            outputs=[penalty, self._data.matrix, self._data.right_hand_side],
+            outputs=[structural_rows.penalty, self._data.matrix, self._data.right_hand_side],
             device=self.device,
         )
 
