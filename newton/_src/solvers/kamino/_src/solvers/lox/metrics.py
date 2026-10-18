@@ -63,15 +63,19 @@ def _pack_joint_constraint_reactions(
     model_joint_num_dynamic_cts: wp.array[wp.int32],
     model_joint_num_kinematic_cts: wp.array[wp.int32],
     model_joint_num_friction_cts: wp.array[wp.int32],
+    model_joint_num_effort_cts: wp.array[wp.int32],
     model_joint_dynamic_cts_offset: wp.array[wp.int32],
     model_joint_kinematic_cts_offset: wp.array[wp.int32],
     model_joint_friction_cts_offset: wp.array[wp.int32],
+    model_joint_effort_cts_offset: wp.array[wp.int32],
     model_joint_dynamic_cts_offset_total_cts: wp.array[wp.int32],
     model_joint_kinematic_cts_offset_total_cts: wp.array[wp.int32],
     model_joint_friction_cts_offset_total_cts: wp.array[wp.int32],
+    model_joint_effort_cts_offset_total_cts: wp.array[wp.int32],
     data_joints_lambda_dyn_j: wp.array[wp.float32],
     data_joints_lambda_kin_j: wp.array[wp.float32],
     data_joints_lambda_f_j: wp.array[wp.float32],
+    data_joints_lambda_tau_j: wp.array[wp.float32],
     # Outputs:
     constraint_impulse: wp.array[wp.float32],
 ):
@@ -87,12 +91,15 @@ def _pack_joint_constraint_reactions(
     num_dyn_cts_j = model_joint_num_dynamic_cts[jid]
     num_kin_cts_j = model_joint_num_kinematic_cts[jid]
     num_f_cts_j = model_joint_num_friction_cts[jid]
+    num_e_cts_j = model_joint_num_effort_cts[jid]
     dyn_cio_j = model_joint_dynamic_cts_offset[jid]
     kin_cio_j = model_joint_kinematic_cts_offset[jid]
     f_cio_j = model_joint_friction_cts_offset[jid]
+    e_cio_j = model_joint_effort_cts_offset[jid]
     dyn_vio_j = model_joint_dynamic_cts_offset_total_cts[jid]
     kin_vio_j = model_joint_kinematic_cts_offset_total_cts[jid]
     f_vio_j = model_joint_friction_cts_offset_total_cts[jid]
+    e_vio_j = model_joint_effort_cts_offset_total_cts[jid]
 
     # Convert the reaction forces to impulses
     for row in range(num_dyn_cts_j):
@@ -101,35 +108,49 @@ def _pack_joint_constraint_reactions(
         constraint_impulse[kin_vio_j + row] = dt * data_joints_lambda_kin_j[kin_cio_j + row]
     for row in range(num_f_cts_j):
         constraint_impulse[f_vio_j + row] = dt * data_joints_lambda_f_j[f_cio_j + row]
+    for row in range(num_e_cts_j):
+        constraint_impulse[e_vio_j + row] = dt * data_joints_lambda_tau_j[e_cio_j + row]
 
 
 @wp.kernel
-def _add_joint_dynamic_compliance_velocity(
+def _add_joint_compliance_velocity(
     # Inputs:
     model_joint_num_dynamic_cts: wp.array[wp.int32],
     model_joint_dynamic_cts_offset: wp.array[wp.int32],
     model_joint_dynamic_cts_offset_total_cts: wp.array[wp.int32],
+    model_joint_num_effort_cts: wp.array[wp.int32],
+    model_joint_effort_cts_offset: wp.array[wp.int32],
+    model_joint_effort_cts_offset_total_cts: wp.array[wp.int32],
     data_joints_inv_m_j: wp.array[wp.float32],
+    data_joints_inv_m_a: wp.array[wp.float32],
     constraint_impulse: wp.array[wp.float32],
     # Outputs:
     constraint_velocity: wp.array[wp.float32],
 ):
-    """Add the armature and implicit-PD compliance ``inv_m_j * lambda`` of the joint dynamic rows.
+    """Add the compliance of the joint dynamic and effort-limit rows.
 
-    The dual problem carries this term on the Delassus diagonal, so the measured
-    velocity of a dynamic row matches the dual velocity once it is added.
+    Dynamic rows add the armature and implicit-PD compliance ``inv_m_j * lambda``, and
+    effort-limit rows add the actuator compliance ``inv_m_a * lambda``. The dual problem
+    carries these terms on the Delassus diagonal, so the measured velocity of each row
+    matches the dual velocity once they are added.
     """
     # Retrieve the joint index from the thread index
     jid = wp.tid()
 
-    # Retrieve the dynamic constraint size and offsets of the joint
+    # Retrieve the dynamic and effort constraint sizes and offsets of the joint
     num_dyn_cts_j = model_joint_num_dynamic_cts[jid]
     dyn_cio_j = model_joint_dynamic_cts_offset[jid]
     dyn_vio_j = model_joint_dynamic_cts_offset_total_cts[jid]
+    num_e_cts_j = model_joint_num_effort_cts[jid]
+    e_cio_j = model_joint_effort_cts_offset[jid]
+    e_vio_j = model_joint_effort_cts_offset_total_cts[jid]
 
     for row in range(num_dyn_cts_j):
         vio_row = dyn_vio_j + row
         constraint_velocity[vio_row] += data_joints_inv_m_j[dyn_cio_j + row] * constraint_impulse[vio_row]
+    for row in range(num_e_cts_j):
+        vio_row = e_vio_j + row
+        constraint_velocity[vio_row] += data_joints_inv_m_a[e_cio_j + row] * constraint_impulse[vio_row]
 
 
 @wp.kernel
@@ -274,7 +295,8 @@ class DualSolution:
     The reconstruction reads the reactions written by LOX and the analysis dual
     problem, which must have been built at the LOX linearization before the
     solve. The velocity is the measured constraint velocity at the final body
-    velocity, plus the compliance ``inv_m_j * lambda`` on the joint dynamic rows,
+    velocity, plus the compliance ``inv_m_j * lambda`` on the joint dynamic rows and
+    ``inv_m_a * lambda`` on the effort-limit rows,
     so metrics must be evaluated with ``use_solution_velocity=True``.
     """
 
@@ -333,15 +355,19 @@ class DualSolution:
                     model.joints.num_dynamic_cts,
                     model.joints.num_kinematic_cts,
                     model.joints.num_friction_cts,
+                    model.joints.num_effort_cts,
                     model.joints.dynamic_cts_offset,
                     model.joints.kinematic_cts_offset,
                     model.joints.friction_cts_offset,
+                    model.joints.effort_cts_offset,
                     model.joints.dynamic_cts_offset_total_cts,
                     model.joints.kinematic_cts_offset_total_cts,
                     model.joints.friction_cts_offset_total_cts,
+                    model.joints.effort_cts_offset_total_cts,
                     data.joints.lambda_dyn_j,
                     data.joints.lambda_kin_j,
                     data.joints.lambda_f_j,
+                    data.joints.lambda_tau_j,
                 ],
                 outputs=[self.lambdas],
                 device=model.device,
@@ -389,16 +415,20 @@ class DualSolution:
             outputs=[self.v_plus],
             device=model.device,
         )
-        if model.size.sum_of_num_dynamic_joints > 0:
-            # Joint dynamic rows: v += inv_m_j * lambda
+        if model.size.sum_of_num_dynamic_joints > 0 or model.size.sum_of_num_effort_joint_cts > 0:
+            # Joint dynamic and effort-limit rows: v += inv_m_j * lambda and v += inv_m_a * lambda
             wp.launch(
-                _add_joint_dynamic_compliance_velocity,
+                _add_joint_compliance_velocity,
                 dim=model.size.sum_of_num_joints,
                 inputs=[
                     model.joints.num_dynamic_cts,
                     model.joints.dynamic_cts_offset,
                     model.joints.dynamic_cts_offset_total_cts,
+                    model.joints.num_effort_cts,
+                    model.joints.effort_cts_offset,
+                    model.joints.effort_cts_offset_total_cts,
                     data.joints.inv_m_j,
+                    data.joints.inv_m_a,
                     self.lambdas,
                 ],
                 outputs=[self.v_plus],
