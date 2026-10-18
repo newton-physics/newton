@@ -1026,6 +1026,9 @@ class TestPipelinePrimitive(unittest.TestCase):
             msg.reset_log_level()
 
     def tearDown(self):
+        # Flush the device printf buffer so capacity-overflow warnings are
+        # not flushed during whichever test happens to synchronize next.
+        wp.synchronize()
         self.default_device = None
         if self.verbose:
             msg.reset_log_level()
