@@ -49,11 +49,12 @@ from .problem_kernels import (
     _reset_row_reactions,
     _scatter_structural_impulses,
     _update_effort_counters,
+    _update_structural_multipliers,
     _write_contact_outputs,
     _write_dynamic_outputs,
     _write_friction_outputs,
     _write_limit_outputs,
-    make_update_structural_multipliers_kernel,
+    make_update_proximal_structural_multipliers_kernel,
 )
 from .system import LOXSystem
 from .system_kernels import (
@@ -621,18 +622,49 @@ class LOXProblem:
         world_failed: wp.array[wp.bool],
         projected_fraction: float,
     ) -> None:
-        """Update the structural multipliers from the candidate twist of each joint, in one pass over the joints.
+        """Update the structural multipliers from the candidate twist of each joint.
 
         The per-world structural residual, scaled by ``position_tolerance`` for the translational
         rows and ``rotation_tolerance`` for the rotational rows, is accumulated into
         ``structural_rows.world_residual``, which the convergence check reads and clears. A
-        non-finite update fails its world.
+        non-finite update fails its world. Without proximal relaxation, one thread updates each
+        row; the proximal relaxation evaluates each joint at its candidate poses in one pass over
+        the joints.
         """
-        if self._data.structural_rows.count == 0:
+        rows = self._data.structural_rows
+        if rows.count == 0:
+            return
+        if self.joint_proximal_relaxation <= 0.0:
+            wp.launch(
+                _update_structural_multipliers,
+                dim=rows.count,
+                inputs=[
+                    time_step,
+                    position_tolerance,
+                    rotation_tolerance,
+                    rows.world,
+                    rows.body_a,
+                    rows.body_b,
+                    world_active,
+                    self.system.data.body_vector_index,
+                    global_twist,
+                    projected_twist,
+                    projected_fraction,
+                    rows.jacobian_a,
+                    rows.jacobian_b,
+                    rows.residual,
+                    rows.penalty,
+                    self._joint_max_correction,
+                    self._joint_translation_dead_zone,
+                    self._joint_rotation_dead_zone,
+                ],
+                outputs=[rows.reaction, rows.body_impulse, rows.world_residual, world_failed],
+                device=self.device,
+            )
             return
         joints = self.model.joints
         wp.launch(
-            make_update_structural_multipliers_kernel(self.rotation_correction, self.joint_proximal_relaxation > 0.0),
+            make_update_proximal_structural_multipliers_kernel(self.rotation_correction),
             dim=self.model.size.sum_of_num_joints,
             inputs=[
                 time_step,
@@ -657,24 +689,24 @@ class LOXProblem:
                 global_twist,
                 projected_twist,
                 projected_fraction,
-                self._data.structural_rows.jacobian_a,
-                self._data.structural_rows.jacobian_b,
-                self._data.structural_rows.residual,
-                self._data.structural_rows.penalty,
+                rows.jacobian_a,
+                rows.jacobian_b,
+                rows.residual,
+                rows.penalty,
                 self.joint_proximal_relaxation,
                 self._joint_max_correction,
                 self._joint_translation_dead_zone,
                 self._joint_rotation_dead_zone,
             ],
             outputs=[
-                self._data.structural_rows.proximal_defect,
-                self._data.structural_rows.candidate_residual,
-                self._data.structural_rows.residual_velocity_scratch,
+                rows.proximal_defect,
+                rows.candidate_residual,
+                rows.residual_velocity_scratch,
                 self._data.joint_coordinate_scratch,
                 self._data.joint_velocity_scratch,
-                self._data.structural_rows.reaction,
-                self._data.structural_rows.body_impulse,
-                self._data.structural_rows.world_residual,
+                rows.reaction,
+                rows.body_impulse,
+                rows.world_residual,
                 world_failed,
             ],
             device=self.device,

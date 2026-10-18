@@ -51,11 +51,12 @@ __all__ = [
     "_reset_row_reactions",
     "_scatter_structural_impulses",
     "_update_effort_counters",
+    "_update_structural_multipliers",
     "_write_contact_outputs",
     "_write_dynamic_outputs",
     "_write_friction_outputs",
     "_write_limit_outputs",
-    "make_update_structural_multipliers_kernel",
+    "make_update_proximal_structural_multipliers_kernel",
 ]
 
 ###
@@ -112,6 +113,128 @@ def _inverse_mass_bilinear_form(
     a_angular = wp.vec3f(jacobian_a[3], jacobian_a[4], jacobian_a[5])
     b_angular = wp.vec3f(jacobian_b[3], jacobian_b[4], jacobian_b[5])
     return inverse_mass[bid] * wp.dot(a_linear, b_linear) + wp.dot(a_angular, inverse_inertia_world[bid] @ b_angular)
+
+
+@wp.func
+def _blend_candidate_twist(
+    bid: wp.int32, global_twist: wp.array[vec6f], projected_twist: wp.array[vec6f], projected_fraction: wp.float32
+) -> vec6f:
+    """Return the candidate twist of a body, which blends its global and projected twists, or zero for no body.
+
+    The loads of both twists are unconditional, so that they issue together with the other loads of the caller.
+    """
+    body = wp.max(bid, 0)
+    candidate = global_twist[body] + projected_fraction * (projected_twist[body] - global_twist[body])
+    return wp.where(bid >= 0, candidate, vec6f(0.0))
+
+
+@wp.func
+def _linearize_structural_row(
+    time_step: wp.float32,
+    frozen_residual: wp.float32,
+    jacobian_a: vec6f,
+    jacobian_b: vec6f,
+    bid_a: wp.int32,
+    bid_b: wp.int32,
+    twist_a: vec6f,
+    twist_b: vec6f,
+    position_tolerance: wp.float32,
+    rotation_tolerance: wp.float32,
+    joint_max_correction: wp.float32,
+    joint_translation_dead_zone: wp.float32,
+    joint_rotation_dead_zone: wp.float32,
+):
+    """Return the linearized end-of-step residual of a structural row at the candidate twists, and its tolerance."""
+    candidate_velocity = wp.float32(0.0)
+    if bid_a >= 0:
+        candidate_velocity += wp.dot(jacobian_a, twist_a)
+    if bid_b >= 0:
+        candidate_velocity += wp.dot(jacobian_b, twist_b)
+    dead_zone = joint_translation_dead_zone
+    row_tolerance = position_tolerance
+    if is_rotational_structural_row(jacobian_a, jacobian_b):
+        dead_zone = joint_rotation_dead_zone
+        row_tolerance = rotation_tolerance
+    row_residual = compute_structural_correction(frozen_residual, dead_zone, joint_max_correction)
+    return row_residual + time_step * candidate_velocity, row_tolerance
+
+
+# The run reductions below combine the lanes of a warp whose rows act on the same two bodies, for
+# kernels with one thread per row in which every row of the launch reaches the reduction. Lane
+# ``index % 32`` of a warp holds row ``index`` of the ``count`` launched rows, and runs of rows on
+# the same bodies are contiguous. The first lane of each run receives the reduction of the run,
+# after as many doubling steps as the longest run of the warp needs.
+_BODY_RUN_LANES = """
+const int lane = threadIdx.x & 31;
+const int lanes = min(32, count - (index - lane));
+const unsigned int mask = lanes == 32 ? 0xffffffffu : (1u << lanes) - 1u;
+"""
+_BODY_RUN_STEP = """
+const int other_a = __shfl_down_sync(mask, body_a, offset);
+const int other_b = __shfl_down_sync(mask, body_b, offset);
+const bool same_run = lane + offset < lanes && other_a == body_a && other_b == body_b;
+if (!__any_sync(mask, same_run))
+    break;
+"""
+
+
+@wp.func_native(f"""
+#if defined(__CUDA_ARCH__)
+{_BODY_RUN_LANES}
+auto sum = value;
+for (int offset = 1; offset < lanes; offset <<= 1) {{
+{_BODY_RUN_STEP}
+    for (int axis = 0; axis < 6; ++axis) {{
+        const float other = __shfl_down_sync(mask, sum.c[axis], offset);
+        if (same_run)
+            sum.c[axis] += other;
+    }}
+}}
+return sum;
+#else
+return value;
+#endif
+""")
+def _sum_over_body_run(body_a: wp.int32, body_b: wp.int32, value: vec6f, index: wp.int32, count: wp.int32) -> vec6f:
+    """Return the sum of ``value`` over the rows of the run that begins at this row of the warp."""
+    ...
+
+
+@wp.func_native(f"""
+#if defined(__CUDA_ARCH__)
+{_BODY_RUN_LANES}
+float result = value;
+for (int offset = 1; offset < lanes; offset <<= 1) {{
+{_BODY_RUN_STEP}
+    const float other = __shfl_down_sync(mask, result, offset);
+    if (same_run)
+        result = fmaxf(result, other);
+}}
+return result;
+#else
+return value;
+#endif
+""")
+def _max_over_body_run(
+    body_a: wp.int32, body_b: wp.int32, value: wp.float32, index: wp.int32, count: wp.int32
+) -> wp.float32:
+    """Return the maximum of ``value`` over the rows of the run that begins at this row of the warp."""
+    ...
+
+
+@wp.func_native(f"""
+#if defined(__CUDA_ARCH__)
+{_BODY_RUN_LANES}
+const int previous_a = __shfl_up_sync(mask, body_a, 1);
+const int previous_b = __shfl_up_sync(mask, body_b, 1);
+return lane == 0 || previous_a != body_a || previous_b != body_b;
+#else
+return true;
+#endif
+""")
+def _begins_body_run(body_a: wp.int32, body_b: wp.int32, index: wp.int32, count: wp.int32) -> wp.bool:
+    """Return whether this row begins a run of rows on the same bodies within its warp."""
+    ...
 
 
 ###
@@ -474,17 +597,30 @@ def _scatter_structural_impulses(
     # Outputs:
     body_impulse: wp.array[vec6f],
 ):
-    """Accumulate the multiplier impulse ``h J^T lambda`` of each penalized structural row on its bodies."""
+    """Accumulate the multiplier impulse ``h J^T lambda`` of each penalized structural row on its bodies.
+
+    The first row of each run of rows on the same bodies within a warp adds the impulses of the run.
+    """
     row = wp.tid()
-    if penalty[row] <= 0.0:
-        return
-    impulse = model_time_dt[row_world[row]] * reaction[row]
     bid_a = body_a[row]
     bid_b = body_b[row]
+    impulse_a = vec6f(0.0)
+    impulse_b = vec6f(0.0)
+    if penalty[row] > 0.0:
+        impulse = model_time_dt[row_world[row]] * reaction[row]
+        impulse_a = impulse * jacobian_a[row]
+        impulse_b = impulse * jacobian_b[row]
+
+    # Every row of the launch reaches the run reductions
+    row_count = jacobian_a.shape[0]
+    impulse_a = _sum_over_body_run(bid_a, bid_b, impulse_a, row, row_count)
+    impulse_b = _sum_over_body_run(bid_a, bid_b, impulse_b, row, row_count)
+    if not _begins_body_run(bid_a, bid_b, row, row_count):
+        return
     if bid_a >= 0:
-        wp.atomic_add(body_impulse, bid_a, impulse * jacobian_a[row])
+        wp.atomic_add(body_impulse, bid_a, impulse_a)
     if bid_b >= 0:
-        wp.atomic_add(body_impulse, bid_b, impulse * jacobian_b[row])
+        wp.atomic_add(body_impulse, bid_b, impulse_b)
 
 
 @wp.kernel
@@ -706,21 +842,117 @@ def _enable_bodies_in_weighted_blocks(
     body_weight_enabled[bid] = wp.where(block >= 0 and block_has_unilateral[block] != 0, 1, 0)
 
 
-@cache
-def make_update_structural_multipliers_kernel(correction: JointCorrectionMode, proximal: bool):
-    """Build the kernel that updates the structural multipliers of each joint from a candidate twist.
+@wp.kernel
+def _update_structural_multipliers(
+    # Inputs:
+    model_time_dt: wp.array[wp.float32],
+    position_tolerance: wp.float32,
+    rotation_tolerance: wp.float32,
+    row_world: wp.array[wp.int32],
+    row_body_a: wp.array[wp.int32],
+    row_body_b: wp.array[wp.int32],
+    world_active: wp.array[wp.bool],
+    body_vector_index: wp.array[wp.int32],
+    global_twist: wp.array[vec6f],
+    projected_twist: wp.array[vec6f],
+    projected_fraction: wp.float32,
+    jacobian_a: wp.array[vec6f],
+    jacobian_b: wp.array[vec6f],
+    frozen_residual: wp.array[wp.float32],
+    penalty: wp.array[wp.float32],
+    joint_max_correction: wp.float32,
+    joint_translation_dead_zone: wp.float32,
+    joint_rotation_dead_zone: wp.float32,
+    # Outputs:
+    reaction: wp.array[wp.float32],
+    body_impulse: wp.array[vec6f],
+    world_residual: wp.array[wp.float32],
+    world_failed: wp.array[wp.bool],
+):
+    """Update the multiplier of each structural row from the candidate twist, with one thread per row.
 
-    The candidate twist blends the global and projected twists of the joint bodies.
-    With ``proximal`` relaxation, the exact joint residual at the candidate poses
-    corrects the linearized residual of the three positional rows of fixed, revolute,
-    and spherical joints, expressed in the frozen joint frame of their Jacobian; the
-    correction of the other rows relaxes to zero. Only the proximal kernel compiles that
-    code, which keeps the register use of the default kernel low. A non-finite update
-    fails the world and stops the update of the joint.
+    The candidate twist blends the global and projected twists of the row bodies. The rows of
+    a joint share their bodies, and the first row of each run of rows on the same bodies within
+    a warp adds the multiplier impulses of the run. A non-finite update fails the world and
+    leaves the multiplier of the row unchanged.
+    """
+    row = wp.tid()
+    row_count = jacobian_a.shape[0]
+    wid = row_world[row]
+    bid_a = row_body_a[row]
+    bid_b = row_body_b[row]
+    # Gather the body indices with the world flags, and the row data with the candidate twists
+    a_vector = wp.where(bid_a >= 0, body_vector_index[wp.max(bid_a, 0)], -1)
+    b_vector = wp.where(bid_b >= 0, body_vector_index[wp.max(bid_b, 0)], -1)
+    update = world_active[wid] and not world_failed[wid]
+    if update and a_vector < 0 and b_vector < 0:
+        reaction[row] = 0.0
+        update = False
+
+    dt = wp.float32(0.0)
+    impulse_change_a = vec6f(0.0)
+    impulse_change_b = vec6f(0.0)
+    scaled_residual = wp.float32(0.0)
+    if update:
+        dt = model_time_dt[wid]
+        row_jacobian_a = jacobian_a[row]
+        row_jacobian_b = jacobian_b[row]
+        row_residual = frozen_residual[row]
+        row_penalty = penalty[row]
+        row_reaction = reaction[row]
+        twist_a = _blend_candidate_twist(bid_a, global_twist, projected_twist, projected_fraction)
+        twist_b = _blend_candidate_twist(bid_b, global_twist, projected_twist, projected_fraction)
+        update_residual, row_tolerance = _linearize_structural_row(
+            dt,
+            row_residual,
+            row_jacobian_a,
+            row_jacobian_b,
+            bid_a,
+            bid_b,
+            twist_a,
+            twist_b,
+            position_tolerance,
+            rotation_tolerance,
+            joint_max_correction,
+            joint_translation_dead_zone,
+            joint_rotation_dead_zone,
+        )
+        reaction_change = -row_penalty * update_residual
+        next_reaction = row_reaction + reaction_change
+        if wp.isfinite(update_residual) and wp.isfinite(next_reaction):
+            reaction[row] = next_reaction
+            scaled_residual = wp.abs(update_residual) / row_tolerance
+            impulse_change_a = reaction_change * row_jacobian_a
+            impulse_change_b = reaction_change * row_jacobian_b
+        else:
+            world_failed[wid] = True
+
+    # Every row of the launch reaches the run reductions
+    impulse_change_a = _sum_over_body_run(bid_a, bid_b, impulse_change_a, row, row_count)
+    impulse_change_b = _sum_over_body_run(bid_a, bid_b, impulse_change_b, row, row_count)
+    scaled_residual = _max_over_body_run(bid_a, bid_b, scaled_residual, row, row_count)
+    if not update or not _begins_body_run(bid_a, bid_b, row, row_count):
+        return
+    if bid_a >= 0:
+        wp.atomic_add(body_impulse, bid_a, dt * impulse_change_a)
+    if bid_b >= 0:
+        wp.atomic_add(body_impulse, bid_b, dt * impulse_change_b)
+    atomic_max_nonnegative(world_residual, wid, scaled_residual)
+
+
+@cache
+def make_update_proximal_structural_multipliers_kernel(correction: JointCorrectionMode):
+    """Build the kernel that updates the structural multipliers of each joint with proximal relaxation.
+
+    The candidate twist blends the global and projected twists of the joint bodies. The exact
+    joint residual at the candidate poses corrects the linearized residual of the three
+    positional rows of fixed, revolute, and spherical joints, expressed in the frozen joint
+    frame of their Jacobian; the correction of the other rows relaxes to zero. A non-finite
+    update fails the world and stops the update of the joint.
     """
 
     @wp.kernel
-    def _update_structural_multipliers(
+    def _update_proximal_structural_multipliers(
         # Inputs:
         model_time_dt: wp.array[wp.float32],
         position_tolerance: wp.float32,
@@ -784,71 +1016,63 @@ def make_update_structural_multipliers_kernel(correction: JointCorrectionMode, p
                 reaction[row] = 0.0
             return
 
-        # Blend the candidate twist of each body from the global and projected twists
-        twist_a = vec6f(0.0)
-        if bid_a >= 0:
-            twist_a = global_twist[bid_a] + projected_fraction * (projected_twist[bid_a] - global_twist[bid_a])
-        twist_b = vec6f(0.0)
-        if bid_b >= 0:
-            twist_b = global_twist[bid_b] + projected_fraction * (projected_twist[bid_b] - global_twist[bid_b])
+        twist_a = _blend_candidate_twist(bid_a, global_twist, projected_twist, projected_fraction)
+        twist_b = _blend_candidate_twist(bid_b, global_twist, projected_twist, projected_fraction)
 
         # Evaluate the exact joint residual at the candidate poses
         dof_type = model_joints_dof_type[jid]
         full_position_block = (
             dof_type == JointDoFType.FIXED or dof_type == JointDoFType.REVOLUTE or dof_type == JointDoFType.SPHERICAL
         )
-        if wp.static(proximal):
-            a_pose = wp.transform_identity(dtype=wp.float32)
-            if bid_a >= 0:
-                a_pose = compute_body_pose_update_with_logmap(
-                    dt,
-                    data_bodies_q_i[bid_a],
-                    wp.vec3f(twist_a[0], twist_a[1], twist_a[2]),
-                    wp.vec3f(twist_a[3], twist_a[4], twist_a[5]),
-                )
-            b_pose = compute_body_pose_update_with_logmap(
+        a_pose = wp.transform_identity(dtype=wp.float32)
+        if bid_a >= 0:
+            a_pose = compute_body_pose_update_with_logmap(
                 dt,
-                data_bodies_q_i[bid_b],
-                wp.vec3f(twist_b[0], twist_b[1], twist_b[2]),
-                wp.vec3f(twist_b[3], twist_b[4], twist_b[5]),
+                data_bodies_q_i[bid_a],
+                wp.vec3f(twist_a[0], twist_a[1], twist_a[2]),
+                wp.vec3f(twist_a[3], twist_a[4], twist_a[5]),
             )
-            joint_pose, relative_position, relative_orientation, relative_twist = (
-                compute_joint_pose_and_relative_motion(
-                    a_pose,
-                    b_pose,
-                    wp.spatial_vectorf(0.0),
-                    wp.spatial_vectorf(0.0),
-                    model_joints_B_r_Bj[jid],
-                    model_joints_F_r_Fj[jid],
-                    model_joints_X_Bj[jid],
-                    model_joints_X_Fj[jid],
-                )
-            )
-            wp.static(make_write_joint_data(correction))(
-                dof_type,
-                row_begin,
-                model_joints_dofs_offset[jid],
-                model_joints_coords_offset[jid],
-                relative_position,
-                relative_orientation,
-                relative_twist,
-                data_joints_q_j_p,
-                candidate_residual,
-                scratch_residual_velocity,
-                scratch_joint_coordinate,
-                scratch_joint_velocity,
-            )
-            if full_position_block:
-                # The Jacobian of the positional rows uses the joint frame of the base body at the
-                # beginning of the time step; express the candidate anchor separation in that frame
-                frozen_orientation = wp.quat_identity(dtype=wp.float32)
-                if bid_a >= 0:
-                    frozen_orientation = wp.transform_get_rotation(data_bodies_q_i[bid_a])
-                frozen_frame = frozen_orientation * wp.quat_from_matrix(model_joints_X_Bj[jid])
-                separation = wp.quat_rotate(wp.transform_get_rotation(joint_pose), relative_position)
-                frozen_separation = wp.quat_rotate_inv(frozen_frame, separation)
-                for axis in range(3):
-                    candidate_residual[row_begin + axis] = frozen_separation[axis]
+        b_pose = compute_body_pose_update_with_logmap(
+            dt,
+            data_bodies_q_i[bid_b],
+            wp.vec3f(twist_b[0], twist_b[1], twist_b[2]),
+            wp.vec3f(twist_b[3], twist_b[4], twist_b[5]),
+        )
+        joint_pose, relative_position, relative_orientation, relative_twist = compute_joint_pose_and_relative_motion(
+            a_pose,
+            b_pose,
+            wp.spatial_vectorf(0.0),
+            wp.spatial_vectorf(0.0),
+            model_joints_B_r_Bj[jid],
+            model_joints_F_r_Fj[jid],
+            model_joints_X_Bj[jid],
+            model_joints_X_Fj[jid],
+        )
+        wp.static(make_write_joint_data(correction))(
+            dof_type,
+            row_begin,
+            model_joints_dofs_offset[jid],
+            model_joints_coords_offset[jid],
+            relative_position,
+            relative_orientation,
+            relative_twist,
+            data_joints_q_j_p,
+            candidate_residual,
+            scratch_residual_velocity,
+            scratch_joint_coordinate,
+            scratch_joint_velocity,
+        )
+        if full_position_block:
+            # The Jacobian of the positional rows uses the joint frame of the base body at the
+            # beginning of the time step; express the candidate anchor separation in that frame
+            frozen_orientation = wp.quat_identity(dtype=wp.float32)
+            if bid_a >= 0:
+                frozen_orientation = wp.transform_get_rotation(data_bodies_q_i[bid_a])
+            frozen_frame = frozen_orientation * wp.quat_from_matrix(model_joints_X_Bj[jid])
+            separation = wp.quat_rotate(wp.transform_get_rotation(joint_pose), relative_position)
+            frozen_separation = wp.quat_rotate_inv(frozen_frame, separation)
+            for axis in range(3):
+                candidate_residual[row_begin + axis] = frozen_separation[axis]
 
         # Update the multipliers of the joint rows, and the multiplier impulses on its bodies
         residual_max = wp.float32(0.0)
@@ -857,35 +1081,33 @@ def make_update_structural_multipliers_kernel(correction: JointCorrectionMode, p
         for row in range(row_begin, row_begin + row_count):
             row_jacobian_a = jacobian_a[row]
             row_jacobian_b = jacobian_b[row]
-            candidate_velocity = wp.float32(0.0)
-            if bid_a >= 0:
-                candidate_velocity += wp.dot(row_jacobian_a, twist_a)
-            if bid_b >= 0:
-                candidate_velocity += wp.dot(row_jacobian_b, twist_b)
-
-            rotational = is_rotational_structural_row(row_jacobian_a, row_jacobian_b)
-            dead_zone = joint_translation_dead_zone
-            row_tolerance = position_tolerance
-            if rotational:
-                dead_zone = joint_rotation_dead_zone
-                row_tolerance = rotation_tolerance
-            row_residual = compute_structural_correction(frozen_residual[row], dead_zone, joint_max_correction)
-            linear_residual = row_residual + dt * candidate_velocity
-            update_residual = linear_residual
-            if wp.static(proximal):
-                feedback_residual = linear_residual
-                if full_position_block and row - row_begin < 3:
-                    feedback_residual = candidate_residual[row]
-                defect = proximal_defect[row]
-                defect += proximal_relaxation * (feedback_residual - linear_residual - defect)
-                update_residual += defect
+            linear_residual, row_tolerance = _linearize_structural_row(
+                dt,
+                frozen_residual[row],
+                row_jacobian_a,
+                row_jacobian_b,
+                bid_a,
+                bid_b,
+                twist_a,
+                twist_b,
+                position_tolerance,
+                rotation_tolerance,
+                joint_max_correction,
+                joint_translation_dead_zone,
+                joint_rotation_dead_zone,
+            )
+            feedback_residual = linear_residual
+            if full_position_block and row - row_begin < 3:
+                feedback_residual = candidate_residual[row]
+            defect = proximal_defect[row]
+            defect += proximal_relaxation * (feedback_residual - linear_residual - defect)
+            update_residual = linear_residual + defect
             reaction_change = -penalty[row] * update_residual
             next_reaction = reaction[row] + reaction_change
             if not (wp.isfinite(update_residual) and wp.isfinite(next_reaction)):
                 world_failed[wid] = True
                 return
-            if wp.static(proximal):
-                proximal_defect[row] = defect
+            proximal_defect[row] = defect
             residual_max = wp.max(residual_max, wp.abs(update_residual) / row_tolerance)
             reaction[row] = next_reaction
             impulse_change_a += reaction_change * row_jacobian_a
@@ -896,7 +1118,7 @@ def make_update_structural_multipliers_kernel(correction: JointCorrectionMode, p
             wp.atomic_add(body_impulse, bid_b, dt * impulse_change_b)
         atomic_max_nonnegative(world_residual, wid, residual_max)
 
-    return _update_structural_multipliers
+    return _update_proximal_structural_multipliers
 
 
 @wp.kernel
