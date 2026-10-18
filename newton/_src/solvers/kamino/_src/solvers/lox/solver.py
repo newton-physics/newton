@@ -17,17 +17,20 @@ from ...core.types import vec6f
 from .metrics import DualSolution
 from .problem import LOXProblem
 from .projection import ProjectionSchedule
-from .projection_kernels import _compute_box_residuals, _compute_contact_residuals, _compute_spatial_contact_residuals
+from .projection_kernels import (
+    _compute_box_residuals,
+    _compute_contact_residuals,
+    _compute_spatial_contact_residuals,
+    make_iteration_residuals_kernel,
+)
 from .seed import estimate_joint_penalty_scale
 from .solver_kernels import (
     _blend_accepted_twist,
-    _finalize_residual_iteration,
+    _finalize_world_iteration,
     _initialize_bodies,
     _initialize_fixed_iteration,
-    _initialize_iteration_residuals,
     _initialize_world_convergence,
     _prepare_projection,
-    _reduce_body_residuals,
     _reduce_final_body_residuals,
     _reset_dual_wrench,
     _restore_dual_from_wrench,
@@ -556,7 +559,7 @@ class LOXSolver:
     def _iterate(self, conditional: bool) -> None:
         """Perform one splitting iteration."""
         # Solve the smooth system for the candidate twist
-        self._update_candidate()
+        self._update_candidate(conditional)
 
         # Project the candidate onto the unilateral constraints
         self._update_projection()
@@ -567,11 +570,12 @@ class LOXSolver:
         # Check convergence
         self._update_convergence_status(conditional)
 
-    def _update_candidate(self) -> None:
-        """Solve the smooth system for the candidate twist."""
+    def _update_candidate(self, conditional: bool = False) -> None:
+        """Solve the smooth system for the candidate twist, and clear the residuals of the convergence check."""
         problem = self._problem
         system = self._problem.system
         splitting = self._data.state
+        residuals = self._data.residuals
         # The splitting dual u = W^-1 J^T r carries the unilateral impulses, and the consensus fraction
         # alpha anchors the solve (A + alpha W) v = f + W (u + alpha p) to the projected twist p
         consensus_fraction = self._config.consensus_fraction
@@ -589,6 +593,7 @@ class LOXSolver:
             dim=splitting.num_bodies,
             inputs=[
                 self._model.bodies.wid,
+                problem.data.world_body_offset,
                 splitting.world_active,
                 system.data.body_vector_index,
                 system.data.packed_solution,
@@ -600,6 +605,14 @@ class LOXSolver:
                 splitting.global_twist,
                 splitting.projected_twist_previous,
                 splitting.projected_twist,
+                residuals.r_change,
+                residuals.r_split,
+                residuals.r_cross_iterate,
+                residuals.r_unilateral,
+                residuals.r_lagged,
+                problem.data.box_rows.world_residual_max,
+                problem.data.contact_rows.world_residual_max,
+                self._iteration_condition if conditional else None,
             ],
             device=self._device,
         )
@@ -674,43 +687,67 @@ class LOXSolver:
             )
             return
         iteration_condition = self._iteration_condition if conditional else None
-        wp.launch(
-            _initialize_iteration_residuals,
-            dim=splitting.num_worlds,
-            inputs=[splitting.world_failed],
-            outputs=[
-                splitting.world_active,
-                splitting.iteration_count,
-                residuals.r_change,
-                residuals.r_split,
-                residuals.r_cross_iterate,
-                residuals.r_unilateral,
-                residuals.r_lagged,
-                problem.data.box_rows.world_residual_max,
-                problem.data.contact_rows.world_residual_max,
-                iteration_condition,
-            ],
-            device=self._device,
+        box_rows = problem.data.box_rows
+        contact_rows = problem.data.contact_rows
+        spatial = contact_rows.frame is not None
+        max_world_items = max(
+            int(self._model.size.max_of_num_bodies), box_rows.max_world_capacity, contact_rows.max_world_capacity
         )
-        self._update_residuals(splitting.world_active, residuals.r_unilateral, residuals.r_lagged)
+        thread_count = _world_thread_count(self._device, problem.data.num_worlds, max_world_items)
         wp.launch(
-            _reduce_body_residuals,
-            dim=splitting.num_bodies,
+            make_iteration_residuals_kernel(spatial),
+            dim=(problem.data.num_worlds, thread_count),
             inputs=[
+                thread_count,
                 self._model.time.dt,
                 config.position_tolerance,
                 config.rotation_tolerance,
                 config.velocity_tolerance,
-                self._model.bodies.wid,
+                1.0 / config.velocity_tolerance,
+                splitting.world_active,
+                problem.data.world_body_offset,
+                problem.data.world_body_count,
                 splitting.global_twist_previous,
                 splitting.global_twist,
                 splitting.projected_twist_previous,
                 splitting.projected_twist,
-                splitting.world_active,
+                box_rows.world_offset,
+                box_rows.world_count,
+                box_rows.body_a,
+                box_rows.body_b,
+                box_rows.jacobian_a,
+                box_rows.jacobian_b,
+                box_rows.bias,
+                box_rows.lower,
+                box_rows.upper,
+                box_rows.reaction,
+                box_rows.physical_delassus,
+                contact_rows.world_offset,
+                contact_rows.world_count,
+                contact_rows.body_a,
+                contact_rows.body_b,
+                contact_rows.jacobian_a,
+                contact_rows.jacobian_b,
+                contact_rows.bias,
+                contact_rows.friction,
+                contact_rows.normal_compliance,
+                contact_rows.restitution,
+                contact_rows.reaction,
+                None if spatial else contact_rows.physical_delassus,
+                contact_rows.frame,
+                contact_rows.angular_friction,
+                contact_rows.angular_reaction,
+                contact_rows.physical_delassus if spatial else None,
             ],
             outputs=[
                 splitting.splitting_dual,
                 splitting.world_failed,
+                box_rows.velocity,
+                contact_rows.velocity,
+                box_rows.world_residual_max,
+                contact_rows.world_residual_max,
+                residuals.r_unilateral,
+                residuals.r_lagged,
                 residuals.r_change,
                 residuals.r_split,
                 residuals.r_cross_iterate,
@@ -718,7 +755,7 @@ class LOXSolver:
             device=self._device,
         )
         wp.launch(
-            _finalize_residual_iteration,
+            _finalize_world_iteration,
             dim=splitting.num_worlds,
             inputs=[
                 residuals.r_change,
@@ -726,11 +763,11 @@ class LOXSolver:
                 residuals.r_cross_iterate,
                 residuals.r_lagged,
                 residuals.r_unilateral,
-                splitting.iteration_count,
                 splitting.world_failed,
                 config.max_iterations,
             ],
             outputs=[
+                splitting.iteration_count,
                 problem.data.structural_rows.world_residual,
                 problem.data.effort_rows.world_residual_max if self._problem.has_bounded_effort else None,
                 splitting.world_active,

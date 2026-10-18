@@ -18,13 +18,11 @@ from .types import LOXStatus, make_status
 
 __all__ = [
     "_blend_accepted_twist",
-    "_finalize_residual_iteration",
+    "_finalize_world_iteration",
     "_initialize_bodies",
     "_initialize_fixed_iteration",
-    "_initialize_iteration_residuals",
     "_initialize_world_convergence",
     "_prepare_projection",
-    "_reduce_body_residuals",
     "_reduce_final_body_residuals",
     "_reset_dual_wrench",
     "_restore_dual_from_wrench",
@@ -33,6 +31,7 @@ __all__ = [
     "_write_integrator_body_inputs",
     "_write_world_status",
     "atomic_max_nonnegative",
+    "compute_body_iteration_residuals",
 ]
 
 ###
@@ -89,6 +88,49 @@ def _reduce_physical_residuals(
         dual_max = wp.max(dual_max, wp.abs(dual[axis]))
     atomic_max_nonnegative(primal_residual, wid, primal_max)
     atomic_max_nonnegative(dual_residual, wid, dual_max)
+
+
+@wp.func
+def compute_body_iteration_residuals(
+    dt: wp.float32,
+    position_tolerance: wp.float32,
+    rotation_tolerance: wp.float32,
+    velocity_tolerance: wp.float32,
+    previous: vec6f,
+    current: vec6f,
+    projected_previous: vec6f,
+    projected: vec6f,
+) -> wp.vec3f:
+    """Return the scaled change, splitting, and cross-iterate residuals of one body twist."""
+    linear_change = wp.float32(0.0)
+    angular_change = wp.float32(0.0)
+    linear_split = wp.float32(0.0)
+    angular_split = wp.float32(0.0)
+    linear_cross_iterate = wp.float32(0.0)
+    angular_cross_iterate = wp.float32(0.0)
+    for axis in range(3):
+        linear_change = wp.max(linear_change, wp.abs(current[axis] - previous[axis]))
+        angular_change = wp.max(angular_change, wp.abs(current[axis + 3] - previous[axis + 3]))
+        linear_split = wp.max(linear_split, wp.abs(current[axis] - projected[axis]))
+        angular_split = wp.max(angular_split, wp.abs(current[axis + 3] - projected[axis + 3]))
+        linear_cross_iterate = wp.max(
+            linear_cross_iterate,
+            wp.abs(current[axis] - projected_previous[axis]),
+        )
+        angular_cross_iterate = wp.max(
+            angular_cross_iterate,
+            wp.abs(current[axis + 3] - projected_previous[axis + 3]),
+        )
+    change = wp.max(
+        dt * linear_change / position_tolerance,
+        dt * angular_change / rotation_tolerance,
+    )
+    split = wp.max(linear_split, angular_split) / velocity_tolerance
+    cross_iterate = wp.max(
+        dt * linear_cross_iterate / position_tolerance,
+        dt * angular_cross_iterate / rotation_tolerance,
+    )
+    return wp.vec3f(change, split, cross_iterate)
 
 
 ###
@@ -244,6 +286,7 @@ def _restore_dual_from_wrench(
 def _prepare_projection(
     # Inputs:
     body_world: wp.array[wp.int32],
+    world_body_offset: wp.array[wp.int32],
     world_active: wp.array[wp.bool],
     body_vector_index: wp.array[wp.int32],
     packed_solution: wp.array[wp.float32],
@@ -254,11 +297,34 @@ def _prepare_projection(
     global_twist: wp.array[vec6f],
     projected_twist_previous: wp.array[vec6f],
     projected_twist: wp.array[vec6f],
+    residual_change: wp.array[wp.float32],
+    residual_split: wp.array[wp.float32],
+    residual_cross_iterate: wp.array[wp.float32],
+    residual_unilateral: wp.array[wp.float32],
+    residual_lagged: wp.array[wp.float32],
+    box_residual_max: wp.array[wp.float32],
+    contact_residual_max: wp.array[wp.float32],
+    iteration_condition: wp.array[wp.int32],
 ):
+    """Load the candidate twist of each body of the active worlds, and clear the residuals that
+    the convergence check of the iteration reduces.
+    """
     bid = wp.tid()
+    # Cleared at the start of each iteration and set again by
+    # _finalize_world_iteration for the worlds that keep iterating.
+    if iteration_condition and bid == 0:
+        iteration_condition[0] = 0
     wid = body_world[bid]
     if not world_active[wid]:
         return
+    if bid == world_body_offset[wid]:
+        residual_change[wid] = 0.0
+        residual_split[wid] = 0.0
+        residual_cross_iterate[wid] = 0.0
+        residual_unilateral[wid] = 0.0
+        residual_lagged[wid] = 0.0
+        box_residual_max[wid] = 0.0
+        contact_residual_max[wid] = 0.0
     global_solution = unpack_body_solution(bid, body_vector_index, packed_solution, prescribed_twist)
     global_twist_previous[bid] = global_twist[bid]
     global_twist[bid] = global_solution
@@ -282,116 +348,6 @@ def _update_splitting_dual(
     wid = body_world[bid]
     if world_active[wid] and not world_failed[wid]:
         splitting_dual[bid] += projected_twist[bid] - global_twist[bid]
-
-
-@wp.kernel
-def _initialize_iteration_residuals(
-    # Inputs:
-    world_failed: wp.array[wp.bool],
-    # Outputs:
-    world_active: wp.array[wp.bool],
-    iteration_count: wp.array[wp.int32],
-    residual_change: wp.array[wp.float32],
-    residual_split: wp.array[wp.float32],
-    residual_cross_iterate: wp.array[wp.float32],
-    residual_unilateral: wp.array[wp.float32],
-    residual_lagged: wp.array[wp.float32],
-    box_residual_max: wp.array[wp.float32],
-    contact_residual_max: wp.array[wp.float32],
-    iteration_condition: wp.array[wp.int32],
-):
-    wid = wp.tid()
-    # Cleared at the start of each iteration and set again by
-    # _finalize_residual_iteration for the worlds that keep iterating.
-    if iteration_condition and wid == 0:
-        iteration_condition[0] = 0
-    if not world_active[wid]:
-        return
-    iteration_count[wid] += 1
-    residual_change[wid] = 0.0
-    residual_split[wid] = 0.0
-    residual_cross_iterate[wid] = 0.0
-    residual_unilateral[wid] = 0.0
-    residual_lagged[wid] = 0.0
-    box_residual_max[wid] = 0.0
-    contact_residual_max[wid] = 0.0
-    if world_failed[wid]:
-        world_active[wid] = False
-
-
-@wp.kernel
-def _reduce_body_residuals(
-    # Inputs:
-    model_time_dt: wp.array[wp.float32],
-    position_tolerance: wp.float32,
-    rotation_tolerance: wp.float32,
-    velocity_tolerance: wp.float32,
-    body_world: wp.array[wp.int32],
-    global_twist_previous: wp.array[vec6f],
-    global_twist: wp.array[vec6f],
-    projected_twist_previous: wp.array[vec6f],
-    projected_twist: wp.array[vec6f],
-    world_active: wp.array[wp.bool],
-    # Outputs:
-    splitting_dual: wp.array[vec6f],
-    world_failed: wp.array[wp.bool],
-    residual_change: wp.array[wp.float32],
-    residual_split: wp.array[wp.float32],
-    residual_cross_iterate: wp.array[wp.float32],
-):
-    """Advance the splitting dual, fail the worlds with non-finite iterates, and reduce the convergence
-    residuals of the body twists.
-
-    This fuses :func:`_update_splitting_dual` with the reduction, which reads the same twists.
-    """
-    bid = wp.tid()
-    wid = body_world[bid]
-    dt = model_time_dt[wid]
-    if not world_active[wid]:
-        return
-
-    previous = global_twist_previous[bid]
-    current = global_twist[bid]
-    projected_previous = projected_twist_previous[bid]
-    projected = projected_twist[bid]
-    dual = splitting_dual[bid] + projected - current
-    splitting_dual[bid] = dual
-    # The previous twists were checked as the current ones of the last iteration
-    if not (wp.isfinite(current) and wp.isfinite(projected) and wp.isfinite(dual)):
-        world_failed[wid] = True
-        return
-
-    linear_change = wp.float32(0.0)
-    angular_change = wp.float32(0.0)
-    linear_split = wp.float32(0.0)
-    angular_split = wp.float32(0.0)
-    linear_cross_iterate = wp.float32(0.0)
-    angular_cross_iterate = wp.float32(0.0)
-    for axis in range(3):
-        linear_change = wp.max(linear_change, wp.abs(current[axis] - previous[axis]))
-        angular_change = wp.max(angular_change, wp.abs(current[axis + 3] - previous[axis + 3]))
-        linear_split = wp.max(linear_split, wp.abs(current[axis] - projected[axis]))
-        angular_split = wp.max(angular_split, wp.abs(current[axis + 3] - projected[axis + 3]))
-        linear_cross_iterate = wp.max(
-            linear_cross_iterate,
-            wp.abs(current[axis] - projected_previous[axis]),
-        )
-        angular_cross_iterate = wp.max(
-            angular_cross_iterate,
-            wp.abs(current[axis + 3] - projected_previous[axis + 3]),
-        )
-    change = wp.max(
-        dt * linear_change / position_tolerance,
-        dt * angular_change / rotation_tolerance,
-    )
-    split = wp.max(linear_split, angular_split) / velocity_tolerance
-    cross_iterate = wp.max(
-        dt * linear_cross_iterate / position_tolerance,
-        dt * angular_cross_iterate / rotation_tolerance,
-    )
-    atomic_max_nonnegative(residual_change, wid, change)
-    atomic_max_nonnegative(residual_split, wid, split)
-    atomic_max_nonnegative(residual_cross_iterate, wid, cross_iterate)
 
 
 @wp.kernel
@@ -445,24 +401,24 @@ def _reduce_final_body_residuals(
 
 
 @wp.kernel
-def _finalize_residual_iteration(
+def _finalize_world_iteration(
     # Inputs:
     residual_change: wp.array[wp.float32],
     residual_split: wp.array[wp.float32],
     residual_cross_iterate: wp.array[wp.float32],
     lagged_residual: wp.array[wp.float32],
     unilateral_residual: wp.array[wp.float32],
-    iteration_count: wp.array[wp.int32],
     world_failed: wp.array[wp.bool],
     max_iterations: wp.int32,
     # Outputs:
+    iteration_count: wp.array[wp.int32],
     structural_residual: wp.array[wp.float32],
     effort_residual: wp.array[wp.float32],
     world_active: wp.array[wp.bool],
     world_converged: wp.array[wp.bool],
     iteration_condition: wp.array[wp.int32],
 ):
-    """Deactivate the converged and failed worlds, and request another iteration for the others.
+    """Count the iteration, deactivate the converged and failed worlds, and request another iteration for the others.
 
     The structural and effort residuals accumulate during the multiplier updates of an iteration;
     this check consumes and clears them.
@@ -470,6 +426,7 @@ def _finalize_residual_iteration(
     wid = wp.tid()
     if not world_active[wid]:
         return
+    iteration_count[wid] += 1
     # Failures of the projections, residuals, and body updates of this iteration
     if world_failed[wid]:
         world_active[wid] = False
