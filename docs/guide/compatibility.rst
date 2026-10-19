@@ -150,7 +150,7 @@ Example timeline
 Assuming a feature is deprecated in release ``1.2.0``:
 
 * ``1.2.0``: feature is deprecated.  It still works; using it emits a
-  ``DeprecationWarning`` and the deprecation is noted in
+  :class:`~newton.exceptions.NewtonDeprecationWarning` and the deprecation is noted in
   ``CHANGELOG.md``.
 * ``1.2.x`` (micro releases): deprecated feature remains fully
   functional.
@@ -165,7 +165,8 @@ How deprecations and breaking changes are communicated
   changes without removals are recorded in ``Changed``.  Include
   migration guidance where applicable.
 * **Runtime warnings**: using a deprecated feature emits a
-  ``DeprecationWarning`` pointing at a replacement when one exists.
+  :class:`~newton.exceptions.NewtonDeprecationWarning`, a subclass of
+  :class:`DeprecationWarning`, pointing at a replacement when one exists.
 * **API documentation**: deprecated symbols are marked with
   ``.. deprecated:: X.Y`` directives indicating the version in which
   deprecation was introduced.
@@ -180,6 +181,9 @@ What to do when you see a DeprecationWarning
 #. Follow the warning and changelog migration guidance.  The deprecated
    feature remains functional for at least one minor release (see the
    example above).
+#. To find every deprecated call in your test suite, turn Newton
+   deprecations into errors with
+   ``warnings.filterwarnings("error", category=newton.exceptions.NewtonDeprecationWarning)``.
 #. If migration is blocked by a gap in the replacement, open a
    `GitHub issue <https://github.com/newton-physics/newton/issues>`__.
 

@@ -3,9 +3,12 @@
 
 import functools
 import itertools
+import logging
 import time
 
 import warp as wp
+
+logger = logging.getLogger(__name__)
 
 
 class EventTracer:
@@ -193,7 +196,7 @@ def run_benchmark(benchmark_cls, number=1, print_results=True):
         for attr in dir(instance):
             if attr.startswith("time_") or attr.startswith("track_"):
                 method = getattr(instance, attr)
-                print(f"\n[Benchmark] Running {benchmark_cls.__name__}.{attr} with parameters {params}")
+                logger.info("[Benchmark] Running %s.%s with parameters %s", benchmark_cls.__name__, attr, params)
                 samples = []
                 if attr.startswith("time_"):
                     # Warmup run (not measured).
@@ -217,8 +220,8 @@ def run_benchmark(benchmark_cls, number=1, print_results=True):
             instance.teardown(*call_params)
 
     if print_results:
-        print("\n=== Benchmark Results ===")
+        print("\n=== Benchmark Results ===")  # noqa: T201
         for (method_name, params), avg in results.items():
-            print(f"{benchmark_cls.__name__}.{method_name} {params}: {avg:.6f}")
+            print(f"{benchmark_cls.__name__}.{method_name} {params}: {avg:.6f}")  # noqa: T201
 
     return results
