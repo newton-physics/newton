@@ -216,6 +216,19 @@ def _make_grid_basis_space(grid: fem.Geometry, basis_str: str, family: fem.Polyn
     )
 
 
+class _PicQuadrature(fem.PicQuadrature):
+    """PIC quadrature whose cache name includes its domain.
+
+    Warp 1.18 names PIC quadratures by index scope only, so point bases built on
+    different geometries share generated kernels. Remove once Newton requires
+    Warp 1.19, which includes the domain name itself (GH-1984).
+    """
+
+    @property
+    def name(self):
+        return f"{super().name}_{self.domain.name}"
+
+
 def _make_pic_basis_space(pic: fem.PicQuadrature, basis_str: str):
     try:
         max_points_per_cell = int(basis_str[3:])
@@ -2894,9 +2907,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         with self._timer("Bin particles"):
             domain = fem.Cells(geo_partition)
 
-            # Whole-grid sparse domains use identical geometry and domain indices. Keeping
-            # them geometry-scoped also gives their PicQuadrature a distinct cache name
-            # from fixed/rebuildable grids, whose explicit partitions require domain indices.
+            # Whole-grid sparse domains use identical geometry and domain indices; fixed and
+            # rebuildable grids have explicit partitions that require domain indices.
             use_domain_element_indices = not (
                 self._separate_worlds and self.grid_type == "sparse" and not self._sparse_rebuildable
             )
@@ -2909,7 +2921,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     self._mpm_model.voxel_size,
                     self._particle_environment,
                 )
-                pic = fem.PicQuadrature(
+                pic = _PicQuadrature(
                     domain=domain,
                     positions=particle_locations,
                     measures=self._mpm_model.particle_volume,
@@ -2918,7 +2930,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 )
                 self._scratchpad.gimp_cells = particle_locations[0]
                 if self.collider_basis[:3] == "pic":
-                    self._scratchpad.contact_pic = fem.PicQuadrature(
+                    self._scratchpad.contact_pic = _PicQuadrature(
                         domain=domain,
                         positions=positions,
                         env_indices=self._particle_environment,
@@ -2927,7 +2939,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                         use_domain_element_indices=use_domain_element_indices,
                     )
             else:
-                pic = fem.PicQuadrature(
+                pic = _PicQuadrature(
                     domain=domain,
                     positions=positions,
                     env_indices=self._particle_environment,
