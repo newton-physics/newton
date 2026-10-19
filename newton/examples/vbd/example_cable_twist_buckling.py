@@ -172,7 +172,6 @@ class Example:
             twist_damping=self.twist_damping,
             label="twist_buckling",
             wrap_in_articulation=False,
-            body_frame_origin="com",
         )
 
         self.bodies = list(map(int, bodies))
@@ -198,7 +197,6 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
-            rigid_compliant_alm=True,
             rigid_contact_history=contact_history,
             rigid_body_contact_buffer_size=256,
         )

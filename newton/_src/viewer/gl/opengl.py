@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import ctypes
-import io
+import logging
 import os
 import sys
 import warnings
@@ -12,9 +12,11 @@ import warp as wp
 
 from newton import Mesh
 
+from ...exceptions import NewtonWarning
 from ...utils.mesh import compute_vertex_normals
 from ...utils.texture import normalize_texture
 from ..utils import OPAQUE_OPACITY_THRESHOLD
+from .icon import set_window_icon
 from .shaders import (
     FrameShader,
     OITResolveShader,
@@ -25,6 +27,8 @@ from .shaders import (
     ShaderSky,
     ShadowShader,
 )
+
+logger = logging.getLogger(__name__)
 
 ENABLE_GL_CHECKS = False
 _CUDA_INTEROP_WARNINGS: set[str] = set()
@@ -44,7 +48,7 @@ def _register_cuda_gl_buffer(buffer, device):
         if "unavailable" not in _CUDA_INTEROP_WARNINGS:
             warnings.warn(
                 "CUDA-OpenGL interoperability is unavailable; using host buffer uploads.",
-                RuntimeWarning,
+                NewtonWarning,
                 stacklevel=3,
             )
             _CUDA_INTEROP_WARNINGS.add("unavailable")
@@ -71,8 +75,7 @@ def check_gl_error():
         import traceback  # noqa: PLC0415
 
         stack = traceback.format_stack()
-        print(f"OpenGL error: {error_name} ({error:#x})")
-        print(f"Called from: {''.join(stack[-2:-1])}")
+        logger.error("OpenGL error: %s (%#x)\nCalled from: %s", error_name, error, "".join(stack[-2:-1]))
 
 
 def _upload_texture_from_file(gl, texture_image: np.ndarray) -> int:
@@ -1202,7 +1205,7 @@ class RendererGL:
             # remember sample count for later (e.g., resolving FBO)
             self.msaa_samples = 4
         except pyglet.window.NoSuchConfigException:
-            print("Warning: Could not get MSAA config, falling back to non-AA.")
+            logger.warning("Could not get MSAA config, falling back to non-AA.")
             self.window = pyglet.window.Window(
                 width=screen_width,
                 height=screen_height,
@@ -1213,7 +1216,7 @@ class RendererGL:
             )
             self.msaa_samples = 0
 
-        self._set_icon()
+        set_window_icon(self.window)
 
         # Pyglet on Windows 8+ (where _always_dwm=True) disables the GL
         # swap interval to avoid double-syncing with DWM, but then also
@@ -1231,6 +1234,8 @@ class RendererGL:
         else:
             self.headless = headless
         self.app = pyglet.app
+        # Closing the last window sets pyglet's process-wide exit flag.
+        self.app.event_loop.has_exit = False
 
         # making window current opengl rendering context
         self._make_current()
@@ -1486,6 +1491,8 @@ class RendererGL:
         texture_id: int | None,
         texture_width: int = 0,
         texture_height: int = 0,
+        *,
+        flip_y: bool = True,
     ):
         """Draw a texture to the frame buffer without rendering the 3D scene.
 
@@ -1493,6 +1500,7 @@ class RendererGL:
             texture_id: OpenGL texture id to draw, or ``None`` to only clear.
             texture_width: Source texture width in pixels.
             texture_height: Source texture height in pixels.
+            flip_y: Whether the source stores its top row first.
         """
         gl = RendererGL.gl
         self._make_current()
@@ -1525,7 +1533,7 @@ class RendererGL:
             gl.glActiveTexture(gl.GL_TEXTURE0)
             gl.glBindTexture(gl.GL_TEXTURE_2D, int(texture_id))
             with self._frame_shader:
-                self._frame_shader.update(0, flip_y=True)
+                self._frame_shader.update(0, flip_y=flip_y)
                 gl.glBindVertexArray(self._frame_vao)
                 gl.glDrawElements(gl.GL_TRIANGLES, len(self._frame_indices), gl.GL_UNSIGNED_INT, None)
                 gl.glBindVertexArray(0)
@@ -1852,7 +1860,7 @@ class RendererGL:
             )
 
             if gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER) != gl.GL_FRAMEBUFFER_COMPLETE:
-                print("Framebuffer is not complete!", flush=True)
+                logger.error("Framebuffer is not complete!")
                 gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
                 sys.exit(1)
 
@@ -1909,7 +1917,7 @@ class RendererGL:
             )
 
             if gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER) != gl.GL_FRAMEBUFFER_COMPLETE:
-                print("Warning: MSAA framebuffer incomplete, disabling MSAA.")
+                logger.warning("MSAA framebuffer incomplete, disabling MSAA.")
                 self.msaa_samples = 0
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
 
@@ -1939,6 +1947,7 @@ class RendererGL:
                 "ViewerGL: weighted order-independent transparency is unavailable on this GL context "
                 "(requires independent blending and a float OIT framebuffer). Falling back to unsorted "
                 "alpha blending, so overlapping transparent surfaces may blend in the wrong order.",
+                NewtonWarning,
                 stacklevel=2,
             )
         return self._oit_supported
@@ -2156,7 +2165,6 @@ class RendererGL:
             diffuse_scale=self.diffuse_scale,
             specular_scale=self.specular_scale,
             spotlight_enabled=self.spotlight_enabled,
-            shadow_extents=self.shadow_extents,
             exposure=self.exposure,
             oit_depth_reference=self.camera.pivot_distance,
         )
@@ -2466,27 +2474,3 @@ class RendererGL:
             # The window could be in the process of being closed, in which case
             # its corresponding context might have been destroyed and set to `None`.
             pass
-
-    def _set_icon(self):
-        import pyglet
-
-        def load_icon(filename):
-            filename = os.path.join(os.path.dirname(__file__), filename)
-
-            if not os.path.exists(filename):
-                raise FileNotFoundError(
-                    f"Error: Icon file '{filename}' not found. Please run the 'generate_icons.py' script first."
-                )
-
-            with open(filename, "rb") as f:
-                icon_bytes = f.read()
-
-            icon_stream = io.BytesIO(icon_bytes)
-            icon = pyglet.image.load(filename=filename, file=icon_stream)
-
-            return icon
-
-        icons = [load_icon("icon_16.png"), load_icon("icon_32.png"), load_icon("icon_64.png")]
-
-        # 5. Create the window and set the icon
-        self.window.set_icon(*icons)

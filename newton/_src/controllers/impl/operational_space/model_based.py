@@ -149,6 +149,17 @@ class ControllerOperationalSpace(ControllerBase):
             ``use_wrench_feedforward``: without it, the command is the
             feedback correction alone, regulating the measured wrench
             toward the desired setpoint with no separate feedforward term.
+        use_motion_wrench_projection: Apply the motion selection matrix again
+            to the motion wrench after optional inertia decoupling, before
+            mapping it to joint torques. Defaults to False, preserving
+            ``Lambda @ Omega @ acceleration``; True uses
+            ``Omega @ Lambda @ Omega @ acceleration`` (identity inertia
+            when decoupling is disabled). Only effective with wrench control.
+            With complementary binary masks, this removes motion-derived
+            wrench along force-controlled axes and can reduce stationary
+            force bias under persistent motion demand. It also removes
+            inertial compensation during acceleration. Fractional weights
+            are applied twice. Gravity and null-space terms are unaffected.
         motion_selection_axes: Diagonal selection weight per task axis
             (0/1, or any scalar weight): (linear x, y, z, angular x, y, z),
             the linear half interpreted in
@@ -271,6 +282,7 @@ class ControllerOperationalSpace(ControllerBase):
         use_gravity_compensation: bool = True,
         use_wrench_feedforward: bool = False,
         use_wrench_feedback: bool = False,
+        use_motion_wrench_projection: bool = False,
         motion_selection_axes: wp.array[wp.spatial_vector] | wp.spatial_vector | None = None,
         wrench_selection_axes: wp.array[wp.spatial_vector] | wp.spatial_vector | None = None,
         wrench_stiffness: wp.array[wp.spatial_vector] | wp.spatial_vector | float | None = None,
@@ -420,6 +432,7 @@ class ControllerOperationalSpace(ControllerBase):
             use_gravity_compensation=use_gravity_compensation,
             use_wrench_feedforward=use_wrench_feedforward,
             use_wrench_feedback=use_wrench_feedback,
+            use_motion_wrench_projection=use_motion_wrench_projection,
             motion_selection_axes=motion_selection_axes,
             wrench_selection_axes=wrench_selection_axes,
             wrench_stiffness=wrench_stiffness,

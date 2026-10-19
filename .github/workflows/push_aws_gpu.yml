@@ -7,6 +7,11 @@ name: Push - AWS GPU
 
 on:
   push:
+    tags:
+      - v*
+    branches:
+      - main
+      - release-*
     paths-ignore:
       - "docs/**"
       - "**.md"
@@ -21,3 +26,38 @@ jobs:
     permissions:
       id-token: write   # Required for AWS OIDC authentication in start-runner/stop-runner
       contents: read    # Required for checkout in all jobs
+
+  # Restores only use the newest Warp kernel cache per GPU architecture; drop
+  # older ones (~1 GB each) so they don't evict other architectures' caches.
+  prune-warp-cache:
+    name: Prune stale Warp kernel caches
+    needs: run-tests
+    if: needs.run-tests.result == 'success' && needs.run-tests.outputs.warp-cache-key-prefix != ''
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write    # Required to delete caches
+    steps:
+      - name: Harden Runner
+        uses: step-security/harden-runner@fa2e9d605c4eeb9fcad4c99c224cee0c6c7f3594  # v2.16.0
+        with:
+          egress-policy: block
+          allowed-endpoints: >
+            api.github.com:443
+
+      - name: Delete all but the newest cache
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          KEY_PREFIX: ${{ needs.run-tests.outputs.warp-cache-key-prefix }}
+          REF: ${{ github.ref }}
+        run: |
+          set -o pipefail
+          gh cache list --ref "$REF" --key "$KEY_PREFIX" --sort created_at --order desc --limit 100 \
+            --json id,key --jq '.[1:][] | "\(.id) \(.key)"' |
+            while read -r id key; do
+              echo "Deleting $key"
+              if ! out=$(gh api -X DELETE "repos/$GH_REPO/actions/caches/$id" 2>&1); then
+                # A concurrent run may have deleted it already; fail on anything else.
+                [[ "$out" == *"HTTP 404"* ]] || { echo "$out"; exit 1; }
+              fi
+            done

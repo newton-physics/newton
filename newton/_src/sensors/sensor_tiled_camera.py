@@ -9,6 +9,7 @@ from typing import Any
 
 import warp as wp
 
+from ..exceptions import NewtonDeprecationWarning
 from ..sim import Model, State
 from .warp_raytrace import (
     ClearData,
@@ -32,6 +33,10 @@ _CONFIG_DEPRECATION_MSG = (
     "SensorTiledCamera(..., config=...) is deprecated as of Newton 1.4; use default_render_config=... instead. "
     "The alias will be removed in a future release."
 )
+_TILED_CAMERA_DEPRECATION_MSG = (
+    "SensorTiledCamera is deprecated as of Newton 1.7 and will be removed in a future release; "
+    "use newton.sensors.SensorCamera instead."
+)
 
 
 class _ConfigUnset:
@@ -44,6 +49,10 @@ _DEPRECATED_CONFIG_UNSET: Any = _ConfigUnset()
 
 class SensorTiledCamera:
     """Warp-based tiled camera sensor for raytraced rendering across multiple worlds.
+
+    .. deprecated:: 1.7
+        Use :class:`~newton.sensors.SensorCamera` instead. ``SensorTiledCamera``
+        will be removed in a future release.
 
     Renders up to seven image channels per (world, camera) pair:
 
@@ -119,10 +128,12 @@ class SensorTiledCamera:
             load_textures: Load texture data from the model. Set to ``False``
                 to skip texture loading when textures are not needed.
         """
+        warnings.warn(_TILED_CAMERA_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+
         self.model = model
 
         if config is not _DEPRECATED_CONFIG_UNSET:
-            warnings.warn(_CONFIG_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            warnings.warn(_CONFIG_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
             if default_render_config is not None:
                 raise TypeError("Specify only one of `default_render_config` and deprecated `config`.")
             default_render_config = config
@@ -261,7 +272,7 @@ class SensorTiledCamera:
         Returns:
             The live default :class:`RenderConfig` instance.
         """
-        warnings.warn(_RENDER_CONFIG_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_RENDER_CONFIG_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         return self.default_render_config
 
     @property

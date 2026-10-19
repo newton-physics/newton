@@ -28,6 +28,7 @@ from ._src.actuators import (
     ComponentKind,
     Delay,
     DriveBase,
+    DriveNeuralGRU,
     DriveNeuralLSTM,
     DriveNeuralMLP,
     DrivePD,
@@ -37,6 +38,7 @@ from ._src.actuators import (
     parse_actuator_prim,
     register_actuator_component,
 )
+from ._src.exceptions import NewtonDeprecationWarning
 
 __all__ = [
     "Actuator",
@@ -48,6 +50,7 @@ __all__ = [
     "ComponentKind",
     "Delay",
     "DriveBase",
+    "DriveNeuralGRU",
     "DriveNeuralLSTM",
     "DriveNeuralMLP",
     "DrivePD",
@@ -94,7 +97,7 @@ def __getattr__(name: str):
     replacement = value.__name__
     warnings.warn(
         f"newton.actuators.{name} is deprecated in Newton 1.6; use newton.actuators.{replacement} instead.",
-        DeprecationWarning,
+        NewtonDeprecationWarning,
         stacklevel=2,
     )
     return value
