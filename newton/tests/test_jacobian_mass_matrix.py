@@ -1038,6 +1038,56 @@ def test_descendant_free_mass_matrix_matches_com_kinetic_energy(test, device):
     np.testing.assert_allclose(kinetic_from_h, kinetic_from_body, atol=1.0e-5, rtol=1.0e-6)
 
 
+def test_composite_mass_matrix_matches_jacobian_mass_matrix(test, device):
+    """The composite rigid body path (no J passed) should match ``J^T M J`` on a branched tree of every joint type.
+
+    Two calls must agree bit for bit.
+    """
+    builder = newton.ModelBuilder()
+    inertia = wp.mat33(0.03, 0.002, -0.001, 0.002, 0.02, 0.003, -0.001, 0.003, 0.04)
+
+    def link(i):
+        return builder.add_link(mass=0.5 + 0.3 * i, com=wp.vec3(0.05 * i, -0.03, 0.02), inertia=inertia)
+
+    def frame(i):
+        return wp.transform(wp.vec3(0.1, 0.05 * i, -0.2), wp.quat_rpy(0.3 * i, -0.2, 0.1 * i))
+
+    cfg = newton.ModelBuilder.JointDofConfig
+    base = link(0)
+    joints = [builder.add_joint_free(base, parent_xform=frame(1))]
+    bodies = [link(i) for i in range(1, 8)]
+    joints.append(builder.add_joint_revolute(base, bodies[0], axis=(0.0, 0.6, 0.8), parent_xform=frame(2)))
+    joints.append(builder.add_joint_prismatic(bodies[0], bodies[1], axis=(1.0, 0.0, 0.0), parent_xform=frame(3)))
+    joints.append(builder.add_joint_ball(base, bodies[2], parent_xform=frame(4), child_xform=frame(5)))
+    joints.append(
+        builder.add_joint_d6(
+            bodies[2],
+            bodies[3],
+            angular_axes=[cfg(axis=(1.0, 0.0, 0.0)), cfg(axis=(0.0, 0.0, 1.0))],
+            parent_xform=frame(6),
+        )
+    )
+    joints.append(builder.add_joint_fixed(bodies[3], bodies[4], parent_xform=frame(7)))
+    joints.append(builder.add_joint_free(bodies[5], parent=bodies[4], parent_xform=frame(8)))
+    joints.append(builder.add_joint_revolute(bodies[2], bodies[6], axis=(0.0, 0.0, 1.0), parent_xform=frame(9)))
+    builder.add_articulation(joints)
+    builder.joint_armature = [0.01 * (i + 1) for i in range(builder.joint_dof_count)]
+    model = builder.finalize(device=device)
+
+    state = model.state()
+    q = state.joint_q.numpy()
+    q += np.linspace(-0.4, 0.5, len(q)).astype(np.float32)
+    state.joint_q.assign(q)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+
+    H_composite = newton.eval_mass_matrix(model, state).numpy()
+    H_again = newton.eval_mass_matrix(model, state).numpy()
+    H_jacobian = newton.eval_mass_matrix(model, state, J=newton.eval_jacobian(model, state)).numpy()
+
+    np.testing.assert_array_equal(H_composite, H_again)
+    np.testing.assert_allclose(H_composite, H_jacobian, atol=1.0e-5, rtol=1.0e-5)
+
+
 class TestJacobianMassMatrix(unittest.TestCase):
     pass
 
@@ -1129,6 +1179,12 @@ add_function_test(
     TestJacobianMassMatrix,
     "test_descendant_free_mass_matrix_matches_com_kinetic_energy",
     test_descendant_free_mass_matrix_matches_com_kinetic_energy,
+    devices=devices,
+)
+add_function_test(
+    TestJacobianMassMatrix,
+    "test_composite_mass_matrix_matches_jacobian_mass_matrix",
+    test_composite_mass_matrix_matches_jacobian_mass_matrix,
     devices=devices,
 )
 

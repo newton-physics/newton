@@ -21,7 +21,7 @@ from collections.abc import Callable
 import numpy as np
 import warp as wp
 
-from ..sim.articulation import eval_fk, eval_jacobian, eval_mass_matrix
+from ..sim.articulation import eval_fk, eval_mass_matrix
 from ..sim.model import Model
 from ..sim.state import State
 
@@ -234,7 +234,6 @@ class JointSpaceResponse:
 
         device = model.device
         art_count = model.articulation_count
-        max_links = model.max_joints_per_articulation
         max_dofs = model.max_dofs_per_articulation
 
         joint_qd_start = model.joint_qd_start.numpy()
@@ -261,7 +260,6 @@ class JointSpaceResponse:
         self._dof_local_index = wp.array(dof_local_index, dtype=wp.int32, device=device)
 
         self._H = wp.zeros((art_count, max_dofs, max_dofs), dtype=float, device=device)
-        self._J = wp.zeros((art_count, max_links * 6, max_dofs), dtype=float, device=device)
         self._body_I_s = wp.zeros(model.body_count, dtype=wp.spatial_matrix, device=device)
         self._joint_S_s = wp.zeros(model.joint_dof_count, dtype=wp.spatial_vector, device=device)
         self._L = wp.zeros_like(self._H)
@@ -329,14 +327,13 @@ class JointSpaceResponse:
         """
         model = self.model
         # eval_fk overwrites body_q/body_qd, so keep it off the caller's state. It
-        # only reads joint_q/joint_qd, and eval_jacobian reads joint_q from the
+        # only reads joint_q/joint_qd, and eval_mass_matrix reads joint_q from the
         # state it is handed, so the scratch state can alias rather than copy.
         fk_state = self._fk_state
         fk_state.joint_q = state.joint_q
         fk_state.joint_qd = state.joint_qd
         eval_fk(model, state.joint_q, state.joint_qd, fk_state)
-        eval_jacobian(model, fk_state, J=self._J, joint_S_s=self._joint_S_s)
-        eval_mass_matrix(model, fk_state, H=self._H, J=self._J, body_I_s=self._body_I_s)
+        eval_mass_matrix(model, fk_state, H=self._H, body_I_s=self._body_I_s, joint_S_s=self._joint_S_s)
         self._invert_blocks()
 
     def refresh_from_solve(

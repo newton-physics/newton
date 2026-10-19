@@ -1499,31 +1499,115 @@ def eval_articulation_mass_matrix(
             H[art_idx, dof, dof] = H[art_idx, dof, dof] + joint_armature[articulation_dof_start + dof]
 
 
-@wp.kernel
-def eval_articulation_mass_matrix_entries(
+@wp.kernel(enable_backward=False)
+def eval_articulation_body_inertia_about_root(
+    joint_articulation: wp.array[wp.int32],
+    articulation_start: wp.array[int],
+    articulation_mask: wp.array[bool],
+    joint_child: wp.array[int],
+    body_inertia: wp.array[wp.mat33],
+    body_mass: wp.array[float],
+    body_com: wp.array[wp.vec3],
+    body_q: wp.array[wp.transform],
+    # outputs
+    body_I_c: wp.array[wp.spatial_matrix],
+):
+    """Spatial inertia of each joint's child body about its articulation's root body origin, one thread per joint.
+
+    World-aligned axes. With ``d`` the vector from the root origin to the body
+    COM and ``D = [d]x``, the inertia is ``[[m 1, -m D], [m D, I_w - m D D]]``.
+    """
+    j = wp.tid()
+    art_idx = joint_articulation[j]
+    if art_idx < 0:
+        return
+    if articulation_mask:
+        if not articulation_mask[art_idx]:
+            return
+
+    child = joint_child[j]
+    origin = wp.transform_get_translation(body_q[joint_child[articulation_start[art_idx]]])
+    X_wb = body_q[child]
+    R = wp.quat_to_matrix(wp.transform_get_rotation(X_wb))
+    I_w = R * body_inertia[child] * wp.transpose(R)
+    m = body_mass[child]
+    D = wp.skew(wp.transform_point(X_wb, body_com[child]) - origin)
+    mD = m * D
+    I_a = I_w - mD * D
+
+    # fmt: off
+    body_I_c[child] = wp.spatial_matrix(
+        m,         0.0,       0.0,       -mD[0, 0], -mD[0, 1], -mD[0, 2],
+        0.0,       m,         0.0,       -mD[1, 0], -mD[1, 1], -mD[1, 2],
+        0.0,       0.0,       m,         -mD[2, 0], -mD[2, 1], -mD[2, 2],
+        mD[0, 0],  mD[0, 1],  mD[0, 2],  I_a[0, 0], I_a[0, 1], I_a[0, 2],
+        mD[1, 0],  mD[1, 1],  mD[1, 2],  I_a[1, 0], I_a[1, 1], I_a[1, 2],
+        mD[2, 0],  mD[2, 1],  mD[2, 2],  I_a[2, 0], I_a[2, 1], I_a[2, 2],
+    )
+    # fmt: on
+
+
+@wp.kernel(enable_backward=False)
+def eval_articulation_composite_inertia(
+    articulation_level_start: wp.array[wp.int32],
+    level_joint_start: wp.array[wp.int32],
+    level_joints: wp.array[wp.int32],
+    articulation_mask: wp.array[bool],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    # outputs
+    body_I_c: wp.array3d[float],
+):
+    """Add each body's inertia into its parent's, deepest tree level first, one thread per (articulation, element).
+
+    On return ``body_I_c[b]`` is the composite inertia of the subtree rooted at
+    ``b``. One thread sums one of the 36 matrix elements over the whole tree in a
+    fixed order, so the result is deterministic. ``body_I_c`` is a float view of
+    the spatial matrices, so each thread loads only its own element.
+    """
+    art_idx, element = wp.tid()
+    if articulation_mask:
+        if not articulation_mask[art_idx]:
+            return
+
+    row = element // 6
+    col = element % 6
+    level_begin = articulation_level_start[art_idx]
+    level_end = articulation_level_start[art_idx + 1]
+    # Level 0 holds the roots, whose parents are outside the articulation.
+    for k in range(level_end - 1 - level_begin):
+        level = level_end - 1 - k
+        for i in range(level_joint_start[level], level_joint_start[level + 1]):
+            j = level_joints[i]
+            parent = joint_parent[j]
+            body_I_c[parent, row, col] = body_I_c[parent, row, col] + body_I_c[joint_child[j], row, col]
+
+
+@wp.kernel(enable_backward=False)
+def eval_articulation_mass_matrix_crba(
     articulation_start: wp.array[int],
     articulation_end: wp.array[int],
     articulation_mask: wp.array[bool],
     joint_child: wp.array[int],
+    joint_ancestor: wp.array[int],
     joint_qd_start: wp.array[int],
-    body_I_s: wp.array[wp.spatial_matrix],
-    J: wp.array3d[float],
+    body_q: wp.array[wp.transform],
+    joint_S_s: wp.array[wp.spatial_vector],
+    body_I_c: wp.array[wp.spatial_matrix],
     joint_armature: wp.array[float],
     # outputs
     H: wp.array3d[float],
 ):
-    """Compute one entry pair of the generalized mass matrix H = J^T * M * J.
+    """Fill one column of the generalized mass matrix by the composite rigid body algorithm.
 
-    One thread per (articulation, i, j) with i <= j; it writes H[i, j] and
-    H[j, i]. M is block diagonal with one 6x6 spatial inertia per link.
-    If ``joint_armature`` is provided, it is added to the diagonal.
-    Output shape: (articulation_count, max_dofs, max_dofs)
+    One thread per (articulation, column c). With joint ``j`` owning DOF c,
+    ``H[r, c] = S_r^T I_c(child of j) S_c`` for every DOF r of ``j`` and its
+    ancestors; entries between different branches stay zero. Motion subspaces
+    and composite inertias are both taken about the root body origin. Each
+    entry pair is written by one thread: c writes rows of strict ancestors and
+    rows ``r <= c`` of its own joint.
     """
-    art_idx, dof_i, dof_j = wp.tid()
-
-    if dof_i > dof_j:
-        return
-
+    art_idx, col = wp.tid()
     if articulation_mask:
         if not articulation_mask[art_idx]:
             return
@@ -1531,37 +1615,33 @@ def eval_articulation_mass_matrix_entries(
     joint_start = articulation_start[art_idx]
     joint_end = articulation_end[art_idx]
     articulation_dof_start = joint_qd_start[joint_start]
-    articulation_dof_count = joint_qd_start[joint_end] - articulation_dof_start
-    if dof_j >= articulation_dof_count:
+    if col >= joint_qd_start[joint_end] - articulation_dof_start:
         return
 
-    sum_val = float(0.0)
-    for link_idx in range(joint_end - joint_start):
-        row_start = link_idx * 6
-        I_s = body_I_s[joint_child[joint_start + link_idx]]
-        J_i = wp.spatial_vector(
-            J[art_idx, row_start + 0, dof_i],
-            J[art_idx, row_start + 1, dof_i],
-            J[art_idx, row_start + 2, dof_i],
-            J[art_idx, row_start + 3, dof_i],
-            J[art_idx, row_start + 4, dof_i],
-            J[art_idx, row_start + 5, dof_i],
-        )
-        J_j = wp.spatial_vector(
-            J[art_idx, row_start + 0, dof_j],
-            J[art_idx, row_start + 1, dof_j],
-            J[art_idx, row_start + 2, dof_j],
-            J[art_idx, row_start + 3, dof_j],
-            J[art_idx, row_start + 4, dof_j],
-            J[art_idx, row_start + 5, dof_j],
-        )
-        sum_val += wp.dot(J_i, I_s * J_j)
+    dof_c = articulation_dof_start + col
+    j = joint_start
+    while joint_qd_start[j + 1] <= dof_c:
+        j += 1
 
-    if joint_armature:
-        if dof_i == dof_j:
-            sum_val += joint_armature[articulation_dof_start + dof_i]
-    H[art_idx, dof_i, dof_j] = sum_val
-    H[art_idx, dof_j, dof_i] = sum_val
+    origin = wp.transform_get_translation(body_q[joint_child[joint_start]])
+    S = joint_S_s[dof_c]
+    S_c = wp.spatial_vector(velocity_at_point(S, origin), wp.spatial_bottom(S))
+    F = body_I_c[joint_child[j]] * S_c
+
+    a = j
+    while a != -1:
+        for dof_r in range(joint_qd_start[a], joint_qd_start[a + 1]):
+            if a != j or dof_r <= dof_c:
+                S = joint_S_s[dof_r]
+                S_r = wp.spatial_vector(velocity_at_point(S, origin), wp.spatial_bottom(S))
+                h = wp.dot(S_r, F)
+                if joint_armature:
+                    if dof_r == dof_c:
+                        h += joint_armature[dof_c]
+                row = dof_r - articulation_dof_start
+                H[art_idx, row, col] = h
+                H[art_idx, col, row] = h
+        a = joint_ancestor[a]
 
 
 @wp.kernel
@@ -1815,8 +1895,10 @@ def eval_mass_matrix(
         state: The state containing body transforms (body_q).
         H: Optional output array for mass matrix, shape (articulation_count, max_dofs, max_dofs).
            If None, allocates internally.
-        J: Optional pre-computed Jacobian. If None, computes internally.
-           Shape (articulation_count, max_links*6, max_dofs).
+        J: Optional pre-computed Jacobian, shape (articulation_count, max_links*6, max_dofs).
+           If None, H is assembled by the composite rigid body algorithm without
+           forming J, unless gradients are required or the articulations are not
+           trees; then J is computed internally.
         body_I_s: Optional pre-allocated temp array for spatial inertias,
                   shape (body_count,), dtype wp.spatial_matrix. If None, allocates internally.
         joint_S_s: Optional pre-allocated temp array for motion subspaces (only used if J is None),
@@ -1886,6 +1968,81 @@ def _eval_mass_matrix(
             device=model.device,
         )
 
+    requires_grad = model.requires_grad or state.joint_q.requires_grad or state.body_q.requires_grad
+    if J is None and model._fk_articulation_level_start is not None and not requires_grad:
+        if joint_S_s is None:
+            joint_S_s = wp.zeros(model.joint_dof_count, dtype=wp.spatial_vector, device=model.device)
+        wp.launch(
+            kernel=eval_articulation_motion_subspace,
+            dim=model.joint_count,
+            inputs=[
+                model.joint_articulation,
+                mask,
+                model.joint_type,
+                model.joint_parent,
+                model.joint_child,
+                model.joint_q_start,
+                model.joint_qd_start,
+                model.joint_X_p,
+                model.joint_axis,
+                state.joint_q,
+                model.joint_dof_dim,
+                state.body_q,
+                model.body_com,
+            ],
+            outputs=[joint_S_s],
+            device=model.device,
+        )
+        wp.launch(
+            kernel=eval_articulation_body_inertia_about_root,
+            dim=model.joint_count,
+            inputs=[
+                model.joint_articulation,
+                model.articulation_start,
+                mask,
+                model.joint_child,
+                model.body_inertia,
+                model.body_mass,
+                model.body_com,
+                state.body_q,
+            ],
+            outputs=[body_I_s],
+            device=model.device,
+        )
+        wp.launch(
+            kernel=eval_articulation_composite_inertia,
+            dim=(model.articulation_count, 36),
+            inputs=[
+                model._fk_articulation_level_start,
+                model._fk_level_joint_start,
+                model._fk_level_joints,
+                mask,
+                model.joint_parent,
+                model.joint_child,
+            ],
+            outputs=[body_I_s.view(float)],
+            device=model.device,
+        )
+        wp.launch(
+            kernel=eval_articulation_mass_matrix_crba,
+            dim=(model.articulation_count, model.max_dofs_per_articulation),
+            inputs=[
+                model.articulation_start,
+                model.articulation_end,
+                mask,
+                model.joint_child,
+                model.joint_ancestor,
+                model.joint_qd_start,
+                state.body_q,
+                joint_S_s,
+                body_I_s,
+                model.joint_armature if include_armature else None,
+            ],
+            outputs=[H],
+            device=model.device,
+        )
+        return H
+
     # Compute spatial inertias in world frame
     wp.launch(
         kernel=compute_body_spatial_inertia,
@@ -1909,26 +2066,6 @@ def _eval_mass_matrix(
             device=model.device,
         )
         eval_jacobian(model, state, J, joint_S_s=joint_S_s, mask=mask)
-
-    if model.device.is_cuda:
-        max_dofs = model.max_dofs_per_articulation
-        wp.launch(
-            kernel=eval_articulation_mass_matrix_entries,
-            dim=(model.articulation_count, max_dofs, max_dofs),
-            inputs=[
-                model.articulation_start,
-                model.articulation_end,
-                mask,
-                model.joint_child,
-                model.joint_qd_start,
-                body_I_s,
-                J,
-                model.joint_armature if include_armature else None,
-            ],
-            outputs=[H],
-            device=model.device,
-        )
-        return H
 
     wp.launch(
         kernel=eval_articulation_mass_matrix,
