@@ -297,10 +297,18 @@ jobs:
 
             ## How to review
 
-            Budget your effort: most pull requests need about 40 to 80 file
-            reads and searches. On very large changes, prioritize the public
-            API, the core changed code paths, and tests, and mark the review
+            Budget your effort. A first review is the only full review the
+            pull request gets, so be thorough: up to about 120 file reads and
+            searches on large changes. A follow-up usually needs far fewer. On
+            very large changes, prioritize the public API, the core changed
+            code paths, documentation, and tests, and mark the review
             incomplete rather than running out of turns.
+
+            In a first review, before writing findings, list for yourself every
+            changed behavior and the assumptions it relies on (which state it
+            reads, which callers and solvers reach it, when values are computed
+            and when they are used), and check each one against the passes
+            below.
 
             Work in this order, and do not let the later passes replace the
             first two. Correctness and the public API are equally important:
@@ -319,6 +327,20 @@ jobs:
                step, CPU versus CUDA differences, and dtypes. Check numerics
                (NaN or infinity inputs, float32 precision), and for MJCF, USD,
                and URDF importers, unit scaling and parity between formats.
+               Check these common Newton pitfalls:
+               - State that only some solvers or paths keep current: for
+                 example maximal-coordinate solvers such as XPBD, SemiImplicit,
+                 and VBD update `body_q`/`body_qd` but not `joint_q`/`joint_qd`,
+                 so code that reads joint coordinates must say so or convert
+                 with `eval_ik`/`eval_fk`.
+               - Values computed once (per pick, step, reset, or layout) and used
+                 later: do they stay valid as bodies move or rotate, models
+                 change, or worlds reset?
+               - Assumptions about the first or only element (`joints[0]`, world
+                 0, one articulation), loop-closing joints, -1 sentinels, and
+                 empty, massless, or kinematic inputs.
+               - Clamps and limits: do the bounds have the right units and still
+                 hold for off-center points, extreme ratios, or other shapes?
             2. **Public API.** For each entry in `api-changes.md`, and any other
                user-visible change, find the closest existing Newton APIs with
                Grep and compare: naming that matches sibling APIs (for example
@@ -341,7 +363,12 @@ jobs:
                tests, CUDA variants of host-only code, redundant parameter
                sweeps, and added runtime without measurements. Apply the same
                care to benchmarks and `asv/pr_benchmarks.txt`.
-            4. **Maintainability and repository standards.** Flag code that is
+            4. **Documentation.** When behavior, defaults, or public API
+               change, check that docstrings, `docs/` pages, examples, and the
+               changelog fragment describe the new behavior: Grep `docs/`,
+               `newton/examples/`, and docstrings for the changed names and
+               flag stale or missing references.
+            5. **Maintainability and repository standards.** Flag code that is
                more complex than it needs to be and show the simpler form;
                values, lists, or settings duplicated across files (code,
                configs, workflows, tests) that must be kept in sync, with a
