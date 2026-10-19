@@ -208,6 +208,16 @@ def _bake_world_points(points, world_mat) -> list[wp.vec3]:
     return [wp.vec3(float(x), float(y), float(z)) for x, y, z in _world_points(points, world_mat, translate=True)]
 
 
+def _rest_index_array(values, element_width: int, name: str) -> np.ndarray:
+    """Read integer rest indices without truncating malformed floating-point values."""
+    indices = np.asarray(values)
+    if indices.size == 0:
+        return np.empty((0, element_width), dtype=np.int64)
+    if not np.issubdtype(indices.dtype, np.integer):
+        raise ValueError(f"{name} must contain integer indices")
+    return indices.reshape(-1, element_width)
+
+
 def _rest_topology_matches(rest_indices, simulation_indices, element_width: int) -> bool:
     """Whether a rest topology authored without rest points equals the simulation topology.
 
@@ -216,7 +226,7 @@ def _rest_topology_matches(rest_indices, simulation_indices, element_width: int)
     """
     try:
         return np.array_equal(
-            np.asarray(rest_indices, dtype=np.int64).reshape(-1, element_width),
+            _rest_index_array(rest_indices, element_width, "rest topology"),
             np.asarray(simulation_indices, dtype=np.int64).reshape(-1, element_width),
         )
     except (TypeError, ValueError):

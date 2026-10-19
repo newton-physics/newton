@@ -374,6 +374,8 @@ Explicit segment masses still apply directly. Newton retains its capsule inertia
 scaled to each resolved segment mass. Cloth element volumes use rest triangle areas with geometry
 thickness, and volume deformables use rest tetrahedron volumes. Typed mass conversion and total-mass
 distribution use these same element volumes.
+Rest topology and bend-pair arrays must contain integer values; arrays authored with floating-point
+or other non-integer types are invalid, rather than being truncated to point or face indices.
 Invalid cloth or volume rest data is logged at ``WARNING`` level and falls back to simulation
 geometry before builder mutation. Mismatched bend-array lengths are logged and fall back to
 ``restBendAnglesDefault``. Invalid individual bend entries are logged and skipped; duplicate pairs

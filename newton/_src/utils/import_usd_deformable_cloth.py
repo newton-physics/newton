@@ -30,6 +30,7 @@ from .import_usd_deformable_utils import (
     _is_ignored_path,
     _read_deformable_element_array,
     _resolve_deformable_density,
+    _rest_index_array,
     _rest_topology_matches,
     _skip_for_deformable_body_owner,
     _transform_rest_points,
@@ -278,7 +279,7 @@ def _cloth_rest_bend_overrides(
     path: str,
 ) -> np.ndarray:
     """Apply authored ``restAdjTriPairs`` / ``restBendAngles`` entries to a copy of ``rest_angles``."""
-    pairs = np.asarray(authored_pairs if authored_pairs is not None else [], dtype=np.int64).reshape(-1, 2)
+    pairs = _rest_index_array(authored_pairs if authored_pairs is not None else [], 2, "restAdjTriPairs")
     angles = np.asarray(authored_angles if authored_angles is not None else [], dtype=np.float64).reshape(-1)
     if len(pairs) != len(angles):
         raise ValueError("restAdjTriPairs and restBendAngles must have matching lengths")
@@ -504,7 +505,7 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
                         raise ValueError("restShapePoints must match points when restTriVertexIndices is omitted")
                     rest_triangles = tri_faces
                 else:
-                    rest_triangles = np.asarray(rest_indices_value, dtype=np.int64).reshape(-1, 3)
+                    rest_triangles = _rest_index_array(rest_indices_value, 3, "restTriVertexIndices")
                     if len(rest_triangles) != len(tri_faces):
                         raise ValueError("restTriVertexIndices must contain one triangle per simulation triangle")
                     if np.any(rest_triangles < 0) or np.any(rest_triangles >= len(rest_points)):

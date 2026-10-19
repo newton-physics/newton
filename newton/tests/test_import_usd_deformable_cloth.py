@@ -196,6 +196,18 @@ class TestUSDDeformableCloth(unittest.TestCase):
         interior_edge = next(i for i, edge in enumerate(builder.edge_indices) if edge[1] != -1)
         self.assertAlmostEqual(builder.edge_rest_angle[interior_edge], math.radians(-75.0), places=6)
 
+        # A malformed pair must not silently select another edge through integer truncation.
+        prim = mesh.GetPrim()
+        prim.RemoveProperty("physics:restAdjTriPairs")
+        prim.CreateAttribute("physics:restAdjTriPairs", Sdf.ValueTypeNames.FloatArray).Set([0.9, 1.9])
+        prim.GetAttribute("physics:restBendAngles").Set([75.0])
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(), self.assertLogs("newton", level="WARNING") as caught:
+            warnings.simplefilter("error")
+            builder.add_usd(stage)
+        self.assertTrue(any("invalid authored rest bend angles" in m for m in caught.output))
+        np.testing.assert_array_equal(builder.edge_rest_angle, 0.0)
+
     def test_cloth_rest_shape_bend_uses_authored_pose(self):
         """Derive signed dihedrals from default-time rest points while retaining live points."""
         from pxr import Sdf, Usd

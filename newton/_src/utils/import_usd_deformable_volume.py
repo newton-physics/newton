@@ -29,6 +29,7 @@ from .import_usd_deformable_utils import (
     _DeformableImportContext,
     _is_ignored_path,
     _resolve_deformable_density,
+    _rest_index_array,
     _rest_topology_matches,
     _skip_for_deformable_body_owner,
     _transform_rest_points,
@@ -271,7 +272,7 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
                             raise ValueError("restShapePoints must match points when restTetVertexIndices is omitted")
                         rest_indices = np.asarray(tetmesh_for_builder.tet_indices, dtype=np.int64).reshape(-1, 4)
                     else:
-                        rest_indices = np.asarray(rest_indices_value, dtype=np.int64).reshape(-1, 4)
+                        rest_indices = _rest_index_array(rest_indices_value, 4, "restTetVertexIndices")
                         if len(rest_indices) != tetmesh_for_builder.tet_count:
                             raise ValueError(
                                 "restTetVertexIndices must contain one tetrahedron per simulation tetrahedron"

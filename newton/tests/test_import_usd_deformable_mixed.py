@@ -469,6 +469,7 @@ class TestUSDDeformableMixed(unittest.TestCase):
         for prim, field, array_type, matching, mismatched in cases:
             for value_type, value, expect_log in (
                 (Sdf.ValueTypeNames.Int, 0, True),
+                (Sdf.ValueTypeNames.FloatArray, (np.asarray(matching).reshape(-1) + 0.9).tolist(), True),
                 (array_type, matching, False),
                 (array_type, mismatched, True),
                 (array_type, [], False),
@@ -548,8 +549,8 @@ class TestUSDDeformableMixed(unittest.TestCase):
                     with self.subTest(field=name):
                         np.testing.assert_allclose(getattr(builder, name), getattr(reference, name), rtol=1.0e-6)
 
-    def test_non_finite_rest_geometry_falls_back(self):
-        """Log non-finite rest data and preserve fallback state under strict warning filters."""
+    def test_invalid_rest_geometry_falls_back(self):
+        """Log non-finite points and fractional indices while preserving the simulation rest state."""
         from pxr import Sdf
 
         stage = _deformable_stage()
@@ -559,23 +560,34 @@ class TestUSDDeformableMixed(unittest.TestCase):
         tet.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
         reference = newton.ModelBuilder()
         reference.add_usd(stage)
-        cloth.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
-            [(float("nan"), 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 0.0)]
+        meshes = (
+            (cloth, "restTriVertexIndices", [0, 1, 2, 0, 2, 3], float("nan")),
+            (tet, "restTetVertexIndices", [0, 1, 2, 3], float("inf")),
         )
-        tet.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
-            [(0.0, 0.0, 0.0), (float("inf"), 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)]
-        )
+        for case in ("non_finite_points", "fractional_indices"):
+            with self.subTest(case=case):
+                for mesh, field, indices, non_finite in meshes:
+                    rest_points = np.asarray(mesh.GetPointsAttr().Get()).copy() * 0.5
+                    if case == "non_finite_points":
+                        rest_points[0, 0] = non_finite
+                    else:
+                        mesh.GetPrim().CreateAttribute(f"physics:{field}", Sdf.ValueTypeNames.FloatArray).Set(
+                            (np.asarray(indices) + 0.9).tolist()
+                        )
+                    mesh.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
+                        rest_points
+                    )
 
-        builder = newton.ModelBuilder()
-        with warnings.catch_warnings(), self.assertLogs("newton", level="WARNING") as caught:
-            warnings.simplefilter("error")
-            builder.add_usd(stage)
-        messages = caught.output
+                builder = newton.ModelBuilder()
+                with warnings.catch_warnings(), self.assertLogs("newton", level="WARNING") as caught:
+                    warnings.simplefilter("error")
+                    builder.add_usd(stage)
+                messages = caught.output
 
-        self.assertTrue(any("/World/Cloth" in m and "invalid cloth rest shape" in m for m in messages))
-        self.assertTrue(any("/World/Soft" in m and "invalid volume rest shape" in m for m in messages))
-        for name in ("particle_q", "particle_mass", "tri_poses", "tet_poses", "edge_rest_angle"):
-            np.testing.assert_allclose(getattr(builder, name), getattr(reference, name))
+                self.assertTrue(any("/World/Cloth" in m and "invalid cloth rest shape" in m for m in messages))
+                self.assertTrue(any("/World/Soft" in m and "invalid volume rest shape" in m for m in messages))
+                for name in ("particle_q", "particle_mass", "tri_poses", "tet_poses", "edge_rest_angle"):
+                    np.testing.assert_allclose(getattr(builder, name), getattr(reference, name))
 
     def test_plain_geometry_is_not_reinterpreted(self):
         """Geometry without the family sim APIs must not become a deformable. A bare TetMesh

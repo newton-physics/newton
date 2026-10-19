@@ -573,19 +573,12 @@ class MeshAdjacency:
         match1 = found & (slot_opp == edges[cand, 1])
         tri_ids = np.broadcast_to(np.arange(tri_count, dtype=np.int32)[:, None], (tri_count, 3))
 
-        def first_per_edge(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-            hit_edges = cand[mask]
-            hit_tris = tri_ids[mask]
-            hit_order = np.lexsort((hit_tris, hit_edges))
-            unique_edges, first = np.unique(hit_edges[hit_order], return_index=True)
-            return unique_edges, hit_tris[hit_order][first]
-
-        side0_edges, side0_tris = first_per_edge(match0)
-        edge_tri_indices[side0_edges, 0] = side0_tris
-        taken = np.full(edge_count, -1, dtype=np.int32)
-        taken[side0_edges] = side0_tris
-        side1_edges, side1_tris = first_per_edge(match1 & (tri_ids != taken[cand]))
-        edge_tri_indices[side1_edges, 1] = side1_tris
+        # Reduce triangle ids directly: sorting every hit is unnecessary even when faces coincide.
+        edge_tri_indices.fill(tri_count)
+        np.minimum.at(edge_tri_indices[:, 0], cand[match0], tri_ids[match0])
+        side1 = match1 & (tri_ids != edge_tri_indices[cand, 0])
+        np.minimum.at(edge_tri_indices[:, 1], cand[side1], tri_ids[side1])
+        edge_tri_indices[edge_tri_indices == tri_count] = -1
         tri_edge_indices = np.where(match0 | match1, cand, -1).astype(np.int32)
         return edge_tri_indices, tri_edge_indices
 
