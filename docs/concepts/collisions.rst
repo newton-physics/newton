@@ -2257,8 +2257,8 @@ no force. Damping and friction only act while the shapes penetrate.
   hold a light object against a gripper pad. Choose ``ka`` so that
   :math:`N k_e \, k_a` exceeds the force you want to resist.
 - Adhesion only acts on contacts the collision pipeline reports, so the pair
-  gap ``gap_a + gap_b`` (see :ref:`margin-gap-semantics`) must be at least the
-  pair's averaged ``ka``.
+  gap ``gap_a + gap_b`` (see :ref:`margin and gap semantics <margin-gap-semantics>`)
+  must be at least the pair's averaged ``ka``.
 - The force jumps from about :math:`k_e \, k_a` to zero at the cutoff, so large
   values inject energy when shapes separate. Keep ``ka`` small relative to the
   shape size.
