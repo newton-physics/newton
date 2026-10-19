@@ -93,7 +93,8 @@ jobs:
     needs: start-runner
     if: ${{ !cancelled() && needs.start-runner.result == 'success' }}
     runs-on: ${{ needs.start-runner.outputs.label }}
-    timeout-minutes: 60
+    # Stay below the 90 min runner watchdog.
+    timeout-minutes: 80
     permissions:
       contents: read
     env:
@@ -128,6 +129,7 @@ jobs:
         run: >
           uv run --extra dev --extra torch-cu13 -m newton.tests
           --strict-warnings
+          --parallel-timeout 4500
           --deprecation-allowlist scripts/ci/deprecation_allowlists/warp_nightly.txt
           --junit-report-xml rspec.xml
 

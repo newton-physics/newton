@@ -15,6 +15,7 @@ from newton.tests._usd_deformable_test_utils import (
     _add_cloth_mesh,
     _add_element_collision_filter,
     _add_physics_attachment,
+    _author_cable_rest_shape,
     _author_deformable_element_array,
     _bind_deformable_material,
     _deformable_stage,
@@ -333,6 +334,72 @@ class TestUSDDeformableAttachments(unittest.TestCase):
 
         model = builder.finalize()
         self.assertGreater(model.body_count, 0)
+
+    def test_strained_cable_attachments_use_rest_endpoints(self):
+        """Keep initial anchors when rest points are absent; let FK close stretched root attachments."""
+        from pxr import UsdGeom, UsdPhysics
+
+        for endpoint, expected_body in ((0, 0), (2, 1)):
+            for rooted, use_rest in ((False, False), (False, True), (True, False), (True, True)):
+                with self.subTest(endpoint=endpoint, rooted=rooted, use_rest=use_rest):
+                    stage = _deformable_stage()
+                    plug = UsdGeom.Cube.Define(stage, "/World/Plug")
+                    plug.CreateSizeAttr(0.1)
+                    UsdPhysics.RigidBodyAPI.Apply(plug.GetPrim())
+                    UsdPhysics.CollisionAPI.Apply(plug.GetPrim())
+                    points = [(0, 0, 0), (0, 0, 0.4), (0, 0, 0.8)]
+                    curves = _add_cable_curve(stage, "/World/Cable", points)
+                    if use_rest:
+                        _author_cable_rest_shape(curves, points=[(0, 0, 0), (0, 0, 0.1), (0, 0, 0.3)])
+                    half_lengths = [0.05, 0.1] if use_rest else [0.2, 0.2]
+                    expected_z = -half_lengths[0] if endpoint == 0 else half_lengths[1]
+                    _add_physics_attachment(
+                        stage,
+                        "/World/Endpoint",
+                        src0="/World/Cable",
+                        src1="/World/Plug",
+                        type0="point",
+                        indices0=[endpoint],
+                        coords1=[points[endpoint]],
+                    )
+                    if not rooted:
+                        # A second attachment keeps the endpoint in the separate attachment pass.
+                        _add_physics_attachment(
+                            stage,
+                            "/World/Segment",
+                            src0="/World/Cable",
+                            type0="segment",
+                            indices0=[1],
+                            coords0=[(0.25, 0.02, 0.03)],
+                            coords1=[(0, 0, 0.7)],
+                        )
+                    builder = newton.ModelBuilder()
+                    result = builder.add_usd(stage, return_deformable_results=True)
+                    bodies = result["path_cable_map"]["/World/Cable"][0]
+                    np.testing.assert_allclose(
+                        np.asarray(builder.body_q)[bodies, :3], [(0, 0, 0.2), (0, 0, 0.6)], atol=1e-6
+                    )
+                    joint = result["path_attachment_map"]["/World/Endpoint"][0]
+                    self.assertEqual(builder.joint_parent[joint], result["path_body_map"]["/World/Plug"])
+                    self.assertEqual(builder.joint_child[joint], bodies[expected_body])
+                    np.testing.assert_allclose(builder.joint_X_c[joint][:3], [0, 0, expected_z], atol=1e-6)
+                    self.assertEqual(builder.joint_articulation[joint] >= 0, rooted)
+                    anchor = wp.transform_point(builder.body_q[bodies[expected_body]], wp.vec3(0, 0, expected_z))
+                    expected_anchor = (0.15 if endpoint == 0 else 0.7) if use_rest else points[endpoint][2]
+                    self.assertAlmostEqual(float(anchor[2]), expected_anchor, places=6)
+                    if not rooted:
+                        segment_joint = result["path_attachment_map"]["/World/Segment"][0]
+                        np.testing.assert_allclose(
+                            builder.joint_X_c[segment_joint][:3], [-0.03, 0.02, 0.5 * half_lengths[1]], atol=1e-6
+                        )
+                    model = builder.finalize(device="cpu")
+                    state = model.state()
+                    np.testing.assert_allclose(state.body_q.numpy()[bodies], np.asarray(builder.body_q)[bodies])
+                    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+                    expected_positions = np.array([[0, 0, 0.2], [0, 0, 0.6]])
+                    if rooted and use_rest:
+                        expected_positions[:, 2] += -0.15 if endpoint == 0 else 0.1
+                    np.testing.assert_allclose(state.body_q.numpy()[bodies, :3], expected_positions, atol=1e-6)
 
     def test_physics_attachment_joins_plug_and_cable_articulation_for_vbd(self):
         """Import a physically attached plug and cable as one articulation."""

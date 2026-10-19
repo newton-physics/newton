@@ -940,23 +940,32 @@ class DVISolverConfig:
     on CUDA. Unused by APGD. Must be greater than zero. Defaults to `2`.
     """
 
-    use_schur_complement: bool = False
+    use_schur_complement: bool | None = None
     """
     Whether to eliminate bilateral rows from the unilateral solve through a Schur complement.
 
     .. experimental::
 
-        The ``True`` mode may change without prior notice. It requires the same
-        setting in every world. PGS adds response-matrix setup and storage;
+        Schur elimination may change without prior notice. It requires the same
+        resolved mode in every world. PGS adds response-matrix setup and storage;
         APGD applies the response using the factored bilateral operator.
 
-    Defaults to ``False``.
+    Defaults to ``None``, which enables elimination when the model contains
+    bounded implicit-PD drives. Their effort rows can be strongly coupled to
+    the bilateral joint rows, making alternating solves converge very slowly.
+    Otherwise, ``None`` selects alternating solves. An explicit boolean
+    overrides the automatic choice for the whole batch.
+
+    Elimination stores per-world response matrices of bilateral rows times
+    unilateral rows, which can multiply the solver's device memory for large
+    batches of articulated robots with many contacts. Set ``False`` to trade
+    drive accuracy for the smaller alternating workspace.
     """
 
     bilateral_solve_interval: int = 1
     """
     Number of alternating DVI iterations between repeated direct bilateral solves.
-    This controls coupling when :attr:`use_schur_complement` is ``False``.
+    This controls coupling when Schur elimination is disabled.
     Larger values trade coupling accuracy for fewer direct solves. Must be greater
     than zero. Defaults to `1`.
     """

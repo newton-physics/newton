@@ -1624,7 +1624,6 @@ def apply_mjc_control_kernel(
     dofs_per_world: wp.int32,
     ctrls_per_world: wp.int32,
     joints_per_world: wp.int32,
-    use_coord_layout_targets: bool,
     # outputs
     mj_ctrl: wp.array2d[wp.float32],
 ):
@@ -1665,27 +1664,18 @@ def apply_mjc_control_kernel(
                     mj_ctrl[world, actuator] = joint_target_q[world_target_q] + ref
             else:
                 # Ball-joint position target
-                # Coord layout stores a 4-float quat (needs log-map); DOF layout stores
-                # extrinsic ZYX Euler target angles directly at the joint's target-q base.
-                last_elem = world_target_q + wp.where(use_coord_layout_targets, 3, 2)  # check size
+                # Position targets store a quaternion at the joint's coordinate base.
+                last_elem = world_target_q + 3
                 assert last_elem < joint_target_q.shape[0]
                 if not last_elem < joint_target_q.shape[0]:
                     return
 
-                if use_coord_layout_targets:
-                    q_n = wp.quat(
-                        joint_target_q[world_target_q + 0],
-                        joint_target_q[world_target_q + 1],
-                        joint_target_q[world_target_q + 2],
-                        joint_target_q[world_target_q + 3],
-                    )
-                else:
-                    angles = wp.vec3(
-                        joint_target_q[world_target_q + 0],
-                        joint_target_q[world_target_q + 1],
-                        joint_target_q[world_target_q + 2],
-                    )
-                    q_n = wp.quat_from_euler(angles, 2, 1, 0)
+                q_n = wp.quat(
+                    joint_target_q[world_target_q + 0],
+                    joint_target_q[world_target_q + 1],
+                    joint_target_q[world_target_q + 2],
+                    joint_target_q[world_target_q + 3],
+                )
 
                 aa_newton = _target_quat_to_axis_angle(q_n[0], q_n[1], q_n[2], q_n[3])
                 jnt = mjc_actuator_to_newton_ball_jnt[actuator]
@@ -3585,3 +3575,54 @@ def reset_joint_state_kernel(
     if joint_qd and i < dofs_per_world:
         di = worldid * dofs_per_world + i
         joint_qd[di] = default_joint_qd[di]
+
+
+# Newton-defined overflow bits written into the MuJoCo solver's overflow observable.
+# Bits 0-15 are reserved for mujoco-warp's OverflowType bitmask (NEFC, NJMAX_NNZ,
+# BROADPHASE, NARROWPHASE, CCD, HFIELD, CONTACT_MATCH, NVMAX, EPA_HORIZON).
+OVERFLOW_CONTACT_PIPELINE = wp.constant(wp.int32(1 << 16))
+"""Collision pipeline overflowed: rigid_contact_count exceeded rigid_contact_max."""
+
+OVERFLOW_SOLVER_NCONMAX = wp.constant(wp.int32(1 << 17))
+"""Solver nconmax overflow: rigid_contact_count exceeded naconmax."""
+
+
+@wp.kernel
+def collect_overflow_kernel(
+    # Newton collision pipeline diagnostics
+    rigid_contact_count: wp.array[wp.int32],  # [1] — total contacts generated
+    rigid_contact_max: int,  # collision pipeline buffer capacity
+    naconmax: int,  # solver contact buffer capacity
+    # 1 when Newton fed contacts to the solver (use_mujoco_contacts=False);
+    # 0 when MuJoCo Warp ran its own collision detection — bits 16-17 are
+    # meaningless in that mode and must not be set.
+    newton_contacts: int,
+    # MuJoCo Warp per-world overflow bitmask (NEFC, NJMAX_NNZ, etc.)
+    mjw_overflow: wp.array[wp.int32],  # [nworld]
+    # Output — written into the overflow observable
+    overflow_out: wp.array[wp.int32],  # [nworld]
+):
+    """Collect overflow signals from the collision pipeline and solver into a per-world bitmask.
+
+    Runs with ``dim=nworld``. Thread 0 checks the global contact count against
+    both capacity limits and ORs the result into every world slot; all threads
+    independently OR in their world's mujoco-warp overflow bits.
+
+    Newton-defined bits (16-17) are only set when ``newton_contacts=1``.  When
+    MuJoCo Warp performs its own collision detection the ``contacts`` argument
+    is unused by the solver, so ``rigid_contact_count`` may be stale or zero
+    and must not be interpreted as an overflow signal.
+    """
+    worldid = wp.tid()
+
+    # Newton contact overflow: only meaningful when Newton fed contacts in.
+    newton_bits = wp.int32(0)
+    if newton_contacts:
+        count = rigid_contact_count[0]
+        if count > rigid_contact_max:
+            newton_bits = newton_bits | OVERFLOW_CONTACT_PIPELINE
+        if count > naconmax:
+            newton_bits = newton_bits | OVERFLOW_SOLVER_NCONMAX
+
+    # Merge Newton bits and this world's mujoco-warp bits into the output.
+    overflow_out[worldid] = newton_bits | mjw_overflow[worldid]

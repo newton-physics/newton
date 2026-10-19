@@ -19,6 +19,7 @@ from typing import Any
 
 import warp as wp
 
+from newton._src.geometry.support_function import GeoTypeEx, _has_verified_hull
 from newton._src.math import orthonormal_basis
 
 from .contact_data import ContactData
@@ -137,6 +138,7 @@ class IncrementalPlaneTracker:
     previous_point: wp.vec3
     normal: wp.vec3
     largest_area_sq: float
+    nonplanar: bool
 
 
 @wp.func
@@ -144,6 +146,7 @@ def update_incremental_plane_tracker(
     tracker: IncrementalPlaneTracker,
     current_point: wp.vec3,
     current_point_id: int,
+    check_planarity: bool = False,
 ) -> IncrementalPlaneTracker:
     """
     Update the incremental plane tracker with a new point.
@@ -151,9 +154,15 @@ def update_incremental_plane_tracker(
     if current_point_id == 0:
         tracker.reference_point = current_point
         tracker.largest_area_sq = 0.0
+        tracker.normal = wp.vec3(0.0)
+        tracker.nonplanar = False
     elif current_point_id == 1:
         tracker.previous_point = current_point
     else:
+        if check_planarity and tracker.largest_area_sq > 0.0:
+            offset = wp.dot(tracker.normal, current_point - tracker.reference_point)
+            if offset * offset > EPS * EPS * tracker.largest_area_sq:
+                tracker.nonplanar = True
         edge1 = tracker.previous_point - tracker.reference_point
         edge2 = current_point - tracker.reference_point
         cross = wp.cross(edge1, edge2)
@@ -163,6 +172,25 @@ def update_incremental_plane_tracker(
             tracker.normal = cross
         tracker.previous_point = current_point
     return tracker
+
+
+@wp.func
+def has_planar_contact_feature(geom: Any) -> bool:
+    """Identify shapes whose sampled supporting features must lie on one plane."""
+    return (
+        geom.shape_type == int(GeoType.BOX)
+        or geom.shape_type == int(GeoType.CONVEX_MESH)
+        or geom.shape_type == int(GeoType.PLANE)
+        or geom.shape_type == int(GeoTypeEx.TRIANGLE)
+        or geom.shape_type == int(GeoTypeEx.TRIANGLE_PRISM)
+    )
+
+
+@wp.func
+def contact_feature_supports_anchor(tracker: IncrementalPlaneTracker, anchor: wp.vec3) -> bool:
+    """Require coplanar support samples and a witness on their fitted plane."""
+    offset = wp.dot(tracker.normal, anchor - tracker.reference_point)
+    return not tracker.nonplanar and offset * offset <= EPS * EPS * tracker.largest_area_sq
 
 
 @wp.func
@@ -667,6 +695,16 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
         using perturbed support mapping and polygon clipping.
     """
 
+    @wp.func
+    def contact_plane_is_supporting(geom: Any, direction: wp.vec3, plane_d: float, provider: Any) -> bool:
+        """Certify a fitted feature plane against the complete shape."""
+        query = geom
+        if not _has_verified_hull(query, provider):
+            query.shape_index = -1
+        point = support_func(query, direction, provider)
+        offset = wp.dot(direction, point) + plane_d
+        return offset * offset <= EPS * EPS * wp.length_sq(direction)
+
     if _support_funcs is not None:
         _support_map_b = _support_funcs[0]
     else:
@@ -872,6 +910,8 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
 
         plane_tracker_a = IncrementalPlaneTracker()
         plane_tracker_b = IncrementalPlaneTracker()
+        planar_a = has_planar_contact_feature(geom_a)
+        planar_b = has_planar_contact_feature(geom_b)
 
         center = 0.5 * (p_a + p_b)
 
@@ -914,7 +954,7 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
             pt_a_2d = wp.vec2(wp.dot(tangent_a, projected_a), wp.dot(tangent_b, projected_a))
             a_count, was_added_a = add_avoid_duplicates_vec2(a_buffer, a_count, pt_a_2d, EPS)
             if was_added_a:
-                plane_tracker_a = update_incremental_plane_tracker(plane_tracker_a, pt_a_3d, a_count - 1)
+                plane_tracker_a = update_incremental_plane_tracker(plane_tracker_a, pt_a_3d, a_count - 1, planar_a)
 
             # Shape B: direction in B-local, result transformed to A-local.
             local_dir_b = local_normal_b * cos_tilt + c_sin * local_ta_b + s_sin * local_tb_b
@@ -924,7 +964,7 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
             pt_b_2d = wp.vec2(wp.dot(tangent_a, projected_b), wp.dot(tangent_b, projected_b))
             b_count, was_added_b = add_avoid_duplicates_vec2(b_buffer, b_count, pt_b_2d, EPS)
             if was_added_b:
-                plane_tracker_b = update_incremental_plane_tracker(plane_tracker_b, pt_b_3d, b_count - 1)
+                plane_tracker_b = update_incremental_plane_tracker(plane_tracker_b, pt_b_3d, b_count - 1, planar_b)
 
         # World-space normal (computed once for all output contacts)
         normal_world = wp.quat_rotate(orientation_a, normal)
@@ -935,15 +975,47 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
         quaternion_a_ws = orientation_a
         quaternion_b_ws = orientation_a * relative_orientation_b
 
-        if a_count < 2 or b_count < 2:
+        if (
+            a_count < 2
+            or b_count < 2
+            or (planar_a and not contact_feature_supports_anchor(plane_tracker_a, p_a))
+            or (planar_b and not contact_feature_supports_anchor(plane_tracker_b, p_b))
+        ):
             count_out = 0
             normal_dot = 0.0
         else:
             projector_a, projector_b = create_body_projectors(plane_tracker_a, p_a, plane_tracker_b, p_b, normal)
 
-            if excess_normal_deviation(normal, projector_a.normal) or excess_normal_deviation(
+            valid_planes = not excess_normal_deviation(normal, projector_a.normal) and not excess_normal_deviation(
                 normal, projector_b.normal
+            )
+            # The collision normal certifies parallel planes through witnesses.
+            # Line projectors use sampled midpoints, so they also need a bound.
+            if (
+                valid_planes
+                and planar_a
+                and (plane_tracker_a.largest_area_sq == 0.0 or wp.length_sq(wp.cross(normal, projector_a.normal)) > 0.0)
             ):
+                direction_a = projector_a.normal
+                plane_d_a = projector_a.plane_d
+                if wp.dot(direction_a, normal) < 0.0:
+                    direction_a = -direction_a
+                    plane_d_a = -plane_d_a
+                valid_planes = contact_plane_is_supporting(geom_a, direction_a, plane_d_a, data_provider)
+            if (
+                valid_planes
+                and planar_b
+                and (plane_tracker_b.largest_area_sq == 0.0 or wp.length_sq(wp.cross(normal, projector_b.normal)) > 0.0)
+            ):
+                direction_b = projector_b.normal
+                plane_d_b = projector_b.plane_d
+                if wp.dot(direction_b, normal) > 0.0:
+                    direction_b = -direction_b
+                    plane_d_b = -plane_d_b
+                local_direction_b = wp.quat_rotate_inv(relative_orientation_b, direction_b)
+                local_plane_d_b = plane_d_b + wp.dot(direction_b, relative_position_b)
+                valid_planes = contact_plane_is_supporting(geom_b, local_direction_b, local_plane_d_b, data_provider)
+            if not valid_planes:
                 count_out = 0
                 normal_dot = 0.0
             else:
