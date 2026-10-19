@@ -568,7 +568,7 @@ def rasterize_collider_kernel(
     collider_friction[i] = collider.material_friction[material_id]
     collider_adhesion[i] = collider.material_adhesion[material_id] * dt * node_volumes[i] / voxel_size
 
-    # Allow approach until the end-of-step gap closes; do not recover penetration.
+    # Allow approach until the end-of-step gap closes; penetrating nodes keep the collider velocity.
     if speculative and dt > 0.0:
         sdf_vel -= (wp.max(sdf, 0.0) / dt) * sdf_gradient
     collider_velocity[i] = sdf_vel
