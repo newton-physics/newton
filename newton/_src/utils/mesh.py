@@ -565,15 +565,28 @@ class MeshAdjacency:
         cand = order[pos]  # (tri_count, 3)
         found = edge_key[cand] == slot_key
 
-        # Link a slot to its candidate only if the opposite vertex matches a stored
-        # opposite (o0 -> side 0, o1 -> side 1), mirroring _compute_edge_adjacency.
-        side0 = found & (slot_opp == edges[cand, 0])
-        side1 = found & ~side0 & (slot_opp == edges[cand, 1])
-
-        tri_edge_indices = np.where(side0 | side1, cand, -1).astype(np.int32)
+        # Link a slot to its candidate only if the opposite vertex matches a stored opposite
+        # (o0 -> side 0, o1 -> side 1). Coincident or duplicated faces can match one side more
+        # than once, so each side resolves to the first matching triangle in traversal order,
+        # never reusing the triangle that holds side 0, as _compute_edge_adjacency does.
+        match0 = found & (slot_opp == edges[cand, 0])
+        match1 = found & (slot_opp == edges[cand, 1])
         tri_ids = np.broadcast_to(np.arange(tri_count, dtype=np.int32)[:, None], (tri_count, 3))
-        edge_tri_indices[cand[side0], 0] = tri_ids[side0]
-        edge_tri_indices[cand[side1], 1] = tri_ids[side1]
+
+        def first_per_edge(mask: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+            hit_edges = cand[mask]
+            hit_tris = tri_ids[mask]
+            hit_order = np.lexsort((hit_tris, hit_edges))
+            unique_edges, first = np.unique(hit_edges[hit_order], return_index=True)
+            return unique_edges, hit_tris[hit_order][first]
+
+        side0_edges, side0_tris = first_per_edge(match0)
+        edge_tri_indices[side0_edges, 0] = side0_tris
+        taken = np.full(edge_count, -1, dtype=np.int32)
+        taken[side0_edges] = side0_tris
+        side1_edges, side1_tris = first_per_edge(match1 & (tri_ids != taken[cand]))
+        edge_tri_indices[side1_edges, 1] = side1_tris
+        tri_edge_indices = np.where(match0 | match1, cand, -1).astype(np.int32)
         return edge_tri_indices, tri_edge_indices
 
     @staticmethod

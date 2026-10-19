@@ -855,6 +855,39 @@ class TestModelMesh(unittest.TestCase):
         )
         self.assertEqual(set(adj.edge_tri_indices[shared].tolist()), {0, 1})
 
+    def test_mesh_adjacency_coincident_faces(self):
+        """Keep the first two incident triangles when pre-numbered edges have equal opposite vertices."""
+        cases = {
+            "same_winding": ([[0, 1, 2], [0, 1, 2], [3, 4, 5]], 0),
+            "flipped_winding": ([[0, 1, 2], [0, 2, 1], [3, 4, 5]], 0),
+            # A duplicated face on a non-manifold edge: traversal order decides which two faces win.
+            "duplicate_then_third": ([[0, 1, 2], [0, 1, 2], [0, 1, 3]], 1),
+            "duplicate_around_third": ([[0, 1, 2], [0, 1, 3], [0, 2, 1]], 1),
+        }
+        for case, (tris, non_manifold_edges) in cases.items():
+            with self.subTest(case=case):
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    derived = newton.utils.MeshAdjacency(tris)
+                self.assertEqual(sum("non-manifold" in str(w.message) for w in caught), non_manifold_edges)
+                # The first two faces in traversal order own the doubled edge (0, 1).
+                doubled = next(i for i, e in enumerate(derived.edge_indices) if {int(e[2]), int(e[3])} == {0, 1})
+                np.testing.assert_array_equal(derived.edge_tri_indices[doubled], [0, 1])
+                # Interleave the edges and swap their endpoints to exercise caller-owned numbering.
+                order = np.arange(len(derived.edge_indices))[::-1]
+                edges = derived.edge_indices[order].copy()
+                edges[:, 2:4] = edges[:, 2:4][:, ::-1]
+                rebuilt = newton.utils.MeshAdjacency(tris, edge_indices=edges)
+                np.testing.assert_array_equal(rebuilt.edge_indices, edges)
+                np.testing.assert_array_equal(rebuilt.edge_tri_indices, derived.edge_tri_indices[order])
+                # Pre-numbered edges link a slot by its opposite vertex, so only the slots whose
+                # triangle holds one of the edge's two sides must agree with the derived maps.
+                sides = derived.edge_tri_indices[derived.tri_edge_indices]
+                owned = (derived.tri_edge_indices >= 0) & (sides == np.arange(len(tris))[:, None, None]).any(axis=2)
+                np.testing.assert_array_equal(
+                    rebuilt.tri_edge_indices[owned], np.argsort(order)[derived.tri_edge_indices[owned]]
+                )
+
     def test_mesh_adjacency_legacy_api_removed(self):
         # The dict-based API deprecated in 1.4 is gone: the `edges` accessor, its
         # `Edge` record class, the `add_edge` shim, and the ctor `indices` alias.
