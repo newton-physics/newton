@@ -1428,6 +1428,14 @@ add_example_test(
     use_viewer=True,
 )
 
+add_example_test(
+    TestMPMExamples,
+    name="mpm.example_mpm_pinch_carry",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 480, "spacing": 0.002},
+    use_viewer=True,
+)
+
 
 add_basic_example_test(
     name="basic.example_basic_plotting",
