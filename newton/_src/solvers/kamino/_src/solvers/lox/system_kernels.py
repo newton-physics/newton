@@ -251,41 +251,35 @@ def _compute_body_inertial_system(
 
 @wp.func
 def _compute_dynamic_joint_row(
-    jacobian: vec6f,
     effective_inertia: wp.float32,
     free_velocity: wp.float32,
-) -> _PrimalRowContribution:
+) -> tuple[wp.float32, wp.float32]:
     """Eliminate one implicit joint-dynamics coordinate into body space.
 
     The joint equation is ``effective_inertia * dq = h_joint`` with
     ``free_velocity = h_joint / effective_inertia`` and ``dq = J v``.
 
     Args:
-        jacobian: Linear-first joint velocity Jacobian row.
         effective_inertia: Positive implicit joint inertia.
         free_velocity: Implicit joint free velocity.
 
     Returns:
-        ``effective_inertia J^T J`` and
-        ``effective_inertia free_velocity J^T``.
+        The coefficients of the matrix term ``effective_inertia J^T J`` and of the
+        right-hand-side term ``effective_inertia free_velocity J^T``.
     """
-    result = _PrimalRowContribution()
-    result.matrix = effective_inertia * wp.outer(jacobian, jacobian)
-    result.right_hand_side = effective_inertia * free_velocity * jacobian
-    return result
+    return effective_inertia, effective_inertia * free_velocity
 
 
 @wp.func
 def _compute_augmented_joint_row(
-    jacobian: vec6f,
     residual: wp.float32,
     penalty: wp.float32,
     time_step: wp.float32,
     linearization_velocity: wp.float32,
-) -> _PrimalRowContribution:
+) -> tuple[wp.float32, wp.float32]:
     """Linearize the augmented Lagrangian penalty of one structural joint row.
 
-    For ``C(q(v)) ~= residual + h J (v - v_k)``, this returns the frozen terms in
+    For ``C(q(v)) ~= residual + h J (v - v_k)``, this returns the coefficients of the frozen terms in
 
     ``(M + h^2 penalty J^T J) v``
     ``= f - h penalty residual J^T + h^2 penalty J^T J v_k + h J^T lambda``.
@@ -294,7 +288,6 @@ def _compute_augmented_joint_row(
     candidate right-hand side.
 
     Args:
-        jacobian: Linear-first structural joint Jacobian row.
         residual: Current joint position residual [m or rad].
         penalty: Positive augmented penalty [N/m or N m/rad].
         time_step: Time step [s].
@@ -303,14 +296,12 @@ def _compute_augmented_joint_row(
             assembly about the begin-step pose.
 
     Returns:
-        The structural matrix and right-hand-side contributions.
+        The coefficients of the matrix term ``h^2 penalty J^T J`` and of the right-hand-side term
+        ``(-h penalty residual + h^2 penalty J v_k) J^T``.
     """
-    result = _PrimalRowContribution()
-    result.matrix = time_step * time_step * penalty * wp.outer(jacobian, jacobian)
-    result.right_hand_side = (
+    return time_step * time_step * penalty, (
         -time_step * penalty * residual + time_step * time_step * penalty * linearization_velocity
-    ) * jacobian
-    return result
+    )
 
 
 @wp.func
@@ -342,30 +333,27 @@ def _body_matrix_rows(
 
 
 @wp.func
-def _atomic_add_body_vector(
-    vector: wp.array[wp.float32],
+def _body_matrix_row(
     vector_offset: wp.int32,
+    inverse_permutation: wp.array[wp.int32],
     body: wp.int32,
-    value: vec6f,
-):
-    body_offset = vector_offset + 6 * body
-    for row in range(6):
-        wp.atomic_add(vector, body_offset + row, value[row])
+    axis: wp.int32,
+    dimension: wp.int32,
+) -> wp.int32:
+    """Return the matrix row of one unknown of a local body, see :func:`_body_matrix_rows`."""
+    row = 6 * body + axis
+    if inverse_permutation and dimension > 6:
+        row = inverse_permutation[vector_offset + row]
+    return row
 
 
 @wp.func
-def _atomic_add_body_block(
-    matrix: wp.array[wp.float32],
-    matrix_offset: wp.int32,
-    dimension: wp.int32,
-    rows: vec6i,
-    cols: vec6i,
-    value: mat66f,
-):
-    for row in range(6):
-        for col in range(6):
-            index = _matrix_index(matrix_offset, dimension, rows[row], cols[col])
-            wp.atomic_add(matrix, index, value[row, col])
+def _select_axis(value: vec6f, axis: wp.int32) -> wp.float32:
+    """Return entry ``axis`` of ``value`` by selection, which keeps ``value`` in registers for a per-thread ``axis``."""
+    result = value[0]
+    for index in range(1, 6):
+        result = wp.where(axis == index, value[index], result)
+    return result
 
 
 @wp.func
@@ -400,6 +388,8 @@ def _assemble_body_inertial_systems(
     dimensions: wp.array[wp.int32],
     matrix_offsets: wp.array[wp.int32],
     vector_offsets: wp.array[wp.int32],
+    body_edge_offset: wp.array[wp.int32],
+    body_edge_neighbor: wp.array[wp.int32],
     model_bodies_m_i: wp.array[wp.float32],
     data_bodies_I_i: wp.array[wp.mat33f],
     velocity_previous: wp.array[vec6f],
@@ -412,12 +402,19 @@ def _assemble_body_inertial_systems(
     matrix: wp.array[wp.float32],
     right_hand_side: wp.array[wp.float32],
 ):
-    bid = wp.tid()
-    wid = body_world[bid]
-    dt = model_time_dt[wid]
+    """Write the inertial terms of each body and clear the off-diagonal blocks of its body edges.
+
+    Six threads assemble each body, one per unknown. Thread ``axis`` writes column ``axis`` of the diagonal
+    block of its body and entry ``axis`` of the right-hand side, and clears column ``axis`` of both
+    off-diagonal blocks of each body edge listed for its body. These blocks hold every matrix entry that
+    the joint assembly adds to, and the other matrix entries hold zeros.
+    """
+    bid, axis = wp.tid()
     block = body_block[bid]
     if block < 0:
         return
+    wid = body_world[bid]
+    dt = model_time_dt[wid]
     local_body = body_local[bid]
     dimension = dimensions[block]
     matrix_offset = matrix_offsets[block]
@@ -434,15 +431,21 @@ def _assemble_body_inertial_systems(
     contribution = _compute_body_inertial_system(
         model_bodies_m_i[bid], data_bodies_I_i[bid], velocity_previous[bid], force_explicit, dt
     )
+    right_hand_side[vector_offset + 6 * local_body + axis] = _select_axis(contribution.right_hand_side, axis)
 
-    body_offset = 6 * local_body
+    # The six threads of a body write contiguous columns of each matrix row
     rows = _body_matrix_rows(vector_offset, inverse_permutation, local_body, dimension)
+    col = _body_matrix_row(vector_offset, inverse_permutation, local_body, axis, dimension)
     for row in range(6):
-        right_hand_side[vector_offset + body_offset + row] = contribution.right_hand_side[row]
-        for col in range(6):
-            # The assembly starts from a cleared matrix, so the entries of the mass and inertia blocks suffice
-            if row == col or (row >= 3 and col >= 3):
-                matrix[_matrix_index(matrix_offset, dimension, rows[row], rows[col])] = contribution.matrix[row, col]
+        value = _select_axis(contribution.matrix[row], axis)
+        matrix[_matrix_index(matrix_offset, dimension, rows[row], col)] = value
+    for edge in range(body_edge_offset[bid], body_edge_offset[bid + 1]):
+        neighbor = body_local[body_edge_neighbor[edge]]
+        neighbor_rows = _body_matrix_rows(vector_offset, inverse_permutation, neighbor, dimension)
+        neighbor_col = _body_matrix_row(vector_offset, inverse_permutation, neighbor, axis, dimension)
+        for row in range(6):
+            matrix[_matrix_index(matrix_offset, dimension, rows[row], neighbor_col)] = 0.0
+            matrix[_matrix_index(matrix_offset, dimension, neighbor_rows[row], col)] = 0.0
 
 
 @wp.kernel
@@ -484,12 +487,19 @@ def _assemble_joint_rows(
 ):
     """Assemble the dynamic rows and the frozen penalty terms of the structural rows of each joint.
 
-    The rows of a joint share its two bodies, so their blocks are summed in registers and added
-    to the matrix once per joint. With a ``joint_penalty_scale``, each structural row also writes
-    its penalty, zero for the rows left out, and the penalized rows add their multiplier impulse
-    ``h J^T lambda`` to ``structural_body_impulse``.
+    Twelve threads assemble each joint, one per unknown of its two bodies. The thread of unknown ``axis``
+    of a body sums, over the rows of the joint, row ``axis`` of the diagonal block of its body and of the
+    block that couples its body to the other body. By symmetry, it adds them once to column ``axis`` of
+    the diagonal block and of the block that couples the other body to its body, so that the six threads
+    of a body add contiguous entries of each matrix row. Both sides evaluate each product of two Jacobian
+    entries in the same order, so the two coupling blocks are exact transposes. With a
+    ``joint_penalty_scale``, the first thread of each joint writes the penalties of its structural rows,
+    zero for the rows left out, and the penalized rows add their multiplier impulse ``h J^T lambda`` to
+    ``structural_body_impulse``.
     """
-    jid = wp.tid()
+    jid, unknown = wp.tid()
+    side = unknown // 6
+    axis = unknown - 6 * side
     bid_a = joint_body_a[jid]
     bid_b = joint_body_b[jid]
     body_count = body_block.shape[0]
@@ -516,7 +526,7 @@ def _assemble_joint_rows(
         dt = model_time_dt[wid]
         if joint_penalty_scale and dt > 0.0:
             world_penalty_scale = joint_penalty_scale[wp.where(bid_a_local >= 0, bid_a, bid_b)]
-    if joint_penalty_scale and world_penalty_scale <= 0.0:
+    if joint_penalty_scale and world_penalty_scale <= 0.0 and unknown == 0:
         for row in range(structural_start, structural_end):
             structural_penalty[row] = 0.0
     if block < 0:
@@ -530,11 +540,14 @@ def _assemble_joint_rows(
     if prescribed_twist and bid_b >= 0 and bid_b_local < 0:
         b_twist = prescribed_twist[bid_b]
 
-    a_matrix = mat66f(0.0)
-    b_matrix = mat66f(0.0)
-    cross_matrix = mat66f(0.0)
-    a_right_hand_side = vec6f(0.0)
-    b_right_hand_side = vec6f(0.0)
+    # The thread assembles one unknown of the body of its side, A or B
+    on_a = side == 0
+    bid = wp.where(on_a, bid_a, bid_b)
+    bid_local = wp.where(on_a, bid_a_local, bid_b_local)
+    other_local = wp.where(on_a, bid_b_local, bid_a_local)
+    body_row = vec6f(0.0)
+    cross_row = vec6f(0.0)
+    right_hand_side_entry = wp.float32(0.0)
     row_count = wp.int32(0)
 
     dynamic_start = dynamic_offset[jid]
@@ -545,31 +558,30 @@ def _assemble_joint_rows(
         a_jacobian = dynamic_jacobian_a[row]
         b_jacobian = dynamic_jacobian_b[row]
         velocity = dynamic_free_velocity[row] - wp.dot(a_jacobian, a_twist) - wp.dot(b_jacobian, b_twist)
-        if bid_a_local >= 0:
-            a_contribution = _compute_dynamic_joint_row(a_jacobian, inertia, velocity)
-            a_matrix += a_contribution.matrix
-            a_right_hand_side += a_contribution.right_hand_side
-        if bid_b_local >= 0:
-            b_contribution = _compute_dynamic_joint_row(b_jacobian, inertia, velocity)
-            b_matrix += b_contribution.matrix
-            b_right_hand_side += b_contribution.right_hand_side
-        cross_matrix += wp.outer(inertia * a_jacobian, b_jacobian)
+        coefficient, right_hand_side_coefficient = _compute_dynamic_joint_row(inertia, velocity)
+        jacobian = wp.where(on_a, a_jacobian, b_jacobian)
+        jacobian_axis = _select_axis(jacobian, axis)
+        body_row += coefficient * (jacobian_axis * jacobian)
+        cross_row += coefficient * (jacobian_axis * wp.where(on_a, b_jacobian, a_jacobian))
+        right_hand_side_entry += right_hand_side_coefficient * jacobian_axis
         row_count += 1
 
     if world_penalty_scale > 0.0:
-        a_impulse = vec6f(0.0)
-        b_impulse = vec6f(0.0)
+        impulse = wp.float32(0.0)
         for row in range(structural_start, structural_end):
             if structural_effective_mass[row] <= 0.0:
-                structural_penalty[row] = 0.0
+                if unknown == 0:
+                    structural_penalty[row] = 0.0
                 continue
             row_penalty = world_penalty_scale * structural_effective_mass[row] / (dt * dt)
-            structural_penalty[row] = row_penalty
+            if unknown == 0:
+                structural_penalty[row] = row_penalty
             a_jacobian = structural_jacobian_a[row]
             b_jacobian = structural_jacobian_b[row]
+            jacobian = wp.where(on_a, a_jacobian, b_jacobian)
+            jacobian_axis = _select_axis(jacobian, axis)
             if row_penalty > 0.0:
-                a_impulse += structural_reaction[row] * a_jacobian
-                b_impulse += structural_reaction[row] * b_jacobian
+                impulse += structural_reaction[row] * jacobian_axis
             # A small violation is left to average out, and a large one is corrected by at most
             # joint_max_correction per step
             dead_zone = joint_translation_dead_zone
@@ -577,43 +589,30 @@ def _assemble_joint_rows(
                 dead_zone = joint_rotation_dead_zone
             row_residual = compute_structural_correction(structural_residual[row], dead_zone, joint_max_correction)
             linearization_velocity = -wp.dot(a_jacobian, a_twist) - wp.dot(b_jacobian, b_twist)
-            if bid_a_local >= 0:
-                a_contribution = _compute_augmented_joint_row(
-                    a_jacobian, row_residual, row_penalty, dt, linearization_velocity
-                )
-                a_matrix += a_contribution.matrix
-                a_right_hand_side += a_contribution.right_hand_side
-            if bid_b_local >= 0:
-                b_contribution = _compute_augmented_joint_row(
-                    b_jacobian, row_residual, row_penalty, dt, linearization_velocity
-                )
-                b_matrix += b_contribution.matrix
-                b_right_hand_side += b_contribution.right_hand_side
-            cross_matrix += wp.outer((dt * dt * row_penalty) * a_jacobian, b_jacobian)
+            coefficient, right_hand_side_coefficient = _compute_augmented_joint_row(
+                row_residual, row_penalty, dt, linearization_velocity
+            )
+            body_row += coefficient * (jacobian_axis * jacobian)
+            cross_row += coefficient * (jacobian_axis * wp.where(on_a, b_jacobian, a_jacobian))
+            right_hand_side_entry += right_hand_side_coefficient * jacobian_axis
             row_count += 1
-        if bid_a >= 0:
-            wp.atomic_add(structural_body_impulse, bid_a, dt * a_impulse)
-        if bid_b >= 0:
-            wp.atomic_add(structural_body_impulse, bid_b, dt * b_impulse)
+        if bid >= 0:
+            structural_body_impulse[bid][axis] += dt * impulse
 
-    if row_count == 0:
+    if row_count == 0 or bid_local < 0:
         return
     dimension = dimensions[block]
     matrix_offset = matrix_offsets[block]
     vector_offset = vector_offsets[block]
-    a_rows = vec6i()
-    b_rows = vec6i()
-    if bid_a_local >= 0:
-        a_rows = _body_matrix_rows(vector_offset, inverse_permutation, bid_a_local, dimension)
-        _atomic_add_body_block(matrix, matrix_offset, dimension, a_rows, a_rows, a_matrix)
-        _atomic_add_body_vector(right_hand_side, vector_offset, bid_a_local, a_right_hand_side)
-    if bid_b_local >= 0:
-        b_rows = _body_matrix_rows(vector_offset, inverse_permutation, bid_b_local, dimension)
-        _atomic_add_body_block(matrix, matrix_offset, dimension, b_rows, b_rows, b_matrix)
-        _atomic_add_body_vector(right_hand_side, vector_offset, bid_b_local, b_right_hand_side)
-    if bid_a_local >= 0 and bid_b_local >= 0:
-        _atomic_add_body_block(matrix, matrix_offset, dimension, a_rows, b_rows, cross_matrix)
-        _atomic_add_body_block(matrix, matrix_offset, dimension, b_rows, a_rows, wp.transpose(cross_matrix))
+    wp.atomic_add(right_hand_side, vector_offset + 6 * bid_local + axis, right_hand_side_entry)
+    col = _body_matrix_row(vector_offset, inverse_permutation, bid_local, axis, dimension)
+    rows = _body_matrix_rows(vector_offset, inverse_permutation, bid_local, dimension)
+    for row in range(6):
+        wp.atomic_add(matrix, _matrix_index(matrix_offset, dimension, rows[row], col), body_row[row])
+    if other_local >= 0:
+        other_rows = _body_matrix_rows(vector_offset, inverse_permutation, other_local, dimension)
+        for row in range(6):
+            wp.atomic_add(matrix, _matrix_index(matrix_offset, dimension, other_rows[row], col), cross_row[row])
 
 
 @wp.func

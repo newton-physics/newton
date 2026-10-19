@@ -133,6 +133,15 @@ class LOXSystem:
         if active_dimensions != storage_dimensions:
             info.dim = wp.array(active_dimensions, dtype=wp.int32, device=self.device)
         self._data = LOXSystemData(body_block, body_local, body_vector_index, info, self.device)
+
+        # The first body of each edge between two dynamic bodies clears the off-diagonal blocks of the edge
+        # before an assembly, see :func:`.system_kernels._assemble_body_inertial_systems`
+        dynamic_edges = edges[np.all(body_block[edges] >= 0, axis=1) & (edges[:, 0] != edges[:, 1])]
+        body_edge_offset = capacity_offsets(np.bincount(dynamic_edges[:, 0], minlength=self.num_bodies))
+        self._body_edge_offset = wp.array(body_edge_offset, dtype=wp.int32, device=self.device)
+        self._body_edge_neighbor = wp.array(
+            dynamic_edges[:, 1] if dynamic_edges.size else [0], dtype=wp.int32, device=self.device
+        )
         self.linear_solver: LLTBlockedRCMTraversalSolver | None = None
         """Sparse LLT of the multi-body blocks, or ``None`` when every block holds a single body."""
         if self.num_sparse_blocks > 0:
@@ -232,11 +241,16 @@ class LOXSystem:
         gravity: wp.array[wp.vec3f],
         time_step: wp.array[wp.float32],
     ) -> None:
-        """Reset and assemble body inertia and explicit-force terms."""
-        self._reset()
+        """Assemble body inertia and explicit-force terms, and clear the other matrix entries of the assembly.
+
+        The body terms write the whole diagonal block of each body and clear the off-diagonal blocks of the
+        body edges, which hold every matrix entry that :meth:`add_joint_rows` adds to. The packed matrix holds
+        zeros elsewhere from its allocation, and the factorization copies them into its ordered matrix with
+        each new row order.
+        """
         wp.launch(
             _assemble_body_inertial_systems,
-            dim=self.num_bodies,
+            dim=(self.num_bodies, 6),
             inputs=[
                 self.body_world,
                 self._data.body_block,
@@ -244,6 +258,8 @@ class LOXSystem:
                 self._data.info.dim,
                 self._data.info.mio,
                 self._data.info.vio,
+                self._body_edge_offset,
+                self._body_edge_neighbor,
                 mass,
                 inertia_world,
                 velocity_previous,
@@ -275,7 +291,8 @@ class LOXSystem:
     ) -> None:
         """Add the implicit joint-dynamics rows and the frozen augmented penalty terms of the structural rows.
 
-        Each joint adds its rows to the blocks of its two bodies at once. The structural rows enter
+        Each joint adds its rows to the blocks of its two bodies at once, with one thread per unknown of
+        the two bodies. :meth:`assemble_bodies` must be called first. The structural rows enter
         the system with a ``joint_penalty_scale``, which also writes their penalties. The multiplier
         terms are added to the candidate right-hand side of each iteration. Each structural row
         corrects the part of its residual beyond ``joint_translation_dead_zone``, or
@@ -305,7 +322,7 @@ class LOXSystem:
             return
         wp.launch(
             _assemble_joint_rows,
-            dim=joint_count,
+            dim=(joint_count, 12),
             inputs=[
                 self._data.info.dim,
                 self._data.info.mio,
@@ -464,10 +481,6 @@ class LOXSystem:
     ###
     # Internals
     ###
-
-    def _reset(self) -> None:
-        """Clear the matrix before an assembly; the factorization overwrites its buffers."""
-        self._matrix.zero_()
 
     def _structural_pairs(
         self,
