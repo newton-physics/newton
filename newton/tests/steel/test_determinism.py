@@ -1,8 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import contextlib
 import hashlib
+import os
 import re
+import subprocess
 import sys
 import unittest
 from unittest import mock
@@ -12,6 +15,7 @@ import warp as wp
 
 import newton
 import newton.examples
+import newton.tests.unittest_utils
 from newton._src.solvers.steel.kernels import PGS_CONSTRAINT_TYPE_JOINT_LIMIT, crba_fill_par_dof
 from newton.solvers import SolverSteel
 from newton.tests.unittest_utils import StdOutCapture, add_function_test, get_cuda_test_devices, get_test_devices
@@ -491,6 +495,104 @@ def test_deterministic_joint_rows_follow_articulation_order(test, device):
         )
 
 
+@contextlib.contextmanager
+def _warp_lowering_off():
+    saved = wp.config.deterministic
+    wp.config.deterministic = wp.DeterministicMode.NOT_GUARANTEED
+    try:
+        yield
+    finally:
+        wp.config.deterministic = saved
+
+
+def _holds_steel_kernel(module):
+    return any(kernel.func.__module__.startswith("newton._src.solvers.steel") for kernel in module.kernels.values())
+
+
+def _check_inherited_global_mode(device):
+    """Run Steel in a process that set ``wp.config.deterministic`` to RUN_TO_RUN before importing Newton."""
+    from warp._src.context import user_modules  # noqa: PLC0415
+
+    assert wp.config.deterministic == RUN_TO_RUN
+    # Newton's collision kernels do not support Warp's deterministic lowering; only Steel's modules keep the global.
+    for module in list(user_modules.values()):
+        if not _holds_steel_kernel(module):
+            wp.set_module_options({"deterministic": wp.DeterministicMode.NOT_GUARANTEED}, module=module)
+    model = _build_contact_scene(device)
+    cuda = wp.get_device(device).is_cuda
+    options = MATRIX_FREE_OPTIONS if cuda else SPLIT_OPTIONS
+
+    def run(deterministic, graph):
+        solver = SolverSteel(model, deterministic=deterministic, **options)
+        with _warp_lowering_off():
+            pipeline = newton.CollisionPipeline(model, deterministic=True)
+            contacts = pipeline.contacts()
+        state_0, state_1, control = model.state(), model.state(), model.control()
+        newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
+        _actuate(model, control)
+
+        def step(state_in, state_out):
+            state_in.clear_forces()
+            with _warp_lowering_off():
+                pipeline.collide(state_in, contacts)
+            solver.step(state_in, state_out, control, contacts, 0.005)
+
+        hashes = []
+        for _ in range(40):
+            step(state_0, state_1)
+            state_0, state_1 = state_1, state_0
+            hashes.append(_sample(state_0))
+        if graph:
+            with wp.ScopedCapture(device=device) as capture:
+                step(state_0, state_1)
+                step(state_1, state_0)
+            for _ in range(10):
+                wp.capture_launch(capture.graph)
+                hashes.append(_sample(state_0))
+        return solver, hashes
+
+    solver, first = run(None, cuda)
+    assert solver._ordered_rows
+    _, second = run(None, cuda)
+    assert first == second, "inherited RUN_TO_RUN runs differ"
+    assert all(finite for _, finite in first)
+    _, unordered = run(wp.DeterministicMode.NOT_GUARANTEED, cuda)
+    assert all(finite for _, finite in unordered)
+    lowered = [
+        m.name
+        for m in user_modules.values()
+        if _holds_steel_kernel(m) and m.options["deterministic"] != wp.DeterministicMode.NOT_GUARANTEED
+    ]
+    assert not lowered, f"Steel modules use Warp's deterministic lowering: {lowered}"
+
+
+def test_inherited_global_mode_keeps_steel_ordering(test, device):
+    """Steel keeps its own ordering, and repeats bitwise, when RUN_TO_RUN is set process-wide before import."""
+    code = (
+        "import warp as wp; wp.config.deterministic = wp.DeterministicMode.RUN_TO_RUN; "
+        "from newton.tests.steel.test_determinism import _check_inherited_global_mode; "
+        f"_check_inherited_global_mode({str(device)!r})"
+    )
+    if newton.tests.unittest_utils.strict_warnings:
+        policy = "import warnings; warnings.filterwarnings('error', module=r'newton(\\.|$)'); "
+        for message in newton.tests.unittest_utils.allowed_deprecation_warnings:
+            policy += (
+                f"warnings.filterwarnings('default', message={re.escape(message)!r}, category=DeprecationWarning); "
+            )
+        code = policy + code
+    env = os.environ.copy()
+    env.pop("PYTHONWARNINGS", None)
+    result = subprocess.run(
+        [sys.executable, *newton.tests.unittest_utils.get_strict_warning_args(), "-c", code],
+        capture_output=True,
+        env=env,
+        text=True,
+        timeout=900,
+        check=False,
+    )
+    test.assertEqual(result.returncode, 0, f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+
+
 class TestSteelDeterminism(unittest.TestCase):
     pass
 
@@ -502,6 +604,7 @@ for _fn in (
     test_full_reset_matches_fresh_solver,
     test_deterministic_runs_are_bitwise_identical,
     test_deterministic_overflow_keeps_earliest_contacts,
+    test_inherited_global_mode_keeps_steel_ordering,
 ):
     add_function_test(TestSteelDeterminism, _fn.__name__, _fn, devices=devices)
 add_function_test(

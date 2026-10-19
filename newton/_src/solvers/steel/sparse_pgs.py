@@ -13,7 +13,10 @@ from .kernels import (
     PGS_CONSTRAINT_TYPE_FRICTION,
     PGS_CONSTRAINT_TYPE_JOINT_LIMIT,
     PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT,
+    STEEL_DETERMINISM_OPTIONS,
 )
+
+wp.set_module_options(STEEL_DETERMINISM_OPTIONS)
 
 
 @cache
@@ -409,4 +412,4 @@ def _get_pgs_solve_sparse_kernel(
 
     solve.__name__ = f"pgs_solve_sparse_{M}_{D}_{S}_{F}_{P}"
     solve.__qualname__ = solve.__name__
-    return wp.kernel(enable_backward=False, module="unique")(solve)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(solve)

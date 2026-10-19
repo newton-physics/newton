@@ -11,6 +11,9 @@ import warp as wp
 from ...core.reset import reset_world_selected
 from ...sim import Model
 from ...sim.enums import BodyFlags, JointType, ModelFlags
+from .kernels import STEEL_DETERMINISM_OPTIONS
+
+wp.set_module_options(STEEL_DETERMINISM_OPTIONS)
 
 
 class _SleepState:

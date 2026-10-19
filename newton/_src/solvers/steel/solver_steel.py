@@ -53,6 +53,7 @@ from .kernels import (
     ROW_SLOTS_WRITE,
     ROW_WATERMARK_CONTACT_SLOT,
     ROW_WATERMARK_FAMILY_STRIDE,
+    STEEL_DETERMINISM_OPTIONS,
     _compute_body_net_wrench,
     _get_tree_fk_kernel,
     _get_tree_tau_kernel,
@@ -198,7 +199,7 @@ from .sparse_mass_matrix import _get_crba_sparse_factor_kernel, _SparseMassMatri
 from .sparse_pgs import _get_pgs_solve_sparse_kernel
 
 # SolverSteel rejects models with ``requires_grad``, so no kernel needs an adjoint.
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, **STEEL_DETERMINISM_OPTIONS})
 
 _SMALL_DOF_THRESHOLD_DEFAULT = 12
 _MFGS_RESIDENT_METADATA_MAX_BYTES = 4096
@@ -1992,6 +1993,8 @@ class SolverSteel(SolverBase):
                 overflowed steps remain flagged in :attr:`constraint_overflow`. The mode adds a per-step
                 sort of the contacts by world and 16 bytes of storage per contact slot.
                 Requires ``articulated_contact_response="immediate"``. ``GPU_TO_GPU`` is not supported.
+                Steel's kernel modules always opt out of Warp's ``deterministic`` module option, so a
+                process-wide ``wp.config.deterministic`` only selects this mode.
         """
         self._kernel_overrides = current_kernel_overrides()
         if contact_compliance:
@@ -10858,7 +10861,9 @@ def _get_composite_inertia_warp_kernel(device_arch: str, warps_per_block: int) -
     name = f"compute_composite_inertia_warp{warps_per_block}"
     composite_inertia_warp_template.__name__ = name
     composite_inertia_warp_template.__qualname__ = name
-    return wp.kernel(enable_backward=False, module="unique")(composite_inertia_warp_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        composite_inertia_warp_template
+    )
 
     # ------------------------------------------------------------------
 
@@ -10995,7 +11000,9 @@ def _get_joint_limit_warp_kernel(size: int, device_arch: str, warps_per_block: i
     name = f"build_joint_limit_rows_warp_{size}_{warps_per_block}"
     joint_limit_warp_template.__name__ = name
     joint_limit_warp_template.__qualname__ = name
-    return wp.kernel(enable_backward=False, module="unique")(joint_limit_warp_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        joint_limit_warp_template
+    )
 
 
 @cache
@@ -11068,7 +11075,9 @@ def _get_hinv_jt_plain_kernel(
     suffix += "_nogroup" if not write_group else ""
     hinv_jt_tiled_template.__name__ = f"hinv_jt_tiled_{n_dofs}_{max_constraints}_c{chunk_size}_bd{tile_threads}{suffix}"
     hinv_jt_tiled_template.__qualname__ = hinv_jt_tiled_template.__name__
-    return wp.kernel(enable_backward=False, module="unique")(hinv_jt_tiled_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        hinv_jt_tiled_template
+    )
 
 
 @cache
@@ -11160,7 +11169,9 @@ def _get_hinv_jt_kernel(
     suffix += "_diag" if compute_diag else ""
     hinv_jt_tiled_template.__name__ = f"hinv_jt_tiled_{n_dofs}_{max_constraints}_c{chunk_size}_bd{tile_threads}{suffix}"
     hinv_jt_tiled_template.__qualname__ = hinv_jt_tiled_template.__name__
-    return wp.kernel(enable_backward=False, module="unique")(hinv_jt_tiled_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        hinv_jt_tiled_template
+    )
 
 
 @cache
@@ -11314,7 +11325,9 @@ def _get_crba_cholesky_warp_kernel(n_dofs: int, device_arch: str, *, warps_per_b
     name = f"crba_cholesky_warp{int(warps_per_block)}_{int(n_dofs)}"
     crba_cholesky_warp_template.__name__ = name
     crba_cholesky_warp_template.__qualname__ = name
-    return wp.kernel(enable_backward=False, module="unique")(crba_cholesky_warp_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        crba_cholesky_warp_template
+    )
 
 
 @cache
@@ -11396,7 +11409,9 @@ def _get_crba_cholesky_kernel(n_dofs: int, device_arch: str, tile_threads: int =
     name = f"crba_cholesky_{int(n_dofs)}_bd{int(tile_threads)}"
     crba_cholesky_template.__name__ = name
     crba_cholesky_template.__qualname__ = name
-    return wp.kernel(enable_backward=False, module="unique")(crba_cholesky_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        crba_cholesky_template
+    )
 
 
 @cache
@@ -11429,7 +11444,9 @@ def _get_cholesky_inverse_tiled_kernel(n_dofs: int, device_arch: str, tile_threa
     name = f"cholesky_inverse_tiled_{int(n_dofs)}_bd{int(tile_threads)}"
     cholesky_inverse_tiled_template.__name__ = name
     cholesky_inverse_tiled_template.__qualname__ = name
-    return wp.kernel(enable_backward=False, module="unique")(cholesky_inverse_tiled_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        cholesky_inverse_tiled_template
+    )
 
 
 @cache
@@ -11496,7 +11513,9 @@ def _get_inverse_cholesky_register_kernel(n_dofs: int, device_arch: str, *, lowe
     name = f"inverse_{'lower' if lower_only else 'cholesky'}_register_{n_dofs}"
     inverse_cholesky_register_template.__name__ = name
     inverse_cholesky_register_template.__qualname__ = name
-    return wp.kernel(enable_backward=False, module="unique")(inverse_cholesky_register_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        inverse_cholesky_register_template
+    )
 
 
 @cache
@@ -11714,7 +11733,9 @@ def _get_paired_hinv_jt_kernel(
         name += "_factor"
     paired_hinv_jt_template.__name__ = name
     paired_hinv_jt_template.__qualname__ = name
-    return wp.kernel(enable_backward=False, module="unique")(paired_hinv_jt_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        paired_hinv_jt_template
+    )
 
 
 @cache
@@ -12160,7 +12181,9 @@ def _get_pgs_solve_paired_factor_kernel(
         name += "_contact3"
     pgs_solve_paired_factor_template.__name__ = name
     pgs_solve_paired_factor_template.__qualname__ = name
-    return wp.kernel(enable_backward=False, module="unique")(pgs_solve_paired_factor_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        pgs_solve_paired_factor_template
+    )
 
 
 @cache
@@ -12201,7 +12224,9 @@ def _get_cholesky_kernel(n_dofs: int, device_arch: str, tile_threads: int = 64) 
 
     cholesky_tiled_template.__name__ = f"cholesky_tiled_{n_dofs}_bd{tile_threads}"
     cholesky_tiled_template.__qualname__ = f"cholesky_tiled_{n_dofs}_bd{tile_threads}"
-    return wp.kernel(enable_backward=False, module="unique")(cholesky_tiled_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        cholesky_tiled_template
+    )
 
 
 @cache
@@ -12237,7 +12262,9 @@ def _get_triangular_solve_kernel(n_dofs: int, device_arch: str, tile_threads: in
 
     trisolve_tiled_template.__name__ = f"trisolve_tiled_{n_dofs}_bd{tile_threads}"
     trisolve_tiled_template.__qualname__ = f"trisolve_tiled_{n_dofs}_bd{tile_threads}"
-    return wp.kernel(enable_backward=False, module="unique")(trisolve_tiled_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        trisolve_tiled_template
+    )
 
 
 @cache
@@ -12313,7 +12340,9 @@ def _get_pack_mf_meta_kernel(free_body_constraint_max: int, device_arch: str) ->
     name = f"pack_mf_meta_{free_body_constraint_max}"
     pack_mf_meta_template.__name__ = name
     pack_mf_meta_template.__qualname__ = name
-    return wp.kernel(enable_backward=False, module="unique")(pack_mf_meta_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        pack_mf_meta_template
+    )
 
 
 @cache
@@ -13410,7 +13439,7 @@ def _get_pgs_solve_local_owned_kernel(
         template = pgs_solve_local_internal_queue_template
     template.__name__ = name
     template.__qualname__ = name
-    return wp.kernel(enable_backward=False, module="unique")(template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(template)
 
 
 @cache
@@ -14207,7 +14236,7 @@ def _get_pgs_solve_mf_gs_kernel(
     )
     pgs_solve_mf_gs.__name__ = name
     pgs_solve_mf_gs.__qualname__ = name
-    return wp.kernel(enable_backward=False, module="unique")(pgs_solve_mf_gs)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(pgs_solve_mf_gs)
 
 
 def _mf_gs_kernel_name(
@@ -14381,7 +14410,9 @@ def _mf_gs_queue_kernel(snippet: str, name: str) -> "wp.Kernel":
 
     pgs_solve_mf_gs_local.__name__ = name
     pgs_solve_mf_gs_local.__qualname__ = name
-    return wp.kernel(enable_backward=False, module="unique")(pgs_solve_mf_gs_local)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        pgs_solve_mf_gs_local
+    )
 
 
 # Static shared memory available to a CUDA block without opt-in [B].
@@ -14486,7 +14517,9 @@ def _get_hinv_jt_fused_kernel(
 
     hinv_jt_tiled_fused_template.__name__ = f"hinv_jt_tiled_fused_{n_dofs}_{max_constraints}_bd{tile_threads}"
     hinv_jt_tiled_fused_template.__qualname__ = f"hinv_jt_tiled_fused_{n_dofs}_{max_constraints}_bd{tile_threads}"
-    return wp.kernel(enable_backward=False, module="unique")(hinv_jt_tiled_fused_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        hinv_jt_tiled_fused_template
+    )
 
 
 @cache
@@ -14581,7 +14614,9 @@ for (int ci = 0; ci < num_chunks; ci++) {{
 
     delassus_template.__name__ = f"delassus_streaming_{n_dofs}_{max_constraints}_chunk{CHUNK}"
     delassus_template.__qualname__ = f"delassus_streaming_{n_dofs}_{max_constraints}_chunk{CHUNK}"
-    return wp.kernel(enable_backward=False, module="unique")(delassus_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        delassus_template
+    )
 
 
 @cache
@@ -14819,7 +14854,9 @@ def _get_pgs_solve_tiled_row_kernel(max_constraints: int, device_arch: str) -> "
 
     pgs_solve_tiled_template.__name__ = f"pgs_solve_tiled_row_{max_constraints}"
     pgs_solve_tiled_template.__qualname__ = f"pgs_solve_tiled_row_{max_constraints}"
-    return wp.kernel(enable_backward=False, module="unique")(pgs_solve_tiled_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        pgs_solve_tiled_template
+    )
 
 
 @cache
@@ -15068,7 +15105,9 @@ def _get_pgs_solve_tiled_contact_kernel(max_constraints: int, device_arch: str) 
 
     pgs_solve_tiled_contact_template.__name__ = f"pgs_solve_tiled_contact_{max_constraints}"
     pgs_solve_tiled_contact_template.__qualname__ = f"pgs_solve_tiled_contact_{max_constraints}"
-    return wp.kernel(enable_backward=False, module="unique")(pgs_solve_tiled_contact_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        pgs_solve_tiled_contact_template
+    )
 
 
 @cache
@@ -15337,7 +15376,9 @@ def _get_pgs_solve_streaming_kernel(max_constraints: int, device_arch: str, pgs_
 
     pgs_solve_streaming_template.__name__ = f"pgs_solve_streaming_{max_constraints}_chunk{pgs_chunk_size}"
     pgs_solve_streaming_template.__qualname__ = f"pgs_solve_streaming_{max_constraints}_chunk{pgs_chunk_size}"
-    return wp.kernel(enable_backward=False, module="unique")(pgs_solve_streaming_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        pgs_solve_streaming_template
+    )
 
 
 @cache
@@ -15642,7 +15683,9 @@ def _get_pgs_solve_mf_kernel(free_body_constraint_max: int, max_mf_bodies: int, 
     name = f"pgs_solve_mf_{free_body_constraint_max}_{max_mf_bodies}"
     pgs_solve_mf_template.__name__ = name
     pgs_solve_mf_template.__qualname__ = name
-    return wp.kernel(enable_backward=False, module="unique")(pgs_solve_mf_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        pgs_solve_mf_template
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -15974,7 +16017,9 @@ def _get_color_propagation_prebuild_kernel(
     name = f"color_propagation_prebuild_{M}_{NE}_bd{B}_os{OS}_mbw{MBW}"
     color_propagation_prebuild_template.__name__ = name
     color_propagation_prebuild_template.__qualname__ = name
-    return wp.kernel(enable_backward=False, module="unique")(color_propagation_prebuild_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        color_propagation_prebuild_template
+    )
 
 
 PROPAGATION_UNIT_FRICTION_SETUP = 5
@@ -16078,7 +16123,9 @@ def _get_colored_friction_setup_kernel(
     name = f"colored_friction_setup_{M}_{NE}"
     colored_friction_setup_template.__name__ = name
     colored_friction_setup_template.__qualname__ = name
-    return wp.kernel(enable_backward=False, module="unique")(colored_friction_setup_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        colored_friction_setup_template
+    )
 
 
 PROPAGATION_UNIT_PAYLOAD = 96
@@ -16196,7 +16243,9 @@ def _get_colored_payload_pack_kernel(
     name = f"colored_payload_pack_{M}_{NE}"
     colored_payload_pack_template.__name__ = name
     colored_payload_pack_template.__qualname__ = name
-    return wp.kernel(enable_backward=False, module="unique")(colored_payload_pack_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        colored_payload_pack_template
+    )
 
 
 PAYLOAD_LANE_WORDS = 104
@@ -17274,7 +17323,9 @@ def _get_pgs_solve_propagation_colored_warp_kernel(
     name = f"pgs_solve_propagation_colored_warp_{M}_{NE}_r{R}_w{W}_mb{MB}_pf{int(_prefetch)}_st{int(staged)}_pk{int(bool(packed or staged))}_sl{int(bool(straight_line))}"
     pgs_solve_propagation_colored_warp_template.__name__ = name
     pgs_solve_propagation_colored_warp_template.__qualname__ = name
-    return wp.kernel(enable_backward=False, module="unique")(pgs_solve_propagation_colored_warp_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        pgs_solve_propagation_colored_warp_template
+    )
 
 
 @cache
@@ -17717,7 +17768,9 @@ def _get_pgs_solve_propagation_colored_block_kernel(
     name = f"pgs_solve_propagation_colored_units_{M}_{NE}_bd{B}_{stag}{MB}"
     pgs_solve_propagation_colored_block_template.__name__ = name
     pgs_solve_propagation_colored_block_template.__qualname__ = name
-    return wp.kernel(enable_backward=False, module="unique")(pgs_solve_propagation_colored_block_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        pgs_solve_propagation_colored_block_template
+    )
 
 
 @cache
@@ -17985,7 +18038,9 @@ def _get_pgs_solve_propagation_contact_kernel(
     name = f"pgs_solve_propagation_contact_{propagation_max_constraints}_w{W}"
     pgs_solve_propagation.__name__ = name
     pgs_solve_propagation.__qualname__ = name
-    return wp.kernel(enable_backward=False, module="unique")(pgs_solve_propagation)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        pgs_solve_propagation
+    )
 
 
 @cache
@@ -18840,7 +18895,9 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
     )
     pgs_solve_propagation_full_iteration.__name__ = name
     pgs_solve_propagation_full_iteration.__qualname__ = name
-    return wp.kernel(enable_backward=False, module="unique")(pgs_solve_propagation_full_iteration)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        pgs_solve_propagation_full_iteration
+    )
 
 
 @cache
@@ -19232,7 +19289,9 @@ def _get_factor_propagation_tree_revolute_kernel(
         name += "_fr"
     factor_propagation_tree_revolute_template.__name__ = name
     factor_propagation_tree_revolute_template.__qualname__ = name
-    return wp.kernel(enable_backward=False, module="unique")(factor_propagation_tree_revolute_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        factor_propagation_tree_revolute_template
+    )
 
 
 @cache
@@ -19503,7 +19562,9 @@ def _get_propagation_tree_body_response_revolute_kernel(
         name += "_fr"
     propagation_tree_body_response_revolute_template.__name__ = name
     propagation_tree_body_response_revolute_template.__qualname__ = name
-    return wp.kernel(enable_backward=False, module="unique")(propagation_tree_body_response_revolute_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        propagation_tree_body_response_revolute_template
+    )
 
 
 @cache
@@ -19857,7 +19918,9 @@ def _get_propagate_tree_impulses_revolute_kernel(
         name += "_fr"
     propagate_tree_impulses_revolute_template.__name__ = name
     propagate_tree_impulses_revolute_template.__qualname__ = name
-    return wp.kernel(enable_backward=False, module="unique")(propagate_tree_impulses_revolute_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        propagate_tree_impulses_revolute_template
+    )
 
 
 def _cached_response_extraction_warps(max_joints: int, cache_max_bodies: int, *, has_free_root: bool) -> int:
@@ -20287,7 +20350,9 @@ def _get_propagation_tree_cached_response_kernel(
         name += "_fr"
     propagation_tree_cached_response_template.__name__ = name
     propagation_tree_cached_response_template.__qualname__ = name
-    return wp.kernel(enable_backward=False, module="unique")(propagation_tree_cached_response_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        propagation_tree_cached_response_template
+    )
 
 
 @cache
@@ -20456,7 +20521,9 @@ def _get_propagation_cached_gemv_kernel(
     name = f"propagation_cached_gemv_c{C}_d{MAXD}_w{W}"
     propagation_cached_gemv_template.__name__ = name
     propagation_cached_gemv_template.__qualname__ = name
-    return wp.kernel(enable_backward=False, module="unique")(propagation_cached_gemv_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        propagation_cached_gemv_template
+    )
 
 
 @cache
@@ -20610,7 +20677,9 @@ def _get_refresh_propagation_tree_body_qd_warp_kernel(size: int, max_joints: int
     name = f"refresh_propagation_tree_body_qd_warp_{size}_j{joints_cap}"
     refresh_propagation_tree_body_qd_warp_template.__name__ = name
     refresh_propagation_tree_body_qd_warp_template.__qualname__ = name
-    return wp.kernel(enable_backward=False, module="unique")(refresh_propagation_tree_body_qd_warp_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        refresh_propagation_tree_body_qd_warp_template
+    )
 
 
 @cache
@@ -20666,7 +20735,9 @@ def _get_mark_independent_sparse_contact_candidates_kernel(
     name = f"mark_independent_sparse_contact_candidates_{sparse_size}"
     mark_independent_sparse_contact_candidates_template.__name__ = name
     mark_independent_sparse_contact_candidates_template.__qualname__ = name
-    return wp.kernel(enable_backward=False, module="unique")(mark_independent_sparse_contact_candidates_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        mark_independent_sparse_contact_candidates_template
+    )
 
 
 @cache
@@ -20824,7 +20895,9 @@ def _get_build_independent_sparse_contact_groups_kernel(
         name += "_serial_contacts"
     build_independent_sparse_contact_groups_template.__name__ = name
     build_independent_sparse_contact_groups_template.__qualname__ = name
-    return wp.kernel(enable_backward=False, module="unique")(build_independent_sparse_contact_groups_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        build_independent_sparse_contact_groups_template
+    )
 
 
 @cache
@@ -21420,7 +21493,9 @@ def _get_pgs_solve_sparse_diagonal_kernel(
         name += "_speculative_batches"
     pgs_solve_sparse_diagonal_template.__name__ = name
     pgs_solve_sparse_diagonal_template.__qualname__ = name
-    return wp.kernel(enable_backward=False, module="unique")(pgs_solve_sparse_diagonal_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(
+        pgs_solve_sparse_diagonal_template
+    )
 
 
 def _synchronize_streams(streams: list) -> None:

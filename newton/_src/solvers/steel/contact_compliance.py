@@ -20,10 +20,10 @@ import math
 import numpy as np
 import warp as wp
 
-from .kernels import PGS_CONSTRAINT_TYPE_CONTACT, PGS_CONSTRAINT_TYPE_FRICTION
+from .kernels import PGS_CONSTRAINT_TYPE_CONTACT, PGS_CONSTRAINT_TYPE_FRICTION, STEEL_DETERMINISM_OPTIONS
 
 # SolverSteel rejects models with ``requires_grad``, so no kernel needs an adjoint.
-wp.set_module_options({"enable_backward": False})
+wp.set_module_options({"enable_backward": False, **STEEL_DETERMINISM_OPTIONS})
 
 
 def material_coefficients(stiffness, damping, friction_scale, *, shape_friction=0.0):
