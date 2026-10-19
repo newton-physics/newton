@@ -68,6 +68,7 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
 
     if not (root_prim and root_prim.IsValid()):
         return
+    radius_fallback_override_paths: list[str] = []
     for prim in ctx.prims.tetmeshes:
         path = str(prim.GetPath())
         if _is_ignored_path(path, ignore_paths):
@@ -233,15 +234,7 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             # and still follows builder.default_particle_radius.
             fallback_radius = 0.5 * _AOUSD_DEFAULT_THICKNESS / ctx.linear_unit
             if builder.default_particle_radius != _BUILDER_STOCK_PARTICLE_RADIUS:
-                warnings.warn(
-                    f"{path}: ModelBuilder.default_particle_radius ({builder.default_particle_radius:g}) no longer "
-                    f"applies to simulation-API volume deformables; using the AOUSD proposal's half-default-thickness "
-                    f"fallback ({fallback_radius:g} stage units) instead. To override, overwrite "
-                    f"ModelBuilder.particle_radius over the soft body's particle range after add_usd() (the ranges are "
-                    f"available in the path_soft_map result of add_usd(..., return_deformable_results=True)).",
-                    NewtonWarning,
-                    stacklevel=2,
-                )
+                radius_fallback_override_paths.append(path)
             add_soft_mesh_kwargs["particle_radius"] = fallback_radius
 
         soft_p0, soft_t0 = builder.particle_count, builder.tet_count
@@ -291,3 +284,20 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             logger.info(
                 "Added soft mesh %s with %s vertices and %s tetrahedra.", path, tetmesh.vertex_count, tetmesh.tet_count
             )
+
+    # One summary per import call, not one warning per prim, and pointed at the caller's
+    # add_usd() frame (stacklevel=4) so it identifies user code (CODING_GUIDELINES).
+    if radius_fallback_override_paths:
+        fallback_radius = 0.5 * _AOUSD_DEFAULT_THICKNESS / ctx.linear_unit
+        shown = ", ".join(radius_fallback_override_paths[:5])
+        if len(radius_fallback_override_paths) > 5:
+            shown += f", and {len(radius_fallback_override_paths) - 5} more"
+        warnings.warn(
+            f"ModelBuilder.default_particle_radius ({builder.default_particle_radius:g}) no longer applies to "
+            f"simulation-API volume deformables; using the AOUSD proposal's half-default-thickness fallback "
+            f"({fallback_radius:g} stage units) for {shown}. To override, overwrite ModelBuilder.particle_radius "
+            f"over the soft body's particle range after add_usd() (the ranges are available in the path_soft_map "
+            f"result of add_usd(..., return_deformable_results=True)).",
+            NewtonWarning,
+            stacklevel=4,
+        )
