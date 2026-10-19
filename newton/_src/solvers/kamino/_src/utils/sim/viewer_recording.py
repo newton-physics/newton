@@ -13,6 +13,10 @@ written to disk until ``viewer.start_clip(...)`` is called, or the
 ``start_clip=True`` is passed to ``enable_recording``. Each call to
 ``viewer.start_clip()`` clears the target folder, resets counters, and records
 up to ``max_frames`` frames before automatically writing the video file.
+Passing ``max_frames=None`` (the default) runs the clip until the viewer is
+closed; the auto-wrapped ``viewer.close()`` then finishes the clip and writes
+the video file as post-processing, so interactive sessions produce a video of
+the full session without needing a predetermined length.
 
 Example usage: (multi-clip mode, one video file per backend triggered by the UI):
 
@@ -87,6 +91,7 @@ class _VideoRecording:
     ###
     original_should_step: Callable | None = None
     original_end_frame: Callable | None = None
+    original_close: Callable | None = None
 
 
 def enable_recording(
@@ -146,8 +151,10 @@ def enable_recording(
     # Wrap viewer functions
     viewer._recording.original_should_step = viewer.should_step
     viewer._recording.original_end_frame = viewer.end_frame
+    viewer._recording.original_close = viewer.close
     viewer.should_step = MethodType(_should_step_with_record, viewer)
     viewer.end_frame = MethodType(_end_frame_with_record, viewer)
+    viewer.close = MethodType(_close_with_record, viewer)
 
     # Monkey-patch recording functions into object
     viewer.generate_video = MethodType(_generate_video, viewer)
@@ -274,22 +281,24 @@ def _reset_recording(self, video_folder: str | None = None) -> None:
 def _start_clip(
     self,
     output_path: str,
-    max_frames: int,
+    max_frames: int | None = None,
     video_folder: str | None = None,
     fps: int = 60,
     keep_frames: bool = False,
     on_done: Callable[[], None] | None = None,
 ) -> None:
-    """Begin a finite-length recording clip with automatic video file generation.
+    """Begin a recording clip with automatic video file generation.
 
     Clears any existing PNGs in the output folder, resets the frame counter,
-    and arms an auto-stop trigger at ``max_frames`` captured frames. When the
-    target is hit, the video file is written, frames are optionally deleted, and
-    ``on_done`` (if provided) is called.
+    and optionally arms an auto-stop trigger at ``max_frames`` captured frames.
+    When the target is hit, or when the viewer is closed in open-ended mode,
+    the video file is written, frames are optionally deleted, and ``on_done``
+    is called if provided.
 
     Args:
         output_path: Destination video file path.
-        max_frames: Number of frames to capture before auto-stopping.
+        max_frames: Number of frames to capture before auto-stopping. If
+            not provided, the clip runs until the viewer is closed.
         video_folder: Optional override for the PNG output directory.
         fps: Frame rate to embed in the video file (should match ``viewer_fps``).
         keep_frames: If False, delete the per-frame PNGs after the video file is
@@ -305,7 +314,22 @@ def _start_clip(
     recording.clip_on_done = on_done
     recording.clip_fps = fps
     recording.recording_active = True
-    msg.notif(f"Recording started: {output_path} ({max_frames} frames -> {recording.default_video_folder})")
+    frame_limit = f"{max_frames} frames" if max_frames is not None else "until viewer close"
+    msg.notif(f"Recording started: {output_path} ({frame_limit} -> {recording.default_video_folder})")
+
+
+def _close_with_record(self):
+    """Flush an active clip before closing the viewer.
+
+    Ensures open-ended clips (started with ``max_frames=None``) finish and
+    write their video file as post-processing when the viewer window closes.
+    Finite clips that reached their frame budget are already inactive, so
+    the extra ``finish_clip`` call is a no-op.
+    """
+    recording: _VideoRecording = self._recording
+    if recording.recording_active:
+        self.finish_clip()
+    recording.original_close()
 
 
 def _capture_frame(viewer, recording: _VideoRecording) -> bool:
@@ -378,12 +402,18 @@ def _generate_video(
         t.join()
     recording.save_threads.clear()
 
-    frame_files = sorted(glob.glob(os.path.join(recording.default_video_folder, "*.png")))
-    if not frame_files:
-        msg.warning(f"No png frames found in {recording.default_video_folder}")
+    # Enumerate exactly the PNGs this clip wrote (for robustness to stale frames in the folder).
+    num_captured = recording.img_idx - recording.num_skipped_frames
+    frame_files = [os.path.join(recording.default_video_folder, f"{i:05d}.png") for i in range(num_captured)]
+    missing = [f for f in frame_files if not os.path.exists(f)]
+    if missing:
+        msg.warning(
+            f"Expected {num_captured} PNG frames in {recording.default_video_folder} "
+            f"but {len(missing)} are missing (first missing: {os.path.basename(missing[0])})"
+        )
         return False
 
-    msg.info(f"Generating video from {len(frame_files)} frames...")
+    msg.info(f"Generating video from {num_captured} frames...")
     try:
         with Image.open(frame_files[0]) as first_frame:
             size = first_frame.size
