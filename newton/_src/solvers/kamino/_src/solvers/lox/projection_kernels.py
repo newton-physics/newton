@@ -61,8 +61,6 @@ from .system_kernels import ProjectionWeights, apply_body_weight
 __all__ = [
     "_apply_twist_delta",
     "_compute_box_residuals",
-    "_compute_contact_residuals",
-    "_compute_spatial_contact_residuals",
     "_prepare_box_blocks",
     "_prepare_contact_blocks",
     "_prepare_physical_spatial_contacts",
@@ -74,6 +72,7 @@ __all__ = [
     "_warmstart_contacts",
     "_warmstart_spatial_contacts",
     "is_active_row",
+    "make_contact_residuals_kernel",
     "make_iteration_residuals_kernel",
     "make_sweep_kernel",
     "row_color",
@@ -1208,17 +1207,28 @@ def make_sweep_kernel(spatial: bool):
 @wp.func
 def _box_row_residual(
     row: wp.int32,
-    velocity: wp.float32,
+    bid_a: wp.int32,
+    bid_b: wp.int32,
+    box_jacobian_a: wp.array[vec6f],
+    box_jacobian_b: wp.array[vec6f],
     box_bias: wp.array[wp.float32],
     box_lower: wp.array[wp.float32],
     box_upper: wp.array[wp.float32],
     box_reaction: wp.array[wp.float32],
     physical_delassus: wp.array[wp.float32],
+    projected_twist: wp.array[vec6f],
+    box_velocity: wp.array[wp.float32],
 ) -> wp.vec2f:
-    """Return the Delassus-scaled natural-map residual of one box row and its Delassus scale.
+    """Store the velocity ``J p`` of one box row and return its Delassus-scaled natural-map residual and
+    Delassus scale.
 
-    The product of both maps the residual back to velocity.
+    The product of both maps the residual back to velocity. A row without bodies has zero velocity and residual.
     """
+    if bid_a < 0 and bid_b < 0:
+        box_velocity[row] = 0.0
+        return wp.vec2f(0.0)
+    velocity = _box_row_velocity(row, bid_a, bid_b, box_jacobian_a, box_jacobian_b, projected_twist)
+    box_velocity[row] = velocity
     scale = wp.sqrt(physical_delassus[row])
     scaled_reaction = scale * box_reaction[row]
     scaled_velocity = (velocity + box_bias[row]) / scale
@@ -1229,18 +1239,30 @@ def _box_row_residual(
 @wp.func
 def _contact_row_residual(
     cid: wp.int32,
-    velocity: wp.vec3f,
+    bid_a: wp.int32,
+    bid_b: wp.int32,
+    contact_jacobian_a: wp.array[mat36f],
+    contact_jacobian_b: wp.array[mat36f],
     contact_bias: wp.array[wp.vec3f],
     contact_friction: wp.array[wp.float32],
     contact_compliance: wp.array[wp.float32],
     contact_restitution: wp.array[wp.vec4f],
     contact_reaction: wp.array[wp.vec3f],
     physical_delassus: wp.array[wp.mat33f],
+    projected_twist: wp.array[vec6f],
+    contact_velocity: wp.array[wp.vec3f],
 ) -> wp.vec2f:
-    """Return the Delassus-scaled Alart--Curnier residual of one contact and its Delassus scale.
+    """Store the velocity ``J p`` of one contact and return its Delassus-scaled Alart--Curnier residual and
+    Delassus scale.
 
-    The product of both maps the residual back to velocity.
+    The product of both maps the residual back to velocity. A contact without bodies has zero velocity and
+    residual.
     """
+    if bid_a < 0 and bid_b < 0:
+        contact_velocity[cid] = wp.vec3f(0.0)
+        return wp.vec2f(0.0)
+    velocity = _contact_row_velocity(cid, bid_a, bid_b, contact_jacobian_a, contact_jacobian_b, projected_twist)
+    contact_velocity[cid] = velocity
     delassus = physical_delassus[cid]
     reaction = contact_reaction[cid]
     law_velocity = _contact_law_velocity(
@@ -1261,19 +1283,34 @@ def _contact_row_residual(
 @wp.func
 def _spatial_contact_row_residual(
     cid: wp.int32,
-    velocity: vec6f,
-    reaction: vec6f,
+    wid: wp.int32,
+    bid_a: wp.int32,
+    bid_b: wp.int32,
     contact_friction: wp.vec3f,
+    contact_jacobian_a: wp.array[mat36f],
+    contact_jacobian_b: wp.array[mat36f],
+    frame: wp.array[wp.mat33f],
+    contact_reaction: wp.array[wp.vec3f],
+    angular_reaction: wp.array[wp.vec3f],
     normal_compliance: wp.array[wp.float32],
     restitution: wp.array[wp.vec4f],
     bias: wp.array[wp.vec3f],
     physical_delassus: wp.array[mat66f],
+    projected_twist: wp.array[vec6f],
+    contact_velocity: wp.array[wp.vec3f],
+    world_failed: wp.array[wp.bool],
 ) -> wp.vec2f:
-    """Return the metric-scaled natural-map residual of one spatial contact and its velocity scale.
+    """Store the linear velocity ``J p`` of one spatial contact and return its metric-scaled natural-map
+    residual and velocity scale.
 
     The product of both maps the residual back to velocity; the angular rows use their friction
-    lengths. A non-finite residual is returned as is.
+    lengths. A non-finite residual fails world ``wid`` and is returned as :data:`_UNRESOLVED_RESIDUAL`.
     """
+    velocity = spatial_contact_velocity(
+        cid, bid_a, bid_b, contact_jacobian_a, contact_jacobian_b, frame, projected_twist
+    )
+    contact_velocity[cid] = linear_contact_reaction(velocity)
+    reaction = pack_contact_reaction(contact_reaction[cid], angular_reaction[cid])
     metric = physical_delassus[cid]
     compliance = _contact_normal_compliance(cid, normal_compliance)
     mechanical = metric
@@ -1284,6 +1321,9 @@ def _spatial_contact_row_residual(
         bias[cid][2] - _contact_restitution_target(cid, free_normal, restitution) + compliance * reaction[0]
     )
     value = wp.max(wp.abs(compute_spatial_contact_residual(metric, contact_friction, reaction, law_velocity)))
+    if not wp.isfinite(value):
+        world_failed[wid] = True
+        value = _UNRESOLVED_RESIDUAL
     return wp.vec2f(value, spatial_contact_velocity_scale(metric, contact_friction))
 
 
@@ -1317,7 +1357,6 @@ def _spatial_contact_lagged_change(
 @wp.kernel
 def _compute_box_residuals(
     # Inputs:
-    world_active: wp.array[wp.bool],
     world_failed: wp.array[wp.bool],
     box_world: wp.array[wp.int32],
     box_local: wp.array[wp.int32],
@@ -1332,218 +1371,124 @@ def _compute_box_residuals(
     box_reaction: wp.array[wp.float32],
     physical_delassus: wp.array[wp.float32],
     projected_twist: wp.array[vec6f],
-    global_twist: wp.array[vec6f],
-    projected_twist_previous: wp.array[vec6f],
-    inverse_velocity_tolerance: wp.float32,
     # Outputs:
     box_velocity: wp.array[wp.float32],
     world_box_residual_max: wp.array[wp.float32],
-    world_velocity_residual: wp.array[wp.float32],
-    world_lagged_residual: wp.array[wp.float32],
 ):
-    """Evaluate the Delassus-scaled natural-map residual of each box row.
-
-    With ``world_velocity_residual``, also reduce the residual mapped back to
-    velocity by the Delassus scale, relative to the velocity tolerance. With
-    ``world_lagged_residual``, also reduce the change ``|J (v - p_prev)|`` of the
-    row velocity over the last iteration, relative to the velocity tolerance.
-    """
+    """Evaluate the Delassus-scaled natural-map residual of each box row, skipping the failed worlds."""
     row = wp.tid()
     wid = box_world[row]
-    if box_local[row] >= world_box_count[wid] or (world_active and not world_active[wid]) or world_failed[wid]:
+    if box_local[row] >= world_box_count[wid] or world_failed[wid]:
         return
-    bid_a = box_body_a[row]
-    bid_b = box_body_b[row]
-    if bid_a < 0 and bid_b < 0:
-        box_velocity[row] = 0.0
-        return
-    velocity = _box_row_velocity(row, bid_a, bid_b, box_jacobian_a, box_jacobian_b, projected_twist)
-    box_velocity[row] = velocity
-    residual = _box_row_residual(row, velocity, box_bias, box_lower, box_upper, box_reaction, physical_delassus)
+    residual = _box_row_residual(
+        row,
+        box_body_a[row],
+        box_body_b[row],
+        box_jacobian_a,
+        box_jacobian_b,
+        box_bias,
+        box_lower,
+        box_upper,
+        box_reaction,
+        physical_delassus,
+        projected_twist,
+        box_velocity,
+    )
     atomic_max_nonnegative(world_box_residual_max, wid, residual[0])
-    if world_velocity_residual:
-        atomic_max_nonnegative(world_velocity_residual, wid, residual[0] * residual[1] * inverse_velocity_tolerance)
-    if world_lagged_residual:
-        lagged = _box_row_velocity(row, bid_a, bid_b, box_jacobian_a, box_jacobian_b, global_twist) - _box_row_velocity(
-            row, bid_a, bid_b, box_jacobian_a, box_jacobian_b, projected_twist_previous
-        )
-        atomic_max_nonnegative(world_lagged_residual, wid, wp.abs(lagged) * inverse_velocity_tolerance)
 
 
-@wp.kernel
-def _compute_contact_residuals(
-    # Inputs:
-    thread_count: wp.int32,
-    world_active: wp.array[wp.bool],
-    world_failed: wp.array[wp.bool],
-    world_contact_offset: wp.array[wp.int32],
-    world_contact_count: wp.array[wp.int32],
-    contact_body_a: wp.array[wp.int32],
-    contact_body_b: wp.array[wp.int32],
-    contact_jacobian_a: wp.array[mat36f],
-    contact_jacobian_b: wp.array[mat36f],
-    contact_bias: wp.array[wp.vec3f],
-    contact_friction: wp.array[wp.float32],
-    contact_compliance: wp.array[wp.float32],
-    contact_restitution: wp.array[wp.vec4f],
-    contact_reaction: wp.array[wp.vec3f],
-    physical_delassus: wp.array[wp.mat33f],
-    projected_twist: wp.array[vec6f],
-    global_twist: wp.array[vec6f],
-    projected_twist_previous: wp.array[vec6f],
-    inverse_velocity_tolerance: wp.float32,
-    # Outputs:
-    contact_velocity: wp.array[wp.vec3f],
-    world_contact_residual_max: wp.array[wp.float32],
-    world_velocity_residual: wp.array[wp.float32],
-    world_lagged_residual: wp.array[wp.float32],
-):
-    """Evaluate the Delassus-scaled Alart--Curnier residual of the contact law of each contact.
+@cache
+def make_contact_residuals_kernel(spatial: bool):
+    """Create the kernel that evaluates the contact-law residual of each contact, skipping the failed worlds.
 
-    With ``world_velocity_residual``, also reduce the residual mapped back to
-    velocity by the Delassus scale, relative to the velocity tolerance. With
-    ``world_lagged_residual``, also reduce the change ``|J (v - p_prev)|`` of the
-    contact velocity over the last iteration, relative to the velocity tolerance.
-    The ``thread_count`` threads of each world loop over its active contacts, so that
-    the launch size follows the number of worlds.
+    The residual is the Delassus-scaled Alart--Curnier residual of :func:`_contact_row_residual`, or the
+    metric-scaled natural-map residual of :func:`_spatial_contact_row_residual` for spatial contacts. The
+    ``thread_count`` threads of each world loop over its active contacts, so that the launch size follows
+    the number of worlds.
+
+    Args:
+        spatial: Whether the contacts are spatial contacts with angular friction.
     """
-    wid, thread = wp.tid()
-    if (world_active and not world_active[wid]) or world_failed[wid]:
-        return
-    residual_max = wp.float32(0.0)
-    velocity_residual_max = wp.float32(0.0)
-    lagged_max = wp.float32(0.0)
-    local = thread
-    while local < world_contact_count[wid]:
-        cid = world_contact_offset[wid] + local
-        local += thread_count
-        bid_a = contact_body_a[cid]
-        bid_b = contact_body_b[cid]
-        if bid_a < 0 and bid_b < 0:
-            contact_velocity[cid] = wp.vec3f(0.0)
-        else:
-            velocity = _contact_row_velocity(cid, bid_a, bid_b, contact_jacobian_a, contact_jacobian_b, projected_twist)
-            contact_velocity[cid] = velocity
-            residual = _contact_row_residual(
-                cid,
-                velocity,
-                contact_bias,
-                contact_friction,
-                contact_compliance,
-                contact_restitution,
-                contact_reaction,
-                physical_delassus,
-            )
-            residual_max = wp.max(residual_max, residual[0])
-            if world_velocity_residual:
-                velocity_residual = residual[0] * residual[1] * inverse_velocity_tolerance
-                velocity_residual_max = wp.max(velocity_residual_max, velocity_residual)
-            if world_lagged_residual:
-                lagged = _contact_row_velocity(
-                    cid, bid_a, bid_b, contact_jacobian_a, contact_jacobian_b, global_twist
-                ) - _contact_row_velocity(
-                    cid, bid_a, bid_b, contact_jacobian_a, contact_jacobian_b, projected_twist_previous
+
+    @wp.kernel(module="unique", enable_backward=False)
+    def compute_contact_residuals(
+        # Inputs:
+        thread_count: wp.int32,
+        world_contact_offset: wp.array[wp.int32],
+        world_contact_count: wp.array[wp.int32],
+        contact_body_a: wp.array[wp.int32],
+        contact_body_b: wp.array[wp.int32],
+        contact_jacobian_a: wp.array[mat36f],
+        contact_jacobian_b: wp.array[mat36f],
+        contact_bias: wp.array[wp.vec3f],
+        contact_friction: wp.array[wp.float32],
+        contact_compliance: wp.array[wp.float32],
+        contact_restitution: wp.array[wp.vec4f],
+        contact_reaction: wp.array[wp.vec3f],
+        contact_physical_delassus: wp.array[wp.mat33f],
+        # Spatial contacts (with angular friction):
+        contact_frame: wp.array[wp.mat33f],
+        angular_friction: wp.array[wp.vec2f],
+        angular_reaction: wp.array[wp.vec3f],
+        spatial_physical_delassus: wp.array[mat66f],
+        # Common:
+        projected_twist: wp.array[vec6f],
+        # Outputs:
+        world_failed: wp.array[wp.bool],
+        contact_velocity: wp.array[wp.vec3f],
+        world_contact_residual_max: wp.array[wp.float32],
+    ):
+        """Reduce the largest contact residual of each world."""
+        wid, thread = wp.tid()
+        if world_failed[wid]:
+            return
+        residual_max = wp.float32(0.0)
+        local = thread
+        while local < world_contact_count[wid]:
+            cid = world_contact_offset[wid] + local
+            local += thread_count
+            bid_a = contact_body_a[cid]
+            bid_b = contact_body_b[cid]
+            if wp.static(spatial):
+                residual = _spatial_contact_row_residual(
+                    cid,
+                    wid,
+                    bid_a,
+                    bid_b,
+                    pack_spatial_friction(cid, contact_friction, angular_friction),
+                    contact_jacobian_a,
+                    contact_jacobian_b,
+                    contact_frame,
+                    contact_reaction,
+                    angular_reaction,
+                    contact_compliance,
+                    contact_restitution,
+                    contact_bias,
+                    spatial_physical_delassus,
+                    projected_twist,
+                    contact_velocity,
+                    world_failed,
                 )
-                lagged_max = wp.max(lagged_max, wp.max(wp.abs(lagged)) * inverse_velocity_tolerance)
-    atomic_max_nonnegative(world_contact_residual_max, wid, residual_max)
-    if world_velocity_residual:
-        atomic_max_nonnegative(world_velocity_residual, wid, velocity_residual_max)
-    if world_lagged_residual:
-        atomic_max_nonnegative(world_lagged_residual, wid, lagged_max)
+            else:
+                residual = _contact_row_residual(
+                    cid,
+                    bid_a,
+                    bid_b,
+                    contact_jacobian_a,
+                    contact_jacobian_b,
+                    contact_bias,
+                    contact_friction,
+                    contact_compliance,
+                    contact_restitution,
+                    contact_reaction,
+                    contact_physical_delassus,
+                    projected_twist,
+                    contact_velocity,
+                )
+            residual_max = wp.max(residual_max, residual[0])
+        atomic_max_nonnegative(world_contact_residual_max, wid, residual_max)
 
-
-@wp.kernel
-def _compute_spatial_contact_residuals(
-    # Inputs:
-    thread_count: wp.int32,
-    world_active: wp.array[wp.bool],
-    world_contact_offset: wp.array[wp.int32],
-    world_contact_count: wp.array[wp.int32],
-    contact_body_a: wp.array[wp.int32],
-    contact_body_b: wp.array[wp.int32],
-    contact_jacobian_a: wp.array[mat36f],
-    contact_jacobian_b: wp.array[mat36f],
-    contact_reaction: wp.array[wp.vec3f],
-    frame: wp.array[wp.mat33f],
-    friction: wp.array[wp.float32],
-    angular_friction: wp.array[wp.vec2f],
-    bias: wp.array[wp.vec3f],
-    normal_compliance: wp.array[wp.float32],
-    restitution: wp.array[wp.vec4f],
-    angular_reaction: wp.array[wp.vec3f],
-    physical_delassus: wp.array[mat66f],
-    twist: wp.array[vec6f],
-    global_twist: wp.array[vec6f],
-    projected_twist_previous: wp.array[vec6f],
-    inverse_velocity_tolerance: wp.float32,
-    # Outputs:
-    world_failed: wp.array[wp.bool],
-    contact_velocity: wp.array[wp.vec3f],
-    world_contact_residual_max: wp.array[wp.float32],
-    world_velocity_residual: wp.array[wp.float32],
-    world_lagged_residual: wp.array[wp.float32],
-):
-    """Evaluate the metric-scaled natural-map residual of each spatial contact.
-
-    With ``world_velocity_residual``, also reduce the residual mapped back to
-    velocity, relative to the velocity tolerance; the angular rows use their
-    friction lengths. With ``world_lagged_residual``, also reduce the change
-    ``|J (v - p_prev)|`` of the linear and frictional angular contact velocities
-    over the last iteration, relative to the velocity tolerance. The ``thread_count``
-    threads of each world loop over its active contacts, so that the launch size
-    follows the number of worlds.
-    """
-    wid, thread = wp.tid()
-    if (world_active and not world_active[wid]) or world_failed[wid]:
-        return
-    residual_max = wp.float32(0.0)
-    velocity_residual_max = wp.float32(0.0)
-    lagged_max = wp.float32(0.0)
-    local = thread
-    while local < world_contact_count[wid]:
-        cid = world_contact_offset[wid] + local
-        local += thread_count
-        bid_a = contact_body_a[cid]
-        bid_b = contact_body_b[cid]
-        contact_friction = pack_spatial_friction(cid, friction, angular_friction)
-        velocity = spatial_contact_velocity(cid, bid_a, bid_b, contact_jacobian_a, contact_jacobian_b, frame, twist)
-        contact_velocity[cid] = linear_contact_reaction(velocity)
-        residual = _spatial_contact_row_residual(
-            cid,
-            velocity,
-            pack_contact_reaction(contact_reaction[cid], angular_reaction[cid]),
-            contact_friction,
-            normal_compliance,
-            restitution,
-            bias,
-            physical_delassus,
-        )
-        value = residual[0]
-        if not wp.isfinite(value):
-            world_failed[wid] = True
-            value = _UNRESOLVED_RESIDUAL
-        residual_max = wp.max(residual_max, value)
-        if world_velocity_residual:
-            velocity_residual = value * residual[1] * inverse_velocity_tolerance
-            velocity_residual_max = wp.max(velocity_residual_max, velocity_residual)
-        if world_lagged_residual:
-            change = _spatial_contact_lagged_change(
-                cid,
-                bid_a,
-                bid_b,
-                contact_jacobian_a,
-                contact_jacobian_b,
-                frame,
-                contact_friction,
-                global_twist,
-                projected_twist_previous,
-            )
-            lagged_max = wp.max(lagged_max, change * inverse_velocity_tolerance)
-    atomic_max_nonnegative(world_contact_residual_max, wid, residual_max)
-    if world_velocity_residual:
-        atomic_max_nonnegative(world_velocity_residual, wid, velocity_residual_max)
-    if world_lagged_residual:
-        atomic_max_nonnegative(world_lagged_residual, wid, lagged_max)
+    return compute_contact_residuals
 
 
 @wp.func_native("""
@@ -1567,8 +1512,8 @@ def make_iteration_residuals_kernel(spatial: bool):
     """Create the kernel that advances the splitting dual and reduces the convergence residuals of an iteration.
 
     The ``thread_count`` threads of each world loop over its bodies, box rows, and active contacts,
-    so that one launch covers the work of :func:`_compute_box_residuals`, :func:`_compute_contact_residuals`
-    (or :func:`_compute_spatial_contact_residuals`), and the body residuals, with the same per-world maxima.
+    so that one launch covers the work of :func:`_compute_box_residuals`, :func:`make_contact_residuals_kernel`,
+    and the body residuals, with the same per-world maxima.
     Each warp reduces its threads before raising the maxima of its world.
 
     Args:
@@ -1682,13 +1627,19 @@ def make_iteration_residuals_kernel(spatial: bool):
             local += thread_count
             bid_a = box_body_a[row]
             bid_b = box_body_b[row]
-            if bid_a < 0 and bid_b < 0:
-                box_velocity[row] = 0.0
-                continue
-            velocity = _box_row_velocity(row, bid_a, bid_b, box_jacobian_a, box_jacobian_b, projected_twist)
-            box_velocity[row] = velocity
             residual = _box_row_residual(
-                row, velocity, box_bias, box_lower, box_upper, box_reaction, box_physical_delassus
+                row,
+                bid_a,
+                bid_b,
+                box_jacobian_a,
+                box_jacobian_b,
+                box_bias,
+                box_lower,
+                box_upper,
+                box_reaction,
+                box_physical_delassus,
+                projected_twist,
+                box_velocity,
             )
             box_max = wp.max(box_max, residual[0])
             velocity_max = wp.max(velocity_max, residual[0] * residual[1] * inverse_velocity_tolerance)
@@ -1706,26 +1657,25 @@ def make_iteration_residuals_kernel(spatial: bool):
             bid_b = contact_body_b[cid]
             if wp.static(spatial):
                 friction = pack_spatial_friction(cid, contact_friction, angular_friction)
-                spatial_velocity = spatial_contact_velocity(
-                    cid, bid_a, bid_b, contact_jacobian_a, contact_jacobian_b, contact_frame, projected_twist
-                )
-                contact_velocity[cid] = linear_contact_reaction(spatial_velocity)
-                spatial_residual = _spatial_contact_row_residual(
+                contact_residual = _spatial_contact_row_residual(
                     cid,
-                    spatial_velocity,
-                    pack_contact_reaction(contact_reaction[cid], angular_reaction[cid]),
+                    wid,
+                    bid_a,
+                    bid_b,
                     friction,
+                    contact_jacobian_a,
+                    contact_jacobian_b,
+                    contact_frame,
+                    contact_reaction,
+                    angular_reaction,
                     contact_compliance,
                     contact_restitution,
                     contact_bias,
                     spatial_physical_delassus,
+                    projected_twist,
+                    contact_velocity,
+                    world_failed,
                 )
-                value = spatial_residual[0]
-                if not wp.isfinite(value):
-                    world_failed[wid] = True
-                    value = _UNRESOLVED_RESIDUAL
-                contact_max = wp.max(contact_max, value)
-                velocity_max = wp.max(velocity_max, value * spatial_residual[1] * inverse_velocity_tolerance)
                 change = _spatial_contact_lagged_change(
                     cid,
                     bid_a,
@@ -1737,34 +1687,31 @@ def make_iteration_residuals_kernel(spatial: bool):
                     global_twist,
                     projected_twist_previous,
                 )
-                lagged_max = wp.max(lagged_max, change * inverse_velocity_tolerance)
-            elif bid_a < 0 and bid_b < 0:
-                contact_velocity[cid] = wp.vec3f(0.0)
             else:
-                contact_row_velocity = _contact_row_velocity(
-                    cid, bid_a, bid_b, contact_jacobian_a, contact_jacobian_b, projected_twist
-                )
-                contact_velocity[cid] = contact_row_velocity
                 contact_residual = _contact_row_residual(
                     cid,
-                    contact_row_velocity,
+                    bid_a,
+                    bid_b,
+                    contact_jacobian_a,
+                    contact_jacobian_b,
                     contact_bias,
                     contact_friction,
                     contact_compliance,
                     contact_restitution,
                     contact_reaction,
                     contact_physical_delassus,
-                )
-                contact_max = wp.max(contact_max, contact_residual[0])
-                velocity_max = wp.max(
-                    velocity_max, contact_residual[0] * contact_residual[1] * inverse_velocity_tolerance
+                    projected_twist,
+                    contact_velocity,
                 )
                 contact_lagged = _contact_row_velocity(
                     cid, bid_a, bid_b, contact_jacobian_a, contact_jacobian_b, global_twist
                 ) - _contact_row_velocity(
                     cid, bid_a, bid_b, contact_jacobian_a, contact_jacobian_b, projected_twist_previous
                 )
-                lagged_max = wp.max(lagged_max, wp.max(wp.abs(contact_lagged)) * inverse_velocity_tolerance)
+                change = wp.max(wp.abs(contact_lagged))
+            contact_max = wp.max(contact_max, contact_residual[0])
+            velocity_max = wp.max(velocity_max, contact_residual[0] * contact_residual[1] * inverse_velocity_tolerance)
+            lagged_max = wp.max(lagged_max, change * inverse_velocity_tolerance)
 
         # The threads of a world span whole warps
         change_max = _warp_max(body_max[0])

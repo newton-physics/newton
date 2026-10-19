@@ -708,6 +708,31 @@ def _cholesky_mat66(matrix: mat66f) -> tuple[mat66f, wp.bool]:
     return lower, True
 
 
+@wp.func
+def _solve_lower_vec6(lower: mat66f, rhs: vec6f) -> vec6f:
+    """Solve the lower triangular ``6 x 6`` system ``L x = b`` by forward substitution."""
+    solved = vec6f(0.0)
+    for axis in range(6):
+        value = rhs[axis]
+        for inner in range(axis):
+            value -= lower[axis, inner] * solved[inner]
+        solved[axis] = value / lower[axis, axis]
+    return solved
+
+
+@wp.func
+def _solve_lower_mat66(lower: mat66f, rhs: mat66f) -> mat66f:
+    """Solve the lower triangular ``6 x 6`` system ``L X = B`` by forward substitution."""
+    solved = mat66f(0.0)
+    for axis in range(6):
+        for col in range(6):
+            value = rhs[axis, col]
+            for inner in range(axis):
+                value -= lower[axis, inner] * solved[inner, col]
+            solved[axis, col] = value / lower[axis, axis]
+    return solved
+
+
 @wp.kernel
 def _compute_free_body_blocks(
     # Inputs:
@@ -878,16 +903,8 @@ def _free_patch_schur(
                 if coefficient > 0.0:
                     neighbor_side = neighbor_row_side[row_entry]
                     neighbor_jacobian = wp.where(neighbor_side == 0, jacobian_a, jacobian_b)
-                    body_jacobian = wp.where(neighbor_side == 0, jacobian_b, jacobian_a)
-                    forward = vec6f(0.0)
-                    for axis in range(6):
-                        value = neighbor_jacobian[axis]
-                        for inner in range(axis):
-                            value -= lower[axis, inner] * forward[inner]
-                        forward[axis] = value / lower[axis, axis]
-                    for axis in range(6):
-                        forward_rows[slot, axis] = forward[axis]
-                        body_rows[slot, axis] = body_jacobian[axis]
+                    forward_rows[slot] = _solve_lower_vec6(lower, neighbor_jacobian)
+                    body_rows[slot] = wp.where(neighbor_side == 0, jacobian_b, jacobian_a)
                     joint_matrix[slot, slot] = 1.0 / coefficient
         # The factorization reads the lower triangle of K only
         for row in range(6):
@@ -901,13 +918,7 @@ def _free_patch_schur(
         if not joint_valid:
             continue
         # Z = P^-1 J_ei with K = P P^T, then J_ei^T K^-1 J_ei = Z^T Z
-        solved = mat66f(0.0)
-        for axis in range(6):
-            for col in range(6):
-                value = body_rows[axis, col]
-                for inner in range(axis):
-                    value -= joint_lower[axis, inner] * solved[inner, col]
-                solved[axis, col] = value / joint_lower[axis, axis]
+        solved = _solve_lower_mat66(joint_lower, body_rows)
         # Z^T Z is symmetric, so each pair of columns is evaluated once
         for row in range(6):
             for col in range(6):
@@ -971,13 +982,7 @@ def _free_patch_schur_subtraction(
         lower, valid = _cholesky_mat66(neighbor_matrix)
         if not valid:
             continue
-        solved = mat66f(0.0)
-        for axis in range(6):
-            for col in range(6):
-                value = coupling[axis, col]
-                for inner in range(axis):
-                    value -= lower[axis, inner] * solved[inner, col]
-                solved[axis, col] = value / lower[axis, axis]
+        solved = _solve_lower_mat66(lower, coupling)
         schur -= wp.transpose(solved) @ solved
     return schur
 
@@ -998,21 +1003,8 @@ def _geometric_mean_mat66(
     if not valid:
         return lower_bound, lower_bound, False
     # X = L^-1 B, then M = L^-1 X^T = L^-1 B L^-T
-    solved = mat66f(0.0)
-    for axis in range(6):
-        for col in range(6):
-            value = upper_bound[axis, col]
-            for inner in range(axis):
-                value -= lower[axis, inner] * solved[inner, col]
-            solved[axis, col] = value / lower[axis, axis]
-    transposed = wp.transpose(solved)
-    congruent = mat66f(0.0)
-    for axis in range(6):
-        for col in range(6):
-            value = transposed[axis, col]
-            for inner in range(axis):
-                value -= lower[axis, inner] * congruent[inner, col]
-            congruent[axis, col] = value / lower[axis, axis]
+    solved = _solve_lower_mat66(lower, upper_bound)
+    congruent = _solve_lower_mat66(lower, wp.transpose(solved))
     normalized, scale = normalize_symmetric_matrix(0.5 * (congruent + wp.transpose(congruent)), 6)
     if not wp.isfinite(scale) or scale <= 0.0:
         return lower_bound, lower_bound, False
@@ -1146,13 +1138,7 @@ def make_patch_schur_kernel(woodbury: bool):
             neighbor_rows = _body_matrix_rows(vector_offset, inverse_permutation, body_local[neighbor], dimension)
             # Y = L_j^-1 A_ji, then A_ij A_jj^-1 A_ji = Y^T Y
             coupling = _read_body_block(matrix, offset, dimension, neighbor_rows, rows)
-            solved = mat66f(0.0)
-            for axis in range(6):
-                for col in range(6):
-                    value = coupling[axis, col]
-                    for inner in range(axis):
-                        value -= neighbor_lower[axis, inner] * solved[inner, col]
-                    solved[axis, col] = value / neighbor_lower[axis, axis]
+            solved = _solve_lower_mat66(neighbor_lower, coupling)
             pinned -= wp.transpose(solved) @ solved
         _store_lower_mat66(pinned_schur, bid, 0.5 * (pinned + wp.transpose(pinned)))
 

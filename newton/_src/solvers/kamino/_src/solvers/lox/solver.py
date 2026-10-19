@@ -19,8 +19,7 @@ from .problem import LOXProblem
 from .projection import ProjectionSchedule
 from .projection_kernels import (
     _compute_box_residuals,
-    _compute_contact_residuals,
-    _compute_spatial_contact_residuals,
+    make_contact_residuals_kernel,
     make_iteration_residuals_kernel,
 )
 from .seed import estimate_joint_penalty_scale
@@ -778,130 +777,64 @@ class LOXSolver:
             device=self._device,
         )
 
-    def _update_residuals(
-        self,
-        world_active: wp.array[wp.bool] | None = None,
-        velocity_residual: wp.array[wp.float32] | None = None,
-        lagged_residual: wp.array[wp.float32] | None = None,
-    ) -> None:
-        """Evaluate the unilateral velocities and natural-map residuals.
-
-        Args:
-            world_active: Worlds to evaluate; ``None`` evaluates the final residuals of
-                the worlds that did not fail.
-            velocity_residual: Per-world residual mapped back to velocity and relative to
-                the velocity tolerance, reduced by the convergence check, or ``None``.
-            lagged_residual: Per-world change of the unilateral row velocities over the
-                last iteration, relative to the velocity tolerance, or ``None``.
-        """
+    def _update_residuals(self) -> None:
+        """Evaluate the unilateral velocities and the final natural-map residuals, skipping the failed worlds."""
         splitting = self._data.state
-        problem = self._problem
-        if world_active is None:
-            problem.data.box_rows.world_residual_max.zero_()
-            problem.data.contact_rows.world_residual_max.zero_()
-        inverse_velocity_tolerance = 1.0 / self._config.velocity_tolerance
-        if problem.data.box_rows.capacity > 0:
+        box_rows = self._problem.data.box_rows
+        contact_rows = self._problem.data.contact_rows
+        box_rows.world_residual_max.zero_()
+        contact_rows.world_residual_max.zero_()
+        if box_rows.capacity > 0:
             wp.launch(
                 _compute_box_residuals,
-                dim=problem.data.box_rows.capacity,
+                dim=box_rows.capacity,
                 inputs=[
-                    world_active,
-                    self._data.state.world_failed,
-                    problem.data.box_rows.world,
-                    problem.data.box_rows.local,
-                    problem.data.box_rows.world_count,
-                    problem.data.box_rows.body_a,
-                    problem.data.box_rows.body_b,
-                    problem.data.box_rows.jacobian_a,
-                    problem.data.box_rows.jacobian_b,
-                    problem.data.box_rows.bias,
-                    problem.data.box_rows.lower,
-                    problem.data.box_rows.upper,
-                    problem.data.box_rows.reaction,
-                    problem.data.box_rows.physical_delassus,
-                    self._data.state.projected_twist,
-                    splitting.global_twist,
-                    splitting.projected_twist_previous,
-                    inverse_velocity_tolerance,
+                    splitting.world_failed,
+                    box_rows.world,
+                    box_rows.local,
+                    box_rows.world_count,
+                    box_rows.body_a,
+                    box_rows.body_b,
+                    box_rows.jacobian_a,
+                    box_rows.jacobian_b,
+                    box_rows.bias,
+                    box_rows.lower,
+                    box_rows.upper,
+                    box_rows.reaction,
+                    box_rows.physical_delassus,
+                    splitting.projected_twist,
                 ],
-                outputs=[
-                    problem.data.box_rows.velocity,
-                    problem.data.box_rows.world_residual_max,
-                    velocity_residual,
-                    lagged_residual,
-                ],
+                outputs=[box_rows.velocity, box_rows.world_residual_max],
                 device=self._device,
             )
-        rows = problem.data.contact_rows
-        if rows.capacity > 0 and rows.frame is not None:
-            thread_count = _world_thread_count(self._device, problem.data.num_worlds, rows.max_world_capacity)
+        if contact_rows.capacity > 0:
+            num_worlds = self._problem.data.num_worlds
+            spatial = contact_rows.frame is not None
+            thread_count = _world_thread_count(self._device, num_worlds, contact_rows.max_world_capacity)
             wp.launch(
-                _compute_spatial_contact_residuals,
-                dim=(problem.data.num_worlds, thread_count),
+                make_contact_residuals_kernel(spatial),
+                dim=(num_worlds, thread_count),
                 inputs=[
                     thread_count,
-                    world_active,
-                    rows.world_offset,
-                    rows.world_count,
-                    rows.body_a,
-                    rows.body_b,
-                    rows.jacobian_a,
-                    rows.jacobian_b,
-                    rows.reaction,
-                    rows.frame,
-                    rows.friction,
-                    rows.angular_friction,
-                    rows.bias,
-                    rows.normal_compliance,
-                    rows.restitution,
-                    rows.angular_reaction,
-                    rows.physical_delassus,
-                    self._data.state.projected_twist,
-                    splitting.global_twist,
-                    splitting.projected_twist_previous,
-                    inverse_velocity_tolerance,
+                    contact_rows.world_offset,
+                    contact_rows.world_count,
+                    contact_rows.body_a,
+                    contact_rows.body_b,
+                    contact_rows.jacobian_a,
+                    contact_rows.jacobian_b,
+                    contact_rows.bias,
+                    contact_rows.friction,
+                    contact_rows.normal_compliance,
+                    contact_rows.restitution,
+                    contact_rows.reaction,
+                    None if spatial else contact_rows.physical_delassus,
+                    contact_rows.frame,
+                    contact_rows.angular_friction,
+                    contact_rows.angular_reaction,
+                    contact_rows.physical_delassus if spatial else None,
+                    splitting.projected_twist,
                 ],
-                outputs=[
-                    self._data.state.world_failed,
-                    rows.velocity,
-                    rows.world_residual_max,
-                    velocity_residual,
-                    lagged_residual,
-                ],
-                device=self._device,
-            )
-        elif rows.capacity > 0:
-            thread_count = _world_thread_count(self._device, problem.data.num_worlds, rows.max_world_capacity)
-            wp.launch(
-                _compute_contact_residuals,
-                dim=(problem.data.num_worlds, thread_count),
-                inputs=[
-                    thread_count,
-                    world_active,
-                    self._data.state.world_failed,
-                    problem.data.contact_rows.world_offset,
-                    problem.data.contact_rows.world_count,
-                    problem.data.contact_rows.body_a,
-                    problem.data.contact_rows.body_b,
-                    problem.data.contact_rows.jacobian_a,
-                    problem.data.contact_rows.jacobian_b,
-                    problem.data.contact_rows.bias,
-                    problem.data.contact_rows.friction,
-                    problem.data.contact_rows.normal_compliance,
-                    problem.data.contact_rows.restitution,
-                    problem.data.contact_rows.reaction,
-                    problem.data.contact_rows.physical_delassus,
-                    self._data.state.projected_twist,
-                    splitting.global_twist,
-                    splitting.projected_twist_previous,
-                    inverse_velocity_tolerance,
-                ],
-                outputs=[
-                    problem.data.contact_rows.velocity,
-                    problem.data.contact_rows.world_residual_max,
-                    velocity_residual,
-                    lagged_residual,
-                ],
+                outputs=[splitting.world_failed, contact_rows.velocity, contact_rows.world_residual_max],
                 device=self._device,
             )
 
