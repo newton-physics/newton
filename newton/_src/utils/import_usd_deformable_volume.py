@@ -23,6 +23,7 @@ from .import_usd_deformable_utils import (
     _AOUSD_DEFAULT_POISSONS_RATIO,
     _AOUSD_DEFAULT_THICKNESS,
     _AOUSD_DEFAULT_YOUNGS_MODULUS,
+    _BUILDER_STOCK_PARTICLE_RADIUS,
     _apply_particle_masses,
     _bake_world_points,
     _deformable_body_skip_reason,
@@ -227,10 +228,21 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             add_soft_mesh_kwargs["density"] = resolved_density
             # AOUSD authors no particle radius for volume deformables. Fall back to the same
             # contact offset the cloth and cable importers use (half the AOUSD default
-            # thickness) instead of the builder-wide default, which can be as large
-            # as an object-sized soft body itself. The legacy bare-TetMesh path is unchanged
+            # thickness) instead of the builder-wide default, which can be as large as an
+            # object-sized soft body itself. The legacy bare-TetMesh path is unchanged
             # and still follows builder.default_particle_radius.
-            add_soft_mesh_kwargs["particle_radius"] = 0.5 * _AOUSD_DEFAULT_THICKNESS / ctx.linear_unit
+            fallback_radius = 0.5 * _AOUSD_DEFAULT_THICKNESS / ctx.linear_unit
+            if builder.default_particle_radius != _BUILDER_STOCK_PARTICLE_RADIUS:
+                warnings.warn(
+                    f"{path}: ModelBuilder.default_particle_radius ({builder.default_particle_radius:g}) no longer "
+                    f"applies to simulation-API volume deformables; using the AOUSD proposal's half-default-thickness "
+                    f"fallback ({fallback_radius:g} stage units) instead. To override, overwrite "
+                    f"ModelBuilder.particle_radius over the soft body's particle range after add_usd() (the ranges are "
+                    f"available in the path_soft_map result of add_usd(..., return_deformable_results=True)).",
+                    NewtonWarning,
+                    stacklevel=2,
+                )
+            add_soft_mesh_kwargs["particle_radius"] = fallback_radius
 
         soft_p0, soft_t0 = builder.particle_count, builder.tet_count
         builder.add_soft_mesh(**add_soft_mesh_kwargs)
