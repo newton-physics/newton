@@ -25,6 +25,8 @@ import warp as wp
 pxr = importlib.util.find_spec("pxr")
 USD_AVAILABLE = pxr is not None
 
+MODULE_LOAD_OUTPUT_RE = r"^Module .* load on device '[^']*' took [\d.]+ ms\s*\((?:compiled|cached)\)\n?"
+
 # default test mode (see get_test_devices())
 #   "basic" - only run on CPU and first GPU device
 #   "unique" - run on CPU and all unique GPU arches

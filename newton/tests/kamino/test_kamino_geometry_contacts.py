@@ -31,7 +31,8 @@ from newton._src.solvers.kamino._src.solvers.warmstart import (
     warmstart_contacts_by_matched_geom_pair_key_and_position_with_net_force_backup,
 )
 from newton._src.solvers.kamino._src.utils import logger as msg
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import CONTACT_CAPACITY_WARNING_RE, setup_tests, test_context
+from newton.tests.unittest_utils import MODULE_LOAD_OUTPUT_RE, NewtonTestCase
 
 _NEWTON_CONTACT_CAPACITY = 64
 
@@ -713,7 +714,7 @@ class TestGeometryContacts(unittest.TestCase):
         self.assertEqual(len(contacts.remap), maxnc)
 
 
-class TestGeometryContactConversions(unittest.TestCase):
+class TestGeometryContactConversions(NewtonTestCase):
     """Tests for Newton <-> Kamino contact conversion functions.
 
     Three reference scenes are used here:
@@ -743,6 +744,7 @@ class TestGeometryContactConversions(unittest.TestCase):
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose
+        self.allowOutputRegex(MODULE_LOAD_OUTPUT_RE, stream="stdout")
 
         if self.verbose:
             msg.info("\n")
@@ -1486,6 +1488,7 @@ class TestGeometryContactConversions(unittest.TestCase):
         - Missing ``remap`` array on the existing-contacts path raises a
           clear ``ValueError`` when ``convert_forces=True``.
         """
+        self.expectOutputRegex(CONTACT_CAPACITY_WARNING_RE, stream="stdout")
         # 1) No-collision scene -> 0 Kamino contacts.
         model_nc, state_nc, contacts_nc = self._setup_newton_scene(
             builder_fn=lambda: build_nunchaku_scene(ground=False),
@@ -1519,7 +1522,8 @@ class TestGeometryContactConversions(unittest.TestCase):
         )
         self.assertEqual(int(kamino_small._data._contact_overflow_warning_emitted.numpy()[0]), 1)
 
-        convert_contacts_newton_to_kamino(model_nc, state_nc, contacts_nc, kamino_small)
+        with self.assertLogs(level="WARNING"):
+            convert_contacts_newton_to_kamino(model_nc, state_nc, contacts_nc, kamino_small)
         self.assertEqual(int(kamino_small._data._contact_overflow_warning_emitted.numpy()[0]), 0)
 
         with self.assertLogs(level="WARNING"):
@@ -1562,6 +1566,7 @@ class TestGeometryContactConversions(unittest.TestCase):
         Test the following regression:
         Scanning with the lower Kamino contact capacity would miss contacts.
         """
+        self.expectOutputRegex(CONTACT_CAPACITY_WARNING_RE, stream="stdout")
         scene = ModelBuilder()
         scene.add_ground_plane()
         scene.add_world(build_nunchaku_scene(ground=False))

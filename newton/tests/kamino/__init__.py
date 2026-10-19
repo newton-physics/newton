@@ -11,7 +11,9 @@ import warp as wp
 # Module interface
 ###
 
-__all__ = ["setup_tests", "test_context"]
+__all__ = ["CONTACT_CAPACITY_WARNING_RE", "setup_tests", "test_context"]
+
+CONTACT_CAPACITY_WARNING_RE = r"^Warning: Kamino per-world contact capacity exceeded\..*\n?"
 
 
 ###
