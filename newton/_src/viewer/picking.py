@@ -81,7 +81,7 @@ class Picking:
 
         self._pick_effective_mass = self._compute_effective_mass(model)
 
-        # Operational-space inertia at the pick point, set on every pick.
+        # Operational-space inertia at the pick point in the picked body's frame, set on every pick.
         self._pick_os_inertia = wp.zeros(1, dtype=wp.mat33, device=model.device if model else "cpu")
 
     def _apply_picking_force(self, state: newton.State) -> None:
@@ -126,14 +126,14 @@ class Picking:
         Computes :math:`\\Lambda = (J H^{-1} J^T)^{-1}` at the pick point, where ``J`` maps
         articulation velocities to the velocity of that point and ``H`` is the joint-space mass
         matrix. This is the inertia actually felt at the grab point, so picking a light distal
-        link is not weaker than picking the base. Eigenvalues are clamped between the body's own
-        mass and the articulation total, which avoids over-commanding and regularizes singular
-        poses. Where the articulation Jacobian is unavailable, as for :attr:`~newton.JointType.ROD`
-        joints, the articulation total stands in, since the whole chain is a closer estimate of
-        what resists than the single link. A body outside an articulation falls back to
-        :math:`m I`, exact for a free body.
+        link is not weaker than picking the base. Eigenvalues are capped at the articulation
+        total, which bounds directions the joints block and regularizes singular poses. Where the
+        articulation Jacobian is unavailable, as for :attr:`~newton.JointType.ROD` joints, the
+        articulation total stands in, since the whole chain is a closer estimate of what resists
+        than the single link. A body outside an articulation falls back to :math:`m I`.
 
-        Held fixed for the duration of the pick.
+        Stored in the body frame and rotated with the body, so it stays aligned as the picked
+        link turns about its upstream joints.
 
         Args:
             state: The simulation state supplying the current pose.
@@ -146,20 +146,29 @@ class Picking:
         # A massless link, e.g. a URDF frame link with geometry, is moved through its subtree.
         lam = np.eye(3) * (mass if mass > 0.0 else upper)
 
+        X_wb = wp.transform(*state.body_q.numpy()[body])
+        rotation = np.array(wp.quat_to_matrix(wp.transform_get_rotation(X_wb)), dtype=np.float64).reshape(3, 3)
+
+        def store(lam_world: np.ndarray) -> None:
+            lam_body = rotation.T @ lam_world @ rotation
+            self._pick_os_inertia.assign(np.ascontiguousarray(lam_body, dtype=np.float32).reshape(1, 3, 3))
+
         joints = np.nonzero(model.joint_child.numpy() == body)[0] if model.articulation_count else []
         if len(joints) and upper > 0.0:
-            joint = int(joints[0])
-            art = int(model.joint_articulation.numpy()[joint])
+            # Prefer the tree joint over loop closures, as _build_joint_ancestor does.
+            joint_art = model.joint_articulation.numpy()[joints]
+            tree = int(np.argmax(joint_art >= 0))
+            joint = int(joints[tree])
+            art = int(joint_art[tree])
             if art < 0:
-                self._pick_os_inertia.assign(np.ascontiguousarray(lam, dtype=np.float32).reshape(1, 3, 3))
+                store(lam)
                 return
             first = int(model.articulation_start.numpy()[art])
             end = int(model.articulation_end.numpy()[art])
 
             # Rod joints do not expose a compatible generalized-coordinate Jacobian.
             if np.any(model.joint_type.numpy()[first:end] == int(newton.JointType.ROD)):
-                lam = np.eye(3) * upper
-                self._pick_os_inertia.assign(np.ascontiguousarray(lam, dtype=np.float32).reshape(1, 3, 3))
+                store(np.eye(3) * upper)
                 return
 
             qd_start = model.joint_qd_start.numpy()
@@ -173,18 +182,17 @@ class Picking:
 
             # Newton stores twists as (linear, angular); shift the linear rows from the COM to
             # the pick point via v_p = v_com + omega x r.
-            X_wb = wp.transform(*state.body_q.numpy()[body])
             r = np.array(point_world) - np.array(wp.transform_point(X_wb, wp.vec3(*model.body_com.numpy()[body])))
             jac_point = jac[row : row + 3] + np.cross(jac[row + 3 : row + 6].T, r).T
 
             try:
                 eigenvalues, eigenvectors = np.linalg.eigh(jac_point @ np.linalg.solve(h, jac_point.T))
-                inertia = 1.0 / np.clip(eigenvalues, 1.0 / upper, 1.0 / mass if mass > 0.0 else None)
+                inertia = 1.0 / np.maximum(eigenvalues, 1.0 / upper)
                 lam = eigenvectors @ np.diag(inertia) @ eigenvectors.T
             except np.linalg.LinAlgError:
                 pass
 
-        self._pick_os_inertia.assign(np.ascontiguousarray(lam, dtype=np.float32).reshape(1, 3, 3))
+        store(lam)
 
     @staticmethod
     def _compute_effective_mass(model: newton.Model) -> wp.array[float]:
@@ -204,7 +212,6 @@ class Picking:
         effective = body_mass_np.copy()
 
         if model.joint_count > 0:
-            joint_parent_np = model.joint_parent.numpy()
             joint_child_np = model.joint_child.numpy()
             joint_art_np = model.joint_articulation.numpy()
 
@@ -212,10 +219,8 @@ class Picking:
             body_art = np.full(model.body_count, -1, dtype=np.int32)
             for j in range(model.joint_count):
                 art = joint_art_np[j]
-                parent = joint_parent_np[j]
                 child = joint_child_np[j]
-                if art >= 0 and parent >= 0:
-                    body_art[parent] = art
+                # Loop closures (art < 0) must not detach a body from its tree joint's articulation.
                 if art >= 0 and child >= 0:
                     body_art[child] = art
 

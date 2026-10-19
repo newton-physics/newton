@@ -262,7 +262,7 @@ def test_picking_setup_device(test: TestPickingSetup, device):
     state.body_f.zero_()
     picking._apply_picking_force(state)
 
-    # A zero spring command does not cancel gravity on the picked body.
+    # The target is the pick point and the body is at rest, so the spring applies no wrench.
     assert_np_equal(state.body_f.numpy()[0], np.zeros(6), tol=1.0e-6)
 
     picking.release()
@@ -282,6 +282,11 @@ def _apply_picking_target(
     return state.body_f.numpy()[body].copy()
 
 
+def _pin_felt_mass(picking: Picking, mass: float) -> None:
+    """Override the operational-space inertia so the force equals ``mass`` times the command."""
+    picking._pick_os_inertia.assign(np.eye(3, dtype=np.float32).reshape(1, 3, 3) * mass)
+
+
 def test_picking_torque_limit(test: TestPickingSetup, device):
     """Picking limits inertia-weighted angular response without changing force."""
     inertia = wp.mat33(1.0e-4, 0.0, 0.0, 0.0, 2.0e-4, 0.0, 0.0, 0.0, 3.0e-4)
@@ -291,9 +296,11 @@ def test_picking_torque_limit(test: TestPickingSetup, device):
 
     picking.pick(state, wp.vec3(0.0, 0.0, -2.0), wp.vec3(0.0, 0.0, 1.0))
     test.assertTrue(picking.is_picking())
+    mass = model.body_mass.numpy()[0]
+    # The felt mass off the COM of this low-inertia body is far below m; pin it so the torque limit engages.
+    _pin_felt_mass(picking, mass)
     wrench = _apply_picking_target(picking, state, (0.5, 0.0, -0.5))
 
-    mass = model.body_mass.numpy()[0]
     inv_inertia = model.body_inv_inertia.numpy()[0]
     max_acceleration = 5.0 * 9.81
     rotational_acceleration_sq = wrench[3:] @ inv_inertia @ wrench[3:] / mass
@@ -314,6 +321,7 @@ def test_picking_torque_limit_is_noop_below_limit(test: TestPickingSetup, device
     picking = Picking(model, pick_stiffness=100.0, pick_damping=0.0, pick_max_acceleration=5.0)
 
     picking.pick(state, wp.vec3(0.0, 0.0, -2.0), wp.vec3(0.0, 0.0, 1.0))
+    _pin_felt_mass(picking, model.body_mass.numpy()[0])
     wrench = _apply_picking_target(picking, state, (0.01, 0.0, -0.5))
     expected_force = np.array([model.body_mass.numpy()[0] * 100.0 * 0.01, 0.0, 0.0])
     expected_torque = np.cross(np.array([0.0, 0.0, -0.5]), expected_force)
@@ -355,11 +363,14 @@ _FINGER_DIST = 0.4
 
 
 def test_picking_acceleration_mass_independent(test: TestPickingSetup, device):
-    """A free body feels exactly its own mass, so picking gains are mass-independent."""
+    """A solid sphere pulled tangentially at its surface feels :math:`m / (1 + m r^2 / I) = m / 3.5`."""
     for mass in (1.0, 1.0e-3):
-        model = _make_single_sphere_model(device=device, body_com=wp.vec3(0.0), mass=mass)
+        inertia = 0.4 * mass * 0.5**2
+        model = _make_single_sphere_model(
+            device=device, body_com=wp.vec3(0.0), body_inertia=wp.mat33(np.eye(3) * inertia), mass=mass
+        )
         _, felt_mass = _picked_mass(test, model, wp.vec3(0.0, 0.0, -2.0), wp.vec3(0.0, 0.0, 1.0), (1.0, 0.0, 0.0))
-        test.assertAlmostEqual(felt_mass, mass, delta=mass * 1.0e-4)
+        test.assertAlmostEqual(felt_mass, mass / 3.5, delta=mass * 1.0e-4)
 
 
 def test_picking_articulated_operational_space_mass(test: TestPickingSetup, device):
@@ -383,6 +394,56 @@ def test_picking_articulated_operational_space_mass(test: TestPickingSetup, devi
         test.assertAlmostEqual(felt_mass, expected, delta=expected * 1.0e-3)
         test.assertGreater(felt_mass, mass[1])
         test.assertLess(felt_mass, mass.sum())
+
+
+def test_picking_inertia_rotates_with_link(test: TestPickingSetup, device):
+    """The felt mass follows the link as it turns, so the tangent stays light after a 90 degree swing."""
+    model = _make_arm_and_finger_model(device, 10.0)
+    state = model.state()
+    picking = Picking(model, pick_stiffness=_PICK_STIFFNESS, pick_damping=0.0, pick_max_acceleration=5.0)
+    picking.pick(state, *_FINGER_RAY)
+    tangent_mass = picking._pick_os_inertia.numpy()[0][1, 1]
+
+    joint_q = model.joint_q.numpy()
+    joint_q[0] = 0.5 * np.pi
+    newton.eval_fk(model, wp.array(joint_q, dtype=float, device=device), model.joint_qd, state)
+    # The pick point moved from (0.4, 0, 0.02) to (0, 0.4, 0.02); its tangent is now -x.
+    target = (-_PICK_DISPLACEMENT, _FINGER_DIST, 0.02)
+    force = _apply_picking_target(picking, state, target, body=1)[:3]
+    felt_mass = -force[0] / (_PICK_STIFFNESS * _PICK_DISPLACEMENT)
+
+    test.assertAlmostEqual(felt_mass, tangent_mass, delta=tangent_mass * 1.0e-3)
+    test.assertLess(felt_mass, 0.5 * model.body_mass.numpy().sum())
+
+
+def test_picking_ignores_earlier_loop_closure(test: TestPickingSetup, device):
+    """A loop closure created before a link's tree joint does not hide the articulation."""
+
+    def os_inertia(loop_first: bool) -> np.ndarray:
+        builder = newton.ModelBuilder()
+        arm = builder.add_link(xform=wp.transform((0.2, 0.0, 0.0), wp.quat_identity()), mass=10.0)
+        finger = builder.add_link(xform=wp.transform((0.45, 0.0, 0.0), wp.quat_identity()), mass=0.1)
+        if loop_first:
+            builder.add_joint_ball(-1, finger, parent_xform=wp.transform((0.45, 0.0, 0.0), wp.quat_identity()))
+        j1 = builder.add_joint_revolute(
+            -1, arm, axis=(0.0, 0.0, 1.0), child_xform=wp.transform((-0.2, 0.0, 0.0), wp.quat_identity())
+        )
+        j2 = builder.add_joint_revolute(
+            arm,
+            finger,
+            axis=(0.0, 0.0, 1.0),
+            parent_xform=wp.transform((0.2, 0.0, 0.0), wp.quat_identity()),
+            child_xform=wp.transform((-0.05, 0.0, 0.0), wp.quat_identity()),
+        )
+        builder.add_articulation([j1, j2])
+        model = builder.finalize(device=device)
+        picking = Picking(model)
+        picking._update_os_inertia(model.state(), finger, wp.vec3(0.45, 0.0, 0.0))
+        return picking._pick_os_inertia.numpy()[0]
+
+    tree_only = os_inertia(loop_first=False)
+    test.assertLess(tree_only[1, 1], 1.0)
+    assert_np_equal(os_inertia(loop_first=True), tree_only, tol=1.0e-5)
 
 
 def test_picking_massless_link(test: TestPickingSetup, device):
@@ -425,6 +486,7 @@ def test_picking_torque_limit_rotates_with_inertia(test: TestPickingSetup, devic
         state = model.state()
         picking = Picking(model, pick_stiffness=100.0, pick_damping=0.0, pick_max_acceleration=5.0)
         picking.pick(state, wp.vec3(0.0, 0.0, -2.0), wp.vec3(0.0, 0.0, 1.0))
+        _pin_felt_mass(picking, model.body_mass.numpy()[0])
         return _apply_picking_target(picking, state, (0.5, 0.0, -0.5))
 
     identity_wrench = apply_with_rotation(wp.quat_identity())
@@ -537,6 +599,18 @@ add_function_test(
     TestPickingSetup,
     "test_picking_articulated_operational_space_mass",
     test_picking_articulated_operational_space_mass,
+    devices=get_test_devices(),
+)
+add_function_test(
+    TestPickingSetup,
+    "test_picking_inertia_rotates_with_link",
+    test_picking_inertia_rotates_with_link,
+    devices=get_test_devices(),
+)
+add_function_test(
+    TestPickingSetup,
+    "test_picking_ignores_earlier_loop_closure",
+    test_picking_ignores_earlier_loop_closure,
     devices=get_test_devices(),
 )
 add_function_test(

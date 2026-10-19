@@ -106,7 +106,7 @@ def apply_picking_force_kernel(
     accel_mag = wp.length(pick_accel)
     pick_mass = body_mass[pick_body]
     if accel_mag > 1.0e-9:
-        accel_dir = pick_accel / accel_mag
+        accel_dir = wp.quat_rotate_inv(wp.transform_get_rotation(X_wb), pick_accel / accel_mag)
         pick_mass = wp.dot(accel_dir, pick_os_inertia[0] * accel_dir)
 
     pick_force = pick_accel * pick_mass
