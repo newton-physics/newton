@@ -772,7 +772,7 @@ def _warn_large_rigid_contact_estimate(estimate: _RigidContactCountEstimate) -> 
         f"{estimate.pair_estimate_contacts_per_pair}; selected estimate: {estimate.source}. "
         "Optional pipeline and solver features may allocate additional memory. Pass rigid_contact_max "
         "explicitly to CollisionPipeline to choose the capacity and silence this warning.",
-        RuntimeWarning,
+        NewtonWarning,
         stacklevel=3,
     )
 
@@ -1018,7 +1018,7 @@ def _resolve_auto_triangle_pairs(
             f"(deterministic=True or contact matching) supports at most {packing_limit:,}, so mesh contacts may "
             "be dropped. Split the worlds across pipelines, or disable determinism and contact matching if "
             "acceptable.",
-            RuntimeWarning,
+            NewtonWarning,
             stacklevel=3,
         )
         capacity = packing_limit
@@ -1036,7 +1036,7 @@ def _resolve_auto_triangle_pairs(
             f"mesh-routed pairs from {estimate.source}, at most {estimate.busiest_world_pair_count:,} in one of "
             f"{estimate.world_count:,} worlds, {_TRIANGLE_PAIRS_PER_MESH_PAIR} candidates per pair. Pass "
             "max_triangle_pairs explicitly to choose the memory budget and silence this warning.",
-            RuntimeWarning,
+            NewtonWarning,
             stacklevel=3,
         )
     return capacity

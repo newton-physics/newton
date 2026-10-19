@@ -153,6 +153,94 @@ class TestUSDDeformableCable(unittest.TestCase):
         for value in builder.shape_material_mu_rolling:
             self.assertAlmostEqual(value, 0.15)
 
+    @staticmethod
+    def _filtered(builder, body_a, body_b):
+        s1, s2 = builder.body_shapes[body_a][0], builder.body_shapes[body_b][0]
+        return (min(s1, s2), max(s1, s2)) in set(builder.shape_collision_filter_pairs)
+
+    def test_cable_self_collision_flag(self):
+        """Verify that an authored newton:selfCollisionEnabled overrides enable_self_collisions per curve."""
+        from pxr import Sdf
+
+        points = [(0.1 * i, y, 1.0) for y in (0.0, 1.0) for i in range(4)]
+        for authored, default, expect_filtered in (
+            (None, True, False),
+            (None, False, True),
+            (False, True, True),
+            (True, False, False),
+        ):
+            with self.subTest(authored=authored, default=default):
+                stage = _deformable_stage()
+                curves = _add_cable_curve(stage, "/World/Cable", points)
+                curves.CreateCurveVertexCountsAttr([4, 4])
+                if authored is not None:
+                    curves.GetPrim().CreateAttribute("newton:selfCollisionEnabled", Sdf.ValueTypeNames.Bool).Set(
+                        authored
+                    )
+                builder = newton.ModelBuilder()
+                result = builder.add_usd(stage, enable_self_collisions=default, return_deformable_results=True)
+                bodies = result["path_cable_map"]["/World/Cable"][0]
+                self.assertEqual(len(bodies), 6)
+                self.assertEqual(self._filtered(builder, bodies[0], bodies[2]), expect_filtered)
+                # Sibling curves are separate articulations, so they are never filtered.
+                self.assertFalse(self._filtered(builder, bodies[0], bodies[3]))
+
+    def test_welded_cable_self_collision_flag(self):
+        """Verify that any welded member authoring self-collision off disables it for the whole graph."""
+        from pxr import Sdf
+
+        for author_a, author_b, default, expect_filtered in (
+            (False, None, True, True),
+            (False, True, True, True),
+            (True, None, False, False),
+        ):
+            with self.subTest(author_a=author_a, author_b=author_b, default=default):
+                stage = self._author_attached_cable_pair(gap=0.0)
+                for path, authored in (("/World/CableA", author_a), ("/World/CableB", author_b)):
+                    if authored is not None:
+                        stage.GetPrimAtPath(path).CreateAttribute(
+                            "newton:selfCollisionEnabled", Sdf.ValueTypeNames.Bool
+                        ).Set(authored)
+                builder = newton.ModelBuilder()
+                if author_b is None:
+                    with self.assertNoLogs("newton", level="WARNING"):
+                        result = builder.add_usd(stage, enable_self_collisions=default, return_deformable_results=True)
+                else:
+                    with self.assertLogs("newton", level="WARNING") as logs:
+                        result = builder.add_usd(stage, enable_self_collisions=default, return_deformable_results=True)
+                    self.assertIn("differing self-collision settings", "\n".join(logs.output))
+                self.assertEqual(builder.articulation_count, 1)
+                bodies_a = result["path_cable_map"]["/World/CableA"][0]
+                bodies_b = result["path_cable_map"]["/World/CableB"][0]
+                self.assertEqual(self._filtered(builder, bodies_a[2], bodies_b[2]), expect_filtered)
+
+    def test_rooted_cable_self_collision_flag(self):
+        """Verify that a world-rooted cable honors its authored flag and a rigid-rooted one does not."""
+        from pxr import Sdf, UsdGeom, UsdPhysics
+
+        for target, expect_filtered in (("", True), ("/World/Plug", False)):
+            with self.subTest(target=target):
+                stage = _deformable_stage()
+                plug = UsdGeom.Cube.Define(stage, "/World/Plug")
+                UsdPhysics.RigidBodyAPI.Apply(plug.GetPrim())
+                UsdPhysics.CollisionAPI.Apply(plug.GetPrim())
+                points = [(0.1 * i, 0.0, 1.0) for i in range(4)]
+                curves = _add_cable_curve(stage, "/World/Cable", points)
+                curves.GetPrim().CreateAttribute("newton:selfCollisionEnabled", Sdf.ValueTypeNames.Bool).Set(False)
+                _add_physics_attachment(
+                    stage,
+                    "/World/Pin",
+                    src0="/World/Cable",
+                    src1=target,
+                    type0="point",
+                    indices0=[0],
+                    coords1=[points[0]],
+                )
+                builder = newton.ModelBuilder()
+                result = builder.add_usd(stage, enable_self_collisions=True, return_deformable_results=True)
+                bodies = result["path_cable_map"]["/World/Cable"][0]
+                self.assertEqual(self._filtered(builder, bodies[0], bodies[2]), expect_filtered)
+
     def test_attachment_weld_policy_rejects_compliant_or_apart(self):
         """A curve-to-curve attachment welds only when hard AND coincident: a compliant
         (zero or finite stiffness) or spatially-apart junction leaves two independent
