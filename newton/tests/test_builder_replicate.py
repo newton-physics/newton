@@ -248,6 +248,33 @@ class TestModelBuilderReplicate(unittest.TestCase):
 
         self.assert_builder_merge_state_equal(expected, actual)
 
+    def test_replicate_matches_add_world_loop_with_many_transforms(self):
+        """Match per-world composition when copies transform enough rows to batch with NumPy."""
+        source = self._make_source()
+        rng = np.random.default_rng(42)
+        xforms = [
+            wp.transform(wp.vec3(*rng.uniform(-3.0, 3.0, 3)), wp.quat_rpy(*rng.uniform(-np.pi, np.pi, 3).tolist()))
+            for _ in range(24)
+        ]
+
+        expected = self._make_destination()
+        for xform in xforms:
+            expected.add_world(source, xform)
+
+        actual = self._make_destination()
+        actual.replicate(source, len(xforms), xforms=xforms)
+
+        # Batched NumPy math matches Warp's scalar builtins bit for bit only without
+        # fused multiply-add contraction, so compare within float32 round-off.
+        for name in ("body_q", "body_qd", "joint_q", "joint_qd", "joint_X_p", "shape_transform"):
+            with self.subTest(attribute=name):
+                np.testing.assert_allclose(
+                    np.asarray(getattr(actual, name), dtype=np.float32),
+                    np.asarray(getattr(expected, name), dtype=np.float32),
+                    rtol=1e-6,
+                    atol=1e-6,
+                )
+
     def test_replicate_remaps_joint_mimic_references(self):
         """Verify replication remaps dense mimic references per world."""
         source = ModelBuilder()
