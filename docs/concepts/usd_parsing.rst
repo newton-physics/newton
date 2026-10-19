@@ -384,6 +384,11 @@ Invalid cloth or volume rest data is logged at ``WARNING`` level and falls back 
 geometry before builder mutation. Mismatched bend-array lengths are logged and fall back to
 ``restBendAnglesDefault``. Invalid individual bend entries are logged and skipped; duplicate pairs
 are logged and use the last valid angle.
+Malformed cloth or TetMesh topology, non-finite or degenerate cloth simulation geometry, and
+invalid ``restBendAnglesDefault`` tokens are also reported through the ``newton`` logger at
+``WARNING`` level; capture these diagnostics with logging handlers rather than warning filters.
+Compatibility and deprecation notices, including the unauthored non-planar cloth flat-bend
+migration notice, remain Python warnings.
 
 Every imported deformable can be looked up by its prim path in the mapping
 :meth:`~newton.ModelBuilder.add_usd` returns when called with ``return_deformable_results=True``:

@@ -17,6 +17,7 @@ import warp as wp
 
 import newton
 from newton import ShapeFlags
+from newton.exceptions import NewtonWarning
 from newton.tests._usd_deformable_test_utils import (
     _add_cable_curve,
     _add_cloth_mesh,
@@ -300,9 +301,8 @@ class TestUSDDeformableCloth(unittest.TestCase):
         # The right-handed fan would give the first triangle (0, 1, 2); left-handed reverses it.
         self.assertEqual(list(builder.tri_indices[0]), [2, 1, 0])
 
-    def test_malformed_cloth_topology_warns_and_skips(self):
-        """Malformed cloth topology (short faces, count/index mismatch, out-of-range index)
-        warns and skips the cloth before any builder mutation instead of crashing."""
+    def test_malformed_cloth_topology_logs_and_skips(self):
+        """Log malformed cloth topology and import a valid sibling without partial state."""
         from pxr import UsdGeom
 
         points = [(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (1.0, 1.0, 1.0), (0.0, 1.0, 1.0)]
@@ -322,12 +322,19 @@ class TestUSDDeformableCloth(unittest.TestCase):
                 mesh.GetPrim().AddAppliedSchema("PhysicsSurfaceDeformableSimAPI")
                 mesh.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
 
+                good = _add_cloth_mesh(stage, "/World/Good")
+                _author_deformable_element_array(good.GetPrim(), "thicknesses", [0.001], "constant")
                 builder = newton.ModelBuilder()
-                with self.assertWarnsRegex(UserWarning, message):
-                    builder.add_usd(stage)
-                self.assertEqual(group_labels(builder, "cloth"), [])
-                self.assertEqual(builder.particle_count, 0)
-                self.assertEqual(builder.tri_count, 0)
+                with warnings.catch_warnings(), self.assertLogs("newton", level="WARNING") as caught:
+                    warnings.simplefilter("error", NewtonWarning)
+                    result = builder.add_usd(stage, return_deformable_results=True)
+                self.assertEqual(len(caught.output), 1)
+                self.assertIn("/World/Cloth", caught.output[0])
+                self.assertIn(message, caught.output[0])
+                self.assertEqual(group_labels(builder, "cloth"), ["/World/Good"])
+                self.assertNotIn("/World/Cloth", result["path_cloth_map"])
+                self.assertEqual(builder.particle_count, 4)
+                self.assertEqual(builder.tri_count, 2)
 
     def test_current_surface_structural_stiffness_is_thickness_independent(self):
         """Preserve current surface stiffnesses when the authored thickness changes."""
@@ -886,6 +893,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
             (None, "consistent", None),
             (None, "consistent", "empty_pairs"),
             ("flat", "consistent", None),
+            ("invalid", "consistent", None),
             ("restShape", "consistent", None),
             ("restShape", "consistent", "rest_points"),
             ("restShape", "flipped", "rest_points"),
@@ -919,8 +927,19 @@ class TestUSDDeformableCloth(unittest.TestCase):
 
                 builder = newton.ModelBuilder()
                 with warnings.catch_warnings(record=True) as caught:
-                    warnings.simplefilter("always")
-                    builder.add_usd(stage)
+                    if token is None:
+                        warnings.simplefilter("always")
+                        builder.add_usd(stage)
+                    else:
+                        warnings.simplefilter("error", NewtonWarning)
+                        if token == "invalid":
+                            with self.assertLogs("newton", level="WARNING") as logs:
+                                builder.add_usd(stage)
+                            self.assertEqual(len(logs.output), 1)
+                            self.assertIn("/World/Cloth: invalid physics:restBendAnglesDefault", logs.output[0])
+                            self.assertIn("using 'flat'", logs.output[0])
+                        else:
+                            builder.add_usd(stage)
                 migration_notices = [
                     str(w.message) for w in caught if "replaces non-planar imported dihedral" in str(w.message)
                 ]

@@ -132,7 +132,7 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
         except ValueError as exc:
             # Malformed authored topology (e.g. out-of-range tet indices) must not abort the
             # whole import; skip the prim like other broken deformable geometry.
-            warnings.warn(f"{path}: invalid TetMesh; skipping soft-body import ({exc}).", NewtonWarning, stacklevel=2)
+            logger.warning("%s: invalid TetMesh; skipping soft-body import (%s).", path, exc)
             continue
         supported_frequencies = {
             Model.AttributeFrequency.PARTICLE,

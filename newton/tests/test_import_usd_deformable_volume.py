@@ -792,9 +792,8 @@ class TestUSDDeformableVolume(unittest.TestCase):
         k_mu, k_lambda, _k_damp = builder.tet_materials[0]
         self.assertTrue(math.isfinite(k_mu) and math.isfinite(k_lambda))
 
-    def test_malformed_tetmesh_warns_and_spares_the_stage(self):
-        """A TetMesh whose indices exceed its point count warns and is skipped; the rest of
-        the stage (a valid soft body) still imports instead of the whole add_usd aborting."""
+    def test_malformed_tetmesh_logs_and_spares_the_stage(self):
+        """Log out-of-range TetMesh indices and import a valid sibling without partial state."""
         from pxr import UsdGeom
 
         stage = _deformable_stage()
@@ -805,11 +804,16 @@ class TestUSDDeformableVolume(unittest.TestCase):
         _author_unit_tet(stage, "/World/Good", sim_api=True)
 
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(UserWarning, "/World/Bad.*exceeds vertex count"):
-            builder.add_usd(stage)
-
+        with warnings.catch_warnings(), self.assertLogs("newton", level="WARNING") as caught:
+            warnings.simplefilter("error", NewtonWarning)
+            result = builder.add_usd(stage, return_deformable_results=True)
+        self.assertEqual(len(caught.output), 1)
+        self.assertRegex(caught.output[0], "/World/Bad.*exceeds vertex count")
+        self.assertNotIn("/World/Bad", result["path_soft_map"])
         self.assertEqual(group_labels(builder, "soft"), ["/World/Good"])
         self.assertEqual(builder.particle_count, 4)
+        self.assertEqual(builder.tet_count, 1)
+        self.assertEqual(builder.tri_count, 4)
 
     def test_unregistered_custom_attribute_is_ignored_and_keeps_tetmesh(self):
         """An irrelevant USD array is ignored without warning or dropping the soft body."""
