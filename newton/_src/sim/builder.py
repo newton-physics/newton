@@ -902,24 +902,18 @@ class ModelBuilder:
         kf: float = 1000.0
         """The contact friction gain [N·s/m].
 
-        In :class:`~newton.solvers.SolverSemiImplicit` and
-        :class:`~newton.solvers.SolverFeatherstone` the tangential force is
-        ``min(kf * |v_t|, mu * |f_n|)``: viscous friction with slope ``kf``
-        below the slip speed ``mu * |f_n| / kf``, Coulomb friction above it.
-        Larger values approach ideal Coulomb friction but stiffen the system and
-        may need a smaller time step. :class:`~newton.solvers.SolverMuJoCo` maps
-        it to ``solreffriction`` (elliptic cones with Newton contacts only), and
-        ``kf = 0`` makes the contact frictionless there. See
+        Slope of the viscous friction regularization in
+        :class:`~newton.solvers.SolverSemiImplicit` and
+        :class:`~newton.solvers.SolverFeatherstone`; also used by
+        :class:`~newton.solvers.SolverMuJoCo`. See
         :ref:`Contact friction gain and adhesion`."""
         ka: float = 0.0
         """The contact adhesion distance [m].
 
-        Only used by :class:`~newton.solvers.SolverSemiImplicit` and
-        :class:`~newton.solvers.SolverFeatherstone`. Shapes closer than ``ka``
-        are pulled together by a normal force ``ke * d`` that grows linearly with
-        the separation ``d`` up to about ``ke * ka`` and cuts off to zero at
-        ``d >= ka``. ``0`` disables
-        adhesion. See :ref:`Contact friction gain and adhesion`."""
+        Distance within which the normal force attracts the shapes, used by
+        :class:`~newton.solvers.SolverSemiImplicit` and
+        :class:`~newton.solvers.SolverFeatherstone`. ``0`` disables adhesion. See
+        :ref:`Contact friction gain and adhesion`."""
         mu: float = 1.0
         """The coefficient of friction."""
         restitution: float = 0.0
