@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+import numpy as np
 import warp as wp
 
 import newton
@@ -335,14 +336,16 @@ def Xform "World"
                 """
         uniform int newton:mujoco:nconmax = 64
         uniform int newton:mujoco:njmax = 128
-        uniform bool newton:mujoco:enableSleeping = true
         uniform int newton:mujoco:nvmax = 1
         uniform double mjc:option:sleep_tolerance = 0.02
         """,
                 scene_apis='"NewtonMuJoCoSceneAPI", "MjcSceneAPI"',
             )
         )
-        solver = SolverMuJoCo.create_from_usd(path, self._build_model(path))
+        model = self._build_model(path)
+        # NewtonMuJoCoSceneAPI has no sleeping flag, so enable sleeping through the model attribute.
+        model.mujoco.enable_sleeping.assign(np.array([True]))
+        solver = SolverMuJoCo.create_from_usd(path, model)
         self.assertFalse(solver.use_mujoco_cpu)
         self.assertEqual(solver.mjw_data.naconmax, 64)
         self.assertEqual(solver.mjw_data.njmax, 128)
@@ -380,9 +383,6 @@ def Xform "World"
         for name, argument in plain.items():
             with self.subTest(attribute=name):
                 self.assertEqual(scene.GetAttribute(f"newton:mujoco:{name}").Get(), parameters[argument].default)
-        # enable_sleeping defaults to None, which resolves to the model attribute (default False)
-        self.assertFalse(scene.GetAttribute("newton:mujoco:enableSleeping").Get())
-        self.assertIsNone(parameters["enable_sleeping"].default)
         # "inherit" is the schema's spelling of deterministic=None
         self.assertEqual(scene.GetAttribute("newton:deterministic").Get(), "inherit")
         self.assertIsNone(parameters["deterministic"].default)

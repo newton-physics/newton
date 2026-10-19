@@ -1132,7 +1132,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             "update_data_interval": authored_count("newton:mujoco:updateDataInterval", minimum=0),
             "use_mujoco_cpu": authored_bool("newton:mujoco:useMujocoCpu"),
             "use_mujoco_contacts": authored_bool("newton:mujoco:useMujocoContacts"),
-            "enable_sleeping": authored_bool("newton:mujoco:enableSleeping"),
             "include_sites": authored_bool("newton:mujoco:includeSites"),
             "skip_visual_only_geoms": authored_bool("newton:mujoco:skipVisualOnlyGeoms"),
         }
