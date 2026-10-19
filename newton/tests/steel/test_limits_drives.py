@@ -1518,39 +1518,30 @@ FRICTION = 1.0
 class TestSteelJointFriction(unittest.TestCase):
     def test_sticks_below_breakaway_in_both_directions(self):
         """Hold hinge and slider DOFs at rest while the applied effort is below the friction."""
+        efforts = (0.6 * FRICTION, -0.6 * FRICTION, 0.999 * FRICTION)
         for joint in ("revolute", "prismatic"):
-            model = _single_dof_model(joint)
-            for effort in (0.6 * FRICTION, -0.6 * FRICTION, 0.999 * FRICTION):
-                with self.subTest(joint=joint, effort=effort):
-                    qd = _run_friction(model, effort=effort, steps=50)
-                    np.testing.assert_allclose(qd, 0.0, atol=1.0e-6)
+            with self.subTest(joint=joint):
+                qd = _run_friction(_worlds_model(joint, len(efforts)), effort=efforts, steps=50, dofs=len(efforts))
+                np.testing.assert_allclose(qd, 0.0, atol=1.0e-6)
 
     def test_breakaway_accelerates_by_net_effort(self):
         """Accelerate at (effort - friction) / inertia once the effort exceeds the friction."""
         for joint, inertia in (("revolute", INERTIA), ("prismatic", 1.0)):
-            model = _single_dof_model(joint)
-            for effort in (2.5, -2.5):
-                with self.subTest(joint=joint, effort=effort):
-                    qd = _run_friction(model, effort=effort, steps=20)
-                    expected = (
-                        np.sign(effort) * (abs(effort) - FRICTION) / inertia * DT_JOINT_FRICTION * np.arange(1, 21)
-                    )
-                    np.testing.assert_allclose(qd, expected, rtol=1.0e-5, atol=1.0e-6)
+            with self.subTest(joint=joint):
+                qd = _run_friction(_worlds_model(joint, 2), effort=(2.5, -2.5), steps=20, dofs=2)
+                ramp = (2.5 - FRICTION) / inertia * DT_JOINT_FRICTION * np.arange(1, 21)
+                np.testing.assert_allclose(qd, np.stack((ramp, -ramp), axis=1), rtol=1.0e-5, atol=1.0e-6)
 
     def test_sliding_decelerates_and_stops_without_chatter(self):
         """Decelerate at friction / inertia, stop at the predicted step and stay at rest."""
-        model = _single_dof_model("revolute")
-        for qd0 in (1.0, -1.0):
-            with self.subTest(qd0=qd0):
-                qd = _run_friction(model, qd0=qd0, steps=80)
-                stop_step = round(abs(qd0) * INERTIA / FRICTION / DT_JOINT_FRICTION)
-                expected = np.sign(qd0) * np.maximum(
-                    abs(qd0) - FRICTION / INERTIA * DT_JOINT_FRICTION * np.arange(1, 81), 0.0
-                )
-                np.testing.assert_allclose(qd, expected, atol=1.0e-5)
-                np.testing.assert_allclose(qd[stop_step:], 0.0, atol=1.0e-6)
-                moving = qd[np.abs(qd) > 1.0e-6]
-                self.assertTrue(np.all(np.sign(moving) == np.sign(qd0)))
+        qd = _run_friction(_worlds_model("revolute", 2), qd0=(1.0, -1.0), steps=80, dofs=2)
+        stop_step = round(INERTIA / FRICTION / DT_JOINT_FRICTION)
+        speed = np.maximum(1.0 - FRICTION / INERTIA * DT_JOINT_FRICTION * np.arange(1, 81), 0.0)
+        np.testing.assert_allclose(qd, np.stack((speed, -speed), axis=1), atol=1.0e-5)
+        np.testing.assert_allclose(qd[stop_step:], 0.0, atol=1.0e-6)
+        for world, sign in ((0, 1.0), (1, -1.0)):
+            moving = qd[:, world][np.abs(qd[:, world]) > 1.0e-6]
+            self.assertTrue(np.all(np.sign(moving) == sign))
 
     def test_pendulum_dissipates_the_friction_work(self):
         """Lose mechanical energy at the rate of the friction torque times the swept angle."""
@@ -1574,14 +1565,14 @@ class TestSteelJointFriction(unittest.TestCase):
 
     def test_substeps_preserve_physical_result(self):
         """Scale the impulse bound with dt so substepping keeps the same physical trajectory."""
-        model = _single_dof_model("revolute")
+        model = _worlds_model("revolute", 2)
         for substeps in (1, 4):
             with self.subTest(substeps=substeps):
                 dt = DT_JOINT_FRICTION / substeps
-                breakaway = _run_friction(model, effort=2.5, steps=20 * substeps, dt=dt)
-                self.assertAlmostEqual(float(breakaway[-1]), 1.5 / INERTIA * 0.2, delta=1.0e-5)
-                slide = _run_friction(model, qd0=1.0, steps=60 * substeps, dt=dt)
-                stop = int(np.argmax(np.abs(slide) < 1.0e-6)) + 1
+                # World 0 breaks away under effort, world 1 slides to rest.
+                qd = _run_friction(model, effort=(2.5, 0.0), qd0=(0.0, 1.0), steps=60 * substeps, dt=dt, dofs=2)
+                self.assertAlmostEqual(float(qd[20 * substeps - 1, 0]), 1.5 / INERTIA * 0.2, delta=1.0e-5)
+                stop = int(np.argmax(np.abs(qd[:, 1]) < 1.0e-6)) + 1
                 self.assertAlmostEqual(stop * dt, 0.5, delta=0.5 * dt)
 
     def test_d6_axes_are_independent_boxes(self):
@@ -1599,6 +1590,28 @@ class TestSteelJointFriction(unittest.TestCase):
         model = builder.finalize()
         qd = _run_friction(model, effort=(1.5, 1.5), steps=10, dofs=2)
         np.testing.assert_allclose(qd[-1], [0.5 * DT_JOINT_FRICTION * 10, 0.0], atol=1.0e-5)
+
+    def test_ball_axes_match_mujoco_frictionloss(self):
+        """Box each BALL DOF separately, matching analytic sticking and SolverMuJoCo's frictionloss when sliding."""
+        efforts = np.array([[0.6, -0.5, 0.9], [2.5, 0.0, 0.0], [0.0, -2.5, 0.3], [2.0, 1.8, 0.0]], dtype=np.float32)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        for _ in efforts:
+            builder.add_world(_root_joint_builder("ball", friction=FRICTION))
+        model = builder.finalize()
+        qd = _run_friction(model, effort=efforts.ravel(), steps=20, dofs=efforts.size).reshape(20, -1, 3)
+        sliding = np.abs(efforts) > FRICTION
+        np.testing.assert_allclose(qd[:, ~sliding], 0.0, atol=1.0e-6)
+        ramp = (2.5 - FRICTION) / INERTIA * DT_JOINT_FRICTION * np.arange(1, 21)
+        np.testing.assert_allclose(qd[:, 1, 0], ramp, atol=1.0e-5)
+        try:
+            reference = newton.solvers.SolverMuJoCo(model, iterations=100, ls_iterations=50, cone="pyramidal")
+        except ImportError as error:
+            self.skipTest(f"MuJoCo is not installed: {error}")
+        states, control = [model.state(), model.state()], model.control()
+        control.joint_f.assign(efforts.ravel())
+        qd_mujoco = _advance_friction(reference, states, control, 20)[1].reshape(20, -1, 3)
+        # MuJoCo's soft friction creeps below breakaway, so compare the sliding DOFs only.
+        np.testing.assert_allclose(qd[:, sliding], qd_mujoco[:, sliding], atol=1.0e-4)
 
     def test_locked_child_moves_with_composite_inertia(self):
         """Lock a stiff-friction child joint so the chain accelerates with its composite inertia."""
@@ -1774,7 +1787,7 @@ class TestSteelJointFriction(unittest.TestCase):
         )
 
     def test_invalid_coefficients_build_no_rows(self):
-        """Step an invalid coefficient written without a notification as frictionless."""
+        """Step an invalid coefficient written without a notification as frictionless and report it."""
         frictionless = _run_friction(_single_dof_model("revolute", friction=0.0), effort=2.5, steps=5)
         for value in (float("inf"), float("nan"), -1.0):
             with self.subTest(value=value):
@@ -1785,6 +1798,8 @@ class TestSteelJointFriction(unittest.TestCase):
                 model.joint_friction.assign([value])
                 _, qd = _advance_friction(solver, states, control, 5)
                 np.testing.assert_array_equal(qd, frictionless)
+                with self.assertRaisesRegex(RuntimeError, r"joint_friction was invalid at a step in worlds \[-1\]"):
+                    solver.check_constraint_capacity()
 
     def test_finite_coefficient_with_unrepresentable_bound_still_sticks(self):
         """Keep the row of a finite coefficient whose impulse bound overflows to infinity."""
@@ -1824,7 +1839,7 @@ class TestSteelJointFriction(unittest.TestCase):
                 else:
                     episode()
                 qd.append(states[0].joint_qd.numpy().copy())
-            self.assertFalse(solver.joint_friction_invalid.numpy().any())
+            solver.check_constraint_capacity()
             runs.append(np.array(qd))
         np.testing.assert_array_equal(runs[1], runs[0])
 
@@ -1850,13 +1865,14 @@ class TestSteelJointFriction(unittest.TestCase):
                 np.testing.assert_array_equal(qd, fresh)
 
     def test_dense_row_overflow_is_reported(self):
-        """Flag worlds whose friction rows exceed the dense row capacity."""
+        """Warn at construction when friction rows exceed the capacity in every step, and flag the worlds."""
         model = _two_link_model(length=0.4, mass=2.0, friction=(FRICTION, FRICTION))
-        solver = _friction_solver(model, articulation_constraint_max=1, warn_constraint_overflow=False)
+        with self.assertWarnsRegex(newton.exceptions.NewtonWarning, r"need at least 2 dense rows .* friction"):
+            solver = _friction_solver(model, articulation_constraint_max=1, warn_constraint_overflow=False)
         states, control = [model.state(), model.state()], model.control()
         _advance_friction(solver, states, control, 1)
         self.assertTrue(bool(solver.constraint_overflow.numpy()[0]))
-        with self.assertRaises(RuntimeError):
+        with self.assertRaisesRegex(RuntimeError, "dropped contacts or constraint rows"):
             solver.check_constraint_capacity()
 
     def test_sleeping_island_wakes_on_friction_edit(self):
@@ -1889,14 +1905,18 @@ class TestSteelJointFriction(unittest.TestCase):
         )
         for kwargs in options:
             with self.subTest(**kwargs):
-                route = _friction_solver(model, **kwargs)
+                solver = _friction_solver(model, **kwargs)
                 if kwargs.get("articulated_contact_response") == "propagation_fused":
-                    self.assertTrue(route._propagation_fused)
+                    self.assertTrue(solver._propagation_fused)
                 if kwargs.get("articulated_contact_response") == "propagation_colored":
-                    self.assertTrue(route._propagation_colored)
-                stick = _run_friction(model, effort=0.5, steps=10, **kwargs)
+                    self.assertTrue(solver._propagation_colored)
+                states, control = [model.state(), model.state()], model.control()
+                control.joint_f.assign([0.5])
+                _, stick = _advance_friction(solver, states, control, 10)
                 np.testing.assert_allclose(stick, 0.0, atol=1.0e-6)
-                slide = _run_friction(model, effort=2.5, steps=10, **kwargs)
+                # Sticking leaves the hinge at rest, so the slide starts from the same state as a fresh run.
+                control.joint_f.assign([2.5])
+                _, slide = _advance_friction(solver, states, control, 10)
                 self.assertAlmostEqual(float(slide[-1]), expected, delta=1.0e-5)
 
     def test_specialized_routes_are_not_selected(self):
@@ -1924,61 +1944,61 @@ class TestSteelJointFriction(unittest.TestCase):
         for value in (-1.0, float("nan"), float("inf")):
             with self.subTest(value=value), self.assertRaisesRegex(ValueError, "finite and non-negative"):
                 _friction_solver(_single_dof_model("revolute", friction=value))
-        for joint in ("ball", "free"):
-            with self.subTest(joint=joint), self.assertRaisesRegex(ValueError, "joint_friction is nonzero"):
-                _friction_solver(_unsupported_joint_model(joint, friction=FRICTION))
+        with self.assertRaisesRegex(ValueError, "joint_friction is nonzero on joint 0 .FREE"):
+            _friction_solver(_root_joint_model("free", friction=FRICTION))
         # Joint-friction rows take a fourth row-type bit: at most 2**27 - 1 rows, rejected before allocation.
         with self.assertRaisesRegex(ValueError, "articulation_constraint_max must be at most 134217727"):
             _friction_solver(_single_dof_model("revolute"), articulation_constraint_max=134_217_728)
 
     def test_eager_notify_raises_after_applying_updates(self):
         """Raise from an eager notify after the other updates, and accept the next valid notify."""
-        model = _unsupported_joint_model("ball", friction=0.0)
+        model = _root_joint_model("free", friction=0.0)
         solver = _friction_solver(model)
         model.joint_armature.fill_(0.3)
         model.joint_friction.fill_(FRICTION)
-        with self.assertRaisesRegex(ValueError, "BALL"):
+        with self.assertRaisesRegex(ValueError, "FREE"):
             solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
-        self.assertFalse(solver.joint_friction_invalid.numpy().any())
         self.assertTrue(np.all(solver._joint_armature_device.numpy() == np.float32(0.3)))
         model.joint_friction.zero_()
         solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
 
-    def test_captured_notify_flags_invalid_coefficients_until_reported(self):
-        """Latch each invalid coefficient's world on replay, keep it through valid replays and resets, and report it once."""
+    def test_captured_steps_flag_invalid_coefficients_until_repaired_and_reset(self):
+        """Flag each invalid coefficient's world on replay, re-flag it after a reset until repaired, and reset per world."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        for joint in ("revolute", "ball", "revolute"):
-            if joint == "ball":
-                builder.add_world(_unsupported_joint_builder("ball", friction=0.0))
-            else:
-                builder.add_world(_single_dof_builder(joint, friction=0.0))
+        builder.add_world(_single_dof_builder("revolute", friction=0.0))
+        builder.add_world(_root_joint_builder("free", friction=0.0))
+        builder.add_world(_single_dof_builder("revolute", friction=0.0))
         model = builder.finalize()
         solver = _friction_solver(model)
+        states, control = [model.state(), model.state()], model.control()
+        _advance_friction(solver, states, control, 1)
         with wp.ScopedCapture(device=model.device) as capture:
-            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
-        flags = solver.joint_friction_invalid
-        # DOF 0 is world 0's hinge, DOFs 1-3 world 1's ball joint and DOF 4 world 2's hinge.
-        cases = ((0, -1.0, 0, "finite and non-negative"), (4, float("nan"), 2, "finite and non-negative"))
-        cases += ((1, 0.5, 1, "BALL"), (3, float("inf"), 1, "finite and non-negative"))
-        for dof, value, world, message in cases:
+            solver.step(states[0], states[1], control, None, DT_JOINT_FRICTION)
+        solver.check_constraint_capacity()
+        # DOF 0 is world 0's hinge, DOFs 1-6 world 1's free joint and DOF 7 world 2's hinge.
+        for dof, value, world in ((0, -1.0, 0), (7, float("nan"), 2), (1, 0.5, 1), (4, float("inf"), 1)):
             with self.subTest(dof=dof, value=value):
                 friction = np.zeros(model.joint_dof_count, dtype=np.float32)
                 friction[dof] = value
                 model.joint_friction.assign(friction)
                 wp.capture_launch(capture.graph)
+                message = rf"joint_friction was invalid at a step in worlds \[{world}\]"
+                with self.assertRaisesRegex(RuntimeError, message):
+                    solver.check_constraint_capacity()
+                # A reset clears the flag, and the next step flags the unrepaired coefficient again.
+                solver.reset(states[0])
+                solver.check_constraint_capacity()
+                wp.capture_launch(capture.graph)
+                with self.assertRaisesRegex(RuntimeError, message):
+                    solver.check_constraint_capacity()
                 model.joint_friction.zero_()
                 wp.capture_launch(capture.graph)
-                solver.reset(model.state())
-                np.testing.assert_array_equal(flags.numpy(), np.arange(4) == world)
-                model.joint_friction.assign(friction)
-                with self.assertRaisesRegex(ValueError, message):
-                    solver.check_joint_friction()
-                self.assertFalse(flags.numpy().any())
-                model.joint_friction.zero_()
-                solver.check_joint_friction()
-        self.assertIs(solver.joint_friction_invalid, flags)
-        with self.assertRaises(AttributeError):
-            solver.joint_friction_invalid = flags
+                other = wp.array(np.arange(4) == (world + 1) % 3, dtype=wp.bool, device=model.device)
+                solver.reset(states[0], world_mask=other)
+                with self.assertRaisesRegex(RuntimeError, message):
+                    solver.check_constraint_capacity()
+                solver.reset(states[0])
+                solver.check_constraint_capacity()
         with self.assertRaises(AttributeError):
             solver.enable_joint_friction = False
 
@@ -2002,22 +2022,17 @@ class TestSteelJointFriction(unittest.TestCase):
         dofs = {name: int(joint_qd_start[joint]) for name, joint in (("loop", loop), ("chain", joints[1]))}
         dofs["global"] = int(joint_qd_start[model.joint_count - 1])
         solver = _friction_solver(model)
-        with wp.ScopedCapture(device=model.device) as capture:
-            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_PROPERTIES)
-        for name, value, entry, message in (
-            ("loop", 0.5, 2, "loop-closing"),
-            ("chain", -1.0, 2, "finite and non-negative"),
-            ("global", -1.0, 3, "finite and non-negative"),
-        ):
+        states, control = [model.state(), model.state()], model.control()
+        for name, value, world in (("loop", 0.5, 2), ("chain", -1.0, 2), ("global", -1.0, -1)):
             with self.subTest(dof=name):
                 friction = np.zeros(model.joint_dof_count, dtype=np.float32)
                 friction[dofs[name]] = value
                 model.joint_friction.assign(friction)
-                wp.capture_launch(capture.graph)
-                np.testing.assert_array_equal(solver.joint_friction_invalid.numpy(), np.arange(4) == entry)
-                with self.assertRaisesRegex(ValueError, message):
-                    solver.check_joint_friction()
+                _advance_friction(solver, states, control, 1)
+                with self.assertRaisesRegex(RuntimeError, rf"worlds \[{world}\]"):
+                    solver.check_constraint_capacity()
                 model.joint_friction.zero_()
+                solver.reset(states[0])
 
 
 def _friction_solver(model, **overrides):
@@ -2065,6 +2080,14 @@ def _single_dof_builder(joint, *, friction=FRICTION, ke=0.0, kd=0.0, limit=None,
 
 def _single_dof_model(joint, **kwargs):
     return _single_dof_builder(joint, **kwargs).finalize()
+
+
+def _worlds_model(joint, world_count, **kwargs):
+    """Replicate the single-DOF fixture so independent cases share one solver."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    for _ in range(world_count):
+        builder.add_world(_single_dof_builder(joint, **kwargs))
+    return builder.finalize()
 
 
 def _two_link_builder(*, length, mass, friction, ke=0.0, kd=0.0):
@@ -2129,7 +2152,7 @@ def _pendulum_model(*, friction, mass=1.0, offset=0.3, inertia=0.01, fixed_base=
     return builder.finalize()
 
 
-def _unsupported_joint_builder(joint, *, friction):
+def _root_joint_builder(joint, *, friction):
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * INERTIA))
     index = builder.add_joint_ball(-1, body) if joint == "ball" else builder.add_joint_free(body)
@@ -2138,8 +2161,8 @@ def _unsupported_joint_builder(joint, *, friction):
     return builder
 
 
-def _unsupported_joint_model(joint, *, friction):
-    return _unsupported_joint_builder(joint, friction=friction).finalize()
+def _root_joint_model(joint, *, friction):
+    return _root_joint_builder(joint, friction=friction).finalize()
 
 
 def _arm_and_box_model():
