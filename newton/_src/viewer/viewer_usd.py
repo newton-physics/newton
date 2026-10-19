@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import tempfile
 import warnings
@@ -15,6 +16,7 @@ import warp as wp
 import newton
 
 from ..core.types import override
+from ..exceptions import NewtonWarning
 from ..utils.mesh import compute_vertex_normals
 
 try:
@@ -24,6 +26,8 @@ except ImportError:
 
 from .utils import promote_to_clamped_float_array
 from .viewer import _DEFAULT_LAYER_ID, ViewerBase
+
+logger = logging.getLogger(__name__)
 
 
 # transforms a cylinder such that it connects the two points pos0, pos1
@@ -77,6 +81,8 @@ class ViewerUSD(ViewerBase):
     using PointInstancers. It supports time-sampled transforms for efficient playback
     and visualization of simulation data.
     """
+
+    _root_path = "/root"
 
     def __init__(
         self,
@@ -138,7 +144,7 @@ class ViewerUSD(ViewerBase):
         UsdGeom.SetStageUpAxis(self.stage, axis_token)
         UsdGeom.SetStageMetersPerUnit(self.stage, 1.0)
 
-        self.root = UsdGeom.Xform.Define(self.stage, "/root")
+        self.root = UsdGeom.Xform.Define(self.stage, self._root_path)
 
         # apply root scaling
         self.root.ClearXformOpOrder()
@@ -177,7 +183,7 @@ class ViewerUSD(ViewerBase):
         }.get(self.up_axis.strip().upper())
         UsdGeom.SetStageUpAxis(self.stage, axis_token)
         UsdGeom.SetStageMetersPerUnit(self.stage, 1.0)
-        self.root = UsdGeom.Xform.Define(self.stage, "/root")
+        self.root = UsdGeom.Xform.Define(self.stage, self._root_path)
         self.root.ClearXformOpOrder()
         s = self.root.AddScaleOp()
         s.Set(Gf.Vec3d(float(self.scaling), float(self.scaling), float(self.scaling)), 0.0)
@@ -276,14 +282,14 @@ class ViewerUSD(ViewerBase):
         self.stage = None
 
         if self.output_path:
-            print(f"USD output saved in: {os.path.abspath(self.output_path)}")
+            logger.info("USD output saved in: %s", os.path.abspath(self.output_path))
 
     def _get_path(self, name):
         # Handle both absolute and relative paths correctly
         if name.startswith("/"):
-            return "/root" + name
+            return self._root_path + name
         else:
-            return "/root/" + name
+            return f"{self._root_path}/{name}"
 
     @override
     def log_mesh(
@@ -353,6 +359,7 @@ class ViewerUSD(ViewerBase):
         # honors the supplied shading normals on polygonal meshes.
         mesh_prim.GetSubdivisionSchemeAttr().Set(UsdGeom.Tokens.none)
         mesh_prim.GetPointsAttr().Set(points_np, self._frame_index)
+        mesh_prim.GetExtentAttr().Set(UsdGeom.Mesh.ComputeExtent(points_np), self._frame_index)
 
         valid_texture = texture is not None and uvs is not None
         self._mesh_appearance[name] = {
@@ -433,6 +440,7 @@ class ViewerUSD(ViewerBase):
         except Exception as exc:
             warnings.warn(
                 f"ViewerUSD: failed to export texture for mesh '{mesh_name}': {exc}. Mesh will render without texture.",
+                NewtonWarning,
                 stacklevel=2,
             )
             return None
@@ -472,6 +480,7 @@ class ViewerUSD(ViewerBase):
         opacity: float | None = None,
         roughness: float | None = None,
         metallic: float | None = None,
+        emissive_color: tuple[float, float, float] | np.ndarray | None = None,
     ):
         """Return a cached UsdPreviewSurface material for the requested appearance."""
         from pxr import Sdf as _Sdf
@@ -483,6 +492,7 @@ class ViewerUSD(ViewerBase):
         opacity_value = self._preview_surface_opacity_value(requested_opacity_value)
         roughness_value = self._material_float(roughness, 0.5)
         metallic_value = self._material_float(metallic, 0.0)
+        emissive_value = self._material_color(emissive_color) if emissive_color is not None else None
         ior_value = self._preview_surface_ior_value(requested_opacity_value)
 
         key = (
@@ -492,6 +502,7 @@ class ViewerUSD(ViewerBase):
             self._material_key_value(opacity_value),
             self._material_key_value(roughness_value),
             self._material_key_value(metallic_value),
+            tuple(self._material_key_value(v) for v in emissive_value) if emissive_value is not None else None,
             self._material_key_value(ior_value) if ior_value is not None else None,
         )
         if key in self._preview_materials:
@@ -510,6 +521,8 @@ class ViewerUSD(ViewerBase):
         surface.CreateInput("opacity", _Sdf.ValueTypeNames.Float).Set(opacity_value)
         surface.CreateInput("opacityMode", _Sdf.ValueTypeNames.Token).Set("transparent")
         surface.CreateInput("opacityThreshold", _Sdf.ValueTypeNames.Float).Set(0.0)
+        if emissive_value is not None:
+            surface.CreateInput("emissiveColor", _Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*emissive_value))
         if ior_value is not None:
             surface.CreateInput("ior", _Sdf.ValueTypeNames.Float).Set(ior_value)
         material.CreateSurfaceOutput().ConnectToSource(surface.ConnectableAPI(), "surface")
@@ -544,10 +557,9 @@ class ViewerUSD(ViewerBase):
         UsdShade.MaterialBindingAPI.Apply(prim)
         UsdShade.MaterialBindingAPI(prim).Bind(material)
 
-    @staticmethod
-    def _texture_material_path(mesh_name: str) -> str:
+    def _texture_material_path(self, mesh_name: str) -> str:
         safe = mesh_name.replace("/", "_").lstrip("_")
-        return f"/root/Materials/mat_{safe}"
+        return f"{self._root_path}/Materials/mat_{safe}"
 
     # log a set of instances as individual mesh prims, slower but makes it easier
     # to do post-editing of instance materials etc. default for Newton shapes

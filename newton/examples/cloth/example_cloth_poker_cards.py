@@ -205,7 +205,6 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             model=self.model,
             iterations=self.iterations,
-            rigid_compliant_alm=True,
             particle_enable_self_contact=True,
             particle_self_contact_margin=0.001,  # m (0.1 cm)
             particle_self_contact_gap=0.0005,  # m (0.05 cm)
@@ -238,7 +237,7 @@ class Example:
             pitch=-15.0,
             yaw=140.0,
         )
-        if hasattr(self.viewer, "camera") and hasattr(self.viewer.camera, "fov"):
+        if hasattr(self.viewer, "camera"):
             self.viewer.camera.fov = 70.0
 
         self.capture()

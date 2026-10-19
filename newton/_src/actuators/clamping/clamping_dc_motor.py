@@ -9,6 +9,7 @@ from typing import Any
 
 import warp as wp
 
+from ...exceptions import NewtonDeprecationWarning
 from .base import ClampingBase
 
 
@@ -172,7 +173,7 @@ class ClampingDCMotor(ClampingBase):
             "The clamp derives the corner velocity from the live parameters instead, so a stored "
             "copy is no longer used; compute it as velocity_limit * (1 + max_motor_effort / "
             "saturation_effort) if you need the value.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         corner = wp.zeros_like(self.velocity_limit)

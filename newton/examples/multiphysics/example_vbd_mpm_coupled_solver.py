@@ -163,8 +163,7 @@ class Example:
         self.control = self.model.control()
 
         newton.examples.configure_coupled_view(self, args)
-        if hasattr(self.viewer, "show_particles"):
-            self.viewer.show_particles = True
+        self.viewer.show_particles = True
 
         self.mpm_particle_ids = wp.array(self.mpm_particles, dtype=int, device=self.model.device)
         self.mpm_render_points = wp.empty(len(self.mpm_particles), dtype=wp.vec3, device=self.model.device)

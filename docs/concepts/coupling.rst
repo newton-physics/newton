@@ -3,6 +3,8 @@
 
 .. currentmodule:: newton
 
+.. _Coupled Solvers:
+
 Coupled Solvers
 ===============
 
@@ -61,7 +63,7 @@ one sub-solver:
 
    entry = SolverCoupled.Entry(
        name="soft",
-       solver=lambda view: SolverVBD(model=view, iterations=20, rigid_compliant_alm=True),
+       solver=lambda view: SolverVBD(model=view, iterations=20),
        bodies=soft_body_ids,
        particles=cloth_particle_ids,
        shapes=cloth_shape_ids,
@@ -220,6 +222,8 @@ destination)``. One source step and one destination step are performed for each
 solver pair and proxy iteration, so a single proxy declaration can carry both
 body and particle mappings around the same destination solve.
 
+.. _ADMM coupling:
+
 ADMM Coupling
 -------------
 
@@ -245,7 +249,7 @@ objects. It does not currently accept arbitrary user-authored endpoint records
 as public API. Supported row sources are:
 
 - cross-solver model joints;
-- custom body-particle attachment attributes;
+- model particle-body attachments;
 - internally detected rigid-rigid, rigid-particle, and particle-particle
   contacts.
 
@@ -258,13 +262,19 @@ Revolute joints preserve the hinge axis and can add a dry-friction row from
 model joint friction. Prismatic, distance, and D6 joint rows are not yet part of
 the experimental API.
 
-Body-particle attachments cover interfaces that cannot be represented by a
-model joint because one endpoint is a particle. The helper
-``SolverCoupledADMM.add_body_particle_attachment()`` registers and fills custom
-attributes under ``coupling:body_particle_attachment`` with body id, particle id,
-body-local point, stiffness, damping, and enabled state. Importers can author the
-same custom attributes directly. Rows whose endpoints are unowned or owned by
-the same entry are ignored; only cross-solver attachments are coupled by ADMM.
+Particle-body attachments cover interfaces that cannot be represented by a
+model joint because one endpoint is a particle. The coupler reads the model
+attachment rows described under :ref:`Particle-body attachments` and owns those
+whose body and particle endpoints belong to different entries; rows owned
+entirely by one entry are left to that entry's solver. The coupler logs a warning
+if that solver does not support attachments or if an endpoint is owned by no
+entry. Rows authored under the legacy ``coupling:body_particle_attachment``
+custom frequency are also consumed by ADMM, so importers that write those
+attributes keep working; these legacy rows remain invisible to
+:class:`~newton.solvers.SolverVBD`.
+``SolverCoupledADMM.add_body_particle_attachment()`` is deprecated in favor of
+:meth:`newton.ModelBuilder.add_attachment_particle_body`, but keeps writing the
+legacy custom-row layout until it is removed.
 
 Contact coupling is enabled by adding one or more ``ContactPair`` values to
 ``SolverCoupledADMM.Config.contact_pairs``. A contact pair names two entries.
@@ -292,9 +302,18 @@ The main ADMM parameters are:
 - ``rho``: penalty weight for interface rows;
 - ``gamma``: proximal inertia and velocity weight;
 - ``baumgarte``: positional error stabilization for attachment/contact rows;
-- stiffness and damping values for model-joint and body-particle attachment
+- stiffness and damping values for model-joint and particle-body attachment
   rows;
 - rigid contact matching mode, thresholds, and warm-start force scale.
+
+ADMM detects cross-entry contacts with its own collision pipeline. Set
+``Config.contact_max_triangle_pairs`` to size its triangle-pair storage and
+``Config.contact_reduction_hashtable_size_factor`` to scale its contact-reduction
+hash table independently. Both default to ``None``, preserving the collision
+pipeline defaults. When rigid contact matching is ``"latest"`` or ``"sticky"``,
+the triangle-pair capacity must be less than ``2**20``. Larger capacities are
+allowed with matching disabled. Increase the hash table size factor when
+contact reduction needs more storage while retaining contact matching.
 
 When ``gamma`` is positive, the coupler scales owned body and particle masses in
 each entry ``ModelView``, asks sub-solvers to refresh model-derived caches, and
@@ -315,7 +334,7 @@ supports MPM transfer-active proxy particles and deformable collider particles.
 
 Use ADMM coupling when the interface should be represented as a symmetric
 constraint or frictional contact between entries. ADMM is better suited for
-cross-solver joints, body-particle attachments, and contact rows that need equal
+cross-solver joints, particle-body attachments, and contact rows that need equal
 and opposite forces. It is more structured, but it also has more tuning
 parameters and a narrower set of supported row types.
 

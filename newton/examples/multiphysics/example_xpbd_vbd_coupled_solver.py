@@ -124,8 +124,7 @@ class Example:
         self.control = self.model.control()
 
         newton.examples.configure_coupled_view(self, args)
-        if hasattr(self.viewer, "show_particles"):
-            self.viewer.show_particles = True
+        self.viewer.show_particles = True
 
         self.capture()
 

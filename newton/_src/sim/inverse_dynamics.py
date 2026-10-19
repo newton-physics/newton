@@ -63,8 +63,7 @@ class _InverseDynamicsScratchBuffer:
             joint_dof_count: Total number of joint DOFs across all
                 articulations (matches :attr:`Model.joint_dof_count`).
             joint_target_q_count: Length of :attr:`Model.joint_target_q`
-                (coord- or DOF-shaped depending on
-                :data:`newton.use_coord_layout_targets`), used to size the
+                (matches :attr:`Model.joint_coord_count`), used to size the
                 constant-zero position-target input.
             max_dofs_per_articulation: Per-articulation DOF count (inclusive
                 of floating-base root DOFs, if any). Matches
@@ -101,9 +100,8 @@ class _InverseDynamicsScratchBuffer:
 
         # Constant-zero inputs (allocated once, never written). The position
         # target buffer is sized separately: it is indexed via
-        # joint_target_q_start, which is coord-shaped under
-        # newton.use_coord_layout_targets, so a DOF-sized buffer would read
-        # out of bounds.
+        # joint_target_q_start in coordinate space, so a DOF-sized buffer
+        # would read out of bounds for free, ball, distance, or rod joints.
         self.zeros_dof = wp.zeros(jdc, dtype=wp.float32, device=device)
         self.zeros_target_q = wp.zeros(joint_target_q_count, dtype=wp.float32, device=device)
         self.zeros_body = wp.zeros(bc, dtype=wp.spatial_vector, device=device)
@@ -376,7 +374,8 @@ def eval_inverse_dynamics_passive(
     not computed. Callers allocate the requested output arrays:
 
     * ``mass_matrix`` ← the joint-space mass matrix ``M(q)`` [kg, kg·m, or
-      kg·m^2, depending on the joint types of the row/column DOFs];
+      kg·m^2, depending on the joint types of the row/column DOFs], with
+      :attr:`~newton.Model.joint_armature` added to the diagonal;
     * ``gravity_force`` ← the gravity force ``g(q) = ∂U/∂q`` [N or N·m,
       depending on joint type], where ``U(q)`` is the system's
       gravitational potential energy ``sum_i -m_i * g . x_com_i``. This is
@@ -397,9 +396,8 @@ def eval_inverse_dynamics_passive(
         loop-closure joints (``EqType.CONNECT``, ``EqType.WELD``, ``EqType.JOINT``)
         play no role in the inverse dynamics evaluation.
 
-        :attr:`~newton.JointType.ROD` joints are not supported because they
-        do not define generalized coordinates or a motion subspace for this
-        inverse-dynamics formulation.
+        :attr:`~newton.JointType.ROD` joints are not supported by the
+        inverse-dynamics pipeline.
 
     .. experimental::
 

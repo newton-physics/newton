@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import inspect
+import logging
 import subprocess
 import warnings
 from typing import Any
@@ -15,6 +16,7 @@ import warp as wp
 import newton
 
 from ..core.types import override
+from ..exceptions import NewtonWarning
 from ..utils.mesh import compute_vertex_normals
 from .utils import prepare_viewer_texture, promote_to_clamped_float_array, to_numpy
 from .viewer import ViewerBase, is_jupyter_notebook
@@ -25,6 +27,8 @@ try:
 except ImportError:
     rr = None
     rrb = None
+
+logger = logging.getLogger(__name__)
 
 
 class ViewerRerun(ViewerBase):
@@ -193,7 +197,7 @@ class ViewerRerun(ViewerBase):
                 self._grpc_server_uri = rr.serve_grpc(grpc_port=grpc_port, default_blueprint=blueprint)
                 rr.serve_web_viewer(connect_to=self._grpc_server_uri, web_port=web_port)
                 query = urlencode({"url": self._grpc_server_uri})
-                print(f"Rerun web viewer running at: http://127.0.0.1:{web_port}/?{query}", flush=True)
+                logger.info("Rerun web viewer running at: http://127.0.0.1:%s/?%s", web_port, query)
             else:
                 rr.spawn(port=grpc_port)
 
@@ -446,6 +450,7 @@ class ViewerRerun(ViewerBase):
                 if not np.allclose(opacities_np, first_opacity):
                     warnings.warn(
                         "ViewerRerun does not support per-instance opacity; using the first opacity for the batch.",
+                        NewtonWarning,
                         stacklevel=2,
                     )
             if colors is not None and not has_texture:

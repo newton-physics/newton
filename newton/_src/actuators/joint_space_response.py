@@ -78,25 +78,6 @@ def _inverse_block_from_mass_matrix_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def _add_armature_kernel(
-    armature: wp.array[float],
-    art_dof_start: wp.array[wp.int32],
-    art_dof_count: wp.array[wp.int32],
-    H: wp.array3d[float],
-):
-    """Add joint armature to the mass-matrix diagonal.
-
-    Solvers carry armature as extra rotor inertia on the diagonal (MuJoCo's
-    ``dof_armature``, Featherstone's ``joint_armature``), but
-    :func:`~newton.eval_mass_matrix` builds ``J^T M J`` without it. Omitting it
-    here would overstate the response and make the solve under-drive the joint.
-    """
-    a, j = wp.tid()
-    if j < art_dof_count[a]:
-        H[a, j, j] = H[a, j, j] + armature[art_dof_start[a] + j]
-
-
-@wp.kernel(enable_backward=False)
 def _unit_rhs_kernel(column: int, rhs: wp.array2d[float]):
     """Right-hand side ``e_column`` for every world."""
     w, i = wp.tid()
@@ -174,9 +155,7 @@ class JointSpaceResponse:
             end = int(joint_qd_start[int(articulation_end[a])])
             starts.append(base)
             counts.append(end - base)
-        self._art_dof_starts_host = starts
         self._art_dof_counts_host = counts
-        self._art_dof_start = wp.array(starts, dtype=wp.int32, device=device)
         self._art_dof_count = wp.array(counts, dtype=wp.int32, device=device)
 
         # Reverse lookup used to scatter a solver's mass matrix into the blocks.
@@ -255,14 +234,6 @@ class JointSpaceResponse:
         eval_fk(model, state.joint_q, state.joint_qd, fk_state)
         eval_jacobian(model, fk_state, J=self._J, joint_S_s=self._joint_S_s)
         eval_mass_matrix(model, fk_state, H=self._H, J=self._J, body_I_s=self._body_I_s)
-        if model.joint_armature is not None:
-            wp.launch(
-                _add_armature_kernel,
-                dim=(model.articulation_count, self._H.shape[1]),
-                inputs=[model.joint_armature, self._art_dof_start, self._art_dof_count],
-                outputs=[self._H],
-                device=model.device,
-            )
         self._invert_blocks()
 
     def refresh_from_solve(

@@ -159,7 +159,6 @@ class Example:
                     bend_stiffness=bend_stiffness,
                     bend_damping=2.0e1,
                     label=f"cable_l{layer}_{lane}",
-                    body_frame_origin="com",
                 )
 
         builder.color()
@@ -172,7 +171,6 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.sim_iterations,
-            rigid_compliant_alm=True,
             rigid_body_contact_buffer_size=256,
             rigid_contact_history=True,
         )

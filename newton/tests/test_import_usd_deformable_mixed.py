@@ -418,9 +418,6 @@ class TestUSDDeformableMixed(unittest.TestCase):
 
         stage = _deformable_stage()
         cable = _add_cable_curve(stage, "/World/Cable", _CABLE_PTS)
-        cable.GetPrim().CreateAttribute("physics:restNormals", Sdf.ValueTypeNames.Vector3fArray).Set(
-            [(0.0, 0.0, 1.0)] * 4
-        )
         UsdGeom.PointBased(cable.GetPrim()).CreateVelocitiesAttr([(1.0, 0.0, 0.0)] * 4)
         cloth = _add_cloth_mesh(stage, "/World/Cloth")
         cloth.GetPrim().CreateAttribute("physics:restBendAngles", Sdf.ValueTypeNames.FloatArray).Set([0.1])
@@ -441,7 +438,6 @@ class TestUSDDeformableMixed(unittest.TestCase):
         messages = [str(w.message) for w in caught]
 
         for field, path in (
-            ("restNormals", "/World/Cable"),
             ("restBendAngles", "/World/Cloth"),
             ("restTriVertexIndices", "/World/Cloth"),
             ("restShapePoints", "/World/Soft"),

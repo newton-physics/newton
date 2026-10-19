@@ -1400,8 +1400,8 @@ def convert_contacts_newton_to_kamino(
     contacts_in: Contacts,
     contacts_out: ContactsKamino,
     convert_forces: bool = False,
-    friction_mix_mode: Literal["average", "multiply", "max", "min"] = "average",
-    restitution_mix_mode: Literal["average", "multiply", "max", "min"] = "min",
+    friction_mix_mode: Literal["average", "multiply", "max", "min", "geometric_average"] = "average",
+    restitution_mix_mode: Literal["average", "multiply", "max", "min", "geometric_average"] = "min",
     cull_speculative_contacts: bool = DEFAULT_CULL_SPECULATIVE_CONTACTS,
 ):
     """
@@ -1553,6 +1553,7 @@ def convert_contacts_kamino_to_newton(
     contacts_out: Contacts,
     clear_output: bool = False,
     convert_forces: bool = False,
+    contact_f: wp.array[wp.spatial_vector] | None = None,
 ) -> None:
     """
     Converts Kamino :class:`ContactsKamino` to Newton's :class:`Contacts` format.
@@ -1597,6 +1598,9 @@ def convert_contacts_kamino_to_newton(
             If ``True``, converts ``contacts_in.reaction`` into ``contacts_out.force``
             using Newton's wrench convention. Required when ``clear_output=False``;
             with ``clear_output=False`` and ``convert_forces=False`` the call is a no-op.
+        contact_f:
+            Optional solver-observable destination for converted contact wrenches.
+            When omitted, the legacy ``contacts_out.force`` array is used.
     """
     # Skip conversion if there are no contacts to convert or no capacity to store them.
     if contacts_in.model_max_contacts_host == 0 or contacts_out.rigid_contact_max == 0:
@@ -1626,7 +1630,7 @@ def convert_contacts_kamino_to_newton(
         )
 
     # Skip conversion of contact forces if not requested
-    contacts_out_force = contacts_out.force if convert_forces else None
+    contacts_out_force = (contact_f if contact_f is not None else contacts_out.force) if convert_forces else None
 
     # Set the maximum number of contacts to convert to the smallest of the
     # number of contacts detected and the maximum capacity of the output contacts.

@@ -110,7 +110,7 @@ def eval_shape_sdf(
     tex = texture_sdf_table[shape_sdf_index]
     if tex.scale_baked:
         d, g = texture_sample_sdf_grad(tex, x_local)
-        return d, d, g
+        return d, d, wp.normalize(g)
     inv_scale = wp.vec3(1.0 / scale[0], 1.0 / scale[1], 1.0 / scale[2])
     dist, grad = texture_sample_sdf_grad(tex, wp.cw_div(x_local, scale))
     # texture_sample_sdf_grad's gradient is not unit-normalized, so normalize it before using it as a

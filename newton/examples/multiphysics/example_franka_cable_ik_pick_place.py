@@ -129,8 +129,7 @@ class Example:
         if isinstance(self.viewer, newton.viewer.ViewerGL):
             scale = max(1.0, float(np.sqrt(self.world_count)))
             self.viewer.set_camera(pos=wp.vec3(0.9 * scale, -1.4 * scale, 0.9 * scale), pitch=-22.0, yaw=120.0)
-            if hasattr(self.viewer.camera, "look_at"):
-                self.viewer.camera.look_at(wp.vec3(0.45, 0.0, 0.28))
+            self.viewer.camera.look_at(wp.vec3(0.45, 0.0, 0.28))
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_1)
@@ -150,6 +149,7 @@ class Example:
             enable_self_collisions=False,
             parse_visuals_as_colliders=False,
             force_show_colliders=False,
+            joint_damping_mode="passive",
         )
         builder.joint_q[: len(FRANKA_Q)] = FRANKA_Q
         builder.joint_target_q[: len(FRANKA_Q)] = FRANKA_Q
@@ -252,7 +252,6 @@ class Example:
         bend_stiffness = 4.0e-4
         builder.add_rod(
             rod=rod,
-            body_frame_origin="com",
             cfg=cable_cfg,
             stretch_stiffness=stretch_stiffness,
             stretch_damping=1.0e-1,
@@ -316,7 +315,6 @@ class Example:
                     solver=lambda v: SolverVBD(
                         model=v,
                         iterations=int(args.vbd_iterations),
-                        rigid_compliant_alm=True,
                         rigid_contact_history=False,
                     ),
                     bodies=self.payload_bodies,

@@ -645,12 +645,12 @@ class SolverKaminoImpl(SolverBase):
             if self._solver_fk is None:
                 raise RuntimeError("The FK solver must be enabled to use resets from joint coordinates.")
             self._solver_fk.run_fk_solve(
-                actuators_q=actuator_q,
-                bodies_q=state.q_i,
+                actuator_q=actuator_q,
+                body_q=state.q_i,
                 base_q=base_q,
-                actuators_u=actuator_u,
+                actuator_u=actuator_u,
                 base_u=base_u if actuator_u is not None else None,
-                bodies_u=state.u_i if actuator_u is not None else None,
+                body_u=state.u_i if actuator_u is not None else None,
                 world_mask=world_mask,
             )
         elif isinstance(config.body_poses, SolverKamino.ResetConfig.ToDefault):
@@ -663,9 +663,9 @@ class SolverKaminoImpl(SolverBase):
             if self._solver_fk is None:
                 raise RuntimeError("The FK solver must be enabled to use resets from joint velocities.")
             self._solver_fk.solve_for_body_velocities(
-                actuators_u=actuator_u,
-                bodies_q=state.q_i,
-                bodies_u=state.u_i,
+                actuator_u=actuator_u,
+                body_q=state.q_i,
+                body_u=state.u_i,
                 base_u=base_u,
                 target_rel_transforms=None,
                 world_mask=world_mask,
@@ -698,7 +698,7 @@ class SolverKaminoImpl(SolverBase):
         if success_mask is not None:
             # Currently, only the position-level (iterative) FK solve can fail
             if actuator_q is not None:
-                wp.copy(success_mask, self._solver_fk.newton_success)
+                wp.copy(success_mask, self._solver_fk.data.gauss_newton.success)
             elif world_mask is not None:
                 wp.copy(success_mask, world_mask)
             else:

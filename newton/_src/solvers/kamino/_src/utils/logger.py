@@ -32,18 +32,27 @@ if sys.platform == "win32":
 
 
 class LogLevel(IntEnum):
-    """Enumeration for log levels."""
+    """Enumeration for log levels.
+
+    Kamino ``INFO`` sits between the standard ``DEBUG`` and ``INFO`` levels so it
+    stays hidden at the ``newton`` logger's default level; ``NOTIF`` is the
+    standard ``INFO`` level.
+    """
 
     DEBUG = logging.DEBUG
-    INFO = logging.INFO
-    NOTIF = logging.INFO + 5
+    INFO = logging.DEBUG + 5
+    NOTIF = logging.INFO
     WARNING = logging.WARNING
     ERROR = logging.ERROR
     CRITICAL = logging.CRITICAL
 
 
 class Logger(logging.Formatter):
-    """Base logger with color highlighting for log levels."""
+    """Formatter with color highlighting for Kamino log levels.
+
+    Kamino messages go through the ``newton`` logger hierarchy; attach this
+    formatter to an application handler to get Kamino-style console output.
+    """
 
     HEADER = "[KAMINO]"
     HEADERCOL = "\x1b[38;5;13m"
@@ -73,21 +82,8 @@ class Logger(logging.Formatter):
     """Dictionary mapping log levels to their respective formats."""
 
     def __init__(self):
-        """Initialize the Logger with a stream handler and set the default logging level."""
         super().__init__()
-
-        # Create a stream handler with the custom logger format.
-        self._streamhandler = logging.StreamHandler()
-        self._streamhandler.setFormatter(self)
-
-        # Add custom level NOTIF to the logging module
-        logging.addLevelName(LogLevel.NOTIF, "NOTIF")
-
-        # Set the default logging level to DEBUG
-        logging.basicConfig(
-            handlers=[self._streamhandler],
-            level=LogLevel.NOTIF,  # Default level set to NOTIF
-        )
+        logging.addLevelName(LogLevel.INFO, "DETAIL")
 
     def format(self, record):
         """Format the log record with the appropriate color based on the log level."""
@@ -96,8 +92,8 @@ class Logger(logging.Formatter):
         return formatter.format(record)
 
     def get(self):
-        """Get the global logger instance."""
-        return logging.getLogger()
+        """Get the Kamino logger."""
+        return logging.getLogger(_LOGGER_NAME)
 
     def notif(self, msg, *args, **kwargs):
         """
@@ -114,6 +110,8 @@ class Logger(logging.Formatter):
 ###
 # Globals
 ###
+
+_LOGGER_NAME = "newton._src.solvers.kamino"
 
 
 LOGGER: Logger | None = None
@@ -140,9 +138,8 @@ def set_log_level(level: LogLevel):
 
 
 def reset_log_level():
-    """Reset the logging level for the default logger to WARNING."""
-    get_default_logger().setLevel(LogLevel.NOTIF)
-    get_default_logger().debug(f"Log level reset to: {logging.getLevelName(LogLevel.NOTIF)}")
+    """Make the default logger inherit its level from the ``newton`` logger again."""
+    get_default_logger().setLevel(logging.NOTSET)
 
 
 def set_log_header(header: str):
@@ -162,7 +159,7 @@ def debug(msg: str, *args, **kwargs):
 
 def info(msg: str, *args, **kwargs):
     """Log an info message."""
-    get_default_logger().info(msg, *args, **kwargs, stacklevel=2)
+    get_default_logger().log(LogLevel.INFO, msg, *args, **kwargs, stacklevel=2)
 
 
 def notif(msg: str, *args, **kwargs):

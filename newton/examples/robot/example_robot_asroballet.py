@@ -568,7 +568,6 @@ class _AsRoBalletController:
     """Own the simulation state shared by all asRoBallet controllers."""
 
     def __init__(self, viewer, model_path: str, virtual_ball_joint: bool):
-        newton.use_coord_layout_targets = True
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
         self.sim_substeps = 10
@@ -1227,8 +1226,8 @@ class _PolicyController(_AsRoBalletController):
         )
 
         self.policy = load_policy_runtime(policy_path, device=self.device)
-        self.policy_input_name = self.policy.input_names[0]
-        self.policy_output_name = self.policy.output_names[0]
+        self.policy_input_name = self.policy.inputs[0].name
+        self.policy_output_name = self.policy.outputs[0].name
         validate_policy_io_shapes(
             policy_path,
             self.policy_input_name,
@@ -1238,8 +1237,8 @@ class _PolicyController(_AsRoBalletController):
             context="asRoBallet policy",
         )
         self.station_policy = load_policy_runtime(station_policy_path, device=self.device)
-        self.station_policy_input_name = self.station_policy.input_names[0]
-        self.station_policy_output_name = self.station_policy.output_names[0]
+        self.station_policy_input_name = self.station_policy.inputs[0].name
+        self.station_policy_output_name = self.station_policy.outputs[0].name
         validate_policy_io_shapes(
             station_policy_path,
             self.station_policy_input_name,

@@ -39,6 +39,10 @@ from .types import GeoType
 # are treated as non-negative, biasing toward the +1 vertex.
 BOX_SUPPORT_DEADBAND = 1.0e-10
 _CENTERED_BOX_SUPPORT_TIE_EPSILON = 1.0e-6
+# Hull certification is independent of the support-walk lookup-table resolution.
+_CONVEX_HULL_VALID = wp.constant(1 << 16)
+_CONVEX_SUPPORT_RESOLUTION_MASK = wp.constant((1 << 16) - 1)
+
 TRIANGLE_PRISM_EXTRUSION = 1.0
 """Depth [m] a triangle is extruded along -Z to give a heightfield cell volume."""
 
@@ -63,9 +67,9 @@ class GeoTypeEx(enum.IntEnum):
 
 @wp.struct
 class SupportMapDataProvider:
-    """Optional external data provider for support mapping."""
+    """Optional model-owned hull validation data for support mapping."""
 
-    pass
+    shape_support_data: wp.array[wp.vec4i]
 
 
 @wp.struct
@@ -123,7 +127,19 @@ class GenericShapeData:
     scale: wp.vec3
     auxiliary: wp.vec3
     center: wp.vec3  # Precomputed local AABB center for convex seed initialization.
+    bounds_half: wp.vec3  # Optional enclosing local AABB half-extents for penetration bounds.
     shape_index: int  # Index for optional model-owned support-map acceleration data.
+
+
+@wp.func
+def _has_verified_hull(geom: Any, provider: Any) -> bool:
+    """Check topology independently of whether a mesh has support acceleration."""
+    if geom.shape_type != int(GeoType.CONVEX_MESH):
+        return True
+    if geom.shape_index < 0 or geom.shape_index >= provider.shape_support_data.shape[0]:
+        return False
+    packed = provider.shape_support_data[geom.shape_index][3]
+    return packed > 0 and (packed & _CONVEX_HULL_VALID) != 0
 
 
 @wp.func
@@ -155,8 +171,9 @@ def _support_map_convex_mesh(
     accelerated = geom.shape_index >= 0 and data_provider.shape_support_data.shape[0] > geom.shape_index
     if accelerated:
         support_data = data_provider.shape_support_data[geom.shape_index]
-        resolution = support_data[3]
-        accelerated = resolution > 0
+        packed = support_data[3]
+        resolution = packed & _CONVEX_SUPPORT_RESOLUTION_MASK
+        accelerated = packed > 0 and resolution > 0
         if accelerated:
             best_idx = _octahedral_support_seed(scaled_dir, resolution, support_data[0], data_provider.support_lut)
             best_dot = wp.dot(mesh.points[best_idx], scaled_dir)
