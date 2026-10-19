@@ -2217,12 +2217,13 @@ and friction also act inside the adhesion zone. For
 :class:`~newton.solvers.SolverMuJoCo`, see
 :ref:`mujoco-contact-friction-solreffriction`.
 
-Let :math:`d` be the signed distance between the contact points along the
-contact normal, negative when the shapes penetrate, and :math:`v_n` and
-:math:`v_t` the normal and tangential relative velocities. Per contact, the
-normal force :math:`f_n` acts along the contact normal and is negative
-(repulsive) when the shapes penetrate and positive (attractive) inside the
-adhesion zone:
+Let :math:`d` be the contact-space distance :math:`d = s - m` from
+:ref:`margin and gap semantics <margin-gap-semantics>`, where :math:`s` is the
+surface distance and :math:`m` the pair margin, so :math:`d` is negative once
+the surfaces come within the pair margin. Let :math:`v_n` and :math:`v_t` be the
+normal and tangential relative velocities. Per contact, the normal force
+:math:`f_n` acts along the contact normal and is negative (repulsive) for
+:math:`d < 0` and positive (attractive) inside the adhesion zone:
 
 .. math::
 
@@ -2246,11 +2247,12 @@ term proportional to ``mu``. The exact cap is under review in
 - ``kf = 0`` disables friction.
 
 **Adhesion distance** ``ka`` **[m]** lets the normal force act before the
-shapes touch. Contacts are processed while :math:`d < k_a` instead of
-:math:`d < 0`. For :math:`0 \le d < k_a`, :math:`f_n = k_e \, d` is attractive
-and grows linearly with the distance :math:`d` up to about :math:`k_e \, k_a`
+surfaces come within the pair margin. Contacts are processed while
+:math:`d < k_a` instead of :math:`d < 0`, so the adhesion zone is
+:math:`m \le s < m + k_a`. For :math:`0 \le d < k_a`, :math:`f_n = k_e \, d` is
+attractive and grows linearly with :math:`d` up to about :math:`k_e \, k_a`
 per contact just inside :math:`d = k_a`. At :math:`d \ge k_a` the contact applies
-no force. Damping and friction only act while the shapes penetrate.
+no force. Damping and friction only act while :math:`d < 0`.
 
 - ``ka = 0`` (the default) disables adhesion.
 - Use a small nonzero value for sticky or suction-like contacts, for example to
@@ -2259,8 +2261,11 @@ no force. Damping and friction only act while the shapes penetrate.
 - Adhesion only acts on contacts the collision pipeline reports, so the pair
   gap ``gap_a + gap_b`` (see :ref:`margin and gap semantics <margin-gap-semantics>`)
   must be at least the pair's averaged ``ka``.
-- The force jumps from about :math:`k_e \, k_a` to zero at the cutoff, so large
-  values inject energy when shapes separate. Keep ``ka`` small relative to the
+- The force jumps from about :math:`k_e \, k_a` to zero at the cutoff. Shapes
+  that enter the zone are pulled in and bounce, and damping only acts for
+  :math:`d < 0`, so large values make contacts lively. Explicit stepping across
+  the cutoff also adds an error of order :math:`k_e \, k_a \, |v_n| \, \Delta t`
+  per step, which can add or remove energy. Keep ``ka`` small relative to the
   shape size.
 
 .. _USD Collision:
