@@ -152,6 +152,24 @@ def test_gimp_stress_roundtrip(test, device):
     np.testing.assert_array_equal(solver._last_step_data.gimp_stress[1].numpy(), 0.0)
 
 
+def test_gimp_capture_history(test, device):
+    """Keep overlap history across replays of a graph captured before the first step."""
+    for reset in (False, True):
+        with test.subTest(reset=reset):
+            solver, state = _make_solver(device, grid_type="fixed", positions=((0.9, 0.4, 0.4), (0.6, 0.4, 0.4)))
+            if reset:
+                solver.reset(state)
+            state.mpm.particle_stress.assign(np.array((1.0, 3.0))[:, None, None] * np.eye(3))
+            with wp.ScopedCapture(device=device) as capture:
+                solver.step(state, state, None, None, 0.001)
+            for x, pressure in ((0.9, 13.0 / 7.0), (0.9, 13.0 / 7.0), (1.1, 9.0 / 7.0)):
+                positions = state.particle_q.numpy()
+                positions[0, 0] = x
+                state.particle_q.assign(positions)
+                wp.capture_launch(capture.graph)
+                np.testing.assert_allclose(state.mpm.particle_stress.numpy()[0], pressure * np.eye(3), atol=5.0e-6)
+
+
 def test_gimp_uniform_stress(test, device):
     """Preserve constant pressure through particle-domain transfers for each strain basis."""
     for basis, mode in (
@@ -450,6 +468,7 @@ for name, func in (
     add_function_test(TestImplicitMPMGimp, name, func, devices=get_test_devices(mode="basic"))
 for name, func in (
     ("test_gimp_sparse_graph_rebuild", test_gimp_sparse_graph_rebuild),
+    ("test_gimp_capture_history", test_gimp_capture_history),
     ("test_gimp_uncapped_capture", test_gimp_uncapped_capture),
 ):
     add_function_test(TestImplicitMPMGimp, name, func, devices=get_cuda_test_devices(mode="basic"))

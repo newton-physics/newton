@@ -2022,6 +2022,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 world_mask=world_mask,
                 world_count=self._initial_world_count,
             )
+            self._last_step_data.gimp_warmstart_state = state
 
     @override
     def step(
@@ -2056,7 +2057,13 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         with wp.ScopedDevice(model.device):
             last_step_data = self._last_step_data
-            if last_step_data.gimp_stress is not None and last_step_data.gimp_warmstart_state is not state_in:
+            # Overlap history belongs to the state it was produced for, or the
+            # last reset state; fresh history is already invalid.
+            if (
+                last_step_data.gimp_stress is not None
+                and last_step_data.gimp_warmstart_state is not None
+                and last_step_data.gimp_warmstart_state is not state_in
+            ):
                 last_step_data.gimp_stress[1].zero_()
             pic = self._particles_to_cells(state_in.particle_q)
             scratch = self._rebuild_scratchpad(pic)
