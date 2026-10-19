@@ -1158,12 +1158,15 @@ def jcalc_motion_subspace(
 
 
 @wp.kernel
-def eval_articulation_motion_subspace(
-    joint_articulation: wp.array[wp.int32],
+def eval_articulation_jacobian(
+    articulation_start: wp.array[int],
+    articulation_end: wp.array[int],
+    articulation_count: int,
     articulation_mask: wp.array[bool],
     joint_type: wp.array[int],
     joint_parent: wp.array[int],
     joint_child: wp.array[int],
+    joint_ancestor: wp.array[int],
     joint_q_start: wp.array[int],
     joint_qd_start: wp.array[int],
     joint_X_p: wp.array[wp.transform],
@@ -1173,68 +1176,18 @@ def eval_articulation_motion_subspace(
     body_q: wp.array[wp.transform],
     body_com: wp.array[wp.vec3],
     # outputs
-    joint_S_s: wp.array[wp.spatial_vector],
-):
-    """World-frame motion subspace of each articulated joint, one thread per joint."""
-    j = wp.tid()
-    art_idx = joint_articulation[j]
-    if art_idx < 0:
-        return
-    if articulation_mask:
-        if not articulation_mask[art_idx]:
-            return
-
-    parent = joint_parent[j]
-    type = joint_type[j]
-
-    X_pj = joint_X_p[j]
-
-    # parent anchor frame in world space
-    X_wpj = X_pj
-    if parent >= 0:
-        X_wp = body_q[parent]
-        X_wpj = X_wp * X_pj
-
-    q_start = joint_q_start[j]
-    qd_start = joint_qd_start[j]
-    lin_axis_count = joint_dof_dim[j, 0]
-    ang_axis_count = joint_dof_dim[j, 1]
-
-    jcalc_motion_subspace(
-        type,
-        joint_axis,
-        joint_q,
-        lin_axis_count,
-        ang_axis_count,
-        X_wpj,
-        body_q[joint_child[j]],
-        body_com[joint_child[j]],
-        q_start,
-        qd_start,
-        joint_S_s,
-    )
-
-
-@wp.kernel
-def eval_articulation_jacobian(
-    articulation_start: wp.array[int],
-    articulation_end: wp.array[int],
-    articulation_mask: wp.array[bool],
-    joint_child: wp.array[int],
-    joint_ancestor: wp.array[int],
-    joint_qd_start: wp.array[int],
-    body_q: wp.array[wp.transform],
-    body_com: wp.array[wp.vec3],
-    joint_S_s: wp.array[wp.spatial_vector],
-    # outputs
     J: wp.array3d[float],
+    joint_S_s: wp.array[wp.spatial_vector],
 ):
-    """Compute the six Jacobian rows of one link, one thread per (articulation, link).
+    """Compute spatial Jacobian for articulations.
 
     The Jacobian J maps joint velocities to spatial velocities of each link.
     Output shape: (articulation_count, max_links*6, max_dofs)
     """
-    art_idx, i = wp.tid()
+    art_idx = wp.tid()
+
+    if art_idx >= articulation_count:
+        return
 
     if articulation_mask:
         if not articulation_mask[art_idx]:
@@ -1243,31 +1196,64 @@ def eval_articulation_jacobian(
     joint_start = articulation_start[art_idx]
     joint_end = articulation_end[art_idx]
     joint_count = joint_end - joint_start
-    if i >= joint_count:
-        return
 
     articulation_dof_start = joint_qd_start[joint_start]
 
-    row_start = i * 6
+    # First pass: compute body transforms and motion subspaces
+    for i in range(joint_count):
+        j = joint_start + i
+        parent = joint_parent[j]
+        type = joint_type[j]
 
-    j = joint_start + i
-    child = joint_child[j]
-    x_com_world = wp.transform_point(body_q[child], body_com[child])
-    while j != -1:
-        joint_dof_start = joint_qd_start[j]
-        joint_dof_end = joint_qd_start[j + 1]
-        joint_dof_count = joint_dof_end - joint_dof_start
+        X_pj = joint_X_p[j]
 
-        # Fill out each row of the Jacobian walking up the tree
-        for dof in range(joint_dof_count):
-            col = (joint_dof_start - articulation_dof_start) + dof
-            S = joint_S_s[joint_dof_start + dof]
-            S_com = wp.spatial_vector(velocity_at_point(S, x_com_world), wp.spatial_bottom(S))
+        # parent anchor frame in world space
+        X_wpj = X_pj
+        if parent >= 0:
+            X_wp = body_q[parent]
+            X_wpj = X_wp * X_pj
 
-            for k in range(6):
-                J[art_idx, row_start + k, col] = S_com[k]
+        q_start = joint_q_start[j]
+        qd_start = joint_qd_start[j]
+        lin_axis_count = joint_dof_dim[j, 0]
+        ang_axis_count = joint_dof_dim[j, 1]
 
-        j = joint_ancestor[j]
+        jcalc_motion_subspace(
+            type,
+            joint_axis,
+            joint_q,
+            lin_axis_count,
+            ang_axis_count,
+            X_wpj,
+            body_q[joint_child[j]],
+            body_com[joint_child[j]],
+            q_start,
+            qd_start,
+            joint_S_s,
+        )
+
+    # Second pass: build Jacobian by walking kinematic chain
+    for i in range(joint_count):
+        row_start = i * 6
+
+        j = joint_start + i
+        child = joint_child[j]
+        x_com_world = wp.transform_point(body_q[child], body_com[child])
+        while j != -1:
+            joint_dof_start = joint_qd_start[j]
+            joint_dof_end = joint_qd_start[j + 1]
+            joint_dof_count = joint_dof_end - joint_dof_start
+
+            # Fill out each row of the Jacobian walking up the tree
+            for dof in range(joint_dof_count):
+                col = (joint_dof_start - articulation_dof_start) + dof
+                S = joint_S_s[joint_dof_start + dof]
+                S_com = wp.spatial_vector(velocity_at_point(S, x_com_world), wp.spatial_bottom(S))
+
+                for k in range(6):
+                    J[art_idx, row_start + k, col] = S_com[k]
+
+            j = joint_ancestor[j]
 
 
 def eval_jacobian(
@@ -1324,14 +1310,17 @@ def eval_jacobian(
         )
 
     wp.launch(
-        kernel=eval_articulation_motion_subspace,
-        dim=model.joint_count,
+        kernel=eval_articulation_jacobian,
+        dim=model.articulation_count,
         inputs=[
-            model.joint_articulation,
+            model.articulation_start,
+            model.articulation_end,
+            model.articulation_count,
             mask,
             model.joint_type,
             model.joint_parent,
             model.joint_child,
+            model.joint_ancestor,
             model.joint_q_start,
             model.joint_qd_start,
             model.joint_X_p,
@@ -1341,24 +1330,7 @@ def eval_jacobian(
             state.body_q,
             model.body_com,
         ],
-        outputs=[joint_S_s],
-        device=model.device,
-    )
-    wp.launch(
-        kernel=eval_articulation_jacobian,
-        dim=(model.articulation_count, model.max_joints_per_articulation),
-        inputs=[
-            model.articulation_start,
-            model.articulation_end,
-            mask,
-            model.joint_child,
-            model.joint_ancestor,
-            model.joint_qd_start,
-            state.body_q,
-            model.body_com,
-            joint_S_s,
-        ],
-        outputs=[J],
+        outputs=[J, joint_S_s],
         device=model.device,
     )
 
@@ -1497,6 +1469,64 @@ def eval_articulation_mass_matrix(
     if joint_armature:
         for dof in range(articulation_dof_count):
             H[art_idx, dof, dof] = H[art_idx, dof, dof] + joint_armature[articulation_dof_start + dof]
+
+
+@wp.kernel(enable_backward=False)
+def eval_articulation_motion_subspace(
+    joint_articulation: wp.array[wp.int32],
+    articulation_mask: wp.array[bool],
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_q_start: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_axis: wp.array[wp.vec3],
+    joint_q: wp.array[float],
+    joint_dof_dim: wp.array2d[int],
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    # outputs
+    joint_S_s: wp.array[wp.spatial_vector],
+):
+    """World-frame motion subspace of each articulated joint, one thread per joint."""
+    j = wp.tid()
+    art_idx = joint_articulation[j]
+    if art_idx < 0:
+        return
+    if articulation_mask:
+        if not articulation_mask[art_idx]:
+            return
+
+    parent = joint_parent[j]
+    type = joint_type[j]
+
+    X_pj = joint_X_p[j]
+
+    # parent anchor frame in world space
+    X_wpj = X_pj
+    if parent >= 0:
+        X_wp = body_q[parent]
+        X_wpj = X_wp * X_pj
+
+    q_start = joint_q_start[j]
+    qd_start = joint_qd_start[j]
+    lin_axis_count = joint_dof_dim[j, 0]
+    ang_axis_count = joint_dof_dim[j, 1]
+
+    jcalc_motion_subspace(
+        type,
+        joint_axis,
+        joint_q,
+        lin_axis_count,
+        ang_axis_count,
+        X_wpj,
+        body_q[joint_child[j]],
+        body_com[joint_child[j]],
+        q_start,
+        qd_start,
+        joint_S_s,
+    )
 
 
 @wp.kernel(enable_backward=False)
