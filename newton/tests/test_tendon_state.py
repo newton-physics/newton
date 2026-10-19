@@ -15,7 +15,11 @@ from newton.examples.tendon.utils import (
     get_tendon_cable_lines,
     get_tendon_total_lengths,
 )
-from newton.tests.test_tendon_capstan import build_explicit_inactive_dynamic_route, build_kinematic_rolling_transport
+from newton.tests.test_tendon_capstan import (
+    _loaded_route_arc_length,
+    build_explicit_inactive_dynamic_route,
+    build_kinematic_rolling_transport,
+)
 
 
 class TestTendonState(unittest.TestCase):
@@ -159,7 +163,7 @@ class TestTendonState(unittest.TestCase):
                             np.testing.assert_allclose(actual, reference, atol=2e-5, rtol=2e-5)
 
     def test_world_dynamic_roller(self):
-        """Activate and detach a world-fixed roller as its neighboring anchors move."""
+        """Conserve material when a world-fixed roller activates and detaches as its anchors move."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         endpoints = builder.add_body(mass=0.0)
         builder.add_tendon(
@@ -187,6 +191,8 @@ class TestTendonState(unittest.TestCase):
                     a, b = model.state(), model.state()
                     self.assertFalse(solver.tendon_guide_active.numpy()[1])
                     initial_rest = solver.tendon_segment_rest_length.numpy().copy()
+                    active_segments = solver.tendon_segment_active.numpy().astype(bool)
+                    initial_material = float(np.sum(initial_rest[active_segments]))
                     for x, active in ((0.2, True), (0.0, False)):
                         poses = a.body_q.numpy()
                         poses[0, 0] = x
@@ -195,6 +201,12 @@ class TestTendonState(unittest.TestCase):
                         a, b = b, a
                         self.assertEqual(bool(a.tendon_guide_active.numpy()[1]), active)
                         self.assertTrue(np.isfinite(a.tendon_segment_rest_length.numpy()).all())
+                        # Inactive spans hold placeholders, not material; the wrap also holds material.
+                        active_segments = solver.tendon_segment_active.numpy().astype(bool)
+                        material = float(np.sum(a.tendon_segment_rest_length.numpy()[active_segments]))
+                        if active:
+                            material += _loaded_route_arc_length(solver, model, 1)
+                        self.assertAlmostEqual(material, initial_material, delta=1.0e-6)
                     solver.reset(a)
                     np.testing.assert_allclose(a.tendon_segment_rest_length.numpy(), initial_rest)
                     self.assertFalse(a.tendon_guide_active.numpy()[1])
