@@ -13,12 +13,17 @@ from newton import ModelBuilder
 from newton._src.solvers.kamino._src.core.data import DataKamino
 from newton._src.solvers.kamino._src.core.model import ModelKamino, ModelKaminoInfo
 from newton._src.solvers.kamino._src.core.size import SizeKamino
-from newton._src.solvers.kamino._src.dynamics.delassus import BlockSparseMatrixFreeDelassusOperator, DelassusOperator
+from newton._src.solvers.kamino._src.dynamics.delassus import (
+    BlockSparseMatrixFreeDelassusOperator,
+    DelassusOperator,
+    _make_merge_preconditioner_kernel,
+)
 from newton._src.solvers.kamino._src.geometry.contacts import ContactsKamino
 from newton._src.solvers.kamino._src.kinematics.constraints import get_max_constraints_per_world
 from newton._src.solvers.kamino._src.kinematics.jacobians import SparseSystemJacobians
 from newton._src.solvers.kamino._src.kinematics.limits import LimitsKamino
 from newton._src.solvers.kamino._src.linalg import LLTSequentialSolver
+from newton._src.solvers.kamino._src.linalg.sparse_matrix import BlockDType
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton.tests.kamino import setup_tests, test_context
 from newton.tests.kamino.utils.extract import (
@@ -1586,6 +1591,29 @@ class TestDelassusOperatorSparse(unittest.TestCase):
         values.zero_()
         delassus._set_raw_transpose_enabled(False)
         self._check_delassus_matrix_vector_product(model, data, delassus, jacobians)
+
+    def test_14_merge_preconditioner_module_hash_is_stable(self):
+        """Keep the module hash unchanged by the first build so cached binaries match their symbols."""
+        # Kamino doesn't merge (5, 1) blocks, so no earlier build can share this unique module and mask a hash change.
+        block_type = BlockDType(dtype=wp.float32, shape=(5, 1))
+        kernel = _make_merge_preconditioner_kernel(block_type)
+        hash_before_build = kernel.module.get_module_hash()
+        device = self.default_device
+        indices = wp.zeros(1, dtype=wp.int32, device=device)
+        wp.launch(
+            kernel,
+            dim=(1, 1),
+            inputs=[
+                indices,
+                indices,
+                wp.zeros((1, 2), dtype=wp.int32, device=device),
+                indices,
+                wp.ones(5, dtype=wp.float32, device=device),
+                wp.zeros(1, dtype=block_type.warp_type, device=device),
+            ],
+            device=device,
+        )
+        self.assertEqual(kernel.module.hash_module(), hash_before_build)
 
 
 ###
