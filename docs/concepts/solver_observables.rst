@@ -144,7 +144,7 @@ the velocity impulse divided by ``dt``. MuJoCo Warp computes ``BODY_QDD`` and
 ``BODY_PARENT_F`` even with ``disable_sensors=True`` by enabling the
 post-constraint RNE stage independently of sensors.
 The native MuJoCo CPU backend (``use_mujoco_cpu=True``) supports ``BODY_QDD``,
-``BODY_PARENT_F``, and ``SolverMuJoCo.ObservableKind.QFRC_ACTUATOR``. It runs
+``BODY_PARENT_F``, and the ``SolverMuJoCo.ObservableKind.QFRC_*`` kinds. It runs
 the post-constraint RNE stage for requested body observables before integration,
 using the step's input dynamics, including with RK4. Contact and overflow
 observable requests are rejected. Native body observables require Euler, RK4,
@@ -191,7 +191,9 @@ MuJoCo also exports ``QFRC_BIAS``, ``QFRC_CONSTRAINT``, and
 ``QFRC_FRICTIONLOSS`` on both backends. ``qfrc_frictionloss`` is the part of
 ``qfrc_constraint`` that comes from each DOF's own friction loss, so
 ``qfrc_constraint - qfrc_frictionloss`` is the constraint load on a DOF without
-it.
+it. The solver writes observables only during :meth:`~newton.solvers.SolverBase.step`
+and :meth:`~newton.solvers.SolverMuJoCo.reset` leaves them unchanged, so zero
+them for reset worlds if a consumer reads them before the next step.
 
 The constants are strings, so literal names work too:
 

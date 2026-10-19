@@ -655,7 +655,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             dtype=wp.float32,
             frequency=AttributeFrequency.JOINT_DOF,
         )
-        """Coriolis, centrifugal and gravity forces at the start of the step [N or N·m], shape ``(joint_dof_count,)``."""
+        """Coriolis, centrifugal and gravity forces from MuJoCo's last force evaluation of the step [N or N·m], shape ``(joint_dof_count,)``.
+
+        That is the start of the step, except for RK4, where it is the last stage.
+        """
 
         qfrc_constraint: wp.array[wp.float32] | None = SolverBase.Observables.field(  # noqa: RUF009
             dtype=wp.float32,
