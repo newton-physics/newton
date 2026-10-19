@@ -278,7 +278,9 @@ jobs:
               code or tests, and public API changes that do not conform to
               `CODING_GUIDELINES.rst`. Focus on
               `.pr-review/since-last-review.diff` (empty if unavailable; then
-              use the full diff). Most follow-up reviews have no findings.
+              use the full diff). It can include changes merged from `main`;
+              review only changes that are also in `.pr-review/pr.diff`. Most
+              follow-up reviews have no findings.
 
             A review with no findings is a good outcome when nothing qualifies.
 
