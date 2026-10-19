@@ -21,7 +21,7 @@ from collections.abc import Callable
 import numpy as np
 import warp as wp
 
-from ..sim.articulation import eval_fk, eval_mass_matrix
+from ..sim.articulation import _eval_mass_matrix, eval_fk
 from ..sim.model import Model
 from ..sim.state import State
 
@@ -262,6 +262,9 @@ class JointSpaceResponse:
         self._H = wp.zeros((art_count, max_dofs, max_dofs), dtype=float, device=device)
         self._body_I_s = wp.zeros(model.body_count, dtype=wp.spatial_matrix, device=device)
         self._joint_S_s = wp.zeros(model.joint_dof_count, dtype=wp.spatial_vector, device=device)
+        self._J = None
+        if model._fk_articulation_level_start is None:
+            self._J = wp.zeros((art_count, model.max_joints_per_articulation * 6, max_dofs), dtype=float, device=device)
         self._L = wp.zeros_like(self._H)
         self._inv_block = wp.zeros_like(self._H)
 
@@ -333,7 +336,15 @@ class JointSpaceResponse:
         fk_state.joint_q = state.joint_q
         fk_state.joint_qd = state.joint_qd
         eval_fk(model, state.joint_q, state.joint_qd, fk_state)
-        eval_mass_matrix(model, fk_state, H=self._H, body_I_s=self._body_I_s, joint_S_s=self._joint_S_s)
+        _eval_mass_matrix(
+            model,
+            fk_state,
+            H=self._H,
+            J=self._J,
+            body_I_s=self._body_I_s,
+            joint_S_s=self._joint_S_s,
+            requires_grad=False,
+        )
         self._invert_blocks()
 
     def refresh_from_solve(

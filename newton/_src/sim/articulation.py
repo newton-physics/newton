@@ -1983,8 +1983,13 @@ def _eval_mass_matrix(
     mask: wp.array[bool] | None = None,
     *,
     include_armature: bool = True,
+    requires_grad: bool | None = None,
 ) -> wp.array | None:
-    """Implement :func:`eval_mass_matrix` without the deprecation warning."""
+    """Implement :func:`eval_mass_matrix` without the deprecation warning.
+
+    ``requires_grad=None`` infers it from the model and state; ``False`` uses the
+    composite rigid body algorithm even for gradient-enabled models.
+    """
     if model.articulation_count == 0:
         return None
 
@@ -2008,7 +2013,8 @@ def _eval_mass_matrix(
             device=model.device,
         )
 
-    requires_grad = model.requires_grad or state.joint_q.requires_grad or state.body_q.requires_grad
+    if requires_grad is None:
+        requires_grad = model.requires_grad or state.joint_q.requires_grad or state.body_q.requires_grad
     if J is None and model._fk_articulation_level_start is not None and not requires_grad:
         if joint_S_s is None:
             joint_S_s = wp.zeros(model.joint_dof_count, dtype=wp.spatial_vector, device=model.device)
