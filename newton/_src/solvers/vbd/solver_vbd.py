@@ -2794,6 +2794,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self._mid_step_detection(
                 state_in, state_out, contacts, dt, rigid_due=rigid_due, soft_due=soft_due, preserve_history=True
             )
+            # Material can redistribute between fixed guides even without any rigid bodies.
+            if self.tendon_segment_lambda is not None and not self.integrate_with_external_rigid_solver:
+                self._update_tendon_routing(state_in, dt, False)
             self._solve_rigid_body_iteration(state_in, state_out, control, contacts, dt)
             self._solve_particle_iteration(state_in, state_out, contacts, dt)
 
@@ -4365,9 +4368,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         and updates AVBD penalty parameters (dual update).
         """
         model = self.model
-        # Material can redistribute between fixed guides even without any rigid bodies.
-        if not self.integrate_with_external_rigid_solver:
-            self._update_tendon_routing(state_in, dt, False)
         # Body-particle soft contacts still need penalty updates when VBD skips rigid solves:
         # external rigid mode uses state_out.body_q, while static-shape contacts use _empty_body_q.
         skip_rigid_solve = not self._integrates_rigid_bodies
