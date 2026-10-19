@@ -1101,7 +1101,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         def authored_bool(name: str) -> bool | None:
             value = authored(name)
-            return None if value is None else bool(value)
+            if value is None:
+                return None
+            if not isinstance(value, bool):
+                raise ValueError(f"{scene_path}: {name} must be a boolean, got {value!r}.")
+            return value
 
         def authored_count(name: str, *, minimum: int = -1) -> int | None:
             value = authored(name)
