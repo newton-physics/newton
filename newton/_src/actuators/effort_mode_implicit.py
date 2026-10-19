@@ -136,6 +136,9 @@ _BLOCK_SOLVE_MAX_ROWS = 64
 _LINE_SEARCH_STEPS = 8
 """Step lengths tried (halving each time) before the solve stops with the current impulse."""
 
+_SUFFICIENT_DECREASE = 1.0e-4
+"""Armijo factor: a step of length ``alpha`` is accepted when ``|r|^2`` drops by at least this times ``alpha``."""
+
 
 def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Function, cache_key: tuple):
     """Build or reuse the coupled solve kernel for a force law and clamp chain.
@@ -355,7 +358,7 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
                     )
                     ri = vbuf[g, i] - hd * f_i
                     rn_t += ri * ri
-                if rn_t <= (wp.float64(1.0) - wp.float64(1.0e-4) * alpha) * rn:
+                if rn_t <= (wp.float64(1.0) - wp.float64(_SUFFICIENT_DECREASE) * alpha) * rn:
                     accepted = 1
                     break
                 alpha = alpha * wp.float64(0.5)
@@ -410,7 +413,9 @@ def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Funct
 
     One thread block per group and one thread per row. The Newton system
     ``J = I - h diag(s) A`` is solved by Gauss elimination with floored pivots,
-    as in the per-thread kernel, one row per lane.
+    as in the per-thread kernel, one row per lane. Unlike the per-thread
+    kernel, ``A p`` and the elimination run in float32; the residual and the
+    force law stay in float64.
     """
     key = (*cache_key, "block", tile)
     cached = _coupled_kernel_cache.get(key)
@@ -587,7 +592,7 @@ def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Funct
                     qd_t = qd0 + u_t
                     r_t = p_t - hd * force_at(q0 + hd * qd_t, qd_t, tq, tqd, ff, params, clamp_params, si)
                 rn_t = wp.tile_extract(wp.tile_sum(wp.tile(r_t * r_t)), 0)
-                if rn_t <= (wp.float64(1.0) - wp.float64(1.0e-4) * alpha) * rn:
+                if rn_t <= (wp.float64(1.0) - wp.float64(_SUFFICIENT_DECREASE) * alpha) * rn:
                     accepted = 1
                     break
                 alpha = alpha * wp.float64(0.5)

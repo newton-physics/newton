@@ -29,6 +29,7 @@ def _build_g1(world_count: int) -> tuple[newton.Model, int]:
     g1 = newton.ModelBuilder()
     newton.solvers.SolverMuJoCo.register_custom_attributes(g1)
     _setup_g1(g1)
+    # Zero gains keep MuJoCo's own joint PD inactive; the actuators supply the effort.
     for i in range(6, g1.joint_dof_count):
         g1.joint_target_ke[i] = 0.0
         g1.joint_target_kd[i] = 0.0
@@ -45,7 +46,7 @@ class _ActuatorBenchmark:
     ``drive`` selects the response: ``implicit`` (from
     :meth:`JointSpaceResponse.refresh`, usable with any solver) or
     ``implicit_from_solve`` (from MuJoCo's factorized inertia).
-    Each step is one CUDA graph replay.
+    Each CUDA graph replay advances two steps.
     """
 
     param_names = ["drive", "world_count"]
