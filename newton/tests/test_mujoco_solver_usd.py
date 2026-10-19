@@ -49,6 +49,19 @@ def Xform "World"
         prepend apiSchemas = ["PhysicsArticulationRootAPI"]
     )
     {{
+        def Xform "Base" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
+        )
+        {{
+            float physics:mass = 1.0
+            float3 physics:diagonalInertia = (0.1, 0.1, 0.1)
+        }}
+
+        def PhysicsFixedJoint "Anchor"
+        {{
+            rel physics:body0 = </World/Articulation/Base>
+        }}
+
         def Xform "Body" (
             prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"]
         )
@@ -67,6 +80,7 @@ def Xform "World"
 
         def PhysicsRevoluteJoint "Joint"
         {{
+            rel physics:body0 = </World/Articulation/Base>
             rel physics:body1 = </World/Articulation/Body>
             uniform token physics:axis = "Y"
             point3f physics:localPos0 = (0, 0, 2)
@@ -279,7 +293,7 @@ def Xform "World"
         self.assertTrue(solver._use_mujoco_contacts)
         self.assertEqual(solver.update_data_interval, 2)
         self.assertEqual(solver._deterministic, wp.DeterministicMode.RUN_TO_RUN)
-        self.assertEqual(solver.model.body_count, 1)
+        self.assertEqual(solver.model.body_count, 2)
         self.assertEqual(opt.iterations, 7)
         self.assertEqual(opt.ls_iterations, 9)
         self.assertAlmostEqual(opt.tolerance, 1e-6, places=9)
