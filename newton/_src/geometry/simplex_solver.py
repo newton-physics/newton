@@ -37,13 +37,14 @@ import warp as wp
 from .mpr import Vert, create_support_map_function
 
 EPSILON = 1e-8
+FLOAT32_EPS = 1.1920929e-7
 
 # Relative float32 rounding margin of the separation cutoff (64 machine epsilons).
 # Scales with the coordinate magnitudes [m] involved in a query.
-GJK_CUTOFF_TOLERANCE = 64.0 * 1.1920929e-7
+GJK_CUTOFF_TOLERANCE = 64.0 * FLOAT32_EPS
 
 # Duality gap [m] relative to the coordinate scale at which GJK counts as converged.
-GJK_REFINE_TOLERANCE = 4.0 * 1.1920929e-7
+GJK_REFINE_TOLERANCE = 4.0 * FLOAT32_EPS
 
 Mat83f = wp.types.matrix(shape=(8, 3), dtype=wp.float32)
 
@@ -359,9 +360,10 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
             extend: Contact offset extension (sum of contact offsets)
             data_provider: Support mapping data provider
             MAX_ITER: Maximum number of GJK iterations (default: 30)
-            COLLIDE_EPSILON: Distance [m] below which the shapes are treated as touching
-                (default: 1e-4). Iteration itself continues until the duality gap reaches
-                float32 rounding, so callers can compare the distance against a threshold.
+            COLLIDE_EPSILON: Near-contact distance [m] below which the solver checks for
+                overlap; a support plane can still certify separation (default: 1e-4).
+                Iteration normally continues until the duality gap reaches float32
+                rounding, so callers can compare the distance against a threshold.
             max_dist: Separation cutoff [m]. When positive, iteration stops once a
                 support-plane lower bound exceeds ``max_dist`` plus a float32 rounding
                 margin (``GJK_CUTOFF_TOLERANCE`` times the support-point coordinate scale).
@@ -415,7 +417,7 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
             if dist_sq < COLLIDE_EPSILON * COLLIDE_EPSILON:
                 # A small simplex distance is not proof of overlap. Preserve
                 # the witness gap and normal when a support plane certifies
-                # separation, even below the distance convergence tolerance.
+                # separation, even below COLLIDE_EPSILON.
                 if simplex_usage_mask != wp.uint32(0):
                     near_direction = last_search_dir
                     if dist_sq > 0.0:
@@ -611,7 +613,7 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
             combined_margin: Sum of margin extensions for both shapes [m]
             data_provider: Support mapping data provider
             MAX_ITER: Maximum number of iterations for GJK algorithm
-            COLLIDE_EPSILON: Small number for numerical comparisons
+            COLLIDE_EPSILON: Near-contact distance [m] below which the solver checks for overlap
         Returns:
             Tuple of (collision, distance, contact point center, normal)
         """

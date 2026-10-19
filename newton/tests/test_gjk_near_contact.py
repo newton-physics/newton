@@ -14,6 +14,8 @@ from newton._src.geometry.simplex_solver import create_solve_closest_distance
 from newton._src.geometry.support_function import GenericShapeData, SupportMapDataProvider, support_map
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
+_F32_EPS = float(np.finfo(np.float32).eps)
+
 
 @wp.kernel
 def _query_box_gap(gap: float, direction: float, output: wp.array[float]):
@@ -176,7 +178,7 @@ def _query_pairs_at_cutoffs(
 
 
 def test_positive_sub_tolerance_gap(test, device):
-    """Return positive gaps and oriented unit normals below the 0.1 mm convergence tolerance."""
+    """Return positive gaps and oriented unit normals below the 0.1 mm near-contact threshold."""
     for gap in (1e-3, 1.1e-4, 9.5e-5, 5e-5, 1e-5, 1e-6, 1e-7, 5e-9):
         for direction in (-1.0, 1.0):
             with test.subTest(gap=gap, direction=direction):
@@ -535,7 +537,7 @@ def test_distance_converges_to_the_analytic_capsule_distance(test, device):
         device=device,
     )
     # A relative duality gap of 1e-4 left errors of several hundred eps * scale here.
-    tolerance = 32.0 * 1.1920929e-7 * (np.abs(p).sum(axis=1) + np.abs(scales).reshape(count, 6).sum(axis=1))
+    tolerance = 32.0 * _F32_EPS * (np.abs(p).sum(axis=1) + np.abs(scales).reshape(count, 6).sum(axis=1))
     error = np.abs(output.numpy()[separated, :, 1] - distance[separated, None])
     np.testing.assert_array_less(error, np.broadcast_to(tolerance[separated, None], error.shape))
 
@@ -573,12 +575,14 @@ def test_separation_cutoff_keeps_contact_at_the_exact_boundary(test, device):
         pipeline.collide(model.state(), contacts)
         return int(contacts.rigid_contact_count.numpy()[0])
 
-    test.assertEqual(contact_count(distance * (1.0 + 1e-6)), 1)
-    test.assertEqual(contact_count(distance * (1.0 - 1e-6)), 0)
+    # Both distances converge only to float32 rounding of the coordinates involved.
+    tolerance = 32.0 * _F32_EPS * (np.abs(position).sum() + sum(scale_a) + sum(scale_b))
+    test.assertEqual(contact_count(distance + tolerance), 1)
+    test.assertEqual(contact_count(distance - tolerance), 0)
 
 
 class TestGJKNearContact(unittest.TestCase):
-    """Preserve geometric separation independently of the convergence tolerance."""
+    """Preserve geometric separation independently of the near-contact threshold."""
 
 
 devices = get_test_devices()
