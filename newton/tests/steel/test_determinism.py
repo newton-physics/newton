@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import contextlib
+import gc
 import hashlib
 import os
 import re
@@ -16,7 +17,12 @@ import warp as wp
 import newton
 import newton.examples
 import newton.tests.unittest_utils
-from newton._src.solvers.steel.kernels import PGS_CONSTRAINT_TYPE_JOINT_LIMIT, crba_fill_par_dof
+from newton._src.solvers.steel.kernels import (
+    PGS_CONSTRAINT_TYPE_JOINT_LIMIT,
+    _get_tree_fk_kernel,
+    _get_tree_tau_kernel,
+    crba_fill_par_dof,
+)
 from newton.solvers import SolverSteel
 from newton.tests.unittest_utils import StdOutCapture, add_function_test, get_cuda_test_devices, get_test_devices
 
@@ -511,7 +517,7 @@ def _holds_steel_kernel(module):
 
 def _check_inherited_global_mode(device):
     """Run Steel in a process that set ``wp.config.deterministic`` to RUN_TO_RUN before importing Newton."""
-    from warp._src.context import user_modules  # noqa: PLC0415
+    from warp._src.context import Module, user_modules  # noqa: PLC0415
 
     assert wp.config.deterministic == RUN_TO_RUN
     # Newton's collision kernels do not support Warp's deterministic lowering; only Steel's modules keep the global.
@@ -555,11 +561,13 @@ def _check_inherited_global_mode(device):
     assert all(finite for _, finite in first)
     _, unordered = run(wp.DeterministicMode.NOT_GUARANTEED)
     assert all(finite for _, finite in unordered)
-    lowered = [
-        m.name
-        for m in user_modules.values()
-        if _holds_steel_kernel(m) and m.options["deterministic"] != wp.DeterministicMode.NOT_GUARANTEED
-    ]
+    # Lazy module factories, and explicitly constructed modules, live outside Warp's module registry.
+    _get_tree_fk_kernel(2, "id")
+    _get_tree_fk_kernel(2, "public")
+    _get_tree_tau_kernel(2)
+    modules = [m for m in gc.get_objects() if isinstance(m, Module) and _holds_steel_kernel(m)]
+    assert len(modules) > len([m for m in user_modules.values() if _holds_steel_kernel(m)])
+    lowered = [m.name for m in modules if m.options["deterministic"] != wp.DeterministicMode.NOT_GUARANTEED]
     assert not lowered, f"Steel modules use Warp's deterministic lowering: {lowered}"
 
 

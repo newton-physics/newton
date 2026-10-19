@@ -21,6 +21,14 @@ from .friction_patches import FrictionPatches, warmstart_dt_scale
 WARP_DETERMINISM_OFF = {"deterministic": wp.DeterministicMode.NOT_GUARANTEED}
 wp.set_module_options({"enable_backward": False, **WARP_DETERMINISM_OFF})
 
+
+def _steel_module(name: str) -> wp.Module:
+    """Create a Warp module for Steel kernels, outside Warp's deterministic lowering."""
+    module = wp.Module(name)
+    wp.set_module_options(WARP_DETERMINISM_OFF, module=module)
+    return module
+
+
 PGS_CONSTRAINT_TYPE_CONTACT = 0
 # PGS joint drive row (``drive_mode="rows"``): a bilateral row per driven DOF whose
 # impulse follows the PhysX force-drive update each iteration; the velocity-only
@@ -232,9 +240,9 @@ def assign_world_contact_slots(
 
 # Keep launch-geometry-specific dynamics kernels out of the large general
 # kernel module. Warp compiles one whole module variant per block dimension.
-_KINEMATICS_KERNEL_MODULE = wp.Module(f"{__name__}.kinematics")
-_INVERSE_DYNAMICS_KERNEL_MODULE = wp.Module(f"{__name__}.inverse_dynamics")
-_MASS_DYNAMICS_KERNEL_MODULE = wp.Module(f"{__name__}.mass_dynamics")
+_KINEMATICS_KERNEL_MODULE = _steel_module(f"{__name__}.kinematics")
+_INVERSE_DYNAMICS_KERNEL_MODULE = _steel_module(f"{__name__}.inverse_dynamics")
+_MASS_DYNAMICS_KERNEL_MODULE = _steel_module(f"{__name__}.mass_dynamics")
 
 # Owner of a world's dense and free-body rows in the matrix-free solve: the general
 # world sweep, or one of the articulation-local solves (one articulation, one
@@ -1218,7 +1226,7 @@ def _get_tree_fk_kernel(lanes: int, mode: str):
         raise ValueError("Tree traversal lanes must be a power of two between 1 and 32")
     if mode not in ("id", "public"):
         raise ValueError(f"Unknown tree traversal mode: {mode}")
-    module = wp.Module(f"{__name__}.tree_fk_{mode}_{lanes}")
+    module = _steel_module(f"{__name__}.tree_fk_{mode}_{lanes}")
 
     if mode == "public":
 
@@ -1670,7 +1678,7 @@ def _get_tree_tau_kernel(lanes: int):
     """
     if lanes not in (1, 2, 4, 8, 16, 32):
         raise ValueError("Tree traversal lanes must be a power of two between 1 and 32")
-    module = wp.Module(f"{__name__}.tree_tau_{lanes}")
+    module = _steel_module(f"{__name__}.tree_tau_{lanes}")
 
     @wp.kernel(module=module, enable_backward=False)
     def tree_tau(
