@@ -139,29 +139,39 @@ def test_gimp_particle_contact_weights(test, device):
 
 def test_gimp_stress_roundtrip(test, device):
     """Retain distinct cell pressures through warmstarts, face crossings, and cache invalidation."""
-    solver, state = _make_solver(device, grid_type="dense", positions=((0.9, 0.4, 0.4), (0.6, 0.4, 0.4)))
-    state.mpm.particle_stress.assign(np.array((1.0, 3.0))[:, None, None] * np.eye(3))
-    for x, pressure in ((0.9, 13.0 / 7.0), (0.9, 13.0 / 7.0), (1.1, 9.0 / 7.0), (2.9, 9.0 / 7.0)):
-        positions = state.particle_q.numpy()
-        positions[0, 0] = x
-        state.particle_q.assign(positions)
-        solver.step(state, state, None, None, 0.001)
-        expected = np.array((pressure, 15.0 / 7.0))[:, None, None] * np.eye(3)
-        np.testing.assert_allclose(state.mpm.particle_stress.numpy(), expected, atol=5.0e-6)
-    solver.reset(state)
-    np.testing.assert_array_equal(solver._last_step_data.gimp_stress[1].numpy(), 0.0)
+    for swap in (False, True):
+        with test.subTest(swap=swap):
+            solver, state = _make_solver(device, grid_type="dense", positions=((0.9, 0.4, 0.4), (0.6, 0.4, 0.4)))
+            states = [state, solver.model.state() if swap else state]
+            state.mpm.particle_stress.assign(np.array((1.0, 3.0))[:, None, None] * np.eye(3))
+            for x, pressure in ((0.9, 13.0 / 7.0), (0.9, 13.0 / 7.0), (1.1, 9.0 / 7.0), (2.9, 9.0 / 7.0)):
+                positions = states[0].particle_q.numpy()
+                positions[0, 0] = x
+                states[0].particle_q.assign(positions)
+                solver.step(states[0], states[1], None, None, 0.001)
+                states.reverse()
+                expected = np.array((pressure, 15.0 / 7.0))[:, None, None] * np.eye(3)
+                np.testing.assert_allclose(states[0].mpm.particle_stress.numpy(), expected, atol=5.0e-6)
+            solver.reset(states[0])
+            np.testing.assert_array_equal(solver._last_step_data.gimp_stress[1].numpy(), 0.0)
 
 
 def test_gimp_capture_history(test, device):
     """Keep overlap history across replays of a graph captured before the first step."""
-    for reset in (False, True):
-        with test.subTest(reset=reset):
+    for reset, swap in ((False, False), (True, False), (True, True)):
+        with test.subTest(reset=reset, swap=swap):
             solver, state = _make_solver(device, grid_type="fixed", positions=((0.9, 0.4, 0.4), (0.6, 0.4, 0.4)))
             if reset:
                 solver.reset(state)
             state.mpm.particle_stress.assign(np.array((1.0, 3.0))[:, None, None] * np.eye(3))
             with wp.ScopedCapture(device=device) as capture:
-                solver.step(state, state, None, None, 0.001)
+                if swap:
+                    # Alternate between two states inside the graph, ending back on the first.
+                    other = solver.model.state()
+                    solver.step(state, other, None, None, 0.001)
+                    solver.step(other, state, None, None, 0.001)
+                else:
+                    solver.step(state, state, None, None, 0.001)
             for x, pressure in ((0.9, 13.0 / 7.0), (0.9, 13.0 / 7.0), (1.1, 9.0 / 7.0)):
                 positions = state.particle_q.numpy()
                 positions[0, 0] = x
