@@ -266,52 +266,54 @@ def test_rebuildable_sparse_preserves_inactive_particle_strain(test, device):
     Covers inactive particles next to active ones and inactive particles outside any active cell,
     which get no quadrature point on a rebuildable grid.
     """
-    for offset in (0.0, 1.0):
-        with test.subTest(offset=offset):
-            builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
-            SolverImplicitMPM.register_custom_attributes(builder)
-            builder.add_particle_grid(
-                pos=wp.vec3(0.025, 0.025, 0.025),
-                rot=wp.quat_identity(),
-                vel=wp.vec3(0.0),
-                dim_x=4,
-                dim_y=2,
-                dim_z=2,
-                cell_x=0.05,
-                cell_y=0.05,
-                cell_z=0.05,
-                mass=0.01,
-                jitter=0.0,
-                radius_mean=0.025,
-                custom_attributes={"mpm:young_modulus": 1.0e4, "mpm:poisson_ratio": 0.2, "mpm:hardening": 10.0},
-            )
-            model = builder.finalize(device=device)
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
+    SolverImplicitMPM.register_custom_attributes(builder)
+    # Active block, inactive block in the neighboring cell, inactive block far from any active cell
+    for x0 in (0.025, 0.125, 1.125):
+        builder.add_particle_grid(
+            pos=wp.vec3(x0, 0.025, 0.025),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=2,
+            dim_y=2,
+            dim_z=2,
+            cell_x=0.05,
+            cell_y=0.05,
+            cell_z=0.05,
+            mass=0.01,
+            jitter=0.0,
+            radius_mean=0.025,
+            custom_attributes={"mpm:young_modulus": 1.0e4, "mpm:poisson_ratio": 0.2, "mpm:hardening": 10.0},
+        )
+    model = builder.finalize(device=device)
 
-            positions = model.particle_q.numpy()
-            inactive = positions[:, 0] > 0.1
-            positions[inactive, 0] += offset
-            model.particle_q.assign(positions)
-            flags = model.particle_flags.numpy()
-            flags[inactive] &= ~int(newton.ParticleFlags.ACTIVE)
-            model.particle_flags.assign(flags)
+    x = model.particle_q.numpy()[:, 0]
+    adjacent = (x > 0.1) & (x < 1.0)
+    far = x > 1.0
+    flags = model.particle_flags.numpy()
+    flags[adjacent | far] &= ~int(newton.ParticleFlags.ACTIVE)
+    model.particle_flags.assign(flags)
 
-            solver = _make_sparse_solver(model, max_active_cell_count=64, warmstart_mode="particles")
-            state_0 = model.state()
-            state_1 = model.state()
+    solver = _make_sparse_solver(model, max_active_cell_count=64, warmstart_mode="particles")
+    state_0 = model.state()
+    state_1 = model.state()
 
-            particle_count = model.particle_count
-            jp = np.full(particle_count, 0.9, dtype=np.float32)
-            strain = np.tile(np.diag([1.01, 0.99, 1.0]).astype(np.float32), (particle_count, 1, 1))
-            stress = np.tile(np.diag([-10.0, -20.0, -30.0]).astype(np.float32), (particle_count, 1, 1))
-            state_0.mpm.particle_Jp.assign(jp)
-            state_0.mpm.particle_elastic_strain.assign(strain)
-            state_0.mpm.particle_stress.assign(stress)
+    particle_count = model.particle_count
+    jp = np.full(particle_count, 0.9, dtype=np.float32)
+    strain = np.tile(np.diag([1.01, 0.99, 1.0]).astype(np.float32), (particle_count, 1, 1))
+    stress = np.tile(np.diag([-10.0, -20.0, -30.0]).astype(np.float32), (particle_count, 1, 1))
+    state_0.mpm.particle_Jp.assign(jp)
+    state_0.mpm.particle_elastic_strain.assign(strain)
+    state_0.mpm.particle_stress.assign(stress)
 
-            solver.step(state_0, state_1, None, None, 0.001)
+    solver.step(state_0, state_1, None, None, 0.001)
 
+    for name, inactive in (("adjacent", adjacent), ("far", far)):
+        with test.subTest(inactive=name):
             np.testing.assert_array_equal(state_1.mpm.particle_Jp.numpy()[inactive], jp[inactive])
             np.testing.assert_array_equal(state_1.mpm.particle_elastic_strain.numpy()[inactive], strain[inactive])
             np.testing.assert_array_equal(state_1.mpm.particle_stress.numpy()[inactive], stress[inactive])
+
 
 def test_rebuildable_sparse_rebuild_uses_mpm_transfer_flags(test, device):
     """Verify sparse-grid rebuilds use MPM transfer flags."""
