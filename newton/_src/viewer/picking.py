@@ -39,8 +39,7 @@ class Picking:
             pick_stiffness: Stiffness of the picking spring, in acceleration per unit
                 displacement [1/s^2]. The commanded acceleration is mapped to a force
                 through the operational-space inertia at the pick point, so gains are
-                mass-independent and picking a light distal link is as effective as
-                picking a heavy one.
+                mass-independent and light distal links stay responsive.
             pick_damping: Damping of the picking spring, in acceleration per unit
                 velocity of the pick point [1/s]. The default is close to critical
                 damping, :math:`2\sqrt{k}`, for the default stiffness.
@@ -82,8 +81,7 @@ class Picking:
 
         self._pick_effective_mass = self._compute_effective_mass(model)
 
-        # Operational-space inertia at the pick point, refreshed on every pick.
-        # Identity-scaled by the body mass is the correct value for a free body.
+        # Operational-space inertia at the pick point, set on every pick.
         self._pick_os_inertia = wp.zeros(1, dtype=wp.mat33, device=model.device if model else "cpu")
 
     def _apply_picking_force(self, state: newton.State) -> None:
@@ -145,10 +143,11 @@ class Picking:
         model = self.model
         mass = float(model.body_mass.numpy()[body])
         upper = max(float(self._pick_effective_mass.numpy()[body]), mass)
-        lam = np.eye(3) * mass
+        # A massless link, e.g. a URDF frame link with geometry, is moved through its subtree.
+        lam = np.eye(3) * (mass if mass > 0.0 else upper)
 
         joints = np.nonzero(model.joint_child.numpy() == body)[0] if model.articulation_count else []
-        if len(joints) and mass > 0.0:
+        if len(joints) and upper > 0.0:
             joint = int(joints[0])
             art = int(model.joint_articulation.numpy()[joint])
             if art < 0:
@@ -180,7 +179,7 @@ class Picking:
 
             try:
                 eigenvalues, eigenvectors = np.linalg.eigh(jac_point @ np.linalg.solve(h, jac_point.T))
-                inertia = 1.0 / np.clip(eigenvalues, 1.0 / upper, 1.0 / mass)
+                inertia = 1.0 / np.clip(eigenvalues, 1.0 / upper, 1.0 / mass if mass > 0.0 else None)
                 lam = eigenvectors @ np.diag(inertia) @ eigenvectors.T
             except np.linalg.LinAlgError:
                 pass
@@ -234,6 +233,17 @@ class Picking:
                     effective[b] = art_mass[a]
 
         return wp.array(effective, dtype=float, device=model.device)
+
+    def _load_kernels(self) -> None:
+        """Compile every Warp module picking launches, so the first pick does not stall."""
+        if self.model is None:
+            return
+        device = self.model.device
+        wp.load_module(module=raycast, device=device)
+        wp.load_module(module="newton._src.viewer.kernels", device=device)
+        # Picking an articulated body evaluates its Jacobian and mass matrix.
+        if self.model.articulation_count:
+            wp.load_module(module="newton._src.sim.articulation", device=device)
 
     def is_picking(self) -> bool:
         """Checks if picking is active.

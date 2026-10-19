@@ -320,47 +320,80 @@ def test_picking_torque_limit_is_noop_below_limit(test: TestPickingSetup, device
     assert_np_equal(wrench, np.concatenate((expected_force, expected_torque)), tol=1.0e-5)
 
 
-def _mass_independence_cases(device):
-    """Yield (model, ray_start, ray_dir, articulated) spanning free bodies and an articulated link."""
-    for mass in (1.0, 1.0e-3):
-        model = _make_single_sphere_model(device=device, body_com=wp.vec3(0.0), mass=mass)
-        yield model, wp.vec3(0.0, 0.0, -2.0), wp.vec3(0.0, 0.0, 1.0), False
-    for arm_mass in (1.0, 10.0):
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(_MJCF_ARM_AND_FINGER.format(arm_mass=arm_mass))
-        yield builder.finalize(device=device), wp.vec3(0.4, 0.0, 1.0), wp.vec3(0.0, 0.0, -1.0), True
+_PICK_STIFFNESS = 100.0
+_PICK_DISPLACEMENT = 0.01
+
+
+def _picked_mass(test: TestPickingSetup, model: newton.Model, ray_start, ray_dir, direction) -> tuple[int, float]:
+    """Pick along a ray, pull the pick point along ``direction``, and return the body and felt mass."""
+    state = model.state()
+    picking = Picking(model, pick_stiffness=_PICK_STIFFNESS, pick_damping=0.0, pick_max_acceleration=5.0)
+    picking.pick(state, ray_start, ray_dir)
+    test.assertTrue(picking.is_picking())
+
+    body = int(picking.pick_body.numpy()[0])
+    direction = np.asarray(direction, dtype=float)
+    picked = np.array(picking.pick_state.numpy()[0]["picked_point_world"], dtype=float)
+    force = _apply_picking_target(picking, state, tuple(picked + _PICK_DISPLACEMENT * direction), body=body)[:3]
+
+    assert_np_equal(np.cross(force, direction), np.zeros(3), tol=1.0e-4)
+    return body, float(force @ direction) / (_PICK_STIFFNESS * _PICK_DISPLACEMENT)
+
+
+def _make_arm_and_finger_model(device, arm_mass: float, massless_fixed_finger: bool = False) -> newton.Model:
+    mjcf = _MJCF_ARM_AND_FINGER.format(arm_mass=arm_mass)
+    if massless_fixed_finger:
+        mjcf = mjcf.replace('<joint name="j2" type="hinge" axis="0 0 1"/>', "").replace('mass="0.1"', 'mass="0"')
+    builder = newton.ModelBuilder()
+    builder.add_mjcf(mjcf)
+    return builder.finalize(device=device)
+
+
+# The ray hits the top of the finger at (0.4, 0, 0.02), on the j2 axis.
+_FINGER_RAY = (wp.vec3(0.4, 0.0, 1.0), wp.vec3(0.0, 0.0, -1.0))
+_FINGER_DIST = 0.4
 
 
 def test_picking_acceleration_mass_independent(test: TestPickingSetup, device):
-    """Below the clamp, picking scales the commanded acceleration by the operational-space mass.
+    """A free body feels exactly its own mass, so picking gains are mass-independent."""
+    for mass in (1.0, 1.0e-3):
+        model = _make_single_sphere_model(device=device, body_com=wp.vec3(0.0), mass=mass)
+        _, felt_mass = _picked_mass(test, model, wp.vec3(0.0, 0.0, -2.0), wp.vec3(0.0, 0.0, 1.0), (1.0, 0.0, 0.0))
+        test.assertAlmostEqual(felt_mass, mass, delta=mass * 1.0e-4)
 
-    A free body feels exactly its own mass, so gains stay mass-independent. A light link on a
-    heavy articulation feels more than its own mass, because the rest of the chain resists,
-    which keeps picking a distal link from becoming uselessly weak.
+
+def test_picking_articulated_operational_space_mass(test: TestPickingSetup, device):
+    """Pulling a distal link tangentially feels the operational-space inertia of the chain.
+
+    Only j1 moves the pick point, along +y, so the felt mass is :math:`1 / (d^2 (H^{-1})_{11})`.
     """
-    stiffness, displacement = 100.0, 0.01
-    for model, ray_start, ray_dir, articulated in _mass_independence_cases(device):
-        state = model.state()
-        picking = Picking(model, pick_stiffness=stiffness, pick_damping=0.0, pick_max_acceleration=5.0)
-        picking.pick(state, ray_start, ray_dir)
-        test.assertTrue(picking.is_picking())
+    for arm_mass in (1.0, 10.0):
+        model = _make_arm_and_finger_model(device, arm_mass)
+        body, felt_mass = _picked_mass(test, model, *_FINGER_RAY, (0.0, 1.0, 0.0))
+        test.assertEqual(body, 1)
 
-        body = int(picking.pick_body.numpy()[0])
-        mass = float(model.body_mass.numpy()[body])
-        articulation_mass = float(picking._pick_effective_mass.numpy()[body])
+        mass = model.body_mass.numpy()
+        inertia_z = model.body_inertia.numpy()[:, 2, 2]
+        armature = model.joint_armature.numpy()
+        h11 = inertia_z[0] + armature[0] + inertia_z[1] + mass[1] * _FINGER_DIST**2
+        h12 = inertia_z[1]
+        h22 = inertia_z[1] + armature[1]
+        expected = (h11 * h22 - h12 * h12) / (_FINGER_DIST**2 * h22)
 
-        picked = np.array(picking.pick_state.numpy()[0]["picked_point_world"], dtype=float)
-        target = tuple(picked + np.array([displacement, 0.0, 0.0]))
-        wrench = _apply_picking_target(picking, state, target, body=body)[:3]
+        test.assertAlmostEqual(felt_mass, expected, delta=expected * 1.0e-3)
+        test.assertGreater(felt_mass, mass[1])
+        test.assertLess(felt_mass, mass.sum())
 
-        assert_np_equal(wrench[1:], np.zeros(2), tol=1.0e-4)
-        felt_mass = wrench[0] / (stiffness * displacement)
-        test.assertGreaterEqual(felt_mass, mass * (1.0 - 1.0e-4))
-        test.assertLessEqual(felt_mass, articulation_mass * (1.0 + 1.0e-4))
-        if articulated:
-            test.assertGreater(felt_mass, 5.0 * mass)
-        else:
-            test.assertAlmostEqual(felt_mass, mass, delta=mass * 1.0e-4)
+
+def test_picking_massless_link(test: TestPickingSetup, device):
+    """Picking a massless link fixed to a heavy parent moves the parent."""
+    model = _make_arm_and_finger_model(device, 10.0, massless_fixed_finger=True)
+    body, felt_mass = _picked_mass(test, model, *_FINGER_RAY, (0.0, 1.0, 0.0))
+    test.assertEqual(body, 1)
+    test.assertEqual(model.body_mass.numpy()[body], 0.0)
+
+    expected = (model.body_inertia.numpy()[0, 2, 2] + model.joint_armature.numpy()[0]) / _FINGER_DIST**2
+    test.assertAlmostEqual(felt_mass, expected, delta=expected * 1.0e-3)
 
 
 _MJCF_ARM_AND_FINGER = """<mujoco>
@@ -498,6 +531,18 @@ add_function_test(
     TestPickingSetup,
     "test_picking_acceleration_mass_independent",
     test_picking_acceleration_mass_independent,
+    devices=get_test_devices(),
+)
+add_function_test(
+    TestPickingSetup,
+    "test_picking_articulated_operational_space_mass",
+    test_picking_articulated_operational_space_mass,
+    devices=get_test_devices(),
+)
+add_function_test(
+    TestPickingSetup,
+    "test_picking_massless_link",
+    test_picking_massless_link,
     devices=get_test_devices(),
 )
 add_function_test(
