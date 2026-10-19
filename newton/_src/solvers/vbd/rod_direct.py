@@ -38,9 +38,8 @@ vec6d = wp.types.vector(length=6, dtype=wp.float64)
 mat66d = wp.types.matrix(shape=(6, 6), dtype=wp.float64)
 mat36d = wp.types.matrix(shape=(3, 6), dtype=wp.float64)
 
-ROD_DIRECT_OK = wp.constant(0)
-ROD_DIRECT_FAILED = wp.constant(1)
-ROD_DIRECT_STALLED = wp.constant(2)
+ROD_DIRECT_FAILED = wp.constant(1)  # status bit: a step was refused (pose kept)
+ROD_DIRECT_STALLED = wp.constant(2)  # status bit: no decrease above the estimated round-off
 FLOAT32_EPS = wp.constant(wp.float64(1.1920929e-7))
 EXTERNAL_HESSIAN_WEIGHT = wp.constant(wp.float64(2.0))
 """Weight of the accumulated contact, attachment and non-rod joint Hessian in the rod step.

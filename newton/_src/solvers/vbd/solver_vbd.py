@@ -102,9 +102,16 @@ from .rigid_vbd_kernels import (
     update_duals_joint,
     update_rod_dahl_state,
 )
-from .rod_direct import mat66d, vec6d
-from .rod_direct_kernels import accumulate_rod_body_joint_terms, solve_rod_direct, split_rod_inverse_mass
-from .rod_direct_layout import allocate_rod_direct_layout, rod_candidates, update_rod_direct_layout
+from .rod_direct import ROD_DIRECT_FAILED, ROD_DIRECT_STALLED, mat66d, vec6d
+from .rod_direct_kernels import accumulate_rod_body_joint_terms, solve_rod_direct
+from .rod_direct_layout import (
+    allocate_rod_direct_layout,
+    check_rod_membership,
+    clear_rod_direct_status,
+    rod_candidates,
+    split_rod_inverse_mass,
+    update_rod_direct_layout,
+)
 from .tendon_kernels import (
     TendonForceElementAdjacencyInfo,
     snapshot_tendon_segment_length_reference,
@@ -181,9 +188,6 @@ def _rigid_lambda_retention(alpha: float, gamma: float, use_compliant_alm: bool)
 
 _ROD_DIRECT_MAX_HALVINGS = 12
 """Backtracking halvings of the direct rod step before the pose is kept."""
-
-_ROD_DIRECT_FAILED = 1  # rod_direct_status bit: a step was refused (singular block or non-finite step)
-_ROD_DIRECT_STALLED = 2  # rod_direct_status bit: the line search found no decrease above estimated round-off
 
 
 class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
@@ -433,6 +437,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         rigid_joint_angular_k_start: float | None = None,  # Legacy AVBD angular joint penalty ramp seed
         rigid_joint_linear_kd: float = 0.0,  # Absolute damping for non-rod linear joint constraints
         rigid_joint_angular_kd: float = 0.0,  # Absolute damping for non-rod angular joint constraints
+        rigid_rod_direct_solve: bool = False,  # Solve each rod's ROD joints directly per iteration (opt-in)
         # Tendons
         tendon_max_sweeps: int = 256,
         tendon_settle_tol: float = 1.0e-3,
@@ -440,7 +445,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         # Rigid body - penetration-free DAT truncation
         rigid_soft_enable_dat: bool = False,  # Truncate rigid pose updates against per-contact division planes
         rigid_soft_dat_use_interval_arithmetic: bool = False,  # Experimental interval verification of rigid trajectories
-        rigid_rod_direct_solve: bool = False,  # Solve each rod's ROD joints directly per iteration (opt-in)
         deterministic: wp.DeterministicMode | None = None,
         collision_pipeline: CollisionPipeline | None = None,
         collision_frequency: Mapping[SolverBase.CollisionSlot, int] | None = None,
@@ -648,6 +652,44 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 Negative values are clamped to 0.
             rigid_joint_angular_kd: Damping coefficient for non-rod angular joint constraints [N·m·s/rad].
                 Negative values are clamped to 0.
+            rigid_rod_direct_solve: If ``True``, every connected set of dynamic bodies joined by
+                :attr:`~newton.JointType.ROD` joints (a chain, a tree, a loop, or a single segment
+                held by rod joints to kinematic or static bodies) is solved as one block in each rigid
+                iteration: a Newton step on the rod's incremental potential (inertia, the contact and
+                non-rod joint terms accumulated per body, and the exact rod stretch/shear and
+                bend/twist energies with their material stiffness), eliminated exactly along the rod
+                tree in float64 and line-searched. The step's Hessian is Gauss-Newton plus the
+                tension part of the joints' geometric stiffness, which carries a tensioned rod's
+                transverse stiffness. This removes the slow convergence of per-body updates on
+                slender, light rods, whose stretch stiffness dwarfs their bending stiffness, while
+                carrying axial load. Rod rows use their material stiffness directly (no
+                augmented-Lagrangian dual or penalty ramp), and the two bend axes may differ
+                (``joint_target_ke``/``joint_target_kd`` per angular DOF). Rod joints that close a
+                loop, or join a rod body to a kinematic body, enter the block diagonal only. Rods are
+                solved in parallel, so contacts and non-rod joints between two directly solved bodies
+                couple simultaneous block solves. The accumulated contact, attachment and non-rod joint
+                Hessian is weighted by 2 in the step: on those shared terms this majorizes the omitted
+                cross terms, and on one-sided terms it under-relaxes friction and contact activation,
+                which enter the line search only as this weighted quadratic model. Gradients are not
+                weighted, so the force balance at convergence is unchanged; the weight only shortens
+                steps. Rod membership follows joint enablement, body flags and inverse masses. It is
+                rewritten in place by :meth:`notify_model_changed` with
+                :attr:`~newton.ModelFlags.JOINT_PROPERTIES` or :attr:`~newton.ModelFlags.BODY_PROPERTIES`,
+                which cannot run during graph capture, so a graph captured before the notification replays
+                the new membership. With :attr:`~newton.ModelFlags.BODY_INERTIAL_PROPERTIES` alone the
+                membership is checked on the device, which is capturable; an inverse mass crossing zero
+                under capture refuses the rod steps until the next notification outside capture. Each rod
+                is solved serially by one thread, so a few long rods use a GPU poorly; see
+                :doc:`/solvers/vbd` for costs. A singular or non-finite step, or a non-finite energy
+                at the start or at the smallest trial step, is refused, and a line search that finds no
+                decrease above an estimate of the energy's round-off keeps the pose;
+                :meth:`check_rod_direct_status` reports both until :meth:`reset`. Not supported together with
+                ``rigid_soft_enable_dat``, Dahl rod friction or tendons routed over rod bodies. Joints
+                cannot become ROD joints after construction. Defaults to ``False``.
+
+                .. experimental::
+                    The direct rod solve and its status reporting may change without a deprecation
+                    period.
             rigid_soft_enable_dat: Whether to apply Divide-and-Truncate (DAT) penetration-free
                 truncation to rigid-soft contacts, symmetric to particle self-contact truncation.
                 Each rigid-soft contact reported by the owned collision pipeline defines a division
@@ -687,42 +729,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 .. experimental::
                     The Stage-2 prefix certification is experimental and may change or be
                     removed; the derivative bound is part of the default path.
-            rigid_rod_direct_solve: If ``True``, every connected set of dynamic bodies joined by
-                :attr:`~newton.JointType.ROD` joints (a chain, a tree, a loop, or a single segment
-                held by rod joints to kinematic or static bodies) is solved as one block in each rigid
-                iteration: a Newton step on the rod's incremental potential (inertia, the contact and
-                non-rod joint terms accumulated per body, and the exact rod stretch/shear and
-                bend/twist energies with their material stiffness), eliminated exactly along the rod
-                tree in float64 and line-searched. The step's Hessian is Gauss-Newton plus the
-                tension part of the joints' geometric stiffness, which carries a tensioned rod's
-                transverse stiffness. This removes the slow convergence of per-body updates on
-                slender, light rods, whose stretch stiffness dwarfs their bending stiffness, while
-                carrying axial load. Rod rows use their material stiffness directly (no
-                augmented-Lagrangian dual or penalty ramp), and the two bend axes may differ
-                (``joint_target_ke``/``joint_target_kd`` per angular DOF). Rod joints that close a
-                loop, or join a rod body to a kinematic body, enter the block diagonal only. Rods are
-                solved in parallel, so contacts and non-rod joints between two directly solved bodies
-                couple simultaneous block solves. The accumulated contact, attachment and non-rod joint
-                Hessian is weighted by 2 in the step: on those shared terms this majorizes the omitted
-                cross terms, and on one-sided terms it under-relaxes friction and contact activation,
-                which enter the line search only as this weighted quadratic model. Gradients are not
-                weighted, so the force balance at convergence is unchanged; the weight only shortens
-                steps. Rod membership follows joint enablement, body flags and inverse masses; it is
-                rewritten in place by :meth:`notify_model_changed` with
-                :attr:`~newton.ModelFlags.JOINT_PROPERTIES`, :attr:`~newton.ModelFlags.BODY_PROPERTIES` or
-                :attr:`~newton.ModelFlags.BODY_INERTIAL_PROPERTIES`, so a graph captured before the
-                notification replays the new membership; the notification itself cannot run during
-                capture. Each rod is solved serially by one thread, so a few long rods use a GPU poorly;
-                see :doc:`/solvers/vbd` for costs. A singular or non-finite step, or a non-finite energy
-                at the start or at the smallest trial step, is refused, and a line search that finds no
-                decrease above an estimate of the energy's round-off keeps the pose;
-                :meth:`check_rod_direct_status` reports both. Not supported together with
-                ``rigid_soft_enable_dat``, Dahl rod friction or tendons routed over rod bodies. Joints
-                cannot become ROD joints after construction. Defaults to ``False``.
-
-                .. experimental::
-                    The direct rod solve and its status reporting may change without a deprecation
-                    period.
             deterministic: Opt-in determinism for this solver's atomic-emitting
                 kernel modules. Pass a :class:`warp.DeterministicMode`, or
                 ``None`` (default) to inherit the current
@@ -1090,7 +1096,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         # Direct (tree) solve of rod joints; None keeps the per-body path unchanged
         self._rod_direct = None
         self._rod_direct_max_halvings = _ROD_DIRECT_MAX_HALVINGS
-        self._rod_direct_prior_status = 0
         if self.rigid_rod_direct_solve and self._integrates_rigid_bodies:
             self._init_rod_direct(model)
 
@@ -1556,13 +1561,13 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES
         ):
             self._refresh_rod_rest_bend_twist_cache()
-        if (
-            self.rigid_rod_direct_solve
-            and self._integrates_rigid_bodies
-            and flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES)
-        ):
-            # rod membership follows joint enablement and dynamic/kinematic body state
-            self._update_rod_direct(self.model)
+        if self.rigid_rod_direct_solve and self._integrates_rigid_bodies:
+            if flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.BODY_PROPERTIES):
+                # rod membership follows joint enablement and body flags: rewrite the layout on the host
+                self._update_rod_direct(self.model)
+            elif flags & ModelFlags.BODY_INERTIAL_PROPERTIES:
+                # mass changes are checked on the device, so per-step notifications stay capturable
+                self._refresh_rod_direct_membership(self.model)
 
     @override
     def coupling_supports_inertial_property_refresh(self) -> bool:
@@ -2929,6 +2934,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         and :meth:`rebuild_bvh` are graph-capturable, so either may run inside a
         captured episode-reset graph.
 
+        With ``rigid_rod_direct_solve``, reset clears the direct-solve status of rods in the selected worlds
+        (see :meth:`check_rod_direct_status`).
+
         Reset does not run collision detection, and :meth:`step` consumes the
         supplied contacts rather than rerunning
         :meth:`~newton.CollisionPipeline.collide`. After moving bodies or
@@ -3024,6 +3032,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 )
 
         self._reset_tendon_state(state, world_mask)
+        self._reset_rod_direct_status(world_mask)
 
         if not self._integrates_rigid_bodies:
             return
@@ -4435,10 +4444,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         }
         self._rod_direct_inv_mass_colour = wp.zeros_like(self.body_inv_mass_effective)
         self._rod_direct_inv_mass_rod = wp.zeros_like(self.body_inv_mass_effective)
-        self.rod_direct_status = wp.zeros(layout.rod_capacity, dtype=wp.int32, device=self.device)
-        """Sticky bits per rod of the current layout: 1 = a step was refused (singular block, or non-finite step or
-        energy; the rod kept its pose for that iteration), 2 = the line search found no decrease larger than the
-        estimated round-off of the energy (pose kept). The array is allocated once."""
+        # Sticky status bits (ROD_DIRECT_FAILED, ROD_DIRECT_STALLED) per rod of the current layout, the bits of
+        # earlier layouts, and a flag for a membership change detected under graph capture; all allocated once.
+        self._rod_direct_status = wp.zeros(layout.rod_capacity, dtype=wp.int32, device=self.device)
+        self._rod_direct_prior_status = wp.zeros(1, dtype=wp.int32, device=self.device)
+        self._rod_direct_stale = wp.zeros(1, dtype=wp.int32, device=self.device)
 
     def _update_rod_direct(self, model: Model) -> None:
         """Rewrite the rod layout in place after a model change; status bits raised so far are kept for
@@ -4459,10 +4469,55 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     "create a new solver (and re-capture any graph that steps it)."
                 )
             return
-        self._rod_direct_prior_status |= int(np.bitwise_or.reduce(self.rod_direct_status.numpy(), initial=0))
-        self.rod_direct_status.zero_()
+        bits = int(np.bitwise_or.reduce(self._rod_direct_status.numpy(), initial=0))
+        self._rod_direct_prior_status.fill_(bits | int(self._rod_direct_prior_status.numpy()[0]))
+        self._rod_direct_status.zero_()
         update_rod_direct_layout(self._rod_direct, model)
+        self._rod_direct_stale.zero_()
         self._check_rod_direct_tendons(model, self._rod_direct)
+
+    def _refresh_rod_direct_membership(self, model: Model) -> None:
+        """Check rod membership on the device after an inertial-property change (capturable).
+
+        Outside capture the layout is rewritten only if a body became dynamic or stopped being dynamic, at the cost of
+        reading one flag. Under capture such a change marks the layout stale, and the rod steps refuse until the next
+        notification outside capture.
+        """
+        rd = self._rod_direct
+        if rd is None:
+            return
+        flags = model.body_flags
+        if flags is None:
+            flags = wp.zeros(model.body_count, dtype=wp.int32, device=self.device)
+        wp.launch(
+            kernel=check_rod_membership,
+            dim=rd.node_capacity,
+            inputs=[rd.rod_bodies, rd.body_dynamic, model.body_inv_mass, flags, int(BodyFlags.KINEMATIC)],
+            outputs=[self._rod_direct_stale],
+            device=self.device,
+        )
+        if not self.device.is_capturing and self._rod_direct_stale.numpy()[0]:
+            self._update_rod_direct(model)
+
+    def _reset_rod_direct_status(self, world_mask: wp.array | None) -> None:
+        """Clear the direct-solve status of rods in the reset worlds (graph-capturable)."""
+        rd = self._rod_direct
+        if rd is None:
+            return
+        wp.launch(
+            kernel=clear_rod_direct_status,
+            dim=rd.rod_capacity + 1,
+            inputs=[
+                world_mask,
+                world_mask is None,
+                self.model.world_count,
+                self.model.body_world,
+                rd.rod_start,
+                rd.node_body,
+            ],
+            outputs=[self._rod_direct_status, self._rod_direct_prior_status],
+            device=self.device,
+        )
 
     @staticmethod
     def _check_rod_direct_tendons(model: Model, layout) -> None:
@@ -4476,7 +4531,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
     def check_rod_direct_status(self) -> None:
         """Report direct rod steps that did not move a rod (``rigid_rod_direct_solve``).
 
-        Covers every step since the solver was created, eager or replayed from a captured graph. A refused step (a
+        Covers every step since the solver was created or since :meth:`reset` cleared the rods' worlds, eager or
+        replayed from a captured graph. A refused step (a
         singular block, a non-finite step, or a non-finite energy at the start or at the smallest trial step) keeps
         the rod's pose for that iteration and prints a warning from the kernel; this check raises for it. A line
         search that found no decrease larger than the estimated round-off of the energy also keeps the pose; this
@@ -4490,20 +4546,27 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             return
         if self.device.is_capturing:
             raise RuntimeError("Cannot inspect rod direct-solve status during graph capture")
-        status = self.rod_direct_status.numpy() if self._rod_direct is not None else np.zeros(0, dtype=np.int32)
-        prior = self._rod_direct_prior_status
-        failed = np.flatnonzero(status & _ROD_DIRECT_FAILED)
-        if failed.size or prior & _ROD_DIRECT_FAILED:
+        if self._rod_direct is None:
+            return
+        if self._rod_direct_stale.numpy()[0]:
+            raise RuntimeError(
+                "SolverVBD rigid_rod_direct_solve: an inverse mass crossed zero under graph capture, so rod steps were "
+                "refused; call notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES) outside capture."
+            )
+        status = self._rod_direct_status.numpy()
+        prior = int(self._rod_direct_prior_status.numpy()[0])
+        failed = np.flatnonzero(status & ROD_DIRECT_FAILED)
+        if failed.size or prior & ROD_DIRECT_FAILED:
             raise RuntimeError(
                 f"SolverVBD rigid_rod_direct_solve: rods {failed[:8].tolist()} (current layout) "
-                f"{'and rods of an earlier layout ' if prior & _ROD_DIRECT_FAILED else ''}"
+                f"{'and rods of an earlier layout ' if prior & ROD_DIRECT_FAILED else ''}"
                 "gave a singular or non-finite step; their poses were kept."
             )
-        stalled = np.flatnonzero(status & _ROD_DIRECT_STALLED)
-        if stalled.size or prior & _ROD_DIRECT_STALLED:
+        stalled = np.flatnonzero(status & ROD_DIRECT_STALLED)
+        if stalled.size or prior & ROD_DIRECT_STALLED:
             warnings.warn(
                 f"SolverVBD rigid_rod_direct_solve: the line search of rods {stalled[:8].tolist()} (current layout) "
-                f"{'and of an earlier layout ' if prior & _ROD_DIRECT_STALLED else ''}"
+                f"{'and of an earlier layout ' if prior & ROD_DIRECT_STALLED else ''}"
                 "found no decrease above the estimated round-off; their poses were kept for that iteration.",
                 NewtonWarning,
                 stacklevel=2,
@@ -4611,6 +4674,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self.body_hessian_ll,
                 self.body_hessian_al,
                 self.body_hessian_aa,
+                self._rod_direct_stale,
                 sc["D"],
                 sc["B"],
                 sc["F"],
@@ -4621,7 +4685,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 sc["FM"],
                 sc["T0"],
             ],
-            outputs=[state_in.body_q, self.rod_direct_status],
+            outputs=[state_in.body_q, self._rod_direct_status],
             device=self.device,
         )
 

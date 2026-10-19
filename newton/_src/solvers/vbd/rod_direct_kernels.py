@@ -37,24 +37,6 @@ from .rod_direct_energy import _com_or_zero, _pose_or_world, _rod_potential
 
 
 @wp.kernel(enable_backward=False)
-def split_rod_inverse_mass(
-    body_node: wp.array[wp.int32],
-    body_inv_mass: wp.array[float],
-    # outputs
-    inv_mass_colour: wp.array[float],
-    inv_mass_rod: wp.array[float],
-):
-    """Split inverse masses between the colour loop (rod bodies zeroed, so its kernels skip them) and the rod step."""
-    b = wp.tid()
-    if body_node[b] >= 0:
-        inv_mass_colour[b] = 0.0
-        inv_mass_rod[b] = body_inv_mass[b]
-    else:
-        inv_mass_colour[b] = body_inv_mass[b]
-        inv_mass_rod[b] = 0.0
-
-
-@wp.kernel(enable_backward=False)
 def accumulate_rod_body_joint_terms(
     rod_bodies: wp.array[wp.int32],
     body_node: wp.array[wp.int32],
@@ -204,6 +186,7 @@ def solve_rod_direct(
     ext_h_ll: wp.array[wp.mat33],
     ext_h_al: wp.array[wp.mat33],
     ext_h_aa: wp.array[wp.mat33],
+    stale: wp.array[wp.int32],
     # scratch, one entry per node
     D: wp.array[mat66d],
     B: wp.array[mat66d],
@@ -225,6 +208,14 @@ def solve_rod_direct(
     s = rod_start[r]
     e = rod_start[r + 1]
     if e <= s:
+        return
+    if stale[0] != 0:  # rod membership changed under graph capture; the layout no longer matches the model
+        status[r] = status[r] | ROD_DIRECT_FAILED
+        if r == 0:
+            wp.printf(
+                "Warning: SolverVBD rigid_rod_direct_solve: an inverse mass crossed zero under graph capture; rod "
+                "steps are refused until notify_model_changed() runs outside capture.\n"
+            )
         return
 
     ok = bool(True)

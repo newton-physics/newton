@@ -9,7 +9,6 @@ and many short rods (shallow walk, wide parallelism). Each rod hangs from a kine
 
 import inspect
 
-import numpy as np
 import warp as wp
 
 wp.config.enable_backward = False
@@ -26,9 +25,8 @@ def _has_direct_solve() -> bool:
     return "rigid_rod_direct_solve" in inspect.signature(newton.solvers.SolverVBD).parameters
 
 
-def build_rods(rods: int, segments: int, device=None) -> tuple[newton.Model, list[int]]:
+def build_rods(rods: int, segments: int, device=None) -> newton.Model:
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
-    tips = []
     for r in range(rods):
         points = [wp.vec3(i * SEGMENT, 0.05 * r, 1.0) for i in range(segments + 2)]
         bodies, _ = builder.add_rod(
@@ -44,9 +42,8 @@ def build_rods(rods: int, segments: int, device=None) -> tuple[newton.Model, lis
         builder.body_inertia[anchor] = wp.mat33(0.0)
         builder.body_inv_inertia[anchor] = wp.mat33(0.0)
         builder.body_flags[anchor] = int(newton.BodyFlags.KINEMATIC)
-        tips.append(int(bodies[-1]))
     builder.color()
-    return builder.finalize(device=device), tips
+    return builder.finalize(device=device)
 
 
 class RodDirectSolve:
@@ -60,7 +57,7 @@ class RodDirectSolve:
     def setup(self, layout, rod_solve):
         if rod_solve == "direct" and not _has_direct_solve():
             raise NotImplementedError("SolverVBD has no rigid_rod_direct_solve option")
-        self.model, self.tips = build_rods(*LAYOUTS[layout], device=DEVICE)
+        self.model = build_rods(*LAYOUTS[layout], device=DEVICE)
         kwargs = {"rigid_rod_direct_solve": True} if rod_solve == "direct" else {}
         self.solver = newton.solvers.SolverVBD(self.model, iterations=10, **kwargs)
         self.state_0, self.state_1 = self.model.state(), self.model.state()
@@ -74,9 +71,6 @@ class RodDirectSolve:
             self.solver.step(self.state_0, self.state_1, self.control, None, self.dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
         wp.synchronize_device(self.model.device)
-
-    def finite(self) -> bool:
-        return bool(np.all(np.isfinite(self.state_0.body_q.numpy())))
 
 
 if __name__ == "__main__":

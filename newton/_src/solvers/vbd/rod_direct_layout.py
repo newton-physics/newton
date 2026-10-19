@@ -1,7 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Rod topology for :class:`~newton.solvers.SolverVBD`'s direct rod solve (``rigid_rod_direct_solve``)."""
+"""Rod topology for :class:`~newton.solvers.SolverVBD`'s direct rod solve (``rigid_rod_direct_solve``): the layout,
+its membership masks and status bookkeeping."""
 
 from __future__ import annotations
 
@@ -10,7 +11,8 @@ from dataclasses import dataclass
 import numpy as np
 import warp as wp
 
-from ...sim import JointType
+from ...sim import BodyFlags, JointType
+from .rigid_vbd_kernels import _reset_world_selected
 
 
 @dataclass
@@ -35,9 +37,78 @@ class RodDirectLayout:
     bnd_start: wp.array  # (node_capacity + 1,) CSR offsets of one-sided ROD joints per node
     bnd_joint: wp.array  # one-sided ROD joints (other end kinematic, or closing a loop)
     body_node: wp.array  # (body_count,) node index of a directly solved body, -1 otherwise
+    body_dynamic: wp.array  # (body_count,) 1 if the body was dynamic when the layout was written
     rod_count: int = 0  # rods in the current layout
     node_count: int = 0  # directly solved bodies in the current layout
     is_rod_body: np.ndarray | None = None  # host mask (body_count,) of the current layout
+
+
+@wp.kernel(enable_backward=False)
+def split_rod_inverse_mass(
+    body_node: wp.array[wp.int32],
+    body_inv_mass: wp.array[float],
+    # outputs
+    inv_mass_colour: wp.array[float],
+    inv_mass_rod: wp.array[float],
+):
+    """Split inverse masses between the colour loop (rod bodies zeroed, so its kernels skip them) and the rod step."""
+    b = wp.tid()
+    if body_node[b] >= 0:
+        inv_mass_colour[b] = 0.0
+        inv_mass_rod[b] = body_inv_mass[b]
+    else:
+        inv_mass_colour[b] = body_inv_mass[b]
+        inv_mass_rod[b] = 0.0
+
+
+@wp.kernel(enable_backward=False)
+def check_rod_membership(
+    rod_bodies: wp.array[wp.int32],
+    body_dynamic: wp.array[wp.int32],
+    body_inv_mass: wp.array[float],
+    body_flags: wp.array[wp.int32],
+    kinematic_bit: int,
+    # output
+    stale: wp.array[wp.int32],
+):
+    """Flag the layout as stale if a candidate body became dynamic or stopped being dynamic since it was written."""
+    b = rod_bodies[wp.tid()]
+    dynamic = int(0)
+    if body_inv_mass[b] > 0.0 and (body_flags[b] & kinematic_bit) == 0:
+        dynamic = 1
+    if dynamic != body_dynamic[b]:
+        stale[0] = 1
+
+
+@wp.kernel(enable_backward=False)
+def clear_rod_direct_status(
+    world_mask: wp.array[wp.bool],
+    reset_all: bool,
+    world_count: int,
+    body_world: wp.array[wp.int32],
+    rod_start: wp.array[wp.int32],
+    node_body: wp.array[wp.int32],
+    # in/out
+    status: wp.array[wp.int32],
+    prior_status: wp.array[wp.int32],
+):
+    """Clear the status of rods in the reset worlds; the bits of earlier layouts clear only when every world resets."""
+    r = wp.tid()
+    if r == status.shape[0]:
+        all_selected = bool(reset_all)
+        if not reset_all:
+            unselected = int(0)
+            for w in range(world_mask.shape[0]):
+                if not world_mask[w]:
+                    unselected = unselected + 1
+            all_selected = unselected == 0
+        if all_selected:
+            prior_status[0] = 0
+        return
+    s = rod_start[r]
+    if rod_start[r + 1] > s:
+        if _reset_world_selected(body_world[node_body[s]], world_mask, reset_all, world_count):
+            status[r] = 0
 
 
 def rod_candidates(model) -> tuple[np.ndarray, np.ndarray]:
@@ -76,6 +147,7 @@ def allocate_rod_direct_layout(model, device) -> RodDirectLayout | None:
         bnd_start=arr(n + 1),
         bnd_joint=arr(2 * int(joints.size)),
         body_node=arr(model.body_count),
+        body_dynamic=arr(model.body_count),
     )
     update_rod_direct_layout(layout, model)
     return layout
@@ -99,7 +171,7 @@ def update_rod_direct_layout(layout: RodDirectLayout, model) -> None:
             "none, after the solver was created; the rod layout's capacity is fixed, so create a new solver (and "
             "re-capture any graph that steps it)."
         )
-    rods = _rod_forest(model)
+    rods, dynamic = _rod_forest(model)
     n_cap, r_cap = layout.node_capacity, layout.rod_capacity
     node_count = len(rods["node_body"])
 
@@ -118,20 +190,20 @@ def update_rod_direct_layout(layout: RodDirectLayout, model) -> None:
     body_node = np.full(model.body_count, -1, dtype=np.int32)
     body_node[rods["node_body"]] = np.arange(node_count, dtype=np.int32)
     layout.body_node.assign(body_node)
+    layout.body_dynamic.assign(dynamic.astype(np.int32))
     layout.rod_count = len(rods["rod_start"]) - 1
     layout.node_count = node_count
     layout.is_rod_body = body_node >= 0
 
 
-def _rod_forest(model) -> dict[str, list[int]]:
+def _rod_forest(model) -> tuple[dict[str, list[int]], np.ndarray]:
     jt = model.joint_type.numpy()
     jp = model.joint_parent.numpy()
     jc = model.joint_child.numpy()
     en = model.joint_enabled.numpy().astype(bool)
     inv_m = model.body_inv_mass.numpy()
     flags = model.body_flags.numpy() if getattr(model, "body_flags", None) is not None else np.zeros_like(inv_m)
-    kinematic_bit = int(_body_flag_kinematic())
-    dynamic = (inv_m > 0.0) & ((flags.astype(np.int64) & kinematic_bit) == 0)
+    dynamic = body_dynamic_mask(inv_m, flags)
 
     rod_joints = [j for j in range(model.joint_count) if jt[j] == int(JointType.ROD) and en[j]]
     parent = np.arange(model.body_count)
@@ -178,13 +250,12 @@ def _rod_forest(model) -> dict[str, list[int]]:
     for b in out["node_body"]:
         out["bnd_joint"].extend(one_sided.get(b, []))
         out["bnd_start"].append(len(out["bnd_joint"]))
-    return out
+    return out, dynamic
 
 
-def _body_flag_kinematic():
-    from ...sim import BodyFlags  # noqa: PLC0415
-
-    return BodyFlags.KINEMATIC
+def body_dynamic_mask(inv_mass: np.ndarray, flags: np.ndarray) -> np.ndarray:
+    """Bodies the direct solve may move: positive inverse mass and not kinematic."""
+    return (inv_mass > 0.0) & ((flags.astype(np.int64) & int(BodyFlags.KINEMATIC)) == 0)
 
 
 def _component(b0: int, adj: dict[int, list[tuple[int, int]]]) -> list[int]:

@@ -115,9 +115,10 @@ total, 60 steps of 10 iterations, seconds):
      - 0.26 / 8.69
      - 0.26 / 0.44
 
-These are costs per iteration, not time to a given accuracy: on stiff, slender
-rods the direct solve settles in a few iterations where per-body updates need
-hundreds. Leave the option off for rods that per-body VBD already resolves
+These are totals at equal iteration counts, not time to a given accuracy: at 10
+iterations, per-body updates leave a stiff, slender self-weight cantilever
+drooping 40 % past its equilibrium, which the direct solve reaches to 1 %.
+Leave the option off for rods that per-body VBD already resolves
 (stretch/bend ratios of order 10 or less), for scenes dominated by a few long
 rods on a GPU, and with the unsupported options listed in the reference.
 
