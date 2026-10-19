@@ -4233,7 +4233,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         if not is_pic:
             nodes_per_color_element = scratch.strain_nodes_per_element
-            is_dg = space_partition.space_topology.node_count() == nodes_per_color_element * grid.cell_count()
+            # Rebuildable sparse grids report capacity-sized node counts, so read
+            # discontinuity from the basis name instead of comparing node counts.
+            is_dg = _parse_grid_basis_name(self.strain_basis)[2]
 
         if is_pic or is_dg:
             # cell-based coloring
@@ -4274,8 +4276,12 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         elif self.strain_basis == "Q1":
             nodes_per_color_element = 1
             stencil_size = 3
+            node_env_offsets = None
+            env_offsets = None
             if isinstance(grid, fem.Nanogrid):
                 voxels = grid._node_ijk
+                node_env_offsets = getattr(space_partition, "env_offsets", None)
+                env_offsets = grid.env_offsets
                 res = wp.vec3i(0)
             else:
                 voxels = None
@@ -4293,6 +4299,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     space_node_indices,
                     stencil_size,
                     voxels,
+                    node_env_offsets,
+                    env_offsets,
                     res,
                     colors,
                     color_indices,

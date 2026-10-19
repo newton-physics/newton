@@ -1251,6 +1251,8 @@ def node_color(
     space_node_indices: wp.array[int],
     stencil_size: int,
     voxels: wp.array[wp.vec3i],
+    node_env_offsets: wp.array[int],
+    env_offsets: wp.array[wp.vec3i],
     res: wp.vec3i,
     colors: wp.array[int],
     color_indices: wp.array[int],
@@ -1265,6 +1267,9 @@ def node_color(
 
     if voxels:
         c = voxels[vid]
+        if node_env_offsets:
+            # Color environment-local coordinates so every environment sweeps its nodes in the same order.
+            c -= env_offsets[wp.lower_bound(node_env_offsets, nid + 1) - 1]
     else:
         c = fem.Grid3D.get_cell(res, vid)
 
