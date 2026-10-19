@@ -129,6 +129,7 @@ jobs:
         run: >
           uv run --extra dev --extra torch-cu13 -m newton.tests
           --strict-warnings
+          --parallel-timeout 4500
           --deprecation-allowlist scripts/ci/deprecation_allowlists/warp_nightly.txt
           --junit-report-xml rspec.xml
 
