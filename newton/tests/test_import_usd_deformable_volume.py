@@ -341,6 +341,37 @@ class TestUSDDeformableVolume(unittest.TestCase):
         for i in range(q0, q1):
             self.assertAlmostEqual(builder.particle_radius[i], builder.default_particle_radius, places=9)
 
+    def test_volume_particle_radius_fallback_warns_on_builder_override(self):
+        """A user-set ModelBuilder.default_particle_radius no longer reaches sim-API volume
+        deformables: import emits one summary warning per add_usd() call with a migration
+        recipe and still applies the half-default-thickness fallback."""
+        from newton._src.utils.import_usd_deformable_utils import _BUILDER_STOCK_PARTICLE_RADIUS
+
+        for override, expect_warning in ((0.05, True), (_BUILDER_STOCK_PARTICLE_RADIUS, False)):
+            with self.subTest(override=override):
+                stage = _deformable_stage()
+                _author_unit_tet(stage, "/World/SoftA", sim_api=True)
+                _author_unit_tet(stage, "/World/SoftB", sim_api=True)
+
+                builder = newton.ModelBuilder()
+                builder.default_particle_radius = override
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    builder.add_usd(stage)
+                mentions = [w for w in caught if "default_particle_radius" in str(w.message)]
+                self.assertEqual(len(mentions), 1 if expect_warning else 0)
+                if expect_warning:
+                    self.assertIn("/World/SoftA", str(mentions[0].message))
+                    self.assertIn("/World/SoftB", str(mentions[0].message))
+                self.assertTrue(np.allclose(builder.particle_radius, np.full(len(builder.particle_q), 0.0005)))
+
+    def test_builder_stock_particle_radius_constant_matches_builder(self):
+        """_BUILDER_STOCK_PARTICLE_RADIUS must track ModelBuilder's stock default, so the
+        override warning never fires on the stock value or misses a real override."""
+        from newton._src.utils.import_usd_deformable_utils import _BUILDER_STOCK_PARTICLE_RADIUS
+
+        self.assertEqual(newton.ModelBuilder().default_particle_radius, _BUILDER_STOCK_PARTICLE_RADIUS)
+
     def test_bare_tetmesh_ignores_per_point_masses(self):
         """A bare TetMesh (no deformable markers) keeps the legacy import; masses ignored."""
         from pxr import Sdf
@@ -750,24 +781,6 @@ class TestUSDDeformableVolume(unittest.TestCase):
         result = builder.add_usd(stage, return_deformable_results=True)
 
         self.assertEqual(result["path_soft_attrs"]["/World/Soft"]["resolved_density"], 123.5)
-
-    def test_volume_particle_radius_fallback_warns_on_builder_override(self):
-        """A user-set ModelBuilder.default_particle_radius no longer reaches sim-API volume
-        deformables: import warns with a migration recipe and still applies the
-        half-default-thickness fallback."""
-        for override, expect_warning in ((0.05, True), (0.1, False)):
-            with self.subTest(override=override):
-                stage = _deformable_stage()
-                _author_unit_tet(stage, "/World/Soft", sim_api=True)
-
-                builder = newton.ModelBuilder()
-                builder.default_particle_radius = override
-                with warnings.catch_warnings(record=True) as caught:
-                    warnings.simplefilter("always")
-                    builder.add_usd(stage)
-                mentions = [w for w in caught if "default_particle_radius" in str(w.message)]
-                self.assertEqual(bool(mentions), expect_warning)
-                self.assertTrue(np.allclose(builder.particle_radius, np.full(len(builder.particle_q), 0.0005)))
 
     def test_volume_collision_limitation(self):
         """Newton cannot disable particle collision: a volume deformable without
