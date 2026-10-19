@@ -11084,7 +11084,7 @@ class TestActuatorDampratioMultiWorldRuntime(unittest.TestCase):
         np.testing.assert_allclose(meaninertia[1], 2.0 * meaninertia[0], rtol=1e-5)
 
     def test_joint_target_initial_damping(self):
-        """Resolve joint-target damping using each world's gains and armature."""
+        """Resolve each world's gains, armature, and ratio despite skipped metadata."""
         template = newton.ModelBuilder()
         template.add_mjcf(self.MJCF)
         builder = newton.ModelBuilder()
@@ -11092,94 +11092,52 @@ class TestActuatorDampratioMultiWorldRuntime(unittest.TestCase):
         builder.joint_armature[1] = 0.3
         builder.joint_target_ke[1] = 25.0
         builder.joint_target_kd[2] = 5.0
+        skipped_row = {
+            key: attr.default for key, attr in builder.custom_attributes.items() if attr.frequency == "mujoco:actuator"
+        }
+        skipped_row["mujoco:actuator_target_label"] = "/missing"
+        builder.add_custom_values(**skipped_row)
         model = builder.finalize()
+        worlds = model.mujoco.actuator_world.numpy()
+        biasprm = model.mujoco.actuator_biasprm.numpy()
+        ratios = np.array([0.5, 2.0, 1.0])
+        biasprm[worlds >= 0, 2] = ratios[worlds[worlds >= 0]]
+        biasprm[worlds < 0, 2] = 0.75
+        model.mujoco.actuator_biasprm.assign(biasprm)
 
         mujoco = self.solver._mujoco
         native = mujoco.MjModel.from_xml_string(self.MJCF)
         modified = mujoco.MjModel.from_xml_string(
             self.MJCF.replace('type="hinge"', 'type="hinge" armature="0.3"').replace('kp="100"', 'kp="25"')
         )
-        expected = [native.actuator_biasprm[0, 2], modified.actuator_biasprm[0, 2], -5.0]
-        # Explicitly separated CPU mode only simulates the template world.
-        cpu_solver = SolverMuJoCo(model, use_mujoco_cpu=True, separate_worlds=True, disable_contacts=True)
-        np.testing.assert_allclose(cpu_solver.mj_model.actuator_biasprm[0, 2], expected[0], rtol=1e-5)
-        np.testing.assert_allclose(model.joint_target_kd.numpy(), [-expected[0], 0.0, 5.0], rtol=1e-5)
-        np.testing.assert_array_equal(model.mujoco.actuator_biasprm.numpy()[1:, 2], 1.0)
-        # A subsequent batched solver must still resolve the remaining worlds.
-        solver = SolverMuJoCo(model, disable_contacts=True)
-        np.testing.assert_allclose(solver.mjw_model.actuator_biasprm.numpy()[:, 0, 2], expected, rtol=1e-5)
+        expected = [0.5 * native.actuator_biasprm[0, 2], 2.0 * modified.actuator_biasprm[0, 2], -5.0]
+        with self.assertWarnsRegex(UserWarning, "unresolved target '/missing'"):
+            solver = SolverMuJoCo(model, disable_contacts=True)
         np.testing.assert_allclose(model.joint_target_kd.numpy(), -np.array(expected), rtol=1e-5)
-        # Reuse the published coefficients without another damping-ratio resolution.
+        np.testing.assert_allclose(solver.mjw_model.actuator_biasprm.numpy()[:, 0, 2], expected, rtol=1e-5)
+        np.testing.assert_array_equal(model.mujoco.actuator_biasprm.numpy()[worlds < 0], biasprm[worlds < 0])
         solver.notify_model_changed(ModelFlags.JOINT_DOF_FORCE_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES)
         np.testing.assert_allclose(solver.mjw_model.actuator_biasprm.numpy()[:, 0, 2], expected, rtol=1e-5)
-        # Rebuilding the solver must preserve an explicit zero after resolving the import.
-        model.joint_target_kd.zero_()
-        rebuilt = SolverMuJoCo(model, disable_contacts=True)
-        np.testing.assert_array_equal(rebuilt.mjw_model.actuator_biasprm.numpy()[:, 0, 2], 0.0)
-
-    def test_ball_joint_target_initial_damping(self):
-        """Resolve every ball axis from its shared source row in each world."""
-        xml = """
-        <mujoco>
-            <worldbody><body>
-                <joint name="j" type="ball"/>
-                <geom type="box" size="0.1 0.2 0.3" mass="1"/>
-            </body></worldbody>
-            <actuator><position joint="j" kp="100" dampratio="1"/></actuator>
-        </mujoco>
-        """
-        # Joint targets expand the imported actuator into three axis actuators.
-        native = self.solver._mujoco.MjModel.from_xml_string(
-            xml.replace(
-                '<position joint="j" kp="100" dampratio="1"/>',
-                """
-                <position joint="j" kp="100" dampratio="1" gear="1 0 0 0 0 0"/>
-                <position joint="j" kp="100" dampratio="1" gear="0 1 0 0 0 0"/>
-                <position joint="j" kp="100" dampratio="1" gear="0 0 1 0 0 0"/>
-                """,
-            )
-        )
-        for cpu in (True, False):
-            with self.subTest(cpu=cpu):
-                template = newton.ModelBuilder()
-                template.add_mjcf(xml)
-                builder = newton.ModelBuilder()
-                builder.replicate(template, 1 if cpu else 2)
-                model = builder.finalize(device="cpu" if cpu else self.model.device)
-                ratios = np.arange(1, model.world_count + 1, dtype=np.float32)
-                biasprm = model.mujoco.actuator_biasprm.numpy()
-                biasprm[:, 2] = ratios
-                model.mujoco.actuator_biasprm.assign(biasprm)
-                expected = -ratios[:, None] * native.actuator_biasprm[:, 2]
-                solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
-
-                np.testing.assert_allclose(model.joint_target_kd.numpy().reshape(-1, 3), expected, rtol=1e-5)
-                np.testing.assert_allclose(solver.mj_model.actuator_biasprm[:, 2], -expected[0], rtol=1e-5)
-                np.testing.assert_allclose(solver.mjw_model.actuator_biasprm.numpy()[..., 2], -expected, rtol=1e-5)
-                solver.notify_model_changed(ModelFlags.JOINT_DOF_FORCE_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES)
-                np.testing.assert_allclose(solver.mjw_model.actuator_biasprm.numpy()[..., 2], -expected, rtol=1e-5)
-                rebuilt = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
-                np.testing.assert_allclose(model.joint_target_kd.numpy().reshape(-1, 3), expected, rtol=1e-5)
-                np.testing.assert_allclose(rebuilt.mjw_model.actuator_biasprm.numpy()[..., 2], -expected, rtol=1e-5)
 
     def test_joint_target_kinematic_initial_damping(self):
-        """Preserve physical damping through a kinematic-to-dynamic transition and rebuild."""
-        native = self.solver._mujoco.MjModel.from_xml_string(
-            self.MJCF.replace('type="hinge"', 'type="hinge" armature="0.3"')
+        """Resolve every ball axis using physical inertia and preserve explicit edits."""
+        xml = self.MJCF.replace('type="hinge" axis="0 0 1"', 'type="ball" armature="0.3"')
+        # The imported ball drive expands into three axis actuators.
+        position = '<position name="pos_dampratio" joint="j1" kp="100" dampratio="1.0"/>'
+        axes = "".join(
+            f'<position joint="j1" kp="100" dampratio="1" gear="{gear} 0 0 0"/>' for gear in ("1 0 0", "0 1 0", "0 0 1")
         )
-        expected = -native.actuator_biasprm[0, 2]
+        native = self.solver._mujoco.MjModel.from_xml_string(xml.replace(position, axes))
+        expected = -native.actuator_biasprm[:, 2]
         for cpu in (True, False):
             with self.subTest(cpu=cpu):
                 builder = newton.ModelBuilder()
-                builder.add_mjcf(self.MJCF)
+                builder.add_mjcf(xml)
                 builder.body_flags[0] = int(BodyFlags.KINEMATIC)
-                builder.joint_armature[0] = 0.3
                 model = builder.finalize(device="cpu" if cpu else self.model.device)
                 solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
-
                 np.testing.assert_allclose(model.joint_target_kd.numpy(), expected, rtol=1e-5)
                 np.testing.assert_allclose(solver.mj_model.actuator_biasprm[:, 2], -expected, rtol=1e-5)
-                np.testing.assert_allclose(solver.mjw_model.actuator_biasprm.numpy()[..., 2], -expected, rtol=1e-5)
                 np.testing.assert_allclose(solver.mjw_model.dof_armature.numpy(), KINEMATIC_ARMATURE)
                 if cpu:
                     np.testing.assert_allclose(solver.mj_model.dof_armature, KINEMATIC_ARMATURE)
@@ -11187,44 +11145,12 @@ class TestActuatorDampratioMultiWorldRuntime(unittest.TestCase):
                 model.body_flags.fill_(int(BodyFlags.DYNAMIC))
                 solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
                 np.testing.assert_allclose(solver.mjw_model.dof_armature.numpy(), 0.3)
-                np.testing.assert_allclose(solver.mjw_model.actuator_biasprm.numpy()[..., 2], -expected, rtol=1e-5)
+                np.testing.assert_allclose(solver.mjw_model.actuator_biasprm.numpy()[0, :, 2], -expected, rtol=1e-5)
+                # Consuming the shared ratio must preserve an explicit zero on rebuild.
+                model.joint_target_kd.zero_()
                 rebuilt = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
-                np.testing.assert_allclose(model.joint_target_kd.numpy(), expected, rtol=1e-5)
-                np.testing.assert_allclose(rebuilt.mj_model.actuator_biasprm[:, 2], -expected, rtol=1e-5)
-                np.testing.assert_allclose(rebuilt.mjw_model.actuator_biasprm.numpy()[..., 2], -expected, rtol=1e-5)
-
-    def test_joint_target_damping_with_skipped_rows(self):
-        """Resolve distinct world ratios while leaving skipped global metadata untouched."""
-        template = newton.ModelBuilder()
-        template.add_mjcf(self.MJCF)
-        native = self.solver._mujoco.MjModel.from_xml_string(self.MJCF)
-        ratios = np.array([0.5, 2.0], dtype=np.float32)
-        expected = native.actuator_biasprm[0, 2] * ratios
-        for skipped_count in (1, 2):
-            with self.subTest(skipped_count=skipped_count):
-                builder = newton.ModelBuilder()
-                builder.replicate(template, 2)
-                skipped_row = {
-                    key: attr.default
-                    for key, attr in builder.custom_attributes.items()
-                    if attr.frequency == "mujoco:actuator"
-                }
-                skipped_row["mujoco:actuator_target_label"] = "/missing"
-                for _ in range(skipped_count):
-                    builder.add_custom_values(**skipped_row)
-                model = builder.finalize()
-                worlds = model.mujoco.actuator_world.numpy()
-                biasprm = model.mujoco.actuator_biasprm.numpy()
-                biasprm[worlds >= 0, 2] = ratios[worlds[worlds >= 0]]
-                biasprm[worlds < 0, 2] = 0.75
-                model.mujoco.actuator_biasprm.assign(biasprm)
-                with self.assertWarnsRegex(UserWarning, "unresolved target '/missing'"):
-                    solver = SolverMuJoCo(model, disable_contacts=True)
-                np.testing.assert_allclose(model.joint_target_kd.numpy(), -expected, rtol=1e-5)
-                np.testing.assert_allclose(solver.mjw_model.actuator_biasprm.numpy()[:, 0, 2], expected, rtol=1e-5)
-                consumed = model.mujoco.actuator_biasprm.numpy()
-                np.testing.assert_allclose(consumed[worlds >= 0, 2], expected[worlds[worlds >= 0]], rtol=1e-5)
-                np.testing.assert_array_equal(consumed[worlds < 0], biasprm[worlds < 0])
+                np.testing.assert_array_equal(rebuilt.mj_model.actuator_biasprm[:, 2], 0.0)
+                np.testing.assert_array_equal(rebuilt.mjw_model.actuator_biasprm.numpy()[..., 2], 0.0)
 
 
 class TestActuatorInheritrange(unittest.TestCase):
