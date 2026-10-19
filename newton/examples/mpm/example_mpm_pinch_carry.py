@@ -301,7 +301,8 @@ class Example:
                     f"{r['stress']:+13.1f}  {r['compression']:+.3f}"
                 )
         lifted = [r for r in self.records if r["phase"] in ("hold high", "carry", "hold carried")]
-        dropped = next((r for r in lifted if r["relative_height"] < -0.01), None)
+        # Non-finite heights also count as dropped.
+        dropped = next((r for r in lifted if not r["relative_height"] >= -0.01), None)
         if dropped is None:
             print("\nResult: the object stayed gripped until release.")
         else:
@@ -360,12 +361,6 @@ class Example:
             action=argparse.BooleanOptionalAction,
             default=None,
             help="Solve contacts inside the strain-cell color loop (automatic for supported configurations).",
-        )
-        parser.add_argument(
-            "--contact-particle-centers",
-            action="store_true",
-            default=True,
-            help="Use particle-center contacts with velocity-basis weights (the only particle-contact mode).",
         )
         parser.add_argument("--solver", "-s", type=str, default="gs")
         return parser
