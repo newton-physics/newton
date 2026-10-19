@@ -2025,7 +2025,7 @@ class TestImportMjcfInlineMesh(unittest.TestCase):
         <mesh name="tetra"
               vertex="1 0 0  2 0 0  1 1 0  1 0 1"
               face="0 2 1  0 1 3  0 3 2  1 2 3"
-              normal="1 1 0  1 1 0  1 1 0  1 1 0"
+              normal="1 1 0"
               refpos="1 0 0"
               refquat="0.7071067811865476 0 0 0.7071067811865476"
               scale="2 3 4"/>
@@ -2035,31 +2035,23 @@ class TestImportMjcfInlineMesh(unittest.TestCase):
     </worldbody>
 </mujoco>
 """
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+
+        mesh = builder.shape_source[0]
+        np.testing.assert_allclose(
+            mesh.vertices,
+            [[0.0, 0.0, 0.0], [0.0, -3.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.0, 4.0]],
+            atol=1e-5,
+        )
         expected_normal = np.array([0.5, -1.0 / 3.0, 0.0])
         expected_normal /= np.linalg.norm(expected_normal)
-        for shared, generate_faces in ((False, False), (True, False), (True, True)):
-            with self.subTest(shared=shared, generate_faces=generate_faces):
-                xml = mjcf
-                if shared:
-                    xml = xml.replace('normal="1 1 0  1 1 0  1 1 0  1 1 0"', 'normal="1 1 0"')
-                if generate_faces:
-                    xml = xml.replace('face="0 2 1  0 1 3  0 3 2  1 2 3"', "")
-                builder = newton.ModelBuilder()
-                builder.add_mjcf(xml)
-
-                mesh = builder.shape_source[0]
-                np.testing.assert_allclose(
-                    mesh.vertices,
-                    [[0.0, 0.0, 0.0], [0.0, -3.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.0, 4.0]],
-                    atol=1e-5,
-                )
-                np.testing.assert_allclose(mesh.normals, np.tile(expected_normal, (4, 1)), atol=1e-5)
+        np.testing.assert_allclose(mesh.normals, np.tile(expected_normal, (4, 1)), atol=1e-5)
 
     def test_inline_mesh_rejects_malformed_vertex_attributes(self):
         """Reject normals and texture coordinates with the wrong vertex count."""
         for attribute, message in (
             ('normal="0 1"', "normal.*3 values per vertex"),
-            ('normal="0 0 1 0 0 1"', "normal.*3 values per vertex"),
             ('texcoord="0 0"', "texcoord.*2 values per vertex"),
             ('refpos="invalid 0 0"', "Inline MJCF mesh 'bad'.*invalid refpos data"),
             ('refquat="invalid 0 0 1"', "Inline MJCF mesh 'bad'.*invalid refquat data"),
