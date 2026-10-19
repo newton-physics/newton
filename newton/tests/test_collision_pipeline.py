@@ -4487,7 +4487,7 @@ def test_split_gjk_mpr_matches_fused_under_graph_capture(test, device):
         builder.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25)
 
     replicated_builder = newton.ModelBuilder()
-    replicated_builder.replicate(builder, world_count=768)
+    replicated_builder.replicate(builder, copy_count=768)
     model = replicated_builder.finalize(device=device)
     split = newton.CollisionPipeline(
         model,

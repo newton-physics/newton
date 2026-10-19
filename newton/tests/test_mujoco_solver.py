@@ -8113,7 +8113,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         # force the ModelBuilder to correct zero mass/inertia values
         world_builder.bound_inertia = 0.01
         world_builder.bound_mass = 0.01
-        world_builder.replicate(builder, world_count=world_count)
+        world_builder.replicate(builder, copy_count=world_count)
         model = world_builder.finalize()
         solver = SolverMuJoCo(model, separate_worlds=True)
         self.assertEqual(solver.mj_model.nv, 3)
@@ -8175,7 +8175,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         # force the ModelBuilder to correct zero mass/inertia values
         world_builder.bound_inertia = 0.01
         world_builder.bound_mass = 0.01
-        world_builder.replicate(builder, world_count=world_count)
+        world_builder.replicate(builder, copy_count=world_count)
         model = world_builder.finalize()
         solver = SolverMuJoCo(model, separate_worlds=True)
         self.assertEqual(model.joint_count, 4 * world_count)
@@ -8211,7 +8211,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
 
         world_count = 3
         world_builder = newton.ModelBuilder()
-        world_builder.replicate(builder, world_count=world_count)
+        world_builder.replicate(builder, copy_count=world_count)
         model = world_builder.finalize()
         solver = SolverMuJoCo(model, separate_worlds=True, disable_contacts=True)
 
@@ -8474,7 +8474,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         b_free = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)), xform=wp.transform(free_pos, free_rot))
 
         world_builder = newton.ModelBuilder()
-        world_builder.replicate(builder, world_count=1)
+        world_builder.replicate(builder, copy_count=1)
         model = world_builder.finalize()
 
         solver = SolverMuJoCo(model)
@@ -8580,7 +8580,7 @@ class TestMuJoCoArticulationConversion(unittest.TestCase):
         b_free = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)), xform=wp.transform(free_pos, free_rot))
 
         world_builder = newton.ModelBuilder()
-        world_builder.replicate(builder, world_count=1)
+        world_builder.replicate(builder, copy_count=1)
         model = world_builder.finalize()
 
         solver = SolverMuJoCo(model)

@@ -134,7 +134,7 @@ class Example:
         shapes_per_world = template.shape_count
 
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
-        builder.replicate(template, world_count=self.world_count)
+        builder.replicate(template, copy_count=self.world_count)
         self._expand_world_indices(bodies_per_world, joints_per_world, shapes_per_world)
         self.ground_shapes = [self._emit_ground_plane(builder)]
 

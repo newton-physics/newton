@@ -12,6 +12,7 @@ import warp as wp
 from newton import Mesh, Model, ModelBuilder, Rod
 from newton._src.sim.builder import _ARRAY_BACKED_ATTRIBUTE_DTYPES, _materialize_array_backed_list
 from newton.actuators import DrivePD
+from newton.exceptions import NewtonDeprecationWarning
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 from newton.utils import compute_world_offsets
 
@@ -274,6 +275,77 @@ class TestModelBuilderReplicate(unittest.TestCase):
                     rtol=1e-6,
                     atol=1e-6,
                 )
+
+    def test_replicate_into_current_world_matches_add_builder_loop(self):
+        """Match repeated add_builder calls when copies share the current world context."""
+        source = self._make_source()
+        xforms = [
+            wp.transform((1.0, 2.0, 3.0), wp.quat_rpy(0.1, 0.2, 0.3)),
+            wp.transform((-2.0, 1.0, 0.5), wp.quat_identity()),
+            wp.transform((0.5, -1.0, 2.0), wp.quat_rpy(-0.2, 0.4, 0.1)),
+        ]
+        label_prefixes = ["a", None, "c"]
+        for in_world in (False, True):
+            with self.subTest(in_world=in_world):
+                expected = self._make_destination()
+                actual = self._make_destination()
+                if in_world:
+                    expected.begin_world()
+                    actual.begin_world()
+                for xform, label_prefix in zip(xforms, label_prefixes, strict=True):
+                    expected.add_builder(source, xform=xform, label_prefix=label_prefix)
+                actual.replicate(
+                    source, len(xforms), separate_worlds=False, xforms=xforms, label_prefixes=label_prefixes
+                )
+                if in_world:
+                    expected.end_world()
+                    actual.end_world()
+
+                self.assert_builder_merge_state_equal(expected, actual)
+
+    def test_replicate_into_current_world_adds_no_worlds(self):
+        """Copies that share a world collide with each other and leave the world count unchanged."""
+        source = ModelBuilder(gravity=(0.0, 0.0, -3.0))
+        body = source.add_body()
+        source.add_shape_box(body, hx=0.5, hy=0.5, hz=0.5)
+
+        builder = ModelBuilder()
+        builder.replicate(source, copy_count=5, spacing=(1.5, 0.0, 0.0), separate_worlds=False)
+        self.assertEqual(builder.world_count, 0)
+        self.assertEqual(builder.body_count, 5)
+        self.assertEqual(builder.body_world, [-1] * 5)
+        np.testing.assert_allclose(np.asarray(builder._gravity_as_vector()), [0.0, 0.0, -3.0])
+
+        builder.begin_world()
+        builder.replicate(source, copy_count=2, separate_worlds=False)
+        builder.end_world()
+        self.assertEqual(builder.world_count, 1)
+        self.assertEqual(builder.body_world, [-1] * 5 + [0] * 2)
+        np.testing.assert_allclose(np.asarray(builder.world_gravity[0]), [0.0, 0.0, -3.0])
+
+        model = builder.finalize(device="cpu")
+        self.assertEqual(model.body_count, 7)
+
+    def test_replicate_world_count_is_deprecated(self):
+        source = self._make_source()
+        expected = self._make_destination()
+        expected.replicate(source, copy_count=2)
+
+        actual = self._make_destination()
+        with self.assertWarnsRegex(NewtonDeprecationWarning, r"replicate\(world_count=\.\.\.\)"):
+            actual.replicate(source, world_count=2)
+        self.assert_builder_merge_state_equal(expected, actual)
+
+        with self.assertRaisesRegex(TypeError, "only one of"):
+            ModelBuilder().replicate(source, 2, world_count=2)
+        with self.assertRaisesRegex(TypeError, "copy_count"):
+            ModelBuilder().replicate(source)
+
+    def test_replicate_separate_worlds_rejects_world_context(self):
+        builder = ModelBuilder()
+        builder.begin_world()
+        with self.assertRaisesRegex(RuntimeError, "already in world context"):
+            builder.replicate(self._make_source(), copy_count=2)
 
     def test_replicate_remaps_joint_mimic_references(self):
         """Verify replication remaps dense mimic references per world."""

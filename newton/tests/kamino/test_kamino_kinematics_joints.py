@@ -202,7 +202,7 @@ class TestKinematicsJoints(unittest.TestCase):
     def test_02_multiple_revolute_joints(self):
         # Construct the model description
         builder = ModelBuilder()
-        builder.replicate(builder=build_unary_revolute_joint_test(), world_count=4)
+        builder.replicate(builder=build_unary_revolute_joint_test(), copy_count=4)
 
         # Create the model and state
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
@@ -394,7 +394,7 @@ class TestKinematicsJoints(unittest.TestCase):
         builder = ModelBuilder()
         builder.replicate(
             builder=build_unary_revolute_joint_test(dynamic=True, implicit_pd=True, effort_limit=None),
-            world_count=4,
+            copy_count=4,
         )
 
         # Create the model and data

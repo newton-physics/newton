@@ -162,6 +162,9 @@ _ADD_ROD_GRAPH_DEPRECATION_MSG = (
     "ModelBuilder.add_rod_graph() is deprecated in Newton 1.6; "
     "construct newton.Rod(..., edges=...) and pass it with add_rod(rod=...) instead."
 )
+_REPLICATE_WORLD_COUNT_DEPRECATION_MSG = (
+    "ModelBuilder.replicate(world_count=...) is deprecated in Newton 1.8; use copy_count=... instead."
+)
 
 # Plain constructors, not wp.transform_identity()/wp.quat_identity(): builtins
 # dispatch through overload resolution and would initialize the Warp runtime at import.
@@ -756,7 +759,7 @@ class ModelBuilder:
 
            main = ModelBuilder()
            main.add_world(robot)  # All robot entities -> world 0
-           main.replicate(robot, world_count=2)  # Add more worlds from the same source
+           main.replicate(robot, copy_count=2)  # Add more worlds from the same source
 
     :attr:`current_world` is builder-managed, read-only state. Use
     :meth:`begin_world`, :meth:`end_world`, :meth:`add_world`, or
@@ -3560,23 +3563,31 @@ class ModelBuilder:
     def replicate(
         self,
         builder: ModelBuilder,
-        world_count: int,
+        copy_count: int | None = None,
         spacing: tuple[float, float, float] = (0.0, 0.0, 0.0),
         *,
+        separate_worlds: bool = True,
         xforms: Sequence[Transform] | None = None,
         label_prefixes: Sequence[str | None] | None = None,
+        world_count: int | None = None,
     ):
         """
         Replicates the given builder multiple times, offsetting each copy according to the supplied spacing.
 
         This method is useful for creating multiple instances of a sub-model (e.g., robots, scenes)
         arranged in a regular grid or along a line. Each copy is offset in space by a multiple of the
-        specified spacing vector, and all entities from each copy are assigned to a new world.
+        specified spacing vector. By default, all entities from each copy are assigned to a new world,
+        so copies do not collide with each other. With ``separate_worlds=False``, all copies are added
+        to the current world context instead, as repeated :meth:`add_builder` calls would add them, and
+        copies collide with each other.
 
-        All copies are merged in a single batched pass; subclass overrides of
-        :meth:`add_world` or :meth:`add_builder` are not invoked during replication.
-        Merged entries may share objects with ``builder`` and across the replicated
-        worlds; see :meth:`add_builder` for the supported life-cycle.
+        All copies are merged in a single batched pass, which is much faster than calling
+        :meth:`add_world` or :meth:`add_builder` once per copy; subclass overrides of those methods are
+        not invoked during replication. Merged entries may share objects with ``builder`` and across
+        the copies; see :meth:`add_builder` for the supported life-cycle.
+
+        .. deprecated:: 1.8
+            ``world_count`` is deprecated. Use ``copy_count`` instead.
 
         Note:
             For visual separation of worlds, it is recommended to use the viewer's
@@ -3602,49 +3613,74 @@ class ModelBuilder:
 
         Args:
             builder: The builder to replicate. All entities from this builder will be copied.
-            world_count: The number of worlds to create.
+            copy_count: The number of copies to add.
             spacing: The spacing between each copy along each axis. Ignored when
                 ``xforms`` is provided.
                 For example, (5.0, 5.0, 0.0) arranges copies in a 2D grid in the XY plane.
                 Defaults to (0.0, 0.0, 0.0).
-            xforms: Optional sequence of transforms, one per replicated world.
-                When provided, its length must equal ``world_count``.
+            separate_worlds: Whether to assign each copy to a new world. If ``False``, add all
+                copies to the current world context (see :attr:`current_world`) instead.
+            xforms: Optional sequence of transforms, one per copy.
+                When provided, its length must equal ``copy_count``.
             label_prefixes: Optional prefix prepended to all labels from the source builder,
-                one per replicated world, applied as :meth:`add_builder` applies its
+                one per copy, applied as :meth:`add_builder` applies its
                 ``label_prefix``. Labels are joined with ``/``. A ``None`` entry leaves that
-                world's labels as they are in ``builder``; an empty source label remains
+                copy's labels as they are in ``builder``; an empty source label remains
                 unlabeled.
+            world_count: Deprecated alias for ``copy_count``.
+
+        Raises:
+            TypeError: Neither or both of ``copy_count`` and ``world_count`` are supplied.
+            RuntimeError: ``separate_worlds`` is ``True`` inside a world context.
+            ValueError: ``xforms`` or ``label_prefixes`` does not have ``copy_count`` entries.
         """
+        if world_count is not None:
+            if copy_count is not None:
+                raise TypeError("Specify only one of `copy_count` and `world_count`")
+            warnings.warn(
+                _REPLICATE_WORLD_COUNT_DEPRECATION_MSG,
+                NewtonDeprecationWarning,
+                stacklevel=_external_warning_stacklevel(),
+            )
+            copy_count = world_count
+        elif copy_count is None:
+            raise TypeError("ModelBuilder.replicate() missing required argument: 'copy_count'")
+
         gc_was_enabled = gc.isenabled()
         gc.disable()
         try:
-            if world_count <= 0:
+            if copy_count <= 0:
                 return
-            if self.current_world != -1:
+            if separate_worlds and self.current_world != -1:
                 raise RuntimeError(
                     f"Cannot begin a new world: already in world context (current_world={self.current_world}). "
                     "Call end_world() first to close the current world context."
                 )
             if xforms is None:
                 if tuple(spacing) == (0, 0, 0):
-                    xforms = [None] * world_count
+                    xforms = [None] * copy_count
                 else:
-                    offsets = compute_world_offsets(world_count, spacing, self.up_axis)
+                    offsets = compute_world_offsets(copy_count, spacing, self.up_axis)
                     xforms = [wp.transform(offset, wp.quat_identity()) for offset in offsets]
-            elif len(xforms) != world_count:
-                raise ValueError(f"xforms must contain {world_count} entries, got {len(xforms)}")
+            elif len(xforms) != copy_count:
+                raise ValueError(f"xforms must contain {copy_count} entries, got {len(xforms)}")
             if label_prefixes is None:
-                label_prefixes = [None] * world_count
-            elif len(label_prefixes) != world_count:
-                raise ValueError(f"label_prefixes must contain {world_count} entries, got {len(label_prefixes)}")
+                label_prefixes = [None] * copy_count
+            elif len(label_prefixes) != copy_count:
+                raise ValueError(f"label_prefixes must contain {copy_count} entries, got {len(label_prefixes)}")
 
-            base_world = self.world_count
-            worlds = list(range(base_world, base_world + world_count))
+            if separate_worlds:
+                worlds = list(range(self.world_count, self.world_count + copy_count))
+            else:
+                worlds = [self.current_world] * copy_count
             with self._raw_array_access():
                 self._merge_builder_copies(builder, worlds, xforms, label_prefixes, array_backed=True)
 
-            self.world_gravity.extend(builder._gravity_as_vector() for _ in range(world_count))
-            self.world_count += world_count
+            if separate_worlds:
+                self.world_gravity.extend(builder._gravity_as_vector() for _ in range(copy_count))
+                self.world_count += copy_count
+            else:
+                self._adopt_builder_gravity(builder)
         finally:
             if gc_was_enabled:
                 gc.enable()
@@ -5538,7 +5574,10 @@ class ModelBuilder:
         """
 
         self._merge_builder_copies(builder, [self.current_world], [xform], [label_prefix])
+        self._adopt_builder_gravity(builder)
 
+    def _adopt_builder_gravity(self, builder: ModelBuilder) -> None:
+        """Take over ``builder``'s gravity for the current world context after merging it."""
         if self.current_world >= 0 and self.current_world < len(self.world_gravity):
             # We're in a world context, update this world's gravity vector
             self.world_gravity[self.current_world] = builder._gravity_as_vector()
@@ -9335,7 +9374,7 @@ class ModelBuilder:
                 arm.approximate_meshes(method="convex_hull")
 
                 scene = newton.ModelBuilder()
-                scene.replicate(arm, world_count=N)
+                scene.replicate(arm, copy_count=N)
 
         Args:
             method: The method to use for approximating the mesh shapes.
