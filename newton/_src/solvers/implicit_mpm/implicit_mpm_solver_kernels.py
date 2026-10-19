@@ -380,7 +380,7 @@ def init_particle_strains(
     particle_Jp: wp.array[float],
     particle_stress: wp.array[wp.mat33],
 ):
-    """Zero the strains `update_particle_strains` accumulates into, and carry over the others.
+    """Zero the strains ``update_particle_strains`` accumulates into, and carry over the others.
 
     Particles it skips (inactive or massless) may have no quadrature point at all,
     e.g. outside the active cells of a rebuildable sparse grid, so they are copied here.
