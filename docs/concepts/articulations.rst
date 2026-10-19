@@ -114,8 +114,7 @@ explicit rest points, the initial endpoints may differ.
 
 At structural rest, parent and child anchor points coincide. The rod's
 :attr:`newton.Model.joint_target_q` therefore has zero translation and stores
-the relative rest rotation as a quaternion in coordinate layout or extrinsic
-ZYX angles [rad] in legacy layout. For individual joints, specify
+the relative rest rotation as a unit quaternion. For individual joints, specify
 ``rest_rotation`` on :meth:`newton.ModelBuilder.add_joint_rod`; its default is
 the initial relative anchor rotation.
 
@@ -202,6 +201,10 @@ applied componentwise when the joints have more than one coordinate.
 The joint types do not need to match; only their position and velocity
 dimensions must match. For example, a one-axis D6 joint can mimic another
 one-dimensional joint.
+Both joints must be PRISMATIC, REVOLUTE, or D6 joints. Quaternion joints
+(BALL, FREE, DISTANCE, and ROD) are not supported because componentwise
+scaling and offsets do not preserve unit quaternions. FIXED joints have no
+coordinates to mimic and are also not supported.
 
 :func:`newton.eval_mimic` updates the follower coordinates in a state. For each
 follower, it reads all position and velocity coordinates of the reference joint
@@ -558,11 +561,9 @@ properties defined via :class:`newton.ModelBuilder.JointDofConfig`, and the
 velocity targets at :attr:`newton.Control.joint_target_qd`.
 
 The position targets at :attr:`newton.Control.joint_target_q` instead match
-:attr:`newton.Model.joint_q` (coord layout) by default; index those with
-:attr:`newton.Model.joint_q_start`. Under the deprecated legacy layout
-(``use_coord_layout_targets = False``) the array is DOF-shaped and indexed
-via :attr:`newton.Model.joint_qd_start` — see the
-:ref:`migration guide <joint-target-layout>` for details.
+:attr:`newton.Model.joint_q` (coordinate layout); index those with
+:attr:`newton.Model.joint_target_q_start`, which aliases :attr:`newton.Model.joint_q_start`.
+See the :ref:`migration guide <joint-target-layout>` for details.
 
 For every generalized-coordinate joint, these per-DOF arrays are stored
 consecutively, with linear DOFs first and angular DOFs second. Use
@@ -591,8 +592,7 @@ The same start index can be used to query other per-DOF arrays for that joint:
     num_angular_dofs = joint_dof_dim[joint_id, 1]
     # all per-DOF arrays for this joint start at this index:
     dof_start = joint_qd_start[joint_id]
-    # position targets use the layout-aware mapping (aliases joint_q_start
-    # under newton.use_coord_layout_targets, joint_qd_start otherwise):
+    # position targets use coordinate indices (aliases joint_q_start):
     target_q_start = joint_target_q_start[joint_id]
     # the axis vector for the first linear DOF
     first_lin_axis = joint_axis[dof_start]
@@ -770,22 +770,54 @@ Construct a view by matching articulation keys with a pattern and optional filte
     assert scalar_view.get_dof_positions(state).shape == (1, 2, 1)
 
 Use views to read/write batched state slices (joint positions/velocities, root transforms,
-link transforms) without manual index bookkeeping.
+link transforms) without manual index bookkeeping. Getters may return a copy instead of a
+view of the source array, for example when a joint or link filter leaves gaps in the
+selection. Write changes back with the matching setter.
 
 Selections with structural differences
 """"""""""""""""""""""""""""""""""""""
 
-By default, every match must have the same joint, link, and shape layout. If some
-kinds of data differ, pass ``allow_partial_layouts=True`` to retain access to the
-layouts that still match:
+By default, :class:`~newton.selection.ArticulationView` requires homogeneous worlds:
+every world contains the same number of matches, every match has the same joint,
+coordinate, DOF, link, shape, and custom-frequency layout, and every world is laid out
+like the first, offset by a fixed stride, such as after replicating a builder into a
+builder that has no worlds yet (global shapes are permitted). Shapes are the exception:
+a match's shapes may be interleaved with other shapes or appended after them, at
+positions that differ between matches, as long as every match has the same shape count
+and owning links and the shape rows repeat in every world. Such shapes are addressed
+through explicit model indices.
 
 .. code-block:: python
 
-    view = newton.selection.ArticulationView(
-        model,
-        pattern="robot*",
-        allow_partial_layouts=True,
-    )
+    robot = newton.ModelBuilder()
+    robot.add_usd("robot.usd")
+    scene = newton.ModelBuilder()
+    scene.replicate(robot, world_count=1024)
+    model = scene.finalize()
+
+    view = newton.selection.ArticulationView(model, pattern="robot*")  # homogeneous=True
+
+Construction raises ``ValueError`` when the selection is not homogeneous. Pass
+``homogeneous=False`` to relax these requirements:
+
+- **Irregular layouts.** Worlds may differ outside the selected articulations, for
+  example by holding additional bodies or articulations, so the selected rows are not
+  evenly spaced between worlds. Such layouts are addressed through explicit model
+  indices (:attr:`~newton.selection.ArticulationView.uses_explicit_model_indices`).
+- **Sparse views.** Matches may cover only some worlds. Worlds without matches are
+  excluded from the leading dimension of all returned arrays, and
+  :attr:`~newton.selection.ArticulationView.is_sparse` is ``True``.
+  :attr:`~newton.selection.ArticulationView.world_ids` maps each view world to its
+  model world. Every world with matches must hold the same number of them.
+- **Unavailable frequencies.** Selected articulations may differ in structure.
+  Frequencies whose layout differs between them are unavailable. Their counts and names
+  are ``None`` only when the selected counts differ, as described below.
+  For example, articulations that share a joint topology but differ in their shapes
+  still provide joint and link data:
+
+.. code-block:: python
+
+    view = newton.selection.ArticulationView(model, pattern="robot*", homogeneous=False)
 
     try:
         shape_margin = view.get_attribute("shape_margin", model)
@@ -796,7 +828,11 @@ Joint, coordinate, DOF, link, and shape layouts are checked independently. Both
 reads and writes raise ``AttributeError`` for an unavailable layout.
 A layout may contain gaps, but every match must have the same selected count and
 relative model positions and ownership (DOF/coordinate to joint and shape to link),
-and the matches' start indices must be uniformly strided within and between worlds.
+and the matches' start indices must be uniformly strided within worlds. With
+``homogeneous=True`` they must also be uniformly strided between worlds;
+``homogeneous=False`` allows irregular spacing between worlds and addresses it through
+explicit model indices. Shapes may instead be interleaved with other shapes at
+different positions, as long as every match has the same shape count and owning links.
 
 Joint and link filters use the first match as their template. A filter selects the
 template position in every match: if another articulation inserts a link or joint
@@ -805,7 +841,7 @@ shapes attached to each selected link; display and collision shapes are not
 distinguished. Counts and names are ``None`` only when counts differ. Relationship
 metadata such as ``joint_dof_counts`` and ``link_shapes`` is available only when both
 participating layouts are available. Custom frequencies with articulation ownership
-follow the same partial-layout behavior.
+follow the same rules.
 
 Move articulations in world space
 """""""""""""""""""""""""""""""""

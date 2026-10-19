@@ -43,10 +43,9 @@ the supported set varies by backend and can grow as solvers gain capabilities.
 Supply ``contacts=contacts`` whenever the requested set includes contact-indexed fields.
 
 Allocate an observable container once and reuse it across steps. The container is
-owned by the solver instance that allocated it. For contact-indexed observables,
-construct a :class:`~newton.CollisionPipeline` first. It publishes the resolved
-rigid and soft contact capacities on the model; the solver allocates from those
-capacities. Create its :class:`~newton.Contacts` instance and pass it to the factory:
+owned by the solver instance that allocated it. Contact-indexed observables are
+sized from the rigid and soft capacities of the :class:`~newton.Contacts` passed to
+the factory, typically created by a :class:`~newton.CollisionPipeline`:
 
 .. code-block:: python
 
@@ -61,34 +60,31 @@ capacities. Create its :class:`~newton.Contacts` instance and pass it to the fac
 
 All requested arrays are allocated when ``observables()`` returns. An unrequested
 field is ``None``; a requested field with zero capacity is an empty array.
-``Model.rigid_contact_max`` and ``Model.soft_contact_max`` use ``None`` for
-uninitialized capacities and nonnegative integers for resolved capacities.
-Requesting contact observables before pipeline construction raises an error.
 Contact-indexed requests require contacts even when their capacity is zero.
 Body- and joint-only observables need neither a pipeline nor contacts; if contacts
 are supplied for such requests or an empty request, they are ignored and
 ``observables.contacts`` is ``None``.
 
 The live contact counts do not determine allocation sizes. ``contact_f`` has
-``model.rigid_contact_max + model.soft_contact_max`` entries, with rigid slots
+``contacts.rigid_contact_max + contacts.soft_contact_max`` entries, with rigid slots
 followed by soft slots. Kernels use the contact counts to process valid entries.
-Allocation freezes the model's contact capacities: later changes, including a
-replacement pipeline with different capacities, are rejected. Configure or
-rebuild pipelines before requesting contact-indexed observables.
+If the solver owns a collision pipeline, ``contacts`` defaults to ``solver.contacts``.
 
-The factory validates the contact device and both capacities once, then stores
-that instance as ``observables.contacts``. Steps and consumers check ownership and
-contact identity, so they must use the same storage. Custom consumers should check
-``observables.model is model`` and, when reading contact fields,
-``observables.contacts is contacts`` before reading the arrays. Newly allocated
-forces are zero and can be read by a sensor or viewer before the first step.
-Allocate observables and contacts before graph capture; neither ordinary nor
-conditional graph execution needs deferred observable allocation. Other solver
-scratch buffers may still need their usual warmup.
-
-If the solver owns a collision pipeline, bind its existing storage with
-``solver.observables(contacts=solver.contacts, kinds=...)``. The solver resolves
-that storage internally when ``step()`` receives ``contacts=None``.
+A step may use any buffer accepted by
+:meth:`~newton.solvers.SolverBase.validate_observables`, so allocate from the
+largest buffer the container will be used with. Rows follow the step's buffer:
+its contact counts give the valid rows, and the soft segment begins at its
+``rigid_contact_max``. ``observables.contacts_for_kind(kind)`` reports the buffer
+each contact-indexed array was last produced with (``observables.contacts`` for
+``contact_f``).
+:class:`~newton.sensors.SensorContact` and the viewer require that buffer, and
+custom consumers should check it together with ``observables.model is model``.
+Newly allocated forces are zero and can be read by a sensor or viewer before the
+first step. Allocate observables and contacts before graph capture; neither
+ordinary nor conditional graph execution needs deferred observable allocation.
+Other solver scratch buffers may still need their usual warmup. Graph replays do
+not update the buffer record; call ``validate_observables()`` with a replayed
+graph's buffer before consuming its outputs.
 
 Native collision backends
 -------------------------
@@ -108,15 +104,13 @@ the pipeline for the backend's export capacity:
 
 There is no ``pipeline.collide()`` call in this mode: the solver fills contact
 geometry and forces. Native Kamino similarly seeds the model's rigid capacity
-when constructed before the pipeline. Both backends reject insufficient
-pipeline capacity during contact-observable allocation instead of resizing arrays
-inside a step.
+when constructed before the pipeline. Both backends reject insufficient contact
+capacity before allocating or stepping instead of resizing arrays inside a step.
 
 A solver advertises available entries through
 :attr:`~newton.solvers.SolverBase.supported_observables` and rejects an
 unsupported request during allocation. Passing an observable container to a
-different solver, or using contact observables with different contact storage, is
-also rejected.
+different solver, or contacts that exceed its contact arrays, is also rejected.
 
 Standard observables
 --------------------
@@ -130,27 +124,39 @@ Standard observables
      - Solvers
    * - ``BODY_QDD`` / ``observables.body_qdd``
      - Rigid-body center-of-mass spatial accelerations in the world frame
-     - :class:`~newton.solvers.SolverMuJoCo` with MuJoCo Warp and
+     - :class:`~newton.solvers.SolverMuJoCo` with MuJoCo Warp or native MuJoCo CPU, and
        :class:`~newton.solvers.SolverKamino`
    * - ``BODY_PARENT_F`` / ``observables.body_parent_f``
      - Incoming parent-joint wrenches on rigid bodies
-     - :class:`~newton.solvers.SolverMuJoCo` with MuJoCo Warp,
-       :class:`~newton.solvers.SolverFeatherstone`, and
+     - :class:`~newton.solvers.SolverMuJoCo` with MuJoCo Warp or native MuJoCo CPU,
+       :class:`~newton.solvers.SolverFeatherstone`,
+       :class:`~newton.solvers.SolverSteel`, and
        :class:`~newton.solvers.SolverXPBD`
    * - ``CONTACT_F`` / ``observables.contact_f``
-     - Contact spatial forces aligned with the bound contacts
+     - Contact spatial forces in the row layout of the step's contacts
      - :class:`~newton.solvers.SolverMuJoCo` with MuJoCo Warp,
-       :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverVBD`, and
-       :class:`~newton.solvers.SolverKamino`
+       :class:`~newton.solvers.SolverXPBD`, :class:`~newton.solvers.SolverVBD`,
+       :class:`~newton.solvers.SolverKamino`, and :class:`~newton.solvers.SolverSteel`
 
 :class:`~newton.solvers.SolverKamino` computes acceleration as the discrete
 step-average ``(body_qd_out - body_qd_in) / dt``. Across an impact, this includes
 the velocity impulse divided by ``dt``. MuJoCo Warp computes ``BODY_QDD`` and
 ``BODY_PARENT_F`` even with ``disable_sensors=True`` by enabling the
 post-constraint RNE stage independently of sensors.
-The native MuJoCo CPU backend (``use_mujoco_cpu=True``) supports only
-``SolverMuJoCo.ObservableKind.QFRC_ACTUATOR``; body and contact observable
-requests are rejected. MuJoCo Warp supports body observables on both CPU and GPU.
+The native MuJoCo CPU backend (``use_mujoco_cpu=True``) supports ``BODY_QDD``,
+``BODY_PARENT_F``, and ``SolverMuJoCo.ObservableKind.QFRC_ACTUATOR``. It runs
+the post-constraint RNE stage for requested body observables before integration,
+using the step's input dynamics, including with RK4. Contact and overflow
+observable requests are rejected. Native body observables require Euler, RK4,
+implicit, or implicitfast integration; discrete integration supports only
+``QFRC_ACTUATOR``. MuJoCo Warp supports body
+observables on both CPU and GPU.
+
+:class:`~newton.solvers.SolverSteel` reports only the linear part of each rigid
+contact force; the torque part is zero. Contacts without solved rows, such as rows
+dropped for capacity or skipped for sleeping islands, report zero. A sleeping body's
+contacts therefore read as unloaded even though they still support it; use
+``sleep_skip_constraints=False`` or disable sleeping when consumers rely on these forces.
 
 Kamino exports contact points in the step's input body frames and world-frame
 wrenches about the input centers of mass.
@@ -191,6 +197,97 @@ Pass a collection even for one kind, such as ``{"body_qdd"}``. Bare strings and
 unknown names are rejected. ``ObservableKind`` is not iterable; query
 ``solver.supported_observables`` for the names accepted by the configured backend.
 An inherited name does not imply support for that observable.
+
+.. _mujoco_overflow_observable:
+
+MuJoCo overflow diagnostics
+^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+:class:`~newton.solvers.SolverMuJoCo` exposes
+:attr:`~newton.solvers.SolverMuJoCo.ObservableKind.OVERFLOW` through
+``observables.overflow``, an ``int32`` array with shape ``(model.world_count,)``.
+It reports capacity overflow after a step without synchronizing the device in
+the solver. Requesting it requires the MuJoCo Warp backend
+(``use_mujoco_cpu=False``); the native MuJoCo CPU backend rejects the request.
+
+Use :class:`~newton.solvers.SolverMuJoCo.OverflowBits` to interpret Newton's
+flags, and ``mujoco_warp.OverflowType`` for MuJoCo Warp's flags. For example,
+this scene deliberately allocates fewer solver contacts than Newton generates:
+
+.. code-block:: python
+
+   import mujoco_warp
+   import newton
+   import warp as wp
+   from newton.solvers import SolverMuJoCo
+
+   builder = newton.ModelBuilder()
+   builder.add_ground_plane()
+   for i in range(4):
+       body = builder.add_body(xform=wp.transform((i * 0.2, 0.0, 0.04), wp.quat_identity()))
+       builder.add_shape_sphere(body, radius=0.05)
+   model = builder.finalize()
+
+   solver = SolverMuJoCo(model, use_mujoco_contacts=False, nconmax=1)
+   pipeline = newton.CollisionPipeline(model)
+   contacts = pipeline.contacts()
+   state_in, state_out = model.state(), model.state()
+   newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
+   observables = solver.observables(kinds={solver.ObservableKind.OVERFLOW})
+
+   pipeline.collide(state_in, contacts)
+   solver.step(state_in, state_out, model.control(), contacts, 1.0 / 60.0, observables=observables)
+   overflow = observables.overflow.numpy()
+
+   if (overflow & SolverMuJoCo.OverflowBits.CONTACT_PIPELINE).any():
+       print("Newton contact pipeline capacity exceeded")
+   if (overflow & SolverMuJoCo.OverflowBits.SOLVER_NCONMAX).any():
+       print("MuJoCo Warp solver contact capacity exceeded")
+   if (overflow & mujoco_warp.OverflowType.NEFC).any():
+       print("MuJoCo Warp constraint capacity exceeded")
+
+The bit layout is:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 12 38 50
+
+   * - Bits
+     - Public flags
+     - Meaning
+   * - 0-15
+     - ``mujoco_warp.OverflowType``
+     - MuJoCo Warp diagnostics, including ``NEFC``, ``NJMAX_NNZ``, collision
+       overflow, and solver iteration limits.
+   * - 16
+     - :attr:`~newton.solvers.SolverMuJoCo.OverflowBits.CONTACT_PIPELINE`
+     - Newton generated more rigid contacts than ``contacts.rigid_contact_max``.
+   * - 17
+     - :attr:`~newton.solvers.SolverMuJoCo.OverflowBits.SOLVER_NCONMAX`
+     - Newton generated more rigid contacts than the solver's shared
+       ``naconmax`` buffer can consume.
+
+The Newton flags describe shared contact buffers and are repeated in every
+world's mask when the global count exceeds capacity. They do not identify which
+world lost contacts. MuJoCo Warp's flags retain their backend-provided world
+assignment. When MuJoCo Warp performs its own collision detection
+(``use_mujoco_contacts=True``), the Newton flags are suppressed and ``contacts``
+may be ``None``.
+
+Allocate the container before CUDA graph capture and pass it to each step that
+should update the diagnostic. The mask reflects that step only, including after
+graph replay; omitted or unselected observables remain unchanged. Reading
+``.numpy()`` synchronizes with the device, so inspect the result outside capture.
+
+Newton checks every declared ``mujoco_warp.OverflowType`` member when importing
+the backend and raises ``RuntimeError`` if any flag uses bits above 15. This
+prevents future upstream flags from silently colliding with Newton's flags,
+even if the upstream ``ALL`` mask omits a member.
+
+The observable reports runtime diagnostics; ``strict_capacity=True`` instead
+compares the two buffer capacities before conversion. A capacity mismatch can occur
+without actual overflow, and no Python warning or exception is automatically
+raised for a nonzero runtime mask.
 
 Selection
 ---------
@@ -279,7 +376,7 @@ Selecting a field absent from the source raises :class:`ValueError`; selecting
 an existing subset can only narrow it. Select from the original container to
 create a different combination. Do not temporarily replace fields with ``None``.
 
-Contact-indexed subsets share the contacts supplied at allocation with their source
+Contact-indexed subsets share their contact-buffer record with their source
 and siblings. A body-only or empty subset has ``contacts=None`` even when the
 original container includes contact fields.
 
@@ -310,7 +407,7 @@ Contact forces from SolverVBD
 contacts, and rigid-soft particle, edge, and face records against rigid shapes -- through
 :attr:`~newton.solvers.SolverBase.Observables.contact_f`:
 
-1. Create the :class:`~newton.CollisionPipeline` to establish contact capacities, create its contacts, then request
+1. Create the :class:`~newton.CollisionPipeline` and its contacts, then request
    ``SolverBase.ObservableKind.CONTACT_F`` with ``solver.observables(contacts=contacts, kinds=...)``. This allocates the entire
    force array before stepping or graph capture; no contact attributes need to be requested.
 2. Each frame, run collision detection and pass the container to ``solver.step(...,
@@ -511,16 +608,15 @@ fields and may redeclare a field's dtype or frequency without changing their
 parents or siblings. Missing declarations, duplicate kinds, and missing
 dataclass decorators are rejected before allocation.
 
-Contact dependencies follow the field's frequency. The base solver requires
-pipeline initialization and a compatible ``contacts=`` argument for any requested
-contact frequency, including custom fields requested without ``CONTACT_F``. It binds
-that storage and freezes capacities after successful allocation. Body- and
-joint-indexed fields do not require a collision pipeline or contact storage.
+Contact dependencies follow the field's frequency. Any requested contact frequency,
+including custom fields requested without ``CONTACT_F``, is sized from
+``contacts=`` or the solver-owned pipeline. Body- and joint-indexed fields do not
+require a collision pipeline or contact storage.
 
 In ``step()``, call :meth:`~newton.solvers.SolverBase.validate_observables` before
-launching work or modifying outputs. This checks the container type, solver owner,
-and contact identity without repeating allocation-time layout validation. Compute
-diagnostics only when requested:
+launching work or modifying outputs. It checks the container and the step's
+contacts and records those contacts for the requested fields. Compute diagnostics
+only when requested:
 
 .. code-block:: python
 
