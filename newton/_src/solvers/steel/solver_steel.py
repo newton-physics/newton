@@ -13678,6 +13678,7 @@ def _get_pgs_solve_mf_gs_kernel(
                     float scale = mag > radius ? radius / mag : 1.0f;
                     new_impulse = pair.x * scale;
                     float sib_delta = pair.y * scale - s_lam_dense[sib];
+                    __syncwarp();
                     s_lam_dense[sib] = pair.y * scale;
                     if (sib_delta != 0.0f) {{
                         iteration_changed = 1;
@@ -13711,6 +13712,7 @@ def _get_pgs_solve_mf_gs_kernel(
                 float scale = mag > radius ? radius / mag : 1.0f;
                 new_impulse = pair.x * scale;
                 float sib_delta = pair.y * scale - s_lam_mf[sib];
+                __syncwarp();
                 s_lam_mf[sib] = pair.y * scale;
                 if (sib_delta != 0.0f) {
                     iteration_changed = 1;
@@ -13864,6 +13866,8 @@ def _get_pgs_solve_mf_gs_kernel(
                 new_impulse = 0.0f;
             }}
             float delta_impulse = new_impulse - old_impulse;
+            // Every lane has read this row's old impulse before any lane overwrites it.
+            __syncwarp();
             s_lam_dense[i] = new_impulse;
             if (delta_impulse != 0.0f) {{
                 iteration_changed = 1;
@@ -13940,6 +13944,7 @@ def _get_pgs_solve_mf_gs_kernel(
 {mf_friction_update}
             }}
             float delta_impulse = new_impulse - old_impulse;
+            __syncwarp();
             s_lam_mf[i] = new_impulse;
             if (delta_impulse != 0.0f) {{
                 iteration_changed = 1;
@@ -21449,6 +21454,8 @@ _DENSE_BISECTION_FRICTION_SOURCE = """
                     float d_n_total = 0.0f;
                     float d_t2_total = 0.0f;
 
+                    // Every lane has read the old impulses before lane 0 overwrites them.
+                    __syncwarp();
                     if (lane == 0) {
                         float u_n = 0.0f, u_t1 = 0.0f, u_t2 = 0.0f;
                         float G_nn = 0.0f, G_nt1 = 0.0f, G_nt2 = 0.0f;
@@ -21599,6 +21606,8 @@ _MF_BISECTION_FRICTION_SOURCE = """
                     float d_n_total = 0.0f;
                     float d_t2_total = 0.0f;
 
+                    // Every lane has read the old impulses before lane 0 overwrites them.
+                    __syncwarp();
                     if (lane == 0) {
                         float u_n = 0.0f, u_t1 = 0.0f, u_t2 = 0.0f;
                         if (dof_a_par >= 0) {
@@ -21793,6 +21802,8 @@ _MF_COULOMB_NEWTON_FRICTION_SOURCE = """
                     float d_n_total = 0.0f;
                     float d_t2_total = 0.0f;
 
+                    // Every lane has read the old impulses before lane 0 overwrites them.
+                    __syncwarp();
                     if (lane == 0) {
                         float u_n = 0.0f, u_t1 = 0.0f, u_t2 = 0.0f;
                         if (dof_a_par >= 0) {
