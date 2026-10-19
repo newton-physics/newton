@@ -128,6 +128,10 @@ class Example:
             yaw = 218.0
             self.viewer.set_camera(camera_pos, pitch, yaw)
 
+        # Optionally start the viewer in paused mode for initial state inspection
+        if getattr(args, "start_paused", False) and hasattr(self.viewer, "_paused"):
+            self.viewer._paused = True
+
     def capture(self):
         self.graph = None
         if self.device.is_cuda and not wp.config.verify_cuda:
@@ -253,6 +257,12 @@ class Example:
             action=argparse.BooleanOptionalAction,
             default=False,
             help="Actuate the cartpole with random inputs.",
+        )
+        parser.add_argument(
+            "--start-paused",
+            action=argparse.BooleanOptionalAction,
+            default=False,
+            help="Open the viewer in paused state.",
         )
         parser.add_argument(
             "--record-video",
