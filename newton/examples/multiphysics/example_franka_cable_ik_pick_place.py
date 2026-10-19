@@ -167,7 +167,7 @@ class Example:
 
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, -9.81))
         builder.rigid_gap = template.rigid_gap
-        builder.replicate(template, copy_count=self.world_count)
+        builder.replicate(template, world_count=self.world_count)
         self._expand_world_indices(bodies_per_world, joints_per_world, shapes_per_world)
 
         # Match the gripper side to the cable material without overwriting

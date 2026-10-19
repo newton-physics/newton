@@ -69,7 +69,7 @@ class Example:
         )
 
         scene = newton.ModelBuilder()
-        scene.replicate(world, copy_count=self.world_count)
+        scene.replicate(world, world_count=self.world_count)
 
         # finalize model
         self.model = scene.finalize()

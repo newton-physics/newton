@@ -792,7 +792,7 @@ through explicit model indices.
     robot = newton.ModelBuilder()
     robot.add_usd("robot.usd")
     scene = newton.ModelBuilder()
-    scene.replicate(robot, copy_count=1024)
+    scene.replicate(robot, world_count=1024)
     model = scene.finalize()
 
     view = newton.selection.ArticulationView(model, pattern="robot*")  # homogeneous=True

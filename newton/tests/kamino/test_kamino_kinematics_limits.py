@@ -178,7 +178,7 @@ class TestKinematicsLimits(unittest.TestCase):
         """
         # Construct the model description
         builder = ModelBuilder()
-        builder.replicate(builder=build_boxes_fourbar(), copy_count=3)
+        builder.replicate(builder=build_boxes_fourbar(), world_count=3)
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
 
         # Create a LimitsKamino container
@@ -229,7 +229,7 @@ class TestKinematicsLimits(unittest.TestCase):
     def test_02_check_revolute_joint(self):
         # Construct the model description
         builder = ModelBuilder()
-        builder.replicate(builder=testing.build_unary_revolute_joint_test(), copy_count=4)
+        builder.replicate(builder=testing.build_unary_revolute_joint_test(), world_count=4)
         num_worlds = builder.world_count
 
         # Create the model and state

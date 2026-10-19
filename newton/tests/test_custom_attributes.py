@@ -2252,7 +2252,7 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         world.add_builder(robot, label_prefix="left")
         world.add_builder(robot, label_prefix="right")
         scene = ModelBuilder()
-        scene.replicate(world, copy_count=2)
+        scene.replicate(world, world_count=2)
         model = scene.finalize(device=self.device)
         control = model.control()
 

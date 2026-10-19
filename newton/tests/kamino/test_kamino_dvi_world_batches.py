@@ -62,7 +62,7 @@ class TestKaminoDVIWorldBatches(unittest.TestCase):
             self.skipTest("Requires the CUDA matrix-free inverse path")
         device = wp.get_cuda_devices()[0]
         builder = newton.ModelBuilder()
-        builder.replicate(builder=basics.build_boxes_hinged(), copy_count=3)
+        builder.replicate(builder=basics.build_boxes_hinged(), world_count=3)
         model = ModelKamino.from_newton(builder.finalize(device=device))
         model, data, state, limits, detector, jacobians = make_containers(
             model=model, max_world_contacts=8, sparse=True

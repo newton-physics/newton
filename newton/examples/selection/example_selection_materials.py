@@ -77,7 +77,7 @@ class Example:
         scene = newton.ModelBuilder()
 
         scene.add_ground_plane(cfg=newton.ModelBuilder.ShapeConfig(mu=0.5))
-        scene.replicate(world_template, copy_count=self.world_count)
+        scene.replicate(world_template, world_count=self.world_count)
 
         # finalize model
         self.model = scene.finalize()

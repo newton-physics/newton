@@ -50,7 +50,7 @@ class TestContactAggregation(unittest.TestCase):
         """
         # Create and set up a model builder
         builder = ModelBuilder()
-        builder.replicate(builder=self.build_func(), copy_count=3)
+        builder.replicate(builder=self.build_func(), world_count=3)
         model = ModelKamino.from_newton(builder.finalize(self.default_device))
         data = model.data()
 

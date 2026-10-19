@@ -112,7 +112,7 @@ class TestKinematicsConstraints(unittest.TestCase):
 
         # Construct the model description
         builder = ModelBuilder()
-        builder.replicate(builder=build_boxes_fourbar(dynamic_joints=True, implicit_pd=True), copy_count=num_worlds)
+        builder.replicate(builder=build_boxes_fourbar(dynamic_joints=True, implicit_pd=True), world_count=num_worlds)
 
         # Create the model from the builder
         model: ModelKamino = ModelKamino.from_newton(builder.finalize(device=self.default_device))

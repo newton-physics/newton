@@ -92,7 +92,7 @@ class TestGeometryCollisionDetector(unittest.TestCase):
         """
         # Create and set up a model builder
         builder = ModelBuilder()
-        builder.replicate(builder=self.build_func(), copy_count=3)
+        builder.replicate(builder=self.build_func(), world_count=3)
         model = ModelKamino.from_newton(builder.finalize(self.default_device))
         data = model.data()
 
@@ -133,7 +133,7 @@ class TestGeometryCollisionDetector(unittest.TestCase):
         """
         # Create and set up a model builder
         builder = ModelBuilder()
-        builder.replicate(builder=self.build_func(), copy_count=3)
+        builder.replicate(builder=self.build_func(), world_count=3)
         model = ModelKamino.from_newton(builder.finalize(self.default_device))
         data = model.data()
 
@@ -170,7 +170,7 @@ class TestGeometryCollisionDetector(unittest.TestCase):
     def test_03_pair_based_world_budgets(self):
         """Verify per-world budgets follow geometry rather than an equal model split."""
         builder = ModelBuilder()
-        builder.replicate(builder=self.build_func(), copy_count=3)
+        builder.replicate(builder=self.build_func(), world_count=3)
         model = ModelKamino.from_newton(builder.finalize(self.default_device))
 
         config = CollisionDetector.Config(pipeline="primitive", broadphase="explicit")
@@ -182,7 +182,7 @@ class TestGeometryCollisionDetector(unittest.TestCase):
     def test_04_max_contacts_caps_model_total(self):
         """Verify ``max_contacts`` caps rather than floors the geometry-based estimate."""
         builder = ModelBuilder()
-        builder.replicate(builder=self.build_func(), copy_count=3)
+        builder.replicate(builder=self.build_func(), world_count=3)
         model = ModelKamino.from_newton(builder.finalize(self.default_device))
         uncapped_total = sum(model.geoms.world_minimum_contacts)
         self.assertGreater(uncapped_total, 15)
@@ -229,7 +229,7 @@ class TestCollisionDetectorContactCapacity(unittest.TestCase):
     def test_01_fallback_explicit_per_world_pair_counts(self):
         """Verify fallback explicit broad-phase estimates accumulate pairs per world."""
         builder = ModelBuilder()
-        builder.replicate(builder=basics.build_boxes_nunchaku(), copy_count=2)
+        builder.replicate(builder=basics.build_boxes_nunchaku(), world_count=2)
         model = ModelKamino.from_newton(builder.finalize(self.default_device))
         config = CollisionDetector.Config(broadphase="explicit")
 

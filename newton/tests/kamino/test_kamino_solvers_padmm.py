@@ -1010,7 +1010,7 @@ class TestPADMMSolver(unittest.TestCase):
 
                 def builder_fn():
                     builder = ModelBuilder()
-                    builder.replicate(basics.build_box_pendulum(ground=False), copy_count=len(budgets))
+                    builder.replicate(basics.build_box_pendulum(ground=False), world_count=len(budgets))
                     return builder
 
                 test = TestSetup(

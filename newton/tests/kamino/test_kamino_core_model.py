@@ -120,7 +120,7 @@ class TestModel(unittest.TestCase):
 
         # Create a model builder
         builder = ModelBuilder()
-        builder.replicate(builder=build_boxes_hinged(), copy_count=num_worlds)
+        builder.replicate(builder=build_boxes_hinged(), world_count=num_worlds)
 
         # Finalize the model
         model: ModelKamino = ModelKamino.from_newton(builder.finalize(device=self.default_device))
@@ -207,7 +207,7 @@ class TestModelConversions(unittest.TestCase):
 
         builder_newton: ModelBuilder = ModelBuilder()
         SolverKamino.register_custom_attributes(builder_newton)
-        builder_newton.replicate(builder=builder_single, copy_count=2)
+        builder_newton.replicate(builder=builder_single, world_count=2)
 
         model_newton: Model = builder_newton.finalize(skip_validation_joints=True, device=self.default_device)
         model_kamino: ModelKamino = ModelKamino.from_newton(model_newton)
@@ -301,7 +301,7 @@ class TestModelConversions(unittest.TestCase):
 
         builder_newton: ModelBuilder = ModelBuilder()
         SolverKamino.register_custom_attributes(builder_newton)
-        builder_newton.replicate(builder=builder_single, copy_count=2)
+        builder_newton.replicate(builder=builder_single, world_count=2)
 
         model_newton: Model = builder_newton.finalize(skip_validation_joints=True, device=self.default_device)
         model_kamino: ModelKamino = ModelKamino.from_newton(model_newton)
@@ -1116,7 +1116,7 @@ class TestStateControlConversions(unittest.TestCase):
         )
         builder_newton: ModelBuilder = ModelBuilder()
         SolverKamino.register_custom_attributes(builder_newton)
-        builder_newton.replicate(builder=builder_single, copy_count=2)
+        builder_newton.replicate(builder=builder_single, world_count=2)
 
         # Create models from the builders and conversion operations, and check for consistency
         model_newton: Model = builder_newton.finalize(skip_validation_joints=True, device=self.default_device)
@@ -1191,7 +1191,7 @@ class TestStateControlConversions(unittest.TestCase):
         )
         builder_newton: ModelBuilder = ModelBuilder()
         SolverKamino.register_custom_attributes(builder_newton)
-        builder_newton.replicate(builder=builder_single, copy_count=2)
+        builder_newton.replicate(builder=builder_single, world_count=2)
 
         # Create models from the builders and conversion operations, and check for consistency
         model_newton: Model = builder_newton.finalize(skip_validation_joints=True, device=self.default_device)

@@ -438,7 +438,7 @@ class TestCollisionCapacityInitialization(unittest.TestCase):
 
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         SolverKamino.register_custom_attributes(builder)
-        builder.replicate(source_builder, copy_count=3)
+        builder.replicate(source_builder, world_count=3)
         return builder.finalize(device=self.default_device, skip_validation_joints=True)
 
     def test_pair_tables_match_collision_mode(self):
@@ -767,7 +767,7 @@ class TestSolverKaminoStatus(unittest.TestCase):
 
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
         newton.solvers.SolverKamino.register_custom_attributes(builder)
-        builder.replicate(source_builder, copy_count=3)
+        builder.replicate(source_builder, world_count=3)
         return builder.finalize(device=self.default_device, skip_validation_joints=True)
 
     def _step_and_assert_status_contract(
@@ -967,7 +967,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         Test resetting multiple world solvers to default state defined in the model.
         """
         builder = newton.ModelBuilder()
-        builder.replicate(builder=build_boxes_fourbar(limits=False), copy_count=3)
+        builder.replicate(builder=build_boxes_fourbar(limits=False), world_count=3)
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         solver = SolverKaminoImpl(model=model)
 
@@ -1025,7 +1025,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         Test resetting multiple world solvers while preserving the state.
         """
         builder = newton.ModelBuilder()
-        builder.replicate(builder=build_boxes_fourbar(limits=False), copy_count=3)
+        builder.replicate(builder=build_boxes_fourbar(limits=False), world_count=3)
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         solver = SolverKaminoImpl(model=model)
 
@@ -1092,7 +1092,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         Test resetting multiple world solvers to specified floating base states.
         """
         builder = newton.ModelBuilder()
-        builder.replicate(builder=build_boxes_fourbar(limits=False), copy_count=3)
+        builder.replicate(builder=build_boxes_fourbar(limits=False), world_count=3)
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         solver = SolverKaminoImpl(model=model)
 
@@ -1221,7 +1221,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         Test resetting multiple world solvers to specified joint states.
         """
         builder = newton.ModelBuilder()
-        builder.replicate(builder=build_boxes_fourbar(limits=False), copy_count=3)
+        builder.replicate(builder=build_boxes_fourbar(limits=False), world_count=3)
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         config = SolverKaminoImpl.Config(use_fk_solver=True)
         solver = SolverKaminoImpl(model=model, config=config)
@@ -1356,7 +1356,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
         Test resetting multiple world solvers to specified actuator states.
         """
         builder = newton.ModelBuilder()
-        builder.replicate(builder=build_boxes_fourbar(limits=False), copy_count=3)
+        builder.replicate(builder=build_boxes_fourbar(limits=False), world_count=3)
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         config = SolverKaminoImpl.Config(use_fk_solver=True)
         solver = SolverKaminoImpl(model=model, config=config)
@@ -1677,7 +1677,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
 
         # Create a multi-instance system by replicating the single-instance builder
         multi_builder = newton.ModelBuilder()
-        multi_builder.replicate(builder=build_boxes_fourbar(ground=False), copy_count=num_worlds)
+        multi_builder.replicate(builder=build_boxes_fourbar(ground=False), world_count=num_worlds)
         for i, (q_i_0, u_i_0) in enumerate(zip(multi_builder.body_q, multi_builder.body_qd, strict=True)):
             msg.info(f"[multi]: [builder]: body {i}: bid: {i}")
             msg.info(f"[multi]: [builder]: body {i}: q_i: {q_i_0}")
@@ -1872,7 +1872,7 @@ class TestSolverKaminoImpl(unittest.TestCase):
 
         # Create a multi-instance system by replicating the single-instance builder
         multi_builder = newton.ModelBuilder()
-        multi_builder.replicate(builder=build_boxes_fourbar(ground=False), copy_count=num_worlds)
+        multi_builder.replicate(builder=build_boxes_fourbar(ground=False), world_count=num_worlds)
         for i, (q_i_0, u_i_0) in enumerate(zip(multi_builder.body_q, multi_builder.body_qd, strict=True)):
             msg.info(f"[multi]: [builder]: body {i}: bid: {i}")
             msg.info(f"[multi]: [builder]: body {i}: q_i: {q_i_0}")

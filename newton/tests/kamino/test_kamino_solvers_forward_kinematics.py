@@ -595,7 +595,7 @@ class TestRandomPoses(unittest.TestCase):
         builder_single.add_usd(source=asset_file)
         builder_single.end_world()
         builder = newton.ModelBuilder()
-        builder.replicate(builder=builder_single, copy_count=10)
+        builder.replicate(builder=builder_single, world_count=10)
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
 
         # Solve and check FK on random poses, on both dense and sparse paths
@@ -615,7 +615,7 @@ class TestRandomPoses(unittest.TestCase):
         builder_single.add_usd(source=asset_file)
         builder_single.end_world()
         builder = newton.ModelBuilder()
-        builder.replicate(builder=builder_single, copy_count=10)
+        builder.replicate(builder=builder_single, world_count=10)
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
 
         # Solve and check FK on random poses, on both dense and sparse paths
@@ -692,7 +692,7 @@ class TestRandomPoses(unittest.TestCase):
         """Validate FK on random poses for a four-bar with a tie rod, using axis joints"""
         rng = np.random.default_rng(rng_seed_from_string("Four-bar with tie rod FK random poses check (axis joints)"))
         builder = newton.ModelBuilder()
-        builder.replicate(builder=create_four_bar_tie_rod(), copy_count=10)
+        builder.replicate(builder=create_four_bar_tie_rod(), world_count=10)
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device, requires_grad=False))
 
         # Solve and check FK on random poses, on both dense and sparse paths
@@ -711,7 +711,7 @@ class TestRandomPoses(unittest.TestCase):
             rng_seed_from_string("Four-bar with tie rod FK random poses check (regularization)")
         )
         builder = newton.ModelBuilder()
-        builder.replicate(builder=create_four_bar_tie_rod(), copy_count=10)
+        builder.replicate(builder=create_four_bar_tie_rod(), world_count=10)
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device, requires_grad=False))
 
         # Solve and check FK on random poses, on both dense and sparse paths

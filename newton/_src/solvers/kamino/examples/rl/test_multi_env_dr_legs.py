@@ -51,7 +51,7 @@ def run_test(num_worlds: int, num_steps: int, device):
     builder_single = newton.ModelBuilder()
     builder_single.add_usd(source=usd_path)
     builder = newton.ModelBuilder()
-    builder.replicate(builder=builder_single, copy_count=num_worlds)
+    builder.replicate(builder=builder_single, world_count=num_worlds)
     offset = wp.transformf(0.0, 0.0, 0.265, 0.0, 0.0, 0.0, 1.0)
     builder.body_q = [wp.mul(offset, q) for q in builder.body_q]
     model = builder.finalize(device=device)

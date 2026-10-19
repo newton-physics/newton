@@ -87,7 +87,7 @@ class TestRandomController(unittest.TestCase):
     def test_02_make_for_multiple_fourbar(self):
         # Define a model builder for the boxes_fourbar problem with 4 worlds
         builder = ModelBuilder()
-        builder.replicate(builder=build_boxes_fourbar(), copy_count=4)
+        builder.replicate(builder=build_boxes_fourbar(), world_count=4)
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         data = model.data()
         control = model.control()
@@ -118,7 +118,7 @@ class TestRandomController(unittest.TestCase):
     def _build_replicated_fourbar(self, num_worlds: int):
         """Build a replicated fourbar ``ModelKamino`` and its data/control containers."""
         builder = ModelBuilder()
-        builder.replicate(builder=build_boxes_fourbar(), copy_count=num_worlds)
+        builder.replicate(builder=build_boxes_fourbar(), world_count=num_worlds)
         model = ModelKamino.from_newton(builder.finalize(device=self.default_device))
         return model, model.data(), model.control()
 

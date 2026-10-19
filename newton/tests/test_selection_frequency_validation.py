@@ -562,7 +562,7 @@ class TestSelectionFrequencyValidation(unittest.TestCase):
         robot.add_articulation([root_joint, tip_joint], label="robot")
 
         replicated = newton.ModelBuilder()
-        replicated.replicate(robot, copy_count=3)
+        replicated.replicate(robot, world_count=3)
         single = newton.ModelBuilder()
         single.add_builder(robot)
         shared_world = newton.ModelBuilder()
