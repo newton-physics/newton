@@ -315,6 +315,32 @@ class TestUSDDeformableVolume(unittest.TestCase):
         # density 40 over the unit tet (V = 1/6) -> total particle mass = 40 / 6.
         self.assertAlmostEqual(sum(builder.particle_mass), 40.0 / 6.0, delta=1e-3)
 
+    def test_volume_particle_radius_fallback(self):
+        """Sim-API TetMeshes fall back to the cloth/cable contact offset, not the builder default.
+
+        AOUSD authors no particle radius for volume deformables, so the import used to resolve
+        to ``ModelBuilder.default_particle_radius`` (0.1 m) - as large as an object-sized soft
+        body, which launches imported bodies off the ground or leaves them hovering (#4700).
+        Sim-API prims now get half the AOUSD default thickness (0.5 mm at metersPerUnit=1),
+        matching the cloth and cable importers; legacy bare TetMeshes keep the builder default.
+        """
+        stage = _deformable_stage()
+        _author_unit_tet(stage, "/World/SoftSim", sim_api=True)
+        _author_unit_tet(stage, "/World/SoftLegacy", sim_api=False)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        p0, p1 = group_range(builder, "soft", "/World/SoftSim", "particle")
+        self.assertEqual(p1 - p0, 4)
+        for i in range(p0, p1):
+            self.assertAlmostEqual(builder.particle_radius[i], 0.5e-3, places=9)
+
+        q0, q1 = group_range(builder, "soft", "/World/SoftLegacy", "particle")
+        self.assertEqual(q1 - q0, 4)
+        for i in range(q0, q1):
+            self.assertAlmostEqual(builder.particle_radius[i], builder.default_particle_radius, places=9)
+
     def test_bare_tetmesh_ignores_per_point_masses(self):
         """A bare TetMesh (no deformable markers) keeps the legacy import; masses ignored."""
         from pxr import Sdf
