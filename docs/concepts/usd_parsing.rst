@@ -414,7 +414,8 @@ each of its curves keeps its own body range but shares that articulation. The im
 ready for :meth:`~newton.ModelBuilder.finalize` with no extra steps.
 
 A cable-owned articulation resolves self-collision from the curve prim (see the articulation
-remapping below), falling back to the ``enable_self_collisions`` argument. In a welded graph,
+remapping below), falling back to the ``enable_self_collisions`` argument. The attribute is read
+directly from the curve; no articulation API schema needs to be applied to it. In a welded graph,
 any member curve authoring self-collision off disables it for the whole graph. A cable joined to
 a rigid body's articulation follows that articulation's setting.
 

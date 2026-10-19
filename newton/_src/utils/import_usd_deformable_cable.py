@@ -22,7 +22,6 @@ from typing import TYPE_CHECKING
 
 import warp as wp
 
-from ..core._warnings import _external_warning_stacklevel
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..sim.rod import _CIRCULAR_SECTION_TRANSVERSE_SHEAR_CORRECTION, Rod
 from ..usd import utils as usd
@@ -1075,11 +1074,10 @@ def _deformable_prepare_cable_topology(
             value for p in comp_paths if (value := _authored_cable_self_collision(ctx, curve_recs[p].prim)) is not None
         }
         if len(authored_self_collisions) > 1:
-            warnings.warn(
-                f"cable graph '{cid}': welded curves author differing self-collision settings; "
+            logger.warning(
+                "cable graph '%s': welded curves author differing self-collision settings; "
                 "self-collision is disabled for the whole graph.",
-                NewtonWarning,
-                stacklevel=_external_warning_stacklevel(),
+                cid,
             )
         if authored_self_collisions:
             ctx.articulation_has_self_collision[builder.articulation_count - 1] = all(authored_self_collisions)

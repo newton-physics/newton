@@ -202,11 +202,13 @@ class TestUSDDeformableCable(unittest.TestCase):
                             "newton:selfCollisionEnabled", Sdf.ValueTypeNames.Bool
                         ).Set(authored)
                 builder = newton.ModelBuilder()
-                with warnings.catch_warnings(record=True) as caught:
-                    warnings.simplefilter("always")
-                    result = builder.add_usd(stage, enable_self_collisions=default, return_deformable_results=True)
-                warned = [w.filename for w in caught if "differing self-collision settings" in str(w.message)]
-                self.assertEqual(warned, [__file__] if author_b is not None else [])
+                if author_b is None:
+                    with self.assertNoLogs("newton", level="WARNING"):
+                        result = builder.add_usd(stage, enable_self_collisions=default, return_deformable_results=True)
+                else:
+                    with self.assertLogs("newton", level="WARNING") as logs:
+                        result = builder.add_usd(stage, enable_self_collisions=default, return_deformable_results=True)
+                    self.assertIn("differing self-collision settings", "\n".join(logs.output))
                 self.assertEqual(builder.articulation_count, 1)
                 bodies_a = result["path_cable_map"]["/World/CableA"][0]
                 bodies_b = result["path_cable_map"]["/World/CableB"][0]
