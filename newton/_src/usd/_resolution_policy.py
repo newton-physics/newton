@@ -446,7 +446,7 @@ def _resolve_shape_contact(
     defaults: ModelBuilder.ShapeConfig,
     *,
     verbose: bool,
-) -> dict[str, float]:
+) -> dict[str, float | None]:
     """Select contact response values from shape, material, and builder settings."""
     # Contact response precedence:
     #   per-shape mjc:solref (non-legacy) > material > legacy per-shape > default
