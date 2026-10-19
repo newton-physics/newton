@@ -1066,19 +1066,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         Raises:
             ImportError: If ``usd-core`` is not installed.
+            FileNotFoundError: If the stage cannot be opened.
             ValueError: If the stage has no scene, its first scene does not apply
                 ``NewtonMuJoCoSceneAPI``, or an authored value is invalid.
         """
-        try:
-            from pxr import Usd
-        except ImportError as error:
-            raise ImportError("Creating a MuJoCo solver from USD requires usd-core.") from error
-
         from ...usd import utils as usd  # noqa: PLC0415
 
-        stage = Usd.Stage.Open(path)
-        if not stage:
-            raise ValueError(f"Failed to open USD stage {path!r}.")
+        stage = usd._open_usd_stage(path)
 
         # Use the scene that ModelBuilder.add_usd() imports model options from, so that the
         # solver arguments and the model's ``mjc:option:*`` values come from the same scene.
