@@ -24,6 +24,16 @@ import numpy as np
 import warp as wp
 
 from ..core._warnings import _external_warning_stacklevel
+from ..core.host_transform import (
+    pack_warp_values,
+    store_transform_rows,
+    transform_inverse,
+    transform_inverse_rows,
+    transform_multiply,
+    transform_multiply_rows,
+    transform_rows,
+    warp_array_from_values,
+)
 from ..core.types import (
     MAXVAL,
     Axis,
@@ -167,121 +177,6 @@ _ADD_ROD_GRAPH_DEPRECATION_MSG = (
 # dispatch through overload resolution and would initialize the Warp runtime at import.
 _IDENTITY_TRANSFORM = np.asarray(wp.transformf((0.0, 0.0, 0.0), (0.0, 0.0, 0.0, 1.0)), dtype=np.float32)
 _IDENTITY_ROTATION = np.asarray(wp.quatf(0.0, 0.0, 0.0, 1.0), dtype=np.float32)
-_QUAT_CONJUGATE_SIGNS = np.asarray((-1.0, -1.0, -1.0, 1.0), dtype=np.float32)
-
-
-def _joined_values(values: Sequence[Any] | np.ndarray, warp_type: type) -> np.ndarray | None:
-    """Join a list of ``warp_type`` vector, matrix, or transform values into one array.
-
-    ``np.asarray`` and ``wp.array`` read a list of Warp value objects one buffer at a
-    time, which dominates model building at scale; joining the buffers is several
-    times faster. Returns a read-only array of shape ``(N, *warp_type._shape_)``, or
-    ``None`` unless ``values`` is a non-empty list holding only ``warp_type`` objects.
-    """
-    if isinstance(values, np.ndarray) or not len(values) or not all(type(value) is warp_type for value in values):
-        return None
-    scalar_type = wp.dtype_to_numpy(warp_type._wp_scalar_type_)
-    return np.frombuffer(b"".join(values), dtype=scalar_type).reshape((len(values), *warp_type._shape_))
-
-
-def _pack_values(values: Sequence[Any] | np.ndarray, warp_type: type) -> np.ndarray:
-    """Pack vector, matrix, or transform values into an array of shape ``(N, *warp_type._shape_)``.
-
-    The result may be read-only.
-    """
-    joined = _joined_values(values, warp_type)
-    if joined is not None:
-        return joined
-    scalar_type = wp.dtype_to_numpy(warp_type._wp_scalar_type_)
-    return np.asarray(values, dtype=scalar_type).reshape((-1, *warp_type._shape_))
-
-
-def _warp_array(values: Any, dtype: type, **kwargs: Any) -> wp.array:
-    """Create a ``wp.array`` of a Warp value type, joining list input with :func:`_joined_values`."""
-    joined = _joined_values(values, dtype)
-    return wp.array(values if joined is None else joined, dtype=dtype, **kwargs)
-
-
-def _transform_rows(values: Sequence[Any] | np.ndarray) -> np.ndarray:
-    """Pack transform-like values into a float32 array of shape ``(N, 7)``."""
-    if isinstance(values, np.ndarray):
-        return np.asarray(values, dtype=np.float32).reshape(-1, 7)
-    # Entries may be reassigned to any transform-like value, e.g. a ``(p, q)`` pair.
-    values = [value if type(value) is wp.transformf else wp.transform(*value) for value in values]
-    return _pack_values(values, wp.transformf)
-
-
-def _store_transform_rows(destination: list | np.ndarray, targets: np.ndarray, rows: np.ndarray) -> None:
-    """Write ``(N, 7)`` transform rows into list- or array-backed builder storage."""
-    if isinstance(destination, np.ndarray):
-        destination[targets] = rows
-        return
-    for target, row in zip(targets.tolist(), rows, strict=True):
-        destination[target] = wp.transform.from_buffer_copy(row)
-
-
-# Batched float32 counterparts of Warp's quat_rotate, quat mul, transform_multiply, and
-# transform_inverse. Each mirrors the operation order of warp/native so the results match
-# the scalar builtins bit for bit on platforms without fused multiply-add contraction.
-_CYCLE_1 = np.asarray((1, 2, 0))
-_CYCLE_2 = np.asarray((2, 0, 1))
-
-
-def _quat_rotate_rows(q: np.ndarray, x: np.ndarray) -> np.ndarray:
-    v, w = q[..., :3], q[..., 3:]
-    two = np.float32(2.0)
-    c = two * w * w - np.float32(1.0)
-    vx = v * x
-    d = two * (vx[..., 0:1] + vx[..., 1:2] + vx[..., 2:3])
-    cross = v[..., _CYCLE_1] * x[..., _CYCLE_2] - v[..., _CYCLE_2] * x[..., _CYCLE_1]
-    return x * c + v * d + cross * w * two
-
-
-def _quat_mul_rows(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    av, aw = a[..., :3], a[..., 3:]
-    bv, bw = b[..., :3], b[..., 3:]
-    xyz = aw * bv + bw * av + av[..., _CYCLE_1] * bv[..., _CYCLE_2] - bv[..., _CYCLE_1] * av[..., _CYCLE_2]
-    ab = av * bv
-    w = aw * bw - ab[..., 0:1] - ab[..., 1:2] - ab[..., 2:3]
-    return np.concatenate((xyz, w), axis=-1)
-
-
-_NATIVE_TRANSFORM_ROW_LIMIT = 16
-"""Batches up to this many transforms call Warp's scalar builtins row by row.
-
-Below this size NumPy's fixed cost per operation outweighs the per-row native call.
-"""
-
-
-def _native_transform_rows(builtin_name: str, *operands: np.ndarray) -> np.ndarray:
-    """Apply a native Warp transform builtin to each row of same-shaped ``(..., 7)`` operands."""
-    builtin = getattr(wp._src.context.runtime.core, builtin_name)
-    shape = operands[0].shape
-    rows = [np.ascontiguousarray(operand, dtype=np.float32).reshape(-1, 7) for operand in operands]
-    out = np.empty((len(rows[0]), 7), dtype=np.float32)
-    for i, out_row in enumerate(out):
-        builtin(
-            *(wp.transform.from_buffer_copy(row[i]) for row in rows), ctypes.byref(wp.transform.from_buffer(out_row))
-        )
-    return out.reshape(shape)
-
-
-def _transform_mul_rows(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Compose broadcastable ``(..., 7)`` float32 transforms as ``a * b``."""
-    a, b = np.broadcast_arrays(a, b)
-    if a.size <= 7 * _NATIVE_TRANSFORM_ROW_LIMIT:
-        return _native_transform_rows("wp_builtin_mul_transformf_transformf", a, b)
-    return np.concatenate(
-        (_quat_rotate_rows(a[..., 3:], b[..., :3]) + a[..., :3], _quat_mul_rows(a[..., 3:], b[..., 3:])), axis=-1
-    )
-
-
-def _transform_inverse_rows(t: np.ndarray) -> np.ndarray:
-    """Invert ``(..., 7)`` float32 transforms."""
-    if t.size <= 7 * _NATIVE_TRANSFORM_ROW_LIMIT:
-        return _native_transform_rows("wp_builtin_transform_inverse_transformf", t)
-    q_inv = t[..., 3:] * _QUAT_CONJUGATE_SIGNS
-    return np.concatenate((-_quat_rotate_rows(q_inv, t[..., :3]), q_inv), axis=-1)
 
 
 _MERGE_VALIDATION_CACHE: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
@@ -3811,10 +3706,10 @@ class ModelBuilder:
         if counts["shape"] and len(moved_worlds):
             static_shapes = np.flatnonzero(np.asarray(builder.shape_body, dtype=np.int64) == -1)
             if len(static_shapes):
-                source = _transform_rows([builder.shape_transform[shape] for shape in static_shapes.tolist()])
-                transformed = _transform_mul_rows(moved_xforms[:, None], source[None])
+                source = transform_rows([builder.shape_transform[shape] for shape in static_shapes.tolist()])
+                transformed = transform_multiply_rows(moved_xforms[:, None], source[None])
                 targets = shape_transform_start + moved_worlds[:, None] * counts["shape"] + static_shapes[None]
-                _store_transform_rows(self.shape_transform, targets.ravel(), transformed.reshape(-1, 7))
+                store_transform_rows(self.shape_transform, targets.ravel(), transformed.reshape(-1, 7))
 
         for body_start, shape_start in zip(body_starts, shape_starts, strict=True):
             for body, shapes in builder.body_shapes.items():
@@ -3845,10 +3740,10 @@ class ModelBuilder:
             joint_parents = np.asarray(builder.joint_parent, dtype=np.int64)
             nonfree_roots = np.flatnonzero((joint_parents == -1) & (joint_types != int(JointType.FREE)))
             if len(nonfree_roots):
-                source = _transform_rows([builder.joint_X_p[joint] for joint in nonfree_roots.tolist()])
-                transformed = _transform_mul_rows(moved_xforms[:, None], source[None])
+                source = transform_rows([builder.joint_X_p[joint] for joint in nonfree_roots.tolist()])
+                transformed = transform_multiply_rows(moved_xforms[:, None], source[None])
                 targets = joint_X_p_start + moved_worlds[:, None] * counts["joint"] + nonfree_roots[None]
-                _store_transform_rows(self.joint_X_p, targets.ravel(), transformed.reshape(-1, 7))
+                store_transform_rows(self.joint_X_p, targets.ravel(), transformed.reshape(-1, 7))
 
             free_roots = np.flatnonzero((joint_parents == -1) & (joint_types == int(JointType.FREE)))
             if len(free_roots):
@@ -3856,13 +3751,13 @@ class ModelBuilder:
                 q_index = np.asarray(builder.joint_q_start, dtype=np.int64)[free_roots, None] + np.arange(7)
                 qd_index = np.asarray(builder.joint_qd_start, dtype=np.int64)[free_roots, None] + np.arange(6)
                 xform_prev = joint_q_source[q_index]
-                X_pj = _transform_rows([builder.joint_X_p[joint] for joint in free_roots.tolist()])
-                X_pj_inv = _transform_inverse_rows(X_pj)
-                xform_local = _transform_mul_rows(
-                    _transform_mul_rows(X_pj_inv[None], moved_xforms[:, None]), X_pj[None]
+                X_pj = transform_rows([builder.joint_X_p[joint] for joint in free_roots.tolist()])
+                X_pj_inv = transform_inverse_rows(X_pj)
+                xform_local = transform_multiply_rows(
+                    transform_multiply_rows(X_pj_inv[None], moved_xforms[:, None]), X_pj[None]
                 )
                 coord_base = moved_worlds[:, None, None] * counts["joint_coord"]
-                joint_q[coord_base + q_index[None]] = _transform_mul_rows(xform_local, xform_prev[None])
+                joint_q[coord_base + q_index[None]] = transform_multiply_rows(xform_local, xform_prev[None])
                 rotated = None if translations_only else ~np.all(moved_xforms[:, 3:] == _IDENTITY_ROTATION, axis=1)
                 if rotated is not None and np.any(rotated):
                     qd_targets = moved_worlds[rotated, None, None] * len(joint_qd_source) + qd_index[None]
@@ -3891,13 +3786,13 @@ class ModelBuilder:
 
         attribute_specs.pop("body_q")
         if counts["body"]:
-            body_q_source = _transform_rows(builder.body_q)
+            body_q_source = transform_rows(builder.body_q)
             body_q = np.tile(body_q_source, (world_count, 1))
             if translations_only:
                 if np.any(offsets):
                     body_q[:, :3] += np.repeat(offsets, counts["body"], axis=0)
             elif len(moved_worlds):
-                body_q.reshape((world_count, -1, 7))[moved_worlds] = _transform_mul_rows(
+                body_q.reshape((world_count, -1, 7))[moved_worlds] = transform_multiply_rows(
                     moved_xforms[:, None], body_q_source[None]
                 )
             if "body_q" in array_starts:
@@ -3911,7 +3806,7 @@ class ModelBuilder:
         # left bit-exact.
         attribute_specs.pop("body_qd")
         if counts["body"]:
-            body_qd = np.tile(_pack_values(builder.body_qd, wp.spatial_vectorf), (world_count, 1))
+            body_qd = np.tile(pack_warp_values(builder.body_qd, wp.spatial_vectorf), (world_count, 1))
             if not translations_only:
                 for world_index, xform in enumerate(xforms):
                     if xform is None or np.array_equal(np.asarray(xform.q), _IDENTITY_ROTATION):
@@ -6357,16 +6252,10 @@ class ModelBuilder:
         q_start = self.joint_q_start[joint_id]
         parent_body_xform = wp.transform_identity() if parent == -1 else self.body_q[parent]
         # Compute inverse(parent_body * parent_anchor) * child_body * child_anchor.
-        # Use native calls to bypass Warp overload resolution, as in add_builder().
-        core = wp._src.context.runtime.core
-        transform_mul = core.wp_builtin_mul_transformf_transformf
-        transform_inverse = core.wp_builtin_transform_inverse_transformf
-        anchor = wp.transform.from_buffer(np.empty(7, dtype=np.float32))
-        joint_q = wp.transform.from_buffer(np.empty(7, dtype=np.float32))
-        transform_mul(parent_body_xform, self.joint_X_p[joint_id], ctypes.byref(anchor))
-        transform_inverse(anchor, ctypes.byref(joint_q))
-        transform_mul(joint_q, self.body_q[child], ctypes.byref(anchor))
-        transform_mul(anchor, self.joint_X_c[joint_id], ctypes.byref(joint_q))
+        anchor = transform_multiply(parent_body_xform, self.joint_X_p[joint_id])
+        joint_q = transform_multiply(
+            transform_multiply(transform_inverse(anchor), self.body_q[child]), self.joint_X_c[joint_id]
+        )
         self.joint_q[q_start : q_start + 7] = list(joint_q)
 
     def add_joint_free(
@@ -14101,8 +13990,8 @@ class ModelBuilder:
             # particles
 
             # state (initial)
-            m.particle_q = _warp_array(self.particle_q, dtype=wp.vec3, requires_grad=requires_grad)
-            m.particle_qd = _warp_array(self.particle_qd, dtype=wp.vec3, requires_grad=requires_grad)
+            m.particle_q = warp_array_from_values(self.particle_q, dtype=wp.vec3, requires_grad=requires_grad)
+            m.particle_qd = warp_array_from_values(self.particle_qd, dtype=wp.vec3, requires_grad=requires_grad)
             m.particle_mass = wp.array(self.particle_mass, dtype=wp.float32, requires_grad=requires_grad)
             m.particle_inv_mass = wp.array(particle_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
             m.particle_radius = wp.array(self.particle_radius, dtype=wp.float32, requires_grad=requires_grad)
@@ -14132,7 +14021,9 @@ class ModelBuilder:
             # collision geometry
 
             m.shape_label = self.shape_label
-            m.shape_transform = _warp_array(self.shape_transform, dtype=wp.transform, requires_grad=requires_grad)
+            m.shape_transform = warp_array_from_values(
+                self.shape_transform, dtype=wp.transform, requires_grad=requires_grad
+            )
             m.shape_body = wp.array(self.shape_body, dtype=wp.int32)
             m.shape_flags = wp.array(self.shape_flags, dtype=wp.int32)
             m.body_shapes = self.body_shapes
@@ -14383,7 +14274,7 @@ class ModelBuilder:
             m._generated_sdf_edge_meshes = generated_sdf_edge_meshes
             m.gaussians_count = len(gaussians)
             m.gaussians_data = wp.array(gaussians, dtype=Gaussian.Data)
-            m.shape_scale = _warp_array(self.shape_scale, dtype=wp.vec3, requires_grad=requires_grad)
+            m.shape_scale = warp_array_from_values(self.shape_scale, dtype=wp.vec3, requires_grad=requires_grad)
             m.shape_is_solid = wp.array(self.shape_is_solid, dtype=wp.bool)
             m.shape_margin = wp.array(self.shape_margin, dtype=wp.float32, requires_grad=requires_grad)
             m.shape_collision_radius = wp.array(
@@ -14392,7 +14283,7 @@ class ModelBuilder:
             m.shape_world = wp.array(self.shape_world, dtype=wp.int32)
 
             m.shape_source = self.shape_source  # used for rendering
-            m.shape_color = _warp_array(self.shape_color, dtype=wp.vec3)
+            m.shape_color = warp_array_from_values(self.shape_color, dtype=wp.vec3)
             m.shape_opacity = wp.array(self.shape_opacity, dtype=wp.float32)
 
             m.shape_material_ke = wp.array(self.shape_material_ke, dtype=wp.float32, requires_grad=requires_grad)
@@ -15208,8 +15099,8 @@ class ModelBuilder:
 
             m.body_mass = wp.array(body_mass, dtype=wp.float32, requires_grad=requires_grad)
             m.body_inv_mass = wp.array(body_inv_mass, dtype=wp.float32, requires_grad=requires_grad)
-            m.body_inertia = _warp_array(body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
-            m.body_inv_inertia = _warp_array(body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+            m.body_inertia = warp_array_from_values(body_inertia, dtype=wp.mat33, requires_grad=requires_grad)
+            m.body_inv_inertia = warp_array_from_values(body_inv_inertia, dtype=wp.mat33, requires_grad=requires_grad)
 
             if len(self.body_mass) > 0 and not self.validate_inertia_detailed:
                 # Use fast Warp kernel validation, correcting the Model arrays in place on device.
@@ -15239,9 +15130,9 @@ class ModelBuilder:
                         stacklevel=3,
                     )
 
-            m.body_q = _warp_array(self.body_q, dtype=wp.transform, requires_grad=requires_grad)
-            m.body_qd = _warp_array(self.body_qd, dtype=wp.spatial_vector, requires_grad=requires_grad)
-            m.body_com = _warp_array(self.body_com, dtype=wp.vec3, requires_grad=requires_grad)
+            m.body_q = warp_array_from_values(self.body_q, dtype=wp.transform, requires_grad=requires_grad)
+            m.body_qd = warp_array_from_values(self.body_qd, dtype=wp.spatial_vector, requires_grad=requires_grad)
+            m.body_com = warp_array_from_values(self.body_com, dtype=wp.vec3, requires_grad=requires_grad)
             m.body_label = self.body_label
             m.body_flags = wp.array(self.body_flags, dtype=wp.int32)
             m.body_world = wp.array(self.body_world, dtype=wp.int32)
@@ -15263,10 +15154,10 @@ class ModelBuilder:
             m.joint_type = wp.array(self.joint_type, dtype=wp.int32)
             m.joint_parent = wp.array(joint_parent_np, dtype=wp.int32)
             m.joint_child = wp.array(joint_child_np, dtype=wp.int32)
-            m.joint_X_p = _warp_array(self.joint_X_p, dtype=wp.transform, requires_grad=requires_grad)
-            m.joint_X_c = _warp_array(self.joint_X_c, dtype=wp.transform, requires_grad=requires_grad)
+            m.joint_X_p = warp_array_from_values(self.joint_X_p, dtype=wp.transform, requires_grad=requires_grad)
+            m.joint_X_c = warp_array_from_values(self.joint_X_c, dtype=wp.transform, requires_grad=requires_grad)
             m.joint_dof_dim = wp.array(np.array(self.joint_dof_dim), dtype=wp.int32, ndim=2)
-            m.joint_axis = _warp_array(self.joint_axis, dtype=wp.vec3, requires_grad=requires_grad)
+            m.joint_axis = warp_array_from_values(self.joint_axis, dtype=wp.vec3, requires_grad=requires_grad)
             m.joint_q = wp.array(self.joint_q, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_qd = wp.array(self.joint_qd, dtype=wp.float32, requires_grad=requires_grad)
             m.joint_label = self.joint_label
