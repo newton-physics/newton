@@ -21,7 +21,6 @@ import newton
 from newton.exceptions import NewtonWarning
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 from newton.tests.vbd.rod_direct_utils import (
-    DENSITY,
     GRAVITY,
     SEG,
     add_rod,

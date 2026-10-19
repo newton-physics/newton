@@ -143,7 +143,9 @@ def test_captured_step_follows_model_changes(test, device):
 
     def scale_tip_mass(model, scale):
         inverse = 1.0 / scale if scale else 0.0
-        for name, factor in (("body_mass", scale), ("body_inertia", scale)) + (
+        for name, factor in (
+            ("body_mass", scale),
+            ("body_inertia", scale),
             ("body_inv_mass", inverse),
             ("body_inv_inertia", inverse),
         ):
