@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""SolverVBD rod joints: graph-colouring iterations vs the direct (serial, per-rod) solve.
+"""SolverVBD rod joints: graph-coloring iterations vs the direct (serial, per-rod) solve.
 
 Both layouts hold the same number of rod bodies: a few long rods (deep serial walk, little parallelism across rods)
 and many short rods (shallow walk, wide parallelism). Each rod hangs from a kinematic first segment under gravity.
@@ -47,7 +47,7 @@ def build_rods(rods: int, segments: int, device=None) -> newton.Model:
 
 
 class RodDirectSolve:
-    params = (list(LAYOUTS), ["colouring", "direct"])
+    params = (list(LAYOUTS), ["coloring", "direct"])
     param_names = ["layout", "rod_solve"]
     number = 1
     rounds = 2

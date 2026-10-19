@@ -114,8 +114,11 @@ valid after :meth:`~newton.solvers.SolverVBD.notify_model_changed` changes rod
 membership (joint enablement, body flags, inverse masses).
 ``JOINT_PROPERTIES`` rewrites the layout on the host, so notify it outside
 capture. ``BODY_PROPERTIES`` and ``BODY_INERTIAL_PROPERTIES`` are checked on the
-device and can be captured; a body that becomes or stops being dynamic under
-capture refuses the rod steps until the next notification outside capture.
+device and can be captured. If a body becomes or stops being dynamic under
+capture, the rods of its world (every rod, for a global body) fall back to the
+per-body update until the next notification outside capture, and
+:meth:`~newton.solvers.SolverVBD.check_rod_direct_status` warns; the rods of
+other worlds stay on the direct solve.
 Create a new solver if joints become ROD joints.
 
 .. experimental::
@@ -126,7 +129,7 @@ Create a new solver if joints become ROD joints.
    (``rigid_soft_enable_dat``), Dahl rod friction, or tendons routed over rod
    bodies.
 
-The block solve costs more per iteration than the coloured per-body update,
+The block solve costs more per iteration than the colored per-body update,
 and each rod is solved serially by one thread. Measured with
 ``asv/benchmarks/simulation/bench_rod_direct_solve.py`` (512 rod segments in
 total, 60 steps of 10 iterations, seconds):
@@ -135,8 +138,8 @@ total, 60 steps of 10 iterations, seconds):
    :header-rows: 1
 
    * - Device
-     - 4 rods x 128 segments, coloured / direct
-     - 128 rods x 4 segments, coloured / direct
+     - 4 rods x 128 segments, colored / direct
+     - 128 rods x 4 segments, colored / direct
    * - CPU
      - 0.86 / 2.43
      - 0.82 / 1.87

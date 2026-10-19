@@ -40,7 +40,7 @@ mat36d = wp.types.matrix(shape=(3, 6), dtype=wp.float64)
 
 ROD_DIRECT_FAILED = wp.constant(1)  # status bit: a step was refused (pose kept)
 ROD_DIRECT_STALLED = wp.constant(2)  # status bit: no decrease above the estimated round-off
-ROD_DIRECT_STALE = wp.constant(4)  # status bit: refused because a body's dynamic state changed under capture
+ROD_DIRECT_STALE = wp.constant(4)  # status bit: solved per body because a body's dynamic state changed under capture
 FLOAT32_EPS = wp.constant(wp.float64(1.1920929e-7))
 EXTERNAL_HESSIAN_WEIGHT = wp.constant(wp.float64(2.0))
 """Weight of the accumulated contact, attachment and non-rod joint Hessian in the rod step.
@@ -49,7 +49,7 @@ All rods are solved in parallel, so a term between two directly solved bodies (t
 couples simultaneous block solves, and each solve sees only its own diagonal block. For a PSD metric K and
 simultaneous endpoint increments u, v, ``|u + v|_K^2 <= 2 |u|_K^2 + 2 |v|_K^2``, so twice the diagonal curvature
 majorizes the omitted cross terms; with weight 1, stiff contacts between rods overshoot and diverge. On one-sided terms
-(static, kinematic or colour-solved partners, particles) the weight under-relaxes the step: their friction and active
+(static, kinematic or color-solved partners, particles) the weight under-relaxes the step: their friction and active
 set enter the line search only as this quadratic model, and with weight 1 rods resting on frictional contacts keep
 two to three times more residual motion. The gradient is not weighted, so the force balance at convergence is
 unchanged. The weight changes only the steps: a larger Hessian lowers the predicted decrease ``g^T H^-1 g``, but

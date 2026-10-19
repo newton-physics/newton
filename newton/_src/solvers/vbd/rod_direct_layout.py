@@ -38,24 +38,36 @@ class RodDirectLayout:
     bnd_joint: wp.array  # one-sided ROD joints (other end kinematic, or closing a loop)
     body_node: wp.array  # (body_count,) node index of a directly solved body, -1 otherwise
     body_dynamic: wp.array  # (body_count,) 1 if the body was dynamic when the layout was written
+    # (node_capacity,) stale slot of the node's rod (see check_rod_membership): its world, or world_count + 1 if the
+    # rod holds global bodies or spans worlds
+    node_slot: wp.array
     is_rod_body: np.ndarray | None = None  # host mask (body_count,) of the current layout
 
 
 @wp.kernel(enable_backward=False)
 def split_rod_inverse_mass(
     body_node: wp.array[wp.int32],
+    node_slot: wp.array[wp.int32],
     body_inv_mass: wp.array[float],
+    stale: wp.array[wp.int32],
+    global_slot: int,
     # outputs
-    inv_mass_colour: wp.array[float],
+    inv_mass_color: wp.array[float],
     inv_mass_rod: wp.array[float],
 ):
-    """Split inverse masses between the colour loop (rod bodies zeroed, so its kernels skip them) and the rod step."""
+    """Split inverse masses between the color loop (rod bodies zeroed, so its kernels skip them) and the rod step.
+
+    Bodies of a rod whose layout is stale (see :func:`check_rod_membership`) stay in the color loop."""
     b = wp.tid()
-    if body_node[b] >= 0:
-        inv_mass_colour[b] = 0.0
+    n = body_node[b]
+    direct = False
+    if n >= 0:
+        direct = stale[node_slot[n]] == 0 and stale[global_slot] == 0
+    if direct:
+        inv_mass_color[b] = 0.0
         inv_mass_rod[b] = body_inv_mass[b]
     else:
-        inv_mass_colour[b] = body_inv_mass[b]
+        inv_mass_color[b] = body_inv_mass[b]
         inv_mass_rod[b] = 0.0
 
 
@@ -66,16 +78,28 @@ def check_rod_membership(
     body_inv_mass: wp.array[float],
     body_flags: wp.array[wp.int32],
     kinematic_bit: int,
+    body_world: wp.array[wp.int32],
+    world_count: int,
     # output
     stale: wp.array[wp.int32],
 ):
-    """Flag the layout as stale if a candidate body became dynamic or stopped being dynamic since it was written."""
+    """Flag the layout as stale where a candidate body became dynamic or stopped being dynamic since it was written.
+
+    ``stale`` has ``world_count + 2`` slots: one per world, one for global bodies (``world_count``) and one for any
+    change (``world_count + 1``). A rod is stale if its own slot (``node_slot``) or the global slot is set, so a change
+    in one world leaves the rods of other worlds on the direct path, while rods that hold global bodies or span worlds
+    react to any change. A set slot is 1, or 2 once the rod step has reported it.
+    """
     b = rod_bodies[wp.tid()]
     dynamic = int(0)
     if body_inv_mass[b] > 0.0 and (body_flags[b] & kinematic_bit) == 0:
         dynamic = 1
     if dynamic != body_dynamic[b]:
-        stale[0] = 1
+        w = body_world[b]
+        if w < 0:
+            w = world_count
+        wp.atomic_max(stale, w, 1)
+        wp.atomic_max(stale, world_count + 1, 1)
 
 
 @wp.kernel(enable_backward=False)
@@ -146,6 +170,7 @@ def allocate_rod_direct_layout(model, device) -> RodDirectLayout | None:
         bnd_joint=arr(2 * int(joints.size)),
         body_node=arr(model.body_count),
         body_dynamic=arr(model.body_count),
+        node_slot=arr(n),
     )
     update_rod_direct_layout(layout, model)
     return layout
@@ -189,7 +214,22 @@ def update_rod_direct_layout(layout: RodDirectLayout, model) -> None:
     body_node[rods["node_body"]] = np.arange(node_count, dtype=np.int32)
     layout.body_node.assign(body_node)
     layout.body_dynamic.assign(dynamic.astype(np.int32))
+    layout.node_slot.assign(pad(_rod_slots(rods, model), n_cap, model.world_count + 1))
     layout.is_rod_body = body_node >= 0
+
+
+def _rod_slots(rods: dict[str, list[int]], model) -> np.ndarray:
+    """Stale slot per node: the world of the node's rod, or ``world_count + 1`` for rods with global bodies or bodies
+    of several worlds."""
+    body_world = model.body_world.numpy()
+    node_world = body_world[np.asarray(rods["node_body"], dtype=np.int64)]
+    slots = np.full(len(node_world), model.world_count + 1, dtype=np.int32)
+    start = rods["rod_start"]
+    for r in range(len(start) - 1):
+        worlds = np.unique(node_world[start[r] : start[r + 1]])
+        if worlds.size == 1 and worlds[0] >= 0:
+            slots[start[r] : start[r + 1]] = worlds[0]
+    return slots
 
 
 def _rod_forest(model) -> tuple[dict[str, list[int]], np.ndarray]:

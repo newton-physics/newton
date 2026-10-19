@@ -658,8 +658,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 iteration, by a line-searched Newton step eliminated along the rod tree in float64. This
                 removes the slow convergence of per-body updates on slender rods, whose stretch stiffness
                 dwarfs their bending stiffness, and lets the two bend axes differ. Rod membership follows
-                joint enablement, body flags and inverse masses through :meth:`notify_model_changed`. A
-                refused or stalled step keeps the rod's pose and is reported by
+                joint enablement, body flags and inverse masses through :meth:`notify_model_changed`.
+                Refused, stalled and per-body fallback steps are reported by
                 :meth:`check_rod_direct_status` until :meth:`reset`. Not supported together with
                 ``rigid_soft_enable_dat``, Dahl rod friction or tendons routed over rod bodies. See
                 :doc:`/solvers/vbd` for the method, graph capture and cost. Defaults to ``False``.
@@ -4420,13 +4420,14 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 ("T0", wp.transform),
             )
         }
-        self._rod_direct_inv_mass_colour = wp.zeros_like(self.body_inv_mass_effective)
+        self._rod_direct_inv_mass_color = wp.zeros_like(self.body_inv_mass_effective)
         self._rod_direct_inv_mass_rod = wp.zeros_like(self.body_inv_mass_effective)
         # Sticky status bits (ROD_DIRECT_FAILED, _STALLED, _STALE) per rod of the current layout, the bits of
-        # earlier layouts, and a flag for a membership change detected under graph capture; all allocated once.
+        # earlier layouts, and stale flags per world for membership changes detected under graph capture (see
+        # check_rod_membership); all allocated once.
         self._rod_direct_status = wp.zeros(layout.rod_capacity, dtype=wp.int32, device=self.device)
         self._rod_direct_prior_status = wp.zeros(1, dtype=wp.int32, device=self.device)
-        self._rod_direct_stale = wp.zeros(1, dtype=wp.int32, device=self.device)
+        self._rod_direct_stale = wp.zeros(model.world_count + 2, dtype=wp.int32, device=self.device)
         self._rod_direct_no_flags = (
             wp.zeros(model.body_count, dtype=wp.int32, device=self.device) if model.body_flags is None else None
         )
@@ -4462,8 +4463,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         """Check rod membership on the device after a body-flag or inertial-property change (capturable).
 
         Outside capture the layout is rewritten only if a body became dynamic or stopped being dynamic, at the cost of
-        reading one flag. Under capture such a change marks the layout stale, and the rod steps refuse until the next
-        notification outside capture.
+        reading the stale flags. Under capture such a change marks the rods of that body's world stale (all rods for a
+        global body), and the color loop solves their bodies per body until the next notification outside capture.
         """
         rd = self._rod_direct
         if rd is None:
@@ -4472,11 +4473,19 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         wp.launch(
             kernel=check_rod_membership,
             dim=rd.node_capacity,
-            inputs=[rd.rod_bodies, rd.body_dynamic, model.body_inv_mass, flags, int(BodyFlags.KINEMATIC)],
+            inputs=[
+                rd.rod_bodies,
+                rd.body_dynamic,
+                model.body_inv_mass,
+                flags,
+                int(BodyFlags.KINEMATIC),
+                model.body_world,
+                model.world_count,
+            ],
             outputs=[self._rod_direct_stale],
             device=self.device,
         )
-        if not self.device.is_capturing and self._rod_direct_stale.numpy()[0]:
+        if not self.device.is_capturing and np.any(self._rod_direct_stale.numpy()):
             self._update_rod_direct(model)
 
     def _reset_rod_direct_status(self, world_mask: wp.array | None) -> None:
@@ -4509,14 +4518,17 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 )
 
     def check_rod_direct_status(self) -> None:
-        """Report direct rod steps that did not move a rod (``rigid_rod_direct_solve``).
+        """Report direct rod steps that were refused, fell back to the per-body solve, or stalled
+        (``rigid_rod_direct_solve``).
 
         Covers every step since the solver was created or since :meth:`reset` cleared the rods' worlds, eager or
-        replayed from a captured graph. A refused step (a
-        singular block, a non-finite step, or a non-finite energy at the start or at the smallest trial step) keeps
-        the rod's pose for that iteration and prints a warning from the kernel; this check raises for it. A line
-        search that found no decrease larger than the estimated round-off of the energy also keeps the pose; this
-        check warns for it, because it signals a step that may not converge. The check synchronizes the solver
+        replayed from a captured graph. A refused step (a singular block, a non-finite step, or a non-finite energy at
+        the start or at the smallest trial step) keeps the rod at the iteration's start pose, so a rod refused on every
+        iteration follows its inertial prediction for that step, ignoring its joints and contacts; the kernel warns
+        once and this check raises. A rod whose membership changed under graph capture (one of its world's bodies
+        became or stopped being dynamic) is solved by the per-body update until :meth:`notify_model_changed` runs
+        outside capture; this check warns for it, and for a line search that found no decrease larger than the
+        estimated round-off of the energy, which keeps the pose for that iteration. The check synchronizes the solver
         device, so call it outside graph capture. It is a no-op without direct rod solves.
 
         Raises:
@@ -4528,25 +4540,29 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             raise RuntimeError("Cannot inspect rod direct-solve status during graph capture")
         if self._rod_direct is None:
             return
-        if self._rod_direct_stale.numpy()[0]:
-            raise RuntimeError(
-                "SolverVBD rigid_rod_direct_solve: a body became or stopped being dynamic (inverse mass or KINEMATIC "
-                "flag) under graph capture, so rod steps were refused; call notify_model_changed() with "
-                "ModelFlags.BODY_PROPERTIES or BODY_INERTIAL_PROPERTIES outside capture."
-            )
         status = self._rod_direct_status.numpy()
         prior = int(self._rod_direct_prior_status.numpy()[0])
-        stale = np.flatnonzero(status & ROD_DIRECT_STALE)
-        if stale.size or prior & ROD_DIRECT_STALE:
-            raise RuntimeError(
-                "SolverVBD rigid_rod_direct_solve: rod steps were refused while a body that became or stopped being "
-                "dynamic under graph capture had not been notified outside capture; reset() clears this report."
-            )
         failed = np.flatnonzero(status & ROD_DIRECT_FAILED)
         if failed.size or prior & ROD_DIRECT_FAILED:
             raise RuntimeError(
                 f"SolverVBD rigid_rod_direct_solve: {self._describe_rods(failed, prior & ROD_DIRECT_FAILED)} "
-                "gave a singular or non-finite step; their poses were kept."
+                "gave a singular or non-finite step; they kept each refused iteration's start pose."
+            )
+        stale = np.flatnonzero(status & ROD_DIRECT_STALE)
+        pending = bool(np.any(self._rod_direct_stale.numpy()))
+        if stale.size or prior & ROD_DIRECT_STALE or pending:
+            rods = self._describe_rods(stale, prior & ROD_DIRECT_STALE) or "the affected rods"
+            remedy = (
+                "call notify_model_changed() with ModelFlags.BODY_PROPERTIES or BODY_INERTIAL_PROPERTIES outside "
+                "capture to restore the direct solve"
+                if pending
+                else "reset() clears this report"
+            )
+            warnings.warn(
+                "SolverVBD rigid_rod_direct_solve: a body became or stopped being dynamic (inverse mass or KINEMATIC "
+                f"flag) under graph capture, so {rods} used the per-body solve; {remedy}.",
+                NewtonWarning,
+                stacklevel=2,
             )
         stalled = np.flatnonzero(status & ROD_DIRECT_STALLED)
         if stalled.size or prior & ROD_DIRECT_STALLED:
@@ -4559,10 +4575,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             )
 
     def _describe_rods(self, rods: np.ndarray, earlier: int) -> str:
-        """Name flagged rods by the label of their first body; rods of an earlier layout can only be counted."""
+        """Name flagged rods by one of their bodies (label, index and world); rods of an earlier layout can only be
+        counted."""
         rd = self._rod_direct
         first_body = rd.node_body.numpy()[rd.rod_start.numpy()[rods[:8]]]
-        names = [self.model.body_label[b] for b in first_body]
+        body_world = self.model.body_world.numpy()
+        names = ", ".join(f"{self.model.body_label[b]!r} (body {b}, world {body_world[b]})" for b in first_body)
         text = f"the rods containing bodies {names}{' and more' if rods.size > 8 else ''}" if rods.size else ""
         if earlier:
             text += f"{' and ' if text else ''}rods of a layout before the last notify_model_changed()"
@@ -4675,7 +4693,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self.body_hessian_ll,
                 self.body_hessian_al,
                 self.body_hessian_aa,
+                rd.node_slot,
                 self._rod_direct_stale,
+                model.world_count,
                 sc["D"],
                 sc["B"],
                 sc["F"],
@@ -4879,16 +4899,22 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         self._update_tendon_routing(state_in, dt, False)
 
-        # Directly solved rod bodies get a zero inverse mass in the colour loop, whose kernels then skip them; the mask
-        # is applied on the device so a captured step follows layout rewrites.
-        colour_inv_mass = self.body_inv_mass_effective
+        # Directly solved rod bodies get a zero inverse mass in the color loop, whose kernels then skip them; the mask
+        # is applied on the device so a captured step follows layout rewrites and stale layouts.
+        color_inv_mass = self.body_inv_mass_effective
         if self._rod_direct is not None:
-            colour_inv_mass = self._rod_direct_inv_mass_colour
+            color_inv_mass = self._rod_direct_inv_mass_color
             wp.launch(
                 kernel=split_rod_inverse_mass,
                 dim=model.body_count,
-                inputs=[self._rod_direct.body_node, self.body_inv_mass_effective],
-                outputs=[colour_inv_mass, self._rod_direct_inv_mass_rod],
+                inputs=[
+                    self._rod_direct.body_node,
+                    self._rod_direct.node_slot,
+                    self.body_inv_mass_effective,
+                    self._rod_direct_stale,
+                    model.world_count,
+                ],
+                outputs=[color_inv_mass, self._rod_direct_inv_mass_rod],
                 device=self.device,
             )
 
@@ -4896,7 +4922,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         for color in range(len(model.body_color_groups)):
             color_group = model.body_color_groups[color]
 
-            self._accumulate_rigid_body_terms(color_group, state_in, contacts, dt, colour_inv_mass)
+            self._accumulate_rigid_body_terms(color_group, state_in, contacts, dt, color_inv_mass)
 
             wp.launch(
                 kernel=self._solve_rigid_body_kernel,
@@ -4907,7 +4933,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     self.body_q_prev,
                     model.body_q,
                     model.body_mass,
-                    colour_inv_mass,
+                    color_inv_mass,
                     model.body_inertia,
                     self.body_inertia_q,
                     model.body_com,

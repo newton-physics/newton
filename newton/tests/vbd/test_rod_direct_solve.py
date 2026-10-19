@@ -5,7 +5,7 @@
 
 The physics of the slender-rod regime is covered by ``test_rod_direct_regime.py``, model changes, graph capture and
 failure reporting by ``test_rod_direct_lifecycle.py``. These tests use a stretch/bend stiffness ratio
-``EA * l**2 / (4 * EI)`` of 1, where per-body VBD converges in a few iterations, so the coloured per-body solve is a
+``EA * l**2 / (4 * EI)`` of 1, where per-body VBD converges in a few iterations, so the colored per-body solve is a
 cheap reference for trees and loops.
 """
 
@@ -132,7 +132,7 @@ def test_one_segment_rod_bends_about_its_loaded_axis(test, device):
     """
     for scale in (1.0, 10.0):
         with test.subTest(loaded_axis_bend_scale=scale):
-            builder, bodies, joints = clamped_chain(device, segments=2)
+            builder, bodies, joints = clamped_chain(segments=2)
             dof = builder.joint_qd_start[joints[0]]
             builder.joint_target_ke[dof + 4] *= scale  # bend about the segment's y axis, which gravity loads
             builder.color()

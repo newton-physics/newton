@@ -156,6 +156,15 @@ def accumulate_rod_body_joint_terms(
         body_hessian_aa[b] = body_hessian_aa[b] + h_aa
 
 
+@wp.func
+def _flag_rod(status: wp.array[wp.int32], r: int, bit: int) -> bool:
+    """Set a sticky status bit of rod ``r``; ``True`` on its first report since the status was cleared, so warnings
+    print once rather than on every iteration."""
+    first = (status[r] & bit) == 0
+    status[r] = status[r] | bit
+    return first
+
+
 @wp.kernel(enable_backward=False)
 def solve_rod_direct(
     dt: float,
@@ -187,7 +196,9 @@ def solve_rod_direct(
     ext_h_ll: wp.array[wp.mat33],
     ext_h_al: wp.array[wp.mat33],
     ext_h_aa: wp.array[wp.mat33],
+    node_slot: wp.array[wp.int32],
     stale: wp.array[wp.int32],
+    global_slot: int,
     # scratch, one entry per node
     D: wp.array[mat66d],
     B: wp.array[mat66d],
@@ -204,18 +215,27 @@ def solve_rod_direct(
 ):
     """One Newton step of a whole rod (one thread per rod): assemble, eliminate leaves-to-root, back-substitute, then
     backtrack on the rod's incremental potential. A singular block or a non-finite step keeps the pose and flags the
-    rod in ``status``. Rods beyond the current layout are empty and return at once."""
+    rod in ``status``. Rods beyond the current layout are empty and return at once. A rod whose layout is stale
+    (see :func:`check_rod_membership`) is left to the color loop, which ``split_rod_inverse_mass`` gave its bodies."""
     r = wp.tid()
     s = rod_start[r]
     e = rod_start[r + 1]
     if e <= s:
         return
-    if stale[0] != 0:  # rod membership changed under graph capture; the layout no longer matches the model
+    slot = node_slot[s]
+    if stale[global_slot] != 0:
+        slot = global_slot
+    if stale[slot] != 0:  # rod membership changed under graph capture; the layout no longer matches the model
         status[r] = status[r] | ROD_DIRECT_STALE
-        if r == 0:
+        if wp.atomic_max(stale, slot, 2) == 1:  # first report of this slot since the layout was written
+            world = slot
+            if slot >= global_slot:
+                world = -1
             wp.printf(
                 "Warning: SolverVBD rigid_rod_direct_solve: a body became or stopped being dynamic under graph "
-                "capture; rod steps are refused until notify_model_changed() runs outside capture.\n"
+                "capture (world %d; -1 for global bodies or rods spanning worlds); those rods use the per-body solve "
+                "until notify_model_changed() runs outside capture.\n",
+                world,
             )
         return
 
@@ -338,12 +358,12 @@ def solve_rod_direct(
             if not wp.isfinite(d[i]):
                 ok = False
     if not ok:
-        status[r] = status[r] | ROD_DIRECT_FAILED
-        wp.printf(
-            "Warning: SolverVBD rigid_rod_direct_solve: the rod containing body %d gave a singular or non-finite "
-            "step; pose kept.\n",
-            node_body[s],
-        )
+        if _flag_rod(status, r, ROD_DIRECT_FAILED):
+            wp.printf(
+                "Warning: SolverVBD rigid_rod_direct_solve: the rod containing body %d gave a singular or non-finite "
+                "step; pose kept.\n",
+                node_body[s],
+            )
         return
 
     alpha = wp.float64(1.0)
@@ -380,12 +400,12 @@ def solve_rod_direct(
         dt,
     )
     if not wp.isfinite(phi0):
-        status[r] = status[r] | ROD_DIRECT_FAILED
-        wp.printf(
-            "Warning: SolverVBD rigid_rod_direct_solve: the rod containing body %d has a non-finite energy; pose "
-            "kept.\n",
-            node_body[s],
-        )
+        if _flag_rod(status, r, ROD_DIRECT_FAILED):
+            wp.printf(
+                "Warning: SolverVBD rigid_rod_direct_solve: the rod containing body %d has a non-finite energy; pose "
+                "kept.\n",
+                node_body[s],
+            )
         return
     accepted = bool(False)
     finite_trial = bool(True)
@@ -433,12 +453,12 @@ def solve_rod_direct(
         # step is a failure; otherwise flag the rod only when that step predicted a decrease larger than the
         # estimated round-off of the energy.
         if not finite_trial:
-            status[r] = status[r] | ROD_DIRECT_FAILED
-            wp.printf(
-                "Warning: SolverVBD rigid_rod_direct_solve: the rod containing body %d has a non-finite energy at "
-                "the smallest trial step; pose kept.\n",
-                node_body[s],
-            )
+            if _flag_rod(status, r, ROD_DIRECT_FAILED):
+                wp.printf(
+                    "Warning: SolverVBD rigid_rod_direct_solve: the rod containing body %d has a non-finite energy "
+                    "at the smallest trial step; pose kept.\n",
+                    node_body[s],
+                )
         elif alpha * wp.float64(2.0) * pred > noise:
             status[r] = status[r] | ROD_DIRECT_STALLED
         alpha = wp.float64(0.0)

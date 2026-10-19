@@ -19,6 +19,16 @@ from newton.tests.unittest_utils import StdOutCapture, add_function_test, get_te
 from newton.tests.vbd.rod_direct_utils import GRAVITY, SEG, add_rod, clamped_chain, clamped_tree, make_rod, run_solver
 
 
+def two_world_chains(device, gravity: float = GRAVITY) -> tuple[newton.Model, int]:
+    """Two worlds, each holding the clamped chain of :func:`clamped_chain` (4 segments); returns the model and the
+    bodies per world."""
+    chain, bodies, _ = clamped_chain(segments=4, gravity=gravity)
+    scene = newton.ModelBuilder(gravity=(0.0, 0.0, -gravity))
+    scene.replicate(chain, 2)
+    scene.color()
+    return scene.finalize(device=device), len(bodies)
+
+
 def test_disabled_rod_joints_release_the_rod(test, device):
     """Release every body once all rod joints are disabled and the solver is notified."""
 
@@ -28,7 +38,7 @@ def test_disabled_rod_joints_release_the_rod(test, device):
 
     results = []
     for direct in (False, True):
-        builder, bodies, _ = clamped_chain(device, segments=6)
+        builder, bodies, _ = clamped_chain(segments=6)
         builder.color()
         model = builder.finalize(device=device)
         _, state = run_solver(model, direct, steps=30, dt=1.0 / 300.0, prepare=disable_joints)
@@ -40,7 +50,7 @@ def test_disabled_rod_joints_release_the_rod(test, device):
 
 def test_body_made_kinematic_is_not_moved(test, device):
     """Leave a rod body in place once it is flagged kinematic and the solver is notified."""
-    builder, bodies, _ = clamped_chain(device, segments=6)
+    builder, bodies, _ = clamped_chain(segments=6)
     builder.color()
     model = builder.finalize(device=device)
     tip = bodies[-1]
@@ -62,7 +72,7 @@ def test_refused_steps_keep_the_pose_and_raise(test, device):
     until the solver is reset."""
     for what, value in (("non-finite material", np.nan), ("negative stiffness", -1.0e9)):
         with test.subTest(case=what):
-            builder, bodies, joints = clamped_chain(device, segments=4, gravity=0.0)  # at rest: the pose is fixed
+            builder, bodies, joints = clamped_chain(segments=4, gravity=0.0)  # at rest: the pose is fixed
             builder.color()
             model = builder.finalize(device=device)
             solver = newton.solvers.SolverVBD(model, iterations=2, rigid_rod_direct_solve=True)
@@ -79,6 +89,7 @@ def test_refused_steps_keep_the_pose_and_raise(test, device):
             finally:
                 out = capture.end()
             test.assertRegex(out, r"rod containing body \d+")
+            test.assertEqual(out.count("rigid_rod_direct_solve"), 1)  # once, not per iteration
             # kept at the iteration's start pose, which is the at-rest initial pose up to float32 re-rounding
             np.testing.assert_allclose(s1.body_q.numpy()[bodies], q0[bodies], rtol=0.0, atol=1.0e-6)
             with test.assertRaises(RuntimeError) as raised:
@@ -88,13 +99,41 @@ def test_refused_steps_keep_the_pose_and_raise(test, device):
             solver.check_rod_direct_status()
 
 
+def test_reset_clears_the_selected_worlds(test, device):
+    """Clear a refused step's report only when its rod's world is reset."""
+    model, _ = two_world_chains(device, gravity=0.0)
+    solver = newton.solvers.SolverVBD(model, iterations=2, rigid_rod_direct_solve=True)
+    ke = model.joint_target_ke.numpy()
+    ke[model.joint_qd_start.numpy()[model.joint_count - 1] + 2] = np.nan  # world 1's last stretch row
+    model.joint_target_ke.assign(ke)
+    s0, s1, control = model.state(), model.state(), model.control()
+    capture = StdOutCapture()
+    capture.begin()
+    try:
+        solver.step(s0, s1, control, None, 1.0 / 300.0)
+        wp.synchronize_device(device)
+    finally:
+        capture.end()
+    for world, still_reported in ((0, True), (1, False)):
+        mask = np.zeros(model.world_count + 1, dtype=bool)  # the last entry selects global entities
+        mask[world] = True
+        solver.reset(s1, world_mask=wp.array(mask, dtype=wp.bool, device=device), flags=0)
+        if still_reported:
+            with test.assertRaises(RuntimeError) as raised:
+                solver.check_rod_direct_status()
+            test.assertRegex(str(raised.exception), r"\(body \d+, world 1\)")
+            test.assertNotIn("world 0", str(raised.exception))
+        else:
+            solver.check_rod_direct_status()
+
+
 def test_stalled_line_search_is_reported(test, device):
     """Report a step whose line search finds no decrease, and accept the same step once backtracking is allowed.
 
     A joint folded to 150 degrees and spun fast overshoots with a full Newton step; with no backtracking the rod
     keeps its pose and is flagged, with the default backtracking the step is accepted.
     """
-    builder, bodies, _ = clamped_chain(device, segments=3, gravity=0.0)
+    builder, bodies, _ = clamped_chain(segments=3, gravity=0.0)
     builder.color()
     model = builder.finalize(device=device)
     q = model.body_q.numpy()
@@ -125,8 +164,9 @@ def test_captured_step_follows_model_changes(test, device):
 
     Disabling the rod joints, making the tip kinematic, or doubling or zeroing its mass after capture gives the eager
     result; a refused step replayed after a notification still raises; a layout rewrite (``JOINT_PROPERTIES``) during
-    capture raises, while body-flag and inertial-property notifications are captured and refuse the rod steps once a
-    body stops being dynamic (reported until reset). Without ROD joints every notification stays capturable.
+    capture raises, while body-flag and inertial-property notifications are captured; once a body stops being dynamic
+    in one world, that world's rod falls back to the per-body solve (warned until reset) and the other world's rod
+    stays on the direct solve. Without ROD joints every notification stays capturable.
     """
     if not is_graph_capture_allocation_enabled(device):
         test.skipTest("graph capture needs the CUDA memory pool")
@@ -165,7 +205,7 @@ def test_captured_step_follows_model_changes(test, device):
         with test.subTest(change=change.__name__):
             q = {}
             for captured in (False, True):
-                builder, _, _ = clamped_chain(device, segments=6)
+                builder, _, _ = clamped_chain(segments=6)
                 builder.color()
                 model = builder.finalize(device=device)
                 solver = newton.solvers.SolverVBD(model, iterations=10, rigid_rod_direct_solve=True)
@@ -195,7 +235,7 @@ def test_captured_step_follows_model_changes(test, device):
             elif change is disable_joints:
                 test.assertGreater(1.0 - float(np.max(q[True][1:, 2])), 0.9 * 0.5 * GRAVITY * (30 * dt) ** 2)
 
-    builder, _, joints = clamped_chain(device, segments=4, gravity=0.0)
+    builder, _, joints = clamped_chain(segments=4, gravity=0.0)
     builder.color()
     model = builder.finalize(device=device)
     solver = newton.solvers.SolverVBD(model, iterations=2, rigid_rod_direct_solve=True)
@@ -238,31 +278,44 @@ def test_captured_step_follows_model_changes(test, device):
         (newton.ModelFlags.BODY_INERTIAL_PROPERTIES, zero_inverse_mass),
     ):
         with test.subTest(captured_notification=stop_being_dynamic.__name__):
-            builder, bodies, _ = clamped_chain(device, segments=4)
-            builder.color()
-            model = builder.finalize(device=device)
-            solver = newton.solvers.SolverVBD(model, iterations=2, rigid_rod_direct_solve=True)
-            s0, s1, control = model.state(), model.state(), model.control()
-            with wp.ScopedCapture(device) as capture:
-                solver.notify_model_changed(flag)
-                solver.step(s0, s1, control, None, dt)
-            wp.capture_launch(capture.graph)
-            solver.check_rod_direct_status()
-            stop_being_dynamic(model, bodies[-1])
-            out = StdOutCapture()
-            out.begin()
-            try:
-                wp.capture_launch(capture.graph)
-                wp.synchronize_device(device)
-            finally:
-                out.end()
-            with test.assertRaisesRegex(RuntimeError, "stopped being dynamic"):
+            q = {}
+            for change in (False, True):
+                model, n = two_world_chains(device)
+                solver = newton.solvers.SolverVBD(model, iterations=10, rigid_rod_direct_solve=True)
+                s0, s1, control = model.state(), model.state(), model.control()
+                with wp.ScopedCapture(device) as capture:
+                    solver.notify_model_changed(flag)
+                    for a, b in ((s0, s1), (s1, s0)):
+                        a.clear_forces()
+                        solver.step(a, b, control, None, dt)
+                if change:
+                    stop_being_dynamic(model, n - 1)  # world 0's tip, before the first replay
+                out = StdOutCapture()
+                out.begin()
+                try:
+                    for _ in range(15):
+                        wp.capture_launch(capture.graph)
+                    wp.synchronize_device(device)
+                finally:
+                    printed = out.end()
+                q[change] = s0.body_q.numpy()
+                if not change:
+                    solver.check_rod_direct_status()
+                    continue
+                test.assertEqual(printed.count("world 0"), 1)  # reported once, for the world that changed
+                with test.assertWarnsRegex(NewtonWarning, "per-body solve; call notify_model_changed"):
+                    solver.check_rod_direct_status()
+                solver.notify_model_changed(flag)  # outside capture: rewrites the layout
+                with test.assertWarnsRegex(NewtonWarning, "reset"):  # the fallback stays reported
+                    solver.check_rod_direct_status()
+                solver.reset(s0, flags=0)
                 solver.check_rod_direct_status()
-            solver.notify_model_changed(flag)  # outside capture: rewrites the layout
-            with test.assertRaisesRegex(RuntimeError, "reset"):  # the refused steps stay reported
-                solver.check_rod_direct_status()
-            solver.reset(s0, flags=0)
-            solver.check_rod_direct_status()
+            # world 1 stayed on the direct solve; world 0 was solved per body, so its rod still hangs between the clamp
+            # and the now fixed tip instead of falling freely
+            np.testing.assert_allclose(q[True][n:], q[False][n:], rtol=0.0, atol=1.0e-6)
+            np.testing.assert_array_equal(q[True][n - 1], model.body_q.numpy()[n - 1])
+            drop = model.body_q.numpy()[1 : n - 1, 2] - q[True][1 : n - 1, 2]
+            test.assertLess(float(np.max(drop)), 0.1 * 0.5 * GRAVITY * (30 * dt) ** 2)
 
     builder = newton.ModelBuilder()
     builder.add_shape_sphere(builder.add_body(), radius=0.1)
@@ -324,7 +377,11 @@ for _fn in (
 ):
     add_function_test(TestRodDirectLifecycle, _fn.__name__, _fn, devices=devices)
 # capture their own output: the kernel's warning is the expected output
-for _fn in (test_refused_steps_keep_the_pose_and_raise, test_captured_step_follows_model_changes):
+for _fn in (
+    test_refused_steps_keep_the_pose_and_raise,
+    test_reset_clears_the_selected_worlds,
+    test_captured_step_follows_model_changes,
+):
     add_function_test(TestRodDirectLifecycle, _fn.__name__, _fn, devices=devices, check_output=False)
 
 

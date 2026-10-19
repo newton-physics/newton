@@ -48,7 +48,7 @@ def clamp(builder: newton.ModelBuilder, body: int) -> None:
     builder.body_flags[body] = int(newton.BodyFlags.KINEMATIC)
 
 
-def clamped_chain(device, segments: int, gravity: float = GRAVITY):
+def clamped_chain(segments: int, gravity: float = GRAVITY):
     """A straight rod along +X whose first segment is a kinematic clamp."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, -gravity))
     bodies, joints = add_rod(builder, make_rod([((i - 1) * SEG, 0.0, 1.0) for i in range(segments + 1)]))
