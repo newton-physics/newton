@@ -10547,17 +10547,21 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         dofs = self.mjc_actuator_to_newton_idx.numpy()
         sources = self.mjc_actuator_ctrl_source.numpy()
+        source_rows = self.mjc_actuator_to_newton_actuator_idx.numpy()
+        source_dofs = attrs.actuator_trnid.numpy()[:, 0]
         nworld = self.mjw_data.nworld
         dofs_per_world = self.model.joint_dof_count // nworld
         kd = self.model.joint_target_kd.numpy().reshape(nworld, dofs_per_world)
         modes = self.model.joint_target_mode.numpy()
         damping = []
         for actuator, dof in enumerate(dofs):
-            if sources[actuator] != SolverMuJoCo.CtrlSource.JOINT_TARGET or dof < 0:
+            if sources[actuator] != SolverMuJoCo.CtrlSource.JOINT_TARGET or dof < 0 or source_rows[actuator] < 0:
                 continue
+            # Ball axes share the imported actuator's base DOF and damping ratio.
+            source_dof = int(source_dofs[source_rows[actuator]])
             for world in range(nworld):
                 global_dof = world * dofs_per_world + int(dof)
-                row = position_source_rows.get(global_dof)
+                row = position_source_rows.get(world * dofs_per_world + source_dof)
                 if row is None or modes[global_dof] != JointTargetMode.POSITION:
                     continue
                 ratio = biasprm[row, 2]

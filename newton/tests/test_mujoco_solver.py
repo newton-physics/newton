@@ -11111,6 +11111,51 @@ class TestActuatorDampratioMultiWorldRuntime(unittest.TestCase):
         rebuilt = SolverMuJoCo(model, disable_contacts=True)
         np.testing.assert_array_equal(rebuilt.mjw_model.actuator_biasprm.numpy()[:, 0, 2], 0.0)
 
+    def test_ball_joint_target_initial_damping(self):
+        """Resolve every ball axis from its shared source row in each world."""
+        xml = """
+        <mujoco>
+            <worldbody><body>
+                <joint name="j" type="ball"/>
+                <geom type="box" size="0.1 0.2 0.3" mass="1"/>
+            </body></worldbody>
+            <actuator><position joint="j" kp="100" dampratio="1"/></actuator>
+        </mujoco>
+        """
+        # Joint targets expand the imported actuator into three axis actuators.
+        native = self.solver._mujoco.MjModel.from_xml_string(
+            xml.replace(
+                '<position joint="j" kp="100" dampratio="1"/>',
+                """
+                <position joint="j" kp="100" dampratio="1" gear="1 0 0 0 0 0"/>
+                <position joint="j" kp="100" dampratio="1" gear="0 1 0 0 0 0"/>
+                <position joint="j" kp="100" dampratio="1" gear="0 0 1 0 0 0"/>
+                """,
+            )
+        )
+        for cpu in (True, False):
+            with self.subTest(cpu=cpu):
+                template = newton.ModelBuilder()
+                template.add_mjcf(xml)
+                builder = newton.ModelBuilder()
+                builder.replicate(template, 1 if cpu else 2)
+                model = builder.finalize(device="cpu" if cpu else self.model.device)
+                ratios = np.arange(1, model.world_count + 1, dtype=np.float32)
+                biasprm = model.mujoco.actuator_biasprm.numpy()
+                biasprm[:, 2] = ratios
+                model.mujoco.actuator_biasprm.assign(biasprm)
+                expected = -ratios[:, None] * native.actuator_biasprm[:, 2]
+                solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
+
+                np.testing.assert_allclose(model.joint_target_kd.numpy().reshape(-1, 3), expected, rtol=1e-5)
+                np.testing.assert_allclose(solver.mj_model.actuator_biasprm[:, 2], -expected[0], rtol=1e-5)
+                np.testing.assert_allclose(solver.mjw_model.actuator_biasprm.numpy()[..., 2], -expected, rtol=1e-5)
+                solver.notify_model_changed(ModelFlags.JOINT_DOF_FORCE_PROPERTIES | ModelFlags.ACTUATOR_PROPERTIES)
+                np.testing.assert_allclose(solver.mjw_model.actuator_biasprm.numpy()[..., 2], -expected, rtol=1e-5)
+                rebuilt = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
+                np.testing.assert_allclose(model.joint_target_kd.numpy().reshape(-1, 3), expected, rtol=1e-5)
+                np.testing.assert_allclose(rebuilt.mjw_model.actuator_biasprm.numpy()[..., 2], -expected, rtol=1e-5)
+
     def test_joint_target_kinematic_initial_damping(self):
         """Preserve physical damping through a kinematic-to-dynamic transition and rebuild."""
         native = self.solver._mujoco.MjModel.from_xml_string(
