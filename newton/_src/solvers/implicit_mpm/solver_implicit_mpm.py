@@ -92,6 +92,7 @@ from .implicit_mpm_solver_kernels import (
     mat66,
     node_color,
     record_volume_rebuild_status,
+    reset_binned_particle_values,
     reset_mpm_collider_history,
     reset_mpm_grid_warmstart,
     reset_mpm_particle_history,
@@ -287,6 +288,7 @@ class ImplicitMPMScratchpad:
     def __init__(self):
         self.grid = None
         self.gimp_cells = None
+        self.particle_cells = None
         self.contact_pic = None
         self.collision_pic = None
         self.pic_domain_element_indices = False
@@ -2933,20 +2935,21 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     use_domain_element_indices=use_domain_element_indices,
                 )
                 self._scratchpad.gimp_cells = particle_locations[0]
+                self._scratchpad.particle_cells = particle_locations[0]
                 if self.collider_basis[:3] == "pic":
                     self._scratchpad.contact_pic = _PicQuadrature(
                         domain=domain,
-                        positions=positions,
-                        env_indices=self._particle_environment,
+                        positions=self._particle_cell_locations(domain, positions, self._particle_environment),
                         measures=self._mpm_model.particle_volume,
                         temporary_store=self.temporary_store,
                         use_domain_element_indices=use_domain_element_indices,
                     )
             else:
+                particle_locations = self._particle_cell_locations(domain, positions, self._particle_environment)
+                self._scratchpad.particle_cells = particle_locations[0].reshape((-1, 1))
                 pic = _PicQuadrature(
                     domain=domain,
-                    positions=positions,
-                    env_indices=self._particle_environment,
+                    positions=particle_locations,
                     measures=self._mpm_model.particle_volume,
                     temporary_store=self.temporary_store,
                     use_domain_element_indices=use_domain_element_indices,
@@ -2984,6 +2987,60 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             device=device,
         )
         return corners, corner_flags, corner_environment, 8
+
+    def _particle_cell_locations(
+        self,
+        domain: fem.GeometryDomain,
+        positions: wp.array,
+        particle_environment: wp.array | None,
+    ):
+        """Bin particle centers to the cells containing them; particles outside every cell are left unbinned."""
+
+        cell_lookup = domain.element_partition_lookup
+        cell_coordinates = domain.element_coordinates
+        separate_worlds = self._separate_worlds
+
+        @fem.cache.dynamic_kernel(suffix=f"{domain.name}_{'isolated' if separate_worlds else 'shared'}_inside")
+        def particle_locations(
+            cell_arg_value: domain.ElementArg,
+            domain_index_arg_value: domain.ElementIndexArg,
+            positions: wp.array[wp.vec3],
+            particle_environment: wp.array[int],
+            cell_index: wp.array[fem.ElementIndex],
+            cell_coords: wp.array[fem.Coords],
+        ):
+            p = wp.tid()
+            domain_arg = domain.DomainArg(cell_arg_value, domain_index_arg_value)
+            if wp.static(separate_worlds):
+                sample = cell_lookup(domain_arg, positions[p], int(particle_environment[p]))
+            else:
+                sample = cell_lookup(domain_arg, positions[p])
+
+            cell_index[p] = fem.NULL_ELEMENT_INDEX
+            cell_coords[p] = fem.Coords(fem.OUTSIDE)
+            if sample.element_index != fem.NULL_ELEMENT_INDEX:
+                # Grid lookups clamp outside points to boundary cells, where coordinates extrapolate.
+                coords = cell_coordinates(cell_arg_value, sample.element_index, positions[p])
+                if wp.min(coords) >= 0.0 and wp.max(coords) <= 1.0:
+                    cell_index[p] = domain.element_partition_index(domain_index_arg_value, sample.element_index)
+                    cell_coords[p] = coords
+
+        device = positions.device
+        cell_indices = fem.borrow_temporary(self.temporary_store, shape=positions.shape, dtype=fem.ElementIndex)
+        cell_coords = fem.borrow_temporary(self.temporary_store, shape=positions.shape, dtype=fem.Coords)
+        wp.launch(
+            particle_locations,
+            dim=positions.shape[0],
+            inputs=[
+                domain.element_arg_value(device=device),
+                domain.element_index_arg_value(device=device),
+                positions,
+                particle_environment,
+            ],
+            outputs=[cell_indices, cell_coords],
+            device=device,
+        )
+        return cell_indices, cell_coords
 
     def _particle_grid_locations_gimp(
         self,
@@ -3883,6 +3940,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     init_particle_strains,
                     dim=model.particle_count,
                     inputs=[
+                        scratch.particle_cells,
                         mpm_model.material_particle_flags,
                         mpm_model.particle_density,
                         elastic_strain_prev,
@@ -3922,8 +3980,15 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         # (A)PIC advection
         with self._timer("Advection"):
-            state_out.particle_qd.zero_()
-            state_out.mpm.particle_qd_grad.zero_()
+            for previous, values in (
+                (state_in.particle_qd, state_out.particle_qd),
+                (state_in.mpm.particle_qd_grad, state_out.mpm.particle_qd_grad),
+            ):
+                wp.launch(
+                    reset_binned_particle_values,
+                    dim=model.particle_count,
+                    inputs=[scratch.particle_cells, previous, values],
+                )
             state_out.particle_q.assign(state_in.particle_q)
 
             fem.interpolate(

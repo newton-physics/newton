@@ -409,8 +409,20 @@ def particle_receives_strain_update(
     return (particle_flags[i] & newton.ParticleFlags.ACTIVE) != 0 and particle_density[i] != 0.0
 
 
+@wp.func
+def particle_is_binned(i: int, particle_cells: wp.array2d[int]):
+    """Whether particle ``i`` lies in at least one cell."""
+    for k in range(particle_cells.shape[1]):
+        # Center binning leaves NULL_ELEMENT_INDEX; unused GIMP overlap slots hold NULL_NODE_INDEX.
+        cell = particle_cells[i, k]
+        if cell != fem.NULL_ELEMENT_INDEX and cell != fem.NULL_NODE_INDEX:
+            return True
+    return False
+
+
 @wp.kernel
 def init_particle_strains(
+    particle_cells: wp.array2d[int],
     particle_flags: wp.array[wp.int32],
     particle_density: wp.array[float],
     elastic_strain_prev: wp.array[wp.mat33],
@@ -422,12 +434,13 @@ def init_particle_strains(
 ):
     """Zero the strains ``update_particle_strains`` accumulates into, and carry over the others.
 
-    Particles it skips (inactive or massless) may have no quadrature point at all,
-    e.g. outside the active cells of a rebuildable sparse grid, so they are copied here.
+    Particles it skips (inactive or massless) and particles without a cell, e.g. outside
+    the active cells of a rebuildable sparse grid or outside a fixed grid, have no
+    quadrature point to accumulate from, so they are copied here.
     """
     i = wp.tid()
 
-    if particle_receives_strain_update(i, particle_flags, particle_density):
+    if particle_receives_strain_update(i, particle_flags, particle_density) and particle_is_binned(i, particle_cells):
         elastic_strain[i] = wp.mat33(0.0)
         particle_Jp[i] = 0.0
         particle_stress[i] = wp.mat33(0.0)
@@ -1497,6 +1510,25 @@ def gather_point_dof_values(
         dof_values[nid] = particle_values[cell_particle_indices[sid]]
     else:
         dof_values[nid] = dof_values.dtype(0.0)
+
+
+@wp.kernel
+def reset_binned_particle_values(
+    particle_cells: wp.array2d[int],
+    previous_values: wp.array[Any],
+    values: wp.array[Any],
+):
+    """Zero binned particles before accumulating their update; unbinned particles keep their values."""
+    p = wp.tid()
+    if particle_is_binned(p, particle_cells):
+        values[p] = values.dtype(0.0)
+    else:
+        values[p] = previous_values[p]
+
+
+wp.overload(reset_binned_particle_values, {"previous_values": wp.array[float], "values": wp.array[float]})
+wp.overload(reset_binned_particle_values, {"previous_values": wp.array[wp.vec3], "values": wp.array[wp.vec3]})
+wp.overload(reset_binned_particle_values, {"previous_values": wp.array[wp.mat33], "values": wp.array[wp.mat33]})
 
 
 wp.overload(scatter_point_dof_values, {"dof_values": wp.array[wp.vec3], "particle_values": wp.array[wp.vec3]})

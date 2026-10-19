@@ -1,0 +1,1 @@
+Fix `SolverImplicitMPM` particles without a grid cell, such as inactive particles on rebuildable sparse grids or particles outside a fixed grid: they now keep their velocity, elastic strain, `Jp`, and stress instead of being reset to zero, and particles outside a fixed grid no longer extrapolate boundary-cell weights into NaN.

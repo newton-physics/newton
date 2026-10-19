@@ -1310,6 +1310,76 @@ def test_multiworld_sparse_gs_identical_worlds(test, device):
             np.testing.assert_allclose(q[starts[0] : starts[1]], q[starts[1] : starts[2]], atol=1.0e-6)
 
 
+def test_unbinned_particles_keep_state(test, device):
+    """Keep the state of particles without a grid cell: frozen on a rebuildable grid, or outside a fixed grid."""
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    SolverImplicitMPM.register_custom_attributes(builder)
+    for x in (-0.3, 0.3):
+        builder.add_particle_grid(
+            pos=wp.vec3(x, 0.0, 0.06),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0, 0.0, -1.5),
+            dim_x=4,
+            dim_y=4,
+            dim_z=4,
+            cell_x=0.025,
+            cell_y=0.025,
+            cell_z=0.025,
+            mass=0.025**3 * 400.0,
+            jitter=0.0,
+            radius_mean=0.0125,
+            custom_attributes={
+                "mpm:young_modulus": 1.0e5,
+                "mpm:hardening": 10.0,
+                "mpm:friction": 0.3,
+                "mpm:yield_pressure": 1.0e4,
+                "mpm:yield_stress": 100.0,
+            },
+        )
+    builder.add_ground_plane()
+    model = builder.finalize(device=device)
+    history = ("particle_Jp", "particle_elastic_strain", "particle_stress")
+    active = int(newton.ParticleFlags.ACTIVE)
+    initial_flags = model.particle_flags.numpy()
+    half = model.particle_count // 2
+    for integration_scheme in ("pic", "gimp"):
+        with test.subTest(grid_type="sparse", integration_scheme=integration_scheme):
+            model.particle_flags.assign(initial_flags)
+            config = SolverImplicitMPM.Config(
+                voxel_size=0.05,
+                grid_type="sparse",
+                max_active_cell_count=256,
+                integration_scheme=integration_scheme,
+                max_iterations=50,
+                tolerance=1.0e-6,
+            )
+            solver, state = _step_mpm(model, config, step_count=20, dt=1.0 / 240.0)
+            frozen = initial_flags.copy()
+            frozen[half:] &= ~active
+            model.particle_flags.assign(frozen)
+            solver.notify_model_changed(newton.ModelFlags.MODEL_PROPERTIES)
+            before = {name: getattr(state.mpm, name).numpy()[half:].copy() for name in history}
+            next_state = model.state()
+            solver.step(state, next_state, None, None, 1.0 / 240.0)
+            for name, values in before.items():
+                np.testing.assert_array_equal(getattr(next_state.mpm, name).numpy()[half:], values)
+            np.testing.assert_array_equal(next_state.particle_qd.numpy()[half:], state.particle_qd.numpy()[half:])
+
+        with test.subTest(grid_type="fixed", integration_scheme=integration_scheme):
+            # The unpadded grid stops above the ground, so falling material leaves it.
+            model.particle_flags.assign(initial_flags)
+            config = SolverImplicitMPM.Config(
+                voxel_size=0.05,
+                grid_type="fixed",
+                integration_scheme=integration_scheme,
+                max_iterations=50,
+                tolerance=1.0e-6,
+            )
+            _, state = _step_mpm(model, config, step_count=30, dt=1.0 / 240.0)
+            test.assertTrue(np.isfinite(state.particle_q.numpy()).all())
+            test.assertGreater(np.linalg.det(state.mpm.particle_elastic_strain.numpy()).min(), 0.5)
+
+
 def test_capped_pic_strain_grid_types(test, device):
     """Run capped particle strain on dense and fixed grids, whose partitions omit capped nodes."""
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -2894,6 +2964,13 @@ add_function_test(
     TestImplicitMPM,
     "test_multiworld_sparse_gimp_matches_independent",
     test_multiworld_sparse_gimp_matches_independent,
+    devices=basic_cuda_devices,
+)
+
+add_function_test(
+    TestImplicitMPM,
+    "test_unbinned_particles_keep_state",
+    test_unbinned_particles_keep_state,
     devices=basic_cuda_devices,
 )
 
