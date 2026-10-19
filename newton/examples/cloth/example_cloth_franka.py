@@ -61,6 +61,8 @@ def compute_joint_qd(
     # outputs
     out_qd: wp.array[float],
 ):
+    # Indexing q and qd alike only holds for a fixed base; a floating base would
+    # need joint_q_start/joint_qd_start and a quaternion difference.
     i = wp.tid()
     out_qd[i] = (target_q[0, i] - current_q[i]) * inv_frame_dt
 
@@ -316,8 +318,6 @@ class Example:
 
     def set_up_ik(self):
         self.ik_joint_q = wp.array(self.model.joint_q, shape=(1, self.model.joint_coord_count))
-        self.finger_idx0 = self.model.joint_coord_count - 2
-        self.finger_idx1 = self.model.joint_coord_count - 1
         self.finger_pos = wp.zeros(1, dtype=float)
 
         # Interpolate the first keyframe from the initial end-effector pose
@@ -350,7 +350,7 @@ class Example:
         rest_q = self.model.joint_q.numpy()
         rest_lower = rest_q.copy()
         rest_upper = rest_q.copy()
-        free = [0, self.finger_idx0, self.finger_idx1]
+        free = [self.base_joint_idx, self.finger_idx0, self.finger_idx1]
         rest_lower[free] = -1.0e6
         rest_upper[free] = 1.0e6
         posture_obj = ik.IKObjectiveJointLimit(
@@ -442,7 +442,11 @@ class Example:
         self.transition_duration = self.robot_key_poses[:, 0]
 
         self.robot_key_poses_time = np.cumsum(self.robot_key_poses[:, 0])
-        self.endeffector_id = builder.body_count - 3
+        self.endeffector_id = builder.body_label.index("fr3/fr3_link7")
+        joint_q_idx = {label: builder.joint_q_start[j] for j, label in enumerate(builder.joint_label)}
+        self.base_joint_idx = joint_q_idx["fr3/fr3_joint1"]
+        self.finger_idx0 = joint_q_idx["fr3/fr3_finger_joint1"]
+        self.finger_idx1 = joint_q_idx["fr3/fr3_finger_joint2"]
         self.endeffector_offset = wp.vec3(0.0, 0.0, 22.0)
 
     def update_ik_targets(self):
@@ -471,7 +475,7 @@ class Example:
             self.simulate()
 
     def simulate(self):
-        self.ik_solver.step(self.ik_joint_q, self.ik_joint_q, iterations=self.ik_iters)
+        self.ik_solver.step(self.state_0.joint_q.reshape((1, -1)), self.ik_joint_q, iterations=self.ik_iters)
         wp.launch(
             set_gripper_q,
             dim=1,
