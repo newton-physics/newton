@@ -597,7 +597,10 @@ def _assemble_joint_rows(
             right_hand_side_entry += right_hand_side_coefficient * jacobian_axis
             row_count += 1
         if bid >= 0:
-            structural_body_impulse[bid][axis] += dt * impulse
+            # Joints that share a body add to its impulse concurrently, so the sum is atomic on every Warp version
+            body_impulse = vec6f(0.0)
+            body_impulse[axis] = dt * impulse
+            wp.atomic_add(structural_body_impulse, bid, body_impulse)
 
     if row_count == 0 or bid_local < 0:
         return
