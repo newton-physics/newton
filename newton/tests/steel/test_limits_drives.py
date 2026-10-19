@@ -652,6 +652,7 @@ def _allocated_rigid_velocity_slots(device, qd6, *, fraction: float, lin_limit: 
             wp.array([ang_limit], dtype=wp.float32, device=device),
             wp.array([0], dtype=wp.int32, device=device),
             wp.array(list(qd6), dtype=wp.float32, device=device),
+            wp.array([wp.quat_identity()], dtype=wp.quat, device=device),
             fraction,
             64,
             wp.ones(1, dtype=wp.int32, device=device),
@@ -1187,7 +1188,9 @@ def test_drive_rows_precede_limit_rows_and_count_against_capacity(test, device):
         test.assertTrue(np.all(row_type[world, 3:9] == PGS_CONSTRAINT_TYPE_JOINT_LIMIT))
     test.assertFalse(np.any(solver.constraint_overflow.numpy()))
 
-    with test.assertWarnsRegex(UserWarning, r"need at least 6 dense rows .* articulation_constraint_max=2"):
+    with test.assertWarnsRegex(
+        newton.exceptions.NewtonWarning, r"need at least 6 dense rows .* articulation_constraint_max=2"
+    ):
         small = SolverSteel(
             model,
             solve_mode="matrix_free",

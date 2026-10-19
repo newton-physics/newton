@@ -745,11 +745,35 @@ Broad Phase and Shape Compatibility
    * - Mode
      - Description
    * - **NxN**
-     - All-pairs AABB broad phase. O(N²), optimal for small scenes (<100 shapes).
+     - All-pairs AABB broad phase. O(N²), suited to small worlds (<100 shapes per world).
    * - **SAP**
      - Sweep-and-prune AABB broad phase. O(N log N), better for larger scenes with spatial coherence.
    * - **EXPLICIT**
      - Uses precomputed shape pairs (default). Combines static pair efficiency with advanced contact algorithms.
+
+:meth:`ModelBuilder.finalize` computes :attr:`Model.shape_contact_pair_count`
+without enumerating pairs. The explicit pair array,
+:attr:`Model.shape_contact_pairs`, is constructed and cached on first
+access, normally when creating an explicit collision pipeline. SAP and NxN do
+not request this array. Hydroelastic setup uses the pipeline's explicit pairs
+when supplied; otherwise, it constructs only its hydroelastic subset.
+Default pairs and counts use the collision topology captured during finalization;
+editing model arrays does not change them. Assigning ``None`` to
+``model.shape_contact_pairs`` disables the model's shape-contact pairs.
+When using the pair array directly in CUDA graph capture, access it once before
+capture to initialize its storage.
+
+Explicit construction uses bounded temporary buffers and reuses equivalent
+worlds. Its final storage still scales with the number of compatible pairs,
+which can be quadratic in shapes per world. For large scenes, SAP avoids that
+array; its runtime candidate buffer is controlled separately by
+``CollisionPipeline(shape_pairs_max=...)``. Choose that capacity to accommodate
+the scene's overlapping candidates.
+
+Explicit broad-phase setup warns when the configured list contains more than
+100 million pairs and the busiest world contributes at least 20,000 pairs,
+including shared global pairs. These pairs are tested on every collision update;
+consider SAP for large worlds.
 
 .. testsetup:: broad-phase
 
@@ -1023,12 +1047,11 @@ memory budget and silence the warning. Optional collision features and solvers m
 allocate additional per-contact memory.
 
 Pipeline construction publishes the resolved rigid and soft capacities as
-``model.rigid_contact_max`` and ``model.soft_contact_max``. Before collision
-setup these are ``None``; zero is a valid empty capacity. Contact-indexed
-:ref:`solver_observables` use these capacities for eager allocation and freeze them
-once allocated. Construct the pipeline and create its contacts before calling
-``solver.observables(contacts=contacts, kinds=...)`` for contact diagnostics; the live
-contact counts are not needed during allocation.
+``model.rigid_contact_max`` and ``model.soft_contact_max``, which later pipelines
+reuse as defaults; ``publish_capacity=False`` keeps a private pipeline's capacities
+to itself. Before collision setup these are ``None``; zero is a valid empty
+capacity. Contact-indexed :ref:`solver_observables` are sized from the
+:class:`~newton.Contacts` passed to ``solver.observables()`` instead.
 
 .. _Mesh Collisions:
 
@@ -1748,8 +1771,8 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
      - Description
    * - ``SolverBase.ObservableKind.CONTACT_F`` / ``SolverBase.Observables.contact_f``
      - Contact spatial forces (used by :class:`~sensors.SensorContact`).
-       Bind the observable allocation to the contacts buffer and pass it to the
-       solver step.
+       Allocate the observables with a contacts buffer and pass each step's buffer
+       to the solver step.
 
 .. note::
 
