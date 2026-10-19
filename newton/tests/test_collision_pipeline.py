@@ -2017,7 +2017,7 @@ def _rounded_convex_separations(probes, placements, device, rigid_gap, targets):
             else:
                 builder.add_shape_capsule(body, radius=radius, half_height=0.02)
             if on_heightfield:
-                # the sphere's lowest point off the grid lines and the cell diagonal
+                # shift the heightfield so the sphere's lowest point is off its grid lines and cell diagonal
                 offset = wp.vec3(0.013, 0.017, -(radius + gap))
             elif placement == "face":
                 offset = wp.vec3(0.0, -(radius + gap + half[1]), 0.0)
@@ -2066,6 +2066,7 @@ def _rounded_convex_separations(probes, placements, device, rigid_gap, targets):
                 - margin0[k]
                 - margin1[k]
             )
+            # each case adds exactly two shapes, the probe then its target, so shape // 2 is the case index
             rows.append((*cases[min(shape0[k], shape1[k]) // 2], separation))
         return rows, cases
 
