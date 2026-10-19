@@ -118,7 +118,9 @@ device and can be captured. If a body becomes or stops being dynamic under
 capture, the rods of its world (every rod, for a global body) fall back to the
 per-body update until the next notification outside capture, and
 :meth:`~newton.solvers.SolverVBD.check_rod_direct_status` warns; the rods of
-other worlds stay on the direct solve.
+other worlds stay on the direct solve. The per-body update requires equal X and
+Y shear and bend coefficients, so for a rod with different ones the check
+raises instead: notify such changes outside capture.
 Create a new solver if joints become ROD joints.
 
 .. experimental::

@@ -29,6 +29,59 @@ def two_world_chains(device, gravity: float = GRAVITY) -> tuple[newton.Model, in
     return scene.finalize(device=device), len(bodies)
 
 
+def _flag_kinematic(model: newton.Model, body: int) -> None:
+    flags = model.body_flags.numpy()
+    flags[body] = int(newton.BodyFlags.KINEMATIC)
+    model.body_flags.assign(flags)
+
+
+def _zero_inverse_mass(model: newton.Model, body: int) -> None:
+    inv_mass = model.body_inv_mass.numpy()
+    inv_mass[body] = 0.0
+    model.body_inv_mass.assign(inv_mass)
+
+
+def _world_mask(model: newton.Model, world: int) -> wp.array:
+    mask = np.zeros(model.world_count + 1, dtype=bool)  # the last entry selects global entities
+    mask[world] = True
+    return wp.array(mask, dtype=wp.bool, device=model.device)
+
+
+def _assert_no_report(solver: newton.solvers.SolverVBD) -> None:
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        solver.check_rod_direct_status()
+
+
+def _capture_two_world_steps(device, flag: newton.ModelFlags, dt: float, prepare=None):
+    """Two worlds of clamped chains (``prepare(model)`` edits the model first) and a graph, captured before any
+    change, that notifies ``flag`` and takes two steps. Returns the model, bodies per world, solver, state and graph."""
+    model, n = two_world_chains(device)
+    if prepare is not None:
+        prepare(model)
+    solver = newton.solvers.SolverVBD(model, iterations=10, rigid_rod_direct_solve=True)
+    s0, s1, control = model.state(), model.state(), model.control()
+    with wp.ScopedCapture(device) as capture:
+        solver.notify_model_changed(flag)
+        for a, b in ((s0, s1), (s1, s0)):
+            a.clear_forces()
+            solver.step(a, b, control, None, dt)
+    return model, n, solver, s0, capture.graph
+
+
+def _replay(device, graph, times: int = 15) -> str:
+    """Launch ``graph`` and return the kernels' printed output."""
+    out = StdOutCapture()
+    out.begin()
+    try:
+        for _ in range(times):
+            wp.capture_launch(graph)
+        wp.synchronize_device(device)
+    finally:
+        printed = out.end()
+    return printed
+
+
 def test_disabled_rod_joints_release_the_rod(test, device):
     """Release every body once all rod joints are disabled and the solver is notified."""
 
@@ -164,9 +217,9 @@ def test_captured_step_follows_model_changes(test, device):
 
     Disabling the rod joints, making the tip kinematic, or doubling or zeroing its mass after capture gives the eager
     result; a refused step replayed after a notification still raises; a layout rewrite (``JOINT_PROPERTIES``) during
-    capture raises, while body-flag and inertial-property notifications are captured; once a body stops being dynamic
-    in one world, that world's rod falls back to the per-body solve (warned until reset) and the other world's rod
-    stays on the direct solve. Without ROD joints every notification stays capturable.
+    capture raises, while body-flag and inertial-property notifications are captured (see
+    :func:`test_captured_membership_change_falls_back_per_world`). Without ROD joints every notification stays
+    capturable.
     """
     if not is_graph_capture_allocation_enabled(device):
         test.skipTest("graph capture needs the CUDA memory pool")
@@ -262,54 +315,56 @@ def test_captured_step_follows_model_changes(test, device):
     finally:
         wp.capture_end(device)
 
-    def flag_kinematic(model, body):
-        flags = model.body_flags.numpy()
-        flags[body] = int(newton.BodyFlags.KINEMATIC)
-        model.body_flags.assign(flags)
+    builder = newton.ModelBuilder()
+    builder.add_shape_sphere(builder.add_body(), radius=0.1)
+    builder.color()
+    solver = newton.solvers.SolverVBD(builder.finalize(device=device), rigid_rod_direct_solve=True)
+    with wp.ScopedCapture(device):
+        solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES | newton.ModelFlags.BODY_PROPERTIES)
 
-    def zero_inverse_mass(model, body):
-        inv_mass = model.body_inv_mass.numpy()
-        inv_mass[body] = 0.0
-        model.body_inv_mass.assign(inv_mass)
 
+def test_captured_membership_change_falls_back_per_world(test, device):
+    """A body stops being dynamic in world 0 under graph capture: that world's rod falls back to the per-body solve and
+    the other world's rod stays on the direct solve.
+
+    The fallback is warned until the layout is rewritten outside capture and the world is reset (a reset before the
+    rewrite leaves the fallback in force); a rod with different X and Y bend coefficients, which the per-body solve
+    cannot represent, raises instead.
+    """
+    if not is_graph_capture_allocation_enabled(device):
+        test.skipTest("graph capture needs the CUDA memory pool")
+    dt = 1.0 / 300.0
     # a pose reset notifies BODY_PROPERTIES; coupled solvers notify inertial changes on every step
     for flag, stop_being_dynamic in (
-        (newton.ModelFlags.BODY_PROPERTIES, flag_kinematic),
-        (newton.ModelFlags.BODY_INERTIAL_PROPERTIES, zero_inverse_mass),
+        (newton.ModelFlags.BODY_PROPERTIES, _flag_kinematic),
+        (newton.ModelFlags.BODY_INERTIAL_PROPERTIES, _zero_inverse_mass),
     ):
         with test.subTest(captured_notification=stop_being_dynamic.__name__):
             q = {}
             for change in (False, True):
-                model, n = two_world_chains(device)
-                solver = newton.solvers.SolverVBD(model, iterations=10, rigid_rod_direct_solve=True)
-                s0, s1, control = model.state(), model.state(), model.control()
-                with wp.ScopedCapture(device) as capture:
-                    solver.notify_model_changed(flag)
-                    for a, b in ((s0, s1), (s1, s0)):
-                        a.clear_forces()
-                        solver.step(a, b, control, None, dt)
+                model, n, solver, s0, graph = _capture_two_world_steps(device, flag, dt)
                 if change:
                     stop_being_dynamic(model, n - 1)  # world 0's tip, before the first replay
-                out = StdOutCapture()
-                out.begin()
-                try:
-                    for _ in range(15):
-                        wp.capture_launch(capture.graph)
-                    wp.synchronize_device(device)
-                finally:
-                    printed = out.end()
-                q[change] = s0.body_q.numpy()
+                printed = _replay(device, graph)
+                q[change] = s0.body_q.numpy().copy()  # a CPU array's numpy() is a view, and replays follow
                 if not change:
-                    solver.check_rod_direct_status()
+                    _assert_no_report(solver)
                     continue
                 test.assertEqual(printed.count("world 0"), 1)  # reported once, for the world that changed
                 with test.assertWarnsRegex(NewtonWarning, "per-body solve; call notify_model_changed"):
                     solver.check_rod_direct_status()
-                solver.notify_model_changed(flag)  # outside capture: rewrites the layout
-                with test.assertWarnsRegex(NewtonWarning, "reset"):  # the fallback stays reported
+                solver.reset(s0, world_mask=_world_mask(model, 0), flags=0)  # before the rewrite: still in force
+                with test.assertWarnsRegex(NewtonWarning, "call notify_model_changed"):
                     solver.check_rod_direct_status()
-                solver.reset(s0, flags=0)
-                solver.check_rod_direct_status()
+                _replay(device, graph, times=1)
+                solver.notify_model_changed(flag)  # outside capture: rewrites the layout
+                with test.assertWarnsRegex(NewtonWarning, r"in worlds \[0\] used the per-body solve; reset\(\)"):
+                    solver.check_rod_direct_status()
+                solver.reset(s0, world_mask=_world_mask(model, 1), flags=0)
+                with test.assertWarnsRegex(NewtonWarning, "reset"):
+                    solver.check_rod_direct_status()
+                solver.reset(s0, world_mask=_world_mask(model, 0), flags=0)
+                _assert_no_report(solver)
             # world 1 stayed on the direct solve; world 0 was solved per body, so its rod still hangs between the clamp
             # and the now fixed tip instead of falling freely
             np.testing.assert_allclose(q[True][n:], q[False][n:], rtol=0.0, atol=1.0e-6)
@@ -317,12 +372,22 @@ def test_captured_step_follows_model_changes(test, device):
             drop = model.body_q.numpy()[1 : n - 1, 2] - q[True][1 : n - 1, 2]
             test.assertLess(float(np.max(drop)), 0.1 * 0.5 * GRAVITY * (30 * dt) ** 2)
 
-    builder = newton.ModelBuilder()
-    builder.add_shape_sphere(builder.add_body(), radius=0.1)
-    builder.color()
-    solver = newton.solvers.SolverVBD(builder.finalize(device=device), rigid_rod_direct_solve=True)
-    with wp.ScopedCapture(device):
-        solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES | newton.ModelFlags.BODY_PROPERTIES)
+    def anisotropic_world_0(model):
+        rods = (model.joint_type.numpy() == int(newton.JointType.ROD)) & (model.joint_world.numpy() == 0)
+        ke = model.joint_target_ke.numpy()
+        ke[model.joint_qd_start.numpy()[: model.joint_count][rods] + 4] *= 10.0  # bend about the segments' y axis
+        model.joint_target_ke.assign(ke)
+
+    flag = newton.ModelFlags.BODY_PROPERTIES
+    model, n, solver, s0, graph = _capture_two_world_steps(device, flag, dt, prepare=anisotropic_world_0)
+    _flag_kinematic(model, n - 1)
+    test.assertIn("X entries", _replay(device, graph))
+    with test.assertRaisesRegex(RuntimeError, r"world 0\) fell back to the per-body solve") as raised:
+        solver.check_rod_direct_status()
+    test.assertNotIn("world 1", str(raised.exception))
+    solver.notify_model_changed(flag)
+    solver.reset(s0, flags=0)
+    _assert_no_report(solver)
 
 
 def test_unsupported_options_raise(test, device):
@@ -381,6 +446,7 @@ for _fn in (
     test_refused_steps_keep_the_pose_and_raise,
     test_reset_clears_the_selected_worlds,
     test_captured_step_follows_model_changes,
+    test_captured_membership_change_falls_back_per_world,
 ):
     add_function_test(TestRodDirectLifecycle, _fn.__name__, _fn, devices=devices, check_output=False)
 

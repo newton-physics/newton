@@ -41,6 +41,9 @@ mat36d = wp.types.matrix(shape=(3, 6), dtype=wp.float64)
 ROD_DIRECT_FAILED = wp.constant(1)  # status bit: a step was refused (pose kept)
 ROD_DIRECT_STALLED = wp.constant(2)  # status bit: no decrease above the estimated round-off
 ROD_DIRECT_STALE = wp.constant(4)  # status bit: solved per body because a body's dynamic state changed under capture
+# status bit: a stale rod with different X and Y shear or bend coefficients was solved per body, which uses the X
+# entries for both axes (the per-body path requires isotropic rods)
+ROD_DIRECT_ANISOTROPIC_FALLBACK = wp.constant(8)
 FLOAT32_EPS = wp.constant(wp.float64(1.1920929e-7))
 EXTERNAL_HESSIAN_WEIGHT = wp.constant(wp.float64(2.0))
 """Weight of the accumulated contact, attachment and non-rod joint Hessian in the rod step.

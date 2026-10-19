@@ -114,18 +114,15 @@ def clear_rod_direct_status(
     status: wp.array[wp.int32],
     prior_status: wp.array[wp.int32],
 ):
-    """Clear the status of rods in the reset worlds; the bits of earlier layouts clear only when every world resets."""
+    """Clear the status of rods in the reset worlds, and the bits of earlier layouts kept for those worlds.
+
+    Threads beyond the rod capacity clear ``prior_status``, one per world plus one for global bodies (the last entry,
+    selected by the reset mask's last entry)."""
     r = wp.tid()
-    if r == status.shape[0]:
-        all_selected = bool(reset_all)
-        if not reset_all:
-            unselected = int(0)
-            for w in range(world_mask.shape[0]):
-                if not world_mask[w]:
-                    unselected = unselected + 1
-            all_selected = unselected == 0
-        if all_selected:
-            prior_status[0] = 0
+    if r >= status.shape[0]:
+        w = r - status.shape[0]
+        if _reset_world_selected(w, world_mask, reset_all, world_count):
+            prior_status[w] = 0
         return
     s = rod_start[r]
     if rod_start[r + 1] > s:

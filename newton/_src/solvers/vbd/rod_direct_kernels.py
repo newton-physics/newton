@@ -16,6 +16,7 @@ from .rigid_vbd_kernels import (
 )
 from .rod_direct import (
     EXTERNAL_HESSIAN_WEIGHT,
+    ROD_DIRECT_ANISOTROPIC_FALLBACK,
     ROD_DIRECT_FAILED,
     ROD_DIRECT_STALE,
     ROD_DIRECT_STALLED,
@@ -165,6 +166,37 @@ def _flag_rod(status: wp.array[wp.int32], r: int, bit: int) -> bool:
     return first
 
 
+@wp.func
+def _joint_anisotropic(d: int, ke: wp.array[float], kd: wp.array[float]) -> bool:
+    """Whether ROD joint DOFs starting at ``d`` have different X and Y shear or bend coefficients."""
+    return ke[d] != ke[d + 1] or kd[d] != kd[d + 1] or ke[d + 3] != ke[d + 4] or kd[d + 3] != kd[d + 4]
+
+
+@wp.func
+def _rod_anisotropic(
+    s: int,
+    e: int,
+    node_joint: wp.array[wp.int32],
+    bnd_start: wp.array[wp.int32],
+    bnd_joint: wp.array[wp.int32],
+    joint_qd_start: wp.array[int],
+    joint_target_ke: wp.array[float],
+    joint_target_kd: wp.array[float],
+) -> bool:
+    """Whether any ROD joint of the rod has different X and Y shear or bend coefficients (the per-body path's
+    isotropy requirement)."""
+    found = bool(False)
+    for k in range(s, e):
+        j = node_joint[k]
+        if j >= 0:  # nested: the root has no joint to index
+            if _joint_anisotropic(joint_qd_start[j], joint_target_ke, joint_target_kd):
+                found = True
+        for i in range(bnd_start[k], bnd_start[k + 1]):
+            if _joint_anisotropic(joint_qd_start[bnd_joint[i]], joint_target_ke, joint_target_kd):
+                found = True
+    return found
+
+
 @wp.kernel(enable_backward=False)
 def solve_rod_direct(
     dt: float,
@@ -227,6 +259,13 @@ def solve_rod_direct(
         slot = global_slot
     if stale[slot] != 0:  # rod membership changed under graph capture; the layout no longer matches the model
         status[r] = status[r] | ROD_DIRECT_STALE
+        if _rod_anisotropic(s, e, node_joint, bnd_start, bnd_joint, joint_qd_start, joint_target_ke, joint_target_kd):
+            if _flag_rod(status, r, ROD_DIRECT_ANISOTROPIC_FALLBACK):
+                wp.printf(
+                    "Warning: SolverVBD rigid_rod_direct_solve: the rod containing body %d has different X and Y shear "
+                    "or bend coefficients, which the per-body fallback cannot represent; it uses the X entries.\n",
+                    node_body[s],
+                )
         if wp.atomic_max(stale, slot, 2) == 1:  # first report of this slot since the layout was written
             world = slot
             if slot >= global_slot:

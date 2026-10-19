@@ -102,7 +102,14 @@ from .rigid_vbd_kernels import (
     update_duals_joint,
     update_rod_dahl_state,
 )
-from .rod_direct import ROD_DIRECT_FAILED, ROD_DIRECT_STALE, ROD_DIRECT_STALLED, mat66d, vec6d
+from .rod_direct import (
+    ROD_DIRECT_ANISOTROPIC_FALLBACK,
+    ROD_DIRECT_FAILED,
+    ROD_DIRECT_STALE,
+    ROD_DIRECT_STALLED,
+    mat66d,
+    vec6d,
+)
 from .rod_direct_kernels import accumulate_rod_body_joint_terms, solve_rod_direct
 from .rod_direct_layout import (
     allocate_rod_direct_layout,
@@ -2912,8 +2919,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         and :meth:`rebuild_bvh` are graph-capturable, so either may run inside a
         captured episode-reset graph.
 
-        With ``rigid_rod_direct_solve``, reset clears the direct-solve status of rods in the selected worlds
-        (see :meth:`check_rod_direct_status`).
+        With ``rigid_rod_direct_solve``, reset clears the direct-solve status of rods in the selected worlds,
+        including what earlier rod layouts reported for them (see :meth:`check_rod_direct_status`). A per-body
+        fallback still in force is reported until :meth:`notify_model_changed` runs outside capture.
 
         Reset does not run collision detection, and :meth:`step` consumes the
         supplied contacts rather than rerunning
@@ -4422,11 +4430,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         }
         self._rod_direct_inv_mass_color = wp.zeros_like(self.body_inv_mass_effective)
         self._rod_direct_inv_mass_rod = wp.zeros_like(self.body_inv_mass_effective)
-        # Sticky status bits (ROD_DIRECT_FAILED, _STALLED, _STALE) per rod of the current layout, the bits of
-        # earlier layouts, and stale flags per world for membership changes detected under graph capture (see
-        # check_rod_membership); all allocated once.
+        # Sticky status bits (ROD_DIRECT_*) per rod of the current layout, the bits of earlier layouts per world (the
+        # last entry for rods whose first body is global), and stale flags per world for membership changes detected
+        # under graph capture (see check_rod_membership); all allocated once.
         self._rod_direct_status = wp.zeros(layout.rod_capacity, dtype=wp.int32, device=self.device)
-        self._rod_direct_prior_status = wp.zeros(1, dtype=wp.int32, device=self.device)
+        self._rod_direct_prior_status = wp.zeros(model.world_count + 1, dtype=wp.int32, device=self.device)
         self._rod_direct_stale = wp.zeros(model.world_count + 2, dtype=wp.int32, device=self.device)
         self._rod_direct_no_flags = (
             wp.zeros(model.body_count, dtype=wp.int32, device=self.device) if model.body_flags is None else None
@@ -4452,8 +4460,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 "SolverVBD rigid_rod_direct_solve: notify_model_changed(JOINT_PROPERTIES) rebuilds the rod layout on "
                 "the host and cannot run during graph capture; call it before capturing or between graph launches."
             )
-        bits = int(np.bitwise_or.reduce(self._rod_direct_status.numpy(), initial=0))
-        self._rod_direct_prior_status.fill_(bits | int(self._rod_direct_prior_status.numpy()[0]))
+        self._fold_rod_direct_status(model)
         self._rod_direct_status.zero_()
         update_rod_direct_layout(self._rod_direct, model)
         self._rod_direct_stale.zero_()
@@ -4495,7 +4502,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             return
         wp.launch(
             kernel=clear_rod_direct_status,
-            dim=rd.rod_capacity + 1,
+            dim=rd.rod_capacity + self.model.world_count + 1,
             inputs=[
                 world_mask,
                 world_mask is None,
@@ -4527,12 +4534,14 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         iteration follows its inertial prediction for that step, ignoring its joints and contacts; the kernel warns
         once and this check raises. A rod whose membership changed under graph capture (one of its world's bodies
         became or stopped being dynamic) is solved by the per-body update until :meth:`notify_model_changed` runs
-        outside capture; this check warns for it, and for a line search that found no decrease larger than the
-        estimated round-off of the energy, which keeps the pose for that iteration. The check synchronizes the solver
-        device, so call it outside graph capture. It is a no-op without direct rod solves.
+        outside capture. The per-body update requires equal X and Y shear and bend coefficients, so this check raises
+        if such a rod has different ones and warns otherwise. It also warns for a line search that found no decrease
+        larger than the estimated round-off of the energy, which keeps the pose for that iteration. The check
+        synchronizes the solver device, so call it outside graph capture. It is a no-op without direct rod solves.
 
         Raises:
-            RuntimeError: If called during graph capture, or if any rod reported a refused step.
+            RuntimeError: If called during graph capture, if any rod reported a refused step, or if a rod with
+                different X and Y shear or bend coefficients fell back to the per-body solve.
         """
         if not self._rigid_rod_direct_solve:
             return
@@ -4541,17 +4550,24 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         if self._rod_direct is None:
             return
         status = self._rod_direct_status.numpy()
-        prior = int(self._rod_direct_prior_status.numpy()[0])
+        prior = self._rod_direct_prior_status.numpy()
         failed = np.flatnonzero(status & ROD_DIRECT_FAILED)
-        if failed.size or prior & ROD_DIRECT_FAILED:
+        if failed.size or np.any(prior & ROD_DIRECT_FAILED):
             raise RuntimeError(
-                f"SolverVBD rigid_rod_direct_solve: {self._describe_rods(failed, prior & ROD_DIRECT_FAILED)} "
+                f"SolverVBD rigid_rod_direct_solve: {self._describe_rods(status, prior, ROD_DIRECT_FAILED)} "
                 "gave a singular or non-finite step; they kept each refused iteration's start pose."
             )
-        stale = np.flatnonzero(status & ROD_DIRECT_STALE)
+        if np.any(status & ROD_DIRECT_ANISOTROPIC_FALLBACK) or np.any(prior & ROD_DIRECT_ANISOTROPIC_FALLBACK):
+            raise RuntimeError(
+                "SolverVBD rigid_rod_direct_solve: "
+                f"{self._describe_rods(status, prior, ROD_DIRECT_ANISOTROPIC_FALLBACK)} fell back to the per-body solve "
+                "after a body became or stopped being dynamic under graph capture, but have different X and Y shear "
+                "or bend coefficients, which the per-body solve cannot represent (it used the X entries); notify such "
+                "changes outside capture. reset() clears this report."
+            )
         pending = bool(np.any(self._rod_direct_stale.numpy()))
-        if stale.size or prior & ROD_DIRECT_STALE or pending:
-            rods = self._describe_rods(stale, prior & ROD_DIRECT_STALE) or "the affected rods"
+        if np.any(status & ROD_DIRECT_STALE) or np.any(prior & ROD_DIRECT_STALE) or pending:
+            rods = self._describe_rods(status, prior, ROD_DIRECT_STALE) or "the affected rods"
             remedy = (
                 "call notify_model_changed() with ModelFlags.BODY_PROPERTIES or BODY_INERTIAL_PROPERTIES outside "
                 "capture to restore the direct solve"
@@ -4564,27 +4580,43 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 NewtonWarning,
                 stacklevel=2,
             )
-        stalled = np.flatnonzero(status & ROD_DIRECT_STALLED)
-        if stalled.size or prior & ROD_DIRECT_STALLED:
+        if np.any(status & ROD_DIRECT_STALLED) or np.any(prior & ROD_DIRECT_STALLED):
             warnings.warn(
                 f"SolverVBD rigid_rod_direct_solve: the line search of "
-                f"{self._describe_rods(stalled, prior & ROD_DIRECT_STALLED)} found no decrease above the estimated "
+                f"{self._describe_rods(status, prior, ROD_DIRECT_STALLED)} found no decrease above the estimated "
                 "round-off; their poses were kept for that iteration.",
                 NewtonWarning,
                 stacklevel=2,
             )
 
-    def _describe_rods(self, rods: np.ndarray, earlier: int) -> str:
-        """Name flagged rods by one of their bodies (label, index and world); rods of an earlier layout can only be
-        counted."""
+    def _describe_rods(self, status: np.ndarray, prior: np.ndarray, bit: int) -> str:
+        """Name the rods with ``bit`` set by one of their bodies (label, index and world); rods of an earlier layout
+        are named by world."""
         rd = self._rod_direct
+        rods = np.flatnonzero(status & bit)
         first_body = rd.node_body.numpy()[rd.rod_start.numpy()[rods[:8]]]
         body_world = self.model.body_world.numpy()
         names = ", ".join(f"{self.model.body_label[b]!r} (body {b}, world {body_world[b]})" for b in first_body)
         text = f"the rods containing bodies {names}{' and more' if rods.size > 8 else ''}" if rods.size else ""
-        if earlier:
-            text += f"{' and ' if text else ''}rods of a layout before the last notify_model_changed()"
+        earlier = np.flatnonzero(prior & bit)
+        if earlier.size:
+            worlds = [int(w) if w < self.model.world_count else -1 for w in earlier]
+            text += (
+                f"{' and ' if text else ''}rods of a layout before the last notify_model_changed() in worlds {worlds}"
+            )
         return text
+
+    def _fold_rod_direct_status(self, model: Model) -> None:
+        """Move the current layout's status bits into the per-world bits of earlier layouts before a rewrite."""
+        status = self._rod_direct_status.numpy()
+        flagged = np.flatnonzero(status)
+        if not flagged.size:
+            return
+        rd = self._rod_direct
+        world = model.body_world.numpy()[rd.node_body.numpy()[rd.rod_start.numpy()[flagged]]]
+        prior = self._rod_direct_prior_status.numpy()
+        np.bitwise_or.at(prior, np.where(world < 0, model.world_count, world), status[flagged])
+        self._rod_direct_prior_status.assign(prior)
 
     @property
     def rigid_rod_direct_solve(self) -> bool:
