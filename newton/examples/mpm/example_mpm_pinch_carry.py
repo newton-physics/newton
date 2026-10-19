@@ -6,7 +6,7 @@
 GIMP uses Q1 velocity, P1d strain, and pic27 contacts by default. Two kinematic
 pads close, lift the object 50 mm, carry it 100 mm, then lower it to the ground
 before opening. Test mode checks grip retention and release on the ground.
-Uses two substeps with up to 100 GS iterations each. No external assets are required.
+Uses four substeps with up to 50 GS iterations each. No external assets are required.
 
 Run ``--viewer null --num-frames 480 --test`` for the full eight-second
 sequence at the default 60 frames per second.
@@ -329,7 +329,7 @@ class Example:
         parser.add_argument("--size", type=float, default=0.016, help="Cube side length or sphere diameter [m].")
         parser.add_argument("--spacing", type=float, default=0.001, help="Target particle spacing [m].")
         parser.add_argument("--fps", type=float, default=60.0)
-        parser.add_argument("--substeps", type=int, default=2, help="Solver steps per frame (120 Hz by default).")
+        parser.add_argument("--substeps", type=int, default=4, help="Solver steps per frame (240 Hz by default).")
         parser.add_argument("--carry-axis", choices=["x", "y"], default="y", help="y is the squeeze axis.")
         parser.add_argument("--pad-friction", type=float, default=1.0)
         parser.add_argument(
@@ -353,7 +353,7 @@ class Example:
         parser.add_argument("--max-active-cells", type=int, default=4096)
         parser.add_argument("--strain-basis", "-sb", type=str, default="P1d")
         parser.add_argument("--collider-basis", type=str, default="pic27")
-        parser.add_argument("--max-iterations", "-it", type=int, default=100)
+        parser.add_argument("--max-iterations", "-it", type=int, default=50)
         parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-5)
         parser.add_argument(
             "--gs-colored-contacts",
