@@ -10914,7 +10914,7 @@ def Xform "Body" (
                 cube.GetDisplayColorAttr().Set([authored_color])
 
                 builder = newton.ModelBuilder()
-                with self.assertWarnsRegex(UserWarning, message):
+                with self.assertWarnsRegex(newton.exceptions.NewtonWarning, message):
                     result = builder.add_usd(stage, load_visual_shapes=True)
 
                 color = builder.shape_color[result["path_shape_map"]["/World/Colored"]]
@@ -11314,7 +11314,7 @@ def Xform "Body" (
                     "displayColor", Sdf.ValueTypeNames.Color3fArray, UsdGeom.Tokens.constant, 1
                 ).Set([authored_color])
 
-                with self.assertWarnsRegex(UserWarning, message):
+                with self.assertWarnsRegex(newton.exceptions.NewtonWarning, message):
                     loaded_mesh = usd.get_mesh(mesh.GetPrim())
 
                 if expected_color is None:
@@ -11403,7 +11403,7 @@ def Xform "Body" (
                 ).Set([authored_color])
 
                 builder = newton.ModelBuilder()
-                with self.assertWarnsRegex(UserWarning, message):
+                with self.assertWarnsRegex(newton.exceptions.NewtonWarning, message):
                     builder.add_usd(stage)
 
                 self.assertEqual(builder.tri_count, 4)

@@ -1869,7 +1869,7 @@ def _coerce_color(value: Any) -> tuple[float, float, float] | None:
     rgb = color_np[:3]
     color = (float(rgb[0]), float(rgb[1]), float(rgb[2]))
     if not np.all(np.isfinite(rgb)):
-        warnings.warn(f"Ignoring non-finite imported color {color!r}.", stacklevel=2)
+        warnings.warn(f"Ignoring non-finite imported color {color!r}.", NewtonWarning, stacklevel=2)
         return None
     # Builder triangle colors reject values outside [0, 1]; clamp like opacity so display-only data cannot abort an import.
     rgb = np.clip(rgb, 0.0, 1.0)
@@ -1877,6 +1877,7 @@ def _coerce_color(value: Any) -> tuple[float, float, float] | None:
     if clamped_color != color:
         warnings.warn(
             f"Clamping imported color {color!r} to {clamped_color!r}.",
+            NewtonWarning,
             stacklevel=2,
         )
     return clamped_color

@@ -113,7 +113,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
         ).Set([(1.5, 0.5, 0.5)])
 
         builder = newton.ModelBuilder()
-        with self.assertWarnsRegex(UserWarning, "Clamping imported color"):
+        with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "Clamping imported color"):
             builder.add_usd(stage)
 
         self.assertEqual(builder.tri_count, 2)
