@@ -99,6 +99,167 @@ class TestUSDDeformableVolume(unittest.TestCase):
         result = builder.add_usd(stage, return_deformable_results=True)
         return builder, result
 
+    def test_volume_rest_shape_drives_material_state(self):
+        """Set tet pose and mass from rest points while retaining the live initial state."""
+        from pxr import Sdf
+
+        stage = _deformable_stage()
+        tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+        tet.CreatePointsAttr([(0.0, 0.0, 1.0), (2.0, 0.0, 1.0), (0.0, 2.0, 1.0), (0.0, 0.0, 3.0)])
+        tet.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
+            [(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0), (0.0, 0.0, 2.0)]
+        )
+        tet.GetPrim().CreateAttribute("physics:restTetVertexIndices", Sdf.ValueTypeNames.Int4Array).Set([(0, 1, 2, 3)])
+        _bind_deformable_material(stage, tet.GetPrim(), "/World/Mat", density=6.0)
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+
+        np.testing.assert_allclose(
+            np.asarray(builder.particle_q),
+            [(0.0, 0.0, 1.0), (2.0, 0.0, 1.0), (0.0, 2.0, 1.0), (0.0, 0.0, 3.0)],
+            atol=1.0e-6,
+        )
+        np.testing.assert_allclose(np.asarray(builder.tet_poses[0]), np.eye(3), atol=1.0e-6)
+        self.assertAlmostEqual(sum(builder.particle_mass), 1.0, places=6)
+
+    def test_volume_disjoint_rest_shape_drives_typed_masses(self):
+        """Distribute typed total mass using disjoint rest volumes and simulation connectivity."""
+        from pxr import Sdf
+
+        stage = _deformable_stage()
+        tet = _author_two_tet_wedge(stage, "/World/Soft")
+        tet.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
+            [(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1), (0, 0, 0), (0, 1, 0), (1, 0, 0), (0, 0, -2)]
+        )
+        tet.GetPrim().CreateAttribute("physics:restTetVertexIndices", Sdf.ValueTypeNames.Int4Array).Set(
+            [(0, 1, 2, 3), (4, 5, 6, 7)]
+        )
+        _author_deformable_element_array(tet.GetPrim(), "masses", [12.0], "constant")
+        _apply_deformable_body_api(tet.GetPrim(), mass=99.0)
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+        np.testing.assert_allclose(builder.particle_mass, [3.0, 3.0, 3.0, 1.0, 2.0])
+        np.testing.assert_allclose(builder.tet_poses[0], np.eye(3))
+        np.testing.assert_allclose(builder.tet_poses[1], [[0, 1, 0], [1, 0, 0], [0, 0, -0.5]])
+        np.testing.assert_allclose(builder.particle_q, tet.GetPointsAttr().Get())
+
+    @staticmethod
+    def _float32_sliver(*, builder_accepts):
+        """Return a sliver tet whose float64 volume and builder (float32) volume disagree in sign.
+
+        ``builder_accepts`` selects a tet with a negative float64 volume that the builder keeps;
+        otherwise one with a float64 volume above 1e-12 that the builder rejects.
+        """
+        rng = np.random.default_rng(7)
+        for _ in range(4096):
+            base = rng.normal(size=(3, 3))
+            normal = np.cross(base[1] - base[0], base[2] - base[0])
+            normal /= np.linalg.norm(normal)
+            apex = base[0] + 0.3 * (base[1] - base[0]) + 0.3 * (base[2] - base[0]) + rng.normal(scale=1.0e-7) * normal
+            points = np.concatenate((base, apex[None, :])).astype(np.float32)
+            exact = points.astype(np.float64)
+            volume = np.linalg.det((exact[1:] - exact[0]).T) / 6.0
+            # ModelBuilder.add_tetrahedron subtracts float32 particle positions before the determinant.
+            builder_volume = np.linalg.det((points[1:] - points[0]).T) / 6.0
+            if builder_accepts and builder_volume > 0.0 and volume < 0.0:
+                return [tuple(float(value) for value in point) for point in points]
+            if not builder_accepts and builder_volume <= 0.0 and volume > 1.0e-12:
+                return [tuple(float(value) for value in point) for point in points]
+        raise AssertionError("no float32 sliver tetrahedron found")
+
+    def test_volume_typed_mass_uses_unsigned_live_volumes(self):
+        """Keep typed masses positive for a builder-accepted sliver whose float64 volume is negative.
+
+        Pins the unsigned mass lumping main already had through the new float32 element gate.
+        """
+        from pxr import UsdGeom
+
+        stage = _deformable_stage()
+        tet = UsdGeom.TetMesh.Define(stage, "/World/Soft")
+        tet.CreatePointsAttr(
+            [
+                (0.0, 0.0, 1.0),
+                (1.0, 0.0, 1.0),
+                (0.0, 1.0, 1.0),
+                (0.0, 0.0, 2.0),
+                *self._float32_sliver(builder_accepts=True),
+            ]
+        )
+        tet.CreateTetVertexIndicesAttr([(0, 1, 2, 3), (4, 5, 6, 7)])
+        tet.GetPrim().AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
+        tet.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+        _author_deformable_element_array(tet.GetPrim(), "masses", [8.0], "constant")
+
+        builder = newton.ModelBuilder()
+        with self.assertNoLogs("newton", level="WARNING"):
+            builder.add_usd(stage)
+
+        self.assertEqual(builder.tet_count, 2)
+        masses = np.asarray(builder.particle_mass)
+        self.assertTrue(np.all(masses > 0.0), masses)
+        self.assertAlmostEqual(float(masses.sum()), 8.0, places=6)
+
+    def test_invalid_live_tet_skips_without_partial_state(self):
+        """Reject exactly the live tets the builder rejects, before appending any particles."""
+        from pxr import Sdf
+
+        rest_points = [(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0), (0.0, 0.0, 2.0)]
+        flat = [(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0), (1.0, 1.0, 1.0)]
+        sliver = self._float32_sliver(builder_accepts=False)
+        for case, points in (("flat", flat), ("float32_sliver", sliver)):
+            with self.subTest(case=case):
+                stage = _deformable_stage()
+                tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+                tet.CreatePointsAttr(points)
+                tet.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
+                    rest_points
+                )
+
+                builder = newton.ModelBuilder()
+                with self.assertLogs("newton", level="WARNING") as caught:
+                    builder.add_usd(stage)
+                self.assertTrue(any("skipping the prim" in m for m in caught.output))
+
+                self.assertEqual(builder.particle_count, 0)
+                self.assertEqual(builder.tet_count, 0)
+                self.assertEqual(group_labels(builder, "soft"), [])
+
+        with self.subTest(case="tiny_valid"):
+            # A 0.1 mm tetrahedron is valid for the builder despite its tiny absolute volume.
+            stage = _deformable_stage()
+            tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+            tet.CreatePointsAttr([(0.0, 0.0, 0.0), (1.0e-4, 0.0, 0.0), (0.0, 1.0e-4, 0.0), (0.0, 0.0, 1.0e-4)])
+            tet.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
+                [(0.0, 0.0, 0.0), (5.0e-5, 0.0, 0.0), (0.0, 5.0e-5, 0.0), (0.0, 0.0, 5.0e-5)]
+            )
+
+            builder = newton.ModelBuilder()
+            with self.assertNoLogs("newton", level="WARNING"):
+                builder.add_usd(stage)
+
+            self.assertEqual(builder.tet_count, 1)
+            np.testing.assert_allclose(np.asarray(builder.tet_poses[0]), np.eye(3) * 2.0e4, rtol=1.0e-5)
+
+    def test_left_handed_rest_indices_follow_tet_orientation(self):
+        """Apply the same left-handed correction to explicit rest and live indices."""
+        from pxr import Sdf, UsdGeom
+
+        stage = _deformable_stage()
+        tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
+        tet.CreateOrientationAttr(UsdGeom.Tokens.leftHanded)
+        tet.CreateTetVertexIndicesAttr([(0, 2, 1, 3)])
+        tet.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
+            [(0.0, 0.0, 1.0), (2.0, 0.0, 1.0), (0.0, 2.0, 1.0), (0.0, 0.0, 3.0)]
+        )
+        tet.GetPrim().CreateAttribute("physics:restTetVertexIndices", Sdf.ValueTypeNames.Int4Array).Set([(0, 2, 1, 3)])
+
+        builder = newton.ModelBuilder()
+        with self.assertNoLogs("newton", level="WARNING"):
+            builder.add_usd(stage)
+
+        np.testing.assert_allclose(np.asarray(builder.tet_poses[0]), np.eye(3) * 0.5, atol=1.0e-6)
+
     def test_volume_mass_precedence(self):
         """Verify proposal precedence for per-prim volume mass sources.
 

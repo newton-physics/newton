@@ -229,6 +229,8 @@ The first release deliberately supports a narrow, predictable set of inputs:
   mass relative to Newton's former direct point interpretation, which untyped arrays retain during
   the deprecation window with a warning.
 * Simulation points, topology, normals, and rest arrays are read at the USD default time.
+  Volume ``restShapePoints`` with optional disjoint ``restTetVertexIndices`` determine FEM
+  rest bases and mass distribution while simulation ``points`` remain the initial state.
   Missing cloth bend arrays use
   ``physics:restBendAnglesDefault = "flat"``; ``"restShape"`` retains the imported dihedral.
   If the token is unauthored and the imported cloth is non-planar, Newton warns that the proposal's
@@ -292,11 +294,16 @@ Limitations
 
 Known gaps of the experimental importer, tracked as follow-ups:
 
-* **Cloth and volume rest state** -- authored rest geometry is not imported as their simulated
-  rest configuration (`issue #3383 <https://github.com/newton-physics/newton/issues/3383>`_).
-  Cloth and volume rest point/topology arrays and explicit cloth bend arrays are ignored with a
-  warning. The supported cloth bend default uses the simulation geometry at the default time:
+* **Cloth rest state** -- authored rest geometry is not imported as its simulated rest
+  configuration (`issue #3383 <https://github.com/newton-physics/newton/issues/3383>`_).
+  Cloth rest point/topology arrays and explicit bend arrays are ignored with a warning.
+  The supported cloth bend default uses the simulation geometry at the default time:
   ``flat`` sets zero rest dihedrals and ``restShape`` uses its imported dihedrals.
+* **Volume rest-state limits** -- rest geometry is read once at the default time during import;
+  time-varying rest shapes are not updated during simulation. Invalid volume rest geometry falls
+  back to the simulation shape for the whole prim. A prim whose live geometry contains an inverted
+  or degenerate tetrahedron is skipped as a whole before builder mutation, even with valid rest
+  geometry.
 * **Cable attachment positions** -- attachments use native rod material endpoints and
   rest-length segment coordinates. When initial and rest segment lengths differ, these
   positions can differ from the proposal's positions on the initial curve. Import preserves
@@ -355,9 +362,11 @@ TetMesh keeps ``ModelBuilder.default_tet_density`` for compatibility. Cable elem
 resolved rest lengths and physical thickness: ``V = L_rest * pi * diameter**2 / 4``.
 Density-derived masses and total-mass weights use these rest volumes, as the proposal requires.
 Explicit segment masses still apply directly. Newton retains its capsule inertia approximation,
-scaled to each resolved segment mass. Cloth and volume masses still use default-time triangle
-areas and tet volumes until their rest-shape import is implemented (see `issue #3383
-<https://github.com/newton-physics/newton/issues/3383>`_).
+scaled to each resolved segment mass. Volume deformables use rest tetrahedron volumes for
+density-derived masses, typed mass conversion, and total-mass distribution. Invalid volume rest data
+is logged at ``WARNING`` level and falls back to simulation geometry before builder mutation.
+Cloth masses still use default-time triangle areas until their rest-shape import is implemented
+(see `issue #3383 <https://github.com/newton-physics/newton/issues/3383>`_).
 
 Every imported deformable can be looked up by its prim path in the mapping
 :meth:`~newton.ModelBuilder.add_usd` returns when called with ``return_deformable_results=True``:

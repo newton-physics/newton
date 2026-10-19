@@ -203,6 +203,17 @@ def _bake_world_points(points, world_mat) -> list[wp.vec3]:
     return [wp.vec3(float(x), float(y), float(z)) for x, y, z in baked]
 
 
+def _transform_rest_points(points, world_mat) -> np.ndarray:
+    """Apply the world's linear transform to rest points in float64."""
+    m = np.asarray(world_mat, dtype=np.float64).reshape(4, 4)
+    pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    if not np.all(np.isfinite(pts)):
+        raise ValueError("restShapePoints contains non-finite coordinates")
+    # Rest geometry depends on differences: omit translation to preserve small edges
+    # at large world offsets, and round only when finalizing the model's float32 arrays.
+    return pts @ m[:3, :3].T
+
+
 class _UnionFind:
     """Union-find with path compression over hashable keys (an unseen key is its own root)."""
 

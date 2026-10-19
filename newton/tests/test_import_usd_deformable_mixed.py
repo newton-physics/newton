@@ -412,8 +412,8 @@ class TestUSDDeformableMixed(unittest.TestCase):
         self.assertNotIn("/World/SoftOff/sim", result["path_shape_map"])
         builder.finalize()
 
-    def test_unsupported_rest_and_velocity_fields_warn(self):
-        """Verify that unsupported rest-state and velocity fields warn without blocking import."""
+    def test_invalid_rest_logs_and_velocity_fields_warn(self):
+        """Log malformed volume rest data and warn about unsupported cloth rest and velocity fields."""
         from pxr import Sdf, UsdGeom
 
         stage = _deformable_stage()
@@ -432,16 +432,15 @@ class TestUSDDeformableMixed(unittest.TestCase):
         tet.GetPrim().CreateAttribute("physics:restTetVertexIndices", Sdf.ValueTypeNames.IntArray).Set([0, 1, 2, 3])
 
         builder = newton.ModelBuilder()
-        with warnings.catch_warnings(record=True) as caught:
+        with warnings.catch_warnings(record=True) as caught, self.assertLogs("newton", level="WARNING") as logs:
             warnings.simplefilter("always")
             builder.add_usd(stage)
         messages = [str(w.message) for w in caught]
 
+        self.assertTrue(any("/World/Soft" in m and "invalid volume rest shape" in m for m in logs.output))
         for field, path in (
             ("restBendAngles", "/World/Cloth"),
             ("restTriVertexIndices", "/World/Cloth"),
-            ("restShapePoints", "/World/Soft"),
-            ("restTetVertexIndices", "/World/Soft"),
         ):
             self.assertTrue(any(path in m and field in m and "not yet supported" in m for m in messages), field)
         for path in ("/World/Cable", "/World/Cloth"):
@@ -450,6 +449,106 @@ class TestUSDDeformableMixed(unittest.TestCase):
         self.assertEqual(group_labels(builder, "cable"), ["/World/Cable"])
         self.assertEqual(group_labels(builder, "cloth"), ["/World/Cloth"])
         self.assertEqual(group_labels(builder, "soft"), ["/World/Soft"])
+
+    def test_rest_indices_without_points_fall_back(self):
+        """Ignore orphan rest indices, including malformed scalars, without aborting other imports."""
+        from pxr import Sdf
+
+        stage = _deformable_stage()
+        cloth = _add_cloth_mesh(stage, "/World/Cloth")
+        _author_deformable_element_array(cloth.GetPrim(), "thicknesses", [0.001], "constant")
+        tet = _author_unit_tet(stage, "/World/Soft")
+        tet.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+        reference = newton.ModelBuilder()
+        reference.add_usd(stage)
+        cases = ((tet.GetPrim(), "restTetVertexIndices", Sdf.ValueTypeNames.Int4Array, [(0, 1, 2, 3)]),)
+        for prim, field, array_type, indices in cases:
+            for value_type, value in ((Sdf.ValueTypeNames.Int, 0), (array_type, indices), (array_type, [])):
+                with self.subTest(field=field, value=value):
+                    prim.CreateAttribute(f"physics:{field}", value_type).Set(value)
+                    try:
+                        builder = newton.ModelBuilder()
+                        log_context = (
+                            self.assertNoLogs("newton", level="WARNING")
+                            if value == []
+                            else self.assertLogs("newton", level="WARNING")
+                        )
+                        with warnings.catch_warnings(), log_context as caught:
+                            warnings.simplefilter("error")
+                            builder.add_usd(stage)
+                        messages = [] if caught is None else caught.output
+                        self.assertEqual(len(messages), int(value != []))
+                        if messages:
+                            self.assertIn(f"{field} is authored without restShapePoints", messages[0])
+                        self.assertEqual(group_labels(builder, "cloth"), ["/World/Cloth"])
+                        self.assertEqual(group_labels(builder, "soft"), ["/World/Soft"])
+                        for name in ("particle_q", "particle_mass", "tri_poses", "tet_poses", "edge_rest_angle"):
+                            np.testing.assert_allclose(getattr(builder, name), getattr(reference, name))
+                    finally:
+                        prim.RemoveProperty(f"physics:{field}")
+
+    def test_rest_geometry_is_translation_invariant(self):
+        """Preserve volume rest properties under large world translations."""
+        from pxr import Gf, Sdf, UsdGeom
+
+        transforms = (
+            Gf.Matrix4d(1.0),
+            # Rotate, scale non-uniformly, shear, and reflect the rest geometry.
+            Gf.Matrix4d(0, -2, 0, 0, -3, 0, 0, 0, 0.25, 0.5, 4, 0, 0, 0, 0, 1),
+        )
+        for transform_index, transform in enumerate(transforms):
+            with self.subTest(transform=transform_index):
+                stage = _deformable_stage()
+                world = UsdGeom.Xform.Define(stage, "/World")
+                transform_op = world.AddTransformOp()
+                transform_op.Set(transform)
+                tet = _author_unit_tet(stage, "/World/Soft")
+                tet.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+                rest_points = np.asarray(tet.GetPointsAttr().Get(), dtype=np.float64) * 0.01
+                tet.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
+                    rest_points
+                )
+                reference = newton.ModelBuilder()
+                reference.add_usd(stage)
+                translated = Gf.Matrix4d(transform)
+                translated.SetTranslateOnly(Gf.Vec3d(1.0e6))
+                transform_op.Set(translated)
+                builder = newton.ModelBuilder()
+                with warnings.catch_warnings(), self.assertNoLogs("newton", level="WARNING"):
+                    warnings.simplefilter("error")
+                    builder.add_usd(stage)
+                np.testing.assert_allclose(
+                    np.asarray(builder.particle_q) - np.asarray(reference.particle_q), 1.0e6, rtol=0, atol=1.0e-6
+                )
+                for name in ("tet_poses", "particle_mass"):
+                    with self.subTest(field=name):
+                        np.testing.assert_allclose(getattr(builder, name), getattr(reference, name), rtol=1.0e-6)
+                model = builder.finalize(device="cpu")
+                self.assertEqual(model.tet_poses.dtype, wp.mat33)
+                self.assertEqual(model.particle_q.dtype, wp.vec3)
+
+    def test_non_finite_rest_geometry_falls_back(self):
+        """Log non-finite rest data and preserve fallback state under strict warning filters."""
+        from pxr import Sdf
+
+        stage = _deformable_stage()
+        tet = _author_unit_tet(stage, "/World/Soft")
+        tet.GetPrim().AddAppliedSchema("PhysicsCollisionAPI")
+        reference = newton.ModelBuilder()
+        reference.add_usd(stage)
+        tet.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
+            [(0.0, 0.0, 0.0), (float("inf"), 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)]
+        )
+
+        builder = newton.ModelBuilder()
+        with warnings.catch_warnings(), self.assertLogs("newton", level="WARNING") as caught:
+            warnings.simplefilter("error")
+            builder.add_usd(stage)
+        messages = caught.output
+
+        self.assertTrue(any("/World/Soft" in m and "invalid volume rest shape" in m for m in messages))
+        for name in ("particle_q", "particle_mass", "tet_poses"):
+            np.testing.assert_allclose(getattr(builder, name), getattr(reference, name))
 
     def test_plain_geometry_is_not_reinterpreted(self):
         """Geometry without the family sim APIs must not become a deformable. A bare TetMesh

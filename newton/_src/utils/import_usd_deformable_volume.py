@@ -29,17 +29,38 @@ from .import_usd_deformable_utils import (
     _DeformableImportContext,
     _is_ignored_path,
     _resolve_deformable_density,
+    _rest_topology_matches,
     _skip_for_deformable_body_owner,
+    _transform_rest_points,
     _warn_collision_approximated,
     _warn_collision_not_disableable,
     _warn_dropped_velocities,
     _warn_geometry_authored_material_attrs,
     _warn_subset_material_bindings,
-    _warn_unsupported_rest_fields,
     _world_matrix_reflects,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _tet_edge_matrices(points: np.ndarray, indices: np.ndarray) -> np.ndarray:
+    """Stack each tetrahedron's three edge vectors from its first vertex as matrix columns."""
+    tets = points[indices]
+    return np.stack((tets[:, 1] - tets[:, 0], tets[:, 2] - tets[:, 0], tets[:, 3] - tets[:, 0]), axis=2)
+
+
+def _tet_rest_data(points: np.ndarray, indices: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Compute inverse rest matrices and positive volumes for ordered tetrahedra."""
+    if not np.all(np.isfinite(points)):
+        raise ValueError("non-finite point coordinates")
+    matrices = _tet_edge_matrices(points, indices)
+    volumes = np.linalg.det(matrices) / 6.0
+    if not np.all(np.isfinite(volumes)):
+        raise ValueError("non-finite tetrahedron volume")
+    # Accept the same elements ModelBuilder.add_tetrahedron accepts: any strictly positive volume.
+    if np.any(volumes <= 0.0):
+        raise ValueError("inverted or degenerate tetrahedron")
+    return np.linalg.inv(matrices), volumes
 
 
 def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
@@ -49,6 +70,8 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
     TetMeshes (graphics / collision, or bare) still import as legacy soft bodies. Results land in
     ``path_soft_map`` / attrs.
     """
+    from pxr import UsdGeom
+
     from ..usd import utils as usd  # noqa: PLC0415
 
     builder = ctx.builder
@@ -96,12 +119,6 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
         if is_volume_deformable and _skip_for_deformable_body_owner(ctx, prim, path):
             continue
         if is_volume_deformable:
-            _warn_unsupported_rest_fields(
-                prim,
-                path,
-                ("restShapePoints", "restTetVertexIndices"),
-                deformable_read,
-            )
             _warn_dropped_velocities(prim, path)
             _warn_geometry_authored_material_attrs(prim, path, "PhysicsVolumeDeformableMaterialAPI", deformable_read)
             _warn_subset_material_bindings(prim, path)
@@ -211,6 +228,78 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             flipped = np.asarray(tetmesh_for_builder.tet_indices).reshape(-1, 4).copy()
             flipped[:, [1, 2]] = flipped[:, [2, 1]]
             add_soft_mesh_kwargs["indices"] = flipped.reshape(-1)
+
+        if is_volume_deformable:
+            simulation_indices = np.asarray(
+                add_soft_mesh_kwargs.get("indices", tetmesh_for_builder.tet_indices), dtype=np.int64
+            ).reshape(-1, 4)
+            # Mass lumping uses volume magnitudes, as before rest shapes were imported; validity is
+            # decided by the builder-mirroring gate below.
+            simulation_volumes = np.abs(
+                np.linalg.det(_tet_edge_matrices(np.asarray(world_vertices, dtype=np.float64), simulation_indices))
+                / 6.0
+            )
+            # add_soft_mesh subtracts float32 particle positions and drops any tetrahedron whose
+            # resulting volume is not positive. Gate on that same arithmetic so no element is dropped
+            # after this point, which would misalign the rest poses and masses assigned per tetrahedron.
+            builder_volumes = (
+                np.linalg.det(_tet_edge_matrices(np.asarray(world_vertices, dtype=np.float32), simulation_indices))
+                / 6.0
+            )
+            invalid_simulation_tets = np.flatnonzero(~np.isfinite(builder_volumes) | (builder_volumes <= 0.0))
+            if len(invalid_simulation_tets):
+                logger.warning(
+                    "%s: simulation TetMesh has %s inverted, degenerate, or non-finite tetrahedron(s), "
+                    "first at %s; skipping the prim. Repair these tetrahedra to import it.",
+                    path,
+                    len(invalid_simulation_tets),
+                    invalid_simulation_tets[:5].tolist(),
+                )
+                continue
+
+        rest_data = None
+        if is_volume_deformable:
+            rest_points_value = deformable_read(prim, "restShapePoints")
+            rest_indices_value = deformable_read(prim, "restTetVertexIndices")
+            if rest_points_value is not None and np.size(rest_points_value) == 0:
+                rest_points_value = None
+            if rest_points_value is not None:
+                try:
+                    rest_points = _transform_rest_points(rest_points_value, soft_mesh_mat)
+                    if rest_indices_value is None or len(rest_indices_value) == 0:
+                        if len(rest_points) != tetmesh_for_builder.vertex_count:
+                            raise ValueError("restShapePoints must match points when restTetVertexIndices is omitted")
+                        rest_indices = np.asarray(tetmesh_for_builder.tet_indices, dtype=np.int64).reshape(-1, 4)
+                    else:
+                        rest_indices = np.asarray(rest_indices_value, dtype=np.int64).reshape(-1, 4)
+                        if len(rest_indices) != tetmesh_for_builder.tet_count:
+                            raise ValueError(
+                                "restTetVertexIndices must contain one tetrahedron per simulation tetrahedron"
+                            )
+                        if np.any(rest_indices < 0) or np.any(rest_indices >= len(rest_points)):
+                            raise ValueError("restTetVertexIndices contains an out-of-range point index")
+                        handedness = UsdGeom.TetMesh(prim).GetOrientationAttr().Get()
+                        if handedness and str(handedness).lower() == "lefthanded":
+                            rest_indices = rest_indices.copy()
+                            rest_indices[:, [1, 2]] = rest_indices[:, [2, 1]]
+                    if _world_matrix_reflects(soft_mesh_mat):
+                        rest_indices = rest_indices.copy()
+                        rest_indices[:, [1, 2]] = rest_indices[:, [2, 1]]
+                    rest_data = _tet_rest_data(rest_points, rest_indices)
+                except (TypeError, ValueError, np.linalg.LinAlgError) as exc:
+                    logger.warning(
+                        "%s: invalid volume rest shape (%s); using the simulation shape.",
+                        path,
+                        exc,
+                    )
+            elif rest_indices_value is not None and np.size(rest_indices_value):
+                authored_tets = UsdGeom.TetMesh(prim).GetTetVertexIndicesAttr().Get()
+                if not _rest_topology_matches(rest_indices_value, authored_tets, 4):
+                    logger.warning(
+                        "%s: restTetVertexIndices is authored without restShapePoints and does not match the "
+                        "simulation topology; using the simulation shape.",
+                        path,
+                    )
         # Body density overrides the TetMesh's material density.
         if is_volume_deformable:
             material_density = (
@@ -227,16 +316,24 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
 
         soft_p0, soft_t0 = builder.particle_count, builder.tet_count
         builder.add_soft_mesh(**add_soft_mesh_kwargs)
+        if is_volume_deformable and builder.tet_count - soft_t0 != len(simulation_indices):
+            raise RuntimeError(
+                f"{path}: ModelBuilder kept {builder.tet_count - soft_t0} of {len(simulation_indices)} preflighted "
+                "tetrahedra; the volume preflight and ModelBuilder.add_tetrahedron disagree."
+            )
+        if rest_data is not None:
+            rest_poses, rest_volumes = rest_data
+            for local_tet, pose in enumerate(rest_poses.tolist()):
+                builder.tet_poses[soft_t0 + local_tet] = pose
+            builder.particle_mass[soft_p0 : builder.particle_count] = np.bincount(
+                simulation_indices.reshape(-1),
+                weights=np.repeat(resolved_density * rest_volumes / 4.0, 4),
+                minlength=tetmesh_for_builder.vertex_count,
+            ).tolist()
         authored_masses = None
         if is_volume_deformable:
-            mass_indices = np.asarray(
-                add_soft_mesh_kwargs.get("indices", tetmesh_for_builder.tet_indices), dtype=np.int64
-            ).reshape(-1, 4)
-            mass_points = np.asarray(world_vertices, dtype=np.float64)
-            edges_a = mass_points[mass_indices[:, 1]] - mass_points[mass_indices[:, 0]]
-            edges_b = mass_points[mass_indices[:, 2]] - mass_points[mass_indices[:, 0]]
-            edges_c = mass_points[mass_indices[:, 3]] - mass_points[mass_indices[:, 0]]
-            mass_volumes = np.abs(np.einsum("ij,ij->i", np.cross(edges_a, edges_b), edges_c)) / 6.0
+            mass_indices = simulation_indices
+            mass_volumes = simulation_volumes if rest_data is None else rest_data[1]
             authored_masses = _apply_particle_masses(
                 builder,
                 prim,
