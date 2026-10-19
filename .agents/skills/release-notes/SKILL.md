@@ -81,6 +81,8 @@ audit counts, or other audit-only metadata; use those sources as evidence only.
 
 Before drafting, inspect changes to existing examples, including shared helpers,
 configuration, assets, and relevant test expectations, across the release range.
+Reuse release-audit or QA findings that cover the same base and target commits;
+on refresh, inspect only changes since that evidence was gathered.
 
 1. Summarize internally how many existing examples changed and which workflows
    or solvers were affected. Separate additions, removals, renames, and cosmetic
@@ -88,19 +90,24 @@ configuration, assets, and relevant test expectations, across the release range.
 2. Identify adaptations required by changes to Newton APIs, defaults,
    dependencies, or simulation behavior. Trace each to the underlying change and
    PR, establish why it was necessary, and assess whether users need it too.
-3. Inspect available QA evidence. If necessity or behavior preservation is
-   unclear, compare the previous and adapted setups on the target release,
-   using the previous release as a reference. Record outcomes and conditions;
-   distinguish source inspection from runtime validation. Investigate unexplained
-   retuning or relaxed assertions before recommending them; keep unresolved
-   questions and validation limits in the review draft.
+3. Inspect available QA evidence, distinguishing source inspection from runtime
+   validation. If necessity or behavior preservation is unclear, record the
+   question in a separate internal note or release-audit report, including any
+   unexplained retuning or relaxed assertions. Route required runtime comparisons
+   of the previous and adapted setups to release-audit/QA, using the previous
+   release as a reference; do not rerun them on each notes refresh or present
+   unconfirmed adjustments as upgrade advice. Keep investigation details out of
+   the public release-note draft.
 4. For confirmed downstream-relevant adaptations, explain who is affected, the
    prior behavior or failure symptom, the required adjustment, and recommended
    revalidation. Include a compact before/after example when useful, the
    originating PR, and a release-tagged example link.
 
-Place guidance in the existing compatibility/migration sections, linking a
-dedicated upgrade guide when needed. Keep audit counts out of public notes.
+For GitHub Release notes, put compatibility and migration guidance in `## Notes`,
+and removals, deprecations, or required platform/dependency actions in
+`## Announcements`. In internal announcements, include a short upgrade bullet
+and link the public guidance when available. Link an existing upgrade guide if
+useful; drafting notes does not require creating one. Keep audit counts internal.
 Passing adapted examples or unchanged examples do not establish numerical
 equivalence, universal compatibility, or that no user action is required.
 
