@@ -360,6 +360,43 @@ def advect_particles(
     wp.atomic_add(vel_grad, s.qp_index, gimp_weight * p_vel_grad)
 
 
+@wp.func
+def particle_receives_strain_update(
+    i: int,
+    particle_flags: wp.array[wp.int32],
+    particle_density: wp.array[float],
+):
+    return (particle_flags[i] & newton.ParticleFlags.ACTIVE) != 0 and particle_density[i] != 0.0
+
+
+@wp.kernel
+def init_particle_strains(
+    particle_flags: wp.array[wp.int32],
+    particle_density: wp.array[float],
+    elastic_strain_prev: wp.array[wp.mat33],
+    particle_Jp_prev: wp.array[float],
+    particle_stress_prev: wp.array[wp.mat33],
+    elastic_strain: wp.array[wp.mat33],
+    particle_Jp: wp.array[float],
+    particle_stress: wp.array[wp.mat33],
+):
+    """Zero the strains `update_particle_strains` accumulates into, and carry over the others.
+
+    Particles it skips (inactive or massless) may have no quadrature point at all,
+    e.g. outside the active cells of a rebuildable sparse grid, so they are copied here.
+    """
+    i = wp.tid()
+
+    if particle_receives_strain_update(i, particle_flags, particle_density):
+        elastic_strain[i] = wp.mat33(0.0)
+        particle_Jp[i] = 0.0
+        particle_stress[i] = wp.mat33(0.0)
+    else:
+        elastic_strain[i] = elastic_strain_prev[i]
+        particle_Jp[i] = particle_Jp_prev[i]
+        particle_stress[i] = particle_stress_prev[i]
+
+
 @fem.integrand
 def update_particle_strains(
     s: fem.Sample,
@@ -379,13 +416,8 @@ def update_particle_strains(
     particle_Jp: wp.array[float],
     particle_stress: wp.array[wp.mat33],
 ):
-    if ~particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE:
-        elastic_strain[s.qp_index] = elastic_strain_prev[s.qp_index]
-        particle_Jp[s.qp_index] = particle_Jp_prev[s.qp_index]
-        return
-    if particle_density[s.qp_index] == 0.0:
-        elastic_strain[s.qp_index] = elastic_strain_prev[s.qp_index]
-        particle_Jp[s.qp_index] = particle_Jp_prev[s.qp_index]
+    # Skipped particles keep the values copied by `init_particle_strains`
+    if not particle_receives_strain_update(s.qp_index, particle_flags, particle_density):
         return
 
     # plastic strain
