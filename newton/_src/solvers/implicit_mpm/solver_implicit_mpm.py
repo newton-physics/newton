@@ -4335,9 +4335,17 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         # build color ranges from cell/node color indices
         if is_pic:
             wp.launch(
-                make_dynamic_color_block_indices_kernel(space_partition.geo_partition),
+                make_dynamic_color_block_indices_kernel(
+                    space_partition.geo_partition, space_partition, scratch.pic_domain_element_indices
+                ),
                 dim=colored_element_count,
-                inputs=[partition_arg, pic.cell_particle_offsets, scratch.color_indices],
+                inputs=[
+                    partition_arg,
+                    space_partition.partition_arg_value(device=scratch.color_indices.device),
+                    pic.cell_particle_offsets,
+                    space_partition.space_topology.MAX_NODES_PER_ELEMENT,
+                    scratch.color_indices,
+                ],
             )
         elif is_dg:
             wp.launch(

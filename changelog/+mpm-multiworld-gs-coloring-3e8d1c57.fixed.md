@@ -1,1 +1,1 @@
-Fix `SolverImplicitMPM` Gauss-Seidel solves on sparse grids with `separate_worlds=True` and discontinuous strain bases, which raced on shared velocity nodes and swept identical worlds in different orders.
+Fix `SolverImplicitMPM` Gauss-Seidel solves on sparse grids, which raced on shared velocity nodes with particle (`pic*`) strain bases or with `separate_worlds=True`, and swept identical worlds in different orders.

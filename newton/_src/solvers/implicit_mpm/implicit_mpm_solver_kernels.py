@@ -1356,22 +1356,37 @@ def make_discontinuous_color_block_indices_kernel(
     return fill_discontinuous_color_block_indices
 
 
-def make_dynamic_color_block_indices_kernel(geo_partition: fem.GeometryPartition):
-    @fem.cache.dynamic_kernel(geo_partition.name)
+def make_dynamic_color_block_indices_kernel(
+    geo_partition: fem.GeometryPartition, space_partition: fem.SpacePartition, domain_indices: bool
+):
+    @fem.cache.dynamic_kernel((geo_partition.name, space_partition.name, domain_indices))
     def fill_dynamic_color_block_indices(
-        partition_arg: geo_partition.CellArg,
+        cell_arg: geo_partition.CellArg,
+        partition_arg: space_partition.PartitionArg,
         cell_node_offsets: wp.array[int],
+        max_nodes_per_cell: int,
         color_indices: wp.array2d[int],
     ):
+        # Point nodes are numbered by the quadrature's cell offsets, in domain or geometry
+        # cell order; a cell's nodes stay contiguous in the partition, which may order them
+        # by environment.
         i = wp.tid()
         elem_idx = color_indices[0, i]
-        cell = geo_partition.cell_index(partition_arg, elem_idx)
-        if cell == -1:
+        cell = geo_partition.cell_index(cell_arg, elem_idx)
+        first = fem.NULL_NODE_INDEX
+        count = int(0)
+        if cell != -1:
+            offset_cell = wp.where(domain_indices, elem_idx, cell)
+            begin = cell_node_offsets[offset_cell]
+            count = wp.min(cell_node_offsets[offset_cell + 1] - begin, max_nodes_per_cell)
+            if count > 0:
+                first = space_partition.partition_node_index(partition_arg, begin)
+        if first == fem.NULL_NODE_INDEX:
             color_indices[0, i] = 0
             color_indices[1, i] = 0
             return
-        color_indices[0, i] = cell_node_offsets[cell]
-        color_indices[1, i] = cell_node_offsets[cell + 1]
+        color_indices[0, i] = first
+        color_indices[1, i] = first + count
 
     return fill_dynamic_color_block_indices
 

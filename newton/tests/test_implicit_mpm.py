@@ -1291,8 +1291,9 @@ def test_multiworld_sparse_gs_identical_worlds(test, device):
     builder.add_ground_plane()
     model = builder.finalize(device=device)
     starts = model.particle_world_start.numpy()
-    # P0 colors cells; continuous Q1 colors nodes of a capacity-sized rebuildable topology.
-    for strain_basis in ("P0", "Q1"):
+    # P0 colors cells; continuous Q1 colors nodes of a capacity-sized rebuildable topology;
+    # particle strain colors per-cell point blocks indexed in the quadrature's domain order.
+    for strain_basis in ("P0", "Q1", "pic8"):
         with test.subTest(strain_basis=strain_basis):
             config = SolverImplicitMPM.Config(
                 voxel_size=0.05,
