@@ -214,7 +214,7 @@ def Xform "World"
 
     def test_invalid_deterministic_raises(self):
         """Reject an unknown determinism token."""
-        path = self._write(_stage_source('uniform token newton:mujoco:deterministic = "bogus"'))
+        path = self._write(_stage_source('uniform token newton:deterministic = "bogus"'))
         with self.assertRaisesRegex(ValueError, "deterministic"):
             SolverMuJoCo.create_from_usd(path, self._build_model(path))
 
@@ -229,7 +229,7 @@ def Xform "World"
         uniform bool mjc:flag:multiccd = true
         uniform bool mjc:flag:contact = false
         uniform int newton:mujoco:updateDataInterval = 3
-        uniform token newton:mujoco:deterministic = "runToRun"
+        uniform token newton:deterministic = "runToRun"
         """
             )
         )
@@ -272,7 +272,7 @@ def Xform "World"
         uniform bool newton:mujoco:useMujocoCpu = true
         uniform bool newton:mujoco:useMujocoContacts = true
         uniform int newton:mujoco:updateDataInterval = 2
-        uniform token newton:mujoco:deterministic = "runToRun"
+        uniform token newton:deterministic = "runToRun"
         uniform int mjc:option:iterations = 7
         uniform int mjc:option:ls_iterations = 9
         uniform double mjc:option:tolerance = 1e-6
@@ -384,7 +384,7 @@ def Xform "World"
         self.assertFalse(scene.GetAttribute("newton:mujoco:enableSleeping").Get())
         self.assertIsNone(parameters["enable_sleeping"].default)
         # "inherit" is the schema's spelling of deterministic=None
-        self.assertEqual(scene.GetAttribute("newton:mujoco:deterministic").Get(), "inherit")
+        self.assertEqual(scene.GetAttribute("newton:deterministic").Get(), "inherit")
         self.assertIsNone(parameters["deterministic"].default)
 
     def test_unauthored_attributes_match_default_solver(self):

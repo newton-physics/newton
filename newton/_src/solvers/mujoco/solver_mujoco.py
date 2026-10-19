@@ -1116,10 +1116,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             "runToRun": wp.DeterministicMode.RUN_TO_RUN,
             "gpuToGpu": wp.DeterministicMode.GPU_TO_GPU,
         }
-        deterministic = authored("newton:mujoco:deterministic")
+        deterministic = authored("newton:deterministic")
         if deterministic is not None and str(deterministic) not in deterministic_modes:
             raise ValueError(
-                f"{scene_path}: newton:mujoco:deterministic must be one of {sorted(deterministic_modes)}, "
+                f"{scene_path}: newton:deterministic must be one of {sorted(deterministic_modes)}, "
                 f"got {deterministic!r}."
             )
 
