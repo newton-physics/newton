@@ -1380,7 +1380,7 @@ void main() {
             except Exception as exc:
                 warnings.warn(
                     f"ViewerRTX: Failed to precompile Warp kernels for device {model.device}: {exc}",
-                    category=RuntimeWarning,
+                    category=NewtonWarning,
                     stacklevel=2,
                 )
 
@@ -1779,7 +1779,7 @@ void main() {
                 except Exception as exc:
                     warnings.warn(
                         f"ViewerRTX: error dispatching window events: {exc}",
-                        category=RuntimeWarning,
+                        category=NewtonWarning,
                         stacklevel=2,
                     )
                     self._should_close = True

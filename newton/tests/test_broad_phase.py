@@ -12,6 +12,7 @@ import warp as wp
 from newton._src.geometry import broad_phase_nxn
 from newton._src.geometry.broad_phase_sap import _advance_sap_chunk_base
 from newton._src.geometry.flags import ShapeFlags
+from newton.exceptions import NewtonWarning
 from newton.geometry import BroadPhaseAllPairs, BroadPhaseExplicit, BroadPhaseSAP
 from newton.tests.unittest_utils import get_test_devices
 
@@ -192,7 +193,7 @@ class TestBroadPhase(unittest.TestCase):
                         mock.patch.object(worlds, "numpy", wraps=worlds.numpy) as read_worlds,
                         warnings.catch_warnings(record=True) as caught,
                     ):
-                        warnings.filterwarnings("always", message="Explicit broad phase tests", category=RuntimeWarning)
+                        warnings.filterwarnings("always", message="Explicit broad phase tests", category=NewtonWarning)
                         BroadPhaseExplicit()._warn_large_pair_count(pairs, worlds, len(counts) - 1)
                     self.assertEqual(len(caught), int(expected_warning))
                     self.assertEqual(read_pairs.call_count, expected_reads)
