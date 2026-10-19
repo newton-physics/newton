@@ -285,6 +285,8 @@ class ImplicitMPMScratchpad:
         self.grid = None
         self.gimp_cells = None
         self.contact_pic = None
+        self.collision_pic = None
+        self.pic_domain_element_indices = False
         self.gimp_particle_contact_nodes = None
         self.gimp_domain_corners = None
 
@@ -389,9 +391,8 @@ class ImplicitMPMScratchpad:
         if use_pic_strain_basis:
             self._strain_basis = _make_pic_basis_space(pic, strain_basis_str)
         if use_pic_collider_basis:
-            self._collision_basis = _make_pic_basis_space(
-                contact_pic if contact_pic is not None else pic, collider_basis_str
-            )
+            self.collision_pic = contact_pic if contact_pic is not None else pic
+            self._collision_basis = _make_pic_basis_space(self.collision_pic, collider_basis_str)
 
         self._create_velocity_function_space(temporary_store, max_cell_count, environment_first)
         self._create_collider_function_space(temporary_store, max_cell_count, environment_first)
@@ -2913,6 +2914,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             use_domain_element_indices = not (
                 self._separate_worlds and self.grid_type == "sparse" and not self._sparse_rebuildable
             )
+            self._scratchpad.pic_domain_element_indices = use_domain_element_indices
 
             if self.gimp:
                 particle_locations = self._particle_grid_locations_gimp(
@@ -3781,7 +3783,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             contact_cell_offsets = None
             contact_cell_rows = None
             if self.gs_colored_contacts:
-                contact_pic = scratch._collision_basis._quadrature
+                contact_pic = scratch.collision_pic
                 partition = scratch._strain_space_restriction.space_partition
                 cell_count = partition.node_count() // scratch.strain_nodes_per_element
                 node_count = scratch.collider_node_count
@@ -3795,7 +3797,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                         contact_pic.domain,
                         partition,
                         scratch.strain_nodes_per_element,
-                        contact_pic._use_domain_element_indices,
+                        scratch.pic_domain_element_indices,
                     ),
                     dim=node_count,
                     inputs=[
