@@ -5,6 +5,8 @@
 
 The current X1 asset has no grippers, so this example deliberately ends at a
 pre-grasp pose instead of claiming to grasp or transport the object.
+
+Command: python -m newton.examples robot_x1
 """
 
 from pathlib import Path

@@ -993,14 +993,6 @@ add_example_test(
 )
 add_example_test(
     TestRobotExamples,
-    name="robot.example_robot_a1",
-    devices=test_devices,
-    test_options={"usd_required": True, "num-frames": 10},
-    test_options_cpu={"num-frames": 10},
-    use_viewer=True,
-)
-add_example_test(
-    TestRobotExamples,
     name="robot.example_robot_x1",
     devices=test_devices,
     test_options={"num-frames": 420},
@@ -1140,6 +1132,14 @@ class TestIKExamples(unittest.TestCase):
 add_example_test(TestIKExamples, name="ik.example_ik_franka", devices=test_devices, use_viewer=True)
 
 add_example_test(TestIKExamples, name="ik.example_ik_h1", devices=test_devices, use_viewer=True)
+
+add_example_test(
+    TestIKExamples,
+    name="ik.example_ik_a1",
+    devices=test_devices,
+    test_options={"usd_required": True, "num-frames": 10},
+    use_viewer=True,
+)
 
 add_example_test(TestIKExamples, name="ik.example_ik_custom", devices=cuda_test_devices, use_viewer=True)
 
