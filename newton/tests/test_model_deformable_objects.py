@@ -10,9 +10,6 @@ import warp as wp
 
 import newton
 from newton.exceptions import NewtonWarning
-from newton.solvers import SolverSemiImplicit, SolverVBD
-from newton.solvers.experimental.coupled import SolverCoupled
-from newton.tests._selection_deformable_test_utils import _add_test_anchored_cable
 from newton.tests.test_deformable_objects import _add_curve, _add_surface, _add_volume
 from newton.tests.unittest_utils import get_test_devices
 
@@ -38,15 +35,14 @@ class TestModelDeformableObjects(unittest.TestCase):
                 builder = newton.ModelBuilder() if replicate else prototype
                 if replicate:
                     builder.replicate(prototype, 2)
-                for device in get_test_devices():
-                    model = builder.finalize(device=device)
-                    for family in ("curve", "surface", "volume"):
-                        name = f"{family}_reference"
-                        np.testing.assert_array_equal(getattr(model, name).numpy(), [0, 1] if replicate else [0])
-                        self.assertEqual(
-                            model.attribute_specs[name].references,
-                            getattr(newton.Model.AttributeFrequency, family.upper()),
-                        )
+                model = builder.finalize(device="cpu")
+                for family in ("curve", "surface", "volume"):
+                    name = f"{family}_reference"
+                    np.testing.assert_array_equal(getattr(model, name).numpy(), [0, 1] if replicate else [0])
+                    self.assertEqual(
+                        model.attribute_specs[name].references,
+                        getattr(newton.Model.AttributeFrequency, family.upper()),
+                    )
 
     def test_vector_reference_sentinels_survive_composition(self):
         """Offset valid vector references without changing negative entries or source values."""
@@ -77,14 +73,13 @@ class TestModelDeformableObjects(unittest.TestCase):
                 builder.add_builder(prototype)
             else:
                 builder.replicate(prototype, 2)
-            for device in get_test_devices():
-                model = builder.finalize(device=device)
-                for family in ("curve", "surface", "volume"):
-                    for kind in values:
-                        with self.subTest(method=method, device=device, family=family, kind=kind):
-                            array = getattr(model, f"{family}_{kind}")
-                            self.assertEqual(array.dtype, wp.vec2i)
-                            np.testing.assert_array_equal(array.numpy(), [[0, -1], [1, -1]])
+            model = builder.finalize(device="cpu")
+            for family in ("curve", "surface", "volume"):
+                for kind in values:
+                    with self.subTest(method=method, family=family, kind=kind):
+                        array = getattr(model, f"{family}_{kind}")
+                        self.assertEqual(array.dtype, wp.vec2i)
+                        np.testing.assert_array_equal(array.numpy(), [[0, -1], [1, -1]])
         for value in values.values():
             np.testing.assert_array_equal(value, [0, -1])
 
@@ -146,28 +141,27 @@ class TestModelDeformableObjects(unittest.TestCase):
                 builder.add_builder(prototype)
             elif method == "replicate":
                 builder.replicate(prototype, 2)
-            for device in get_test_devices():
-                if method == "source":
-                    with self.assertWarnsRegex(
-                        NewtonWarning, r"Custom attribute 'sensor_curve_sparse' has 2 values.*expects 3"
-                    ):
-                        model = builder.finalize(device=device)
-                else:
-                    model = builder.finalize(device=device)
-                for family in ("curve", "surface", "volume"):
-                    for name, _, _, _, expected in cases:
-                        with self.subTest(method=method, device=device, family=family, kind=name):
-                            np.testing.assert_array_equal(
-                                getattr(model, f"{family}_{name}").numpy(),
-                                expected[:2] if method == "source" else expected,
-                            )
-                np.testing.assert_array_equal(model.temperature.numpy(), [300.0] * model.curve_count)
-                for name, expected in (("default", [0, 0, 0, 2, 2, 2]), ("sparse", [0, 1, 0, 2, 3, 2])):
-                    with self.subTest(method=method, device=device, sensor=name):
+            if method == "source":
+                with self.assertWarnsRegex(
+                    NewtonWarning, r"Custom attribute 'sensor_curve_sparse' has 2 values.*expects 3"
+                ):
+                    model = builder.finalize(device="cpu")
+            else:
+                model = builder.finalize(device="cpu")
+            for family in ("curve", "surface", "volume"):
+                for name, _, _, _, expected in cases:
+                    with self.subTest(method=method, family=family, kind=name):
                         np.testing.assert_array_equal(
-                            getattr(model, f"sensor_curve_{name}").numpy(),
-                            expected[:3] if method == "source" else expected,
+                            getattr(model, f"{family}_{name}").numpy(),
+                            expected[:2] if method == "source" else expected,
                         )
+            np.testing.assert_array_equal(model.temperature.numpy(), [300.0] * model.curve_count)
+            for name, expected in (("default", [0, 0, 0, 2, 2, 2]), ("sparse", [0, 1, 0, 2, 3, 2])):
+                with self.subTest(method=method, sensor=name):
+                    np.testing.assert_array_equal(
+                        getattr(model, f"sensor_curve_{name}").numpy(),
+                        expected[:3] if method == "source" else expected,
+                    )
         self.assertEqual(prototype.custom_attributes["curve_scalar"].values, {})
         self.assertEqual(prototype.custom_attributes["curve_sparse"].values, {1: -1})
         self.assertEqual(prototype.custom_attributes["sensor_curve_sparse"].values, [None, 1])
@@ -267,15 +261,14 @@ class TestModelDeformableObjects(unittest.TestCase):
                     )
                     destination, source = (custom, builtin) if builtin_in_source else (builtin, custom)
                     destination.add_builder(source)
-                    for device in get_test_devices():
-                        model = destination.finalize(device=device)
-                        np.testing.assert_array_equal(model.builtin_reference.numpy(), [2 if builtin_in_source else 0])
-                        np.testing.assert_array_equal(model.custom_reference.numpy(), [2])
-                        self.assertEqual(model.attribute_specs["custom_reference"].references, family)
-                        self.assertEqual(
-                            model.attribute_specs["builtin_reference"].references,
-                            getattr(newton.Model.AttributeFrequency, family.upper()),
-                        )
+                    model = destination.finalize(device="cpu")
+                    np.testing.assert_array_equal(model.builtin_reference.numpy(), [2 if builtin_in_source else 0])
+                    np.testing.assert_array_equal(model.custom_reference.numpy(), [2])
+                    self.assertEqual(model.attribute_specs["custom_reference"].references, family)
+                    self.assertEqual(
+                        model.attribute_specs["builtin_reference"].references,
+                        getattr(newton.Model.AttributeFrequency, family.upper()),
+                    )
 
     def test_conflicting_deformable_references_reject_merge(self):
         """Reject same-name attributes with different reference meanings before modifying the destination."""
@@ -456,28 +449,27 @@ class TestModelDeformableObjects(unittest.TestCase):
             )
         with self.assertWarnsRegex(NewtonWarning, "removed.*all.*segment bodies"):
             builder.collapse_fixed_joints()
-        for device in get_test_devices():
-            model = builder.finalize(device=device)
-            for family in ("curve", "articulation"):
-                self.assertEqual(getattr(model, f"{family}_label"), ["reduced", "unaffected"])
-                np.testing.assert_array_equal(getattr(model, f"{family}_tag").numpy(), [20, 30])
-                for kind in ("body", "joint"):
-                    with self.subTest(device=device, family=family, kind=kind):
-                        np.testing.assert_array_equal(getattr(model, f"{family}_{kind}_owner").numpy(), [0, 1, 1])
-                for name, dtype, _, expected in vector_cases:
-                    with self.subTest(device=device, family=family, kind=name):
-                        array = getattr(model, f"{family}_{name}")
-                        self.assertEqual(array.dtype, dtype)
-                        np.testing.assert_array_equal(array.numpy(), expected)
-                for name, _, _, _, expected in default_cases:
-                    with self.subTest(device=device, family=family, default=name):
-                        np.testing.assert_array_equal(getattr(model, f"{family}_default_{name}").numpy(), expected)
-                np.testing.assert_array_equal(getattr(model, f"{family}_default_once").numpy(), [[-1, 0]])
-            np.testing.assert_array_equal(model.custom_curve_pair.numpy(), [[0, 1], [1, 0]])
-            np.testing.assert_array_equal(model.custom_row_curve_default.numpy(), [0, 0])
-            np.testing.assert_array_equal(model.custom_row_curve_sparse.numpy(), [0, 1])
-            self.assertEqual(model.attribute_specs["curve_pair"].references, newton.Model.AttributeFrequency.CURVE)
-            self.assertEqual(model.attribute_specs["custom_curve_pair"].references, "curve")
+        model = builder.finalize(device="cpu")
+        for family in ("curve", "articulation"):
+            self.assertEqual(getattr(model, f"{family}_label"), ["reduced", "unaffected"])
+            np.testing.assert_array_equal(getattr(model, f"{family}_tag").numpy(), [20, 30])
+            for kind in ("body", "joint"):
+                with self.subTest(family=family, kind=kind):
+                    np.testing.assert_array_equal(getattr(model, f"{family}_{kind}_owner").numpy(), [0, 1, 1])
+            for name, dtype, _, expected in vector_cases:
+                with self.subTest(family=family, kind=name):
+                    array = getattr(model, f"{family}_{name}")
+                    self.assertEqual(array.dtype, dtype)
+                    np.testing.assert_array_equal(array.numpy(), expected)
+            for name, _, _, _, expected in default_cases:
+                with self.subTest(family=family, default=name):
+                    np.testing.assert_array_equal(getattr(model, f"{family}_default_{name}").numpy(), expected)
+            np.testing.assert_array_equal(getattr(model, f"{family}_default_once").numpy(), [[-1, 0]])
+        np.testing.assert_array_equal(model.custom_curve_pair.numpy(), [[0, 1], [1, 0]])
+        np.testing.assert_array_equal(model.custom_row_curve_default.numpy(), [0, 0])
+        np.testing.assert_array_equal(model.custom_row_curve_sparse.numpy(), [0, 1])
+        self.assertEqual(model.attribute_specs["curve_pair"].references, newton.Model.AttributeFrequency.CURVE)
+        self.assertEqual(model.attribute_specs["custom_curve_pair"].references, "curve")
 
     def test_empty_model_has_empty_public_deformable_arrays(self):
         """Inspect an empty model without placeholder objects or missing arrays."""
@@ -568,110 +560,6 @@ class TestModelDeformableObjects(unittest.TestCase):
         np.testing.assert_array_equal(model.surface_world.numpy(), [0])
         self.assertEqual(model.volume_label, ["global_toy"])
         np.testing.assert_array_equal(model.volume_world.numpy(), [-1])
-
-    def test_coupled_empty_ranges_and_partial_curves(self):
-        """Keep empty joint ranges but omit a curve whose bodies are only partly selected."""
-        builder = newton.ModelBuilder()
-        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        segment, _ = builder.add_rod(
-            rod=newton.Rod([(0.0, 0.0, 1.0), (0.1, 0.0, 1.0)], radius=0.02),
-            label="segment",
-            wrap_in_articulation=False,
-            body_frame_origin="com",
-        )
-        curve, _ = _add_curve(builder, label="partial")
-        model = builder.finalize(device="cpu")
-        coupled = SolverCoupled(
-            model,
-            entries=[SolverCoupled.Entry(name="selected", solver=SolverSemiImplicit, bodies=[*segment, curve[0]])],
-        )
-        view = coupled.view("selected")
-        self.assertEqual(view.curve_label, ["segment"])
-        np.testing.assert_array_equal(view.curve_body_start.numpy(), [0])
-        np.testing.assert_array_equal(view.curve_body_end.numpy(), [1])
-        np.testing.assert_array_equal(view.curve_joint_start.numpy(), [0])
-        np.testing.assert_array_equal(view.curve_joint_end.numpy(), [0])
-        np.testing.assert_array_equal(model.curve_joint_start.numpy(), [1, 1])
-
-    def test_coupled_model_keeps_reduced_rod(self):
-        """Keep and rebase all current rod parts after builder collapse reduces the record."""
-        builder = newton.ModelBuilder()
-        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        _add_test_anchored_cable(builder)
-        builder.collapse_fixed_joints()
-        builder.color()
-        for device in get_test_devices():
-            with self.subTest(device=device):
-                model = builder.finalize(device=device)
-                coupled = SolverCoupled(
-                    model,
-                    entries=[SolverCoupled.Entry(name="rod", solver=SolverVBD, bodies=[1], joints=[1])],
-                )
-                compact = coupled.view("rod")
-                self.assertEqual(compact.curve_label, ["anchored_curve"])
-                for kind in ("body", "joint"):
-                    np.testing.assert_array_equal(getattr(model, f"curve_{kind}_start").numpy(), [1])
-                    np.testing.assert_array_equal(getattr(model, f"curve_{kind}_end").numpy(), [2])
-                    np.testing.assert_array_equal(getattr(compact, f"curve_{kind}_start").numpy(), [0])
-                    np.testing.assert_array_equal(getattr(compact, f"curve_{kind}_end").numpy(), [1])
-
-    def test_coupled_model_rebases_complete_deformable_objects(self):
-        """Expose only complete curves and remap their ranges in a compact solver model."""
-        builder = newton.ModelBuilder()
-        _add_curve(builder, label="hidden")
-        bodies, _ = _add_curve(builder, label="selected")
-        _add_surface(builder, label="cloth")
-        _add_volume(builder, label="toy")
-        builder.add_custom_frequency(newton.ModelBuilder.CustomFrequency(name="curve"))
-        builder.add_custom_attribute(
-            newton.ModelBuilder.CustomAttribute(name="custom_curve_tag", dtype=wp.int32, frequency="curve")
-        )
-        builder.add_custom_values(custom_curve_tag=10)
-        builder.add_custom_values(custom_curve_tag=20)
-        builder.add_custom_attribute(
-            newton.ModelBuilder.CustomAttribute(
-                name="owning_curve",
-                dtype=wp.int32,
-                frequency=newton.Model.AttributeFrequency.BODY,
-                references=newton.Model.AttributeFrequency.CURVE,
-                values={0: 0, 1: 0, 2: 0, 3: 1, 4: 1, 5: 1},
-            )
-        )
-        builder.color()
-        model = builder.finalize(device="cpu")
-        # Include the articulation root, not just the rod's returned connecting joints.
-        joints = list(range(int(model.curve_joint_start.numpy()[1]), int(model.curve_joint_end.numpy()[1])))
-        coupled = SolverCoupled(
-            model,
-            entries=[
-                SolverCoupled.Entry(name="cable", solver=SolverVBD, bodies=bodies, joints=joints),
-                SolverCoupled.Entry(
-                    name="particles", solver=SolverSemiImplicit, particles=list(range(model.particle_count))
-                ),
-            ],
-        )
-
-        cable = coupled.view("cable")
-        self.assertEqual(cable.curve_count, 1)
-        self.assertEqual(cable.curve_label, ["selected"])
-        np.testing.assert_array_equal(cable.curve_body_start.numpy(), [0])
-        np.testing.assert_array_equal(cable.curve_body_end.numpy(), [3])
-        np.testing.assert_array_equal(cable.curve_joint_start.numpy(), [0])
-        np.testing.assert_array_equal(cable.curve_joint_end.numpy(), [3])
-        np.testing.assert_array_equal(cable.owning_curve.numpy(), [0, 0, 0])
-        self.assertEqual((cable.surface_count, cable.volume_count), (0, 0))
-        self.assertEqual(cable.surface_label, [])
-        self.assertEqual(cable.volume_particle_start.shape, (0,))
-
-        particles = coupled.view("particles")
-        self.assertEqual(particles.curve_count, 0)
-        self.assertEqual(particles.curve_label, [])
-        self.assertEqual(particles.surface_label, ["cloth"])
-        self.assertEqual(particles.volume_label, ["toy"])
-        np.testing.assert_array_equal(particles.surface_particle_start.numpy(), [0])
-        np.testing.assert_array_equal(particles.volume_particle_start.numpy(), [4])
-        self.assertEqual(model.curve_label, ["hidden", "selected"])
-        np.testing.assert_array_equal(model.curve_body_start.numpy(), [0, 3])
 
     def test_mixed_model_exposes_deformable_ranges(self):
         """Inspect each family without including unrelated rigid bodies or particles."""

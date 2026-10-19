@@ -29,6 +29,7 @@ from newton.solvers.experimental.coupled import (
     SolverCoupled,
     SolverCoupledProxy,
 )
+from newton.tests.test_deformable_objects import _add_curve, _add_surface, _add_test_anchored_cable, _add_volume
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 
@@ -2407,6 +2408,110 @@ class TestSolverCoupledBasic(unittest.TestCase):
                     ],
                 ),
             )
+
+    def test_coupled_empty_ranges_and_partial_curves(self):
+        """Keep empty joint ranges but omit a curve whose bodies are only partly selected."""
+        builder = newton.ModelBuilder()
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        segment, _ = builder.add_rod(
+            rod=newton.Rod([(0.0, 0.0, 1.0), (0.1, 0.0, 1.0)], radius=0.02),
+            label="segment",
+            wrap_in_articulation=False,
+            body_frame_origin="com",
+        )
+        curve, _ = _add_curve(builder, label="partial")
+        model = builder.finalize(device="cpu")
+        coupled = SolverCoupled(
+            model,
+            entries=[SolverCoupled.Entry(name="selected", solver=SolverSemiImplicit, bodies=[*segment, curve[0]])],
+        )
+        view = coupled.view("selected")
+        self.assertEqual(view.curve_label, ["segment"])
+        np.testing.assert_array_equal(view.curve_body_start.numpy(), [0])
+        np.testing.assert_array_equal(view.curve_body_end.numpy(), [1])
+        np.testing.assert_array_equal(view.curve_joint_start.numpy(), [0])
+        np.testing.assert_array_equal(view.curve_joint_end.numpy(), [0])
+        np.testing.assert_array_equal(model.curve_joint_start.numpy(), [1, 1])
+
+    def test_coupled_model_keeps_reduced_rod(self):
+        """Keep and rebase all current rod parts after builder collapse reduces the record."""
+        builder = newton.ModelBuilder()
+        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        _add_test_anchored_cable(builder)
+        builder.collapse_fixed_joints()
+        builder.color()
+        for device in get_test_devices():
+            with self.subTest(device=device):
+                model = builder.finalize(device=device)
+                coupled = SolverCoupled(
+                    model,
+                    entries=[SolverCoupled.Entry(name="rod", solver=SolverVBD, bodies=[1], joints=[1])],
+                )
+                compact = coupled.view("rod")
+                self.assertEqual(compact.curve_label, ["anchored_curve"])
+                for kind in ("body", "joint"):
+                    np.testing.assert_array_equal(getattr(model, f"curve_{kind}_start").numpy(), [1])
+                    np.testing.assert_array_equal(getattr(model, f"curve_{kind}_end").numpy(), [2])
+                    np.testing.assert_array_equal(getattr(compact, f"curve_{kind}_start").numpy(), [0])
+                    np.testing.assert_array_equal(getattr(compact, f"curve_{kind}_end").numpy(), [1])
+
+    def test_coupled_model_rebases_complete_deformable_objects(self):
+        """Expose only complete curves and remap their ranges in a compact solver model."""
+        builder = newton.ModelBuilder()
+        _add_curve(builder, label="hidden")
+        bodies, _ = _add_curve(builder, label="selected")
+        _add_surface(builder, label="cloth")
+        _add_volume(builder, label="toy")
+        builder.add_custom_frequency(newton.ModelBuilder.CustomFrequency(name="curve"))
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(name="custom_curve_tag", dtype=wp.int32, frequency="curve")
+        )
+        builder.add_custom_values(custom_curve_tag=10)
+        builder.add_custom_values(custom_curve_tag=20)
+        builder.add_custom_attribute(
+            newton.ModelBuilder.CustomAttribute(
+                name="owning_curve",
+                dtype=wp.int32,
+                frequency=newton.Model.AttributeFrequency.BODY,
+                references=newton.Model.AttributeFrequency.CURVE,
+                values={0: 0, 1: 0, 2: 0, 3: 1, 4: 1, 5: 1},
+            )
+        )
+        builder.color()
+        model = builder.finalize(device="cpu")
+        # Include the articulation root, not just the rod's returned connecting joints.
+        joints = list(range(int(model.curve_joint_start.numpy()[1]), int(model.curve_joint_end.numpy()[1])))
+        coupled = SolverCoupled(
+            model,
+            entries=[
+                SolverCoupled.Entry(name="cable", solver=SolverVBD, bodies=bodies, joints=joints),
+                SolverCoupled.Entry(
+                    name="particles", solver=SolverSemiImplicit, particles=list(range(model.particle_count))
+                ),
+            ],
+        )
+
+        cable = coupled.view("cable")
+        self.assertEqual(cable.curve_count, 1)
+        self.assertEqual(cable.curve_label, ["selected"])
+        np.testing.assert_array_equal(cable.curve_body_start.numpy(), [0])
+        np.testing.assert_array_equal(cable.curve_body_end.numpy(), [3])
+        np.testing.assert_array_equal(cable.curve_joint_start.numpy(), [0])
+        np.testing.assert_array_equal(cable.curve_joint_end.numpy(), [3])
+        np.testing.assert_array_equal(cable.owning_curve.numpy(), [0, 0, 0])
+        self.assertEqual((cable.surface_count, cable.volume_count), (0, 0))
+        self.assertEqual(cable.surface_label, [])
+        self.assertEqual(cable.volume_particle_start.shape, (0,))
+
+        particles = coupled.view("particles")
+        self.assertEqual(particles.curve_count, 0)
+        self.assertEqual(particles.curve_label, [])
+        self.assertEqual(particles.surface_label, ["cloth"])
+        self.assertEqual(particles.volume_label, ["toy"])
+        np.testing.assert_array_equal(particles.surface_particle_start.numpy(), [0])
+        np.testing.assert_array_equal(particles.volume_particle_start.numpy(), [4])
+        self.assertEqual(model.curve_label, ["hidden", "selected"])
+        np.testing.assert_array_equal(model.curve_body_start.numpy(), [0, 3])
 
 
 class TestSolverMuJoCoCouplingHooks(unittest.TestCase):
