@@ -25,6 +25,11 @@ TERMINAL_LINKS = ("Link_l7", "Link_r7")
 TARGET_OFFSETS = np.array([[0.15, -0.06, 0.12], [0.15, 0.06, 0.12]], dtype=np.float32)
 
 
+def _quat_to_vec4(quaternion: wp.quat) -> wp.vec4:
+    """Convert a Warp quaternion to the vector representation IK expects."""
+    return wp.vec4(quaternion[0], quaternion[1], quaternion[2], quaternion[3])
+
+
 def _find_unique_bodies(builder: newton.ModelBuilder, labels: tuple[str, ...]) -> list[int]:
     """Resolve unique body indices from the final segments of USD paths."""
     bodies_by_label: dict[str, int] = {}
@@ -51,6 +56,7 @@ class Example:
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
         self.viewer = viewer
+        self.viewer.picking_enabled = False
         self.device = wp.get_device()
 
         asset_root = newton.utils.download_asset("onerobotics_a1")
@@ -77,7 +83,9 @@ class Example:
         shared_object_position = initial_targets.mean(axis=0)
         self.object_tf = wp.transform(wp.vec3(*shared_object_position), wp.quat_identity())
         self.grasp_offsets = initial_targets - shared_object_position
+        self.grasp_rotations = [wp.quat(*initial_body_q[body, 3:]) for body in self.terminal_bodies]
         self.target_positions = initial_targets.copy()
+        self.target_rotations = self.grasp_rotations.copy()
         self.target_points = wp.array(self.target_positions, dtype=wp.vec3, device=self.device)
         self.target_colors = wp.array(
             np.tile(np.array([0.95, 0.25, 0.10], dtype=np.float32), (len(self.terminal_bodies), 1)),
@@ -93,6 +101,14 @@ class Example:
             )
             for body, target in zip(self.terminal_bodies, self.target_positions, strict=True)
         ]
+        self.rotation_objectives = [
+            ik.IKObjectiveRotation(
+                link_index=body,
+                link_offset_rotation=wp.quat_identity(),
+                target_rotations=wp.array([_quat_to_vec4(rotation)], dtype=wp.vec4, device=self.device),
+            )
+            for body, rotation in zip(self.terminal_bodies, self.target_rotations, strict=True)
+        ]
         joint_limit_objective = ik.IKObjectiveJointLimit(
             joint_limit_lower=self.model.joint_limit_lower,
             joint_limit_upper=self.model.joint_limit_upper,
@@ -102,7 +118,7 @@ class Example:
         self.solver = ik.IKSolver(
             model=self.model,
             n_problems=1,
-            objectives=[*self.position_objectives, joint_limit_objective],
+            objectives=[*self.position_objectives, *self.rotation_objectives, joint_limit_objective],
             lambda_initial=0.1,
             jacobian_mode=ik.IKJacobianType.ANALYTIC,
         )
@@ -112,12 +128,16 @@ class Example:
         self.capture()
 
     def update_targets_from_object_frame(self):
-        """Transform both local grasp offsets from the shared object frame."""
+        """Transform both local grasp poses from the shared object frame."""
         self.target_positions = np.asarray(
             [wp.transform_point(self.object_tf, wp.vec3(*offset)) for offset in self.grasp_offsets], dtype=np.float32
         )
+        object_rotation = wp.transform_get_rotation(self.object_tf)
+        self.target_rotations = [object_rotation * rotation for rotation in self.grasp_rotations]
         for objective, target in zip(self.position_objectives, self.target_positions, strict=True):
             objective.set_target_position(0, wp.vec3(*target))
+        for objective, rotation in zip(self.rotation_objectives, self.target_rotations, strict=True):
+            objective.set_target_rotation(0, _quat_to_vec4(rotation))
         self.target_points.assign(self.target_positions)
 
     def capture(self):
@@ -157,7 +177,7 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        """Verify both terminal links reach their targets and the joints actually move."""
+        """Verify both terminal links reach their target poses and the joints move."""
         joint_q = self.model.joint_q.numpy()
         if not np.isfinite(joint_q).all():
             raise ValueError("A1 joint coordinates contain non-finite values")
@@ -170,6 +190,12 @@ class Example:
         position_errors = np.linalg.norm(actual_positions - self.target_positions, axis=1)
         if np.max(position_errors) > 1.0e-3:
             raise ValueError(f"A1 terminal-link position errors are {position_errors} m")
+
+        actual_rotations = body_q[self.terminal_bodies, 3:]
+        target_rotations = np.asarray(self.target_rotations)
+        orientation_alignment = np.abs(np.sum(actual_rotations * target_rotations, axis=1))
+        if np.min(orientation_alignment) < 0.999:
+            raise ValueError(f"A1 terminal-link orientation alignment is {orientation_alignment}")
 
     @staticmethod
     def create_parser():

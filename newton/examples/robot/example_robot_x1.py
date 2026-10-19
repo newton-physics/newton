@@ -19,6 +19,11 @@ import newton.examples
 import newton.utils
 from newton import JointTargetMode
 
+DRIVE_DURATION = 2.0
+ARM_MOTION_DURATION = 4.0
+PREGRASP_TIME = DRIVE_DURATION + ARM_MOTION_DURATION
+WHEEL_SPEED = 2.0
+
 
 @wp.kernel
 def update_x1_position_targets(
@@ -31,7 +36,7 @@ def update_x1_position_targets(
     coordinate = wp.tid()
     time = motion_time[0]
 
-    blend = wp.clamp((time - 2.0) / 4.0, 0.0, 1.0)
+    blend = wp.clamp((time - DRIVE_DURATION) / ARM_MOTION_DURATION, 0.0, 1.0)
     blend = blend * blend * (3.0 - 2.0 * blend)
     target_q[coordinate] = home_q[coordinate] + blend * (pregrasp_q[coordinate] - home_q[coordinate])
 
@@ -42,15 +47,16 @@ def update_x1_velocity_targets(
     wheel_dofs: wp.array[wp.int32],
     target_qd: wp.array[wp.float32],
 ):
-    """Drive forward for two seconds, accounting for the mirrored wheel axes."""
-    dof = wp.tid()
+    """Drive the two wheel DOFs forward, accounting for mirrored wheel axes."""
+    wheel_index = wp.tid()
+    dof = wheel_dofs[wheel_index]
 
     target_qd[dof] = 0.0
-    if motion_time[0] < 2.0:
-        if dof == wheel_dofs[0]:
-            target_qd[dof] = 2.0
-        elif dof == wheel_dofs[1]:
-            target_qd[dof] = -2.0
+    if motion_time[0] < DRIVE_DURATION:
+        if wheel_index == 0:
+            target_qd[dof] = WHEEL_SPEED
+        else:
+            target_qd[dof] = -WHEEL_SPEED
 
 
 @wp.kernel
@@ -180,7 +186,7 @@ class Example:
             )
             wp.launch(
                 update_x1_velocity_targets,
-                dim=self.model.joint_dof_count,
+                dim=len(self.wheel_dofs),
                 inputs=[self.motion_time, self.wheel_dofs],
                 outputs=[self.control.joint_target_qd],
                 device=self.device,
@@ -212,7 +218,7 @@ class Example:
         joint_q = self.state_0.joint_q.numpy()
         if not np.isfinite(joint_q).all() or not np.isfinite(self.state_0.joint_qd.numpy()).all():
             raise ValueError("X1 joint state contains non-finite values")
-        if motion_time < 6.0:
+        if motion_time < PREGRASP_TIME:
             return
 
         base_transform = self.state_0.body_q.numpy()[self.base_body]
