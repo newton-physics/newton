@@ -8,6 +8,7 @@ import tempfile
 import unittest
 import warnings
 import zlib
+from itertools import product
 from pathlib import Path
 
 import numpy as np
@@ -4232,25 +4233,56 @@ f 4 5 8
             # Ellipsoid uses AABB half-extents directly: (1.0, 0.5, 2.0)
             np.testing.assert_allclose([s[0], s[1], s[2]], [1.0, 0.5, 2.0], atol=1e-4)
 
-    def test_mesh_without_explicit_type_stays_mesh(self):
-        """A geom with mesh= but no type= should still be treated as a mesh shape."""
+    def test_mesh_geom_type_defaults(self):
+        """Honor default, inherited, and explicit types when a geom references a mesh."""
+        import mujoco
+
+        cases = (
+            ("", "", "", GeoType.SPHERE),
+            ('type="mesh"', "", "", GeoType.MESH),
+            ('class="mesh"', "", "", GeoType.MESH),
+            ("", "", 'childclass="nested_mesh"', GeoType.MESH),
+            ("", '<geom type="mesh"/>', "", GeoType.MESH),
+            ('type="sphere"', '<geom type="mesh"/>', "", GeoType.SPHERE),
+        )
         with tempfile.TemporaryDirectory() as tmpdir:
-            stl_path = os.path.join(tmpdir, "box.stl")
-            self._write_box_stl(stl_path, hx=1.0, hy=1.0, hz=1.0)
-            mjcf = f"""\
-<mujoco>
-    <compiler meshdir="{tmpdir}"/>
-    <asset><mesh name="box" file="box.stl"/></asset>
-    <worldbody>
-        <body name="b">
-            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
-            <geom name="g" mesh="box"/>
-        </body>
-    </worldbody>
-</mujoco>"""
-            builder = newton.ModelBuilder()
-            builder.add_mjcf(mjcf)
-            self.assertEqual(builder.shape_type[0], GeoType.MESH)
+            self._write_box_stl(os.path.join(tmpdir, "box.stl"), cx=0.3, cy=-0.2, cz=0.4)
+            for fitaabb, (attributes, defaults, childclass, expected_type) in product((False, True), cases):
+                with self.subTest(fitaabb=fitaabb, attributes=attributes, defaults=defaults, childclass=childclass):
+                    mjcf = f"""<mujoco>
+                        <compiler fitaabb="{str(fitaabb).lower()}" meshdir="{tmpdir}"/>
+                        <default>{defaults}
+                            <default class="mesh"><geom type="mesh"/><default class="nested_mesh"/></default>
+                        </default>
+                        <asset><mesh name="box" file="box.stl"/></asset>
+                        <worldbody><body name="b" {childclass}>
+                            <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+                            <geom name="g" mesh="box" pos="0.4 0.1 -0.2" {attributes}/>
+                        </body></worldbody>
+                    </mujoco>"""
+                    reference = mujoco.MjModel.from_xml_string(mjcf)
+                    builder = newton.ModelBuilder()
+                    builder.add_mjcf(mjcf, scale=1.5)
+                    self.assertEqual(builder.shape_count, 1)
+                    self.assertEqual(builder.shape_type[0], expected_type)
+                    pose = builder.body_q[builder.shape_body[0]] * builder.shape_transform[0]
+                    center = np.array([1.05, -0.15, 0.3])
+                    half_extents = np.array([1.5, 0.75, 3.0])
+                    if expected_type == GeoType.SPHERE:
+                        self.assertEqual(reference.geom_type[0], mujoco.mjtGeom.mjGEOM_SPHERE)
+                        self.assertAlmostEqual(builder.shape_scale[0][0], 1.5 * reference.geom_size[0, 0], places=5)
+                        np.testing.assert_allclose(pose.p, center, atol=1e-5)
+                    else:
+                        self.assertEqual(reference.geom_type[0], mujoco.mjtGeom.mjGEOM_MESH)
+                        mesh = builder.shape_source[0]
+                        points = np.array(
+                            [
+                                wp.transform_point(pose, wp.vec3(vertex))
+                                for vertex in np.asarray(mesh.vertices) * np.asarray(builder.shape_scale[0])
+                            ]
+                        )
+                        np.testing.assert_allclose(points.min(axis=0), center - half_extents, atol=1e-5)
+                        np.testing.assert_allclose(points.max(axis=0), center + half_extents, atol=1e-5)
 
 
 class TestImportMjcfSolverParams(unittest.TestCase):
