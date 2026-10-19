@@ -17,6 +17,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton.exceptions import NewtonWarning
 from newton.tests._usd_deformable_test_utils import (
     _apply_deformable_body_api,
     _author_deformable_element_array,
@@ -200,14 +201,21 @@ class TestUSDDeformableVolume(unittest.TestCase):
         self.assertTrue(np.all(masses > 0.0), masses)
         self.assertAlmostEqual(float(masses.sum()), 8.0, places=6)
 
-    def test_invalid_live_tet_skips_without_partial_state(self):
-        """Reject exactly the live tets the builder rejects, before appending any particles."""
+    def test_unusable_live_volume_with_rest_skips_without_partial_state(self):
+        """Skip rest-enabled volumes with non-finite points or no surviving tetrahedra."""
         from pxr import Sdf
 
         rest_points = [(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0), (0.0, 0.0, 2.0)]
         flat = [(0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0), (1.0, 1.0, 1.0)]
         sliver = self._float32_sliver(builder_accepts=False)
-        for case, points in (("flat", flat), ("float32_sliver", sliver)):
+        nonfinite = [*rest_points[:3], (float("nan"), 0.0, 2.0)]
+        overflow = [(0, 0, 0), (1.0e20, 0, 0), (0, 1.0e20, 0), (0, 0, 1.0e20)]
+        for case, points in (
+            ("flat", flat),
+            ("float32_sliver", sliver),
+            ("nonfinite", nonfinite),
+            ("volume_overflow", overflow),
+        ):
             with self.subTest(case=case):
                 stage = _deformable_stage()
                 tet = _author_unit_tet(stage, "/World/Soft", sim_api=True)
@@ -216,14 +224,16 @@ class TestUSDDeformableVolume(unittest.TestCase):
                     rest_points
                 )
 
+                _author_unit_tet(stage, "/World/Good", sim_api=True)
                 builder = newton.ModelBuilder()
                 with self.assertLogs("newton", level="WARNING") as caught:
-                    builder.add_usd(stage)
-                self.assertTrue(any("skipping the prim" in m for m in caught.output))
-
-                self.assertEqual(builder.particle_count, 0)
-                self.assertEqual(builder.tet_count, 0)
-                self.assertEqual(group_labels(builder, "soft"), [])
+                    result = builder.add_usd(stage, return_deformable_results=True)
+                self.assertTrue(any("/World/Soft" in m and "skipping the prim" in m for m in caught.output))
+                self.assertNotIn("/World/Soft", result["path_soft_map"])
+                self.assertEqual(builder.particle_count, 4)
+                self.assertEqual(builder.tet_count, 1)
+                self.assertEqual(builder.tri_count, 4)
+                self.assertEqual(group_labels(builder, "soft"), ["/World/Good"])
 
         with self.subTest(case="tiny_valid"):
             # A 0.1 mm tetrahedron is valid for the builder despite its tiny absolute volume.
@@ -240,6 +250,113 @@ class TestUSDDeformableVolume(unittest.TestCase):
 
             self.assertEqual(builder.tet_count, 1)
             np.testing.assert_allclose(np.asarray(builder.tet_poses[0]), np.eye(3) * 2.0e4, rtol=1.0e-5)
+
+    def test_partial_volume_import_keeps_matching_rest_data(self):
+        """Keep rest poses, masses, and custom data aligned after dropping a middle tet.
+
+        Exercise each mass policy on the same small asset, including reflection,
+        left-handed topology, and a pre-existing builder tet. Fallback cases pin
+        compatibility without making the old orphaned-surface behavior a contract.
+        """
+        from pxr import Gf, Sdf, UsdGeom
+
+        unit = np.array([(0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1)], dtype=np.float32)
+        points = np.concatenate([unit + np.array([4 * i, 0, 0]) for i in range(3)])
+        rest_points = np.concatenate([unit * (i + 1) + np.array([4 * i, 0, 0]) for i in range(3)])
+        # Mass policy, rest state, reflection, handedness, and a flat middle tet are
+        # independent inputs; avoid selecting geometry implicitly from the mass policy.
+        cases = (
+            ("density", "valid", False, False, False),
+            ("constant", "valid", True, False, False),
+            ("tetrahedron", "valid", True, True, False),
+            ("point", "valid", False, False, False),
+            ("body", "valid", False, False, True),
+            ("density", "absent", False, False, False),
+            ("density", "empty", False, False, False),
+            ("density", "malformed", False, False, False),
+        )
+        for mode, rest_state, reflected, left_handed, flat in cases:
+            with self.subTest(mass=mode, rest=rest_state):
+                stage = _deformable_stage()
+                tet = UsdGeom.TetMesh.Define(stage, "/World/Soft")
+                live = points.copy()
+                indices = np.arange(12).reshape(3, 4)
+                rest_indices = indices.copy()
+                if flat:
+                    live[7] = live[4]  # Zero-volume middle tet exercises the degenerate path.
+                else:
+                    indices[1, [1, 2]] = indices[1, [2, 1]]
+                if left_handed:
+                    tet.CreateOrientationAttr(UsdGeom.Tokens.leftHanded)
+                    indices[:, [1, 2]] = indices[:, [2, 1]]
+                    rest_indices[:, [1, 2]] = rest_indices[:, [2, 1]]
+                tet.CreatePointsAttr(live.tolist())
+                tet.CreateTetVertexIndicesAttr(indices.tolist())
+                prim = tet.GetPrim()
+                prim.AddAppliedSchema("PhysicsVolumeDeformableSimAPI")
+                prim.AddAppliedSchema("PhysicsCollisionAPI")
+                _apply_deformable_body_api(prim, density=6.0)
+                scale = np.array([-2, 3, 4] if reflected else [1, 1, 1])
+                UsdGeom.Xformable(tet).AddScaleOp().Set(Gf.Vec3d(*scale.tolist()))
+                has_rest = rest_state == "valid"
+                if rest_state != "absent":
+                    authored_rest = {"valid": rest_points.tolist(), "empty": [], "malformed": [[0, 0, 0]]}[rest_state]
+                    prim.CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(authored_rest)
+                    prim.CreateAttribute("physics:restTetVertexIndices", Sdf.ValueTypeNames.Int4Array).Set(
+                        rest_indices.tolist()
+                    )
+                if mode == "constant":
+                    _author_deformable_element_array(prim, "masses", [28.0], "constant")
+                elif mode == "tetrahedron":
+                    _author_deformable_element_array(prim, "masses", [4.0, 8.0, 12.0], "tetrahedron")
+                elif mode == "point":
+                    _author_deformable_element_array(prim, "masses", [1.0] * 4 + [100.0] * 4 + [3.0] * 4, "point")
+                elif mode == "body":
+                    _apply_deformable_body_api(prim, mass=28.0, density=6.0)
+                prim.CreateAttribute("custom:regionId", Sdf.ValueTypeNames.IntArray).Set([10, 20, 30])
+
+                builder = newton.ModelBuilder()
+                builder.add_custom_attribute(
+                    newton.ModelBuilder.CustomAttribute(
+                        name="regionId",
+                        dtype=wp.int32,
+                        frequency=newton.Model.AttributeFrequency.TETRAHEDRON,
+                        usd_attribute_name="custom:regionId",
+                    )
+                )
+                for point in unit:
+                    builder.add_particle(wp.vec3(*point), wp.vec3(0.0), 2.0)
+                builder.add_tetrahedron(0, 1, 2, 3, custom_attributes={"regionId": 99})
+                with warnings.catch_warnings(), self.assertLogs("newton", level="WARNING") as caught:
+                    warnings.simplefilter("error", NewtonWarning)
+                    if mode == "point":
+                        with self.assertWarnsRegex(NewtonWarning, "4 unreferenced point"):
+                            result = builder.add_usd(stage, return_deformable_results=True)
+                    else:
+                        result = builder.add_usd(stage, return_deformable_results=True)
+                self.assertEqual(builder.tet_count, 3)
+                self.assertEqual(result["path_soft_map"]["/World/Soft"], {"particle": (4, 16), "tet": (1, 3)})
+                np.testing.assert_array_equal(builder.particle_q[4:], live * scale)
+                np.testing.assert_array_equal(builder.particle_mass[:4], [2.0] * 4)
+                np.testing.assert_allclose(builder.tet_poses[0], np.eye(3))
+                self.assertEqual(builder.custom_attributes["regionId"].values, {0: 99, 1: 10, 2: 30})
+                expected_indices = np.array([[0, 1, 2, 3], [8, 9, 10, 11]])
+                if scale[0] < 0:
+                    expected_indices[:, [1, 2]] = expected_indices[:, [2, 1]]
+                np.testing.assert_array_equal(builder.tet_indices[1:], expected_indices + 4)
+                basis = np.diag(scale.astype(float))
+                if scale[0] < 0:
+                    basis = basis[:, [1, 0, 2]]
+                expected_poses = [np.linalg.inv(basis) / size for size in ((1, 3) if has_rest else (1, 1))]
+                np.testing.assert_allclose(builder.tet_poses[1:], expected_poses)
+                if has_rest:
+                    self.assertTrue(any("/World/Soft" in m and "[1]" in m for m in caught.output))
+                    expected_mass = [4, 0, 12] if mode in ("tetrahedron", "point") else [1, 0, 27]
+                    np.testing.assert_allclose(
+                        np.array(builder.particle_mass[4:]).reshape(3, 4).sum(axis=1), expected_mass
+                    )
+                elif rest_state == "malformed":
+                    self.assertTrue(any("invalid volume rest shape" in m for m in caught.output))
 
     def test_left_handed_rest_indices_follow_tet_orientation(self):
         """Apply the same left-handed correction to explicit rest and live indices."""

@@ -234,29 +234,6 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             simulation_indices = np.asarray(
                 add_soft_mesh_kwargs.get("indices", tetmesh_for_builder.tet_indices), dtype=np.int64
             ).reshape(-1, 4)
-            # Mass lumping uses volume magnitudes, as before rest shapes were imported; validity is
-            # decided by the builder-mirroring gate below.
-            simulation_volumes = np.abs(
-                np.linalg.det(_tet_edge_matrices(np.asarray(world_vertices, dtype=np.float64), simulation_indices))
-                / 6.0
-            )
-            # add_soft_mesh subtracts float32 particle positions and drops any tetrahedron whose
-            # resulting volume is not positive. Gate on that same arithmetic so no element is dropped
-            # after this point, which would misalign the rest poses and masses assigned per tetrahedron.
-            builder_volumes = (
-                np.linalg.det(_tet_edge_matrices(np.asarray(world_vertices, dtype=np.float32), simulation_indices))
-                / 6.0
-            )
-            invalid_simulation_tets = np.flatnonzero(~np.isfinite(builder_volumes) | (builder_volumes <= 0.0))
-            if len(invalid_simulation_tets):
-                logger.warning(
-                    "%s: simulation TetMesh has %s inverted, degenerate, or non-finite tetrahedron(s), "
-                    "first at %s; skipping the prim. Repair these tetrahedra to import it.",
-                    path,
-                    len(invalid_simulation_tets),
-                    invalid_simulation_tets[:5].tolist(),
-                )
-                continue
 
         rest_data = None
         if is_volume_deformable:
@@ -301,6 +278,33 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
                         "simulation topology; using the simulation shape.",
                         path,
                     )
+        rest_sources = None
+        if rest_data is not None:
+            if not np.all(np.isfinite(world_vertices)):
+                logger.warning("%s: simulation TetMesh has non-finite points; skipping the prim.", path)
+                continue
+            # Match add_tetrahedron's float32 edge arithmetic and preserve source indices when
+            # it drops an element, so later tets receive their own rest poses and authored masses.
+            with np.errstate(over="ignore", invalid="ignore"):
+                builder_volumes = np.linalg.det(_tet_edge_matrices(world_vertices, simulation_indices)) / 6.0
+            if not np.all(np.isfinite(builder_volumes)):
+                logger.warning("%s: simulation TetMesh has non-finite tetrahedron volumes; skipping the prim.", path)
+                continue
+            rest_sources = np.flatnonzero(builder_volumes > 0.0)
+            if len(rest_sources) == 0:
+                logger.warning("%s: simulation TetMesh has no positive-volume tetrahedra; skipping the prim.", path)
+                continue
+            dropped = np.flatnonzero(builder_volumes <= 0.0)
+            if len(dropped):
+                logger.warning(
+                    "%s: simulation TetMesh has %s inverted or degenerate tetrahedron(s), first at %s; "
+                    "importing the remaining tetrahedra with their corresponding rest data.",
+                    path,
+                    len(dropped),
+                    dropped[:5].tolist(),
+                )
+            rest_data = (rest_data[0][rest_sources], rest_data[1][rest_sources])
+
         # Body density overrides the TetMesh's material density.
         if is_volume_deformable:
             material_density = (
@@ -317,24 +321,32 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
 
         soft_p0, soft_t0 = builder.particle_count, builder.tet_count
         builder.add_soft_mesh(**add_soft_mesh_kwargs)
-        if is_volume_deformable and builder.tet_count - soft_t0 != len(simulation_indices):
-            raise RuntimeError(
-                f"{path}: ModelBuilder kept {builder.tet_count - soft_t0} of {len(simulation_indices)} preflighted "
-                "tetrahedra; the volume preflight and ModelBuilder.add_tetrahedron disagree."
-            )
         if rest_data is not None:
+            retained_indices = simulation_indices[rest_sources]
+            actual_indices = np.asarray(builder.tet_indices[soft_t0:], dtype=np.int64).reshape(-1, 4) - soft_p0
+            if not np.array_equal(actual_indices, retained_indices):
+                raise RuntimeError(
+                    f"{path}: retained tetrahedra differ from the volume preflight; "
+                    "cannot assign corresponding rest data."
+                )
             rest_poses, rest_volumes = rest_data
             for local_tet, pose in enumerate(rest_poses.tolist()):
                 builder.tet_poses[soft_t0 + local_tet] = pose
             builder.particle_mass[soft_p0 : builder.particle_count] = np.bincount(
-                simulation_indices.reshape(-1),
+                retained_indices.reshape(-1),
                 weights=np.repeat(resolved_density * rest_volumes / 4.0, 4),
                 minlength=tetmesh_for_builder.vertex_count,
             ).tolist()
         authored_masses = None
         if is_volume_deformable:
-            mass_indices = simulation_indices
-            mass_volumes = simulation_volumes if rest_data is None else rest_data[1]
+            mass_indices = simulation_indices if rest_data is None else retained_indices
+            if rest_data is None:
+                # Preserve the existing unsigned live-volume mass policy on the fallback path.
+                mass_volumes = np.abs(
+                    np.linalg.det(_tet_edge_matrices(np.asarray(world_vertices, dtype=np.float64), mass_indices)) / 6.0
+                )
+            else:
+                mass_volumes = rest_data[1]
             authored_masses = _apply_particle_masses(
                 builder,
                 prim,
@@ -344,6 +356,8 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
                 element_name="tetrahedron",
                 element_indices=mass_indices,
                 element_volumes=mass_volumes,
+                element_count=len(simulation_indices),
+                element_sources=rest_sources,
             )
         path_soft_map[path] = {
             "particle": (soft_p0, builder.particle_count),

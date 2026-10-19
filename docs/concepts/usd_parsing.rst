@@ -306,13 +306,17 @@ Known gaps of the experimental importer, tracked as follow-ups:
   time-varying rest shapes are not updated during simulation. Invalid cloth or volume rest
   geometry falls back to the simulation shape for the whole prim. Disjoint cloth rest edges
   may have different lengths; Newton logs a warning and uses the last adjacent triangle's rest
-  length for bending while preserving both triangles' rest bases and masses. A prim whose live
-  geometry contains a degenerate triangle or an inverted or degenerate tetrahedron is skipped
-  as a whole before builder mutation, even with valid rest geometry: a cloth or soft body
-  missing one element would carry inconsistent mass, surface, and rest data. Rest geometry is
-  transformed in float64 without the world translation, while simulation points are stored in
-  float32, so at very large world offsets an asset authored at rest can start slightly strained
-  by the float32 rounding of its live points.
+  length for bending while preserving both triangles' rest bases and masses. Cloth with
+  degenerate live triangles is skipped as a whole. Volume import drops inverted or degenerate
+  live tetrahedra individually; with valid rest geometry, surviving tetrahedra use their
+  corresponding rest poses, volumes, and authored element masses. A volume with valid rest
+  geometry is skipped before builder mutation if its live points or tetrahedron volumes are
+  non-finite, or no tetrahedra survive. Without valid rest geometry, the existing live-shape
+  fallback applies. Partial volume import retains the builder's existing particle storage and
+  collision surface generation; surfaces associated with dropped tetrahedra are not removed.
+  Rest geometry is transformed in float64 without the world translation, while simulation
+  points are stored in float32, so at very large world offsets an asset authored at rest can
+  start slightly strained by the float32 rounding of its live points.
 * **Cable attachment positions** -- attachments use native rod material endpoints and
   rest-length segment coordinates. When initial and rest segment lengths differ, these
   positions can differ from the proposal's positions on the initial curve. Import preserves
