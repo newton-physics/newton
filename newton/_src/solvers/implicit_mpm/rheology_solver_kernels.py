@@ -8,6 +8,8 @@ import warp.fem as fem
 import warp.sparse as sp
 from warp.fem.linalg import symmetric_eigenvalues_qr
 
+from .contact_solver_kernels import ColoredContacts, make_solve_colored_cell_contacts
+
 _DELASSUS_PROXIMAL_REG = wp.constant(1.0e-6)
 """Cutoff for the trace of the diagonal block of the Delassus operator to disable constraints"""
 
@@ -1171,8 +1173,13 @@ def make_gs_solve_kernel(
     strain_nodes_per_cell: int = 0,
     max_entries: int = -1,
     cache_cell_velocity: bool = True,
+    colored_contact_nodes: int = 0,
 ):
-    """Specialize one GS kernel for BSR/SoA storage and colored/batched updates."""
+    """Specialize one GS kernel for BSR/SoA storage and colored/batched updates.
+
+    With ``colored_contact_nodes`` > 0, each strain cell also solves its particle contact rows,
+    whose velocity nodes it does not share with other cells of its color.
+    """
     # Batched updates read frozen velocities and scatter in a separate kernel.
     cache_cell_velocity = (
         cache_cell_velocity and not batched and strain_velocity_node_count == 8 and strain_nodes_per_cell > 1
@@ -1188,6 +1195,8 @@ def make_gs_solve_kernel(
         batched,
         max_entries,
         cache_cell_velocity,
+        colored_contact_nodes,
+        strain_nodes_per_cell if colored_contact_nodes > 0 else 0,
     )
     solve_rows = make_solve_strain_rows(
         has_viscosity,
@@ -1198,6 +1207,8 @@ def make_gs_solve_kernel(
         batched,
         max_entries,
     )
+
+    solve_contacts = make_solve_colored_cell_contacts(colored_contact_nodes) if colored_contact_nodes > 0 else None
 
     @fem.cache.dynamic_kernel(suffix=key, kernel_options={"fast_math": True}, allow_overloads=True)
     def gs_solve_kernel_impl(
@@ -1219,6 +1230,7 @@ def make_gs_solve_kernel(
         velocities: wp.array[wp.vec3],
         local_stress: wp.array[vec6],
         delta_correction: wp.array[vec6],
+        contacts: ColoredContacts,
     ):
         first_color = color
         last_color = color + 1
@@ -1249,6 +1261,10 @@ def make_gs_solve_kernel(
                 local_stress,
                 delta_correction,
             )
+            if wp.static(colored_contact_nodes > 0):
+                # Rows start at the cell's first partition node; contacts are keyed by that cell.
+                cell = int(color_blocks[0, block]) // wp.static(max(strain_nodes_per_cell, 1))
+                wp.static(solve_contacts)(cell, contacts, inv_mass_matrix, velocities)
 
     return gs_solve_kernel_impl
 

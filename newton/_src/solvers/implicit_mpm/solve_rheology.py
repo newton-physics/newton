@@ -18,15 +18,13 @@ from warp.fem.linalg import array_axpy
 from warp.optim.linear import LinearOperator, cg, cr, gmres
 
 from .contact_solver_kernels import (
-    BOUNDARY_CONTACT_THREADS,
+    ColoredContacts,
     apply_nodal_impulse_warmstart,
     apply_subgrid_impulse,
     apply_subgrid_impulse_warmstart,
-    build_boundary_cell_colors,
     compute_collider_delassus_diagonal,
     compute_collider_inv_mass,
     compute_collider_unsplit_diagonal,
-    make_boundary_contact_gs_kernel,
     solve_nodal_friction,
     solve_subgrid_friction,
 )
@@ -810,7 +808,17 @@ class _RheologySolver:
         return block_count * block_dim, block_dim, block_count
 
     def _make_gs_solve_launch(
-        self, rows, launch_dim, block_dim, block_count, *, soa=False, colors_per_batch=1, batched=False
+        self,
+        rows,
+        launch_dim,
+        block_dim,
+        block_count,
+        *,
+        soa=False,
+        colors_per_batch=1,
+        batched=False,
+        contacts: ColoredContacts | None = None,
+        contact_nodes: int = 0,
     ):
         kernel = make_gs_solve_kernel(
             has_viscosity=self.rheology.has_viscosity,
@@ -821,6 +829,7 @@ class _RheologySolver:
             max_entries=rows.columns.shape[0] if soa else self.rheology.strain_velocity_node_count,
             soa=soa,
             batched=batched,
+            colored_contact_nodes=contact_nodes if contacts is not None else 0,
         )
         return wp.launch(
             kernel,
@@ -842,7 +851,12 @@ class _RheologySolver:
                 self.momentum.inv_volume,
                 self.rheology.elastic_strain_delta,
             ],
-            outputs=[self.momentum.velocity, self.rheology.stress, self.delta_stress],
+            outputs=[
+                self.momentum.velocity,
+                self.rheology.stress,
+                self.delta_stress,
+                contacts if contacts is not None else ColoredContacts(),
+            ],
             block_dim=block_dim,
             max_blocks=block_count,
             record_cmd=True,
@@ -890,55 +904,24 @@ class _GaussSeidelSolver(_RheologySolver):
         )
 
         self.contact_solver = contact_solver
-        self.contact_launch = None
-        self.boundary_counts = None
-        self.boundary_cells = None
+        self.contacts = None
+        self.contact_nodes = 0
         if contact_solver is not None:
             c = contact_solver.collision
-            contact_inputs = [
-                c.colored_cell_offsets,
-                c.colored_cell_rows,
-                c.collider_mat.offsets,
-                c.collider_mat.columns,
-                c.collider_mat.values,
-                c.collider_friction,
-                c.collider_adhesion,
-                c.collider_normals,
-                contact_solver.collider_delassus_diagonal,
-                c.collider_velocities,
-                c.collider_impulse,
-                contact_solver.delta_impulse,
-            ]
-            self.boundary_counts = fem.borrow_temporary(temporary_store, shape=self.color_count, dtype=int)
-            self.boundary_cells = fem.borrow_temporary(
-                temporary_store, shape=(self.color_count, c.colored_cell_offsets.shape[0] - 1), dtype=int
-            )
-            self.boundary_counts.zero_()
-            wp.launch(
-                build_boundary_cell_colors,
-                dim=(self.color_count, BOUNDARY_CONTACT_THREADS),
-                inputs=[
-                    self.rheology.color_offsets,
-                    self.rheology.color_blocks,
-                    c.colored_cell_offsets,
-                    self.boundary_counts,
-                    self.boundary_cells,
-                ],
-            )
-            self.contact_launch = wp.launch(
-                make_boundary_contact_gs_kernel(c.colored_velocity_nodes_per_cell == 8),
-                dim=BOUNDARY_CONTACT_THREADS,
-                block_dim=1,
-                inputs=[
-                    0,
-                    self.boundary_counts,
-                    self.boundary_cells,
-                    *contact_inputs,
-                    self.momentum.inv_volume,
-                    self.momentum.velocity,
-                ],
-                record_cmd=True,
-            )
+            self.contacts = ColoredContacts()
+            self.contacts.cell_offsets = c.colored_cell_offsets
+            self.contacts.cell_rows = c.colored_cell_rows
+            self.contacts.offsets = c.collider_mat.offsets
+            self.contacts.columns = c.collider_mat.columns
+            self.contacts.values = c.collider_mat.values
+            self.contacts.friction = c.collider_friction
+            self.contacts.adhesion = c.collider_adhesion
+            self.contacts.normal = c.collider_normals
+            self.contacts.diagonal = contact_solver.collider_delassus_diagonal
+            self.contacts.boundary_velocity = c.collider_velocities
+            self.contacts.impulse = c.collider_impulse
+            self.contacts.delta_impulse = contact_solver.delta_impulse
+            self.contact_nodes = c.colored_velocity_nodes_per_cell
         self.solve_local_launch = self._make_solve_launch(
             temporary_store, color_launch_dim, color_block_dim, color_block_count
         )
@@ -948,7 +931,9 @@ class _GaussSeidelSolver(_RheologySolver):
         rows.offsets = self.rheology.strain_mat.offsets
         rows.columns = self.rheology.strain_mat.columns
         rows.values = self.rheology.strain_mat.values.view(dtype=mat13)
-        return self._make_gs_solve_launch(rows, launch_dim, block_dim, block_count)
+        return self._make_gs_solve_launch(
+            rows, launch_dim, block_dim, block_count, contacts=self.contacts, contact_nodes=self.contact_nodes
+        )
 
     @property
     def name(self):
@@ -970,18 +955,8 @@ class _GaussSeidelSolver(_RheologySolver):
         for color in range(self.color_count):
             self.solve_local_launch.set_param_at_index(0, color)
             self.solve_local_launch.launch()
-            # Material updates can reintroduce inward contact velocity.
-            if self.contact_launch is not None:
-                self.contact_launch.set_param_at_index(0, color)
-                self.contact_launch.launch()
         if self.contact_solver is not None:
             self.contact_solver.apply_rigidity_operator()
-
-    def release(self):
-        if self.boundary_counts is not None:
-            self.boundary_counts.release()
-            self.boundary_cells.release()
-        super().release()
 
 
 class _ReorderedGaussSeidelSolver(_GaussSeidelSolver):
@@ -991,7 +966,15 @@ class _ReorderedGaussSeidelSolver(_GaussSeidelSolver):
         svnc = self.rheology.strain_velocity_node_count
         max_entries = svnc if svnc > 0 else self.color_count
         rows = self._prepare_strain_rows_soa(temporary_store, max_entries)
-        return self._make_gs_solve_launch(rows, launch_dim, block_dim, block_count, soa=True)
+        return self._make_gs_solve_launch(
+            rows,
+            launch_dim,
+            block_dim,
+            block_count,
+            soa=True,
+            contacts=self.contacts,
+            contact_nodes=self.contact_nodes,
+        )
 
     @property
     def name(self):

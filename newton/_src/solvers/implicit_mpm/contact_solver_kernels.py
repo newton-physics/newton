@@ -336,9 +336,6 @@ def _solve_cell_contacts_gs_generic(
                 velocity[node] += inv_volume[node] * values[b] * delta
 
 
-BOUNDARY_CONTACT_THREADS = wp.constant(256)
-"""Threads striding over the boundary cells of one color in colored contact solves"""
-
 _ContactScalar8 = wp.types.vector(length=8, dtype=float)
 _ContactIndex8 = wp.types.vector(length=8, dtype=int)
 
@@ -430,65 +427,51 @@ def solve_cell_contacts_gs(
         velocity[nodes[k]] = wp.vec3(vx[k], vy[k], vz[k])
 
 
-@wp.kernel
-def build_boundary_cell_colors(
-    color_offsets: wp.array[int],
-    color_blocks: wp.array2d[int],
-    cell_offsets: wp.array[int],
-    boundary_counts: wp.array[int],
-    boundary_cells: wp.array2d[int],
-):
-    color, thread = wp.tid()
-    for b in range(color_offsets[color] + thread, color_offsets[color + 1], BOUNDARY_CONTACT_THREADS):
-        beg, end = color_blocks[0, b], color_blocks[1, b]
-        if end > beg:
-            cell = beg // (end - beg)
-            if cell_offsets[cell + 1] > cell_offsets[cell]:
-                slot = wp.atomic_add(boundary_counts, color, 1)
-                boundary_cells[color, slot] = cell
+@wp.struct
+class ColoredContacts:
+    """Particle contact rows grouped by strain cell, solved within the colored strain sweep."""
+
+    cell_offsets: wp.array[int]
+    cell_rows: wp.array[int]
+    offsets: wp.array[int]
+    columns: wp.array[int]
+    values: wp.array[float]
+    friction: wp.array[float]
+    adhesion: wp.array[float]
+    normal: wp.array[wp.vec3]
+    diagonal: wp.array[float]
+    boundary_velocity: wp.array[wp.vec3]
+    impulse: wp.array[wp.vec3]
+    delta_impulse: wp.array[wp.vec3]
 
 
-def make_boundary_contact_gs_kernel(cache_cell_velocity: bool):
-    """Specialize one colored contact kernel for cached or generic cell updates."""
-    solve_cell = solve_cell_contacts_gs if cache_cell_velocity else _solve_cell_contacts_gs_generic
+def make_solve_colored_cell_contacts(nodes_per_cell: int):
+    """Solve one strain cell's contact rows, caching eight-node cells in registers."""
+    solve_cell = solve_cell_contacts_gs if nodes_per_cell == 8 else _solve_cell_contacts_gs_generic
 
-    @fem.cache.dynamic_kernel(suffix=cache_cell_velocity, kernel_options={"fast_math": True, "enable_backward": False})
-    def solve_boundary_contacts_gs(
-        color: int,
-        boundary_counts: wp.array[int],
-        boundary_cells: wp.array2d[int],
-        cell_offsets: wp.array[int],
-        cell_rows: wp.array[int],
-        offsets: wp.array[int],
-        columns: wp.array[int],
-        values: wp.array[float],
-        friction: wp.array[float],
-        adhesion: wp.array[float],
-        normal: wp.array[wp.vec3],
-        diagonal: wp.array[float],
-        boundary_velocity: wp.array[wp.vec3],
-        impulse: wp.array[wp.vec3],
-        delta_impulse: wp.array[wp.vec3],
+    @fem.cache.dynamic_func(suffix=nodes_per_cell)
+    def solve_colored_cell_contacts(
+        cell: int,
+        contacts: ColoredContacts,
         inv_volume: wp.array[float],
         velocity: wp.array[wp.vec3],
     ):
-        for b in range(wp.tid(), boundary_counts[color], BOUNDARY_CONTACT_THREADS):
-            wp.static(solve_cell)(
-                boundary_cells[color, b],
-                cell_offsets,
-                cell_rows,
-                offsets,
-                columns,
-                values,
-                friction,
-                adhesion,
-                normal,
-                diagonal,
-                boundary_velocity,
-                inv_volume,
-                velocity,
-                impulse,
-                delta_impulse,
-            )
+        wp.static(solve_cell)(
+            cell,
+            contacts.cell_offsets,
+            contacts.cell_rows,
+            contacts.offsets,
+            contacts.columns,
+            contacts.values,
+            contacts.friction,
+            contacts.adhesion,
+            contacts.normal,
+            contacts.diagonal,
+            contacts.boundary_velocity,
+            inv_volume,
+            velocity,
+            contacts.impulse,
+            contacts.delta_impulse,
+        )
 
-    return solve_boundary_contacts_gs
+    return solve_colored_cell_contacts
