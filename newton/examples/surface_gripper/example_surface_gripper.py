@@ -39,7 +39,7 @@
 #       engaged    - sealed to a body. The seal carries load and resists drift from the pose it
 #                    formed at; the seal-quality metric reports how far the surface has since pulled off.
 #       disengaged - neither of the above. No seal force, and the quality metric reports -1.
-#     The drive targets and the mode of each pad are read from assets/fanuc_recording.jsonl.
+#     The drive targets and the mode of each pad are read from assets/palletizer_trajectory.jsonl.
 #   - Which body and shape to grab: a fixed pick order -- one wide panel, then six crates -- advanced
 #     on each release.
 #   - When the seal fractures under load, via one of two interchangeable criteria (BREAK_ON_SEAL_QUALITY):
@@ -88,8 +88,8 @@
 #     ...solver step...
 #     state_in_prev, state_in_curr = state_in_curr, state_in_prev
 #
-# The scene: a fixed-base FANUC arm (assets/fanuc_arm.usda) with four suction pads on its flange,
-# two pallets, and the pick boxes -- one wide panel and six crates (assets/fanuc_pick_scene.usda).
+# The scene: a fixed-base palletizer arm (assets/palletizer_arm.usda) with four suction pads on its flange,
+# two pallets, and the pick boxes -- one wide panel and six crates (assets/palletizer_scene.usda).
 # The panel is picked first, then each crate in turn; every crate waits out of reach until its turn
 # comes, when it is teleported onto the pick pallet. Arm joint targets are interpolated from the
 # recorded timestamps before every physics sub-step, so the arm follows the recorded motion at its
@@ -127,13 +127,13 @@ from newton.viewer import ViewerBase
 # Asset paths (global constants). All assets live in the shared newton/examples/assets/ directory.
 ASSETS = Path(__file__).parent.parent / "assets"
 # robot arm USD
-ROBOT_USD = ASSETS / "fanuc_arm.usda"
+ROBOT_USD = ASSETS / "palletizer_arm.usda"
 # ArticulationView pattern matching the robot arm's USD root prim label (used to find its joint_q offsets).
 ROBOT_ARTICULATION_PATTERN = "*Robot*"
 # Pick scene (2 static pallets + panel + 6 crates as box colliders at their waiting poses).
-PICK_SCENE_USD = ASSETS / "fanuc_pick_scene.usda"
+PICK_SCENE_USD = ASSETS / "palletizer_scene.usda"
 # recording of the robot arm motion and surface gripper engagement/disengagement.
-RECORDING_JSONL = ASSETS / "fanuc_recording.jsonl"
+RECORDING_JSONL = ASSETS / "palletizer_trajectory.jsonl"
 # Duration of that recording [s]: one panel pick followed by six crate picks, the last release at
 # ~25.6 s. Used to default --num-frames so a plain run plays the whole cycle rather than stopping
 # partway through the first pick.
