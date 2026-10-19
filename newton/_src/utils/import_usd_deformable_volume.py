@@ -29,7 +29,7 @@ from .import_usd_deformable_utils import (
     _DeformableImportContext,
     _is_ignored_path,
     _resolve_deformable_density,
-    _rest_index_array,
+    _rest_shape_indices,
     _rest_topology_matches,
     _skip_for_deformable_body_owner,
     _transform_rest_points,
@@ -244,18 +244,14 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             if rest_points_value is not None:
                 try:
                     rest_points = _transform_rest_points(rest_points_value, soft_mesh_mat)
-                    if rest_indices_value is None or len(rest_indices_value) == 0:
-                        if len(rest_points) != tetmesh_for_builder.vertex_count:
-                            raise ValueError("restShapePoints must match points when restTetVertexIndices is omitted")
-                        rest_indices = np.asarray(tetmesh_for_builder.tet_indices, dtype=np.int64).reshape(-1, 4)
-                    else:
-                        rest_indices = _rest_index_array(rest_indices_value, 4, "restTetVertexIndices")
-                        if len(rest_indices) != tetmesh_for_builder.tet_count:
-                            raise ValueError(
-                                "restTetVertexIndices must contain one tetrahedron per simulation tetrahedron"
-                            )
-                        if np.any(rest_indices < 0) or np.any(rest_indices >= len(rest_points)):
-                            raise ValueError("restTetVertexIndices contains an out-of-range point index")
+                    rest_indices = _rest_shape_indices(
+                        rest_indices_value,
+                        np.asarray(tetmesh_for_builder.tet_indices, dtype=np.int64).reshape(-1, 4),
+                        tetmesh_for_builder.vertex_count,
+                        len(rest_points),
+                        "restTetVertexIndices",
+                    )
+                    if rest_indices_value is not None and np.size(rest_indices_value):
                         handedness = UsdGeom.TetMesh(prim).GetOrientationAttr().Get()
                         if handedness and str(handedness).lower() == "lefthanded":
                             rest_indices = rest_indices.copy()
@@ -330,8 +326,7 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
                     "cannot assign corresponding rest data."
                 )
             rest_poses, rest_volumes = rest_data
-            for local_tet, pose in enumerate(rest_poses.tolist()):
-                builder.tet_poses[soft_t0 + local_tet] = pose
+            builder.tet_poses[soft_t0 : builder.tet_count] = rest_poses.tolist()
             builder.particle_mass[soft_p0 : builder.particle_count] = np.bincount(
                 retained_indices.reshape(-1),
                 weights=np.repeat(resolved_density * rest_volumes / 4.0, 4),
@@ -339,13 +334,14 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             ).tolist()
         authored_masses = None
         if is_volume_deformable:
-            mass_indices = simulation_indices if rest_data is None else retained_indices
             if rest_data is None:
+                mass_indices = simulation_indices
                 # Preserve the existing unsigned live-volume mass policy on the fallback path.
                 mass_volumes = np.abs(
                     np.linalg.det(_tet_edge_matrices(np.asarray(world_vertices, dtype=np.float64), mass_indices)) / 6.0
                 )
             else:
+                mass_indices = retained_indices
                 mass_volumes = rest_data[1]
             authored_masses = _apply_particle_masses(
                 builder,

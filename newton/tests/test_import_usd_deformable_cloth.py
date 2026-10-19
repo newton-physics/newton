@@ -210,22 +210,62 @@ class TestUSDDeformableCloth(unittest.TestCase):
         np.testing.assert_array_equal(builder.edge_rest_angle, 0.0)
 
     def test_cloth_rest_shape_bend_uses_authored_pose(self):
-        """Derive signed dihedrals from default-time rest points while retaining live points."""
-        from pxr import Sdf, Usd
+        """Keep default-time rest corners aligned through handedness and reflection changes."""
+        from pxr import Gf, Sdf, Usd, UsdGeom
 
-        stage = _deformable_stage()
-        mesh = _add_cloth_mesh(stage, "/World/Cloth")
-        live_points = np.asarray(mesh.GetPointsAttr().Get())
-        rest = mesh.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray)
-        rest.Set([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 1.0)])
-        rest.Set(live_points, Usd.TimeCode(1.0))
-        mesh.GetPrim().CreateAttribute("physics:restBendAnglesDefault", Sdf.ValueTypeNames.Token).Set("restShape")
-        _author_deformable_element_array(mesh.GetPrim(), "thicknesses", [0.001], "constant")
-        builder = newton.ModelBuilder()
-        builder.add_usd(stage)
-        interior_edge = next(i for i, edge in enumerate(builder.edge_indices) if edge[1] != -1)
-        self.assertAlmostEqual(builder.edge_rest_angle[interior_edge], -math.atan(math.sqrt(2.0)), places=6)
-        np.testing.assert_allclose(builder.particle_q, live_points)
+        rest_points = np.asarray([(0.0, 0.0, 0.0), (2.0, 0.0, 0.0), (2.0, 1.0, 0.0), (0.0, 1.0, 1.0)])
+        live_points = rest_points * 2.0
+        live_points[:, 2] = 0.0
+        triangles = np.asarray([(0, 1, 2), (0, 2, 3)])
+        cases = [
+            (False, False, False),
+            *((True, left, reflected) for left in (False, True) for reflected in (False, True)),
+        ]
+        for disjoint, left_handed, reflected in cases:
+            with self.subTest(disjoint=disjoint, left_handed=left_handed, reflected=reflected):
+                stage = _deformable_stage()
+                mesh = _add_cloth_mesh(stage, "/World/Cloth")
+                mesh.GetPointsAttr().Set(live_points)
+                scale = [-1.0 if reflected else 1.0, 1.0, 1.0]
+                mesh.AddScaleOp().Set(Gf.Vec3d(*scale))
+                if left_handed:
+                    mesh.CreateOrientationAttr(UsdGeom.Tokens.leftHanded)
+                prim = mesh.GetPrim()
+                rest = prim.CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray)
+                rest.Set(rest_points[triangles].reshape(-1, 3) if disjoint else rest_points)
+                rest.Set(live_points[triangles].reshape(-1, 3) if disjoint else live_points, Usd.TimeCode(1.0))
+                if disjoint:
+                    prim.CreateAttribute("physics:restTriVertexIndices", Sdf.ValueTypeNames.Int3Array).Set(
+                        [(0, 1, 2), (3, 4, 5)]
+                    )
+                prim.CreateAttribute("physics:restBendAnglesDefault", Sdf.ValueTypeNames.Token).Set("restShape")
+                _author_deformable_element_array(prim, "thicknesses", [0.001], "constant")
+
+                # The builder's welded rest mesh supplies independent pose, length, and signed-angle expectations.
+                reference = newton.ModelBuilder()
+                reference.add_cloth_mesh(
+                    pos=wp.vec3(0.0, 0.0, 0.0),
+                    rot=wp.quat_identity(),
+                    scale=1.0,
+                    vel=wp.vec3(0.0, 0.0, 0.0),
+                    vertices=(rest_points * scale).tolist(),
+                    indices=(triangles[:, ::-1] if left_handed != reflected else triangles).reshape(-1).tolist(),
+                    density=1.0,
+                )
+                interior = next(i for i, edge in enumerate(reference.edge_indices) if edge[1] != -1)
+                self.assertGreater(abs(reference.edge_rest_angle[interior]), 0.1)
+
+                # Seed existing geometry to check that rest assignments respect builder offsets.
+                builder = newton.ModelBuilder()
+                builder.add_builder(reference)
+                builder.add_usd(stage)
+                np.testing.assert_allclose(builder.particle_q[:4], rest_points * scale)
+                np.testing.assert_allclose(builder.particle_q[4:], live_points * scale)
+                for field in ("tri_poses", "tri_areas", "edge_rest_angle", "edge_rest_length"):
+                    expected = np.asarray(getattr(reference, field))
+                    np.testing.assert_allclose(
+                        getattr(builder, field), np.concatenate((expected, expected)), atol=1.0e-7
+                    )
 
     def test_coincident_cloth_faces_keep_rest_bending(self):
         """Preserve both sides of coincident faces for rest-shape dihedrals and bend overrides."""

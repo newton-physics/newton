@@ -218,6 +218,30 @@ def _rest_index_array(values, element_width: int, name: str) -> np.ndarray:
     return indices.reshape(-1, element_width)
 
 
+def _rest_shape_indices(
+    authored_indices,
+    simulation_indices: np.ndarray,
+    simulation_point_count: int,
+    rest_point_count: int,
+    name: str,
+) -> np.ndarray:
+    """Default or validate rest topology, preserving simulation element order.
+
+    The simulation indices already have the caller's orientation correction. Explicit rest
+    indices retain their authored orientation for the caller to correct after validation.
+    """
+    if authored_indices is None or np.size(authored_indices) == 0:
+        if rest_point_count != simulation_point_count:
+            raise ValueError(f"restShapePoints must match points when {name} is omitted")
+        return simulation_indices
+    indices = _rest_index_array(authored_indices, simulation_indices.shape[1], name)
+    if len(indices) != len(simulation_indices):
+        raise ValueError(f"{name} must contain {len(simulation_indices)} elements to match the simulation topology")
+    if np.any(indices < 0) or np.any(indices >= rest_point_count):
+        raise ValueError(f"{name} contains an out-of-range point index")
+    return indices
+
+
 def _rest_topology_matches(rest_indices, simulation_indices, element_width: int) -> bool:
     """Whether a rest topology authored without rest points equals the simulation topology.
 

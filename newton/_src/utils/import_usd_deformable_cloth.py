@@ -31,6 +31,7 @@ from .import_usd_deformable_utils import (
     _read_deformable_element_array,
     _resolve_deformable_density,
     _rest_index_array,
+    _rest_shape_indices,
     _rest_topology_matches,
     _skip_for_deformable_body_owner,
     _transform_rest_points,
@@ -494,18 +495,11 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         if rest_points_value is not None:
             try:
                 rest_points = _transform_rest_points(rest_points_value, world_mat)
-                if rest_indices_value is None or len(rest_indices_value) == 0:
-                    if len(rest_points) != len(mesh_points):
-                        raise ValueError("restShapePoints must match points when restTriVertexIndices is omitted")
-                    rest_triangles = tri_faces
-                else:
-                    rest_triangles = _rest_index_array(rest_indices_value, 3, "restTriVertexIndices")
-                    if len(rest_triangles) != len(tri_faces):
-                        raise ValueError("restTriVertexIndices must contain one triangle per simulation triangle")
-                    if np.any(rest_triangles < 0) or np.any(rest_triangles >= len(rest_points)):
-                        raise ValueError("restTriVertexIndices contains an out-of-range point index")
-                    if flip_winding:
-                        rest_triangles = rest_triangles[:, ::-1]
+                rest_triangles = _rest_shape_indices(
+                    rest_indices_value, tri_faces, len(mesh_points), len(rest_points), "restTriVertexIndices"
+                )
+                if rest_indices_value is not None and np.size(rest_indices_value) and flip_winding:
+                    rest_triangles = rest_triangles[:, ::-1]
                 rest_poses, rest_areas = _cloth_rest_data(rest_points, rest_triangles)
                 rest_shape_applied = True
             except (TypeError, ValueError, np.linalg.LinAlgError) as exc:
@@ -641,9 +635,8 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
                 "the cloth preflight and ModelBuilder.add_triangles disagree."
             )
         if rest_shape_applied:
-            for local_tri, (pose, area) in enumerate(zip(rest_poses.tolist(), rest_areas.tolist(), strict=True)):
-                builder.tri_poses[t0 + local_tri] = pose
-                builder.tri_areas[t0 + local_tri] = area
+            builder.tri_poses[t0 : builder.tri_count] = rest_poses.tolist()
+            builder.tri_areas[t0 : builder.tri_count] = rest_areas.tolist()
         builder.particle_radius[p0 : builder.particle_count] = (0.5 * point_thickness_array).tolist()
 
         element_volumes = rest_areas * face_thickness_array
@@ -720,8 +713,7 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
             adjacency = MeshAdjacency(tri_faces, edge_indices=np.where(local_edges >= 0, local_edges - p0, -1))
             if rest_shape_applied:
                 rest_edge_lengths = _cloth_rest_edge_lengths(adjacency, rest_points, rest_triangles, path)
-                for local_edge, length in enumerate(rest_edge_lengths.tolist()):
-                    builder.edge_rest_length[e0 + local_edge] = length
+                builder.edge_rest_length[e0 : builder.edge_count] = rest_edge_lengths.tolist()
             rest_angles = _cloth_rest_default_angles(adjacency, rest_points, rest_triangles, rest_bend_angles_default)
             if bend_overrides_authored:
                 try:
@@ -753,8 +745,7 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
                     stacklevel=2,
                 )
         if rest_angles is not None:
-            for local_edge, angle in enumerate(rest_angles.tolist()):
-                builder.edge_rest_angle[e0 + local_edge] = angle
+            builder.edge_rest_angle[e0 : builder.edge_count] = rest_angles.tolist()
 
         authored_masses = _apply_particle_masses(
             builder,
