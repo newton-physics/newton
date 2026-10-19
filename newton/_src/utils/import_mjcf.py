@@ -1585,6 +1585,7 @@ def parse_mjcf(
                 continue
             site_attrib = resolve_element_attrib(site, "site", defaults)
 
+            raw_site_name = site.attrib.get("name")
             site_name = site_attrib.get("name", f"{body_name}_site_{site_count}")
 
             # Check if site should be ignored by name
@@ -1667,7 +1668,8 @@ def parse_mjcf(
             )
             site_shapes.append(s)
             site_name_to_idx[sanitize_name(site_name)] = s
-            raw_site_name_to_idx[site_name] = s
+            if raw_site_name:
+                raw_site_name_to_idx[raw_site_name] = s
 
         return site_shapes
 
@@ -3120,8 +3122,6 @@ def parse_mjcf(
 
                 elif child.tag == "geom":
                     geom_name = child.attrib.get("geom", "")
-                    if geom_name:
-                        geom_name = sanitize_name(geom_name)
                     geom_idx = find_shape_by_name(geom_name, want_site=False) if geom_name else -1
                     if geom_idx < 0:
                         warnings.warn(
