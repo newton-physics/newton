@@ -2509,27 +2509,39 @@ def test_collision_sdf_zero_average_normal(test, device):
     # The two sides of a thin slab are inside the normal-query radius.
     # Equal areas and opposite winding cancel their averaged normals.
     points = [(x, y, z) for y in (0.0, -0.0005) for x, z in ((-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0))]
-    mesh_points = wp.array(points, dtype=wp.vec3, device=device)
-    indices = wp.array((0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7), dtype=int, device=device)
-    mesh = wp.Mesh(mesh_points, indices, wp.zeros_like(mesh_points))
-    solver.setup_collider(collider_meshes=[mesh])
-    collider = solver._mpm_model.collider
-    collider.query_max_dist = 1.0
-    collider.material_thickness.zero_()
-    queries = wp.array(((0.2, 0.01, -0.3), (0.2, -0.0105, -0.3), (0.2, -0.0001, -0.3)), dtype=wp.vec3, device=device)
-    distances = wp.empty(3, dtype=float, device=device)
-    state = model.state()
-    wp.launch(
-        _query_collision_distance,
-        dim=3,
-        inputs=[queries, collider, state.body_q, state.body_qd, None],
-        outputs=[distances],
-        device=device,
-    )
-    above, below, inside = distances.numpy()
-    test.assertAlmostEqual(float(above), 0.01, delta=1.0e-5)
-    test.assertAlmostEqual(float(below), 0.01, delta=1.0e-5)
-    test.assertLess(inside, 0.0)
+    queries = [(0.2, 0.01, -0.3), (0.2, -0.0105, -0.3), (0.2, -0.0001, -0.3)]
+    # Rotation leaves roundoff instead of an exactly zero sum.
+    axis = wp.normalize(wp.vec3(1.0, 2.0, 3.0))
+    rotation = np.array(wp.quat_to_matrix(wp.quat_from_axis_angle(axis, 0.37))).reshape(3, 3)
+    for rotated in (False, True):
+        with test.subTest(rotated=rotated):
+            frame = rotation if rotated else np.eye(3)
+            mesh_points = wp.array(np.array(points) @ frame.T, dtype=wp.vec3, device=device)
+            indices = wp.array((0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7), dtype=int, device=device)
+            mesh = wp.Mesh(mesh_points, indices, wp.zeros_like(mesh_points))
+            solver.setup_collider(collider_meshes=[mesh])
+            collider = solver._mpm_model.collider
+            collider.query_max_dist = 1.0
+            collider.material_thickness.zero_()
+            distances = wp.empty(3, dtype=float, device=device)
+            state = model.state()
+            wp.launch(
+                _query_collision_distance,
+                dim=3,
+                inputs=[
+                    wp.array(np.array(queries) @ frame.T, dtype=wp.vec3, device=device),
+                    collider,
+                    state.body_q,
+                    state.body_qd,
+                    None,
+                ],
+                outputs=[distances],
+                device=device,
+            )
+            above, below, inside = distances.numpy()
+            test.assertAlmostEqual(float(above), 0.01, delta=1.0e-5)
+            test.assertAlmostEqual(float(below), 0.01, delta=1.0e-5)
+            test.assertLess(inside, 0.0)
 
 
 def test_strain_modes_symmetric_cell(test, device):

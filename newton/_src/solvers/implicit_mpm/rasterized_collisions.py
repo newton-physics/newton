@@ -28,6 +28,12 @@ _INFINITY = wp.constant(1.0e12)
 _CLOSEST_POINT_NORMAL_EPSILON = wp.constant(1.0e-3)
 """Maximum neighborhood radius for closest point normal calculation"""
 
+_CANCELLED_NORMAL_RATIO = wp.constant(1.0e-4)
+"""Relative length below which an averaged normal is cancelled by opposing faces.
+
+Sharp convex features keep much larger ratios, e.g. about 0.07 for an 8 degree wedge.
+"""
+
 _SDF_SIGN_FROM_AVERAGE_NORMAL = True
 """If true, determine the sign of the sdf from the average normal of the faces around the closest point.
 Otherwise, use Warp's default sign determination strategy (raycasts).
@@ -193,10 +199,12 @@ def get_average_face_normal(
         point: The point to query.
 
     Returns:
-        The average face normal at the point.
+        The average face normal at the point, or zero when opposing faces cancel
+        it to roundoff relative to their weights.
     """
 
     face_normal = wp.vec3(0.0)
+    weight_sq_sum = float(0.0)
 
     vidx = wp.mesh_get(mesh_id).indices
     points = wp.mesh_get(mesh_id).points
@@ -212,7 +220,10 @@ def get_average_face_normal(
 
         _distance_sq, weighted_normal = _triangle_distance_sq_and_pseudonormal(point - V0, V1 - V0, V2 - V0, eps_sq)
         face_normal += weighted_normal
+        weight_sq_sum += wp.length_sq(weighted_normal)
 
+    if wp.length_sq(face_normal) <= _CANCELLED_NORMAL_RATIO * _CANCELLED_NORMAL_RATIO * weight_sq_sum:
+        return wp.vec3(0.0)
     return wp.normalize(face_normal)
 
 
