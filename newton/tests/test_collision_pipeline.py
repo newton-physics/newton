@@ -3,6 +3,7 @@
 
 import gc
 import itertools
+import math
 import unittest
 import warnings
 import weakref
@@ -1985,16 +1986,21 @@ class TestRigidContactNormal(unittest.TestCase):
     pass
 
 
-def _rounded_convex_separations(probes, device):
-    """Collide each probe kind against a box and a convex hull at known gaps; return (probe, target, gap, separation)
-    per contact and the number of cases."""
+def _rounded_convex_separations(probes, placements, device, rigid_gap):
+    """Collide each probe kind against a box and a convex hull at known gaps; return (probe, target, placement, gap,
+    separation) per contact and the list of cases.
+
+    A ``("face", gap)`` placement puts the probe ``gap`` from the box's +y face; an ``("edge", gap)`` placement puts it
+    ``gap`` from the box's +x/+y edge along the diagonal, where the AABBs overlap even beyond the summed contact gap,
+    so the narrow phase decides whether the pair is admitted.
+    """
     with wp.ScopedDevice(device):
         half = (0.05, 0.01, 0.05)
         hull = newton.Mesh.create_box(*half, duplicate_vertices=False, compute_inertia=False)
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        builder.rigid_gap = 0.002
+        builder.rigid_gap = rigid_gap
         cases = []
-        for i, (probe, target, gap) in enumerate(itertools.product(probes, ("box", "hull"), (-2.0e-4, 0.0, 3.0e-4))):
+        for i, (probe, target, (placement, gap)) in enumerate(itertools.product(probes, ("box", "hull"), placements)):
             x = 0.25 * i
             radius = 0.01
             body = builder.add_body(xform=wp.transform(wp.vec3(x, 0.0, 0.0), wp.quat_identity()))
@@ -2002,12 +2008,17 @@ def _rounded_convex_separations(probes, device):
                 builder.add_shape_sphere(body, radius=radius)
             else:
                 builder.add_shape_capsule(body, radius=radius, half_height=0.02)
-            other = builder.add_body(xform=wp.transform(wp.vec3(x, -(radius + gap + half[1]), 0.0), wp.quat_identity()))
+            if placement == "face":
+                offset = wp.vec3(0.0, -(radius + gap + half[1]), 0.0)
+            else:
+                diagonal = (radius + gap) / math.sqrt(2.0)
+                offset = wp.vec3(-(diagonal + half[0]), -(diagonal + half[1]), 0.0)
+            other = builder.add_body(xform=wp.transform(wp.vec3(x, 0.0, 0.0) + offset, wp.quat_identity()))
             if target == "box":
                 builder.add_shape_box(other, hx=half[0], hy=half[1], hz=half[2])
             else:
                 builder.add_shape_convex_hull(other, mesh=hull)
-            cases.append((probe, target, gap))
+            cases.append((probe, target, placement, gap))
         model = builder.finalize()
         state = model.state()
         pipeline = newton.CollisionPipeline(model)
@@ -2037,7 +2048,7 @@ def _rounded_convex_separations(probes, device):
                 - margin1[k]
             )
             rows.append((*cases[min(shape0[k], shape1[k]) // 2], separation))
-        return rows, len(cases)
+        return rows, cases
 
 
 def test_rounded_convex_contact_separation(test, device):
@@ -2045,17 +2056,42 @@ def test_rounded_convex_contact_separation(test, device):
 
     The GJK/MPR path shrinks a sphere or capsule to its core plus a small inflation radius and restores the rest of
     the radius afterwards, so the written separation must equal the geometric surface gap. Each probe sits at a known
-    gap (penetrating, touching, separated within the contact gap) from a box face and from a convex hull of the same
-    box. The tolerance is far below the inflation radius, so restoring the whole radius instead of the remainder fails.
-    A sphere-only model runs the lean post-processor (``post_process_minkowski_only``); a capsule selects the full one.
+    gap from a box face and from a convex hull of the same box: deep enough that its core overlaps the target (MPR),
+    penetrating, touching, and separated within the contact gap. Off a box edge, a probe just inside the summed contact
+    gap must be admitted and one just beyond it rejected. The tolerance is far below the inflation radius, so restoring
+    the whole radius instead of the remainder fails. A sphere-only model runs the lean post-processor
+    (``post_process_minkowski_only``); a capsule selects the full one.
     """
+    rigid_gap = 0.002
+    summed_gap = 2.0 * rigid_gap
+    outside = ("edge", summed_gap + 5.0e-5)
+    placements = (
+        ("face", -1.05e-2),  # 0.6 mm of core overlap for the 10 mm probe radius
+        ("face", -2.0e-4),
+        ("face", 0.0),
+        ("face", 3.0e-4),
+        ("edge", summed_gap - 1.0e-4),
+        outside,
+    )
     for probes in (("sphere",), ("sphere", "capsule")):
         with test.subTest(probes=probes):
-            rows, count = _rounded_convex_separations(probes, device)
-            for probe, target, gap, separation in rows:
-                test.assertAlmostEqual(separation, gap, delta=1.0e-6, msg=f"{probe} vs {target} at gap {gap}")
-            seen = {(probe, target, gap) for probe, target, gap, _ in rows}
-            test.assertEqual(len(seen), count, "every probe must produce a contact")
+            rows, cases = _rounded_convex_separations(probes, placements, device, rigid_gap)
+            for probe, target, placement, gap, separation in rows:
+                msg = f"{probe} vs {target} {placement} at gap {gap}"
+                test.assertNotEqual((placement, gap), outside, f"{msg}: admitted beyond the summed contact gap")
+                # GJK/MPR's own error reaches a few um (a sphere against the hull's edge, deep MPR): a tenth of
+                # the inflation radius still separates it from the radius-restore error
+                test.assertAlmostEqual(separation, gap, delta=1.0e-5, msg=msg)
+            seen = {row[:4] for row in rows}
+            test.assertEqual(seen, {case for case in cases if case[2:] != outside}, "every admitted probe must contact")
+
+
+add_function_test(
+    TestCollisionPipeline,
+    "test_rounded_convex_contact_separation",
+    test_rounded_convex_contact_separation,
+    devices=get_test_devices(),
+)
 
 
 def test_rigid_contact_normal_sphere_sphere(test, device, broad_phase: str):
@@ -7077,14 +7113,6 @@ for _expert_test in (
     test_expert_narrow_phase_empty_voxel_resolution,
 ):
     add_function_test(TestCollisionPipeline, _expert_test.__name__, _expert_test, devices=get_test_devices())
-
-
-add_function_test(
-    TestCollisionPipeline,
-    "test_rounded_convex_contact_separation",
-    test_rounded_convex_contact_separation,
-    devices=get_test_devices(),
-)
 
 
 if __name__ == "__main__":
