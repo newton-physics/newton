@@ -1310,6 +1310,35 @@ def test_multiworld_sparse_gs_identical_worlds(test, device):
             np.testing.assert_allclose(q[starts[0] : starts[1]], q[starts[1] : starts[2]], atol=1.0e-6)
 
 
+def test_small_iteration_budget_holds_ground(test, device):
+    """Run every requested iteration, including budgets below one residual-check batch."""
+    spacing = 0.025
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    SolverImplicitMPM.register_custom_attributes(builder)
+    builder.add_particle_grid(
+        pos=wp.vec3(0.0, 0.0, 0.5 * spacing),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.0),
+        dim_x=4,
+        dim_y=4,
+        dim_z=6,
+        cell_x=spacing,
+        cell_y=spacing,
+        cell_z=spacing,
+        mass=spacing**3 * 1000.0,
+        jitter=0.0,
+        radius_mean=0.5 * spacing,
+        custom_attributes={"mpm:young_modulus": 1.0e5, "mpm:friction": 0.5},
+    )
+    builder.add_ground_plane()
+    model = builder.finalize(device=device)
+    config = SolverImplicitMPM.Config(
+        grid_type="dense", voxel_size=2.0 * spacing, solver="jacobi", max_iterations=10, tolerance=0.0
+    )
+    _, state = _step_mpm(model, config, step_count=20, dt=1.0 / 120.0)
+    test.assertGreater(state.particle_q.numpy()[:, 2].min(), -0.5 * spacing)
+
+
 def test_unbinned_particles_keep_state(test, device):
     """Keep the state of particles without a grid cell: frozen on a rebuildable grid, or outside a fixed grid."""
     builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -2965,6 +2994,13 @@ add_function_test(
     "test_multiworld_sparse_gimp_matches_independent",
     test_multiworld_sparse_gimp_matches_independent,
     devices=basic_cuda_devices,
+)
+
+add_function_test(
+    TestImplicitMPM,
+    "test_small_iteration_budget_holds_ground",
+    test_small_iteration_budget_holds_ground,
+    devices=basic_devices,
 )
 
 add_function_test(

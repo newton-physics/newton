@@ -1777,7 +1777,8 @@ def _run_solver_loop(
             else l2_tolerance_scale.numpy()
         )
 
-        for batch in range(max_iterations // solve_granularity):
+        # Round up like the graph path, so budgets below one batch still iterate.
+        for batch in range((max_iterations + solve_granularity - 1) // solve_granularity):
             for _k in range(solve_granularity):
                 contact_solver.solve()
                 rheology_solver.solve()

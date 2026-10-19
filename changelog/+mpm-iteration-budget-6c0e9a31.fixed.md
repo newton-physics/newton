@@ -1,0 +1,1 @@
+Fix `SolverImplicitMPM` running fewer rheology iterations than `max_iterations` without CUDA graphs, for example on CPU: the batch count was rounded down, so budgets below one 25- or 50-iteration batch ran no iterations and contacts were ignored. It now rounds up, like the CUDA graph path.
