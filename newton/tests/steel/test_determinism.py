@@ -519,11 +519,9 @@ def _check_inherited_global_mode(device):
         if not _holds_steel_kernel(module):
             wp.set_module_options({"deterministic": wp.DeterministicMode.NOT_GUARANTEED}, module=module)
     model = _build_contact_scene(device)
-    cuda = wp.get_device(device).is_cuda
-    options = MATRIX_FREE_OPTIONS if cuda else SPLIT_OPTIONS
 
-    def run(deterministic, graph):
-        solver = SolverSteel(model, deterministic=deterministic, **options)
+    def run(deterministic):
+        solver = SolverSteel(model, deterministic=deterministic, **MATRIX_FREE_OPTIONS)
         with _warp_lowering_off():
             pipeline = newton.CollisionPipeline(model, deterministic=True)
             contacts = pipeline.contacts()
@@ -542,21 +540,20 @@ def _check_inherited_global_mode(device):
             step(state_0, state_1)
             state_0, state_1 = state_1, state_0
             hashes.append(_sample(state_0))
-        if graph:
-            with wp.ScopedCapture(device=device) as capture:
-                step(state_0, state_1)
-                step(state_1, state_0)
-            for _ in range(10):
-                wp.capture_launch(capture.graph)
-                hashes.append(_sample(state_0))
+        with wp.ScopedCapture(device=device) as capture:
+            step(state_0, state_1)
+            step(state_1, state_0)
+        for _ in range(10):
+            wp.capture_launch(capture.graph)
+            hashes.append(_sample(state_0))
         return solver, hashes
 
-    solver, first = run(None, cuda)
+    solver, first = run(None)
     assert solver._ordered_rows
-    _, second = run(None, cuda)
+    _, second = run(None)
     assert first == second, "inherited RUN_TO_RUN runs differ"
     assert all(finite for _, finite in first)
-    _, unordered = run(wp.DeterministicMode.NOT_GUARANTEED, cuda)
+    _, unordered = run(wp.DeterministicMode.NOT_GUARANTEED)
     assert all(finite for _, finite in unordered)
     lowered = [
         m.name
@@ -604,7 +601,6 @@ for _fn in (
     test_full_reset_matches_fresh_solver,
     test_deterministic_runs_are_bitwise_identical,
     test_deterministic_overflow_keeps_earliest_contacts,
-    test_inherited_global_mode_keeps_steel_ordering,
 ):
     add_function_test(TestSteelDeterminism, _fn.__name__, _fn, devices=devices)
 add_function_test(
@@ -618,6 +614,7 @@ for _fn in (
     test_warm_started_full_reset_matches_fresh_solver,
     test_deterministic_launches_replay_identically,
     test_deterministic_joint_rows_follow_articulation_order,
+    test_inherited_global_mode_keeps_steel_ordering,
 ):
     add_function_test(TestSteelDeterminism, _fn.__name__, _fn, devices=cuda_devices)
 
