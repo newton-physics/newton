@@ -921,7 +921,14 @@ class _SteelTreePlan:
 
 _DENSE_META_ROW_TYPE_BITS = 3
 _DENSE_META_ROW_TYPE_MASK = (1 << _DENSE_META_ROW_TYPE_BITS) - 1
-_DENSE_META_MAX_PARENT = ((2**31 - 1) >> _DENSE_META_ROW_TYPE_BITS) - 1
+
+
+def _dense_meta_type_bits(joint_friction: bool) -> int:
+    """Return the row-type width of the matrix-free sweep's packed row metadata; joint-friction rows need a fourth bit."""
+    return _DENSE_META_ROW_TYPE_BITS + int(joint_friction)
+
+
+_DENSE_META_MAX_PARENT = ((2**31 - 1) >> _dense_meta_type_bits(False)) - 1
 
 
 def _use_resident_mfgs_metadata(
@@ -2090,8 +2097,7 @@ class SolverSteel(SolverBase):
         self._requested_dense_max_constraints = int(articulation_constraint_max)
         if self._requested_dense_max_constraints < 1:
             raise ValueError("articulation_constraint_max must be >= 1")
-        # Joint-friction rows widen the packed row-type field of the matrix-free sweep by one bit.
-        max_parent = ((2**31 - 1) >> (_DENSE_META_ROW_TYPE_BITS + int(self._enable_joint_friction))) - 1
+        max_parent = ((2**31 - 1) >> _dense_meta_type_bits(self._enable_joint_friction)) - 1
         if self._requested_dense_max_constraints - 1 > max_parent:
             raise ValueError(f"articulation_constraint_max must be at most {max_parent + 1}")
         self._free_body_constraint_max = int(free_body_constraint_max)
@@ -2993,8 +2999,8 @@ class SolverSteel(SolverBase):
                 stacklevel=3,
             )
 
-    def _persistent_dense_rows_per_world(self, model) -> np.ndarray:
-        """Count the dense rows every step allocates regardless of the state, per world.
+    def _persistent_dense_rows_per_world(self, model) -> tuple[np.ndarray, np.ndarray]:
+        """Count the joint-limit and joint-friction dense rows every step allocates regardless of the state, per world.
 
         With ``enable_joint_limits`` and ``joint_limit_activation_gap=inf`` each finite
         position limit of a responding PRISMATIC, REVOLUTE or D6 DOF is a row in every step,
@@ -3002,48 +3008,60 @@ class SolverSteel(SolverBase):
         default ``+/-1e10``, count like any other finite bound. With ``enable_joint_friction``
         each responding, non-kinematic DOF with positive friction is one row in every step.
         """
-        rows = np.zeros(max(self._world_count, 1), dtype=np.int64)
-        per_dof = np.zeros(model.joint_dof_count, dtype=np.int64)
-        limit_sizes = frozenset()
+        limit_rows = np.zeros(max(self._world_count, 1), dtype=np.int64)
+        friction_rows = np.zeros_like(limit_rows)
         if self._enable_joint_limits and np.isinf(self._joint_limit_activation_gap) and self._joint_limit_sizes:
             limit_q_index = self._joint_limit_q_index.numpy()
             lower = model.joint_limit_lower.numpy()
             upper = model.joint_limit_upper.numpy()
-            per_dof += np.where(limit_q_index >= 0, np.isfinite(lower).astype(np.int64) + np.isfinite(upper), 0)
-            limit_sizes = self._joint_limit_sizes
+            per_dof = np.where(limit_q_index >= 0, np.isfinite(lower).astype(np.int64) + np.isfinite(upper), 0)
+            self._add_articulation_rows(limit_rows, per_dof, self._joint_limit_sizes)
         if self._joint_friction_warp_kernels:
             friction = model.joint_friction.numpy()
             with np.errstate(invalid="ignore"):
-                friction_rows = (friction > 0.0) & np.isfinite(friction) & (self._friction_dof_supported.numpy() != 0)
-            per_dof += friction_rows & (self._kinematic_dof_mask_host == 0)
-        sizes = limit_sizes | frozenset(self._joint_friction_warp_kernels)
-        if not sizes:
-            return rows
+                per_dof = (friction > 0.0) & np.isfinite(friction) & (self._friction_dof_supported.numpy() != 0)
+            per_dof &= self._kinematic_dof_mask_host == 0
+            self._add_articulation_rows(friction_rows, per_dof.astype(np.int64), self._joint_friction_warp_kernels)
+        return limit_rows, friction_rows
+
+    def _add_articulation_rows(self, rows: np.ndarray, per_dof: np.ndarray, sizes) -> None:
+        """Add each articulation's sum of ``per_dof`` over the size groups ``sizes`` to its world's entry of ``rows``."""
         dof_start = self._articulation_dof_start.numpy()
         art_to_world = self._art_to_world.numpy()
         for size in sizes:
             for art in self._group_to_art[size].numpy():
                 start = int(dof_start[art])
                 rows[int(art_to_world[art])] += int(np.sum(per_dof[start : start + size]))
-        return rows
 
     def _warn_persistent_row_capacity(self, model) -> None:
         """Warn once at construction if every step is certain to exceed ``articulation_constraint_max``."""
-        rows = self._persistent_dense_rows_per_world(model)
+        limit_rows, friction_rows = self._persistent_dense_rows_per_world(model)
+        rows = limit_rows + friction_rows
         capacity = self._requested_dense_max_constraints
         worlds = np.flatnonzero(rows > capacity)
-        if worlds.size:
-            warnings.warn(
-                f"SolverSteel: worlds {worlds[:16].tolist()} need at least {int(rows.max())} dense rows in "
-                f"every step for the finite joint position limits (two per DOF limited on both sides; "
-                f"the builder's default +/-1e10 limits are finite) and positive joint friction (one per DOF) "
-                f"alone, more than articulation_constraint_max={capacity}. Rows beyond the capacity are dropped "
-                "and flagged in constraint_overflow. Raise articulation_constraint_max, set a finite "
-                "joint_limit_activation_gap so that only limits near the joint position create rows, or set "
-                "unbounded limits to +/-inf.",
-                NewtonWarning,
-                stacklevel=3,
-            )
+        if not worlds.size:
+            return
+        causes, details, remedies = [], [], ["Raise articulation_constraint_max"]
+        if np.any(limit_rows[worlds]):
+            causes.append("the finite joint position limits")
+            details.append("two per DOF limited on both sides; the builder's default +/-1e10 limits are finite")
+            remedies += [
+                "set a finite joint_limit_activation_gap so that only limits near the joint position create rows",
+                "set unbounded limits to +/-inf",
+            ]
+        if np.any(friction_rows[worlds]):
+            causes.append("positive joint friction")
+            details.append("one per DOF")
+            remedies.append("set joint_friction to zero on the DOFs that need no friction")
+        remedy = remedies[0] if len(remedies) == 1 else ", ".join(remedies[:-1]) + ", or " + remedies[-1]
+        warnings.warn(
+            f"SolverSteel: worlds {worlds[:16].tolist()} need at least {int(rows.max())} dense rows in "
+            f"every step for {' and '.join(causes)} alone ({'; '.join(details)}), more than "
+            f"articulation_constraint_max={capacity}. Rows beyond the capacity are dropped and flagged in "
+            f"constraint_overflow. {remedy}.",
+            NewtonWarning,
+            stacklevel=3,
+        )
 
     def _build_mimic_plan(self, model) -> None:
         """Build the static lookup tables of the mimic rows.
@@ -13543,8 +13561,7 @@ def _get_pgs_solve_mf_gs_kernel(
     M_MF = free_body_constraint_max
     D = max_world_dofs
     ELEMS_PER_LANE = (D + 31) // 32
-    # Joint-friction rows (type 8) need a fourth row-type bit.
-    type_bits = _DENSE_META_ROW_TYPE_BITS + int(joint_friction)
+    type_bits = _dense_meta_type_bits(joint_friction)
     type_mask = (1 << type_bits) - 1
 
     def lanes(template: str) -> str:

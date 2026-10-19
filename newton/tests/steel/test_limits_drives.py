@@ -1164,7 +1164,7 @@ def test_drive_rows_precede_limit_rows_and_count_against_capacity(test, device):
 
     with test.assertWarnsRegex(
         newton.exceptions.NewtonWarning, r"need at least 6 dense rows .* articulation_constraint_max=2"
-    ):
+    ) as caught:
         small = SolverSteel(
             model,
             solve_mode="matrix_free",
@@ -1173,6 +1173,7 @@ def test_drive_rows_precede_limit_rows_and_count_against_capacity(test, device):
             articulation_constraint_max=2,
             warn_constraint_overflow=False,
         )
+    test.assertNotIn("friction", str(caught.warning))
     small.step(model.state(), model.state(), model.control(), None, DT)
     np.testing.assert_array_equal(small._constraint_count.numpy(), [2, 2])
     test.assertTrue(np.all(small._row_type.numpy()[:, :2] == PGS_CONSTRAINT_TYPE_JOINT_TARGET))
@@ -1867,8 +1868,21 @@ class TestSteelJointFriction(unittest.TestCase):
     def test_dense_row_overflow_is_reported(self):
         """Warn at construction when friction rows exceed the capacity in every step, and flag the worlds."""
         model = _two_link_model(length=0.4, mass=2.0, friction=(FRICTION, FRICTION))
-        with self.assertWarnsRegex(newton.exceptions.NewtonWarning, r"need at least 2 dense rows .* friction"):
+        with self.assertWarnsRegex(
+            newton.exceptions.NewtonWarning, r"need at least 2 dense rows .* friction"
+        ) as caught:
             solver = _friction_solver(model, articulation_constraint_max=1, warn_constraint_overflow=False)
+        self.assertNotIn("limit", str(caught.warning))
+        # Limit and friction rows together name both causes and both remedies.
+        limited = _single_dof_model("revolute", limit=(-1.0, 1.0))
+        with self.assertWarnsRegex(
+            newton.exceptions.NewtonWarning,
+            r"3 dense rows .* position limits and positive joint friction .* joint_limit_activation_gap"
+            r".* set joint_friction to zero",
+        ):
+            _friction_solver(
+                limited, enable_joint_limits=True, articulation_constraint_max=2, warn_constraint_overflow=False
+            )
         states, control = [model.state(), model.state()], model.control()
         _advance_friction(solver, states, control, 1)
         self.assertTrue(bool(solver.constraint_overflow.numpy()[0]))
@@ -1919,16 +1933,14 @@ class TestSteelJointFriction(unittest.TestCase):
                 _, slide = _advance_friction(solver, states, control, 10)
                 self.assertAlmostEqual(float(slide[-1]), expected, delta=1.0e-5)
 
-    def test_specialized_routes_are_not_selected(self):
-        """Keep enabled friction on the generic matrix-free route instead of row-limited fast paths."""
+    def test_local_internal_fast_path_is_not_selected(self):
+        """Keep enabled friction off the articulation-local solves.
+
+        The selection tests of the paired factor-coordinate, sparse-diagonal and sparse-factor solves cover the others.
+        """
         model = _arm_and_box_model()
-        disabled = _friction_solver(model, enable_joint_friction=False)
-        enabled = _friction_solver(model)
-        self.assertTrue(disabled._local_internal_fast_path)
-        for name in ("_local_internal_fast_path", "_paired_factor_coordinates", "_sparse_diagonal_contact_solve"):
-            self.assertFalse(getattr(enabled, name), name)
-        self.assertFalse(enabled._fused_diagonal_joint_limit_sizes)
-        self.assertIsNone(enabled._sparse_mass_matrix_size)
+        self.assertTrue(_friction_solver(model, enable_joint_friction=False)._local_internal_fast_path)
+        self.assertFalse(_friction_solver(model)._local_internal_fast_path)
 
     def test_rejects_unsupported_configurations(self):
         """Raise for joint types, values and solver options the friction rows do not support."""
