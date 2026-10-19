@@ -87,7 +87,7 @@ class Example:
             a1.joint_target_q[dof_id] = a1.joint_q[dof_id]
 
         builder = newton.ModelBuilder()
-        builder.replicate(a1, self.world_count, spacing=(2.0, 2.0, 0.0))
+        builder.replicate(a1, self.world_count)
 
         base_targets = np.asarray(builder.joint_target_q, dtype=np.float32)
         amplitudes = np.zeros_like(base_targets)
@@ -136,10 +136,12 @@ class Example:
 
     def capture(self):
         """Capture one simulation step as a Warp graph when supported."""
-        self.graph = None
-        with wp.ScopedCapture() as capture:
-            self.simulate()
-        self.graph = capture.graph
+        if wp.get_device().is_cuda and not wp.config.verify_cuda:
+            with wp.ScopedCapture() as capture:
+                self.simulate()
+            self.graph = capture.graph
+        else:
+            self.graph = None
 
     def simulate(self):
         """Advance the A1 simulation by one frame using fixed substeps."""
@@ -184,7 +186,7 @@ class Example:
         self.viewer.end_frame()
 
     def test_final(self):
-        """Verify the selected A1 model remains finite while holding its pose."""
+        """Verify the selected A1 model remains finite and its requested motion runs."""
         joint_q = self.state_0.joint_q.numpy()
         joint_qd = self.state_0.joint_qd.numpy()
         if not np.isfinite(joint_q).all() or not np.isfinite(joint_qd).all():

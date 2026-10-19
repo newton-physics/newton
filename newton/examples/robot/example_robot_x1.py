@@ -82,11 +82,14 @@ class Example:
         )
         builder.add_ground_plane()
 
-        joint_indices = {
-            label.rsplit("/", 1)[-1]: index
-            for index, label in enumerate(builder.joint_label)
-            if builder.joint_qd_start[index] < builder.joint_dof_count
-        }
+        joint_indices = {}
+        for index, label in enumerate(builder.joint_label):
+            if sum(builder.joint_dof_dim[index]) == 0:
+                continue
+            short_label = label.rsplit("/", 1)[-1]
+            if short_label in joint_indices:
+                raise ValueError(f"X1 joint label is not unique: {short_label}")
+            joint_indices[short_label] = index
         joint_dofs = {label: builder.joint_qd_start[index] for label, index in joint_indices.items()}
         joint_coordinates = {label: builder.joint_q_start[index] for label, index in joint_indices.items()}
         wheel_dofs = [joint_dofs["lun_r"], joint_dofs["lun_l"]]
@@ -147,8 +150,6 @@ class Example:
         self.initial_base_transform = self.state_0.body_q.numpy()[self.base_body].copy()
         qx, qy, qz, qw = self.initial_base_transform[3:]
         self.initial_heading = np.array([1.0 - 2.0 * (qy * qy + qz * qz), 2.0 * (qx * qy + qw * qz)], dtype=np.float32)
-        self.collision_pipeline = newton.CollisionPipeline(self.model)
-        self.contacts = self.collision_pipeline.contacts()
         self.solver = newton.solvers.SolverMuJoCo(self.model)
 
         self.viewer.set_model(self.model)
@@ -183,9 +184,8 @@ class Example:
                 device=self.device,
             )
             wp.launch(advance_x1_motion_time, dim=1, inputs=[self.motion_time, self.sim_dt], device=self.device)
-            self.collision_pipeline.collide(self.state_0, self.contacts)
             self.viewer.apply_forces(self.state_0)
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            self.solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)
             self.state_0, self.state_1 = self.state_1, self.state_0
 
     def step(self):
