@@ -104,7 +104,10 @@ accumulated contact, attachment and non-rod joint Hessian is therefore weighted
 by 2 in the step: on shared terms this majorizes the omitted cross terms, and on
 one-sided terms it under-relaxes friction and contact activation, which enter
 the line search only as this quadratic model. Gradients are not weighted, so
-the force balance at convergence is unchanged; the weight only shortens steps.
+the force balance at convergence is unchanged. The weight changes only the
+steps taken on the way: it lowers each step's predicted decrease, but it can
+change the step's direction as well as its length, so this damping is a
+heuristic.
 
 The option allocates its arrays once, so a step captured in a CUDA graph stays
 valid after :meth:`~newton.solvers.SolverVBD.notify_model_changed` changes rod

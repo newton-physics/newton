@@ -52,7 +52,8 @@ majorizes the omitted cross terms; with weight 1, stiff contacts between rods ov
 (static, kinematic or colour-solved partners, particles) the weight under-relaxes the step: their friction and active
 set enter the line search only as this quadratic model, and with weight 1 rods resting on frictional contacts keep
 two to three times more residual motion. The gradient is not weighted, so the force balance at convergence is
-unchanged; the weight only shortens steps."""
+unchanged. The weight changes only the steps: a larger Hessian lowers the predicted decrease ``g^T H^-1 g``, but
+it can change a step's direction as well as its length, so this damping is a heuristic."""
 
 
 @wp.func
