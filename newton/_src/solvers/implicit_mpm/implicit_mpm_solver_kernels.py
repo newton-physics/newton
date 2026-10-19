@@ -413,9 +413,7 @@ def particle_receives_strain_update(
 def particle_is_binned(i: int, particle_cells: wp.array2d[int]):
     """Whether particle ``i`` lies in at least one cell."""
     for k in range(particle_cells.shape[1]):
-        # Center binning leaves NULL_ELEMENT_INDEX; unused GIMP overlap slots hold NULL_NODE_INDEX.
-        cell = particle_cells[i, k]
-        if cell != fem.NULL_ELEMENT_INDEX and cell != fem.NULL_NODE_INDEX:
+        if particle_cells[i, k] != fem.NULL_ELEMENT_INDEX:
             return True
     return False
 

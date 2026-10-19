@@ -3147,7 +3147,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 tot_weight += weight
 
             for k in range(8):
-                if cell_index[p, k] != fem.NULL_NODE_INDEX:
+                if cell_index[p, k] != fem.NULL_ELEMENT_INDEX:
                     cell_fractions[p, k] /= tot_weight
 
         device = positions.device
@@ -3156,7 +3156,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         cell_coords = fem.borrow_temporary(self.temporary_store, shape=(positions.shape[0], 8), dtype=fem.Coords)
         cell_fractions = fem.borrow_temporary(self.temporary_store, shape=(positions.shape[0], 8), dtype=float)
 
-        cell_indices.fill_(fem.NULL_NODE_INDEX)
+        cell_indices.fill_(fem.NULL_ELEMENT_INDEX)
 
         wp.launch(
             particle_locations_gimp,
