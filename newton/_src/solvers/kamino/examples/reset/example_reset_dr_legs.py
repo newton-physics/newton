@@ -13,6 +13,7 @@
 ###########################################################################
 
 import argparse
+from pathlib import Path
 
 import numpy as np
 import warp as wp
@@ -21,6 +22,7 @@ from scipy.spatial.transform import Rotation  # noqa: TID253
 import newton
 import newton.examples
 from newton._src.solvers.kamino._src.utils.sim.viewer_recording import enable_recording
+from newton._src.solvers.kamino.examples import get_examples_output_path
 
 ###
 # Kernels
@@ -96,15 +98,24 @@ class Example:
         self.sim_steps = 0
         self.sim_reset_mode = 0
 
-        video_output_filename = getattr(args, "video_path", None)
-        self.record_video = enable_recording(
-            viewer=self.viewer,
-            record_video=args.record_video if args else False,
-            start_clip=True,
-            output_path=video_output_filename if video_output_filename is not None else "recording.mp4",
-            max_frames=getattr(args, "max_video_frames", 1000),
-            fps=self.fps,
-        )
+        self.record_video = False
+        if getattr(args, "record_video", False):
+            user_video_path = getattr(args, "video_path", None)
+            if user_video_path is not None:
+                video_path = Path(user_video_path)
+            else:
+                video_path = Path(get_examples_output_path()) / "reset_dr_legs" / "reset_dr_legs.mp4"
+            video_path.parent.mkdir(parents=True, exist_ok=True)
+            self.record_video = enable_recording(
+                viewer=self.viewer,
+                record_video=True,
+                default_video_folder=str(video_path.parent / f"{video_path.stem}_frames"),
+                start_clip=True,
+                output_path=str(video_path),
+                max_frames=getattr(args, "video_num_frames", None),
+                fps=self.fps,
+                keep_frames=getattr(args, "keep_frames", False),
+            )
 
         # Create a single-robot model builder and register the Kamino-specific custom attributes
         robot_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -356,19 +367,25 @@ class Example:
             "--record-video",
             action=argparse.BooleanOptionalAction,
             default=False,
-            help="Record a video of the viewer, up to 1000 frames.",
+            help="Record a video of the viewer. By default, records until the viewer is closed; use --video-num-frames to cap the recording length.",
         )
         parser.add_argument(
             "--video-path",
             type=str,
             default=None,
-            help="Output video path (defaults to 'recording.mp4').",
+            help="Output path for the video file. Defaults to <examples_output>/reset_dr_legs/reset_dr_legs.mp4",
         )
         parser.add_argument(
-            "--max-video-frames",
+            "--keep-frames",
+            action=argparse.BooleanOptionalAction,
+            default=False,
+            help="If set, keep the per-frame PNGs captured during recording after the video file is generated.",
+        )
+        parser.add_argument(
+            "--video-num-frames",
             type=int,
-            default=1000,
-            help="Maximum number of frames recorded for the video (defaults to 1000).",
+            default=None,
+            help="Stop recording and write the video after this many frames. If None (default), recording stops when the viewer closes (manually in windowed mode, or after --num-frames in headless mode).",
         )
         parser.set_defaults(world_count=1)
         return parser
