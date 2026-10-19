@@ -175,7 +175,7 @@ class TestDeformableFamilyViews(unittest.TestCase):
         # Enum members name the same element kind as their lowercase names.
         self.assertEqual(view.ranges(newton.Model.AttributeFrequency.BODY), [(0, 3), (3, 6)])
         self.assertIs(view.starts(newton.Model.AttributeFrequency.JOINT), view.starts("joint"))
-        self.assertEqual(view.elements_per_deformable_object(newton.Model.AttributeFrequency.BODY), 3)
+        self.assertEqual(view.element_count(newton.Model.AttributeFrequency.BODY), 3)
         self.assertEqual(view.deformable_object_ranges(), [(0, 1), (1, 2)])
         np.testing.assert_array_equal(view.worlds_device.numpy(), [0, 1])
         self.assertEqual(view.get_body_transforms(model).shape, (2, 3))
@@ -293,8 +293,8 @@ class TestDeformableSelection(unittest.TestCase):
         self.assertEqual(cables.worlds[deformable_object_index], 1)
         self.assertEqual(cables.ranges("body")[deformable_object_index], (6, 9))
         self.assertEqual(cables.ranges("joint")[deformable_object_index], (6, 9))
-        self.assertEqual(cables.bodies_per_deformable_object, 3)
-        self.assertEqual(cables.elements_per_deformable_object("joint"), 3)
+        self.assertEqual(cables.body_count, 3)
+        self.assertEqual(cables.element_count("joint"), 3)
         self.assertEqual(cables.labels[3], "cable_2")
 
         world_id = 1
@@ -306,15 +306,15 @@ class TestDeformableSelection(unittest.TestCase):
         self.assertEqual(cloths.ranges("particle"), [(0, 4), (4, 8), (12, 16)])
         self.assertEqual(cloths.ranges("triangle"), [(0, 2), (2, 4), (8, 10)])
         self.assertEqual(cloths.ranges("edge"), [(0, 5), (5, 10), (16, 21)])
-        self.assertEqual(cloths.particles_per_deformable_object, 4)
+        self.assertEqual(cloths.particle_count, 4)
         volumes = DeformableVolumeView(model, "volume")
         self.assertEqual(volumes.deformable_object_ranges(), [(0, 0), (0, 1), (1, 1)])
         self.assertEqual(volumes.ranges("particle"), [(8, 12)])
         self.assertEqual(volumes.ranges("tetrahedron"), [(0, 1)])
-        self.assertEqual(volumes.particles_per_deformable_object, 4)
+        self.assertEqual(volumes.particle_count, 4)
 
     def test_selection_errors(self):
-        """No match raises KeyError; ragged element counts and bad families raise ValueError."""
+        """Report unequal counts without raising, but reject batched access and unavailable kinds."""
         builder = newton.ModelBuilder()
         _add_test_cloth(builder, label="/World/ClothA")  # 4 particles
         _add_test_cloth(
@@ -336,8 +336,9 @@ class TestDeformableSelection(unittest.TestCase):
         view = DeformableSurfaceView(model, "/World/Cloth*")
         self.assertEqual([end - start for start, end in view.ranges("particle")], [4, 5])
         np.testing.assert_array_equal(view.starts("particle").numpy(), [0, 4])
-        with self.assertRaisesRegex(ValueError, "Varying particle counts.*ranges"):
-            view.elements_per_deformable_object("particle")
+        self.assertIsNone(view.particle_count)
+        self.assertIsNone(view.element_count("particle"))
+        self.assertIsNone(view.element_count(newton.Model.AttributeFrequency.PARTICLE))
         with self.assertRaisesRegex(ValueError, "Varying particle counts.*ranges"):
             view.get_particle_positions(model.state())
         for getter in (view.get_particle_inv_masses, view.get_particle_flags):
@@ -381,7 +382,7 @@ class TestDeformableBuilderObjects(unittest.TestCase):
                 self.assertEqual((view.count, view.labels, view.worlds), (1, [label], [-1]))
                 for kind, (start, end) in ranges.items():
                     self.assertEqual(view.ranges(kind), [(start, end)])
-                    self.assertEqual(view.elements_per_deformable_object(kind), end - start)
+                    self.assertEqual(view.element_count(kind), end - start)
                 if view_type is DeformableCurveView:
                     self.assertEqual(model.joint_type.numpy()[ranges["joint"][0]], newton.JointType.FREE)
 
@@ -468,14 +469,14 @@ class TestDeformableBuilderObjects(unittest.TestCase):
         state = model.state()
 
         soft = DeformableVolumeView(model, "soft_proto")
-        self.assertEqual((soft.count, soft.worlds, soft.particles_per_deformable_object), (2, [0, 1], 4))
+        self.assertEqual((soft.count, soft.worlds, soft.particle_count), (2, [0, 1], 4))
         (r0, r1) = soft.ranges("particle")
         self.assertEqual(r1[0] - r0[0], 4)
         self.assertNotEqual(r0, r1)
 
         cable = DeformableCurveView(model, "cable_proto")
-        self.assertEqual((cable.count, cable.worlds, cable.bodies_per_deformable_object), (2, [0, 1], 2))
-        self.assertEqual(cable.elements_per_deformable_object("joint"), 2)
+        self.assertEqual((cable.count, cable.worlds, cable.body_count), (2, [0, 1], 2))
+        self.assertEqual(cable.element_count("joint"), 2)
 
         # State access round-trips through the offset ranges.
         positions = soft.get_particle_positions(state)
@@ -574,6 +575,9 @@ class TestDeformableBuilderObjects(unittest.TestCase):
         self.assertEqual(view.worlds, [0, 1])
         self.assertEqual(view.deformable_object_ranges(), [(0, 1), (1, 2), (2, 2)])
         self.assertEqual(view.ranges("body"), [(0, 1), (1, 3)])
+        self.assertIsNone(view.body_count)
+        self.assertIsNone(view.element_count("body"))
+        self.assertIsNone(view.element_count(newton.Model.AttributeFrequency.BODY))
         with self.assertRaises(ValueError):
             view.get_body_transforms(model.state())
 
@@ -798,7 +802,7 @@ class TestDeformableAndArticulationViews(unittest.TestCase):
                         np.testing.assert_array_equal(view.worlds_device.numpy(), worlds)
                         np.testing.assert_array_equal(view.deformable_object_boundaries.numpy(), boundaries)
                         array = getattr(state, name)
-                        shape = (view.count, view.elements_per_deformable_object(kind), *expected[name].shape[1:])
+                        shape = (view.count, view.element_count(kind), *expected[name].shape[1:])
                         values = wp.array(np.full(shape, 2.0, dtype=np.float32), dtype=array.dtype, device=device)
                         mask = wp.array([world == 2 for world in worlds], dtype=bool, device=device)
                         setter(state, values, mask=mask)
@@ -1661,16 +1665,16 @@ class TestUSDDeformableObjects(unittest.TestCase):
 
         cable = DeformableCurveView(model, "/World/CableA/sim")
         self.assertEqual(cable.count, 1)
-        self.assertEqual(cable.bodies_per_deformable_object, 3)
-        self.assertEqual(cable.elements_per_deformable_object("joint"), 3)  # free root and two rod joints
+        self.assertEqual(cable.body_count, 3)
+        self.assertEqual(cable.element_count("joint"), 3)  # free root and two rod joints
         cloth = DeformableSurfaceView(model, "/World/Cloth/sim")
-        self.assertEqual(cloth.particles_per_deformable_object, 4)
+        self.assertEqual(cloth.particle_count, 4)
         self.assertEqual(cloth.ranges("triangle"), [(0, 2)])
         soft = DeformableVolumeView(model, "/World/Soft*/sim")
         self.assertEqual(soft.count, 2)
         soft_ranges = soft.ranges("particle")
         self.assertNotEqual(soft_ranges[0], soft_ranges[1])
-        self.assertEqual(soft.elements_per_deformable_object("tetrahedron"), 1)
+        self.assertEqual(soft.element_count("tetrahedron"), 1)
         # No begin_world -> global deformable objects.
         self.assertEqual(cable.worlds, [-1])
         with self.assertRaises(KeyError):
@@ -1927,11 +1931,11 @@ class TestUSDDeformableObjects(unittest.TestCase):
                         self.assertEqual(model.curve_joint_end.numpy().tolist(), [end for _, end in joint_ranges])
 
                         view = DeformableCurveView(model, graph_label)
-                        self.assertEqual((view.count, view.bodies_per_deformable_object), (copies, 5))
+                        self.assertEqual((view.count, view.body_count), (copies, 5))
                         self.assertEqual(view.worlds, worlds)
                         self.assertEqual(view.ranges("body"), body_ranges)
                         self.assertEqual(view.ranges("joint"), joint_ranges)
-                        self.assertEqual(view.elements_per_deformable_object("joint"), 5)
+                        self.assertEqual(view.element_count("joint"), 5)
                         self.assertEqual(view.get_body_transforms(model).shape, (copies, 5))
                         joint_types = model.joint_type.numpy().tolist()
                         for start, end in joint_ranges:

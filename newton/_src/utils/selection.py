@@ -2860,16 +2860,16 @@ class _DeformableViewBase:
             for i in range(self.world_count)
         ]
 
-    def elements_per_deformable_object(
+    def element_count(
         self,
         kind: AttributeFrequency | Literal["body", "joint", "particle", "triangle", "edge", "tetrahedron"],
-    ) -> int:
-        """Elements of ``kind`` in each selected deformable object (homogeneous across the selection).
+    ) -> int | None:
+        """Elements of ``kind`` per selected deformable object, or ``None`` when counts differ.
 
         Current rods record ``body``/``joint`` ranges, triangle surfaces record
         ``particle``/``triangle``/``edge`` ranges, and tetrahedral volumes record
-        ``particle``/``tetrahedron`` ranges. The selected records determine which
-        element kinds are available.
+        ``particle``/``tetrahedron`` ranges. Batched reads and writes require a
+        common count; :meth:`ranges` remains available when counts differ.
 
         Args:
             kind: Element kind recorded by every selected deformable object: a
@@ -2877,13 +2877,12 @@ class _DeformableViewBase:
                 or its lowercase name.
 
         Returns:
-            Common number of elements in every selected deformable object.
+            Common number of elements per selected deformable object, or ``None``.
 
         Raises:
             AttributeError: If the selected deformable objects do not all record ``kind``.
-            ValueError: If the selected deformable objects have different element counts.
         """
-        return self._element_count(kind)
+        return self._counts[self._validate_kind(kind)]
 
     def ranges(
         self,
@@ -2893,7 +2892,7 @@ class _DeformableViewBase:
 
         For consumers that need each deformable object's raw slice of the flat model arrays, e.g. to
         hand per-instance offsets to a renderer sync or to custom kernels. See
-        :meth:`elements_per_deformable_object` for the valid ``kind`` values.
+        :meth:`element_count` for the valid ``kind`` values.
 
         Native and USD curves include their construction-time root joints.
         After fixed-joint collapse, only surviving bodies and joints are exposed.
@@ -2920,7 +2919,7 @@ class _DeformableViewBase:
     ) -> wp.array[wp.int32]:
         """Device-side element-range starts of the selected deformable objects, shape ``(count,)``.
 
-        Together with :meth:`elements_per_deformable_object` this drives custom kernels over the
+        Together with :meth:`element_count` this drives custom kernels over the
         selection without a host round-trip; the view's own gather/scatter kernels use
         the same array. Treat the returned internal array as read-only.
 
@@ -3193,9 +3192,9 @@ class _DeformableParticleView(_DeformableViewBase):
     """Share particle state and property access without prescribing a geometric family."""
 
     @property
-    def particles_per_deformable_object(self) -> int:
-        """Common particle count in each selected deformable object."""
-        return self._element_count("particle")
+    def particle_count(self) -> int | None:
+        """Particles per selected deformable object, or ``None`` when counts differ."""
+        return self._counts["particle"]
 
     def get_particle_inv_masses(self, source: Model) -> wp.array2d[wp.float32]:
         """Return particle inverse masses [1/kg] for the selected deformable objects.
@@ -3208,7 +3207,7 @@ class _DeformableParticleView(_DeformableViewBase):
                 This property is not stored on State.
 
         Returns:
-            Inverse masses with shape ``(count, particles_per_deformable_object)``.
+            Inverse masses with shape ``(count, particle_count)``.
 
         Raises:
             AttributeError: If the source does not provide particle inverse masses.
@@ -3228,7 +3227,7 @@ class _DeformableParticleView(_DeformableViewBase):
                 This property is not stored on State.
 
         Returns:
-            Integer bitmasks with shape ``(count, particles_per_deformable_object)``.
+            Integer bitmasks with shape ``(count, particle_count)``.
 
         Raises:
             AttributeError: If the source does not provide particle flags.
@@ -3247,7 +3246,7 @@ class _DeformableParticleView(_DeformableViewBase):
             source: Model initial state or simulation state to read.
 
         Returns:
-            Particle positions with shape ``(count, particles_per_deformable_object)``.
+            Particle positions with shape ``(count, particle_count)``.
 
         Raises:
             AttributeError: If the selected deformable objects do not all record particles.
@@ -3272,7 +3271,7 @@ class _DeformableParticleView(_DeformableViewBase):
         Args:
             target: Model initial state or simulation state to update.
             values: Particle positions [m], shape
-                ``(count, particles_per_deformable_object)``. Must not share storage
+                ``(count, particle_count)``. Must not share storage
                 with the target array; clone live getter results before writing.
                 Host inputs are reshaped with a final axis of length 3. None is invalid.
             mask: Boolean array of shape ``(count,)`` on the view's device, or
@@ -3297,7 +3296,7 @@ class _DeformableParticleView(_DeformableViewBase):
             source: Model initial state or simulation state to read.
 
         Returns:
-            Particle velocities with shape ``(count, particles_per_deformable_object)``.
+            Particle velocities with shape ``(count, particle_count)``.
 
         Raises:
             AttributeError: If the selected deformable objects do not all record particles.
@@ -3322,7 +3321,7 @@ class _DeformableParticleView(_DeformableViewBase):
         Args:
             target: Model initial state or simulation state to update.
             values: Particle velocities [m/s], shape
-                ``(count, particles_per_deformable_object)``. Must not share storage
+                ``(count, particle_count)``. Must not share storage
                 with the target array; clone live getter results before writing.
                 Host inputs are reshaped with a final axis of length 3. None is invalid.
             mask: Boolean array of shape ``(count,)`` on the view's device, or
@@ -3342,15 +3341,15 @@ class _DeformableBodyView(_DeformableViewBase):
     """Read and write body state for selected deformable objects."""
 
     @property
-    def bodies_per_deformable_object(self) -> int:
-        """Common body count in each selected deformable object."""
-        return self._element_count("body")
+    def body_count(self) -> int | None:
+        """Bodies per selected deformable object, or ``None`` when counts differ."""
+        return self._counts["body"]
 
     def get_body_transforms(
         self,
         source: Model | State,
     ) -> wp.array2d[wp.transform]:
-        """Body transforms, shape ``(count, bodies_per_deformable_object)``.
+        """Body transforms, shape ``(count, body_count)``.
 
         Each transform contains a world-space translation [m] and a unitless
         quaternion.
@@ -3359,7 +3358,7 @@ class _DeformableBodyView(_DeformableViewBase):
             source: Model initial state or simulation state to read.
 
         Returns:
-            Body transforms with shape ``(count, bodies_per_deformable_object)``.
+            Body transforms with shape ``(count, body_count)``.
 
         Raises:
             AttributeError: If the selected deformable objects do not all record bodies.
@@ -3384,7 +3383,7 @@ class _DeformableBodyView(_DeformableViewBase):
         Args:
             target: Model initial state or simulation state to update.
             values: Body transforms with world-space translation [m] and a unitless quaternion, shape
-                ``(count, bodies_per_deformable_object)``. Must not share storage
+                ``(count, body_count)``. Must not share storage
                 with the target array; clone live getter results before writing.
                 Host inputs are reshaped with a final axis of length 7. None is invalid.
             mask: Boolean array of shape ``(count,)`` on the view's device, or
@@ -3403,7 +3402,7 @@ class _DeformableBodyView(_DeformableViewBase):
         self,
         source: Model | State,
     ) -> wp.array2d[wp.spatial_vector]:
-        """Body velocities, shape ``(count, bodies_per_deformable_object)``.
+        """Body velocities, shape ``(count, body_count)``.
 
         Each value follows ``(v_com_world, omega_world)``: linear velocity [m/s]
         followed by angular velocity [rad/s].
@@ -3412,7 +3411,7 @@ class _DeformableBodyView(_DeformableViewBase):
             source: Model initial state or simulation state to read.
 
         Returns:
-            Body velocities with shape ``(count, bodies_per_deformable_object)``.
+            Body velocities with shape ``(count, body_count)``.
 
         Raises:
             AttributeError: If the selected deformable objects do not all record bodies.
@@ -3437,7 +3436,7 @@ class _DeformableBodyView(_DeformableViewBase):
         Args:
             target: Model initial state or simulation state to update.
             values: Body velocities in (v_com_world, omega_world) order [m/s, rad/s], shape
-                ``(count, bodies_per_deformable_object)``. Must not share storage
+                ``(count, body_count)``. Must not share storage
                 with the target array; clone live getter results before writing.
                 Host inputs are reshaped with a final axis of length 6. None is invalid.
             mask: Boolean array of shape ``(count,)`` on the view's device, or

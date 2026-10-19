@@ -86,7 +86,7 @@ Read particle properties
 
 Surface and volume views also read :attr:`~newton.Model.particle_inv_mass` and
 :attr:`~newton.Model.particle_flags`. Pass a Model, not a State. Both results have
-shape ``(count, particles_per_deformable_object)``, with the same rows and particle
+shape ``(count, particle_count)``, with the same rows and particle
 order as the position getter. Inverse masses use ``wp.float32`` in [1/kg]; flags
 use ``wp.int32`` bitmasks from :class:`~newton.ParticleFlags`.
 
@@ -259,8 +259,10 @@ arrays. For example, ``body_start`` and ``body_end`` above refer to the model's
 body arrays, not selected deformable object indices. There can be gaps between different
 cables' body ranges even though their selected deformable object indices are consecutive.
 ``starts(kind)`` returns device-side starts; treat this array as read-only.
-``elements_per_deformable_object(kind)`` returns a common element count or raises when the
-sizes differ. Raw ranges remain available for deformable objects with different sizes.
+``element_count(kind)`` returns the common element count, or ``None`` when the
+sizes differ. ``particle_count`` on surface and volume views and ``body_count``
+on curve views report the corresponding per-object counts. Raw ranges remain
+available when the selected deformable objects have different sizes.
 ``kind`` is a :class:`~newton.Model.AttributeFrequency` member or its lowercase name.
 
 For cable root joints and later attachments, see :ref:`deformable-objects-curve-joints`.
