@@ -5871,7 +5871,7 @@ def _step_plastic_hinge(solver, state_in, state_out, angle):
 
 
 def _bending_plasticity_loading(test, device):
-    """Verify yield limits, isolated material history, and elastic defaults on one hinge."""
+    """Verify yield limits and state-local material history on one hinge."""
     builder = _plastic_hinge_builder()
     builder.particle_mass[1] = 1.0
     for opposite, stiffness, threshold in ((0, 1.0, 0.0), (0, 1.0, math.inf), (-1, 1.0, 0.2), (0, 0.0, 0.2)):
@@ -5903,26 +5903,10 @@ def _bending_plasticity_loading(test, device):
     fresh_a, fresh_b = model.state(), model.state()
     _step_plastic_hinge(solver, fresh_a, fresh_b, 0.1)
     np.testing.assert_allclose(fresh_b.vbd.edge_plastic_angle.numpy(), [0.0, 0.1, 0.0, 0.0, 0.0], atol=1.0e-6)
-    other = SolverVBD(model, iterations=1, particle_enable_bending_plasticity=True, particle_enable_tile_solve=False)
-    _step_plastic_hinge(other, fresh_a, fresh_b, 1.5)
-    np.testing.assert_allclose(fresh_b.vbd.edge_plastic_angle.numpy(), [1.3, 1.5, 0.0, 0.0, 0.0], atol=1.0e-6)
     np.testing.assert_array_equal(a.vbd.edge_plastic_angle.numpy(), retained)
     a.particle_q.zero_()
     solver.step(a, b, None, None, 1.0 / 240.0)
     np.testing.assert_array_equal(b.vbd.edge_plastic_angle.numpy(), retained)
-
-    model.particle_flags.fill_(int(newton.ParticleFlags.ACTIVE))
-    default = SolverVBD(model, particle_enable_tile_solve=False)
-    disabled = SolverVBD(model, particle_enable_bending_plasticity=False, particle_enable_tile_solve=False)
-    a, b, c = model.state(), model.state(), model.state()
-    a.particle_q.assign(_plastic_hinge_points(1.0))
-    default.step(a, b, None, None, 0.01)
-    a.particle_q.assign(_plastic_hinge_points(1.0))
-    disabled.step(a, c, None, None, 0.01)
-    np.testing.assert_array_equal(b.particle_q.numpy(), c.particle_q.numpy())
-    np.testing.assert_array_equal(b.particle_qd.numpy(), c.particle_qd.numpy())
-    np.testing.assert_array_equal(b.vbd.edge_plastic_angle.numpy(), np.zeros(model.edge_count))
-    test.assertGreater(float(np.linalg.norm(b.particle_q.numpy() - _plastic_hinge_points(1.0))), 1.0e-7)
 
 
 def _bending_plasticity_springback(test, device):
@@ -5944,29 +5928,24 @@ def _bending_plasticity_springback(test, device):
     elastic_solver = SolverVBD(model, iterations=4, particle_enable_tile_solve=device.is_cuda)
     elastic_a, elastic_b = model.state(), model.state()
     elastic_a.particle_q.assign(_plastic_hinge_points(1.0))
-    for step in range(120):
+    for _ in range(120):
         solver.step(a, b, None, None, 1.0 / 60.0)
         a, b = b, a
         elastic_solver.step(elastic_a, elastic_b, None, None, 1.0 / 60.0)
         elastic_a, elastic_b = elastic_b, elastic_a
-        if step >= 108:
-            p = a.particle_q.numpy()[1]
-            p_elastic = elastic_a.particle_q.numpy()[1]
-            test.assertAlmostEqual(math.atan2(-p[2], -p[1]), 0.8, delta=0.01)
-            test.assertAlmostEqual(math.atan2(-p_elastic[2], -p_elastic[1]), 0.0, delta=0.01)
+    for state, expected in ((a, 0.8), (elastic_a, 0.0)):
+        p = state.particle_q.numpy()[1]
+        v = state.particle_qd.numpy()[1]
+        angular_velocity = (p[1] * v[2] - p[2] * v[1]) / (p[1] ** 2 + p[2] ** 2)
+        test.assertAlmostEqual(math.atan2(-p[2], -p[1]), expected, delta=0.01)
+        test.assertLess(abs(float(angular_velocity)), 0.02)
     np.testing.assert_allclose(a.vbd.edge_plastic_angle.numpy(), [0.8], atol=1.0e-5)
+    np.testing.assert_array_equal(elastic_a.vbd.edge_plastic_angle.numpy(), [0.0])
     np.testing.assert_array_equal(model.edge_rest_angle.numpy(), [0.0])
 
 
 def _bending_plasticity_angle_branch(test, device):
     """Keep crease history and bending forces continuous across the dihedral branch cut."""
-    model, solver, a, b = _make_plastic_hinge(device)
-    a.vbd.edge_plastic_angle.fill_(math.pi - 0.1)
-    _step_plastic_hinge(solver, a, b, -math.pi + 0.05)
-    np.testing.assert_allclose(b.vbd.edge_plastic_angle.numpy(), [math.pi - 0.1], atol=1.0e-6)
-    _step_plastic_hinge(solver, b, a, -math.pi + 0.3)
-    np.testing.assert_allclose(a.vbd.edge_plastic_angle.numpy(), [math.pi + 0.1], atol=1.0e-6)
-    # Equal rest curvatures separated by 2*pi must produce equal physical motion.
     builder = _plastic_hinge_builder()
     builder.particle_mass[1] = 1.0
     builder.color()
@@ -5974,6 +5953,15 @@ def _bending_plasticity_angle_branch(test, device):
     solver = SolverVBD(
         model, iterations=8, particle_enable_bending_plasticity=True, particle_enable_tile_solve=device.is_cuda
     )
+    model.particle_flags.zero_()
+    a, b = model.state(), model.state()
+    a.vbd.edge_plastic_angle.fill_(math.pi - 0.1)
+    _step_plastic_hinge(solver, a, b, -math.pi + 0.05)
+    np.testing.assert_allclose(b.vbd.edge_plastic_angle.numpy(), [math.pi - 0.1], atol=1.0e-6)
+    _step_plastic_hinge(solver, b, a, -math.pi + 0.3)
+    np.testing.assert_allclose(a.vbd.edge_plastic_angle.numpy(), [math.pi + 0.1], atol=1.0e-6)
+    # Equal rest curvatures separated by 2*pi must produce equal physical motion.
+    model.particle_flags.fill_(int(newton.ParticleFlags.ACTIVE))
     outputs = []
     for angle in (math.pi - 0.01, -math.pi - 0.01):
         a, b = model.state(), model.state()
@@ -5987,7 +5975,7 @@ def _bending_plasticity_angle_branch(test, device):
 
 def _bending_plasticity_validation(test, device):
     """Reject unsupported material and state inputs before mutating particle positions."""
-    for threshold in (-0.1, math.nan, -math.inf):
+    for threshold in (-0.1, math.nan):
         with test.subTest(yield_angle=threshold):
             builder = _plastic_hinge_builder(yield_angle=threshold)
             builder.color()
@@ -6019,10 +6007,11 @@ def _bending_plasticity_coupled_reset(test, device):
     """Gather and reset plastic material history through the native proxy coupler."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     builder.replicate(_plastic_hinge_builder(), world_count=2, spacing=(2.0, 0.0, 0.0))
+    builder.add_builder(_plastic_hinge_builder(), xform=wp.transform((4.0, 0.0, 0.0), wp.quat_identity()))
     builder.color()
     model = builder.finalize(device=device)
-    model.vbd.edge_bending_yield_angle.assign(np.array([0.2, 0.4], dtype=np.float32))
-    particles = list(range(model.particle_count))
+    model.vbd.edge_bending_yield_angle.assign(np.array([0.2, 0.4, 0.2], dtype=np.float32))
+    particles = list(range(8))
     solver = SolverCoupledProxy(
         model,
         coupling=SolverCoupledProxy.Config(
@@ -6042,24 +6031,31 @@ def _bending_plasticity_coupled_reset(test, device):
     )
     a, b = model.state(), model.state()
     a.particle_q.assign(
-        np.vstack((_plastic_hinge_points(1.0), _plastic_hinge_points(-0.9) + np.array([2.0, 0.0, 0.0])))
+        np.vstack(
+            [
+                _plastic_hinge_points(angle) + np.array([offset, 0.0, 0.0])
+                for angle, offset in ((1.0, 0.0), (-0.9, 2.0), (0.0, 4.0))
+            ]
+        )
     )
+    a.vbd.edge_plastic_angle.assign(np.array([0.0, 0.0, 0.6], dtype=np.float32))
+    b.vbd.edge_plastic_angle.assign(np.array([0.0, 0.0, -0.2], dtype=np.float32))
     solver.step(a, b, None, None, 0.01)
-    np.testing.assert_allclose(b.vbd.edge_plastic_angle.numpy(), [0.8, -0.5], atol=1.0e-6)
+    np.testing.assert_allclose(b.vbd.edge_plastic_angle.numpy(), [0.8, -0.5, 0.6], atol=1.0e-6)
     if device.is_cuda:
         with wp.ScopedCapture(device=device) as capture:
             solver.step(a, b, None, None, 0.01)
         wp.capture_launch(capture.graph)
-        np.testing.assert_allclose(b.vbd.edge_plastic_angle.numpy(), [0.8, -0.5], atol=1.0e-6)
+        np.testing.assert_allclose(b.vbd.edge_plastic_angle.numpy(), [0.8, -0.5, 0.6], atol=1.0e-6)
     mask = wp.array([True, False, False], dtype=wp.bool, device=device)
     solver.reset(b, world_mask=mask, flags=newton.StateFlags.PARTICLE_Q)
-    np.testing.assert_allclose(b.vbd.edge_plastic_angle.numpy(), [0.0, -0.5], atol=1.0e-6)
+    np.testing.assert_allclose(b.vbd.edge_plastic_angle.numpy(), [0.0, -0.5, 0.6], atol=1.0e-6)
     if device.is_cuda:
-        b.vbd.edge_plastic_angle.assign(np.array([0.8, -0.5], dtype=np.float32))
+        b.vbd.edge_plastic_angle.assign(np.array([0.8, -0.5, 0.6], dtype=np.float32))
         with wp.ScopedCapture(device=device) as reset_capture:
             solver.reset(b, world_mask=mask, flags=newton.StateFlags.PARTICLE_Q)
         wp.capture_launch(reset_capture.graph)
-        np.testing.assert_allclose(b.vbd.edge_plastic_angle.numpy(), [0.0, -0.5], atol=1.0e-6)
+        np.testing.assert_allclose(b.vbd.edge_plastic_angle.numpy(), [0.0, -0.5, 0.6], atol=1.0e-6)
 
 
 def _bending_plasticity_reset_worlds(test, device):

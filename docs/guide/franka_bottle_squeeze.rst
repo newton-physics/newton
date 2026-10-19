@@ -67,8 +67,7 @@ is used for collision and rendering. The contact faces are flush with the
 finger pads. The initial 40 mm opening per finger provides an 80 mm gap,
 leaving room to approach a bottle that is already dented and has bulged sideways.
 ``--minimum-opening`` controls the joint displacement and half the plate gap.
-The default 17 mm opening per finger gives a 34 mm closed plate gap. Use
-``--minimum-opening 0.018`` for the previous 36 mm gap.
+The default 17 mm opening per finger gives a 34 mm closed plate gap.
 
 Material and permanent creases
 -----------------------------
@@ -220,9 +219,10 @@ surface chemistry.
 containment, and absence of yielding before the squeeze. ``test_final()`` checks
 the fixed base, reconstructed surface, and retained deformation after release.
 Solver tests verify yielding, springback, state ownership, masked resets, and
-CUDA graph replay. GPU example tests protect wall contact, surface containment,
-open-neck spills, and robot motion; geometry checks protect material scaling
-and the plates' physical and visible openings.
+CUDA graph replay. Bottle-specific tests protect wall contact, surface
+containment, open-neck spills, mesh topology, and material scaling. A short
+graph/eager example test checks initialization, stepping, and reconstruction;
+it does not run the full squeeze sequence.
 
 Save rendered frames for a recording:
 

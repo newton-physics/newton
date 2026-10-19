@@ -2389,6 +2389,11 @@ class SolverCoupled(SolverBase, CouplingInterface):
         finally:
             self._active_observables = None
         _copy_state(state_in, state_out)
+        for name in self._edge_state_attributes:
+            src = _nested_attribute_value(state_in, name)
+            dst = _nested_attribute_value(state_out, name)
+            if src is not dst and isinstance(src, wp.array) and isinstance(dst, wp.array):
+                wp.copy(dst, src)
         self._reconcile_state(state_out)
         if observables is not None:
             self._reconcile_observables(observables)

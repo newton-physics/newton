@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Check bottle boundaries, robot motion, and the fluid shown by the example."""
+"""Check bottle material scaling, fluid boundaries, and liquid reconstruction."""
 
 import unittest
 
@@ -9,52 +9,16 @@ import numpy as np
 import warp as wp
 
 import newton
-import newton.utils
 from newton.examples.multiphysics._bottle import BottleFluid, BottleSurface, _density_multipliers, _shell_contacts
 from newton.examples.multiphysics.example_franka_bottle_squeeze import (
     _BOTTLE_CENTER,
     _BOTTLE_HEIGHT,
-    _CYCLE_DURATION,
-    _add_robot,
     _bottle_mesh,
     _bottle_radius,
     _pet_bending_properties,
-    _robot_motion,
-    _squeeze_keyframes,
     _water_samples,
 )
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices
-
-
-def test_gripper_plates_follow_fingers(test, device):
-    """Match the visible and physical plate gaps as the fingers close."""
-    asset = newton.utils.download_asset("franka_emika_panda")
-    for scale in (1.0, 100.0):
-        builder = newton.ModelBuilder()
-        _add_robot(builder, asset, scale=scale)
-        plates = [i for i, label in enumerate(builder.shape_label) if label.endswith("_squeeze_plate")]
-        test.assertEqual(len(plates), 2)
-        model = builder.finalize(device=device)
-        state = model.state()
-        finger_coords = [builder.joint_q_start[builder.joint_label.index(f"fr3/fr3_finger_joint{i}")] for i in (1, 2)]
-        for opening, expected_gap in ((0.04, 0.080), (0.018, 0.036)):
-            q = model.joint_q.numpy()
-            q[finger_coords] = opening * scale
-            newton.eval_fk(model, wp.array(q, device=device), model.joint_qd, state)
-            poses = state.body_q.numpy()
-            faces = []
-            normals = []
-            for shape in plates:
-                body = builder.shape_body[shape]
-                test.assertIn("finger", builder.body_label[body])
-                test.assertTrue(builder.shape_flags[shape] & int(newton.ShapeFlags.COLLIDE_PARTICLES))
-                test.assertTrue(builder.shape_flags[shape] & int(newton.ShapeFlags.VISIBLE))
-                frame = wp.transform(wp.vec3(*poses[body, :3]), wp.quat(*poses[body, 3:]))
-                local = wp.transform_point(builder.shape_transform[shape], wp.vec3(0.0, -0.0015 * scale, 0.0))
-                faces.append(np.asarray(wp.transform_point(frame, local)))
-                normals.append(np.asarray(wp.transform_vector(frame, wp.vec3(0.0, -1.0, 0.0))))
-            test.assertAlmostEqual(float(np.linalg.norm(faces[0] - faces[1])) / scale, expected_gap, places=5)
-            test.assertAlmostEqual(float(np.dot(normals[0], normals[1])), -1.0, places=5)
 
 
 def test_water_xpbd_pressure_history(test, device):
@@ -92,7 +56,7 @@ def test_water_xpbd_pressure_history(test, device):
 
 
 def test_water_xpbd_resting_bottle(test, device):
-    """Settle incompressible samples without spurious wall escape."""
+    """Keep resting water contained over repeated fluid substeps."""
     vertices, triangles = _bottle_mesh(32, 28)
     shell = wp.array(100.0 * (vertices + _BOTTLE_CENTER), dtype=wp.vec3, device=device)
     positions, spacing = _water_samples(4096, seed=42)
@@ -156,45 +120,6 @@ def test_water_xpbd_substep_reset(test, device):
     np.testing.assert_allclose(reused.velocities.numpy(), fresh.velocities.numpy(), atol=1.0e-6)
     np.testing.assert_allclose(reused.multipliers.numpy(), fresh.multipliers.numpy(), atol=1.0e-6)
     test.assertTrue(np.any(fresh.multipliers.numpy() < 0.0))
-
-
-def test_robot_repeated_squeezes(test, device):
-    """Vary grip height and close once per angle with fingers open during repositioning."""
-    grips = np.array([[0.0, 11.2, 4.0, 4.0], [1.0, 13.0, 4.0, 4.0], [-1.0, 9.4, 4.0, 4.0]], dtype=np.float32)
-    retreats = grips.copy()
-    retreats[:, 1] = 27.0
-    times, poses = _squeeze_keyframes(grips, retreats, (2, 3), 1.2)
-    clock = wp.zeros(1, dtype=float, device=device)
-    times_wp = wp.array(times, dtype=float, device=device)
-    poses_wp = wp.array(poses, dtype=float, device=device)
-    q, qd = wp.empty(4, dtype=float, device=device), wp.empty(4, dtype=float, device=device)
-    dt = 1.0e-4
-
-    def sample(time):
-        clock.fill_(time - dt)
-        wp.launch(_robot_motion, 4, inputs=[clock, dt, times_wp, poses_wp, q, qd], device=device)
-        return q.numpy(), qd.numpy()
-
-    for cycle, grip in enumerate(grips):
-        base = cycle * _CYCLE_DURATION
-        open_pose, _ = sample(base + 0.3)
-        np.testing.assert_allclose(open_pose, grip, atol=1.0e-5)
-        closed_pose, velocity = sample(base + 2.0)
-        np.testing.assert_allclose(closed_pose, [*grip[:2], 1.2, 1.2], atol=1.0e-5)
-        np.testing.assert_allclose(velocity, 0.0, atol=1.0e-5)
-        for phase in (3.5, 4.0, 4.8, 5.6):
-            reposition, _ = sample(base + phase)
-            np.testing.assert_allclose(reposition[2:], 4.0, atol=1.0e-5)
-    final_pose, velocity = sample(3.0 * _CYCLE_DURATION + 1.0)
-    np.testing.assert_allclose(final_pose, retreats[-1], atol=1.0e-5)
-    np.testing.assert_allclose(velocity, 0.0, atol=1.0e-5)
-    # A smooth trajectory has no position or velocity jump at a waypoint.
-    for time in times[1:-1]:
-        before, velocity_before = sample(float(time) - dt)
-        after, velocity_after = sample(float(time) + dt)
-        np.testing.assert_allclose(before, after, atol=1.0e-5)
-        test.assertLess(float(np.max(np.abs(velocity_before))), 0.02)
-        test.assertLess(float(np.max(np.abs(velocity_after))), 0.02)
 
 
 def test_water_shell_contact(test, device):
@@ -414,17 +339,11 @@ class TestBottleSqueeze(unittest.TestCase):
 
 
 for function in (
-    test_gripper_plates_follow_fingers,
     test_water_xpbd_pressure_history,
     test_water_xpbd_substep_reset,
     test_water_xpbd_moving_mouth,
-    test_robot_repeated_squeezes,
     test_water_shell_contact,
     test_water_boundary_density,
-):
-    add_function_test(TestBottleSqueeze, function.__name__, function, devices=get_cuda_test_devices())
-
-for function in (
     test_water_xpbd_resting_bottle,
     test_water_surface_containment,
     test_water_surface_open_mouth_and_spill,

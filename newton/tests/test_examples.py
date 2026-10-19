@@ -1740,6 +1740,7 @@ add_example_batch(
                 "segments": 32,
                 "rings": 28,
                 "vbd-iterations": 20,
+                "substeps": 8 if use_cuda_graph else 3,
                 "surface-voxel-size": 0.003,
                 "surface-max-grid-cells": 200_000,
                 "cuda-graph": use_cuda_graph,

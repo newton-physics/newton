@@ -418,8 +418,8 @@ class BottleFluid:
             ],
             device=self.device,
         )
-        wp.copy(self.velocities, self.velocity_temp)
-        wp.copy(self.positions, self.predicted)
+        self.velocities, self.velocity_temp = self.velocity_temp, self.velocities
+        self.positions, self.predicted = self.predicted, self.positions
 
 
 def compute_normals(vertices: wp.array[wp.vec3], indices: wp.array[int], normals: wp.array[wp.vec3]):

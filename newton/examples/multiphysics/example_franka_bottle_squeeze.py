@@ -138,12 +138,12 @@ def _scale_transforms(source: wp.array[wp.transform], output: wp.array[wp.transf
     output[i] = wp.transform(0.01 * wp.transform_get_translation(x), wp.transform_get_rotation(x))
 
 
-def _squeeze_keyframes(grips, retreats, finger_indices, minimum_opening):
+def _squeeze_keyframes(grips, retreats, minimum_opening):
     """Keep both fingers open during withdrawal, rotation and approach."""
     times, poses = [], []
     for cycle, (grip, retreat) in enumerate(zip(grips, retreats, strict=True)):
         closed = grip.copy()
-        closed[list(finger_indices)] = minimum_opening
+        closed[-2:] = minimum_opening
         for time, pose in (
             (0.0, grip),
             (0.6, grip),
@@ -335,7 +335,7 @@ class Example:
                 raise ValueError(f"{name.replace('_', '-')} must be finite and positive")
         if args.segments < 12 or args.rings < 12:
             raise ValueError("segments and rings must each be at least 12")
-        if args.substeps % 2:
+        if args.cuda_graph and args.substeps % 2:
             raise ValueError("substeps must be even so captured ping-pong states return to the same buffer")
         if not 0.0 < args.minimum_opening <= 0.04:
             raise ValueError("minimum-opening must be in (0, 0.04] meters per finger")
@@ -589,7 +589,7 @@ class Example:
             yaw = float(np.deg2rad(angle))
             grips.append(np.r_[target, yaw, 4.0, 4.0])
             retreats.append(np.r_[retreat, yaw, 4.0, 4.0])
-        times, targets = _squeeze_keyframes(grips, retreats, (4, 5), self.minimum_opening)
+        times, targets = _squeeze_keyframes(grips, retreats, self.minimum_opening)
         sampled_times, poses = [], []
         previous = targets[0]
         for key, endpoint in enumerate(targets):
