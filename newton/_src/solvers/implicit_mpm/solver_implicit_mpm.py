@@ -45,7 +45,6 @@ from .implicit_mpm_solver_kernels import (
     YIELD_PARAM_LENGTH,
     YieldMomentVec,
     _rebuild_capacity,
-    _TransformedStrainBasis,
     advect_particles,
     allocate_by_voxels,
     average_elastic_parameters,
@@ -70,6 +69,7 @@ from .implicit_mpm_solver_kernels import (
     integrate_gimp_point_stress,
     integrate_mass,
     integrate_particle_stress,
+    integrate_transformed_yield_parameters,
     integrate_velocity,
     integrate_velocity_apic,
     integrate_yield_parameters,
@@ -594,7 +594,6 @@ class ImplicitMPMScratchpad:
 
         divergence_space = fem.make_collocated_function_space(strain_basis, dtype=float)
         strain_yield_parameters_space = fem.make_collocated_function_space(strain_basis, dtype=YieldParamVec)
-        material_basis = strain_basis
         if transform_basis:
             mode_space = fem.make_collocated_function_space(
                 strain_basis, dtype=wp.types.vector(length=self.strain_nodes_per_element, dtype=wp.float32)
@@ -603,8 +602,7 @@ class ImplicitMPMScratchpad:
                 self.strain_basis_transform_field = mode_space.make_field(space_partition=strain_space_partition)
             else:
                 self.strain_basis_transform_field.rebind(mode_space, strain_space_partition)
-            material_basis = _TransformedStrainBasis(self.strain_basis_transform_field)
-        strain_yield_parameters_test_space = fem.make_collocated_function_space(material_basis, dtype=YieldMomentVec)
+        strain_yield_parameters_test_space = fem.make_collocated_function_space(strain_basis, dtype=YieldMomentVec)
 
         if self.sym_strain_test is None:
             self.sym_strain_test = fem.make_test(sym_strain_space, space_restriction=strain_space_restriction)
@@ -3576,17 +3574,21 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             pic, scratch, inv_cell_volume
         )
         with self._timer("Interpolated yield parameters"):
+            integrand = integrate_yield_parameters
+            fields = {"u": scratch.strain_yield_parameters_test}
+            if scratch.strain_basis_transform is not None:
+                integrand = integrate_transformed_yield_parameters
+                fields["modes"] = scratch.strain_basis_transform_field
             moments = fem.integrate(
-                integrate_yield_parameters,
+                integrand,
                 quadrature=pic,
-                fields={"u": scratch.strain_yield_parameters_test},
+                fields=fields,
                 values={
                     "particle_Jp": state_in.mpm.particle_Jp,
                     "material_parameters": mpm_model.material_parameters,
                     "particle_flags": mpm_model.material_particle_flags,
                     "inv_cell_volume": inv_cell_volume,
                     "dt": dt,
-                    "transformed_basis": scratch.strain_basis_transform is not None,
                 },
                 output_dtype=YieldMomentVec,
                 assembly="generic",
@@ -3641,8 +3643,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         modes.dof_values = (
             transform.transpose((0, 2, 1)).contiguous().reshape((-1, nodes_per_element)).view(modes.dof_dtype)
         )
-        # The retained test field caches an argument containing the coefficient array.
-        scratch.strain_yield_parameters_test.eval_arg_value.invalidate(scratch.strain_yield_parameters_test)
         return transform, stress_transform
 
     def _apply_strain_basis_transform(

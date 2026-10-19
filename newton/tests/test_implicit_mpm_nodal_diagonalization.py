@@ -11,9 +11,8 @@ import warp.fem as fem
 import newton
 from newton._src.solvers.implicit_mpm.implicit_mpm_solver_kernels import (
     YieldMomentVec,
-    _TransformedStrainBasis,
     compute_nodal_diagonalization,
-    integrate_yield_parameters,
+    integrate_transformed_yield_parameters,
     inverse_scale_vector,
 )
 from newton._src.solvers.implicit_mpm.rheology_solver_kernels import YieldParamVec
@@ -239,19 +238,18 @@ def test_nodal_material_averaging(test, device):
                 mode_space = fem.make_collocated_function_space(basis, dtype=wp.types.vector(length=n, dtype=float))
                 modes = mode_space.make_field(space_partition=field.space_partition)
                 modes.dof_values = wp.array(transform.T.copy(), dtype=mode_space.dof_dtype)
-                moment_space = fem.make_collocated_function_space(_TransformedStrainBasis(modes), dtype=YieldMomentVec)
+                moment_space = fem.make_collocated_function_space(basis, dtype=YieldMomentVec)
                 material_test = fem.make_test(moment_space, space_restriction=field.space_restriction)
                 moments = fem.integrate(
-                    integrate_yield_parameters,
+                    integrate_transformed_yield_parameters,
                     quadrature=pic,
-                    fields={"u": material_test},
+                    fields={"u": material_test, "modes": modes},
                     values={
                         "material_parameters": solver._mpm_model.material_parameters,
                         "particle_Jp": model.state().mpm.particle_Jp,
                         "particle_flags": solver._mpm_model.material_particle_flags,
                         "inv_cell_volume": 1.0,
                         "dt": dt,
-                        "transformed_basis": True,
                     },
                     output_dtype=YieldMomentVec,
                     assembly="generic",

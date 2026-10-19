@@ -273,6 +273,19 @@ def integrate_elastic_parameters(
     return wp.dot(u(s), params_vec) * inv_cell_volume
 
 
+@wp.func
+def _yield_moment(
+    weights: YieldMomentVec,
+    i: int,
+    material_parameters: MaterialParameters,
+    particle_Jp: wp.array[float],
+    dt: float,
+):
+    parameters = YieldMomentVec(1.0)
+    parameters[:YIELD_PARAM_LENGTH] = get_yield_parameters(i, material_parameters, particle_Jp[i], dt)
+    return wp.dot(weights, parameters)
+
+
 @fem.integrand
 def integrate_yield_parameters(
     s: fem.Sample,
@@ -282,22 +295,37 @@ def integrate_yield_parameters(
     particle_Jp: wp.array[float],
     dt: float,
     particle_flags: wp.array[wp.int32],
-    transformed_basis: bool,
 ):
     if ~particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE:
         return 0.0
+    return _yield_moment(u(s), s.qp_index, material_parameters, particle_Jp, dt) * inv_cell_volume
 
-    value = u(s)
-    weights = value
-    if transformed_basis:
-        weights = wp.max(value, YieldMomentVec(0.0))
-        # Apply the same shear/viscosity weights to numerators and weight sums.
-        weights[2::YIELD_PARAM_LENGTH] = wp.abs(value[2::YIELD_PARAM_LENGTH])
-        viscosity_weights = value[5::YIELD_PARAM_LENGTH]
-        weights[5::YIELD_PARAM_LENGTH] = wp.cw_mul(viscosity_weights, viscosity_weights)
-    parameters = YieldMomentVec(1.0)
-    parameters[:YIELD_PARAM_LENGTH] = get_yield_parameters(s.qp_index, material_parameters, particle_Jp[s.qp_index], dt)
-    return wp.dot(weights, parameters) * inv_cell_volume
+
+@fem.integrand
+def integrate_transformed_yield_parameters(
+    s: fem.Sample,
+    u: fem.Field,
+    modes: fem.Field,
+    inv_cell_volume: float,
+    material_parameters: MaterialParameters,
+    particle_Jp: wp.array[float],
+    dt: float,
+    particle_flags: wp.array[wp.int32],
+):
+    """Weigh yield parameters by the transformed strain mode of the current test node."""
+    if ~particle_flags[s.qp_index] & newton.ParticleFlags.ACTIVE:
+        return 0.0
+
+    # Discontinuous nodes are numbered by cell, so the local index selects the test node's mode.
+    mode = fem.node_index(u, s) % fem.node_count(u, s)
+    # Nodal test functions are one at their own node, giving the test component's direction.
+    value = u(fem.at_node(u, s)) * modes(s)[mode]
+    weights = wp.max(value, YieldMomentVec(0.0))
+    # Apply the same shear/viscosity weights to numerators and weight sums.
+    weights[2::YIELD_PARAM_LENGTH] = wp.abs(value[2::YIELD_PARAM_LENGTH])
+    viscosity_weights = value[5::YIELD_PARAM_LENGTH]
+    weights[5::YIELD_PARAM_LENGTH] = wp.cw_mul(viscosity_weights, viscosity_weights)
+    return _yield_moment(weights, s.qp_index, material_parameters, particle_Jp, dt) * inv_cell_volume
 
 
 @fem.integrand
@@ -642,48 +670,6 @@ def mass_form(
         return 0.0
 
     return p(s) * q(s) * inv_cell_volume
-
-
-class _TransformedStrainBasis(fem.ShapeBasisSpace):
-    """Evaluate transformed shape weights through an ordinary FEM coefficient field."""
-
-    def __init__(self, modes):
-        self._modes = modes
-        self.BasisArg = modes.EvalArg
-        super().__init__(modes.space.topology, modes.space.basis.shape)
-
-    @property
-    def name(self):
-        return f"{self._modes.name}_transformed"
-
-    def fill_basis_arg(self, arg, device):
-        self._modes.fill_eval_arg(arg, device)
-
-    def make_element_inner_weight(self):
-        modes = self._modes
-
-        @fem.cache.dynamic_func(suffix=self.name)
-        def transformed_weight(
-            elt_arg: self.geometry.CellArg,
-            topo_arg: self.topology.TopologyArg,
-            basis_arg: self.BasisArg,
-            element_index: int,
-            coords: fem.Coords,
-            node_index_in_elt: int,
-            qp_index: int,
-        ):
-            mode_arg = modes.ElementEvalArg()
-            mode_arg.elt_arg = elt_arg
-            mode_arg.eval_arg = basis_arg
-            s = fem.make_free_sample(element_index, coords)
-            s.qp_index = qp_index
-            return modes.eval_inner(mode_arg, s)[node_index_in_elt]
-
-        return transformed_weight
-
-    def make_element_inner_weight_gradient(self):
-        # This basis is only used for material moments, which do not evaluate gradients.
-        return None
 
 
 @wp.kernel(module="unique", module_options={"max_unroll": 4, "enable_backward": False})
