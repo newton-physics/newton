@@ -3204,6 +3204,25 @@ def convert_rigid_forces_from_mj_kernel(
 
 
 @wp.kernel
+def frictionloss_force_from_efc_kernel(
+    nefc: wp.array[wp.int32],
+    efc_type: wp.array2d[wp.int32],
+    efc_id: wp.array2d[wp.int32],
+    efc_force: wp.array2d[wp.float32],
+    friction_dof_type: int,
+    # output
+    qfrc_frictionloss: wp.array2d[wp.float32],
+):
+    """Scatter the forces of MuJoCo's DOF friction-loss rows into ``[nworld, nv]``."""
+    worldid, efcid = wp.tid()
+    if efcid >= nefc[worldid]:
+        return
+    if efc_type[worldid, efcid] != friction_dof_type:
+        return
+    qfrc_frictionloss[worldid, efc_id[worldid, efcid]] = efc_force[worldid, efcid]
+
+
+@wp.kernel
 def convert_qfrc_actuator_from_mj_kernel(
     mjw_qfrc_actuator: wp.array2d[wp.float32],
     qpos: wp.array2d[wp.float32],

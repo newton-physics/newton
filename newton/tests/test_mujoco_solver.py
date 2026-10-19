@@ -7779,9 +7779,16 @@ class TestMuJoCoOptions(unittest.TestCase):
                 self.assertNotIn(flag, solver.supported_observables)
                 with self.assertRaisesRegex(ValueError, "does not support"):
                     solver.observables(kinds={flag})
-        flag = SolverMuJoCo.ObservableKind.QFRC_ACTUATOR
+        qfrc_kinds = {
+            SolverMuJoCo.ObservableKind.QFRC_ACTUATOR,
+            SolverMuJoCo.ObservableKind.QFRC_BIAS,
+            SolverMuJoCo.ObservableKind.QFRC_CONSTRAINT,
+            SolverMuJoCo.ObservableKind.QFRC_FRICTIONLOSS,
+        }
         observables = solver.observables(solver.supported_observables)
-        self.assertEqual(observables.kinds, {flag, solver.ObservableKind.BODY_QDD, solver.ObservableKind.BODY_PARENT_F})
+        self.assertEqual(
+            observables.kinds, qfrc_kinds | {solver.ObservableKind.BODY_QDD, solver.ObservableKind.BODY_PARENT_F}
+        )
         self.assertIsNotNone(observables.body_qdd)
         self.assertIsNotNone(observables.body_parent_f)
         self.assertIsNone(observables.contact_f)
@@ -7793,7 +7800,7 @@ class TestMuJoCoOptions(unittest.TestCase):
         # Discrete stepping works, but its native integrator has no Python binding
         # for inserting body exports before integration.
         solver = SolverMuJoCo(model, use_mujoco_cpu=True, integrator=int(solver._mujoco.mjtIntegrator.mjINT_DISCRETE))
-        self.assertEqual(solver.supported_observables, {flag})
+        self.assertEqual(solver.supported_observables, qfrc_kinds)
         for kind in (solver.ObservableKind.BODY_QDD, solver.ObservableKind.BODY_PARENT_F):
             with self.subTest(integrator="discrete", kind=kind):
                 with self.assertRaisesRegex(ValueError, "does not support"):

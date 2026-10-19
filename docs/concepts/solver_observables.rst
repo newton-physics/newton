@@ -148,8 +148,8 @@ The native MuJoCo CPU backend (``use_mujoco_cpu=True``) supports ``BODY_QDD``,
 the post-constraint RNE stage for requested body observables before integration,
 using the step's input dynamics, including with RK4. Contact and overflow
 observable requests are rejected. Native body observables require Euler, RK4,
-implicit, or implicitfast integration; discrete integration supports only
-``QFRC_ACTUATOR``. MuJoCo Warp supports body
+implicit, or implicitfast integration; discrete integration supports only the
+``QFRC_*`` kinds. MuJoCo Warp supports body
 observables on both CPU and GPU.
 
 :class:`~newton.solvers.SolverSteel` reports only the linear part of each rigid
@@ -186,6 +186,12 @@ example, MuJoCo adds ``QFRC_ACTUATOR`` and returns a
            solver.ObservableKind.QFRC_ACTUATOR,
        }
    )
+
+MuJoCo also exports ``QFRC_BIAS``, ``QFRC_CONSTRAINT``, and
+``QFRC_FRICTIONLOSS`` on both backends. ``qfrc_frictionloss`` is the part of
+``qfrc_constraint`` that comes from each DOF's own friction loss, so
+``qfrc_constraint - qfrc_frictionloss`` is the constraint load on a DOF without
+it.
 
 The constants are strings, so literal names work too:
 
