@@ -1469,6 +1469,42 @@ wp.overload(scatter_field_dof_values, {"src": wp.array[wp.vec3], "dest": wp.arra
 wp.overload(scatter_field_dof_values, {"src": wp.array[vec6], "dest": wp.array[vec6]})
 
 
+@wp.kernel
+def scatter_point_dof_values(
+    space_node_indices: wp.array[int],
+    cell_particle_indices: wp.array[int],
+    dof_values: wp.array[Any],
+    particle_values: wp.array[Any],
+):
+    """Store point-basis values on their particles; point nodes are cell-sorted particle positions."""
+    nid = wp.tid()
+    sid = space_node_indices[nid]
+    if sid != fem.NULL_NODE_INDEX:
+        particle_values[cell_particle_indices[sid]] = dof_values[nid]
+
+
+@wp.kernel
+def gather_point_dof_values(
+    space_node_indices: wp.array[int],
+    cell_particle_indices: wp.array[int],
+    particle_values: wp.array[Any],
+    dof_values: wp.array[Any],
+):
+    """Load point-basis values from their particles; point nodes are cell-sorted particle positions."""
+    nid = wp.tid()
+    sid = space_node_indices[nid]
+    if sid != fem.NULL_NODE_INDEX:
+        dof_values[nid] = particle_values[cell_particle_indices[sid]]
+    else:
+        dof_values[nid] = dof_values.dtype(0.0)
+
+
+wp.overload(scatter_point_dof_values, {"dof_values": wp.array[wp.vec3], "particle_values": wp.array[wp.vec3]})
+wp.overload(scatter_point_dof_values, {"dof_values": wp.array[vec6], "particle_values": wp.array[vec6]})
+wp.overload(gather_point_dof_values, {"dof_values": wp.array[wp.vec3], "particle_values": wp.array[wp.vec3]})
+wp.overload(gather_point_dof_values, {"dof_values": wp.array[vec6], "particle_values": wp.array[vec6]})
+
+
 @wp.func
 def gimp_half_size(particle_radius: float, voxel_size: float):
     """Half edge of the cubic GIMP particle domain, capped at half a voxel (two cells per axis at most)."""

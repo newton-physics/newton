@@ -59,6 +59,7 @@ from .implicit_mpm_solver_kernels import (
     fill_uniform_color_block_indices,
     free_velocity,
     init_particle_strains,
+    gather_point_dof_values,
     gimp_domain_corners,
     gimp_half_size,
     gimp_store_point_stress,
@@ -98,6 +99,7 @@ from .implicit_mpm_solver_kernels import (
     rotate_matrix_columns,
     rotate_matrix_rows,
     scatter_field_dof_values,
+    scatter_point_dof_values,
     strain_delta_form,
     strain_rhs,
     transfer_gimp_impulses,
@@ -3612,8 +3614,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         inv_cell_volume: float,
     ):
         if self.strain_basis[:3] == "pic":
-            if not self.gimp:
-                scratch.strain_node_particle_volume.assign(self._mpm_model.material_particle_volume * inv_cell_volume)
+            # Point nodes already hold their particle volumes from the strain-node integration.
             return None, None
         nodes_per_element = scratch.divergence_test.space.topology.MAX_NODES_PER_ELEMENT
         if scratch.strain_basis_transform_field is None:
@@ -4094,7 +4095,16 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     ],
                 )
             else:
-                scratch.impulse_field.dof_values.assign(prev_impulse_field.dof_values[pic.cell_particle_indices])
+                wp.launch(
+                    gather_point_dof_values,
+                    dim=scratch.impulse_field.space_partition.node_count(),
+                    inputs=[
+                        scratch.impulse_field.space_partition.space_node_indices(),
+                        pic.cell_particle_indices,
+                        prev_impulse_field.dof_values,
+                        scratch.impulse_field.dof_values,
+                    ],
+                )
         elif grid_to_grid_warmstart:
             # Interpolate previous impulse
             prev_impulse_field = fem.NonconformingField(
@@ -4117,7 +4127,16 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 # point stresses are transferred through the per-overlap cache.
                 scratch.stress_field.dof_values.zero_()
             else:
-                scratch.stress_field.dof_values.assign(prev_stress_field.dof_values[pic.cell_particle_indices])
+                wp.launch(
+                    gather_point_dof_values,
+                    dim=scratch.stress_field.space_partition.node_count(),
+                    inputs=[
+                        scratch.stress_field.space_partition.space_node_indices(),
+                        pic.cell_particle_indices,
+                        prev_stress_field.dof_values,
+                        scratch.stress_field.dof_values,
+                    ],
+                )
         elif self._stress_warmstart in ("grid", "smoothed") and grid_to_grid_warmstart:
             prev_stress_field = fem.NonconformingField(
                 domain, prev_stress_field, background=scratch.background_stress_field
@@ -4178,8 +4197,15 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                         ],
                     )
                 else:
-                    last_step_data.ws_impulse_field.dof_values[pic.cell_particle_indices].assign(
-                        scratch.impulse_field.dof_values
+                    wp.launch(
+                        scatter_point_dof_values,
+                        dim=scratch.impulse_field.space_partition.node_count(),
+                        inputs=[
+                            scratch.impulse_field.space_partition.space_node_indices(),
+                            pic.cell_particle_indices,
+                            scratch.impulse_field.dof_values,
+                            last_step_data.ws_impulse_field.dof_values,
+                        ],
                     )
             else:
                 last_step_data.ws_impulse_field.dof_values.zero_()
@@ -4200,8 +4226,15 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     # scatter, which cannot represent multiple GIMP subpoints.
                     last_step_data.ws_stress_field.dof_values.zero_()
                 else:
-                    last_step_data.ws_stress_field.dof_values[pic.cell_particle_indices].assign(
-                        scratch.stress_field.dof_values
+                    wp.launch(
+                        scatter_point_dof_values,
+                        dim=scratch.stress_field.space_partition.node_count(),
+                        inputs=[
+                            scratch.stress_field.space_partition.space_node_indices(),
+                            pic.cell_particle_indices,
+                            scratch.stress_field.dof_values,
+                            last_step_data.ws_stress_field.dof_values,
+                        ],
                     )
             else:
                 last_step_data.ws_stress_field.dof_values.zero_()

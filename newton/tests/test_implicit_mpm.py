@@ -1310,6 +1310,43 @@ def test_multiworld_sparse_gs_identical_worlds(test, device):
             np.testing.assert_allclose(q[starts[0] : starts[1]], q[starts[1] : starts[2]], atol=1.0e-6)
 
 
+def test_capped_pic_strain_grid_types(test, device):
+    """Run capped particle strain on dense and fixed grids, whose partitions omit capped nodes."""
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    SolverImplicitMPM.register_custom_attributes(builder)
+    builder.add_particle_grid(
+        pos=wp.vec3(-0.2, -0.2, 0.06),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.3, 0.1, -1.5),
+        dim_x=8,
+        dim_y=8,
+        dim_z=6,
+        cell_x=0.025,
+        cell_y=0.025,
+        cell_z=0.025,
+        mass=0.025**3 * 1500.0,
+        jitter=0.0,
+        radius_mean=0.0125,
+    )
+    builder.add_ground_plane()
+    model = builder.finalize(device=device)
+    positions = []
+    for grid_type, padding in (("dense", 0), ("fixed", 8)):
+        config = SolverImplicitMPM.Config(
+            voxel_size=0.05,
+            grid_type=grid_type,
+            grid_padding=padding,
+            strain_basis="pic8",
+            solver="jacobi",
+            max_iterations=50,
+            tolerance=1.0e-6,
+        )
+        _, state = _step_mpm(model, config, step_count=10, dt=1.0 / 240.0)
+        positions.append(state.particle_q.numpy())
+    test.assertTrue(np.isfinite(positions[0]).all())
+    np.testing.assert_allclose(positions[0], positions[1], atol=1.0e-5)
+
+
 def test_multiworld_sparse_empty_worlds_padding_matches_independent(test, device):
     """Verify multi-world sparse empty worlds padding matches independent."""
     populated_worlds = (1, 3)
@@ -2858,6 +2895,13 @@ add_function_test(
     "test_multiworld_sparse_gimp_matches_independent",
     test_multiworld_sparse_gimp_matches_independent,
     devices=basic_cuda_devices,
+)
+
+add_function_test(
+    TestImplicitMPM,
+    "test_capped_pic_strain_grid_types",
+    test_capped_pic_strain_grid_types,
+    devices=basic_devices,
 )
 
 add_function_test(
