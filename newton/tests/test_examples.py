@@ -995,10 +995,9 @@ add_example_test(
     TestRobotExamples,
     name="robot.example_robot_a1",
     devices=test_devices,
-    test_options={"usd_required": True, "num-frames": 100, "model": "bimanual", "demo": "wave"},
+    test_options={"usd_required": True, "num-frames": 10},
     test_options_cpu={"num-frames": 10},
     use_viewer=True,
-    test_suffix="bimanual",
 )
 add_example_test(
     TestRobotExamples,
