@@ -17,6 +17,7 @@ from .rigid_vbd_kernels import (
 from .rod_direct import (
     EXTERNAL_HESSIAN_WEIGHT,
     ROD_DIRECT_FAILED,
+    ROD_DIRECT_STALE,
     ROD_DIRECT_STALLED,
     _blocks66,
     _d3,
@@ -210,7 +211,7 @@ def solve_rod_direct(
     if e <= s:
         return
     if stale[0] != 0:  # rod membership changed under graph capture; the layout no longer matches the model
-        status[r] = status[r] | ROD_DIRECT_FAILED
+        status[r] = status[r] | ROD_DIRECT_STALE
         if r == 0:
             wp.printf(
                 "Warning: SolverVBD rigid_rod_direct_solve: an inverse mass crossed zero under graph capture; rod "

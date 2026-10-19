@@ -102,7 +102,7 @@ from .rigid_vbd_kernels import (
     update_duals_joint,
     update_rod_dahl_state,
 )
-from .rod_direct import ROD_DIRECT_FAILED, ROD_DIRECT_STALLED, mat66d, vec6d
+from .rod_direct import ROD_DIRECT_FAILED, ROD_DIRECT_STALE, ROD_DIRECT_STALLED, mat66d, vec6d
 from .rod_direct_kernels import accumulate_rod_body_joint_terms, solve_rod_direct
 from .rod_direct_layout import (
     allocate_rod_direct_layout,
@@ -4444,11 +4444,14 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         }
         self._rod_direct_inv_mass_colour = wp.zeros_like(self.body_inv_mass_effective)
         self._rod_direct_inv_mass_rod = wp.zeros_like(self.body_inv_mass_effective)
-        # Sticky status bits (ROD_DIRECT_FAILED, ROD_DIRECT_STALLED) per rod of the current layout, the bits of
+        # Sticky status bits (ROD_DIRECT_FAILED, _STALLED, _STALE) per rod of the current layout, the bits of
         # earlier layouts, and a flag for a membership change detected under graph capture; all allocated once.
         self._rod_direct_status = wp.zeros(layout.rod_capacity, dtype=wp.int32, device=self.device)
         self._rod_direct_prior_status = wp.zeros(1, dtype=wp.int32, device=self.device)
         self._rod_direct_stale = wp.zeros(1, dtype=wp.int32, device=self.device)
+        self._rod_direct_no_flags = (
+            wp.zeros(model.body_count, dtype=wp.int32, device=self.device) if model.body_flags is None else None
+        )
 
     def _update_rod_direct(self, model: Model) -> None:
         """Rewrite the rod layout in place after a model change; status bits raised so far are kept for
@@ -4486,9 +4489,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         rd = self._rod_direct
         if rd is None:
             return
-        flags = model.body_flags
-        if flags is None:
-            flags = wp.zeros(model.body_count, dtype=wp.int32, device=self.device)
+        flags = model.body_flags if model.body_flags is not None else self._rod_direct_no_flags
         wp.launch(
             kernel=check_rod_membership,
             dim=rd.node_capacity,
@@ -4555,6 +4556,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             )
         status = self._rod_direct_status.numpy()
         prior = int(self._rod_direct_prior_status.numpy()[0])
+        stale = np.flatnonzero(status & ROD_DIRECT_STALE)
+        if stale.size or prior & ROD_DIRECT_STALE:
+            raise RuntimeError(
+                "SolverVBD rigid_rod_direct_solve: rod steps were refused while an inverse mass that crossed zero under "
+                "graph capture had not been notified outside capture; reset() clears this report."
+            )
         failed = np.flatnonzero(status & ROD_DIRECT_FAILED)
         if failed.size or prior & ROD_DIRECT_FAILED:
             raise RuntimeError(

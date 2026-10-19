@@ -91,9 +91,10 @@ options.
 
 The option allocates its arrays once, so a step captured in a CUDA graph stays
 valid after :meth:`~newton.solvers.SolverVBD.notify_model_changed` changes rod
-membership (joint enablement, body flags, inverse masses). Call the
-notification outside capture, and create a new solver if joints become ROD
-joints.
+membership (joint enablement, body flags, inverse masses). Notifications with
+``JOINT_PROPERTIES`` or ``BODY_PROPERTIES`` rewrite the layout on the host, so
+call them outside capture; ``BODY_INERTIAL_PROPERTIES`` alone is checked on the
+device and can be captured. Create a new solver if joints become ROD joints.
 
 .. experimental::
 
