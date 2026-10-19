@@ -7,6 +7,7 @@ import warnings
 
 import warp as wp
 
+from ..exceptions import NewtonDeprecationWarning
 from ..math import quat_decompose, transform_twist, velocity_at_point
 from .enums import BodyFlags, JointType
 from .model import Model
@@ -94,36 +95,12 @@ def invert_2d_rotational_dofs(
 ):
     """
     Computes generalized joint position and velocity coordinates for a 2D rotational joint given the joint axes, relative orientations and angular velocity differences between the two bodies the joint connects.
+
+    Decomposes in the order ``(axis_0, axis_0 x axis_1, axis_1)``, so the locked rotation is the middle angle
+    and both joint coordinates cover their full range.
     """
-    q_off = wp.quat_from_matrix(wp.matrix_from_cols(axis_0, axis_1, wp.cross(axis_0, axis_1)))
-    q_pc = wp.quat_inverse(q_off) * wp.quat_inverse(q_p) * q_c * q_off
-
-    # decompose to a compound rotation each axis
-    angles = quat_decompose(q_pc)
-
-    # find rotation axes
-    local_0 = wp.quat_rotate(q_off, wp.vec3(1.0, 0.0, 0.0))
-    local_1 = wp.quat_rotate(q_off, wp.vec3(0.0, 1.0, 0.0))
-    local_2 = wp.quat_rotate(q_off, wp.vec3(0.0, 0.0, 1.0))
-
-    axis_0 = local_0
-    q_0 = wp.quat_from_axis_angle(axis_0, angles[0])
-
-    axis_1 = wp.quat_rotate(q_0, local_1)
-    q_1 = wp.quat_from_axis_angle(axis_1, angles[1])
-
-    axis_2 = wp.quat_rotate(q_1 * q_0, local_2)
-
-    # convert angular velocity to local space
-    w_err_p = wp.quat_rotate_inv(q_p, w_err)
-
-    # given joint axes and angular velocity error, solve for joint velocities
-    c12 = wp.cross(axis_1, axis_2)
-    c02 = wp.cross(axis_0, axis_2)
-
-    vel = wp.vec2(wp.dot(w_err_p, c12) / wp.dot(axis_0, c12), wp.dot(w_err_p, c02) / wp.dot(axis_1, c02))
-
-    return wp.vec2(angles[0], angles[1]), vel
+    qs, qds = invert_3d_rotational_dofs(axis_0, wp.cross(axis_0, axis_1), axis_1, q_p, q_c, w_err)
+    return wp.vec2(qs[0], qs[2]), wp.vec2(qds[0], qds[2])
 
 
 @wp.func
@@ -233,6 +210,41 @@ def invert_3d_rotational_dofs(
     # Map canonical-basis result back to the user's axes: rotation/velocity around axis_2 equals
     # ``s`` times the same quantity around axis_2_rh (s = -1 iff the user's triple is left-handed).
     return wp.vec3(angles[0], angles[1], s * angles[2]), wp.vec3(velocities[0], velocities[1], s * velocities[2])
+
+
+@wp.func
+def eval_angular_coordinates(
+    joint_axis: wp.array[wp.vec3], axis_start: int, axis_count: int, q_p: wp.quat, q_c: wp.quat
+):
+    """Returns the coordinates of a 2- or 3-axis angular D6 and the world-frame covectors as matrix rows.
+
+    Covector ``k`` maps the relative angular velocity to ``dq_k/dt``, so it is also the torque direction of a
+    generalized force on coordinate ``k``. For two axes, coordinate 2 is the locked rotation about their cross product.
+    """
+    axis_0 = joint_axis[axis_start]
+    axis_1 = joint_axis[axis_start + 1]
+    axis_2 = wp.cross(axis_0, axis_1)
+    if axis_count == 3:
+        axis_2 = joint_axis[axis_start + 2]
+    else:
+        # as in invert_2d_rotational_dofs: the locked rotation is the middle angle
+        axis_2 = axis_1
+        axis_1 = wp.cross(axis_0, axis_2)
+    coords, _vels = invert_3d_rotational_dofs(axis_0, axis_1, axis_2, q_p, q_c, wp.vec3(0.0))
+    a0, a1, a2 = transform_3d_rotational_axes(axis_0, axis_1, axis_2, coords[0], coords[1])
+    a0 = wp.quat_rotate(q_p, a0)
+    a1 = wp.quat_rotate(q_p, a1)
+    a2 = wp.quat_rotate(q_p, a2)
+    if axis_count == 2:
+        coords = wp.vec3(coords[0], coords[2], coords[1])
+        a_locked = a1
+        a1 = a2
+        a2 = a_locked
+
+    # dual basis of the transported axes, bounded near gimbal lock
+    det = wp.dot(a0, wp.cross(a1, a2))
+    inv_det = 1.0 / (wp.sign(det) * wp.max(wp.abs(det), 1.0e-4))
+    return coords, wp.matrix_from_rows(wp.cross(a1, a2), wp.cross(a2, a0), wp.cross(a0, a1)) * inv_det
 
 
 @wp.func
@@ -660,6 +672,8 @@ def eval_fk(
             state.body_qd,
         ],
         device=model.device,
+        # Small blocks spread independent articulations across more SMs.
+        block_dim=16 if model.max_joints_per_articulation <= 4 else 8,
     )
 
 
@@ -1944,7 +1958,7 @@ def eval_mass_matrix(
     if not include_armature:
         warnings.warn(
             _INCLUDE_ARMATURE_DEPRECATION_MSG.format(name="eval_mass_matrix()"),
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
     return _eval_mass_matrix(

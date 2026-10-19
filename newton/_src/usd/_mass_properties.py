@@ -19,6 +19,7 @@ import warp as wp
 
 from ..core import quat_between_axes
 from ..core.types import Axis
+from ..exceptions import NewtonWarning
 from ..geometry import GeoType, Mesh, compute_inertia_shape, transform_inertia
 from . import utils as usd
 
@@ -73,6 +74,7 @@ class _UsdMassProperties:
             self.warned_invalid_density.add(prim_path)
             warnings.warn(
                 f"{prim_path}: authored MassAPI density must be positive and finite; treating it as unspecified.",
+                NewtonWarning,
                 stacklevel=2,
             )
         return None
@@ -89,6 +91,7 @@ class _UsdMassProperties:
             warnings.warn(
                 f"{prim_path}: authored MassAPI diagonalInertia must have finite, nonnegative components; "
                 "treating it as unspecified.",
+                NewtonWarning,
                 stacklevel=2,
             )
         return None
@@ -182,6 +185,7 @@ class _UsdMassProperties:
                 warnings.warn(
                     f"Skipping collider {prim.GetPath()}: authored MassAPI mass must be positive and finite "
                     "to derive volume and density.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
             return None
@@ -190,6 +194,7 @@ class _UsdMassProperties:
         if shape_volume <= 0.0:
             warnings.warn(
                 f"Skipping collider {prim.GetPath()}: unable to derive positive collider volume from authored shape parameters.",
+                NewtonWarning,
                 stacklevel=2,
             )
             return None
@@ -197,6 +202,7 @@ class _UsdMassProperties:
         if density <= 0.0:
             warnings.warn(
                 f"Skipping collider {prim.GetPath()}: derived density from authored mass is non-positive.",
+                NewtonWarning,
                 stacklevel=2,
             )
             return None
@@ -275,6 +281,7 @@ class _UsdMassProperties:
         if shape_mass <= 0.0:
             warnings.warn(
                 f"Skipping collider {prim.GetPath()} in mass aggregation: unable to derive positive unit-density mass.",
+                NewtonWarning,
                 stacklevel=2,
             )
             return None
@@ -388,6 +395,7 @@ class _UsdMassProperties:
         if is_expected_missing and collider_path not in self.warned_missing_collider_mass_info:
             warnings.warn(
                 f"Skipping collider {collider_path} in mass aggregation: missing usable collider mass information.",
+                NewtonWarning,
                 stacklevel=2,
             )
             self.warned_missing_collider_mass_info.add(collider_path)

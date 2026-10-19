@@ -2333,12 +2333,10 @@ class TestDriveNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.TestCas
 
         Regression test for a bug where the Torch path fell back to sequential indices
         into target_pos whenever target_pos_indices was not literally the same array
-        object as pos_indices. This matters in practice for a floating-base robot: the
-        free joint occupies 7 coordinate ("q", position-layout) DOFs but only 6 velocity
-        ("qd") DOFs, so ``pos_indices`` (coord layout) and ``indices``/``target_pos_indices``
-        (legacy DOF layout, see ``newton.use_coord_layout_targets``) are offset
-        differently for the two actuated joints that follow it, and neither equals a plain
-        ``arange(n)``.
+        object as pos_indices. Custom target buffers may use offsets different
+        from both the position coordinates and sequential actuator indices.
+        Exercise those independent mappings with two actuated joints following
+        a floating base.
         """
         self.torch.manual_seed(0)
         net = self.torch.nn.Sequential(self.torch.nn.Linear(2, 1, bias=True)).to(self._torch_dev)
@@ -2351,7 +2349,7 @@ class TestDriveNeuralMLPTorchFormats(_TorchCheckpointTestMixin, unittest.TestCas
         # joint_q layout: 7 free-joint DOFs, then the 2 actuated revolute joints at 7, 8.
         positions = wp.array([0.0] * 7 + [0.3, -0.2], dtype=wp.float32, device=self.device)
         pos_indices = wp.array([7, 8], dtype=wp.uint32, device=self.device)
-        # joint_qd / legacy target layout: 6 free-joint DOFs, then the actuated joints at 6, 7.
+        # Velocity indices follow 6 free-joint DOFs; the custom target buffer uses the same offsets.
         velocities = wp.zeros(8, dtype=wp.float32, device=self.device)
         vel_indices = wp.array([6, 7], dtype=wp.uint32, device=self.device)
         target_pos = wp.array([0.0] * 6 + [1.0, 2.0], dtype=wp.float32, device=self.device)
@@ -2490,12 +2488,10 @@ class TestDriveNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.TestCa
 
         Regression test for a bug where the Torch path fell back to sequential indices
         into target_pos whenever target_pos_indices was not literally the same array
-        object as pos_indices. This matters in practice for a floating-base robot: the
-        free joint occupies 7 coordinate ("q", position-layout) DOFs but only 6 velocity
-        ("qd") DOFs, so ``pos_indices`` (coord layout) and ``indices``/``target_pos_indices``
-        (legacy DOF layout, see ``newton.use_coord_layout_targets``) are offset
-        differently for the two actuated joints that follow it, and neither equals a plain
-        ``arange(n)``.
+        object as pos_indices. Custom target buffers may use offsets different
+        from both the position coordinates and sequential actuator indices.
+        Exercise those independent mappings with two actuated joints following
+        a floating base.
         """
         net = self._make_lstm(hidden=4, layers=1)
         path = self._save_pt2(net, metadata={"effort_scale": 1.0, "num_layers": 1, "hidden_size": 4})
@@ -2507,7 +2503,7 @@ class TestDriveNeuralLSTMTorchFormats(_TorchCheckpointTestMixin, unittest.TestCa
         # joint_q layout: 7 free-joint DOFs, then the 2 actuated revolute joints at 7, 8.
         positions = wp.array([0.0] * 7 + [0.3, -0.2], dtype=wp.float32, device=self.device)
         pos_indices = wp.array([7, 8], dtype=wp.uint32, device=self.device)
-        # joint_qd / legacy target layout: 6 free-joint DOFs, then the actuated joints at 6, 7.
+        # Velocity indices follow 6 free-joint DOFs; the custom target buffer uses the same offsets.
         velocities = wp.zeros(8, dtype=wp.float32, device=self.device)
         vel_indices = wp.array([6, 7], dtype=wp.uint32, device=self.device)
         target_pos = wp.array([0.0] * 6 + [1.0, 2.0], dtype=wp.float32, device=self.device)
@@ -5502,7 +5498,8 @@ class TestNeuralActuatorUsdParsing(unittest.TestCase):
 class TestTargetPosIndicesSeparation(unittest.TestCase):
     """Actuator must read joint_target_q via target_pos_indices, not pos_indices."""
 
-    def test_target_pos_read_from_dof_index_not_coord_index(self):
+    def test_target_pos_read_from_custom_index(self):
+        """Read a custom target buffer through its explicit index mapping."""
         device = wp.get_device()
 
         def _a(vals: Sequence[float], dtype: type = wp.float32) -> wp.array[Any]:
@@ -5515,7 +5512,7 @@ class TestTargetPosIndicesSeparation(unittest.TestCase):
 
         indices = _a([1], dtype=wp.uint32)  # DOF index 1
         pos_indices = _a([3], dtype=wp.uint32)  # coord index 3 (joint_q layout)
-        target_pos_indices = _a([1], dtype=wp.uint32)  # DOF index 1 (legacy DOF target layout)
+        target_pos_indices = _a([1], dtype=wp.uint32)  # index 1 in a custom target buffer
 
         ctrl = DrivePD(kp=_a([kp]), kd=_a([0.0]), const_effort=_a([0.0]))
         actuator = Actuator(
@@ -5561,10 +5558,8 @@ class TestTargetPosIndicesSeparation(unittest.TestCase):
 class TestControlTargetAttrDefaults(unittest.TestCase):
     """``control_target_pos_attr`` / ``control_target_vel_attr`` accept ``None``.
 
-    Both parameters used to default to ``None``, meaning "resolve against the
-    active target layout". The layout switch removed that resolution step, but
-    callers may still pass ``None`` explicitly; it must keep selecting the
-    canonical names instead of reaching ``getattr()`` with a non-string.
+    Explicit ``None`` must select the canonical target attribute names
+    instead of reaching ``getattr()`` with a non-string.
     """
 
     def _actuator(self, **kwargs):

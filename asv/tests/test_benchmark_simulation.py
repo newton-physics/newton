@@ -389,6 +389,99 @@ class TestSimulationBenchmarks(unittest.TestCase):
         self.assertIsNotNone(model_key)
         self.assertEqual(model_key, solver_key)
 
+    def test_large_world_startup_phases(self):
+        """Include finalization in model time and collision setup in solver time."""
+        benchmark = bench_model.KpiInitializeModelLargeWorld()
+        clock = [0.0]
+
+        def advance(seconds):
+            clock[0] += seconds
+            return Mock()
+
+        builder = Mock()
+        builder.add_body.side_effect = lambda **kwargs: advance(1.0)
+        builder.finalize.side_effect = lambda: advance(2.0)
+        phases = {}
+        with (
+            patch.object(bench_model.newton, "ModelBuilder", return_value=builder),
+            patch.object(bench_model.newton.Mesh, "create_box"),
+            patch.object(bench_model.newton, "CollisionPipeline", side_effect=lambda *args, **kwargs: advance(3.0)),
+            patch.object(bench_model, "SolverXPBD", side_effect=lambda *args: advance(4.0)),
+            patch("time.perf_counter", side_effect=lambda: clock[0]),
+            patch.object(wp, "synchronize_device", side_effect=lambda: advance(0.5)),
+        ):
+            benchmark._initialize(4, phases)
+
+        self.assertEqual(phases, {"finalize": 2.5, "model": 7.0, "solver": 7.5})
+
+    def test_large_world_startup_cache_excludes_warmup(self):
+        """Average matching warm samples and expose each initialization metric."""
+        benchmark = bench_model.KpiInitializeModelLargeWorld()
+        cases = []
+        clock = [0.0]
+
+        def initialize(shape_count, phase_times=None):
+            cases.append(shape_count)
+            clock[0] += 100.0 if phase_times is None else 10.0
+            if phase_times is not None:
+                scale = len(cases) - 2
+                phase_times.update(model=4.0 * scale, finalize=2.0 * scale, solver=3.0 * scale)
+            return Mock(), Mock(), Mock()
+
+        with (
+            patch.object(benchmark, "_initialize", side_effect=initialize),
+            patch.object(wp, "get_cuda_device_count", return_value=1),
+            patch.object(wp, "ScopedDevice"),
+            patch.object(wp, "synchronize_device"),
+            patch("time.perf_counter", side_effect=lambda: clock[0]),
+        ):
+            metrics = benchmark.setup_cache()
+
+        self.assertEqual(cases, [4, 10000, 10000, 10000, 10000])
+        self.assertEqual(benchmark.track_initialize_model(metrics), 8.0)
+        self.assertEqual(benchmark.track_mean_finalize_time(metrics), 4.0)
+        self.assertEqual(benchmark.track_initialize_solver(metrics), 6.0)
+        self.assertEqual(benchmark.track_mean_startup_time(metrics), 10.0)
+
+    def test_large_world_cpu_memory_accepts_startup_cache(self):
+        """Warm only CPU without CUDA and accept optional cached timing metrics."""
+        benchmark = bench_model.KpiInitializeModelLargeWorld()
+        with (
+            patch.object(benchmark, "_initialize", return_value=(Mock(), Mock(), Mock())) as initialize,
+            patch.object(wp, "get_cuda_device_count", return_value=0),
+            patch.object(wp, "ScopedDevice") as scoped_device,
+            patch.object(wp, "synchronize_device"),
+        ):
+            self.assertIsNone(benchmark.setup_cache())
+            initialize.assert_called_once_with(4)
+            scoped_device.assert_called_once_with("cpu")
+            for metrics in (None, {"model": 1.0}):
+                benchmark.peakmem_initialize_model_cpu(metrics)
+            self.assertEqual(initialize.call_count, 3)
+            self.assertEqual(initialize.call_args.args, (10000,))
+
+    def test_large_world_startup_metrics_share_one_cache(self):
+        """Discover the phase metrics and CPU peak memory with a shared startup cache."""
+        prefix = "setup.bench_model.KpiInitializeModelLargeWorld."
+        inventory = {
+            entry["name"].removeprefix(prefix): entry
+            for entry in self._discover_benchmarks(pr_gate=False)
+            if entry["name"].startswith(prefix)
+        }
+        self.assertEqual(
+            set(inventory),
+            {
+                "track_initialize_model",
+                "track_mean_finalize_time",
+                "track_initialize_solver",
+                "track_mean_startup_time",
+                "peakmem_initialize_model_cpu",
+            },
+        )
+        cache_keys = {entry["setup_cache_key"] for entry in inventory.values()}
+        self.assertEqual(len(cache_keys), 1)
+        self.assertNotIn(None, cache_keys)
+
     def test_metric_setup_caches_skip_without_cuda(self):
         """Skip metric caches without constructing CPU workloads."""
         with (

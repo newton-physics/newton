@@ -9,6 +9,7 @@ import time
 import unittest
 import warnings
 import xml.etree.ElementTree as ET
+from copy import deepcopy
 from enum import IntFlag
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -7505,6 +7506,18 @@ class TestMuJoCoOptions(unittest.TestCase):
         self.assertEqual(solver.mj_model.opt.sdf_iterations, 20)
         self.assertEqual(solver.mj_model.opt.sdf_initpoints, 50)
 
+    def test_options_discrete_integrator(self):
+        """Forward the discrete integrator to MuJoCo Warp and step finitely."""
+        model = self._create_multiworld_model(world_count=2)
+        solver = SolverMuJoCo(model, integrator="discrete", disable_contacts=True)
+        mujoco = SolverMuJoCo._mujoco
+        self.assertEqual(solver.mj_model.opt.integrator, mujoco.mjtIntegrator.mjINT_DISCRETE)
+        self.assertEqual(solver.mjw_model.opt.integrator, mujoco.mjtIntegrator.mjINT_DISCRETE)
+
+        state_in, state_out, control = model.state(), model.state(), model.control()
+        solver.step(state_in, state_out, control, None, 0.001)
+        self.assertTrue(np.all(np.isfinite(state_out.joint_q.numpy())))
+
     def test_options_constructor_override(self):
         """Give constructor options precedence over authored values in every world."""
         world_count = 2
@@ -7753,13 +7766,14 @@ class TestMuJoCoOptions(unittest.TestCase):
         self.assertTrue(np.isfinite(observables.qfrc_actuator.numpy()).all())
 
     def test_native_cpu_observable_capabilities(self):
-        """Reject unsupported body/contact exports while retaining native actuator forces."""
+        """Validate native observable support for each integrator family."""
         model = self._create_multiworld_model(world_count=1)
         solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+        for kind in (solver.ObservableKind.BODY_QDD, solver.ObservableKind.BODY_PARENT_F):
+            self.assertIn(kind, solver.supported_observables)
         for flag in (
-            solver.ObservableKind.BODY_QDD,
-            solver.ObservableKind.BODY_PARENT_F,
             solver.ObservableKind.CONTACT_F,
+            solver.ObservableKind.OVERFLOW,
         ):
             with self.subTest(flag=flag):
                 self.assertNotIn(flag, solver.supported_observables)
@@ -7767,14 +7781,133 @@ class TestMuJoCoOptions(unittest.TestCase):
                     solver.observables(kinds={flag})
         flag = SolverMuJoCo.ObservableKind.QFRC_ACTUATOR
         observables = solver.observables(solver.supported_observables)
-        self.assertEqual(observables.kinds, {flag})
-        self.assertIsNone(observables.body_qdd)
-        self.assertIsNone(observables.body_parent_f)
+        self.assertEqual(observables.kinds, {flag, solver.ObservableKind.BODY_QDD, solver.ObservableKind.BODY_PARENT_F})
+        self.assertIsNotNone(observables.body_qdd)
+        self.assertIsNotNone(observables.body_parent_f)
         self.assertIsNone(observables.contact_f)
         observables.qfrc_actuator.fill_(float("nan"))
         solver.mjw_data.qfrc_actuator.fill_(1234.0)
         solver.step(model.state(), model.state(), model.control(), None, 0.01, observables=observables)
         np.testing.assert_allclose(observables.qfrc_actuator.numpy(), solver.mj_data.qfrc_actuator, atol=1e-6)
+
+        # Discrete stepping works, but its native integrator has no Python binding
+        # for inserting body exports before integration.
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True, integrator=int(solver._mujoco.mjtIntegrator.mjINT_DISCRETE))
+        self.assertEqual(solver.supported_observables, {flag})
+        for kind in (solver.ObservableKind.BODY_QDD, solver.ObservableKind.BODY_PARENT_F):
+            with self.subTest(integrator="discrete", kind=kind):
+                with self.assertRaisesRegex(ValueError, "does not support"):
+                    solver.observables({kind})
+        observables = solver.observables(solver.supported_observables)
+        state_out = model.state()
+        control = model.control()
+        control.joint_f.fill_(1.0)
+        solver.step(model.state(), state_out, control, None, 0.01, observables=observables)
+        self.assertEqual(solver.mj_data.time, 0.01)
+        np.testing.assert_allclose(state_out.joint_q.numpy(), solver.mj_data.qpos, atol=1e-6)
+        np.testing.assert_allclose(state_out.joint_qd.numpy(), solver.mj_data.qvel, atol=1e-6)
+        self.assertGreater(np.abs(state_out.joint_qd.numpy()).max(), 0.0)
+        np.testing.assert_allclose(observables.qfrc_actuator.numpy(), solver.mj_data.qfrc_actuator, atol=1e-6)
+
+    def _create_body_observable_builder(self):
+        """Build a moving chain with nonzero velocity-dependent acceleration."""
+        builder = newton.ModelBuilder()
+        link_a = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.1))
+        link_b = builder.add_link(mass=0.5, inertia=wp.mat33(np.eye(3) * 0.05))
+        joint_a = builder.add_joint_revolute(
+            -1,
+            link_a,
+            axis=newton.Axis.Y,
+            child_xform=wp.transform((0.0, 0.0, 0.3), wp.quat_identity()),
+        )
+        joint_b = builder.add_joint_revolute(
+            link_a,
+            link_b,
+            axis=newton.Axis.X,
+            parent_xform=wp.transform((0.0, 0.0, -0.3), wp.quat_identity()),
+            child_xform=wp.transform((0.0, 0.0, 0.3), wp.quat_identity()),
+        )
+        builder.add_articulation([joint_a, joint_b])
+        builder.joint_q[:] = [0.7, -0.4]
+        builder.joint_qd[:] = [2.0, -3.0]
+        return builder
+
+    def test_native_cpu_body_observables_match_mujoco_warp(self):
+        """Match native CPU and Warp diagnostics for a moving chain."""
+        kinds = SolverMuJoCo.ObservableKind
+        model = self._create_body_observable_builder().finalize(device="cpu")
+        results = {}
+        for use_cpu in (True, False):
+            solver = SolverMuJoCo(model, use_mujoco_cpu=use_cpu, disable_contacts=True, disable_sensors=True)
+            observables = solver.observables({kinds.BODY_QDD, kinds.BODY_PARENT_F})
+            observables.body_qdd.fill_(float("nan"))
+            observables.body_parent_f.fill_(float("nan"))
+            solver.step(model.state(), model.state(), model.control(), None, 0.005, observables=observables)
+            results[use_cpu] = (observables.body_qdd.numpy(), observables.body_parent_f.numpy())
+
+        for cpu_values, warp_values in zip(results[True], results[False], strict=True):
+            self.assertTrue(np.isfinite(cpu_values).all())
+            self.assertGreater(np.abs(cpu_values).max(), 1.0e-3)
+            np.testing.assert_allclose(cpu_values, warp_values, rtol=1.0e-4, atol=1.0e-4)
+
+    def test_native_cpu_body_observables_preserve_integrators(self):
+        """Export pre-integration native diagnostics without changing the integrated state.
+
+        Exercise each integrator because RK4 overwrites intermediate kinematics,
+        while the implicit integrators use a separate velocity update. Reuse one
+        model and verify legacy destinations alongside solver observables.
+        """
+        builder = self._create_body_observable_builder()
+        builder.joint_damping[:] = [0.2, 0.3]
+        builder.joint_limit_upper[0] = 0.5
+        model = builder.finalize()
+        for integrator in ("euler", "implicit", "implicitfast", "rk4"):
+            with self.subTest(integrator=integrator):
+                solver = SolverMuJoCo(
+                    model, use_mujoco_cpu=True, disable_contacts=True, disable_sensors=True, integrator=integrator
+                )
+                reference = SolverMuJoCo(
+                    model, use_mujoco_cpu=True, disable_contacts=True, disable_sensors=True, integrator=integrator
+                )
+                mujoco = solver._mujoco
+                data = deepcopy(solver.mj_data)
+                state_in, state_out, reference_out = model.state(), model.state(), model.state()
+                control = model.control()
+                solver._apply_mjc_control(model, state_in, control, data)
+                solver._update_mjc_data(data, model, state_in)
+                solver.mj_model.opt.timestep = 0.005
+                mujoco.mj_forward(solver.mj_model, data)
+                mujoco.mj_rnePostConstraint(solver.mj_model, data)
+                expected_qdd = np.empty((model.body_count, 6))
+                expected_parent_f = np.empty_like(expected_qdd)
+                mapping = solver.mjc_body_to_newton.numpy()[0]
+                for mj_body, body in enumerate(mapping):
+                    if body < 0:
+                        continue
+                    acceleration = np.empty(6)
+                    mujoco.mj_objectAcceleration(
+                        solver.mj_model, data, mujoco.mjtObj.mjOBJ_BODY, mj_body, acceleration, 0
+                    )
+                    expected_qdd[body, :3] = acceleration[3:] + solver.mj_model.opt.gravity
+                    expected_qdd[body, 3:] = acceleration[:3]
+                    wrench = data.cfrc_int[mj_body]
+                    offset = data.xipos[mj_body] - data.subtree_com[solver.mj_model.body_rootid[mj_body]]
+                    expected_parent_f[body, :3] = wrench[3:]
+                    expected_parent_f[body, 3:] = wrench[:3] - np.cross(offset, wrench[3:])
+
+                observables = solver.observables({solver.ObservableKind.BODY_QDD, solver.ObservableKind.BODY_PARENT_F})
+                state_out.body_qdd = wp.empty_like(observables.body_qdd)
+                state_out.body_parent_f = wp.empty_like(observables.body_parent_f)
+                reference.step(state_in, reference_out, control, None, 0.005)
+                solver.step(state_in, state_out, control, None, 0.005, observables=observables)
+                np.testing.assert_allclose(solver.mj_data.qpos, reference.mj_data.qpos, atol=1.0e-12, rtol=1.0e-12)
+                np.testing.assert_allclose(solver.mj_data.qvel, reference.mj_data.qvel, atol=1.0e-12, rtol=1.0e-12)
+                self.assertEqual(solver.mj_data.time, reference.mj_data.time)
+                for source in (observables, state_out):
+                    np.testing.assert_allclose(source.body_qdd.numpy(), expected_qdd, rtol=1.0e-4, atol=1.0e-4)
+                    np.testing.assert_allclose(
+                        source.body_parent_f.numpy(), expected_parent_f, rtol=1.0e-4, atol=1.0e-4
+                    )
 
     def test_enable_multiccd_default_off(self):
         """Verify that multi-CCD is disabled by default (Newton default differs from MuJoCo 3.8+)."""
@@ -9611,7 +9744,7 @@ class TestMuJoCoSolverFreeJointNonWorldParent(unittest.TestCase):
             self.skipTest(f"MuJoCo or deps not installed: {e}")
         mjc_warnings = [w for w in caught if "SolverMuJoCo" in str(w.message)]
         self.assertEqual(len(mjc_warnings), 1)
-        self.assertEqual(mjc_warnings[0].category, UserWarning)
+        self.assertEqual(mjc_warnings[0].category, newton.exceptions.NewtonWarning)
         self.assertIn("floater", str(mjc_warnings[0].message))
 
 
@@ -11063,8 +11196,9 @@ class TestUsdActuatorTypeAttributes(unittest.TestCase):
         stage = _create_actuator_test_stage(extra_actuator_attrs=set_actuator_attrs)
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        with self.assertWarnsRegex(RuntimeWarning, r"gaintype 'pid' on prim '/World/actuator'"):
+        with self.assertLogs("newton", level="WARNING") as logs:
             builder.add_usd(stage)
+        self.assertTrue(any("gaintype 'pid' on prim '/World/actuator'" in line for line in logs.output), logs.output)
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -13523,8 +13657,11 @@ class TestActuatorTypes(unittest.TestCase):
         for gaintype in ("dcmotor", "so3", "pid", "bogus"):
             with self.subTest(gaintype=gaintype):
                 builder = newton.ModelBuilder()
-                with self.assertWarnsRegex(RuntimeWarning, rf"gaintype '{gaintype}' on actuator 'a'"):
+                with self.assertLogs("newton", level="WARNING") as logs:
                     builder.add_mjcf(self._mjcf(gaintype=gaintype))
+                self.assertTrue(
+                    any(f"gaintype '{gaintype}' on actuator 'a'" in line for line in logs.output), logs.output
+                )
 
 
 if __name__ == "__main__":

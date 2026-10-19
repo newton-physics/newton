@@ -18,6 +18,7 @@ import warp as wp
 import newton as nt
 
 from ..core.types import Axis, override
+from ..exceptions import NewtonDeprecationWarning
 from ..utils.deprecation import deprecate_nonkeyword_arguments
 from ..utils.render import copy_rgb_frame_uint8
 from .camera import Camera
@@ -2126,7 +2127,7 @@ class ViewerGL(ViewerBase):
                 raise TypeError("Specify only one of `output` and `target_image`")
             warnings.warn(
                 "ViewerGL.get_frame(target_image=...) is deprecated as of Newton 1.7; use output=... instead.",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=3,
             )
             output = target_image
