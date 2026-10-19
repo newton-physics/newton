@@ -1985,6 +1985,79 @@ class TestRigidContactNormal(unittest.TestCase):
     pass
 
 
+def _rounded_convex_separations(probes, device):
+    """Collide each probe kind against a box and a convex hull at known gaps; return (probe, target, gap, separation)
+    per contact and the number of cases."""
+    with wp.ScopedDevice(device):
+        half = (0.05, 0.01, 0.05)
+        hull = newton.Mesh.create_box(*half, duplicate_vertices=False, compute_inertia=False)
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        builder.rigid_gap = 0.002
+        cases = []
+        for i, (probe, target, gap) in enumerate(itertools.product(probes, ("box", "hull"), (-2.0e-4, 0.0, 3.0e-4))):
+            x = 0.25 * i
+            radius = 0.01
+            body = builder.add_body(xform=wp.transform(wp.vec3(x, 0.0, 0.0), wp.quat_identity()))
+            if probe == "sphere":
+                builder.add_shape_sphere(body, radius=radius)
+            else:
+                builder.add_shape_capsule(body, radius=radius, half_height=0.02)
+            other = builder.add_body(xform=wp.transform(wp.vec3(x, -(radius + gap + half[1]), 0.0), wp.quat_identity()))
+            if target == "box":
+                builder.add_shape_box(other, hx=half[0], hy=half[1], hz=half[2])
+            else:
+                builder.add_shape_convex_hull(other, mesh=hull)
+            cases.append((probe, target, gap))
+        model = builder.finalize()
+        state = model.state()
+        pipeline = newton.CollisionPipeline(model)
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+
+        n = int(contacts.rigid_contact_count.numpy()[0])
+        shape0 = contacts.rigid_contact_shape0.numpy()[:n]
+        shape1 = contacts.rigid_contact_shape1.numpy()[:n]
+        point0 = contacts.rigid_contact_point0.numpy()[:n]
+        point1 = contacts.rigid_contact_point1.numpy()[:n]
+        normal = contacts.rigid_contact_normal.numpy()[:n]
+        margin0 = contacts.rigid_contact_margin0.numpy()[:n]
+        margin1 = contacts.rigid_contact_margin1.numpy()[:n]
+        body_q = state.body_q.numpy()
+        shape_body = model.shape_body.numpy()
+
+        def to_world(point, shape):
+            q = body_q[shape_body[shape]]
+            return q[:3] + np.array(wp.quat_rotate(wp.quat(*q[3:7]), wp.vec3(*point)))
+
+        rows = []
+        for k in range(n):
+            separation = float(
+                np.dot(normal[k], to_world(point1[k], shape1[k]) - to_world(point0[k], shape0[k]))
+                - margin0[k]
+                - margin1[k]
+            )
+            rows.append((*cases[min(shape0[k], shape1[k]) // 2], separation))
+        return rows, len(cases)
+
+
+def test_rounded_convex_contact_separation(test, device):
+    """Spheres and capsules against a box and a convex hull report their true surface separation.
+
+    The GJK/MPR path shrinks a sphere or capsule to its core plus a small inflation radius and restores the rest of
+    the radius afterwards, so the written separation must equal the geometric surface gap. Each probe sits at a known
+    gap (penetrating, touching, separated within the contact gap) from a box face and from a convex hull of the same
+    box. The tolerance is far below the inflation radius, so restoring the whole radius instead of the remainder fails.
+    A sphere-only model runs the lean post-processor (``post_process_minkowski_only``); a capsule selects the full one.
+    """
+    for probes in (("sphere",), ("sphere", "capsule")):
+        with test.subTest(probes=probes):
+            rows, count = _rounded_convex_separations(probes, device)
+            for probe, target, gap, separation in rows:
+                test.assertAlmostEqual(separation, gap, delta=1.0e-6, msg=f"{probe} vs {target} at gap {gap}")
+            seen = {(probe, target, gap) for probe, target, gap, _ in rows}
+            test.assertEqual(len(seen), count, "every probe must produce a contact")
+
+
 def test_rigid_contact_normal_sphere_sphere(test, device, broad_phase: str):
     """Verify rigid_contact_normal on four sphere-pair scenarios.
 
@@ -7004,6 +7077,14 @@ for _expert_test in (
     test_expert_narrow_phase_empty_voxel_resolution,
 ):
     add_function_test(TestCollisionPipeline, _expert_test.__name__, _expert_test, devices=get_test_devices())
+
+
+add_function_test(
+    TestCollisionPipeline,
+    "test_rounded_convex_contact_separation",
+    test_rounded_convex_contact_separation,
+    devices=get_test_devices(),
+)
 
 
 if __name__ == "__main__":

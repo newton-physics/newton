@@ -25,6 +25,10 @@ from .types import GeoType
 # Configuration flag for multi-contact generation
 ENABLE_MULTI_CONTACT = True
 
+# GJK/MPR see a sphere or capsule as its core (point or segment) inflated by this radius; the rest of the radius
+# is restored by the post-processors below, so a reported distance is the true surface distance.
+MINKOWSKI_CORE_RADIUS = wp.constant(1.0e-4)
+
 # Configuration flag for tiled BVH queries (experimental)
 ENABLE_TILE_BVH_QUERY = True
 
@@ -159,12 +163,14 @@ def post_process_minkowski_only(
     radius_eff_b = contact_data.radius_eff_b
 
     if type_a == GeoType.SPHERE or type_a == GeoType.CAPSULE:
-        contact_data.contact_point_center = contact_data.contact_point_center + normal * (radius_eff_a * 0.5)
-        contact_data.contact_distance = contact_data.contact_distance - radius_eff_a
+        restored_a = radius_eff_a - MINKOWSKI_CORE_RADIUS
+        contact_data.contact_point_center = contact_data.contact_point_center + normal * (restored_a * 0.5)
+        contact_data.contact_distance = contact_data.contact_distance - restored_a
 
     if type_b == GeoType.SPHERE or type_b == GeoType.CAPSULE:
-        contact_data.contact_point_center = contact_data.contact_point_center - normal * (radius_eff_b * 0.5)
-        contact_data.contact_distance = contact_data.contact_distance - radius_eff_b
+        restored_b = radius_eff_b - MINKOWSKI_CORE_RADIUS
+        contact_data.contact_point_center = contact_data.contact_point_center - normal * (restored_b * 0.5)
+        contact_data.contact_distance = contact_data.contact_distance - restored_b
 
     return contact_data
 
@@ -207,13 +213,15 @@ def post_process_axial_on_discrete_contact(
     # 1. Minkowski object processing for spheres and capsules
     # Adjust contact point and distance for sphere/capsule A
     if type_a == GeoType.SPHERE or type_a == GeoType.CAPSULE:
-        contact_data.contact_point_center = contact_data.contact_point_center + normal * (radius_eff_a * 0.5)
-        contact_data.contact_distance = contact_data.contact_distance - radius_eff_a
+        restored_a = radius_eff_a - MINKOWSKI_CORE_RADIUS
+        contact_data.contact_point_center = contact_data.contact_point_center + normal * (restored_a * 0.5)
+        contact_data.contact_distance = contact_data.contact_distance - restored_a
 
     # Adjust contact point and distance for sphere/capsule B
     if type_b == GeoType.SPHERE or type_b == GeoType.CAPSULE:
-        contact_data.contact_point_center = contact_data.contact_point_center - normal * (radius_eff_b * 0.5)
-        contact_data.contact_distance = contact_data.contact_distance - radius_eff_b
+        restored_b = radius_eff_b - MINKOWSKI_CORE_RADIUS
+        contact_data.contact_point_center = contact_data.contact_point_center - normal * (restored_b * 0.5)
+        contact_data.contact_distance = contact_data.contact_distance - restored_b
 
     # 2. Axial shape rolling stabilization (cylinders and cones on discrete surfaces)
     is_discrete_a = is_discrete_shape(type_a)
@@ -339,7 +347,7 @@ def create_compute_gjk_mpr_contacts(
         radius_eff_a = float(0.0)
         radius_eff_b = float(0.0)
 
-        small_radius = 0.0001
+        small_radius = MINKOWSKI_CORE_RADIUS
 
         # Get shape types from shape data
         type_a = shape_a_data.shape_type
