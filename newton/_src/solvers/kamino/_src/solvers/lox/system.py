@@ -50,6 +50,9 @@ __all__ = [
 
 wp.set_module_options({"enable_backward": False})
 
+_WIDE_TILE_MAX_BLOCKS_PER_SM = 4
+"""Multi-body blocks per multiprocessor below which the sparse LLT factorizes and solves with wide tiles."""
+
 
 ###
 # Interfaces
@@ -146,12 +149,19 @@ class LOXSystem:
                 sparse_info.dim = wp.array(active_dimensions, dtype=wp.int32, device=self.device)
             sparse_info.total_mat_size = info.total_mat_size
             sparse_info.total_vec_size = info.total_vec_size
-            # Small tiles skip most of the zero blocks of a tree-like body graph,
-            # and one warp per world matches the work of a single-RHS tile solve.
+            # Batches that fill the device take small tiles, which skip most of the zero
+            # blocks of a tree-like body graph, and one warp per world, which matches the
+            # work of a single-RHS tile solve. Smaller batches take wide tiles, wide thread
+            # blocks and panel-parallel factorization, which halve the sequential tile
+            # steps of each block.
+            wide_tiles = (
+                self.device.is_cuda and self.num_sparse_blocks < _WIDE_TILE_MAX_BLOCKS_PER_SM * self.device.sm_count
+            )
             self.linear_solver = LLTBlockedRCMTraversalSolver(
                 operator=DenseLinearOperatorData(info=sparse_info, mat=self._data.matrix),
-                block_size=16,
-                solve_block_dim=32,
+                block_size=32 if wide_tiles else 16,
+                solve_block_dim=256 if wide_tiles else 32,
+                parallel_factorization=wide_tiles,
                 reuse_permutation=True,
                 dtype=wp.float32,
                 device=self.device,
