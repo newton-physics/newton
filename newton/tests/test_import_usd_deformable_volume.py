@@ -751,6 +751,24 @@ class TestUSDDeformableVolume(unittest.TestCase):
 
         self.assertEqual(result["path_soft_attrs"]["/World/Soft"]["resolved_density"], 123.5)
 
+    def test_volume_particle_radius_fallback_warns_on_builder_override(self):
+        """A user-set ModelBuilder.default_particle_radius no longer reaches sim-API volume
+        deformables: import warns with a migration recipe and still applies the
+        half-default-thickness fallback."""
+        for override, expect_warning in ((0.05, True), (0.1, False)):
+            with self.subTest(override=override):
+                stage = _deformable_stage()
+                _author_unit_tet(stage, "/World/Soft", sim_api=True)
+
+                builder = newton.ModelBuilder()
+                builder.default_particle_radius = override
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    builder.add_usd(stage)
+                mentions = [w for w in caught if "default_particle_radius" in str(w.message)]
+                self.assertEqual(bool(mentions), expect_warning)
+                self.assertTrue(np.allclose(builder.particle_radius, np.full(len(builder.particle_q), 0.0005)))
+
     def test_volume_collision_limitation(self):
         """Newton cannot disable particle collision: a volume deformable without
         an enabled PhysicsCollisionAPI warns and imports colliding."""
