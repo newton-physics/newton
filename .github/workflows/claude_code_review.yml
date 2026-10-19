@@ -355,14 +355,23 @@ jobs:
                caller, `.. deprecated::` note, changelog fragment); names that
                never shipped need none. New public API needs Google-style
                docstrings with Args and Returns and SI units.
-            3. **Tests and CI cost.** Would each regression test fail without
-               the fix? Flag tests that also pass on the base, assert only that
-               something runs or is finite, or use inputs where the fixed term
-               is zero. Flag new test files that belong in an existing file or
-               class, solver tests outside `newton/tests/<solver>/`, mock-only
-               tests, CUDA variants of host-only code, redundant parameter
-               sweeps, and added runtime without measurements. Apply the same
-               care to benchmarks and `asv/pr_benchmarks.txt`.
+            3. **Tests and CI cost.** Keep CI time flat: test only what is truly
+               needed. Would each regression test fail without the fix? Flag
+               tests that also pass on the base, assert only that something
+               runs or is finite, or use inputs where the fixed term is zero.
+               Flag new tests that could instead extend an existing test, new
+               test files that belong in an existing file or class, solver
+               tests outside `newton/tests/<solver>/`, mock-only tests, CUDA
+               variants of host-only code, redundant parameter sweeps, and added
+               runtime without measurements; say what could be merged or
+               removed. Do not ask for new tests, test cases, parameter
+               combinations, devices, or longer simulations unless a real
+               behavior change would otherwise be untested and that gap is a P0
+               or P1 risk. Even then, propose extending or updating a specific
+               existing test (name the file and test, for example an extra
+               assertion or `subTest` in a test that already builds a suitable
+               model) rather than a new one. Apply the same care to benchmarks
+               and `asv/pr_benchmarks.txt`.
             4. **Documentation.** When behavior, defaults, or public API
                change, check that docstrings, `docs/` pages, examples, and the
                changelog fragment describe the new behavior: Grep `docs/`,
@@ -397,7 +406,8 @@ jobs:
               are not keyword-only, internals or duplicate options made public,
               and new public API without correct docstrings. Also missing
               changelog fragments for user-facing changes, tests that do not
-              guard the fix, significant CI cost, and performance regressions.
+              guard the fix (propose updating them, not adding new ones),
+              significant CI cost, and performance regressions.
             - `P2`: non-blocking but worth considering: naming polish in
               private code, simpler or reused code, clearer docs.
             - `nit`: a P2 that is purely cosmetic and optional.
