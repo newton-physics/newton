@@ -47,7 +47,7 @@ def test_body_made_kinematic_is_not_moved(test, device):
 
     def make_tip_kinematic(solver):
         flags = model.body_flags.numpy()
-        flags[tip] |= int(newton.BodyFlags.KINEMATIC)
+        flags[tip] = int(newton.BodyFlags.KINEMATIC)  # replaces DYNAMIC: one runtime state flag per body
         model.body_flags.assign(flags)
         solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
 
@@ -137,7 +137,7 @@ def test_captured_step_follows_model_changes(test, device):
 
     def make_tip_kinematic(model):
         flags = model.body_flags.numpy()
-        flags[-1] |= int(newton.BodyFlags.KINEMATIC)
+        flags[-1] = int(newton.BodyFlags.KINEMATIC)
         model.body_flags.assign(flags)
         return newton.ModelFlags.BODY_PROPERTIES
 

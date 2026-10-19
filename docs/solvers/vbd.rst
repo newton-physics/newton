@@ -98,6 +98,12 @@ device and can be captured. Create a new solver if joints become ROD joints.
 
 .. experimental::
 
+   ``SolverVBD(rigid_rod_direct_solve=True)`` and
+   :meth:`~newton.solvers.SolverVBD.check_rod_direct_status` may change without
+   the normal deprecation period. The option does not support DAT
+   (``rigid_soft_enable_dat``), Dahl rod friction, or tendons routed over rod
+   bodies.
+
 The block solve costs more per iteration than the coloured per-body update,
 and each rod is solved serially by one thread. Measured with
 ``asv/benchmarks/simulation/bench_rod_direct_solve.py`` (512 rod segments in
@@ -116,10 +122,13 @@ total, 60 steps of 10 iterations, seconds):
      - 0.26 / 8.69
      - 0.26 / 0.44
 
-These are totals at equal iteration counts, not time to a given accuracy: at 10
-iterations, per-body updates leave a stiff, slender self-weight cantilever
-drooping 40 % past its equilibrium, which the direct solve reaches to 1 %.
-Leave the option off for rods that per-body VBD already resolves
+These are totals at equal iteration counts, not time to a given accuracy. In
+``test_heavy_cantilever_settles_to_discrete_equilibrium``
+(``newton/tests/vbd/test_rod_direct_regime.py``: a clamped 12-segment rod under
+its own weight at stretch/bend ratios of 1e3 and 1e6, ``dt = 1/120`` s, 10
+iterations, 2 s), the direct solve's tip droop is within 1 % of the exact
+equilibrium of the discrete rod; with the option off, the per-body solve
+droops about 40 % past it. Leave the option off for rods that per-body VBD already resolves
 (stretch/bend ratios of order 10 or less), for scenes dominated by a few long
 rods on a GPU, and with the unsupported options listed in the reference.
 
