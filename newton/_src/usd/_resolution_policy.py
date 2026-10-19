@@ -10,6 +10,7 @@ import warnings
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
+from ..exceptions import NewtonWarning
 from ..sim.enums import JointTargetMode
 from ..solvers.mujoco.constants import SOLREF_MODE_FORCE_SPACE, SOLREF_MODE_MJCF_DEFAULT, SOLREF_MODE_RAW
 from . import utils as usd
@@ -364,6 +365,7 @@ def _resolve_physics_material(
     if not math.isfinite(desc.density):
         warnings.warn(
             f"{prim.GetPath()}: authored material density must be finite; treating it as unspecified.",
+            NewtonWarning,
             stacklevel=3,
         )
 
@@ -430,6 +432,7 @@ def _resolve_shape_offsets(
             warnings.warn(
                 f"Prim '{prim.GetPath()}': legacy translation yields "
                 f"negative margin (mjc_margin={margin_val}, mjc_gap={mjc_gap}).",
+                NewtonWarning,
                 stacklevel=4,
             )
         margin_val = newton_margin
@@ -510,6 +513,7 @@ def _resolve_shape_sdf(
             f"{prim.GetPath()}: NewtonSDFCollisionAPI and NewtonMeshCollisionAPI are "
             f"independent collision representations and should not be co-applied; "
             f"SDF configuration will be used.",
+            NewtonWarning,
             stacklevel=4,
         )
 
@@ -525,6 +529,7 @@ def _resolve_shape_sdf(
         warnings.warn(
             f"{prim.GetPath()}: newton:sdfTargetVoxelSize={sdf_target_voxel_size!r} is invalid "
             f"(must be > 0); falling back to default.",
+            NewtonWarning,
             stacklevel=4,
         )
         sdf_target_voxel_size = None
@@ -538,6 +543,7 @@ def _resolve_shape_sdf(
         warnings.warn(
             f"{prim.GetPath()}: newton:sdfMaxResolution={sdf_max_resolution!r} is invalid "
             f"(must be > 0); falling back to default.",
+            NewtonWarning,
             stacklevel=4,
         )
         sdf_max_resolution = None
@@ -545,6 +551,7 @@ def _resolve_shape_sdf(
         warnings.warn(
             f"{prim.GetPath()}: newton:sdfMaxResolution={sdf_max_resolution!r} must be "
             f"divisible by 8 (SDF volumes are allocated in 8x8x8 tiles); falling back to default.",
+            NewtonWarning,
             stacklevel=4,
         )
         sdf_max_resolution = None
@@ -552,6 +559,7 @@ def _resolve_shape_sdf(
         warnings.warn(
             f"{prim.GetPath()}: both newton:sdfTargetVoxelSize and newton:sdfMaxResolution "
             f"are set; sdfTargetVoxelSize takes precedence.",
+            NewtonWarning,
             stacklevel=4,
         )
         sdf_max_resolution = None
@@ -587,6 +595,7 @@ def _resolve_shape_sdf(
         warnings.warn(
             f"{prim.GetPath()}: newton:sdfTextureFormat={sdf_texture_format!r} is invalid "
             f"(expected one of {list(_valid_sdf_tex_fmts)}); falling back to default.",
+            NewtonWarning,
             stacklevel=4,
         )
         sdf_texture_format = None
@@ -599,6 +608,7 @@ def _resolve_shape_sdf(
     elif sdf_padding is not None and sdf_padding < 0:
         warnings.warn(
             f"{prim.GetPath()}: newton:sdfPadding={sdf_padding!r} is invalid (must be >= 0); falling back to default.",
+            NewtonWarning,
             stacklevel=4,
         )
         sdf_padding = None
@@ -632,6 +642,7 @@ def _resolve_shape_hydroelastic(
     elif kh is not None and kh <= 0:
         warnings.warn(
             f"{prim.GetPath()}: newton:hydroelasticStiffness={kh!r} is invalid (must be > 0); falling back to default.",
+            NewtonWarning,
             stacklevel=4,
         )
         kh = None
@@ -659,6 +670,7 @@ def _resolve_shape_hydroelastic(
             f"{prim.GetPath()}: hydroelastic mesh requires newton:sdfMaxResolution "
             f"or newton:sdfTargetVoxelSize so an SDF can be generated; "
             f"disabling hydroelastic for this shape.",
+            NewtonWarning,
             stacklevel=4,
         )
         is_hydroelastic = False
@@ -682,6 +694,7 @@ def _resolve_shape_shell(
         else:
             warnings.warn(
                 f"Shape {prim.GetPath()}: negative shell thickness {shell_thickness_val}; falling back to margin.",
+                NewtonWarning,
                 stacklevel=4,
             )
             inertia_margin = margin_val

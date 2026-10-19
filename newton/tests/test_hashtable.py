@@ -68,7 +68,7 @@ def test_insert_single_slot(test, device):
     """Test inserting values into different slots of the same key."""
     values_per_key = 13
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def insert_test_kernel(
         keys: wp.array[wp.uint64],
         values: wp.array[wp.uint64],
@@ -110,7 +110,7 @@ def test_atomic_max_behavior(test, device):
     """Test that atomic max correctly keeps the maximum value."""
     values_per_key = 13
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def atomic_max_test_kernel(
         keys: wp.array[wp.uint64],
         values: wp.array[wp.uint64],
@@ -147,7 +147,7 @@ def test_multiple_keys(test, device):
     """Test inserting multiple different keys."""
     values_per_key = 1
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def multi_key_kernel(
         keys: wp.array[wp.uint64],
         values: wp.array[wp.uint64],
@@ -182,7 +182,7 @@ def test_clear(test, device):
     """Test clearing the hash table."""
     values_per_key = 13
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def insert_kernel(
         keys: wp.array[wp.uint64],
         values: wp.array[wp.uint64],
@@ -222,7 +222,7 @@ def test_clear_active(test, device):
     """Test clearing only active entries (keys only, not values)."""
     values_per_key = 13
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def insert_kernel(
         keys: wp.array[wp.uint64],
         values: wp.array[wp.uint64],
@@ -266,7 +266,7 @@ def test_high_collision(test, device):
     """Test with many threads competing for same keys."""
     values_per_key = 13
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def collision_kernel(
         keys: wp.array[wp.uint64],
         values: wp.array[wp.uint64],
@@ -307,7 +307,7 @@ def test_early_exit_optimization(test, device):
     """
     values_per_key = 13
 
-    @wp.kernel
+    @wp.kernel(module="unique")
     def insert_descending_kernel(
         keys: wp.array[wp.uint64],
         values: wp.array[wp.uint64],

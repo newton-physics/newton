@@ -162,6 +162,21 @@ Apply the :ref:`source-code-guidelines` to every code and public-API change.
 They are authoritative for public exports, namespaces, naming, signatures,
 types, documentation, testing, compatibility, and repository conventions.
 
+For test changes, explicitly assess :ref:`test-organization-and-runtime`.
+Confirm that tests exercise the actual implementation and verify meaningful
+technical results. Flag tests that replace the functionality under test with
+mocks or only check fake interfaces, expected calls, or canned responses. Apply
+the ``newton/tests/test_api.py`` exception only to targeted checks of actual API
+contracts; it does not excuse mock-only tests or missing functional coverage.
+Inspect related existing coverage and check whether new assertions or scenarios
+could extend it, whether new solver-specific modules are placed correctly, and
+whether related tests reuse an appropriate class, module, and fixture. Assess
+redundant simulation work and added CI cost; new or expanded expensive scenarios
+need before/after measurements and justification. Ground concerns in the
+specific duplicated coverage, avoidable setup, or misplaced tests. Preserve
+meaningful coverage, failure diagnosis, and test independence, and weigh setup
+reuse against lost class-level parallelism when recommending consolidation.
+
 For public API changes, check the canonical public path, stability status,
 signature and defaults, behavior and return contract, documentation, and
 generated API reference. Enforce the deprecation policy and migration guidance
@@ -170,6 +185,8 @@ for incompatible changes.
 Check the repository obligations relevant to the change, including:
 
 - focused regression coverage and documentation;
+- diagnostics that follow the error, warning, and logging rules, including
+  Newton warning categories and module loggers instead of ``print()``;
 - accurate, correctly categorized Towncrier fragments for user-facing changes;
 - dependency and lockfile changes, licenses, and required notices;
 - packaging, supported platforms, workflows, and downstream compatibility;
