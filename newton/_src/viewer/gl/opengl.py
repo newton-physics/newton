@@ -48,7 +48,7 @@ def _register_cuda_gl_buffer(buffer, device):
         if "unavailable" not in _CUDA_INTEROP_WARNINGS:
             warnings.warn(
                 "CUDA-OpenGL interoperability is unavailable; using host buffer uploads.",
-                RuntimeWarning,
+                NewtonWarning,
                 stacklevel=3,
             )
             _CUDA_INTEROP_WARNINGS.add("unavailable")

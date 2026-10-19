@@ -288,11 +288,9 @@ def _convex_hull_adjacency(source: Mesh, *, certify: bool = True) -> list[set[in
             edge_incidence[min(first, second), max(first, second)] += 1
     if not edge_incidence or any(count != 2 for count in edge_incidence.values()):
         if not certify and vertex_count >= _CONVEX_SUPPORT_MIN_VERTICES:
-            warnings.warn(
+            logger.warning(
                 "Convex support acceleration requires complete closed hull topology; "
-                "falling back to exhaustive support mapping.",
-                RuntimeWarning,
-                stacklevel=2,
+                "falling back to exhaustive support mapping."
             )
         return None
 
@@ -4259,12 +4257,17 @@ class ModelBuilder:
         force_position_velocity_actuation: bool = False,
         override_root_xform: bool = False,
         joint_damping_mode: Literal["passive", "drive"] | None = None,
+        package_dirs: list[str] | None = None,
     ):
         """
         Parses a URDF file and adds the bodies and joints to the given ModelBuilder.
 
         Args:
-            source: The filename of the URDF file to parse, or the URDF XML string content.
+            source: URDF filename, local ``file:`` URI, ``package://`` or ``model://`` URI, or XML content.
+            package_dirs: Extra package roots for source and asset URIs; for ``package://robot/...``,
+                supply the directory containing ``robot``. Requires ``newton[importers]``.
+                Roots supplement environment paths without guaranteed precedence or restricting access.
+                Plain relative paths use the URDF directory; file URIs require an absolute local path.
             xform: The transform to apply to the root body. If None, the transform is set to identity.
             override_root_xform: If ``True``, the articulation root's world-space
                 transform is replaced by ``xform`` instead of being composed with it,
@@ -4395,6 +4398,7 @@ class ModelBuilder:
             force_position_velocity_actuation=force_position_velocity_actuation,
             override_root_xform=override_root_xform,
             joint_damping_mode=joint_damping_mode,
+            package_dirs=package_dirs,
         )
 
     def add_usd(
