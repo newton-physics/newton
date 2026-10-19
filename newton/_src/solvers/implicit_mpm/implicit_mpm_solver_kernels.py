@@ -1286,6 +1286,8 @@ def make_cell_color_kernel(geo_partition: fem.GeometryPartition):
         partition_arg: geo_partition.CellArg,
         stencil_size: int,
         voxels: wp.array[wp.vec3i],
+        voxel_envs: wp.array[int],
+        env_offsets: wp.array[wp.vec3i],
         res: wp.vec3i,
         colors: wp.array[int],
         color_indices: wp.array[int],
@@ -1299,7 +1301,8 @@ def make_cell_color_kernel(geo_partition: fem.GeometryPartition):
             return
 
         if voxels:
-            c = voxels[cell]
+            # Color environment-local coordinates so every environment sweeps its cells in the same order.
+            c = voxels[cell] - env_offsets[voxel_envs[cell]]
         else:
             c = fem.Grid3D.get_cell(res, cell)
 
@@ -1322,6 +1325,34 @@ def fill_uniform_color_block_indices(
     elem_idx = color_indices[0, i]
     color_indices[0, i] = elem_idx * nodes_per_element
     color_indices[1, i] = (elem_idx + 1) * nodes_per_element
+
+
+def make_discontinuous_color_block_indices_kernel(
+    geo_partition: fem.GeometryPartition, space_partition: fem.SpacePartition
+):
+    @fem.cache.dynamic_kernel((geo_partition.name, space_partition.name))
+    def fill_discontinuous_color_block_indices(
+        cell_arg: geo_partition.CellArg,
+        partition_arg: space_partition.PartitionArg,
+        nodes_per_element: int,
+        color_indices: wp.array2d[int],
+    ):
+        # A discontinuous cell's nodes stay contiguous in the partition, which
+        # may order them by environment.
+        i = wp.tid()
+        elem_idx = color_indices[0, i]
+        cell = geo_partition.cell_index(cell_arg, elem_idx)
+        first = fem.NULL_NODE_INDEX
+        if cell != -1:
+            first = space_partition.partition_node_index(partition_arg, cell * nodes_per_element)
+        if first == fem.NULL_NODE_INDEX:
+            color_indices[0, i] = 0
+            color_indices[1, i] = 0
+            return
+        color_indices[0, i] = first
+        color_indices[1, i] = first + nodes_per_element
+
+    return fill_discontinuous_color_block_indices
 
 
 def make_dynamic_color_block_indices_kernel(geo_partition: fem.GeometryPartition):

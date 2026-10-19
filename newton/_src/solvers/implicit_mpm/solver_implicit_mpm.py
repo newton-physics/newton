@@ -78,6 +78,7 @@ from .implicit_mpm_solver_kernels import (
     invert_point_particle_indices,
     make_cell_color_kernel,
     make_contact_cell_keys_kernel,
+    make_discontinuous_color_block_indices_kernel,
     make_dynamic_color_block_indices_kernel,
     make_inverse_rotate_vectors,
     make_rotate_vectors,
@@ -4221,9 +4222,13 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             stencil_size = int(np.round(np.cbrt(scratch.velocity_nodes_per_element)))
             if isinstance(grid, fem.Nanogrid):
                 voxels = grid._cell_ijk
+                voxel_envs = grid.cell_env
+                env_offsets = grid.env_offsets
                 res = wp.vec3i(0)
             else:
                 voxels = None
+                voxel_envs = None
+                env_offsets = None
                 res = grid.res
 
             colored_element_count = space_partition.geo_partition.cell_count()
@@ -4238,6 +4243,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     partition_arg,
                     stencil_size,
                     voxels,
+                    voxel_envs,
+                    env_offsets,
                     res,
                     colors,
                     color_indices,
@@ -4303,6 +4310,17 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 make_dynamic_color_block_indices_kernel(space_partition.geo_partition),
                 dim=colored_element_count,
                 inputs=[partition_arg, pic.cell_particle_offsets, scratch.color_indices],
+            )
+        elif is_dg:
+            wp.launch(
+                make_discontinuous_color_block_indices_kernel(space_partition.geo_partition, space_partition),
+                dim=colored_element_count,
+                inputs=[
+                    partition_arg,
+                    space_partition.partition_arg_value(device=scratch.color_indices.device),
+                    nodes_per_color_element,
+                    scratch.color_indices,
+                ],
             )
         else:
             wp.launch(

@@ -1,0 +1,1 @@
+Fix `SolverImplicitMPM` Gauss-Seidel solves on sparse grids with `separate_worlds=True` and discontinuous strain bases, which raced on shared velocity nodes and swept identical worlds in different orders.

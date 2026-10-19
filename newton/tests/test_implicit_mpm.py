@@ -1266,6 +1266,46 @@ def test_multiworld_sparse_gimp_matches_independent(test, device):
     _run_multiworld_reference_case(device, grid_type="sparse", integration_scheme="gimp")
 
 
+def test_multiworld_sparse_gs_identical_worlds(test, device):
+    """Verify colored Gauss-Seidel sweeps identical sparse worlds in the same order."""
+    local = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    SolverImplicitMPM.register_custom_attributes(local)
+    local.add_particle_grid(
+        pos=wp.vec3(-0.2, -0.2, 0.06),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(0.3, 0.1, -1.5),
+        dim_x=8,
+        dim_y=8,
+        dim_z=6,
+        cell_x=0.025,
+        cell_y=0.025,
+        cell_z=0.025,
+        mass=0.025**3 * 1500.0,
+        jitter=0.0,
+        radius_mean=0.0125,
+    )
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+    SolverImplicitMPM.register_custom_attributes(builder)
+    builder.add_world(local)
+    builder.add_world(local)
+    builder.add_ground_plane()
+    model = builder.finalize(device=device)
+    config = SolverImplicitMPM.Config(
+        voxel_size=0.05,
+        grid_type="sparse",
+        strain_basis="P0",
+        solver="gs",
+        max_iterations=50,
+        tolerance=1.0e-6,
+        separate_worlds=True,
+        max_active_cell_count=1024,
+    )
+    _, state = _step_mpm(model, config, step_count=20, dt=1.0 / 240.0)
+    starts = model.particle_world_start.numpy()
+    q = state.particle_q.numpy()
+    np.testing.assert_allclose(q[starts[0] : starts[1]], q[starts[1] : starts[2]], atol=1.0e-6)
+
+
 def test_multiworld_sparse_empty_worlds_padding_matches_independent(test, device):
     """Verify multi-world sparse empty worlds padding matches independent."""
     populated_worlds = (1, 3)
@@ -2800,6 +2840,13 @@ add_function_test(
     TestImplicitMPM,
     "test_multiworld_sparse_gimp_matches_independent",
     test_multiworld_sparse_gimp_matches_independent,
+    devices=basic_cuda_devices,
+)
+
+add_function_test(
+    TestImplicitMPM,
+    "test_multiworld_sparse_gs_identical_worlds",
+    test_multiworld_sparse_gs_identical_worlds,
     devices=basic_cuda_devices,
 )
 
