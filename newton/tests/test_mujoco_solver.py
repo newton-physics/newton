@@ -11028,7 +11028,7 @@ class TestActuatorLengthRange(unittest.TestCase):
 
 
 class TestActuatorDampratioMultiWorldRuntime(unittest.TestCase):
-    """Verify per-world derived quantities after mass randomization."""
+    """Verify damping initialization and runtime updates across backends and worlds."""
 
     MJCF = """<?xml version="1.0" ?>
     <mujoco>
@@ -11093,14 +11093,20 @@ class TestActuatorDampratioMultiWorldRuntime(unittest.TestCase):
         builder.joint_target_ke[1] = 25.0
         builder.joint_target_kd[2] = 5.0
         model = builder.finalize()
-        solver = SolverMuJoCo(model, disable_contacts=True)
 
-        mujoco = solver._mujoco
+        mujoco = self.solver._mujoco
         native = mujoco.MjModel.from_xml_string(self.MJCF)
         modified = mujoco.MjModel.from_xml_string(
             self.MJCF.replace('type="hinge"', 'type="hinge" armature="0.3"').replace('kp="100"', 'kp="25"')
         )
         expected = [native.actuator_biasprm[0, 2], modified.actuator_biasprm[0, 2], -5.0]
+        # Explicitly separated CPU mode only simulates the template world.
+        cpu_solver = SolverMuJoCo(model, use_mujoco_cpu=True, separate_worlds=True, disable_contacts=True)
+        np.testing.assert_allclose(cpu_solver.mj_model.actuator_biasprm[0, 2], expected[0], rtol=1e-5)
+        np.testing.assert_allclose(model.joint_target_kd.numpy(), [-expected[0], 0.0, 5.0], rtol=1e-5)
+        np.testing.assert_array_equal(model.mujoco.actuator_biasprm.numpy()[1:, 2], 1.0)
+        # A subsequent batched solver must still resolve the remaining worlds.
+        solver = SolverMuJoCo(model, disable_contacts=True)
         np.testing.assert_allclose(solver.mjw_model.actuator_biasprm.numpy()[:, 0, 2], expected, rtol=1e-5)
         np.testing.assert_allclose(model.joint_target_kd.numpy(), -np.array(expected), rtol=1e-5)
         # Reuse the published coefficients without another damping-ratio resolution.

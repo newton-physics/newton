@@ -4307,6 +4307,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         2. **Newton model custom attribute** (``model.mujoco.<option>``) - Supports per-world values.
         3. **MuJoCo default** - Used if neither of the above is set.
 
+        For imported MJCF position drives using joint-target control and ``dampratio``,
+        construction writes resolved damping into zero entries of ``model.joint_target_kd``
+        and consumes the placeholders in ``model.mujoco.actuator_biasprm``. These coefficients
+        use the initial physical inertia, armature, and position gain; later inertia edits
+        or solver reconstruction do not recompute them. Update ``joint_target_kd`` explicitly
+        to change damping. Other consumers of the same model see the initialized values.
+        Native CPU mode resolves only the template world when ``separate_worlds=True``.
+
         Args:
             model: The model to be simulated.
             separate_worlds: If True, each Newton world is mapped to a separate MuJoCo world. Defaults to `not use_mujoco_cpu`.
@@ -10559,7 +10567,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 continue
             # Ball axes share the imported actuator's base DOF and damping ratio.
             source_dof = int(source_dofs[source_rows[actuator]])
-            for world in range(nworld):
+            # Native CPU MuJoCo only refreshes the template world's constants.
+            for world in range(1 if self.use_mujoco_cpu else nworld):
                 global_dof = world * dofs_per_world + int(dof)
                 row = position_source_rows.get(world * dofs_per_world + source_dof)
                 if row is None or modes[global_dof] != JointTargetMode.POSITION:
