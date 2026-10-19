@@ -4233,7 +4233,8 @@ f 4 5 8
             np.testing.assert_allclose([s[0], s[1], s[2]], [1.0, 0.5, 2.0], atol=1e-4)
 
     def test_mesh_geom_type_defaults(self):
-        import mujoco
+        """Fit MuJoCo's default sphere to a mesh geom unless a mesh type is set or inherited."""
+        mujoco = SolverMuJoCo.import_mujoco()[0]
 
         cases = (
             ("", "", GeoType.SPHERE),
