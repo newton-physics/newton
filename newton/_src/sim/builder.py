@@ -3695,10 +3695,9 @@ class ModelBuilder:
         world_guides = np.flatnonzero(np.asarray(builder.tendon_guide_body, dtype=np.int64) == -1)
         for name in ("tendon_guide_offset", "tendon_guide_axis"):
             attribute_specs.pop(name)
-            start = array_starts.get(name, int(bases["tendon_guide"]))
+            start = int(bases["tendon_guide"])
             values = getattr(self, name)
-            if name not in array_starts:
-                values.extend(source_list(name) * world_count)
+            values.extend(source_list(name) * world_count)
             is_offset = name == "tendon_guide_offset"
             if world_guides.size == 0 or (not is_offset and translations_only):
                 continue
@@ -3712,11 +3711,8 @@ class ModelBuilder:
                 if is_offset:
                     transformed += np.asarray(xform.p, dtype=np.float32)
                 targets = start + world_index * counts["tendon_guide"] + world_guides
-                if isinstance(values, np.ndarray):
-                    values[targets] = transformed
-                else:
-                    for target, vector in zip(targets, transformed.tolist(), strict=True):
-                        values[target] = tuple(vector)
+                for target, vector in zip(targets, transformed.tolist(), strict=True):
+                    values[target] = tuple(vector)
 
         for body_start, shape_start in zip(body_starts, shape_starts, strict=True):
             for body, shapes in builder.body_shapes.items():

@@ -88,10 +88,10 @@ fixed-joint collapse transforms them into the retained body's frame, or world
 space when the body is merged into the world. Placement transforms apply directly
 to world-attached guides when composing or replicating builders.
 
-Tendon guides no longer prevent fixed bodies from collapsing into world. This can
-remove anchor bodies and change the body counts and indices compared with the
-previous behavior. Pass their fixed joints in `collapse_fixed_joints(joints_to_keep=...)`
-if those body frames must remain, and do not reuse pre-collapse body indices.
+Fixed-joint collapse may merge a guide's body into world, which removes that body
+and changes later body indices. Pass its fixed joint in
+`collapse_fixed_joints(joints_to_keep=...)` if the body frame must remain, and do
+not reuse pre-collapse body indices.
 
 ## Guide types
 

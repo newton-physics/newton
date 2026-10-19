@@ -62,7 +62,7 @@ class TestTendonBuilder(unittest.TestCase):
         np.testing.assert_allclose(placed.tendon_guide_axis[2], [1.0, 0.0, 0.0])
         self.assertEqual(placed.tendon_guide_body, [-1, 0, -1, 1])
 
-        # Exercise the array-backed path with rotation, an existing prefix, and an identity copy.
+        # Preserve list-backed guide data during replication with rotation, a prefix, and an identity copy.
         target = newton.ModelBuilder()
         target.add_world(source)
         target.replicate(source, 2, xforms=[xform, wp.transform_identity()])
