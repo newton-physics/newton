@@ -39,6 +39,9 @@ _AOUSD_DEFAULT_THICKNESS = 1.0e-3
 _AOUSD_DEFAULT_YOUNGS_MODULUS = 1.0e6
 _AOUSD_DEFAULT_POISSONS_RATIO = 0.3
 _USD_FLOAT_MAX = float(np.finfo(np.float32).max)
+# ModelBuilder's stock default_particle_radius (newton/_src/sim/builder.py). Only a
+# comparison reference to detect a user override; never a fallback value.
+_BUILDER_STOCK_PARTICLE_RADIUS = 0.1
 
 
 def _is_usd_float_representable(value: float) -> bool:
