@@ -413,6 +413,12 @@ the articulation. A welded rod graph gets one free-rooted articulation per conne
 each of its curves keeps its own body range but shares that articulation. The imported model is
 ready for :meth:`~newton.ModelBuilder.finalize` with no extra steps.
 
+A cable-owned articulation resolves self-collision from the curve prim (see the articulation
+remapping below), falling back to the ``enable_self_collisions`` argument. The attribute is read
+directly from the curve; no articulation API schema needs to be applied to it. In a welded graph,
+any member curve authoring self-collision off disables it for the whole graph. A cable joined to
+a rigid body's articulation follows that articulation's setting.
+
 .. code-block:: python
 
     result = builder.add_usd("cables.usda", return_deformable_results=True)
@@ -564,9 +570,20 @@ authored ``mjc:gravcomp`` takes precedence, including partial compensation
 and an explicit zero. This mapping uses MuJoCo's existing gravity compensation;
 it does not add per-body gravity support to other solvers.
 
+For mesh colliders with ``physics:approximation = "convexDecomposition"`` and
+``PhysxConvexDecompositionCollisionAPI`` applied, enabling
+:class:`newton.usd.SchemaResolverPhysx` imports
+``physxConvexDecompositionCollision:maxConvexHulls`` (default 32) as CoACD's
+hull-count limit with merging enabled, independently for each connected component.
+``physxConvexDecompositionCollision:hullVertexLimit`` (default 64) sets the mesh's
+hull vertex limit, taking precedence over ``physxConvexHullCollision:hullVertexLimit``
+for these prims. Newton's existing hull reduction applies that vertex limit to each
+output hull. Disconnected components remain separate; the result need not match
+PhysX cooking.
+
 **Newton articulation remapping:**
 
-On articulation root prims (with ``PhysicsArticulationRootAPI`` or ``NewtonArticulationRootAPI``), the following is resolved:
+On articulation root prims (with ``PhysicsArticulationRootAPI`` or ``NewtonArticulationRootAPI``) and cable ``BasisCurves`` prims, the following is resolved:
 
 .. list-table:: Newton Articulation Remapping
    :header-rows: 1

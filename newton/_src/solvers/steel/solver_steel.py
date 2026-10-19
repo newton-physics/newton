@@ -16,6 +16,7 @@ import warp as wp
 
 from ...core.reset import reset_world_selected
 from ...core.types import override
+from ...exceptions import NewtonWarning
 from ...geometry.flags import ShapeFlags
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelBuilder, ModelFlags, State, StateFlags
 from ...sim.articulation import eval_fk
@@ -90,6 +91,8 @@ from .kernels import (
     compute_contact_spatial_force_from_impulses,
     compute_delta_and_accumulate,
     compute_dense_contact_bounds,
+    compute_effective_joint_armature,
+    compute_free_root_rotation,
     compute_mf_body_Hinv,
     compute_mf_effective_mass_and_rhs,
     compute_mf_velocity_rhs,
@@ -122,6 +125,8 @@ from .kernels import (
     flatten_propagation_joint_S,
     flush_propagation_free_body_qd_to_vout,
     gather_contact_warmstart,
+    gather_free_root_anchors,
+    gather_group_armature,
     gather_JY_to_world,
     gather_propagation_unit_meta,
     gather_tau_to_groups,
@@ -156,6 +161,9 @@ from .kernels import (
     remove_free_root_transport_from_qdd,
     reset_row_warmstart,
     rhs_accum_world_par_art,
+    rotate_mf_body_Hinv_to_free_root_anchor,
+    rotate_mf_rows_to_free_root_anchor,
+    rotate_propagation_rows_to_free_root_anchor,
     scale_array_inplace,
     scatter_augmented_drive_dof_K,
     scatter_qdd_from_groups,
@@ -1193,7 +1201,8 @@ class SolverSteel(SolverBase):
     does not simulate bodies that are not connected through joints. Floating bases and
     free bodies need an explicit free joint, see :meth:`~newton.ModelBuilder.add_joint_free`
     (:meth:`~newton.ModelBuilder.add_body` adds one). Free-joint ``joint_qd`` is
-    ``(v_com, omega)`` in world frame, the convention of :func:`newton.eval_fk`.
+    ``(v_com, omega)`` in the frame of the joint's parent anchor (``joint_X_p``), which is the
+    world frame for an identity anchor, the convention of :func:`newton.eval_fk`.
 
     Supported features:
 
@@ -1680,12 +1689,10 @@ class SolverSteel(SolverBase):
                 of different sizes overlap. Results are unchanged; CPU devices and models with
                 one size group ignore it.
             double_buffer: Keep two sets of the grouped mass-matrix and Jacobian buffers and
-                clear the set a step used on a separate CUDA stream while the next step runs
-                on the other set. Results are unchanged; CPU devices and the sparse mass
-                factors ignore it. Within a captured graph the clearing overlaps the next
-                step; after an eager step, the stream's later work waits for its clearing.
-                Steps and graph launches of one solver must be ordered on one stream (or
-                through explicit stream dependencies).
+                clear the set a step used on a separate CUDA stream, which the step joins
+                before it returns. Results are unchanged; CPU devices and the sparse mass
+                factors ignore it. Steps and graph launches of one solver must be ordered
+                on one stream (or through explicit stream dependencies).
             friction_anchor_beta: Position-correction gain of persistent friction patches;
                 ``0`` selects point friction. ``None`` selects ``0.2`` with
                 ``solve_mode="matrix_free"``, and point friction with ``solve_mode="split"``,
@@ -1974,7 +1981,7 @@ class SolverSteel(SolverBase):
                     "The contact_compliance material law uses point friction; it does not support "
                     "persistent friction patches. Set friction_anchor_beta=0 to select point friction "
                     "without this warning.",
-                    UserWarning,
+                    NewtonWarning,
                     stacklevel=2,
                 )
             elif (
@@ -1986,7 +1993,7 @@ class SolverSteel(SolverBase):
                 warnings.warn(
                     f"friction_mode={friction_mode!r} uses point friction; it does not support persistent "
                     "friction patches. Set friction_anchor_beta=0 to select point friction without this warning.",
-                    UserWarning,
+                    NewtonWarning,
                     stacklevel=2,
                 )
             else:
@@ -2117,7 +2124,7 @@ class SolverSteel(SolverBase):
                 "Patch friction selects its own friction locations and carries tangential displacement. "
                 "contact_shared_anchor still applies to normal rows; set friction_anchor_beta=0 "
                 "to apply shared-anchor flags to point friction rows as well.",
-                UserWarning,
+                NewtonWarning,
                 stacklevel=2,
             )
         configure_contact_torsion(self)
@@ -2379,7 +2386,7 @@ class SolverSteel(SolverBase):
             if self._has_prescribed_response
             else wp.zeros((1, 1), dtype=wp.float32, device=model.device)
         )
-        self._scatter_armature_to_groups()
+        self._update_effective_armature()
         self._init_tiled_kernels(model)
         self._init_streams(model)
         # Free-body groups read their body inertia directly; every other responding
@@ -2540,9 +2547,8 @@ class SolverSteel(SolverBase):
         return self._namespaced_attribute("min_torsional_patch_radius")
 
     def _update_kinematic_state(self) -> None:
-        """Refresh cached kinematic flags and effective joint armature."""
+        """Refresh cached kinematic flags from the host copy of ``body_flags``."""
         model = self.model
-        armature = model.joint_armature.numpy().copy()
         joint_mask = np.zeros(model.joint_count, dtype=np.int32)
         dof_mask = np.zeros(model.joint_dof_count, dtype=np.int32)
 
@@ -2554,12 +2560,7 @@ class SolverSteel(SolverBase):
                 if not kinematic_bodies[joint_child[joint]]:
                     continue
                 joint_mask[joint] = 1
-                dof_start = joint_qd_start[joint]
-                dof_end = joint_qd_start[joint + 1]
-                if dof_end <= dof_start:
-                    continue
-                dof_mask[dof_start:dof_end] = 1
-                armature[dof_start:dof_end] = 1.0e10
+                dof_mask[joint_qd_start[joint] : joint_qd_start[joint + 1]] = 1
 
         self._validate_connect_parent_membership()
         if self._model_plan is not None:
@@ -2573,15 +2574,37 @@ class SolverSteel(SolverBase):
                         "reconstruct the solver and recapture its CUDA graph."
                     )
 
-        self._joint_armature_effective = armature
-        if armature.size:
-            self._joint_armature_device.assign(armature.astype(np.float32))
         self._kinematic_dof_mask_host = dof_mask.copy()
         self._kinematic_joint_mask.assign(joint_mask)
         self._kinematic_dof_mask.assign(dof_mask)
 
+    def _update_effective_armature(self) -> None:
+        """Rebuild the effective joint armature and its size-grouped copies on the device."""
+        model = self.model
+        if model.joint_dof_count:
+            wp.launch(
+                compute_effective_joint_armature,
+                model.joint_dof_count,
+                inputs=[model.joint_armature, self._kinematic_dof_mask],
+                outputs=[self._joint_armature_device],
+                device=model.device,
+            )
+        for size in self._size_groups:
+            wp.launch(
+                gather_group_armature,
+                (self._n_arts_by_size[size], size),
+                inputs=[
+                    self._group_to_art[size],
+                    self._articulation_dof_start,
+                    self._articulation_H_rows,
+                    self._joint_armature_device,
+                ],
+                outputs=[self._R_by_size[size]],
+                device=model.device,
+            )
+
     @override
-    def notify_model_changed(self, flags: ModelFlags | int) -> None:
+    def notify_model_changed(self, flags: ModelFlags | int, *, world_mask: "wp.array[wp.bool] | None" = None) -> None:
         """Refresh cached solver data after model changes.
 
         Joint (frames), joint DOF, DOF force (drive gains), DOF inertial (armature), body
@@ -2597,21 +2620,35 @@ class SolverSteel(SolverBase):
         :attr:`constraint_overflow` is not cleared, see :meth:`reset`.
 
         Body, inertial, joint DOF, DOF inertial and shape changes discard the warm-start
-        impulses. With friction patches, shape changes also discard the anchors of the
-        bodies whose collision geometry changed; this copies the shape geometry to the host,
-        so issue such notifications outside CUDA graph capture.
+        impulses of the worlds selected by ``world_mask``. With friction patches, shape changes
+        also discard the anchors of the bodies whose collision geometry changed, in every world.
+
+        Joint, joint DOF (including the DOF inertial and force flags), body inertial and shape
+        notifications run on the device without host synchronization, so they can be captured
+        in a CUDA graph and replayed after the model arrays are edited in place. A captured
+        notification reads the arrays it was captured with; after replacing a model array,
+        notify eagerly or recapture. Body notifications read ``body_flags`` on the host.
+        Sleeping, and the positive-restitution checks of the split solve and of sparse mass
+        factors (with restitution enabled), also read model data on the host, so issue those
+        notifications outside CUDA graph capture.
 
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` indicating which model properties changed.
+            world_mask: Optional boolean mask of shape ``(world_count + 1,)`` in the :meth:`reset`
+                layout, selecting the worlds whose model data changed. Only their warm-start
+                impulses are discarded; cached model data is refreshed for every world. ``None``
+                discards the warm-start impulses of every world.
         """
+        world_mask = self._normalize_reset_world_mask(world_mask)
         if flags & ModelFlags.CONSTRAINT_PROPERTIES:
             _validate_equality_constraints(self.model)
         if self._sleeping is not None:
             self._sleeping.notify(flags)
         dof_inertial = ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
-        if flags & (ModelFlags.BODY_PROPERTIES | dof_inertial):
+        if flags & ModelFlags.BODY_PROPERTIES:
             self._update_kinematic_state()
-            self._scatter_armature_to_groups()
+        if flags & (ModelFlags.BODY_PROPERTIES | dof_inertial):
+            self._update_effective_armature()
             self._mass_update_requested.fill_(1)
         if flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES):
             self._refresh_passive_joint_damping()
@@ -2621,6 +2658,7 @@ class SolverSteel(SolverBase):
             self._refresh_shape_materials()
             self._check_restitution_support()
         if flags & ModelFlags.JOINT_PROPERTIES:
+            self._refresh_free_root_anchors()
             # Joint frames move the bodies the mass matrix is built from.
             self._mass_update_requested.fill_(1)
         if flags & ModelFlags.BODY_INERTIAL_PROPERTIES and self.model.body_count:
@@ -2658,7 +2696,7 @@ class SolverSteel(SolverBase):
             | dof_inertial
             | ModelFlags.SHAPE_PROPERTIES
         ):
-            self._clear_warmstart_history(None)
+            self._clear_warmstart_history(world_mask)
 
     def _clear_warmstart_history(self, world_mask: "wp.array[wp.bool] | None") -> None:
         """Discard the carried contact impulses of the selected worlds (all worlds for ``None``)."""
@@ -2828,7 +2866,7 @@ class SolverSteel(SolverBase):
                 "other than 0. Global articulations are solved in world 0, so such contacts cannot be solved: "
                 "they are dropped, counted and flagged in constraint_overflow. Use world geometry or a "
                 "kinematic free body for shared scenery, or add the body to every world.",
-                UserWarning,
+                NewtonWarning,
                 stacklevel=3,
             )
 
@@ -2873,7 +2911,7 @@ class SolverSteel(SolverBase):
                 f"{capacity}. Rows beyond the capacity are dropped and flagged in constraint_overflow. Raise "
                 "articulation_constraint_max, set a finite joint_limit_activation_gap so that only limits near the "
                 "joint position create rows, or set unbounded limits to +/-inf.",
-                UserWarning,
+                NewtonWarning,
                 stacklevel=3,
             )
 
@@ -3142,6 +3180,7 @@ class SolverSteel(SolverBase):
             warnings.warn(
                 "SolverSteel: bilateral pre-elimination does not support the propagation contact responses; "
                 "pre-elimination is disabled and the mimic rows stay iterative.",
+                NewtonWarning,
                 stacklevel=3,
             )
             return
@@ -3151,6 +3190,7 @@ class SolverSteel(SolverBase):
                 "SolverSteel: enable_bilateral_preelimination does not support velocity_iterations > 0; "
                 "pre-elimination is disabled for the whole solver and every articulation keeps iterative mimic "
                 "and connect rows.",
+                NewtonWarning,
                 stacklevel=3,
             )
             return
@@ -3159,6 +3199,7 @@ class SolverSteel(SolverBase):
                 "SolverSteel: enable_bilateral_preelimination does not support loop closures with a "
                 "kinematic or world parent; pre-elimination is disabled for the whole solver and every "
                 "articulation keeps iterative mimic and connect rows.",
+                NewtonWarning,
                 stacklevel=3,
             )
             return
@@ -3180,6 +3221,7 @@ class SolverSteel(SolverBase):
                 f"capacity of {PREELIM_MAX_ROWS}; pre-elimination is disabled for the whole solver and every "
                 "articulation keeps iterative mimic and connect rows. Set "
                 "bilateral_preelimination_include_mimics=False to pre-eliminate only the connect rows.",
+                NewtonWarning,
                 stacklevel=3,
             )
             return
@@ -3397,7 +3439,7 @@ class SolverSteel(SolverBase):
             warnings.warn(
                 "SolverSteel does not support passive joint springs yet and ignores nonzero "
                 "mujoco:dof_passive_stiffness (see newton-physics/newton#4516).",
-                UserWarning,
+                NewtonWarning,
                 stacklevel=3,
             )
 
@@ -4543,6 +4585,7 @@ class SolverSteel(SolverBase):
             self._free_rigid_body_indices = None
             self._free_rigid_body_count = 0
             self._max_free_rigid_bodies_per_world = 0
+            self._free_root_anchor = None
             return
         if self._model_plan is None:
             raise RuntimeError("Steel model plan must be built before free-body classification")
@@ -4575,6 +4618,21 @@ class SolverSteel(SolverBase):
             self._max_free_rigid_bodies_per_world = int(np.max(np.bincount(np.maximum(worlds, 0))))
         else:
             self._max_free_rigid_bodies_per_world = 0
+        self._free_root_anchor = wp.empty(model.articulation_count, dtype=wp.quat, device=model.device)
+        self._free_root_rotation = wp.empty(max(self._free_root_joint_count, 1), dtype=wp.quat, device=model.device)
+        self._refresh_free_root_anchors()
+
+    def _refresh_free_root_anchors(self) -> None:
+        """Gather each free rigid body's FREE-joint parent-anchor rotation, the frame of its ``joint_qd``."""
+        if self._free_root_anchor is None:
+            return
+        wp.launch(
+            gather_free_root_anchors,
+            dim=self.model.articulation_count,
+            inputs=[self.model.articulation_start, self._is_free_rigid, self.model.joint_X_p],
+            outputs=[self._free_root_anchor],
+            device=self.model.device,
+        )
 
     def _compute_world_response_dof_mapping(self, model):
         """Build compact per-world response offsets and global-DOF indices."""
@@ -4920,29 +4978,6 @@ class SolverSteel(SolverBase):
         else:
             self._rigid_velocity_limit_slot = None
             self._rigid_velocity_limit_sign = None
-
-    def _scatter_armature_to_groups(self):
-        """Copy armature from model (DOF-ordered) to size-grouped storage."""
-        if not self._size_groups:
-            return
-
-        armature_np = self._joint_armature_effective
-        art_dof_start_np = self._model_plan.articulation_dof_start
-        art_H_rows_np = self._model_plan.articulation_dof_count
-
-        # R_by_size is sized to actual DOF count (matches H_by_size allocation)
-        for size in self._size_groups:
-            n_arts = self._n_arts_by_size[size]
-            R_np = np.zeros((n_arts, size), dtype=np.float32)
-
-            group_to_art_np = np.flatnonzero(self._model_plan.response_dof_count == size)
-            for group_idx in range(n_arts):
-                art_idx = group_to_art_np[group_idx]
-                dof_start = art_dof_start_np[art_idx]
-                dof_count = art_H_rows_np[art_idx]
-                R_np[group_idx, :dof_count] = armature_np[dof_start : dof_start + dof_count]
-
-            self._R_by_size[size].assign(R_np)
 
     def _init_tiled_kernels(self, model):
         """Resolve size-specialized Warp kernels once for this solver shape."""
@@ -6084,9 +6119,6 @@ class SolverSteel(SolverBase):
         )
         self._buffer_index = 0
         self._double_buffer_selected = False
-        # Per buffer set: the event that ends its clearing and the capture it was recorded in.
-        self._memset_done_event = [None, None]
-        self._memset_done_capture = [None, None]
         streams = [
             *self._size_streams.values(),
             self._memset_stream,
@@ -6118,13 +6150,8 @@ class SolverSteel(SolverBase):
             for stream in self._size_streams.values():
                 main_stream.wait_event(stream.record_event())
 
-    def _current_capture(self):
-        """Return the graph the current stream captures into, or ``None`` outside a capture."""
-        stream = wp.get_stream(self.model.device)
-        return self.model.device.captures.get(stream) if stream.is_capturing else None
-
     def _select_double_buffer(self) -> None:
-        """Make the current buffer set active and wait until it was cleared."""
+        """Make the current buffer set active; the step that cleared it joined the clearing before returning."""
         self._double_buffer_selected = True
         # Set by the mass-matrix stage; a step that raises before it wrote no mass matrices.
         self._mass_update_global_flag = 0
@@ -6133,30 +6160,18 @@ class SolverSteel(SolverBase):
         self._J_by_size = self._J_bufs[index]
         if self._jy_world_aliased:
             self._J_world = self._J_by_size[self._size_groups[0]]
-        # Only a clearing recorded earlier in the same capture is pending here: an eager step joins its
-        # clearing before it returns, and a graph launch ends after its clearing.
-        event = self._memset_done_event[index]
-        capture = self._current_capture()
-        if event is not None and capture is not None and self._memset_done_capture[index] is capture:
-            wp.get_stream(self.model.device).wait_event(event)
 
     def _clear_double_buffer(self) -> None:
         """Clear the buffer set of this step on the memset stream and switch to the other set."""
         self._double_buffer_selected = False
         index = self._buffer_index
-        with wp.ScopedStream(self._memset_stream):
+        # Join on exit: a capture paused between steps (e.g. by a conditional node) rejects unjoined streams.
+        with wp.ScopedStream(self._memset_stream, sync_enter=True, sync_exit=True):
             for size in self._size_groups:
                 # A step without a global mass refresh wrote no mass matrices.
                 if self._mass_update_global_flag:
                     self._H_bufs[index][size].zero_()
                 self._J_bufs[index][size].zero_()
-        event = self._memset_stream.record_event()
-        capture = self._current_capture()
-        if capture is None:
-            # A graph captured after this step cannot wait on an event recorded outside it.
-            wp.get_stream(self.model.device).wait_event(event)
-        self._memset_done_event[index] = event
-        self._memset_done_capture[index] = capture
         self._buffer_index = 1 - index
 
     def _accumulate_row_watermarks(self, contacts: Contacts | None) -> None:
@@ -7879,6 +7894,19 @@ class SolverSteel(SolverBase):
             return
         if self._free_rigid_body_count:
             wp.launch(
+                compute_free_root_rotation,
+                dim=self._free_root_joint_count,
+                inputs=[
+                    self._free_root_joint_indices,
+                    model.joint_child,
+                    self._body_to_articulation,
+                    self._free_root_anchor,
+                    state_in.body_q,
+                ],
+                outputs=[self._free_root_rotation],
+                device=model.device,
+            )
+            wp.launch(
                 apply_free_root_velocity_corrections,
                 dim=self._free_root_joint_count,
                 inputs=[
@@ -7889,7 +7917,7 @@ class SolverSteel(SolverBase):
                     self._is_free_rigid,
                     self._art_group_idx,
                     self._kinematic_joint_mask,
-                    state_in.body_q,
+                    self._free_root_rotation,
                     model.body_inertia,
                     self._L_by_size[6],
                     stage3_qd,
@@ -8627,6 +8655,7 @@ class SolverSteel(SolverBase):
                     self._rigid_body_max_angular_velocity,
                     self._articulation_root_dof_start,
                     self._v_hat,
+                    self._free_root_anchor,
                     self._velocity_limit_activation_fraction,
                     self._free_body_constraint_max,
                     self._constraint_art_active,
@@ -8998,6 +9027,21 @@ class SolverSteel(SolverBase):
     def _mf_pgs_setup(self, state_aug: State, dt: float):
         """Compute free-body inverse inertias, row responses, effective masses and right-hand sides."""
         model = self.model
+        # Rows are built in world axes; express them in each free body's FREE-joint anchor frame.
+        wp.launch(
+            rotate_mf_rows_to_free_root_anchor,
+            dim=self._world_count * self._free_body_constraint_max,
+            inputs=[
+                self._mf_constraint_count,
+                self._free_body_constraint_max,
+                self._body_to_articulation,
+                self._free_root_anchor,
+                self._mf_body_a,
+                self._mf_body_b,
+            ],
+            outputs=[self._mf_J_a, self._mf_J_b],
+            device=model.device,
+        )
         wp.launch(
             compute_mf_body_Hinv,
             dim=self._free_rigid_body_count,
@@ -9009,6 +9053,21 @@ class SolverSteel(SolverBase):
                 model.body_flags,
                 self._articulation_dof_start,
                 self._joint_armature_device,
+            ],
+            outputs=[self._mf_body_Hinv],
+            device=model.device,
+        )
+        wp.launch(
+            rotate_mf_body_Hinv_to_free_root_anchor,
+            dim=self._free_rigid_body_count,
+            inputs=[
+                self._free_rigid_body_indices,
+                state_aug._body_I_s,
+                self._body_to_articulation,
+                model.body_flags,
+                self._articulation_dof_start,
+                self._joint_armature_device,
+                self._free_root_anchor,
             ],
             outputs=[self._mf_body_Hinv],
             device=model.device,
@@ -9658,6 +9717,22 @@ class SolverSteel(SolverBase):
         Runs after ``v_out`` holds the unconstrained velocity of the step.
         """
         model = self.model
+        if self._has_free_rigid_bodies:
+            # Free rigid bodies' rows are built in world axes; their velocity is in the FREE-joint anchor frame.
+            wp.launch(
+                rotate_propagation_rows_to_free_root_anchor,
+                dim=self._world_count * self._propagation_max_constraints,
+                inputs=[
+                    self._propagation_constraint_count,
+                    self._propagation_max_constraints,
+                    self._body_to_articulation,
+                    self._free_root_anchor,
+                    self._propagation_body_a,
+                    self._propagation_body_b,
+                ],
+                outputs=[self._propagation_J_a, self._propagation_J_b],
+                device=model.device,
+            )
         wp.launch(
             compute_propagation_body_com_rel,
             dim=model.body_count,
