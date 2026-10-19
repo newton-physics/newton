@@ -191,27 +191,49 @@ def _read_deformable_element_array(
     return _DeformableElementArray(values, element_type, legacy_implicit_type)
 
 
+def _world_points(points, world_mat, *, translate: bool) -> np.ndarray:
+    """Apply the world affine, or only its linear part, to points in float64."""
+    m = np.asarray(world_mat, dtype=np.float64).reshape(4, 4)
+    pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
+    transformed = pts @ m[:3, :3].T
+    return transformed + m[:3, 3] if translate else transformed
+
+
 def _bake_world_points(points, world_mat) -> list[wp.vec3]:
     """Bake the full world affine into points (vectorized), returning ``wp.vec3`` s.
 
     Applies non-uniform scale, shear, and reflection exactly -- a rotation/scale
     decomposition cannot represent either. Shared by the cable / cloth / volume passes.
     """
-    m = np.array(world_mat, dtype=np.float64).reshape(4, 4)
-    pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
-    baked = pts @ m[:3, :3].T + m[:3, 3]
-    return [wp.vec3(float(x), float(y), float(z)) for x, y, z in baked]
+    return [wp.vec3(float(x), float(y), float(z)) for x, y, z in _world_points(points, world_mat, translate=True)]
+
+
+def _rest_topology_matches(rest_indices, simulation_indices, element_width: int) -> bool:
+    """Whether a rest topology authored without rest points equals the simulation topology.
+
+    The proposal derives ``restShapePoints`` from ``points`` only in that case; any other
+    authored rest topology is unusable without rest points.
+    """
+    try:
+        return np.array_equal(
+            np.asarray(rest_indices, dtype=np.int64).reshape(-1, element_width),
+            np.asarray(simulation_indices, dtype=np.int64).reshape(-1, element_width),
+        )
+    except (TypeError, ValueError):
+        return False
 
 
 def _transform_rest_points(points, world_mat) -> np.ndarray:
-    """Apply the world's linear transform to rest points in float64."""
-    m = np.asarray(world_mat, dtype=np.float64).reshape(4, 4)
+    """Apply the world's linear transform to rest points in float64.
+
+    Rest geometry depends only on point differences, so the translation is omitted: it would
+    swamp small rest edges at large world offsets, and the live float32 bake already carries
+    the placement.
+    """
     pts = np.asarray(points, dtype=np.float64).reshape(-1, 3)
     if not np.all(np.isfinite(pts)):
         raise ValueError("restShapePoints contains non-finite coordinates")
-    # Rest geometry depends on differences: omit translation to preserve small edges
-    # at large world offsets, and round only when finalizing the model's float32 arrays.
-    return pts @ m[:3, :3].T
+    return _world_points(pts, world_mat, translate=False)
 
 
 class _UnionFind:
@@ -600,23 +622,6 @@ def _mark_attachment_unsupported(attrs: dict, path: str, reason: str) -> None:
     """Record why a ``PhysicsAttachment`` was not imported and warn, preserving its attrs."""
     attrs["unsupported_reason"] = reason
     warnings.warn(f"{path}: {reason}", NewtonWarning, stacklevel=2)
-
-
-def _warn_unsupported_rest_fields(prim: Usd.Prim, path: str, names: Sequence[str], read_attr: Callable) -> None:
-    """Warn (once) if any authored rest-state field in ``names`` is present but not yet imported.
-
-    Rest-state import (rest shape, rest dihedral angles) is not implemented yet; warn rather than
-    silently drop an authored rest configuration.
-    """
-    authored = [name for name in names if read_attr(prim, name) is not None]
-    if not authored:
-        return
-    fields = ", ".join(f"'physics:{name}'" for name in authored)
-    if len(authored) == 1:
-        message = f"{fields} is authored but its import is not yet supported; it is ignored."
-    else:
-        message = f"{fields} are authored but their import is not yet supported; they are ignored."
-    warnings.warn(f"{path}: {message}", NewtonWarning, stacklevel=2)
 
 
 def _warn_dropped_velocities(prim: Usd.Prim, path: str) -> None:
