@@ -16,6 +16,7 @@ approval = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(approval)
 
 SHA = "a" * 40
+BASE_SHA = "c" * 40
 BOT = "newton-maintainer-approval[bot]"
 PREFIX = "repos/newton-physics/newton"
 PULL = f"{PREFIX}/pulls/42"
@@ -44,7 +45,7 @@ class FakeGitHub:
             "draft": False,
             "user": {"id": 20},
             "head": {"sha": SHA},
-            "base": {"repo": {"full_name": "newton-physics/newton"}, "ref": "main"},
+            "base": {"repo": {"full_name": "newton-physics/newton"}, "ref": "main", "sha": BASE_SHA},
             "changed_files": 1,
         }
         self.membership = {"state": "active"}
@@ -69,6 +70,8 @@ class FakeGitHub:
             return copy.deepcopy(self.comment)
         if endpoint == MEMBER:
             return copy.deepcopy(self.membership)
+        if endpoint == f"{PREFIX}/compare/{BASE_SHA}...{SHA}?per_page=1&page=1":
+            return {"base_commit": {"sha": BASE_SHA}, "files": copy.deepcopy(self.files)}
         if endpoint == PULL:
             self.pull_reads += 1
             if self.pull_reads == 2:
@@ -202,6 +205,60 @@ class TestMaintainerApprove(unittest.TestCase):
         self.api.pull["changed_files"] = 3001
         self.assert_rejected_without_write()
 
+    def test_temporary_head_cannot_hide_protected_changes(self):
+        """Inspect the requested commit even if a temporary head has allowed files."""
+        self.api.files = [{"filename": ".github/workflows/untrusted.yml"}]
+        original_list = self.api.list
+
+        def list_with_head_flip(endpoint):
+            if endpoint.endswith("/files"):
+                # The mutable PR-files endpoint can observe head B while every
+                # metadata check sees requested head A, which has protected files.
+                self.api.pull["head"]["sha"] = "b" * 40
+                result = [{"filename": "newton/_src/example.py"}]
+                self.api.pull["head"]["sha"] = SHA
+                return result
+            return original_list(endpoint)
+
+        with mock.patch.object(self.api, "list", side_effect=list_with_head_flip):
+            self.assert_rejected_without_write()
+
+    def test_comparison_file_limit_fails_closed(self):
+        """Reject the comparison cap even when the PR file count matches it."""
+        self.api.files = [{"filename": f"newton/file{index}.py"} for index in range(300)]
+        self.api.pull["changed_files"] = 300
+        self.assert_rejected_without_write()
+
+    def test_complete_comparison_below_limit_can_be_approved(self):
+        """Inspect all files in a complete comparison below the API limit."""
+        self.api.files = [{"filename": f"newton/file{index}.py"} for index in range(299)]
+        self.api.pull["changed_files"] = 299
+        self.run_approval()
+        self.assertTrue(any(method == "POST" for method, _, _ in self.api.calls))
+
+    def test_base_change_before_submission_prevents_approval(self):
+        """Reject a changed base after inspecting the pinned comparison."""
+        self.api.before_second_pull = lambda: self.api.pull["base"].update(sha="d" * 40)
+        self.assert_rejected_without_write()
+
+    def test_comparison_failure_does_not_fall_back_to_mutable_files(self):
+        """Reject unavailable immutable comparisons without a mutable fallback."""
+        self.api.fail_endpoint = f"{PREFIX}/compare/{BASE_SHA}...{SHA}?per_page=1&page=1"
+        self.assert_rejected_without_write()
+
+    def test_rejects_wrong_comparison_base(self):
+        """Reject a comparison response that identifies another base commit."""
+        request = self.api.request
+
+        def wrong_base(method, endpoint, body=None):
+            result = request(method, endpoint, body)
+            if "/compare/" in endpoint:
+                result["base_commit"]["sha"] = "d" * 40
+            return result
+
+        with mock.patch.object(self.api, "request", side_effect=wrong_base):
+            self.assert_rejected_without_write()
+
     def test_replay_does_not_resurrect_dismissed_approval(self):
         """Deduplicate consumed commands even after review dismissal."""
         self.api.reviews = [
@@ -262,13 +319,15 @@ class TestMaintainerApprove(unittest.TestCase):
 
     def test_change_during_submission_dismisses_created_review(self):
         """Roll back approval when head or authorization changes during submission."""
-        for change in ("push", "membership", "comment", "api-error"):
+        for change in ("push", "base", "membership", "comment", "api-error"):
             with self.subTest(change=change):
                 self.setUp()
 
                 def change_after_post(change=change):
                     if change == "push":
                         self.api.pull["head"]["sha"] = "b" * 40
+                    elif change == "base":
+                        self.api.pull["base"]["sha"] = "d" * 40
                     elif change == "membership":
                         self.api.membership["state"] = "pending"
                     elif change == "comment":

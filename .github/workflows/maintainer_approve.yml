@@ -50,8 +50,8 @@ jobs:
           private-key: ${{ secrets.MAINTAINER_APPROVAL_APP_PRIVATE_KEY }}
           owner: newton-physics
           repositories: newton
-          # Inherit only the App's configured PR write and organization Members
-          # read permissions. No contents write, administration, or rule bypass.
+          # Inherit only the App's configured PR write, Contents read, and
+          # organization Members read. No contents write, admin, or rule bypass.
 
       - name: Validate command and submit delegated approval
         run: uv run --no-project --python 3.12 scripts/ci/maintainer_approve.py

@@ -40,7 +40,12 @@ Changes under `.github/`, `.agents/`, `.claude/`, `.codex/`, and `scripts/`, plu
 `AGENTS.md`, `CODING_GUIDELINES.rst`, `CONTRIBUTING.md`, and
 `REVIEW_GUIDELINES.rst`, require independent review. Both sides of a rename are
 checked. "Small" is the maintainer's judgment; the workflow does not infer risk
-from line count. Required CODEOWNER reviews and other review requirements remain
+from line count. The file-policy check compares the pinned base and requested
+head commit SHAs, so temporarily switching the PR branch cannot change which
+files are inspected. Comparisons with 300 or more files are rejected because
+GitHub caps comparison file results at 300; this workflow never approves a
+potentially truncated file list. Base changes during validation require a fresh
+command. Required CODEOWNER reviews and other review requirements remain
 GitHub's responsibility and can still block queue entry.
 
 ## Manual setup and rollout
@@ -59,6 +64,7 @@ integration tests below pass. Merging the files alone does not enable approvals.
 2. **Register an organization-owned GitHub App**, with webhooks disabled; Actions
    handles comment events. Install it only on the selected repository. Grant:
    - Repository **Pull requests: Read and write**.
+   - Repository **Contents: Read-only**, for immutable commit comparisons.
    - Organization **Members: Read-only**, for private team-membership checks.
    - Repository **Metadata: Read-only** (automatic).
 
@@ -106,6 +112,10 @@ GitHub's ruleset enforcement. Before rollout, record sandbox evidence for:
 - Non-maintainers (including ordinary write collaborators), the PR author, pending
   team members, edited/deleted comments, and stale SHAs being rejected.
 - A new contributor push invalidating the approval and requiring a fresh command.
+- Temporarily switching the PR head away from and back to the requested SHA
+  cannot hide protected files from the immutable base/head comparison. Verify
+  fork-head SHA comparisons work with the App token; API failures reject the
+  command without falling back to the mutable PR-files endpoint.
 - A push racing review submission: an approval for the old SHA must not make the
   new head eligible. GitHub's review API has no atomic "head must still equal SHA"
   precondition. The script checks before and after submission and attempts to
@@ -141,8 +151,9 @@ It never checks out or executes PR code and never interpolates comment text into
 a shell command. The official token action creates a short-lived installation
 token scoped to `newton` and revokes it at job completion.
 
-The script re-fetches the comment, team membership, and PR head; checks all changed
-file paths; deduplicates App reviews; then submits an `APPROVE` review with an
+The script re-fetches the comment, team membership, and PR head; checks changed
+file paths through an immutable base/head commit comparison; deduplicates App
+reviews; then submits an `APPROVE` review with an
 explicit `commit_id`, requester, reason, and command link. It revalidates after
 submission and attempts rollback if that validation fails. API/dismissal failures
 fail the run and require inspection; successful rollback is not guaranteed during
@@ -158,5 +169,6 @@ Existing CI discovers these tests under `scripts/ci/tests`.
 
 References: [App tokens in Actions](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/making-authenticated-api-requests-with-a-github-app-in-a-github-actions-workflow),
 [comment events](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#issue_comment),
-[review API](https://docs.github.com/en/rest/pulls/reviews), and
+[review API](https://docs.github.com/en/rest/pulls/reviews),
+[commit comparisons](https://docs.github.com/en/rest/commits/commits#compare-two-commits), and
 [merge queue](https://docs.github.com/en/repositories/configuring-branches-and-merges-in-your-repository/configuring-pull-request-merges/managing-a-merge-queue).

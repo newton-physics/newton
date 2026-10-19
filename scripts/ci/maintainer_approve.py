@@ -102,6 +102,7 @@ def approve(event: dict, api: GitHub, *, bot_login: str) -> str:
     prefix = f"repos/{REPOSITORY}"
     pull_path = f"{prefix}/pulls/{int(event['issue']['number'])}"
     comment_path = f"{prefix}/issues/comments/{int(comment['id'])}"
+    base_sha = None
 
     def validate_request() -> dict:
         # Re-fetch the comment so deleted/edited comments cannot authorize a run.
@@ -120,12 +121,23 @@ def approve(event: dict, api: GitHub, *, bot_login: str) -> str:
             raise Rejected("Active membership in newton-physics/maintainers is required.")
         pull = api.request("GET", pull_path)
         validate_pull(pull, sha, actor["id"])
+        if base_sha is not None and pull["base"]["sha"] != base_sha:
+            raise Rejected("The base changed during validation; post a fresh command.")
         return pull
 
     pull = validate_request()
-    files = api.list(f"{pull_path}/files")
-    # GitHub limits this endpoint to 3,000 files. Never silently inspect a subset.
-    if len(files) != pull["changed_files"]:
+    base_sha = pull["base"]["sha"]
+    if re.fullmatch(r"[0-9a-f]{40}", base_sha) is None:
+        raise Rejected("GitHub did not return a full base commit SHA.")
+    # PR-files follows a mutable branch: even repeated head checks cannot detect
+    # a temporary switch away from and back to the requested SHA. Compare only
+    # immutable base/head commits. Files are returned on page one, capped at 300.
+    comparison = api.request("GET", f"{prefix}/compare/{base_sha}...{sha}?per_page=1&page=1")
+    files = comparison["files"]
+    if comparison["base_commit"]["sha"] != base_sha:
+        raise Rejected("GitHub returned a comparison for an unexpected base.")
+    # Exactly 300 files is ambiguous: a larger comparison may have been truncated.
+    if len(files) >= 300 or len(files) != pull["changed_files"]:
         raise Rejected("Could not inspect the complete changed-file list.")
     for file in files:
         for name in (file["filename"], file.get("previous_filename", "")):
