@@ -13,6 +13,7 @@ from unittest import mock
 import numpy as np
 import warp as wp
 import warp.examples
+from packaging.version import Version
 
 import newton
 from newton import GeoType
@@ -68,6 +69,9 @@ from newton.tests.unittest_utils import (
     get_cuda_test_devices,
     get_test_devices,
 )
+
+# Warp's decorators retained caller frames before NVIDIA/warp#2068 was fixed.
+_WARP_NEEDS_CAPTURE_GC_GUARD = Version(wp.__version__) < Version("1.19.0.dev20261019")
 
 
 class TestLevel(IntFlag):
@@ -194,8 +198,9 @@ class CollisionSetup:
     def capture(self):
         if wp.get_device(self._device).is_cuda:
             # Cyclic GC can destroy an earlier scene's SDF textures, which CUDA forbids during capture.
-            gc_was_enabled = gc.isenabled()
-            gc.disable()
+            gc_was_enabled = _WARP_NEEDS_CAPTURE_GC_GUARD and gc.isenabled()
+            if gc_was_enabled:
+                gc.disable()
             try:
                 with wp.ScopedCapture(device=self._device) as capture:
                     self.simulate()
@@ -760,25 +765,32 @@ def test_mesh_mesh_bvh_vs_bvh(_test, device, broad_phase: str):
     )
 
 
-def test_collision_capture_defers_sdf_texture_cleanup(test, device):
-    """Defer unreachable SDF texture cleanup until CUDA capture finishes."""
+def test_collision_capture_sdf_texture_cleanup(test, device):
+    """Capture safely with version-dependent SDF texture cleanup protection."""
     gc_was_enabled = gc.isenabled()
     thresholds = gc.get_threshold()
     gc.collect()
     gc.enable()
     gc.set_threshold(0)
     try:
-        mesh = newton.Mesh.create_box(0.5, 0.5, 0.5)
-        mesh.build_sdf(max_resolution=16, device=device)
-        texture_ref = weakref.ref(mesh.sdf._coarse_texture)
-        # Keep a discarded scene pending cyclic collection regardless of Warp version.
-        discarded_scene = {"mesh": mesh}
-        discarded_scene["cycle"] = discarded_scene
-        del mesh, discarded_scene
+
+        def discard_scene():
+            mesh = newton.Mesh.create_box(0.5, 0.5, 0.5)
+            mesh.build_sdf(max_resolution=16, device=device)
+            if _WARP_NEEDS_CAPTURE_GC_GUARD:
+                # Exercise deferred destruction even if an older Warp releases this particular scene.
+                discarded_scene = {"mesh": mesh}
+                discarded_scene["cycle"] = discarded_scene
+            return weakref.ref(mesh.sdf._coarse_texture)
+
+        texture_ref = discard_scene()
+        if not _WARP_NEEDS_CAPTURE_GC_GUARD:
+            test.assertIsNone(texture_ref())
 
         simulate = CollisionSetup.simulate
 
         def simulate_with_gc_pressure(setup):
+            test.assertEqual(gc.isenabled(), not _WARP_NEEDS_CAPTURE_GC_GUARD)
             gc.set_threshold(gc.get_count()[0] + 1, 1000000, 1000000)
             allocations = [[] for _ in range(32)]
             simulate(setup)
@@ -824,8 +836,8 @@ def test_collision_capture_defers_sdf_texture_cleanup(test, device):
 
 add_function_test(
     TestCollisionPipeline,
-    "test_collision_capture_defers_sdf_texture_cleanup",
-    test_collision_capture_defers_sdf_texture_cleanup,
+    "test_collision_capture_sdf_texture_cleanup",
+    test_collision_capture_sdf_texture_cleanup,
     devices=get_cuda_test_devices(),
     check_output=False,
 )
