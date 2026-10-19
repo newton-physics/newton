@@ -9,6 +9,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton.exceptions import NewtonWarning
 from newton.solvers import SolverSemiImplicit, SolverVBD
 from newton.solvers.experimental.coupled import SolverCoupled
 from newton.tests._selection_deformable_test_utils import _add_test_anchored_cable
@@ -148,7 +149,7 @@ class TestModelDeformableObjects(unittest.TestCase):
             for device in get_test_devices():
                 if method == "source":
                     with self.assertWarnsRegex(
-                        UserWarning, r"Custom attribute 'sensor_curve_sparse' has 2 values.*expects 3"
+                        NewtonWarning, r"Custom attribute 'sensor_curve_sparse' has 2 values.*expects 3"
                     ):
                         model = builder.finalize(device=device)
                 else:
@@ -453,7 +454,7 @@ class TestModelDeformableObjects(unittest.TestCase):
                     values=values,
                 )
             )
-        with self.assertWarnsRegex(UserWarning, "removed.*all.*segment bodies"):
+        with self.assertWarnsRegex(NewtonWarning, "removed.*all.*segment bodies"):
             builder.collapse_fixed_joints()
         for device in get_test_devices():
             model = builder.finalize(device=device)
