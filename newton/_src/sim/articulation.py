@@ -1937,8 +1937,9 @@ def eval_mass_matrix(
            If None, allocates internally.
         J: Optional pre-computed Jacobian, shape (articulation_count, max_links*6, max_dofs).
            If None, H is assembled by the composite rigid body algorithm without
-           forming J, unless gradients are required or the articulations are not
-           trees; then J is computed internally.
+           forming J, unless gradients are required or the model has no FK level
+           schedule (non-tree articulations or a tree level wider than 512 joints);
+           then J is computed internally.
         body_I_s: Optional pre-allocated temp array for spatial inertias,
                   shape (body_count,), dtype wp.spatial_matrix. If None, allocates internally.
         joint_S_s: Optional pre-allocated temp array for motion subspaces (only used if J is None),
@@ -2014,7 +2015,19 @@ def _eval_mass_matrix(
         )
 
     if requires_grad is None:
-        requires_grad = model.requires_grad or state.joint_q.requires_grad or state.body_q.requires_grad
+        requires_grad = model.requires_grad or any(
+            a.requires_grad
+            for a in (
+                state.joint_q,
+                state.body_q,
+                model.joint_X_p,
+                model.joint_axis,
+                model.body_com,
+                model.body_mass,
+                model.body_inertia,
+                model.joint_armature,
+            )
+        )
     if J is None and model._fk_articulation_level_start is not None and not requires_grad:
         if joint_S_s is None:
             joint_S_s = wp.zeros(model.joint_dof_count, dtype=wp.spatial_vector, device=model.device)

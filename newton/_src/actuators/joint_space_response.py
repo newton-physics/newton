@@ -21,7 +21,7 @@ from collections.abc import Callable
 import numpy as np
 import warp as wp
 
-from ..sim.articulation import _eval_mass_matrix, eval_fk
+from ..sim.articulation import _eval_mass_matrix, eval_fk, eval_jacobian
 from ..sim.model import Model
 from ..sim.state import State
 
@@ -265,7 +265,6 @@ class JointSpaceResponse:
         self._J = None
         if model._fk_articulation_level_start is None:
             self._J = wp.zeros((art_count, model.max_joints_per_articulation * 6, max_dofs), dtype=float, device=device)
-        self._L = wp.zeros_like(self._H)
         self._inv_block = wp.zeros_like(self._H)
 
         # Tile path: one thread block per articulation inverts its block.
@@ -278,6 +277,8 @@ class JointSpaceResponse:
             self._L_pad = wp.zeros_like(self._H_pad)
             self._inv_pad = wp.zeros_like(self._H_pad)
             self._tile_kernel = _build_tile_inverse_kernel(tile)
+        else:
+            self._L = wp.zeros_like(self._H)
 
         # Scratch so refresh() never writes to the caller's state.
         self._fk_state = model.state()
@@ -336,6 +337,8 @@ class JointSpaceResponse:
         fk_state.joint_q = state.joint_q
         fk_state.joint_qd = state.joint_qd
         eval_fk(model, state.joint_q, state.joint_qd, fk_state)
+        if self._J is not None:
+            eval_jacobian(model, fk_state, J=self._J, joint_S_s=self._joint_S_s)
         _eval_mass_matrix(
             model,
             fk_state,
