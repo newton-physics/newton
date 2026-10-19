@@ -277,8 +277,8 @@ def _cloth_rest_bend_overrides(
     authored_pairs,
     authored_angles,
     path: str,
-) -> np.ndarray:
-    """Apply authored ``restAdjTriPairs`` / ``restBendAngles`` entries to a copy of ``rest_angles``."""
+) -> tuple[np.ndarray, bool]:
+    """Return overridden rest angles and whether at least one valid bend entry was applied."""
     pairs = _rest_index_array(authored_pairs if authored_pairs is not None else [], 2, "restAdjTriPairs")
     angles = np.asarray(authored_angles if authored_angles is not None else [], dtype=np.float64).reshape(-1)
     if len(pairs) != len(angles):
@@ -335,7 +335,7 @@ def _cloth_rest_bend_overrides(
         seen.add(key)
         # The AOUSD proposal's Rest Shape Attributes section authors bend angles in degrees.
         rest_angles[pair_edges[starts[slot] : starts[slot] + counts[slot]]] = math.radians(float(angle))
-    return rest_angles
+    return rest_angles, bool(seen)
 
 
 def _cloth_rest_edge_lengths(
@@ -713,6 +713,7 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
         # Without authored rest geometry or bend overrides, a restShape default keeps the dihedrals
         # the builder already derived from the live pose.
         bend_overrides_authored = authored_pairs is not None or authored_angles is not None
+        bend_overrides_applied = False
         rest_angles = None
         if rest_shape_applied or bend_overrides_authored:
             local_edges = np.asarray(builder.edge_indices[e0 : builder.edge_count], dtype=np.int64)
@@ -724,7 +725,7 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
             rest_angles = _cloth_rest_default_angles(adjacency, rest_points, rest_triangles, rest_bend_angles_default)
             if bend_overrides_authored:
                 try:
-                    rest_angles = _cloth_rest_bend_overrides(
+                    rest_angles, bend_overrides_applied = _cloth_rest_bend_overrides(
                         rest_angles, adjacency, tri_source_faces, authored_pairs, authored_angles, path
                     )
                 except (TypeError, ValueError) as exc:
@@ -736,7 +737,7 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
                     )
         elif rest_bend_angles_default == "flat":
             rest_angles = np.zeros(builder.edge_count - e0)
-        if rest_bend_angles_default == "flat" and rest_points_value is None and not bend_overrides_authored:
+        if rest_bend_angles_default == "flat" and not rest_shape_applied and not bend_overrides_applied:
             has_nonplanar_rest_angle = any(
                 builder.edge_indices[edge_offset][0] != -1
                 and builder.edge_indices[edge_offset][1] != -1

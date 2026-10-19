@@ -240,10 +240,11 @@ The first release deliberately supports a narrow, predictable set of inputs:
   :meth:`~newton.ModelBuilder.add_cloth_mesh` derives from live geometry. With disjoint rest
   topology, that dihedral is measured between the two rest copies of the shared edge as placed in
   ``restShapePoints``, so coplanar, consistently oriented rest panels yield flat rest angles.
-  With no authored rest shape or bend overrides, if the token is unauthored and the imported
-  cloth is non-planar, Newton warns that the proposal's flat fallback changes the previous rest
-  state and points to ``"restShape"`` as the preservation
-  choice. Explicit ``"flat"`` authoring and planar cloth do not emit this migration warning.
+  If neither a valid rest shape nor any valid bend overrides are applied, the token is
+  unauthored, and the imported cloth is non-planar, Newton warns that the proposal's flat
+  fallback changes the previous rest state and points to ``"restShape"`` as the preservation
+  choice. Rejected rest data does not suppress this warning; an applied zero-angle override
+  does. Explicit ``"flat"`` authoring and planar cloth do not emit this migration warning.
 * Cable ``physics:restShapePoints`` and ``physics:restNormals`` set a rest shape separate from
   the initial pose. This works for individual curves, periodic curves, cables rooted in an
   articulation, and welded cable graphs. Rest lengths set capsule sizes, mass volume weights,

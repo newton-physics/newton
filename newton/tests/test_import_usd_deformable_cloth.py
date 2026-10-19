@@ -887,12 +887,36 @@ class TestUSDDeformableCloth(unittest.TestCase):
         points = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, 1.0)]
         rest_points = [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (1.0, 1.0, 0.0), (0.0, 1.0, -0.5)]
         windings = {"consistent": [0, 1, 2, 0, 2, 3], "flipped": [0, 1, 2, 0, 3, 2]}
-        # (token, winding, authored rest shape): an empty restAdjTriPairs counts as unauthored, so it
-        # keeps the migration notice; restShape without a rest shape keeps the live dihedral.
+        # Invalid rest data must retain the migration notice; valid zero-angle overrides suppress it.
+        rest_cases = {
+            "rest_points": rest_points,
+            "wrong_count": rest_points[:3],
+            "nonfinite_rest": [*rest_points[:3], (0.0, 1.0, float("nan"))],
+            "degenerate_rest": [(0.0, 0.0, 0.0)] * 4,
+        }
+        bend_cases = {
+            "empty_pairs": ([], []),
+            "mismatched_bends": ([(0, 1)], []),
+            "invalid_pair": ([(7, 9)], [30.0]),
+            "nonfinite_bend": ([(0, 1)], [float("nan")]),
+            "zero_bend": ([(0, 1)], [0.0]),
+            "mixed_bends": ([(0, 1), (7, 9)], [0.0, 30.0]),
+        }
+        log_reasons = {
+            "wrong_count": "invalid cloth rest shape",
+            "nonfinite_rest": "invalid cloth rest shape",
+            "degenerate_rest": "invalid cloth rest shape",
+            "mismatched_bends": "invalid authored rest bend angles",
+            "invalid_pair": "non-adjacent face pair",
+            "nonfinite_bend": "non-finite value",
+            "mixed_bends": "non-adjacent face pair",
+        }
         cases = [
             (None, "consistent", None),
-            (None, "consistent", "empty_pairs"),
+            *((None, "consistent", authored) for authored in (*rest_cases, *bend_cases)),
             ("flat", "consistent", None),
+            ("flat", "consistent", "wrong_count"),
+            ("restShape", "consistent", "wrong_count"),
             ("invalid", "consistent", None),
             ("restShape", "consistent", None),
             ("restShape", "consistent", "rest_points"),
@@ -918,33 +942,40 @@ class TestUSDDeformableCloth(unittest.TestCase):
                     cloth.GetPrim().CreateAttribute("physics:restBendAnglesDefault", Sdf.ValueTypeNames.Token).Set(
                         token
                     )
-                if authored == "rest_points":
+                if authored in rest_cases:
                     cloth.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
-                        rest_points
+                        rest_cases[authored]
                     )
-                elif authored == "empty_pairs":
-                    cloth.GetPrim().CreateAttribute("physics:restAdjTriPairs", Sdf.ValueTypeNames.Int2Array).Set([])
+                elif authored in bend_cases:
+                    pairs, angles = bend_cases[authored]
+                    cloth.GetPrim().CreateAttribute("physics:restAdjTriPairs", Sdf.ValueTypeNames.Int2Array).Set(pairs)
+                    cloth.GetPrim().CreateAttribute("physics:restBendAngles", Sdf.ValueTypeNames.FloatArray).Set(angles)
 
                 builder = newton.ModelBuilder()
-                with warnings.catch_warnings(record=True) as caught:
-                    if token is None:
-                        warnings.simplefilter("always")
-                        builder.add_usd(stage)
-                    else:
-                        warnings.simplefilter("error", NewtonWarning)
-                        if token == "invalid":
-                            with self.assertLogs("newton", level="WARNING") as logs:
-                                builder.add_usd(stage)
-                            self.assertEqual(len(logs.output), 1)
-                            self.assertIn("/World/Cloth: invalid physics:restBendAnglesDefault", logs.output[0])
-                            self.assertIn("using 'flat'", logs.output[0])
-                        else:
-                            builder.add_usd(stage)
+                log_reason = (
+                    "invalid physics:restBendAnglesDefault" if token == "invalid" else log_reasons.get(authored)
+                )
+                log_context = (
+                    self.assertLogs("newton", level="WARNING")
+                    if log_reason
+                    else self.assertNoLogs("newton", level="WARNING")
+                )
+                with warnings.catch_warnings(record=True) as caught, log_context as logs:
+                    warnings.simplefilter("always" if token is None else "error", NewtonWarning)
+                    builder.add_usd(stage)
+                if log_reason:
+                    self.assertEqual(len(logs.output), 1)
+                    self.assertIn("/World/Cloth", logs.output[0])
+                    self.assertIn(log_reason, logs.output[0])
+                    if token == "invalid":
+                        self.assertIn("using 'flat'", logs.output[0])
                 migration_notices = [
                     str(w.message) for w in caught if "replaces non-planar imported dihedral" in str(w.message)
                 ]
-                self.assertEqual(len(migration_notices), int(token is None))
-                if token is None:
+                expect_notice = token is None and authored not in ("rest_points", "zero_bend", "mixed_bends")
+                self.assertEqual(len(migration_notices), int(expect_notice))
+                self.assertEqual(len(caught), int(expect_notice))
+                if expect_notice:
                     self.assertIn("restShape", migration_notices[0])
                 e0, e1 = group_range(builder, "cloth", "/World/Cloth", "edge")
                 interior_edges = [
