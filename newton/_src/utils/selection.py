@@ -2862,7 +2862,7 @@ class _DeformableViewBase:
 
     def elements_per_deformable_object(
         self,
-        kind: Literal["body", "joint", "particle", "triangle", "edge", "tetrahedron"],
+        kind: AttributeFrequency | Literal["body", "joint", "particle", "triangle", "edge", "tetrahedron"],
     ) -> int:
         """Elements of ``kind`` in each selected deformable object (homogeneous across the selection).
 
@@ -2872,7 +2872,9 @@ class _DeformableViewBase:
         element kinds are available.
 
         Args:
-            kind: Element kind recorded by every selected deformable object.
+            kind: Element kind recorded by every selected deformable object: a
+                :class:`~newton.Model.AttributeFrequency` member such as ``PARTICLE``
+                or its lowercase name.
 
         Returns:
             Common number of elements in every selected deformable object.
@@ -2885,7 +2887,7 @@ class _DeformableViewBase:
 
     def ranges(
         self,
-        kind: Literal["body", "joint", "particle", "triangle", "edge", "tetrahedron"],
+        kind: AttributeFrequency | Literal["body", "joint", "particle", "triangle", "edge", "tetrahedron"],
     ) -> list[tuple[int, int]]:
         """``[start, end)`` element ranges of the selected deformable objects, in selection order.
 
@@ -2900,7 +2902,8 @@ class _DeformableViewBase:
         empty joint lists. See :ref:`deformable-objects-welded-usd-graphs`.
 
         Args:
-            kind: Element kind recorded by every selected deformable object.
+            kind: Element kind recorded by every selected deformable object: a
+                :class:`~newton.Model.AttributeFrequency` member or its lowercase name.
 
         Returns:
             One ``[start, end)`` range per selected deformable object.
@@ -2908,12 +2911,12 @@ class _DeformableViewBase:
         Raises:
             AttributeError: If the selected deformable objects do not all record ``kind``.
         """
-        self._validate_kind(kind)
+        kind = self._validate_kind(kind)
         return list(self._ranges[kind])
 
     def starts(
         self,
-        kind: Literal["body", "joint", "particle", "triangle", "edge", "tetrahedron"],
+        kind: AttributeFrequency | Literal["body", "joint", "particle", "triangle", "edge", "tetrahedron"],
     ) -> wp.array[wp.int32]:
         """Device-side element-range starts of the selected deformable objects, shape ``(count,)``.
 
@@ -2922,7 +2925,8 @@ class _DeformableViewBase:
         the same array. Treat the returned internal array as read-only.
 
         Args:
-            kind: Element kind recorded by every selected deformable object.
+            kind: Element kind recorded by every selected deformable object: a
+                :class:`~newton.Model.AttributeFrequency` member or its lowercase name.
 
         Returns:
             Device array containing one start index per selected deformable object.
@@ -2930,17 +2934,23 @@ class _DeformableViewBase:
         Raises:
             AttributeError: If the selected deformable objects do not all record ``kind``.
         """
-        self._validate_kind(kind)
+        kind = self._validate_kind(kind)
         return self._starts[kind]
 
     # generic gather/scatter -------------------------------------------------
 
-    def _validate_kind(self, kind: str) -> None:
+    def _validate_kind(self, kind: AttributeFrequency | str) -> str:
+        """Return the element kind as the lowercase name used by the view's range tables."""
+        if isinstance(kind, AttributeFrequency):
+            kind = kind.name.lower()
         if kind not in self._kinds:
-            raise AttributeError(f"Selected {self.family} deformable objects have no {kind} elements in common")
+            raise AttributeError(
+                f"Selected {self.family} deformable objects record {', '.join(self._kinds)} elements, not {kind!r}"
+            )
+        return kind
 
-    def _element_count(self, kind: str) -> int:
-        self._validate_kind(kind)
+    def _element_count(self, kind: AttributeFrequency | str) -> int:
+        kind = self._validate_kind(kind)
         count = self._counts[kind]
         if count is None:
             sizes = sorted({end - start for start, end in self._ranges[kind]})

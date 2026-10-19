@@ -261,6 +261,7 @@ cables' body ranges even though their selected deformable object indices are con
 ``starts(kind)`` returns device-side starts; treat this array as read-only.
 ``elements_per_deformable_object(kind)`` returns a common element count or raises when the
 sizes differ. Raw ranges remain available for deformable objects with different sizes.
+``kind`` is a :class:`~newton.Model.AttributeFrequency` member or its lowercase name.
 
 For cable root joints and later attachments, see :ref:`deformable-objects-curve-joints`.
 For changes to the ranges after collapse, see :ref:`deformable-objects-collapse`.

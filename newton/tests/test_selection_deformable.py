@@ -172,11 +172,16 @@ class TestDeformableFamilyViews(unittest.TestCase):
 
         self.assertEqual((view.family, view.labels, view.worlds), ("curve", ["object", "object"], [0, 1]))
         self.assertEqual(view.ranges("body"), [(0, 3), (3, 6)])
+        # Enum members name the same element kind as their lowercase names.
+        self.assertEqual(view.ranges(newton.Model.AttributeFrequency.BODY), [(0, 3), (3, 6)])
+        self.assertIs(view.starts(newton.Model.AttributeFrequency.JOINT), view.starts("joint"))
+        self.assertEqual(view.elements_per_deformable_object(newton.Model.AttributeFrequency.BODY), 3)
         self.assertEqual(view.deformable_object_ranges(), [(0, 1), (1, 2)])
         np.testing.assert_array_equal(view.worlds_device.numpy(), [0, 1])
         self.assertEqual(view.get_body_transforms(model).shape, (2, 3))
-        with self.assertRaisesRegex(AttributeError, "no particle elements"):
-            view.ranges("particle")
+        for kind in ("particle", newton.Model.AttributeFrequency.PARTICLE):
+            with self.assertRaisesRegex(AttributeError, "record body, joint elements, not 'particle'"):
+                view.ranges(kind)
 
         for view_type, family, ranges in (
             (newton.selection.DeformableSurfaceView, "surface", [(0, 4), (8, 12)]),
@@ -342,7 +347,7 @@ class TestDeformableSelection(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Varying particle counts.*ranges"):
             view.set_particle_positions(model.state(), wp.zeros((2, 4), dtype=wp.vec3))
         view = DeformableSurfaceView(model, "/World/ClothA")
-        with self.assertRaisesRegex(AttributeError, "no body elements"):
+        with self.assertRaisesRegex(AttributeError, "record particle, triangle, edge elements, not 'body'"):
             view.ranges("body")
         with self.assertRaises(ValueError):
             view.set_particle_positions(model.state(), wp.zeros((2, 4), dtype=wp.vec3))
