@@ -43,6 +43,7 @@ from .implicit_mpm_solver_kernels import (
     EPSILON,
     GIMP_MIN_OVERLAP_FRACTION,
     INFINITY,
+    NODE_KEY_SENTINEL,
     YIELD_PARAM_LENGTH,
     YieldMomentVec,
     _rebuild_capacity,
@@ -54,12 +55,14 @@ from .implicit_mpm_solver_kernels import (
     compliance_form,
     compute_bounds,
     compute_color_offsets,
+    compute_lattice_node_keys,
     compute_nodal_diagonalization,
     compute_unilateral_strain_offset,
     fill_uniform_color_block_indices,
     free_velocity,
     init_particle_strains,
     gather_point_dof_values,
+    gather_sorted_node_values,
     gimp_domain_corners,
     gimp_half_size,
     gimp_store_point_stress,
@@ -78,6 +81,7 @@ from .implicit_mpm_solver_kernels import (
     inverse_scale_sym_tensor,
     inverse_scale_vector,
     invert_point_particle_indices,
+    load_values_by_lattice_key,
     make_cell_color_kernel,
     make_contact_cell_keys_kernel,
     make_discontinuous_color_block_indices_kernel,
@@ -97,6 +101,7 @@ from .implicit_mpm_solver_kernels import (
     reset_mpm_grid_warmstart,
     reset_mpm_particle_history,
     reset_mpm_point_warmstart,
+    reset_values_by_lattice_key,
     rotate_matrix_columns,
     rotate_matrix_rows,
     scatter_field_dof_values,
@@ -758,6 +763,17 @@ class LastStepData:
         self.body_q_prev = None  # Previous body transforms for finite-difference velocities
         self.gimp_stress = None
         self.gimp_warmstart_state = None
+        # Grid collider impulses keyed by lattice node, for grids rebuilt in place
+        self.impulse_keys = None
+        self.impulse_nodes = None
+        self.impulse_values = None
+
+    def require_keyed_impulses(self, node_count: int, device: wp.Device):
+        """Allocate sorted lattice keys and impulses for ``node_count`` collider nodes."""
+        if self.impulse_values is None or self.impulse_values.shape[0] != node_count:
+            self.impulse_keys = wp.full(2 * node_count, NODE_KEY_SENTINEL, dtype=wp.int64, device=device)
+            self.impulse_nodes = wp.empty(2 * node_count, dtype=int, device=device)
+            self.impulse_values = wp.zeros(node_count, dtype=wp.vec3, device=device)
 
     def require_gimp_stress_fields(self, particle_count: int, device: wp.Device):
         """Allocate persistent stress history for each particle's cell overlaps."""
@@ -1650,6 +1666,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
             self._require_velocity_space_fields(self._scratchpad, self._mpm_model.has_compliant_particles)
             self._require_collision_space_fields(self._scratchpad, self._last_step_data)
             self._require_strain_space_fields(self._scratchpad, self._last_step_data)
+            if self._sparse_rebuildable and self.collider_basis[:3] != "pic":
+                # Allocated before any capture, so graphs do not record the initialization.
+                self._last_step_data.require_keyed_impulses(self._scratchpad.collider_node_count, model.device)
 
         self._velocity_nodes_per_strain_sample = (
             self._scratchpad.velocity_nodes_per_element
@@ -1909,6 +1928,23 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         world_mask: wp.array[wp.bool] | None,
         reset_partitions: tuple[fem.SpacePartition | None, fem.SpacePartition | None],
     ) -> None:
+        last_step_data = self._last_step_data
+        if last_step_data.impulse_values is not None:
+            if world_mask is None:
+                last_step_data.impulse_keys.fill_(NODE_KEY_SENTINEL)
+                last_step_data.impulse_values.zero_()
+            else:
+                wp.launch(
+                    reset_values_by_lattice_key,
+                    dim=last_step_data.impulse_values.shape[0],
+                    inputs=[
+                        world_mask,
+                        self._initial_world_count,
+                        last_step_data.impulse_keys,
+                        last_step_data.impulse_values,
+                    ],
+                    device=self.model.device,
+                )
         if self._last_step_data.gimp_stress is not None:
             valid = self._last_step_data.gimp_stress[1]
             if world_mask is None:
@@ -4182,6 +4218,21 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 reduction="first",
                 temporary_store=self.temporary_store,
             )
+        elif last_step_data.impulse_values is not None:
+            # Collider nodes keep their positions across in-place rebuilds; match them by lattice key.
+            wp.launch(
+                load_values_by_lattice_key,
+                dim=scratch.collider_node_count,
+                inputs=[
+                    scratch.collider_position_field.dof_values,
+                    scratch.collider_environment_offsets,
+                    2.0 / self._mpm_model.voxel_size,
+                    last_step_data.impulse_keys,
+                    last_step_data.impulse_values,
+                    last_step_data.impulse_values.shape[0],
+                    scratch.impulse_field.dof_values,
+                ],
+            )
         else:
             scratch.impulse_field.dof_values.zero_()
 
@@ -4218,6 +4269,28 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         else:
             # No grid-to-grid stress warmstart available for the rebuilt grid; start cold.
             scratch.stress_field.dof_values.zero_()
+
+    def _save_keyed_impulses(self, scratch: ImplicitMPMScratchpad, last_step_data: LastStepData):
+        """Save grid collider impulses sorted by lattice key; an in-place rebuild discards their node numbering."""
+        node_count = scratch.collider_node_count
+        last_step_data.require_keyed_impulses(node_count, self.model.device)
+        wp.launch(
+            compute_lattice_node_keys,
+            dim=node_count,
+            inputs=[
+                scratch.collider_position_field.dof_values,
+                scratch.collider_environment_offsets,
+                2.0 / self._mpm_model.voxel_size,
+            ],
+            outputs=[last_step_data.impulse_keys, last_step_data.impulse_nodes],
+        )
+        wp.utils.radix_sort_pairs(last_step_data.impulse_keys, last_step_data.impulse_nodes, node_count)
+        wp.launch(
+            gather_sorted_node_values,
+            dim=node_count,
+            inputs=[last_step_data.impulse_nodes, scratch.impulse_field.dof_values],
+            outputs=[last_step_data.impulse_values],
+        )
 
     def _save_for_next_warmstart(
         self, scratch: ImplicitMPMScratchpad, pic: fem.PicQuadrature, last_step_data: LastStepData
@@ -4283,6 +4356,8 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                         last_step_data.ws_impulse_field.dof_values,
                     ],
                 )
+                if self._sparse_rebuildable:
+                    self._save_keyed_impulses(scratch, last_step_data)
 
             last_step_data.rebind_strain_space_fields(scratch, smoothed=self._stress_warmstart == "smoothed")
             if isinstance(last_step_data.ws_stress_field.space.basis, fem.PointBasisSpace):

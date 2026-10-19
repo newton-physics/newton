@@ -1098,6 +1098,88 @@ wp.overload(reset_mpm_grid_warmstart, {"values": wp.array[wp.vec3]})
 wp.overload(reset_mpm_grid_warmstart, {"values": wp.array[vec6]})
 
 
+NODE_KEY_SENTINEL = wp.constant(wp.int64(0x7FFFFFFFFFFFFFFF))
+"""Key of nodes that have no lattice key; it sorts last and matches no saved node."""
+
+
+@wp.func
+def lattice_node_key(position: wp.vec3, inv_half_voxel: float, environment: int):
+    """Key a grid node by its environment and its coordinates on the half-voxel lattice."""
+    if position[0] == fem.OUTSIDE or environment < 0 or environment >= 32768:
+        return NODE_KEY_SENTINEL
+    key = wp.int64(environment)
+    for axis in range(3):
+        scaled = position[axis] * inv_half_voxel
+        coord = int(wp.round(scaled))
+        # Nodes off the lattice, or beyond 16-bit coordinates, keep a cold start.
+        if wp.abs(scaled - float(coord)) > 0.25 or coord < -32768 or coord > 32767:
+            return NODE_KEY_SENTINEL
+        key = key * wp.int64(65536) + wp.int64(coord + 32768)
+    return key
+
+
+@wp.kernel
+def compute_lattice_node_keys(
+    positions: wp.array[wp.vec3],
+    environment_offsets: wp.array[int],
+    inv_half_voxel: float,
+    keys: wp.array[wp.int64],
+    nodes: wp.array[int],
+):
+    i = wp.tid()
+    environment = int(0)
+    if environment_offsets:
+        environment = wp.lower_bound(environment_offsets, i + 1) - 1
+    keys[i] = lattice_node_key(positions[i], inv_half_voxel, environment)
+    nodes[i] = i
+
+
+@wp.kernel
+def gather_sorted_node_values(sorted_nodes: wp.array[int], values: wp.array[wp.vec3], sorted_values: wp.array[wp.vec3]):
+    j = wp.tid()
+    sorted_values[j] = values[sorted_nodes[j]]
+
+
+@wp.kernel
+def load_values_by_lattice_key(
+    positions: wp.array[wp.vec3],
+    environment_offsets: wp.array[int],
+    inv_half_voxel: float,
+    saved_keys: wp.array[wp.int64],
+    saved_values: wp.array[wp.vec3],
+    saved_count: int,
+    values: wp.array[wp.vec3],
+):
+    """Warm-start nodes from the saved node with the same lattice key, or zero."""
+    i = wp.tid()
+    environment = int(0)
+    if environment_offsets:
+        environment = wp.lower_bound(environment_offsets, i + 1) - 1
+    key = lattice_node_key(positions[i], inv_half_voxel, environment)
+    value = wp.vec3(0.0)
+    if key != NODE_KEY_SENTINEL:
+        j = wp.lower_bound(saved_keys, 0, saved_count, key)
+        if j < saved_count and saved_keys[j] == key:
+            value = saved_values[j]
+    values[i] = value
+
+
+@wp.kernel
+def reset_values_by_lattice_key(
+    world_mask: wp.array[wp.bool],
+    world_count: int,
+    saved_keys: wp.array[wp.int64],
+    saved_values: wp.array[wp.vec3],
+):
+    """Clear saved values of selected environments, keeping keys sorted."""
+    j = wp.tid()
+    key = saved_keys[j]
+    if key != NODE_KEY_SENTINEL:
+        environment = int(key // wp.int64(281474976710656))
+        if environment < world_count and world_mask[environment]:
+            saved_values[j] = wp.vec3(0.0)
+
+
 @wp.kernel
 def pad_voxels(particle_q: wp.array[wp.vec3i], padded_q: wp.array4d[wp.vec3i]):
     pid = wp.tid()
