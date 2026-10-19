@@ -185,7 +185,8 @@ formulation.
   :class:`~newton.solvers.SolverMuJoCo`.
   :class:`~newton.solvers.SolverVBD` consumes these properties for rigid-rigid contacts
   when ``rigid_compliant_alm=True``, with separate Coulomb limits for sliding, torsion,
-  and rolling rather than one coupled cone.
+  and rolling rather than one coupled cone. Sliding and rolling use full 2D
+  response metrics for conditioning; torsion uses its scalar response.
 - ``kh``: consumed by hydroelastic contact generation for Newton-generated
   contacts used by :class:`~newton.solvers.SolverFeatherstone`,
   :class:`~newton.solvers.SolverSemiImplicit`, and

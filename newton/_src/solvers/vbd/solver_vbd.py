@@ -183,7 +183,8 @@ class SolverVBD(SolverBase, CouplingInterface):
     Their nonzero defaults enable both channels; setting either coefficient to
     zero on either shape disables that channel for the contact pair.
     VBD clamps sliding force, torsional torque, and rolling torque to separate
-    Coulomb limits; it does not use a single coupled friction cone.
+    Coulomb limits; it does not use a single coupled friction cone. Sliding and
+    rolling use two-dimensional conditioning metrics; torsion uses a scalar.
 
     Joint limitations:
         - Supported joint types: BALL, FIXED, FREE, REVOLUTE, PRISMATIC, D6, ROD.
@@ -1210,9 +1211,9 @@ class SolverVBD(SolverBase, CouplingInterface):
             self.body_body_contact_material_mu = wp.zeros(0, dtype=float, device=self.device)
             self.body_body_contact_material_mu_torsional = wp.zeros(0, dtype=float, device=self.device)
             self.body_body_contact_material_mu_rolling = wp.zeros(0, dtype=float, device=self.device)
-            self.body_body_contact_tangent_rho = wp.zeros(0, dtype=float, device=self.device)
+            self.body_body_contact_tangent_rho = wp.zeros(0, dtype=wp.mat22, device=self.device)
             self.body_body_contact_torsional_rho = wp.zeros(0, dtype=float, device=self.device)
-            self.body_body_contact_rolling_rho = wp.zeros(0, dtype=float, device=self.device)
+            self.body_body_contact_rolling_rho = wp.zeros(0, dtype=wp.mat22, device=self.device)
             self.body_body_contact_lambda = wp.zeros(0, dtype=wp.vec3, device=self.device)
             self.body_body_contact_lambda_angular = wp.zeros(0, dtype=wp.vec3, device=self.device)
             self.body_body_contact_C0 = wp.zeros(0, dtype=wp.vec3, device=self.device)
@@ -1479,6 +1480,9 @@ class SolverVBD(SolverBase, CouplingInterface):
                     point1,
                     force_on_body1,
                     self._rigid_contact_pure_torque_on_body1,
+                    contacts.rigid_contact_normal,
+                    contacts.rigid_contact_offset0,
+                    contacts.rigid_contact_offset1,
                     self.model.body_inv_mass,
                     self.model.body_flags,
                     body_local_to_proxy_global,
@@ -1652,9 +1656,9 @@ class SolverVBD(SolverBase, CouplingInterface):
         self.body_body_contact_material_mu = wp.zeros(rigid_contact_max, dtype=float, device=self.device)
         self.body_body_contact_material_mu_torsional = wp.zeros(rigid_contact_max, dtype=float, device=self.device)
         self.body_body_contact_material_mu_rolling = wp.zeros(rigid_contact_max, dtype=float, device=self.device)
-        self.body_body_contact_tangent_rho = wp.zeros(rigid_contact_max, dtype=float, device=self.device)
+        self.body_body_contact_tangent_rho = wp.zeros(rigid_contact_max, dtype=wp.mat22, device=self.device)
         self.body_body_contact_torsional_rho = wp.zeros(rigid_contact_max, dtype=float, device=self.device)
-        self.body_body_contact_rolling_rho = wp.zeros(rigid_contact_max, dtype=float, device=self.device)
+        self.body_body_contact_rolling_rho = wp.zeros(rigid_contact_max, dtype=wp.mat22, device=self.device)
         self.body_body_contact_lambda = wp.zeros(rigid_contact_max, dtype=wp.vec3, device=self.device)
         self.body_body_contact_lambda_angular = wp.zeros(rigid_contact_max, dtype=wp.vec3, device=self.device)
         self.body_body_contact_C0 = wp.zeros(rigid_contact_max, dtype=wp.vec3, device=self.device)
@@ -3922,6 +3926,7 @@ class SolverVBD(SolverBase, CouplingInterface):
                     inputs=[
                         dt,
                         color_group,
+                        model.body_colors,
                         self.body_q_prev,
                         state_in.body_q,
                         model.body_com,
@@ -4177,7 +4182,7 @@ class SolverVBD(SolverBase, CouplingInterface):
         wp.array[wp.vec3],
         wp.array[wp.int32],
     ]:
-        """Collect per-contact rigid contact forces and world-space application points.
+        """Collect per-contact rigid contact forces and world-space surface points.
 
         Args:
             body_q: Current body transforms (world frame),
@@ -4201,8 +4206,10 @@ class SolverVBD(SolverBase, CouplingInterface):
             iterate up to the returned ``rigid_contact_count`` rather than the
             array length.
 
-            These outputs exclude pure torsional/rolling friction couples, so
-            point-force moments alone do not reconstruct the full contact wrench.
+            Returned points are surface anchors. Normal force acts at the underlying
+            support points, which can have different moment arms when offsets rotate.
+            Pure torsional/rolling friction couples are also excluded, so these
+            outputs do not reconstruct the full contact wrench.
 
         Returns:
             tuple[
@@ -4215,8 +4222,8 @@ class SolverVBD(SolverBase, CouplingInterface):
             ]: Tuple of per-contact outputs:
                 - body0: Body index for shape0, int32.
                 - body1: Body index for shape1, int32.
-                - point0_world: World-space contact point on body0, wp.vec3 [m].
-                - point1_world: World-space contact point on body1, wp.vec3 [m].
+                - point0_world: World-space surface contact point on body0, wp.vec3 [m].
+                - point1_world: World-space surface contact point on body1, wp.vec3 [m].
                 - force_on_body1: Contact force applied to body1 in world frame, wp.vec3 [N].
                 - rigid_contact_count: Length-1 active rigid-contact count, int32.
         """
