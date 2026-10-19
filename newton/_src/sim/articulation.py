@@ -1540,14 +1540,15 @@ def eval_articulation_body_inertia_about_root(
     body_com: wp.array[wp.vec3],
     body_q: wp.array[wp.transform],
     # outputs
-    body_I_c: wp.array[wp.spatial_matrix],
+    body_I_c: wp.array3d[float],
 ):
-    """Spatial inertia of each joint's child body about its articulation's root body origin, one thread per joint.
+    """Spatial inertia of each joint's child body about its articulation's root body origin.
 
-    World-aligned axes. With ``d`` the vector from the root origin to the body
-    COM and ``D = [d]x``, the inertia is ``[[m 1, -m D], [m D, I_w - m D D]]``.
+    One thread per (joint, row), writing into a float view of the spatial
+    matrices. World-aligned axes. With ``d`` the vector from the root origin to
+    the body COM and ``D = [d]x``, the inertia is ``[[m 1, -m D], [m D, I_w - m D D]]``.
     """
-    j = wp.tid()
+    j, row = wp.tid()
     art_idx = joint_articulation[j]
     if art_idx < 0:
         return
@@ -1558,23 +1559,18 @@ def eval_articulation_body_inertia_about_root(
     child = joint_child[j]
     origin = wp.transform_get_translation(body_q[joint_child[articulation_start[art_idx]]])
     X_wb = body_q[child]
-    R = wp.quat_to_matrix(wp.transform_get_rotation(X_wb))
-    I_w = R * body_inertia[child] * wp.transpose(R)
     m = body_mass[child]
     D = wp.skew(wp.transform_point(X_wb, body_com[child]) - origin)
-    mD = m * D
-    I_a = I_w - mD * D
-
-    # fmt: off
-    body_I_c[child] = wp.spatial_matrix(
-        m,         0.0,       0.0,       -mD[0, 0], -mD[0, 1], -mD[0, 2],
-        0.0,       m,         0.0,       -mD[1, 0], -mD[1, 1], -mD[1, 2],
-        0.0,       0.0,       m,         -mD[2, 0], -mD[2, 1], -mD[2, 2],
-        mD[0, 0],  mD[0, 1],  mD[0, 2],  I_a[0, 0], I_a[0, 1], I_a[0, 2],
-        mD[1, 0],  mD[1, 1],  mD[1, 2],  I_a[1, 0], I_a[1, 1], I_a[1, 2],
-        mD[2, 0],  mD[2, 1],  mD[2, 2],  I_a[2, 0], I_a[2, 1], I_a[2, 2],
-    )
-    # fmt: on
+    if row < 3:
+        for col in range(3):
+            body_I_c[child, row, col] = wp.where(row == col, m, 0.0)
+            body_I_c[child, row, col + 3] = -m * D[row, col]
+    else:
+        R = wp.quat_to_matrix(wp.transform_get_rotation(X_wb))
+        I_a = R * body_inertia[child] * wp.transpose(R) - m * D * D
+        for col in range(3):
+            body_I_c[child, row, col] = m * D[row - 3, col]
+            body_I_c[child, row, col + 3] = I_a[row - 3, col]
 
 
 @wp.kernel(enable_backward=False)
@@ -2025,7 +2021,7 @@ def _eval_mass_matrix(
         )
         wp.launch(
             kernel=eval_articulation_body_inertia_about_root,
-            dim=model.joint_count,
+            dim=(model.joint_count, 6),
             inputs=[
                 model.joint_articulation,
                 model.articulation_start,
@@ -2036,7 +2032,7 @@ def _eval_mass_matrix(
                 model.body_com,
                 state.body_q,
             ],
-            outputs=[body_I_s],
+            outputs=[body_I_s.view(float)],
             device=model.device,
         )
         wp.launch(
