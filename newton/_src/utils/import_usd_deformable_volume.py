@@ -21,6 +21,7 @@ from ..exceptions import NewtonWarning
 from ..sim.model import Model
 from .import_usd_deformable_utils import (
     _AOUSD_DEFAULT_POISSONS_RATIO,
+    _AOUSD_DEFAULT_THICKNESS,
     _AOUSD_DEFAULT_YOUNGS_MODULUS,
     _apply_particle_masses,
     _bake_world_points,
@@ -224,6 +225,12 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
                 read_base_material=volume_material is None and tetmesh_for_builder.density is None,
             )
             add_soft_mesh_kwargs["density"] = resolved_density
+            # AOUSD authors no particle radius for volume deformables. Fall back to the same
+            # contact offset the cloth and cable importers use (half the AOUSD default
+            # thickness) instead of the builder-wide default (0.1 m), which can be as large
+            # as an object-sized soft body itself. The legacy bare-TetMesh path is unchanged
+            # and still follows builder.default_particle_radius.
+            add_soft_mesh_kwargs["particle_radius"] = 0.5 * _AOUSD_DEFAULT_THICKNESS / ctx.linear_unit
 
         soft_p0, soft_t0 = builder.particle_count, builder.tet_count
         builder.add_soft_mesh(**add_soft_mesh_kwargs)
