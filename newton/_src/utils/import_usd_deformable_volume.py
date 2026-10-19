@@ -227,7 +227,7 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             add_soft_mesh_kwargs["density"] = resolved_density
             # AOUSD authors no particle radius for volume deformables. Fall back to the same
             # contact offset the cloth and cable importers use (half the AOUSD default
-            # thickness) instead of the builder-wide default (0.1 m), which can be as large
+            # thickness) instead of the builder-wide default, which can be as large
             # as an object-sized soft body itself. The legacy bare-TetMesh path is unchanged
             # and still follows builder.default_particle_radius.
             add_soft_mesh_kwargs["particle_radius"] = 0.5 * _AOUSD_DEFAULT_THICKNESS / ctx.linear_unit
