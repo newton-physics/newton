@@ -7816,6 +7816,50 @@ class TestMuJoCoOptions(unittest.TestCase):
         self.assertGreater(np.abs(state_out.joint_qd.numpy()).max(), 0.0)
         np.testing.assert_allclose(observables.qfrc_actuator.numpy(), solver.mj_data.qfrc_actuator, atol=1e-6)
 
+    def test_qfrc_constraint_load_observables(self):
+        """Friction-loss forces are split out of the constraint forces of a horizontal arm.
+
+        World 0 has more friction than the gravity torque and sticks; world 1 slides.
+        """
+        mass, length, gravity = 1.0, 0.5, 9.81
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, -gravity))
+        for friction in (10.0, 2.0):
+            link = builder.add_link(com=wp.vec3(length, 0.0, 0.0), mass=mass, inertia=wp.diag(wp.vec3(1.0e-6)))
+            joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Y, friction=friction)
+            builder.add_articulation([joint])
+        model = builder.finalize()
+        kinds = {
+            SolverMuJoCo.ObservableKind.QFRC_BIAS,
+            SolverMuJoCo.ObservableKind.QFRC_CONSTRAINT,
+            SolverMuJoCo.ObservableKind.QFRC_FRICTIONLOSS,
+        }
+
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu)
+                observables = solver.observables(kinds)
+                state_0, state_1, control = model.state(), model.state(), model.control()
+                for _ in range(30):
+                    solver.step(state_0, state_1, control, None, 1.0 / 240.0, observables=observables)
+                    state_0, state_1 = state_1, state_0
+
+                bias = observables.qfrc_bias.numpy()
+                constraint = observables.qfrc_constraint.numpy()
+                frictionloss = observables.qfrc_frictionloss.numpy()
+                if use_mujoco_cpu:
+                    mj_bias, mj_constraint = solver.mj_data.qfrc_bias, solver.mj_data.qfrc_constraint
+                else:
+                    mj_bias, mj_constraint = solver.mjw_data.qfrc_bias.numpy(), solver.mjw_data.qfrc_constraint.numpy()
+                np.testing.assert_allclose(bias, mj_bias.ravel(), atol=1e-5)
+                np.testing.assert_allclose(constraint, mj_constraint.ravel(), atol=1e-5)
+
+                gravity_torque = mass * gravity * length
+                np.testing.assert_allclose(bias[0], -gravity_torque, rtol=1e-3)
+                np.testing.assert_allclose(frictionloss[0], -gravity_torque, rtol=1e-3)
+                np.testing.assert_allclose(abs(frictionloss[1]), 2.0, rtol=1e-3)
+                np.testing.assert_allclose(constraint - frictionloss, 0.0, atol=1e-4)
+                np.testing.assert_allclose((constraint - frictionloss - bias)[0], gravity_torque, rtol=1e-3)
+
     def _create_body_observable_builder(self):
         """Build a moving chain with nonzero velocity-dependent acceleration."""
         builder = newton.ModelBuilder()
