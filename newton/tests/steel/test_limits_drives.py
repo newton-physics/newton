@@ -1944,8 +1944,14 @@ class TestSteelJointFriction(unittest.TestCase):
         for value in (-1.0, float("nan"), float("inf")):
             with self.subTest(value=value), self.assertRaisesRegex(ValueError, "finite and non-negative"):
                 _friction_solver(_single_dof_model("revolute", friction=value))
-        with self.assertRaisesRegex(ValueError, "joint_friction is nonzero on joint 0 .FREE"):
+        with self.assertRaisesRegex(ValueError, r"joint_friction is nonzero on joint 0 \(FREE\)"):
             _friction_solver(_root_joint_model("free", friction=FRICTION))
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        links = [builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * INERTIA)) for _ in range(2)]
+        builder.add_articulation([builder.add_joint_revolute(-1, link, axis=newton.Axis.Z) for link in links])
+        builder.add_joint_revolute(links[0], links[1], axis=newton.Axis.Z, friction=FRICTION)
+        with self.assertRaisesRegex(ValueError, r"joint_friction is nonzero on joint 2 \(loop-closing joint\)"):
+            _friction_solver(builder.finalize())
         # Joint-friction rows take a fourth row-type bit: at most 2**27 - 1 rows, rejected before allocation.
         with self.assertRaisesRegex(ValueError, "articulation_constraint_max must be at most 134217727"):
             _friction_solver(_single_dof_model("revolute"), articulation_constraint_max=134_217_728)

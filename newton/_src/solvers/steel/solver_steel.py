@@ -1788,8 +1788,8 @@ class SolverSteel(SolverBase):
                 ``"interleaved"`` sweeps every row family in each iteration: the dense rows,
                 the free-body contact rows, then the velocity limits. ``"contact_then_internal"``
                 runs every iteration of the contact rows first, then every iteration of the
-                internal rows (drive, mimic, connect and joint-limit rows) and the velocity
-                limits. ``"phased"`` approximates the order PhysX uses for grasping: each
+                internal rows (drive, mimic, connect, joint-limit and joint-friction rows) and
+                the velocity limits. ``"phased"`` approximates the order PhysX uses for grasping: each
                 iteration solves the internal rows, then the contact rows, then the velocity
                 limits, each in a launch of its own; the propagation responses use this order
                 with ``"interleaved"`` as well. Contact torsion and contact compliance require
@@ -2775,10 +2775,11 @@ class SolverSteel(SolverBase):
         unsupported = np.flatnonzero((friction > 0.0) & (self._friction_dof_supported.numpy() == 0))
         if unsupported.size:
             joint = int(np.searchsorted(model.joint_qd_start.numpy(), unsupported[0], side="right") - 1)
-            raise ValueError(
-                f"joint_friction is nonzero on joint {joint} "
-                f"({JointType(int(model.joint_type.numpy()[joint])).name} or loop-closing joint)"
-            )
+            if self._model_plan.loop_joint_articulation[joint] >= 0:
+                kind = "loop-closing joint"
+            else:
+                kind = JointType(int(model.joint_type.numpy()[joint])).name
+            raise ValueError(f"joint_friction is nonzero on joint {joint} ({kind})")
 
     def _init_joint_friction(self, model) -> None:
         """Upload the per-DOF friction tables and select the row builders of the articulations that use them."""
@@ -13495,8 +13496,8 @@ def _get_pgs_solve_mf_gs_kernel(
     With ``row_phases`` the launch argument ``row_phase`` restricts a sweep to some row
     families, for the PGS schedules and so a propagation solve can interleave its own rows:
     ``1`` and ``4`` the contact rows (dense and free-body contact, friction and torsion
-    rows), ``2`` the internal rows (drive, mimic, connect and joint-limit rows) and the
-    velocity limits, ``3`` the internal rows without the velocity limits, ``5`` the
+    rows), ``2`` the internal rows (drive, mimic, connect, joint-limit and joint-friction
+    rows) and the velocity limits, ``3`` the internal rows without the velocity limits, ``5`` the
     velocity limits (velocity-limit rows and the fused clamp). ``0`` (the only value
     without ``row_phases``) sweeps every family.
 
@@ -13523,6 +13524,8 @@ def _get_pgs_solve_mf_gs_kernel(
             normal impulse; the other modes solve each contact's normal and tangent rows
             together, once per sweep at its first friction row (dense contacts keep the
             ``"fixed_normal"`` update under ``"coulomb_newton"``).
+        joint_friction: Emit the box projection of the joint-friction rows
+            (``enable_joint_friction``).
     """
     if fuse_vel_limits and not has_drive_rows:
         raise ValueError("fuse_vel_limits requires has_drive_rows")
@@ -14103,6 +14106,7 @@ def _get_pgs_solve_mf_gs_kernel(
                 row_phases,
                 friction_mode,
                 factor_coordinates,
+                joint_friction,
             )
             + "_local",
         )
@@ -14239,6 +14243,7 @@ def _get_pgs_solve_mf_gs_kernel(
         row_phases,
         friction_mode,
         factor_coordinates,
+        joint_friction,
     )
     pgs_solve_mf_gs.__name__ = name
     pgs_solve_mf_gs.__qualname__ = name
@@ -14257,6 +14262,7 @@ def _mf_gs_kernel_name(
     row_phases: bool,
     friction_mode: str,
     factor_coordinates: bool,
+    joint_friction: bool,
 ) -> str:
     """Return the unique name of one matrix-free Gauss-Seidel kernel shape."""
     return (
@@ -14267,6 +14273,7 @@ def _mf_gs_kernel_name(
         f"{'_phased' if row_phases else ''}"
         f"{'' if friction_mode == 'fixed_normal' else '_' + friction_mode}"
         f"{'_factor' if factor_coordinates else ''}"
+        f"{'_jfric' if joint_friction else ''}"
     )
 
 
@@ -18872,7 +18879,7 @@ def _get_pgs_solve_propagation_full_iteration_kernel(
 
     name = (
         f"pgs_solve_propagation_full_iteration_{M_D}_{M_MF}_{D}_{M_PROP}_{max_propagation_bodies}_{target_size}"
-        f"_drive{int(has_drive_rows)}_fvl{int(fuse_vel_limits)}"
+        f"_drive{int(has_drive_rows)}_fvl{int(fuse_vel_limits)}{'_jfric' if joint_friction else ''}"
     )
     pgs_solve_propagation_full_iteration.__name__ = name
     pgs_solve_propagation_full_iteration.__qualname__ = name
