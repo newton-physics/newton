@@ -8884,9 +8884,14 @@ def Xform "Articulation" (
                 with self.subTest(articulated=articulated, enabled=enabled, ignore_paths=ignore_paths):
                     joint_x.CreateJointEnabledAttr().Set(enabled)
                     builder = newton.ModelBuilder()
-                    result = builder.add_usd(
-                        stage, ignore_paths=ignore_paths, load_visual_shapes=False, load_sites=False
-                    )
+                    with warnings.catch_warnings():
+                        # usd-core 25.5 reports an articulation without enabled joints as invalid.
+                        warnings.filterwarnings(
+                            "ignore", "Invalid ArticulationDesc", category=newton.exceptions.NewtonWarning
+                        )
+                        result = builder.add_usd(
+                            stage, ignore_paths=ignore_paths, load_visual_shapes=False, load_sites=False
+                        )
                     self.assertNotIn(str(joint_x.GetPath()), result["path_joint_map"])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
