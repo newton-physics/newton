@@ -6,7 +6,7 @@
 GIMP uses Q1 velocity, P1d strain, and pic27 contacts by default. Two kinematic
 pads close, lift the object 50 mm, carry it 100 mm, then lower it to the ground
 before opening. Test mode checks grip retention and release on the ground.
-Uses four substeps with up to 50 GS iterations each. No external assets are required.
+Uses four substeps with up to 50 solver iterations each. No external assets are required.
 
 Run ``--viewer null --num-frames 480 --test`` for the full eight-second
 sequence at the default 60 frames per second.
@@ -362,7 +362,7 @@ class Example:
             default=None,
             help="Solve contacts inside the strain-cell color loop (automatic for supported configurations).",
         )
-        parser.add_argument("--solver", "-s", type=str, default="gs")
+        parser.add_argument("--solver", "-s", type=str, default="auto")
         return parser
 
 
