@@ -7,7 +7,7 @@ name: Claude Auto Review
 # pull_request_target runs this workflow as defined on the default branch, with
 # access to secrets, for pull requests from forks as well. Pull request content
 # is therefore untrusted. Following the separate-checkout pattern in the
-# action's docs/security.md, the trusted base revision is the working directory
+# action's docs/security.md, the trusted base branch is the working directory
 # and the pull request head is checked out into pr-head/ only as files to read.
 #
 # The reviewer runs in Claude Code's restricted mode with only Read, Grep, and
@@ -46,12 +46,13 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      # Trusted base revision at the workspace root. It supplies the review
-      # guidelines; the action also restores Claude configuration paths from
-      # the base branch here.
+      # Trusted checkout of the current base branch at the workspace root
+      # (github.sha under pull_request_target). It supplies the review
+      # guidelines and the scripts the steps below run, which may not exist
+      # at an older pull_request.base.sha; the action also restores Claude
+      # configuration paths from the base branch here.
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 1
           persist-credentials: false
 
@@ -71,7 +72,7 @@ jobs:
       # - Build the complete diff against the merge base, so the review does
       #   not depend on GitHub's diff size limits. External diff and textconv
       #   drivers are disabled.
-      # - List public API changes with the base revision's
+      # - List public API changes with the base branch's
       #   scripts/ci/detect_api_changes.py, which only parses the trees with
       #   ast and never imports or runs code from them.
       # - Save the pull request description and existing comments as files.
@@ -139,8 +140,11 @@ jobs:
 
             You can only read files; you cannot run commands.
 
-            - The working directory is the base revision: the code before the
-              change. `pr-head/` is the pull request head: the code after it.
+            - The working directory is the current base branch: the code
+              without the change. `pr-head/` is the pull request head: the code
+              with it. The base branch may have moved on since the pull request
+              branched off; the diff below shows only the pull request's own
+              changes.
             - `.pr-review/pr-stat.txt` lists the changed files and
               `.pr-review/pr.diff` is the complete diff against the merge base.
               Read large diffs in chunks with Read's offset and limit.
@@ -324,7 +328,7 @@ jobs:
             --allowedTools "Read(/${{ github.workspace }}/**),Grep(/${{ github.workspace }}/**),Glob(/${{ github.workspace }}/**)"
             --json-schema '{"type":"object","additionalProperties":false,"required":["summary","complete","findings"],"properties":{"summary":{"type":"string","description":"Overall assessment in at most four sentences, without a heading or a list of the findings"},"complete":{"type":"boolean","description":"Whether the whole change was reviewed"},"findings":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["path","line","severity","title","body"],"properties":{"path":{"type":"string","description":"File path relative to pr-head"},"line":{"type":["integer","null"],"description":"Line in the head version of the file, or null"},"start_line":{"type":["integer","null"],"description":"First line of a multi-line range"},"severity":{"type":"string","enum":["P0","P1","P2","nit"]},"title":{"type":"string"},"body":{"type":"string"},"suggestion":{"type":["string","null"],"description":"Exact replacement text for the anchored lines"}}}}}}'
 
-      # Publish from a trusted step with the base revision's script, so the
+      # Publish from a trusted step with the base branch's script, so the
       # reviewer never needs a shell or a token: findings anchored to diff
       # lines become one review with inline comments, and a summary comment is
       # updated on each run. Both link this run and name the model and effort
