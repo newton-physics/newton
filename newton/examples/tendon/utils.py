@@ -24,7 +24,7 @@ def get_tendon_attachment_worlds(solver, model, state):
     seg_active = getattr(solver, "tendon_segment_active", None)
     seg_active = seg_active.numpy() if seg_active is not None else np.ones(len(seg_guide_l), dtype=np.int32)
     guide_body = model.tendon_guide_body.numpy()
-    body_q = state.body_q.numpy()
+    body_q = state.body_q.numpy() if state.body_q is not None else None
 
     att_l_world = np.empty_like(att_l)
     att_r_world = np.empty_like(att_r)
@@ -66,7 +66,7 @@ def get_tendon_cable_lines(solver, model, state):
     seg_guide_l = getattr(solver, "tendon_segment_active_guide_l", solver.tendon_segment_guide_l).numpy()
     seg_guide_r = getattr(solver, "tendon_segment_active_guide_r", None)
     seg_guide_r = seg_guide_r.numpy() if seg_guide_r is not None else seg_guide_l + 1
-    body_q = state.body_q.numpy()
+    body_q = state.body_q.numpy() if state.body_q is not None else None
 
     seg = 0
     for t in range(model.tendon_count):
@@ -168,7 +168,7 @@ def get_tendon_total_lengths(solver, model, state):
     seg_guide_l = getattr(solver, "tendon_segment_active_guide_l", solver.tendon_segment_guide_l).numpy()
     seg_guide_r = getattr(solver, "tendon_segment_active_guide_r", None)
     seg_guide_r = seg_guide_r.numpy() if seg_guide_r is not None else seg_guide_l + 1
-    body_q = state.body_q.numpy()
+    body_q = state.body_q.numpy() if state.body_q is not None else None
 
     lengths = np.zeros(model.tendon_count, dtype=np.float32)
     seg = 0

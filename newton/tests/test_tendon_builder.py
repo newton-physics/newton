@@ -15,29 +15,6 @@ from newton._src.solvers.coupled.model_view import ModelView
 
 
 class TestTendonBuilder(unittest.TestCase):
-    def test_world_guides_without_bodies(self):
-        """Initialize, step, and reset an entirely world-attached route without body arrays."""
-        builder = newton.ModelBuilder()
-        builder.begin_world()
-        builder.add_tendon(
-            [newton.TendonGuide(body=-1), newton.TendonGuide(body=-1, offset=(1.0, 0.0, 0.0), compliance=0.01)]
-        )
-        builder.end_world()
-        builder.color()
-        for device in wp.get_devices():
-            for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
-                with self.subTest(device=device, solver=solver_type.__name__):
-                    model = builder.finalize(device=device)
-                    solver = solver_type(model, iterations=2)
-                    state, output = model.state(), model.state()
-                    solver.step(state, output, model.control(), None, 0.01)
-                    np.testing.assert_allclose(solver.tendon_segment_rest_length.numpy(), [1.0])
-                    np.testing.assert_allclose(solver.tendon_segment_attachment_r.numpy(), [[1.0, 0.0, 0.0]])
-                    output.tendon_segment_rest_length.fill_(0.5)
-                    mask = wp.array([True, False], dtype=wp.bool, device=device)
-                    solver.reset(output, world_mask=mask, flags=0)
-                    np.testing.assert_allclose(output.tendon_segment_rest_length.numpy(), [1.0])
-
     def test_world_guide_composition(self):
         """Transform world guides once while preserving local frames and simulation-world ownership."""
         source = newton.ModelBuilder()
@@ -84,6 +61,18 @@ class TestTendonBuilder(unittest.TestCase):
         np.testing.assert_allclose(placed.tendon_guide_offset[2], [2.0, 0.2, 0.0])
         np.testing.assert_allclose(placed.tendon_guide_axis[2], [1.0, 0.0, 0.0])
         self.assertEqual(placed.tendon_guide_body, [-1, 0, -1, 1])
+
+        # Exercise the array-backed path with rotation, an existing prefix, and an identity copy.
+        target = newton.ModelBuilder()
+        target.add_world(source)
+        target.replicate(source, 2, xforms=[xform, wp.transform_identity()])
+        np.testing.assert_array_equal(target.tendon_guide_body, [-1, 0, -1, 1, -1, 2])
+        for start in (0, 4):
+            np.testing.assert_allclose(target.tendon_guide_offset[start], [0.0, 0.2, 0.0])
+            np.testing.assert_allclose(target.tendon_guide_axis[start], [1.0, 0.0, 0.0])
+        np.testing.assert_allclose(target.tendon_guide_offset[2], wp.transform_point(xform, wp.vec3(0.0, 0.2, 0.0)))
+        np.testing.assert_allclose(target.tendon_guide_axis[2], wp.transform_vector(xform, wp.vec3(1.0, 0.0, 0.0)))
+        np.testing.assert_allclose(target.tendon_guide_offset[3], [0.0, 0.1, 0.0])
 
     def test_first_guide_has_no_material(self):
         """Reject non-default incoming-span parameters on a guide with no incoming span."""
@@ -340,72 +329,85 @@ class TestTendonBuilder(unittest.TestCase):
 
     def test_replicated_dynamic_guides_switch_independently(self):
         """Keep routing transitions, history slots, and masked resets within one world."""
-        source = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        roller = source.add_body(xform=wp.transform(p=wp.vec3(0.25, 0.0, 0.0)), mass=0.0)
-        source.add_tendon(
-            [
-                newton.TendonGuide(body=-1, offset=(0.0, 0.0, -0.5), axis=(0.0, 1.0, 0.0)),
-                newton.TendonGuide(
-                    body=roller,
-                    guide_type=newton.TendonGuideType.ROLLER,
-                    dynamic=True,
-                    radius=0.1,
-                    mu=0.2,
-                    axis=(0.0, 1.0, 0.0),
-                    compliance=1e-4,
-                    rest_length=0.4,
-                ),
-                newton.TendonGuide(
-                    body=-1, offset=(0.0, 0.0, 0.5), axis=(0.0, 1.0, 0.0), compliance=2e-4, rest_length=0.6
-                ),
-            ]
-        )
-        source.color()
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        builder.replicate(source, 3)
-        for device in wp.get_devices():
-            for solver_type, options in (
-                (newton.solvers.SolverXPBD, {}),
-                (newton.solvers.SolverVBD, {"rigid_compliant_alm": False}),
-                (newton.solvers.SolverVBD, {"rigid_compliant_alm": True}),
-            ):
-                with self.subTest(device=device, solver=solver_type.__name__, options=options):
-                    model = builder.finalize(device=device)
-                    expected_warning = (
-                        self.assertWarnsRegex(DeprecationWarning, "rigid_compliant_alm=False is deprecated")
-                        if options.get("rigid_compliant_alm") is False
-                        else nullcontext()
-                    )
-                    with expected_warning:
-                        solver = solver_type(model, iterations=2, **options)
-                    state_0, state_1 = model.state(), model.state()
-                    control = model.control()
-                    initial_rest = solver.tendon_segment_rest_length.numpy().copy()
-                    np.testing.assert_array_equal(solver.tendon_guide_active.numpy()[[1, 4, 7]], [False, False, False])
-                    for x, active in ((0.05, True), (0.25, False)):
-                        poses = state_0.body_q.numpy()
-                        poses[1, 0] = x
-                        state_0.body_q.assign(poses)
+        for world_attached in (False, True):
+            source = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            lower = -1 if world_attached else source.add_body(xform=wp.transform(p=(0.0, 0.0, -0.5)), mass=0.0)
+            roller = source.add_body(xform=wp.transform(p=wp.vec3(0.25, 0.0, 0.0)), mass=0.0)
+            upper = -1 if world_attached else source.add_body(xform=wp.transform(p=(0.0, 0.0, 0.5)), mass=0.0)
+            source.add_tendon(
+                [
+                    newton.TendonGuide(
+                        body=lower, offset=(0.0, 0.0, -0.5) if world_attached else (0.0, 0.0, 0.0), axis=(0.0, 1.0, 0.0)
+                    ),
+                    newton.TendonGuide(
+                        body=roller,
+                        guide_type=newton.TendonGuideType.ROLLER,
+                        dynamic=True,
+                        radius=0.1,
+                        mu=0.2,
+                        axis=(0.0, 1.0, 0.0),
+                        compliance=1e-4,
+                        rest_length=0.4,
+                    ),
+                    newton.TendonGuide(
+                        body=upper,
+                        offset=(0.0, 0.0, 0.5) if world_attached else (0.0, 0.0, 0.0),
+                        axis=(0.0, 1.0, 0.0),
+                        compliance=2e-4,
+                        rest_length=0.6,
+                    ),
+                ]
+            )
+            source.color()
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            builder.replicate(source, 3)
+            for device in wp.get_devices():
+                for solver_type, options in (
+                    (newton.solvers.SolverXPBD, {}),
+                    (newton.solvers.SolverVBD, {"rigid_compliant_alm": False}),
+                    (newton.solvers.SolverVBD, {"rigid_compliant_alm": True}),
+                ):
+                    with self.subTest(
+                        device=device, solver=solver_type.__name__, options=options, world_attached=world_attached
+                    ):
+                        model = builder.finalize(device=device)
+                        expected_warning = (
+                            self.assertWarnsRegex(DeprecationWarning, "rigid_compliant_alm=False is deprecated")
+                            if options.get("rigid_compliant_alm") is False
+                            else nullcontext()
+                        )
+                        with expected_warning:
+                            solver = solver_type(model, iterations=2, **options)
+                        state_0, state_1 = model.state(), model.state()
+                        control = model.control()
+                        initial_rest = solver.tendon_segment_rest_length.numpy().copy()
+                        np.testing.assert_array_equal(
+                            solver.tendon_guide_active.numpy()[[1, 4, 7]], [False, False, False]
+                        )
+                        for x, active in ((0.05, True), (0.25, False)):
+                            poses = state_0.body_q.numpy()
+                            poses[source.body_count + roller, 0] = x
+                            state_0.body_q.assign(poses)
+                            solver.step(state_0, state_1, control, None, 1.0 / 60.0)
+                            state_0, state_1 = state_1, state_0
+                            np.testing.assert_array_equal(
+                                solver.tendon_guide_active.numpy()[[1, 4, 7]], [False, active, False]
+                            )
+                            np.testing.assert_array_equal(
+                                solver.tendon_segment_rest_length.numpy()[[0, 1, 4, 5]], initial_rest[[0, 1, 4, 5]]
+                            )
+                        changed = state_0.tendon_segment_rest_length.numpy().copy()
+                        # The second slot of each bypassed route is an inactive
+                        # placeholder, not another physical free span.
+                        changed[::2] += np.float32(0.01)
+                        state_0.tendon_segment_rest_length.assign(changed)
+                        mask = wp.array([False, True, False, False], dtype=wp.bool, device=device)
+                        solver.reset(state_0, world_mask=mask, flags=0)
+                        expected = changed.copy()
+                        expected[2:4] = initial_rest[2:4]
+                        np.testing.assert_array_equal(state_0.tendon_segment_rest_length.numpy(), expected)
                         solver.step(state_0, state_1, control, None, 1.0 / 60.0)
-                        state_0, state_1 = state_1, state_0
-                        np.testing.assert_array_equal(
-                            solver.tendon_guide_active.numpy()[[1, 4, 7]], [False, active, False]
-                        )
-                        np.testing.assert_array_equal(
-                            solver.tendon_segment_rest_length.numpy()[[0, 1, 4, 5]], initial_rest[[0, 1, 4, 5]]
-                        )
-                    changed = state_0.tendon_segment_rest_length.numpy().copy()
-                    # The second slot of each bypassed route is an inactive
-                    # placeholder, not another physical free span.
-                    changed[::2] += np.float32(0.01)
-                    state_0.tendon_segment_rest_length.assign(changed)
-                    mask = wp.array([False, True, False, False], dtype=wp.bool, device=device)
-                    solver.reset(state_0, world_mask=mask, flags=0)
-                    expected = changed.copy()
-                    expected[2:4] = initial_rest[2:4]
-                    np.testing.assert_array_equal(state_0.tendon_segment_rest_length.numpy(), expected)
-                    solver.step(state_0, state_1, control, None, 1.0 / 60.0)
-                    np.testing.assert_array_equal(state_1.tendon_segment_rest_length.numpy(), expected)
+                        np.testing.assert_array_equal(state_1.tendon_segment_rest_length.numpy(), expected)
 
     def test_xpbd_reports_wraps_only_at_accepted_pose(self):
         """Suppress unsupported-wrap warnings during unconverged iterations."""

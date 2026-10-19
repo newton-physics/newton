@@ -2761,7 +2761,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         # Must run BEFORE _initialize_rigid_bodies: the dynamic routing activation
         # decision has to see the accepted pose, but the inertial predictor inside
         # _initialize_rigid_bodies overwrites state_in.body_q in place.
-        if self.tendon_segment_lambda is not None and state_in.body_q is not None:
+        if self.tendon_segment_lambda is not None:
             self._load_tendon_history(state_in)
             self._snapshot_tendon_step_state()
             self._update_tendon_guide_active(self.model, state_in.body_q)
@@ -2800,7 +2800,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         update_tendon_diagnostics = (
             self.iterations > 0
             and self.tendon_segment_lambda is not None
-            and state_in.body_q is not None
             and not self.integrate_with_external_rigid_solver
         )
         if update_tendon_diagnostics:
@@ -4206,7 +4205,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
     def _update_tendon_routing(self, state_in: State, dt: float, report_unsupported_wrap: bool) -> None:
         """Update VBD routed-tendon geometry and rolling rest transfer for this iteration."""
         model = self.model
-        if model.tendon_segment_count == 0 or state_in.body_q is None:
+        if model.tendon_segment_count == 0:
             return
 
         wp.launch(
@@ -4252,7 +4251,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             inputs=[
                 state_in.body_q,
                 state_in.body_qd,
-                self.body_q_prev,
+                self.body_q_prev if model.body_count else None,
                 model.body_com,
                 model.tendon_start,
                 model.tendon_guide_body,
@@ -4306,7 +4305,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             inputs=[
                 dt,
                 body_q,
-                self.body_q_prev,
+                self.body_q_prev if model.body_count else None,
                 model.body_com,
                 model.tendon_guide_body,
                 model.tendon_guide_type,
@@ -4366,6 +4365,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         and updates AVBD penalty parameters (dual update).
         """
         model = self.model
+        # Material can redistribute between fixed guides even without any rigid bodies.
+        if not self.integrate_with_external_rigid_solver:
+            self._update_tendon_routing(state_in, dt, False)
         # Body-particle soft contacts still need penalty updates when VBD skips rigid solves:
         # external rigid mode uses state_out.body_q, while static-shape contacts use _empty_body_q.
         skip_rigid_solve = not self._integrates_rigid_bodies
@@ -4404,8 +4406,6 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self.body_hessian_aa.zero_()
         self.body_hessian_al.zero_()
         self.body_hessian_ll.zero_()
-
-        self._update_tendon_routing(state_in, dt, False)
 
         body_color_groups = model.body_color_groups
 

@@ -3693,21 +3693,30 @@ class ModelBuilder:
 
         # World guides carry their own frame; body-local guides follow the placed body.
         world_guides = np.flatnonzero(np.asarray(builder.tendon_guide_body, dtype=np.int64) == -1)
-        for name, transform in (
-            ("tendon_guide_offset", wp.transform_point),
-            ("tendon_guide_axis", wp.transform_vector),
-        ):
+        for name in ("tendon_guide_offset", "tendon_guide_axis"):
             attribute_specs.pop(name)
             start = array_starts.get(name, int(bases["tendon_guide"]))
             values = getattr(self, name)
             if name not in array_starts:
                 values.extend(source_list(name) * world_count)
+            is_offset = name == "tendon_guide_offset"
+            if world_guides.size == 0 or (not is_offset and translations_only):
+                continue
+            source_vectors = np.asarray(getattr(builder, name), dtype=np.float32)[world_guides]
             for world_index, xform in enumerate(xforms):
                 if xform is None:
                     continue
-                for guide in world_guides.tolist():
-                    target = start + world_index * counts["tendon_guide"] + guide
-                    values[target] = transform(xform, wp.vec3(getattr(builder, name)[guide]))
+                transformed = source_vectors.copy()
+                if not translations_only:
+                    rotate_vectors(xform.q, transformed)
+                if is_offset:
+                    transformed += np.asarray(xform.p, dtype=np.float32)
+                targets = start + world_index * counts["tendon_guide"] + world_guides
+                if isinstance(values, np.ndarray):
+                    values[targets] = transformed
+                else:
+                    for target, vector in zip(targets, transformed.tolist(), strict=True):
+                        values[target] = tuple(vector)
 
         for body_start, shape_start in zip(body_starts, shape_starts, strict=True):
             for body, shapes in builder.body_shapes.items():
@@ -6672,6 +6681,8 @@ class ModelBuilder:
         is fixed in world space and belongs to :attr:`current_world`. Roller guides
         may be dynamic only when internal and not adjacent to another dynamic guide.
         The route is validated and copied before any tendon arrays are changed.
+        Author world-attached routes in the source builder before :meth:`add_world`
+        or :meth:`replicate`; those methods end outside the copied world contexts.
 
         .. experimental::
 
@@ -7311,6 +7322,12 @@ class ModelBuilder:
                 the collapse process.
 
         Note:
+            Tendon guides do not prevent their attached bodies from being merged
+            into world. Their offsets and axes are transformed to world space, and
+            their body indices become ``-1``. To retain an anchor body and its
+            fixed joint, include that joint in ``joints_to_keep``. Do not reuse
+            pre-collapse body indices after collapsing joints.
+
             Deformable labels do not change which fixed joints are collapsed. A curve's
             record is retained only if all of its segment bodies and joints survive.
             Otherwise the incomplete record is omitted with a warning. Pass the relevant
