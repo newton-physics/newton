@@ -2016,7 +2016,7 @@ def _eval_mass_matrix(
 
     if requires_grad is None:
         requires_grad = model.requires_grad or any(
-            a.requires_grad
+            a is not None and a.requires_grad
             for a in (
                 state.joint_q,
                 state.body_q,
