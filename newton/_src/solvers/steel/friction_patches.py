@@ -37,7 +37,7 @@ from ...core.reset import reset_world_selected
 from ...math.spatial import velocity_at_point
 from .friction import contact_tangent_basis
 
-# Same as kernels.STEEL_DETERMINISM_OPTIONS, which this module cannot import.
+# Same as kernels.WARP_DETERMINISM_OFF, which this module cannot import.
 wp.set_module_options({"deterministic": wp.DeterministicMode.NOT_GUARANTEED})
 
 

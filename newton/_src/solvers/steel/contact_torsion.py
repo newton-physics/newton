@@ -25,11 +25,11 @@ from .kernels import (
     PGS_CONSTRAINT_TYPE_CONTACT,
     PGS_CONSTRAINT_TYPE_FRICTION,
     PGS_CONSTRAINT_TYPE_TORSION,
-    STEEL_DETERMINISM_OPTIONS,
+    WARP_DETERMINISM_OFF,
 )
 
 # SolverSteel rejects models with ``requires_grad``, so no kernel needs an adjoint.
-wp.set_module_options({"enable_backward": False, **STEEL_DETERMINISM_OPTIONS})
+wp.set_module_options({"enable_backward": False, **WARP_DETERMINISM_OFF})
 
 _TOUCH_TOLERANCE = 1.0e-5
 _NORMAL_COSINE = 0.999

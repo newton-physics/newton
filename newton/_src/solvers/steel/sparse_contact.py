@@ -8,9 +8,9 @@ from functools import cache
 import warp as wp
 
 from .friction import contact_tangent_basis
-from .kernels import PGS_CONSTRAINT_TYPE_JOINT_LIMIT, STEEL_DETERMINISM_OPTIONS
+from .kernels import PGS_CONSTRAINT_TYPE_JOINT_LIMIT, WARP_DETERMINISM_OFF
 
-wp.set_module_options(STEEL_DETERMINISM_OPTIONS)
+wp.set_module_options(WARP_DETERMINISM_OFF)
 
 
 @cache
@@ -422,7 +422,7 @@ def _get_sparse_contact_response_kernel(
 
     contact_kernel.__name__ = f"populate_sparse_contact_response_{n}_{lanes}_{warps}"
     contact_kernel.__qualname__ = contact_kernel.__name__
-    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(contact_kernel)
+    return wp.kernel(enable_backward=False, module="unique", module_options=WARP_DETERMINISM_OFF)(contact_kernel)
 
 
 @wp.func_native(

@@ -13,9 +13,9 @@ from functools import cache
 import numpy as np
 import warp as wp
 
-from .kernels import STEEL_DETERMINISM_OPTIONS
+from .kernels import WARP_DETERMINISM_OFF
 
-wp.set_module_options(STEEL_DETERMINISM_OPTIONS)
+wp.set_module_options(WARP_DETERMINISM_OFF)
 
 
 @wp.struct
@@ -417,7 +417,7 @@ def _get_crba_sparse_factor_kernel(dof_count: int, nonzero_count: int, *, warps_
 
     factor_kernel.__name__ = f"crba_sparse_factor_{n}_{nnz}_{warps}"
     factor_kernel.__qualname__ = factor_kernel.__name__
-    return wp.kernel(enable_backward=False, module="unique", module_options=STEEL_DETERMINISM_OPTIONS)(factor_kernel)
+    return wp.kernel(enable_backward=False, module="unique", module_options=WARP_DETERMINISM_OFF)(factor_kernel)
 
 
 @wp.func_native("""

@@ -18,8 +18,8 @@ from .friction_patches import FrictionPatches, warmstart_dt_scale
 
 # SolverSteel rejects models with ``requires_grad``, so no kernel needs an adjoint.
 # Steel orders its own order-dependent atomics; Warp's deterministic lowering would overflow on its loops.
-STEEL_DETERMINISM_OPTIONS = {"deterministic": wp.DeterministicMode.NOT_GUARANTEED}
-wp.set_module_options({"enable_backward": False, **STEEL_DETERMINISM_OPTIONS})
+WARP_DETERMINISM_OFF = {"deterministic": wp.DeterministicMode.NOT_GUARANTEED}
+wp.set_module_options({"enable_backward": False, **WARP_DETERMINISM_OFF})
 
 PGS_CONSTRAINT_TYPE_CONTACT = 0
 # PGS joint drive row (``drive_mode="rows"``): a bilateral row per driven DOF whose

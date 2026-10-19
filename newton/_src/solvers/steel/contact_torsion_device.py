@@ -17,12 +17,12 @@ from .kernels import (
     PGS_CONSTRAINT_TYPE_CONTACT,
     PGS_CONSTRAINT_TYPE_FRICTION,
     PGS_CONSTRAINT_TYPE_TORSION,
-    STEEL_DETERMINISM_OPTIONS,
+    WARP_DETERMINISM_OFF,
 )
 
 # Match the retained host oracle's rounding at angular cancellation and
 # touching/grouping thresholds. This option affects only this preparation module.
-wp.set_module_options({"fuse_fp": False, **STEEL_DETERMINISM_OPTIONS})
+wp.set_module_options({"fuse_fp": False, **WARP_DETERMINISM_OFF})
 
 
 @wp.func
@@ -506,7 +506,7 @@ def _rollback_state(status: wp.array[int], saved: wp.array[Any], output: wp.arra
         output[i] = saved[i]
 
 
-@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False, **STEEL_DETERMINISM_OPTIONS})
+@wp.kernel(enable_backward=False, module="unique", module_options={"fuse_fp": False, **WARP_DETERMINISM_OFF})
 def _jacobians(
     work: _Workspace,
     group_art: wp.array[int],
