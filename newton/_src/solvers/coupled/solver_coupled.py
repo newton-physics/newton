@@ -900,10 +900,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
         if pairs is None:
             return
 
-        pair_count = min(int(getattr(view, "shape_contact_pair_count", pairs.shape[0])), pairs.shape[0])
+        pair_count = len(pairs)
         if pair_count == 0:
             view.shape_contact_pairs = wp.zeros(0, dtype=wp.vec2i, device=self.model.device)
-            view.shape_contact_pair_count = 0
             return
 
         shape_count = int(getattr(view, "shape_count", self.model.shape_count))
@@ -939,7 +938,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
         )
         count = int(filtered_count.numpy()[0])
         view.shape_contact_pairs = filtered_pairs[:count]
-        view.shape_contact_pair_count = count
 
     def _apply_global_shape_metadata(
         self,
@@ -3175,7 +3173,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 )
                 if self.model.shape_contact_pairs is not None:
                     entry.view.shape_contact_pairs = wp.clone(self.model.shape_contact_pairs)
-                    entry.view.shape_contact_pair_count = int(self.model.shape_contact_pair_count)
                 self._customize_compact_view(entry.view)
                 self._filter_shape_contact_pairs(entry.view)
 
