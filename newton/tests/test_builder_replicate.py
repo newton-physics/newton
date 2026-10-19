@@ -303,7 +303,7 @@ class TestModelBuilderReplicate(unittest.TestCase):
                 self.assert_builder_merge_state_equal(expected, actual)
 
     def test_replicate_into_current_world_adds_no_worlds(self):
-        """Copies that share a world collide with each other and leave the world count unchanged."""
+        """Add shared-world copies to the current world without changing the world count."""
         source = ModelBuilder(gravity=(0.0, 0.0, -3.0))
         body = source.add_body()
         source.add_shape_box(body, hx=0.5, hy=0.5, hz=0.5)
@@ -326,6 +326,7 @@ class TestModelBuilderReplicate(unittest.TestCase):
         self.assertEqual(model.body_count, 7)
 
     def test_replicate_separate_worlds_rejects_world_context(self):
+        """Reject separate-world replication inside an active world context."""
         builder = ModelBuilder()
         builder.begin_world()
         with self.assertRaisesRegex(RuntimeError, "already in world context"):
