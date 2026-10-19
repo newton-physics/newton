@@ -183,7 +183,9 @@ The first release deliberately supports a narrow, predictable set of inputs:
   0.5 mm radius implied by the proposal's 1 mm thickness default (``0.0005 / metersPerUnit``
   in stage units) instead of ``ModelBuilder.default_particle_radius``. To use a different
   radius, overwrite :attr:`newton.ModelBuilder.particle_radius` over the soft body's particle
-  range after ``add_usd()``. Bare TetMeshes without the simulation API keep using
+  range after ``add_usd()``. If ``ModelBuilder.default_particle_radius`` was changed from its
+  stock value, the import emits one warning per ``add_usd()`` call because that setting no
+  longer reaches these prims. Bare TetMeshes without the simulation API keep using
   ``ModelBuilder.default_particle_radius``.
 
   Poisson's ratios in ``(-1, 0.5)`` retain their authored value. Newton approximates ``0.5`` and
