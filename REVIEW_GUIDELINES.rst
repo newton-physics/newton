@@ -98,10 +98,10 @@ Apply four gates:
   left, who can maintain and validate it, and which existing priority will
   lose capacity.
 
-For new or changed user-authorable configuration, require an explicit USD
-schema disposition: reuse an existing USD schema; add or track a USD schema
-with lifecycle ownership, importer coverage, and runtime coverage; or explain
-why the concept is intentionally runtime-only or non-authorable.
+For authorable simulation features, apply the schema and importer policy in
+:ref:`source-code-guidelines`: schema design should inform the API before merge.
+Require implemented support, an explicitly accepted and tracked deferral, or a
+reason this does not apply. A follow-up issue alone is not acceptance.
 
 Return one explicit verdict:
 
@@ -131,6 +131,10 @@ Check for:
   inputs, or outputs; and
 - inconsistencies between the implementation, documentation, tests, and
   stated behavior.
+
+For authorable features, trace schema parsing through the builder to runtime
+behavior and check tests against equivalent builder-created models. Verify
+schema semantics and the documented supported subset.
 
 Review the relevant invariants, boundary conditions, failure paths, state and
 resource ownership, and supported execution modes. Pay particular attention
@@ -185,6 +189,7 @@ for incompatible changes.
 Check the repository obligations relevant to the change, including:
 
 - focused regression coverage and documentation;
+- schema/importer coverage, compatible schema-package versions, and deferrals;
 - diagnostics that follow the error, warning, and logging rules, including
   Newton warning categories and module loggers instead of ``print()``;
 - accurate, correctly categorized Towncrier fragments for user-facing changes;
