@@ -1194,7 +1194,7 @@ class ViewerGui:
                 exclude_joints=exclude_joints,
                 include_links=include_links,
                 exclude_links=exclude_links,
-                allow_partial_layouts=True,
+                homogeneous=False,
                 verbose=False,
             )
         except Exception as e:

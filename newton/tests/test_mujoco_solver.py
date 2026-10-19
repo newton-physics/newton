@@ -7506,6 +7506,18 @@ class TestMuJoCoOptions(unittest.TestCase):
         self.assertEqual(solver.mj_model.opt.sdf_iterations, 20)
         self.assertEqual(solver.mj_model.opt.sdf_initpoints, 50)
 
+    def test_options_discrete_integrator(self):
+        """Forward the discrete integrator to MuJoCo Warp and step finitely."""
+        model = self._create_multiworld_model(world_count=2)
+        solver = SolverMuJoCo(model, integrator="discrete", disable_contacts=True)
+        mujoco = SolverMuJoCo._mujoco
+        self.assertEqual(solver.mj_model.opt.integrator, mujoco.mjtIntegrator.mjINT_DISCRETE)
+        self.assertEqual(solver.mjw_model.opt.integrator, mujoco.mjtIntegrator.mjINT_DISCRETE)
+
+        state_in, state_out, control = model.state(), model.state(), model.control()
+        solver.step(state_in, state_out, control, None, 0.001)
+        self.assertTrue(np.all(np.isfinite(state_out.joint_q.numpy())))
+
     def test_options_constructor_override(self):
         """Give constructor options precedence over authored values in every world."""
         world_count = 2
@@ -9732,7 +9744,7 @@ class TestMuJoCoSolverFreeJointNonWorldParent(unittest.TestCase):
             self.skipTest(f"MuJoCo or deps not installed: {e}")
         mjc_warnings = [w for w in caught if "SolverMuJoCo" in str(w.message)]
         self.assertEqual(len(mjc_warnings), 1)
-        self.assertEqual(mjc_warnings[0].category, UserWarning)
+        self.assertEqual(mjc_warnings[0].category, newton.exceptions.NewtonWarning)
         self.assertIn("floater", str(mjc_warnings[0].message))
 
 
@@ -11184,8 +11196,9 @@ class TestUsdActuatorTypeAttributes(unittest.TestCase):
         stage = _create_actuator_test_stage(extra_actuator_attrs=set_actuator_attrs)
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
-        with self.assertWarnsRegex(RuntimeWarning, r"gaintype 'pid' on prim '/World/actuator'"):
+        with self.assertLogs("newton", level="WARNING") as logs:
             builder.add_usd(stage)
+        self.assertTrue(any("gaintype 'pid' on prim '/World/actuator'" in line for line in logs.output), logs.output)
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -13644,8 +13657,11 @@ class TestActuatorTypes(unittest.TestCase):
         for gaintype in ("dcmotor", "so3", "pid", "bogus"):
             with self.subTest(gaintype=gaintype):
                 builder = newton.ModelBuilder()
-                with self.assertWarnsRegex(RuntimeWarning, rf"gaintype '{gaintype}' on actuator 'a'"):
+                with self.assertLogs("newton", level="WARNING") as logs:
                     builder.add_mjcf(self._mjcf(gaintype=gaintype))
+                self.assertTrue(
+                    any(f"gaintype '{gaintype}' on actuator 'a'" in line for line in logs.output), logs.output
+                )
 
 
 if __name__ == "__main__":

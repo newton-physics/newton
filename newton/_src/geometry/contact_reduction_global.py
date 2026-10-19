@@ -705,7 +705,7 @@ class GlobalContactReducerData:
     contact_count: wp.array[wp.int32]
     exported_flags: wp.array[wp.int32]
     reclaimed_contact_bits: wp.array[wp.uint32]
-    reclaimed_contact_cursor: wp.array[wp.int32]
+    reclaimed_contact_count: wp.array[wp.int32]
     capacity: int
 
     # Deterministic fingerprint per contact (triangle/edge/vertex index).
@@ -783,7 +783,7 @@ def _clear_active_kernel(
     # Counter arrays to zero (merged from _zero_count_and_contacts_kernel)
     contact_count: wp.array[wp.int32],
     reclaimed_contact_bits: wp.array[wp.uint32],
-    reclaimed_contact_cursor: wp.array[wp.int32],
+    reclaimed_contact_count: wp.array[wp.int32],
     ht_insert_failures: wp.array[wp.int32],
     buffer_overflows: wp.array[wp.int32],
     ht_capacity: int,
@@ -810,8 +810,8 @@ def _clear_active_kernel(
 
     if tid == 0:
         contact_count[0] = 0
-        if reclaimed_contact_cursor.shape[0] > 0:
-            reclaimed_contact_cursor[0] = 0
+        if reclaimed_contact_count.shape[0] > 0:
+            reclaimed_contact_count[0] = 0
         ht_insert_failures[0] = 0
         buffer_overflows[0] = 0
 
@@ -1021,10 +1021,10 @@ class GlobalContactReducer:
         # Atomic bits avoid publishing a linked-list pointer separately from its head.
         if enable_contact_reclamation:
             self.reclaimed_contact_bits = wp.zeros(capacity // 32 + 1, dtype=wp.uint32, device=device)
-            self.reclaimed_contact_cursor = wp.zeros(1, dtype=wp.int32, device=device)
+            self.reclaimed_contact_count = wp.zeros(1, dtype=wp.int32, device=device)
         else:
             self.reclaimed_contact_bits = wp.zeros(0, dtype=wp.uint32, device=device)
-            self.reclaimed_contact_cursor = wp.zeros(0, dtype=wp.int32, device=device)
+            self.reclaimed_contact_count = wp.zeros(0, dtype=wp.int32, device=device)
         # Count failed hashtable inserts (e.g., table full)
         self.ht_insert_failures = wp.zeros(1, dtype=wp.int32, device=device)
         # Count contacts dropped because the contact buffer was full. The reservation in
@@ -1080,7 +1080,7 @@ class GlobalContactReducer:
         """Clear all contacts and reset the reducer (full clear)."""
         self.contact_count.zero_()
         self.reclaimed_contact_bits.zero_()
-        self.reclaimed_contact_cursor.zero_()
+        self.reclaimed_contact_count.zero_()
         self.ht_insert_failures.zero_()
         self.buffer_overflows.zero_()
         self.hashtable.clear()
@@ -1127,7 +1127,7 @@ class GlobalContactReducer:
                 self.agg_moment2_reduced,
                 self.contact_count,
                 self.reclaimed_contact_bits,
-                self.reclaimed_contact_cursor,
+                self.reclaimed_contact_count,
                 self.ht_insert_failures,
                 self.buffer_overflows,
                 self.hashtable.capacity,
@@ -1159,7 +1159,7 @@ class GlobalContactReducer:
         data.contact_count = self.contact_count
         data.exported_flags = self.exported_flags
         data.reclaimed_contact_bits = self.reclaimed_contact_bits
-        data.reclaimed_contact_cursor = self.reclaimed_contact_cursor
+        data.reclaimed_contact_count = self.reclaimed_contact_count
         data.capacity = self.capacity
         data.contact_fingerprints = self.contact_fingerprints
         data.contact_area = self.contact_area
@@ -1189,20 +1189,28 @@ def reclaim_contact_id(contact_id: int, reducer_data: GlobalContactReducerData):
         return
     word = contact_id / 32
     mask = wp.uint32(1) << wp.uint32(contact_id % 32)
-    wp.atomic_or(reducer_data.reclaimed_contact_bits, word, mask)
+    old_bits = wp.atomic_or(reducer_data.reclaimed_contact_bits, word, mask)
+    # Count only newly set bits so every reservation is backed by a bit.
+    if old_bits & mask == wp.uint32(0):
+        wp.atomic_add(reducer_data.reclaimed_contact_count, 0, 1)
 
 
 @wp.func
-def _pop_reclaimed_contact_id(reducer_data: GlobalContactReducerData) -> int:
-    """Claim a reclaimed contact ID, returning zero when none is available."""
-    if reducer_data.reclaimed_contact_bits.shape[0] == 0:
-        return 0
+def _pop_reclaimed_contact_id(reducer_data: GlobalContactReducerData, ticket: int) -> int:
+    """Claim a reclaimed contact ID, returning zero when none is available.
+
+    A single bitmap pass can miss bits published behind it, so reserve against
+    the count first; a successful reservation guarantees the scan finds a bit.
+    """
+    while wp.atomic_add(reducer_data.reclaimed_contact_count, 0, -1) <= 0:
+        # Other failed pops' transient debits can hide IDs; whoever undoes
+        # last sees the true count, so retry while it is positive.
+        if wp.atomic_add(reducer_data.reclaimed_contact_count, 0, 1) < 0:
+            return 0
 
     word_count = reducer_data.reclaimed_contact_bits.shape[0]
-    start = wp.atomic_add(reducer_data.reclaimed_contact_cursor, 0, 1) % word_count
-    offset = int(0)
-    while offset < word_count:
-        word = (start + offset) % word_count
+    word = ticket % word_count
+    while True:
         bits = wp.atomic_or(reducer_data.reclaimed_contact_bits, word, wp.uint32(0))
         bit = int(0)
         while bit < 32:
@@ -1213,8 +1221,7 @@ def _pop_reclaimed_contact_id(reducer_data: GlobalContactReducerData) -> int:
                 if old_bits & mask != wp.uint32(0):
                     return word * 32 + bit
             bit += 1
-        offset += 1
-    return 0
+        word = (word + 1) % word_count
 
 
 @wp.func
@@ -1250,7 +1257,7 @@ def export_contact_to_buffer(
     else:
         contact_id = int(0)
         if reducer_data.reclaimed_contact_bits.shape[0] > 0:
-            contact_id = _pop_reclaimed_contact_id(reducer_data)
+            contact_id = _pop_reclaimed_contact_id(reducer_data, buffer_idx - reducer_data.capacity)
         if contact_id == 0:
             # Undo the reservation because no buffer slot was available.
             wp.atomic_add(reducer_data.contact_count, 0, -1)
