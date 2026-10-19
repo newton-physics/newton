@@ -76,6 +76,51 @@ legacy-path controls — ``model.vbd.joint_is_hard`` and
 :meth:`~newton.solvers.SolverVBD.set_joint_constraint_mode` (deprecated since
 1.6; no solver-mode effect under compliant ALM).
 
+Slender Rods
+~~~~~~~~~~~~
+
+VBD updates one body at a time, so a rod segment cannot rotate without
+stretching its anchors against neighbours that are frozen during its update.
+When a rod's stretch stiffness far exceeds its bending stiffness (a ratio
+``EA * l**2 / (4 * EI)`` above ~25 for segment length ``l``, typical of threads,
+cables and tapes), bending converges very slowly. Pass
+``rigid_rod_direct_solve=True`` to solve each rod (a chain, tree or loop of
+bodies joined by :attr:`~newton.JointType.ROD` joints) as one block per
+iteration instead. See :class:`~newton.solvers.SolverVBD` for the supported
+options.
+
+The option allocates its arrays once, so a step captured in a CUDA graph stays
+valid after :meth:`~newton.solvers.SolverVBD.notify_model_changed` changes rod
+membership (joint enablement, body flags, inverse masses). Call the
+notification outside capture, and create a new solver if joints become ROD
+joints.
+
+.. experimental::
+
+The block solve costs more per iteration than the coloured per-body update,
+and each rod is solved serially by one thread. Measured with
+``asv/benchmarks/simulation/bench_rod_direct_solve.py`` (512 rod segments in
+total, 60 steps of 10 iterations, seconds):
+
+.. list-table::
+   :header-rows: 1
+
+   * - Device
+     - 4 rods x 128 segments, coloured / direct
+     - 128 rods x 4 segments, coloured / direct
+   * - CPU
+     - 0.86 / 2.43
+     - 0.82 / 1.87
+   * - NVIDIA L4
+     - 0.26 / 8.69
+     - 0.26 / 0.44
+
+These are costs per iteration, not time to a given accuracy: on stiff, slender
+rods the direct solve settles in a few iterations where per-body updates need
+hundreds. Leave the option off for rods that per-body VBD already resolves
+(stretch/bend ratios of order 10 or less), for scenes dominated by a few long
+rods on a GPU, and with the unsupported options listed in the reference.
+
 Coupling Modes
 ~~~~~~~~~~~~~~
 
