@@ -699,8 +699,10 @@ def compute_nodal_diagonalization(
     """Orthogonalize supported nodal mass blocks without changing reference P1d/Q1d cells.
 
     Outputs the test transform R, its dual coefficient transform on the
-    supported subspace, and diagonal mass. Singular blocks orthogonalize
-    projected nodal axes to select supported directions with equal mass.
+    supported subspace, and diagonal mass. Supported modes stay closest to the
+    nodal axes; singular blocks orthogonalize projected nodal axes. Each mode is
+    scaled so the unit field has unit coefficients, keeping yield bounds in
+    physical units in partially filled cells.
     """
     row = wp.tid()
     diag_index = wps.bsr_block_index(row, row, offsets, columns)
@@ -762,14 +764,19 @@ def compute_nodal_diagonalization(
             if k >= active_count:
                 scales[k] = 1.0
             else:
-                scales[k] = reference_mass
                 mean = float(0.0)
+                norm_sq = float(0.0)
                 for j in range(scales.length):
                     mean += transform[k, j] * ones[row, j]
+                    norm_sq += transform[k, j] * transform[k, j]
+                # Rescaling keeps modes orthogonal. Give the unit field unit coefficients, and
+                # zero-mean modes unit nodal norm, so yield bounds stay in physical units.
+                row_scale = wp.max(wp.abs(mean) / reference_mass, 1.0 / wp.sqrt(norm_sq))
+                scales[k] = reference_mass * row_scale * row_scale
                 orientation = wp.where(mean < 0.0, -1.0, 1.0)
                 for j in range(scales.length):
-                    transform[k, j] *= orientation
-                    coefficient_transform[k, j] *= orientation
+                    transform[k, j] *= orientation * row_scale
+                    coefficient_transform[k, j] *= orientation / row_scale
 
     for k in range(scales.length):
         diagonal_mass[row, k] = scales[k]

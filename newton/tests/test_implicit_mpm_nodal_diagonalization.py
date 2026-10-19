@@ -55,8 +55,10 @@ def test_nodal_full_rank_transform(test, device):
             with test.subTest(n=n, perturbation=perturbation):
                 mass = ((np.eye(n) + perturbation * a) / n).astype(np.float32)
                 r, t, diagonal, mean = _diagonalize(mass, device)
-                np.testing.assert_allclose(r @ mass @ r.T, np.eye(n) / n, atol=2.0e-6)
+                np.testing.assert_allclose(r @ mass @ r.T, np.diag(diagonal), atol=2.0e-6)
                 np.testing.assert_allclose(t @ r.T, np.eye(n), atol=1.0e-5)
+                # The unit field has at most unit coefficients.
+                np.testing.assert_array_less(t @ np.ones(n), 1.0 + 1.0e-5)
                 np.testing.assert_allclose(r @ mass, np.diag(diagonal) @ t, atol=2.0e-6)
                 test.assertTrue(np.all(mean >= 0.0))
                 if perturbation <= 1.0e-5:
@@ -68,18 +70,18 @@ def test_nodal_mean_orientation(test, device):
     for delta in (-1.0e-5, 0.0, 1.0e-5):
         root = np.array(((1.0, -1.0 + delta), (-1.0 + delta, 2.0)), dtype=np.float32)
         mass = root @ root
-        r, t, _diagonal, mean = _diagonalize(mass, device)
+        r, t, diagonal, mean = _diagonalize(mass, device)
         if delta < 0.0:
             test.assertLess(r[0, 0], 0.0)
         elif delta > 0.0:
             test.assertGreater(r[0, 0], 0.0)
         test.assertTrue(np.all(mean >= -2.0e-7))
-        np.testing.assert_allclose(r @ mass @ r.T, np.eye(2) / 2, atol=3.0e-6)
+        np.testing.assert_allclose(r @ mass @ r.T, np.diag(diagonal), atol=3.0e-6)
         np.testing.assert_allclose(t @ r.T, np.eye(2), atol=3.0e-6)
 
 
 def test_nodal_rank_deficient_transform(test, device):
-    """Orthogonalize and equally normalize the supported subspace of singular mass blocks."""
+    """Orthogonalize the supported subspace of singular mass blocks."""
     for n in (4, 8):
         eigenvalues = np.append(np.linspace(0.25, 0.9, n - 1), 0.0) / n
         for mixed_nullspace in (False, True):
@@ -93,8 +95,7 @@ def test_nodal_rank_deficient_transform(test, device):
                 test.assertTrue(np.isfinite(t).all())
                 test.assertEqual(np.linalg.matrix_rank(r), n - 1)
                 active = np.linalg.norm(r, axis=1) > 0.0
-                np.testing.assert_allclose(diagonal[active], 1.0 / n, atol=1.0e-6)
-                np.testing.assert_allclose((r @ mass @ r.T)[active][:, active], np.eye(n - 1) / n, atol=1.0e-6)
+                np.testing.assert_allclose((r @ mass @ r.T)[active][:, active], np.diag(diagonal[active]), atol=1.0e-6)
                 np.testing.assert_allclose(t @ r.T, np.diag(active.astype(float)), atol=1.0e-6)
                 np.testing.assert_allclose(r @ mass, np.diag(diagonal) @ t, atol=1.0e-6)
                 # Reconstructing a coefficient warmstart retains exactly its supported part.
@@ -109,8 +110,9 @@ def test_nodal_rank_deficient_transform(test, device):
         r, t, diagonal, mean = _diagonalize(mass, device)
         test.assertEqual(np.linalg.matrix_rank(r), 1)
         active = np.linalg.norm(r, axis=1) > 0.0
-        np.testing.assert_allclose(diagonal[active], 1.0 / n, atol=1.0e-6)
-        np.testing.assert_allclose((r @ mass @ r.T)[active][:, active], np.eye(1) / n, atol=1.0e-6)
+        np.testing.assert_allclose((r @ mass @ r.T)[active][:, active], np.diag(diagonal[active]), atol=1.0e-6)
+        # A single particle carries the unit field in its only mode.
+        np.testing.assert_allclose(t[active] @ np.ones(n), 1.0, atol=1.0e-5)
         np.testing.assert_allclose(r.T @ t, np.outer(phi, phi) / np.dot(phi, phi), atol=1.0e-6)
         test.assertTrue(np.all(mean >= 0.0))
 
@@ -138,13 +140,14 @@ def test_nodal_singular_completion(test, device):
                         :, supported
                     ].T
                     actual_frame = t[active] @ inverse_root
+                    actual_frame /= np.linalg.norm(actual_frame, axis=1, keepdims=True)
                     test.assertEqual(len(actual_frame), rank)
                     if reference_frame is None:
                         reference_frame = actual_frame
                     for actual, expected in zip(actual_frame, reference_frame, strict=True):
                         # The final pressure orientation may flip a row, but not rotate it.
                         np.testing.assert_allclose(np.outer(actual, actual), np.outer(expected, expected), atol=3.0e-6)
-                    np.testing.assert_allclose(r @ mass @ r.T, np.diag(active.astype(float)) / n, atol=2.0e-6)
+                    np.testing.assert_allclose(r @ mass @ r.T, np.diag(np.where(active, diagonal, 0.0)), atol=2.0e-6)
                     np.testing.assert_allclose(t @ r.T, np.diag(active.astype(float)), atol=3.0e-6)
                     np.testing.assert_allclose(r @ mass, np.diag(diagonal) @ t, atol=2.0e-6)
                     np.testing.assert_allclose(r.T @ t, frame.T @ frame, atol=3.0e-6)
@@ -171,6 +174,7 @@ def test_nodal_singular_tied_pivots(test, device):
                     :, supported
                 ].T
                 actual_frame = t[:2] @ inverse_root
+                actual_frame /= np.linalg.norm(actual_frame, axis=1, keepdims=True)
                 if reference_frame is None:
                     reference_frame = actual_frame
                 for actual, expected in zip(actual_frame, reference_frame, strict=True):
@@ -336,7 +340,7 @@ def test_nodal_full_cell_solver(test, device):
                 material_test = solver._scratchpad.strain_yield_parameters_test
                 test.assertIs(material_test.space.dtype, YieldMomentVec)
                 np.testing.assert_allclose(solver.test_transform, np.eye(n), atol=3.0e-6)
-                np.testing.assert_allclose(solver.test_diagonal, np.full(n, 1.0 / n), atol=1.0e-7)
+                np.testing.assert_allclose(solver.test_diagonal, np.full(n, 1.0 / n), atol=1.0e-6)
                 for _ in range(3):
                     solver.step(state, state, None, None, 0.001)
                     test.assertIs(solver._scratchpad.strain_yield_parameters_test, material_test)
@@ -444,6 +448,53 @@ def test_nodal_higher_order_solver(test, device):
                 test.assertTrue(np.isfinite(array.numpy()).all())
 
 
+def _yield_impulse(device, basis, layer, volume_scale):
+    """Velocity change from a unit yield stress on sheared material in the bottom ``layer`` of one cell."""
+    g = (np.arange(4) + 0.5) / 4
+    positions = np.array(np.meshgrid(g, g, g * layer)).reshape(3, -1).T
+    radius = (3.0 * volume_scale * layer / (256.0 * np.pi)) ** (1.0 / 3.0)
+    velocities = []
+    for yield_stress in (0.0, 1.0):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        SolverImplicitMPM.register_custom_attributes(builder)
+        for position in positions:
+            builder.add_particle(
+                pos=position,
+                vel=(3.0 * (position[1] - 0.5), 0.0, 0.0),
+                mass=1.0 / 64.0,
+                radius=radius,
+                custom_attributes={
+                    "mpm:friction": 0.0,
+                    "mpm:yield_pressure": 1.0e6,
+                    "mpm:tensile_yield_ratio": 1.0,
+                    "mpm:yield_stress": yield_stress,
+                    "mpm:young_modulus": 1.0e9,
+                },
+            )
+        model = builder.finalize(device=device)
+        config = SolverImplicitMPM.Config(
+            voxel_size=1.0,
+            grid_type="fixed",
+            strain_basis=basis,
+            max_iterations=500,
+            tolerance=1.0e-9,
+            warmstart_mode="none",
+        )
+        state = model.state()
+        SolverImplicitMPM(model, config).step(state, state, None, None, 0.01)
+        velocities.append(state.particle_qd.numpy()[:, 0])
+    return np.abs(velocities[1] - velocities[0]).max()
+
+
+def test_nodal_yield_fill_fraction(test, device):
+    """Keep yield-limited impulses consistent with P0 in diluted and thin partially filled cells."""
+    for layer, volume_scale in ((1.0, 1.0), (1.0, 1.0 / 64.0), (0.125, 1.0)):
+        reference = _yield_impulse(device, "P0", layer, volume_scale)
+        for basis in ("P1d", "Q1d"):
+            with test.subTest(basis=basis, layer=layer, volume_scale=volume_scale):
+                test.assertAlmostEqual(_yield_impulse(device, basis, layer, volume_scale) / reference, 1.0, delta=0.1)
+
+
 def test_nodal_sparse_graph_capture(test, device):
     """Match captured sparse nodal solves to ordinary stepping for both strain bases."""
     # This solver omits diagnostic host copies inside capture.
@@ -490,6 +541,7 @@ for name, func in (
     ("test_nodal_affine_stress_work", test_nodal_affine_stress_work),
     ("test_nodal_particle_sampling_response", test_nodal_particle_sampling_response),
     ("test_nodal_higher_order_solver", test_nodal_higher_order_solver),
+    ("test_nodal_yield_fill_fraction", test_nodal_yield_fill_fraction),
 ):
     add_function_test(TestImplicitMPMNodalDiagonalization, name, func, devices=get_test_devices(mode="basic"))
 

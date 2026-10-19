@@ -1035,9 +1035,10 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         Discontinuous polynomial bases use nodal mass orthogonalization.
         P1d/Q1d recover the full-cell reference basis; Q1d uses Gauss--Legendre
         reference nodes. Rank-deficient cells drop null modes and orthogonalize
-        the supported subspace. Pressure-related parameters use positive basis
-        weights, shear strength uses absolute weights, and viscosity uses squared
-        weights.
+        the supported subspace. Each mode is scaled so the unit field has unit
+        coefficients, keeping yield bounds in physical units in partially filled
+        cells. Pressure-related parameters use positive basis weights, shear
+        strength uses absolute weights, and viscosity uses squared weights.
 
         .. experimental::
 

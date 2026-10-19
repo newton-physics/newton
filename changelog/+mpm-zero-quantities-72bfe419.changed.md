@@ -1,1 +1,1 @@
-Orthogonalize P1d and Q1d implicit MPM strain modes in their nodal basis (experimental), keeping supported modes in partially filled cells. Existing `strain_basis` settings remain valid, but results can change in partially filled cells.
+Orthogonalize P1d and Q1d implicit MPM strain modes in their nodal basis (experimental), keeping supported modes in partially filled cells and yield strengths consistent with P0 regardless of fill fraction. Existing `strain_basis` settings remain valid, but results can change in partially filled cells.
