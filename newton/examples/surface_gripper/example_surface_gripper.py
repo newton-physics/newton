@@ -39,7 +39,7 @@
 #       engaged    - sealed to a body. The seal carries load and resists drift from the pose it
 #                    formed at; the seal-quality metric reports how far the surface has since pulled off.
 #       disengaged - neither of the above. No seal force, and the quality metric reports -1.
-#     The drive targets and the mode of each pad are read from assets/palletizer_trajectory.jsonl.
+#     The drive targets and the mode of each pad are read from assets/palletizer_trajectory.csv.
 #   - Which body and shape to grab: a fixed pick order -- one wide panel, then six crates -- advanced
 #     on each release.
 #   - When the seal fractures under load, via one of two interchangeable criteria (BREAK_ON_SEAL_QUALITY):
@@ -133,7 +133,7 @@ ROBOT_ARTICULATION_PATTERN = "*Robot*"
 # Pick scene (2 static pallets + panel + 6 crates as box colliders at their waiting poses).
 PICK_SCENE_USD = ASSETS / "palletizer_scene.usda"
 # recording of the robot arm motion and surface gripper engagement/disengagement.
-RECORDING_JSONL = ASSETS / "palletizer_trajectory.jsonl"
+RECORDING_CSV = ASSETS / "palletizer_trajectory.csv"
 # Duration of that recording [s]: one panel pick followed by six crate picks, the last release at
 # ~25.6 s. Used to default --num-frames so a plain run plays the whole cycle rather than stopping
 # partway through the first pick.
@@ -172,7 +172,7 @@ CRATE_PRIMS = (
 )
 # Each crate is authored at a waiting pose, where it cannot be reached by the surface gripper, and then moved
 # to a grip pose (wp.transform, position [m] + quat), where it can be reached. At each disengagement signal in
-# RECORDING_JSONL, the next crate to be gripped is teleported from the waiting pose to the grip pose.
+# RECORDING_CSV, the next crate to be gripped is teleported from the waiting pose to the grip pose.
 CRATE_GRIP_POSES = (
     wp.transform(
         wp.vec3(-1.53891122341156, -1.339923620223999, 0.7991625070571899),
@@ -709,8 +709,8 @@ class ExampleState:
     """
 
     def __init__(self, n_grippers: int):
-        self.gripper_command_engaged_wp = wp.zeros(n_grippers, dtype=wp.bool)  # engagement command (ro[0])
-        self.gripper_command_preparing_wp = wp.zeros(n_grippers, dtype=wp.bool)  # preparing-to-engage flag (ro[2])
+        self.gripper_command_engaged_wp = wp.zeros(n_grippers, dtype=wp.bool)  # engagement command (gripper_close)
+        self.gripper_command_preparing_wp = wp.zeros(n_grippers, dtype=wp.bool)  # preparing-to-engage flag (prepare_to_engage)
         self.gripper_curr_box_wp = wp.zeros(n_grippers, dtype=wp.int32)  # current box index
 
 
@@ -750,11 +750,11 @@ class Example:
         self.sim_step_count_wp = wp.zeros(1, dtype=wp.int32)
         self.last_lo_wp = wp.zeros(1, dtype=wp.int32)
 
-        # RECORDING_JSONL contains time-stamped joint drive target positions and pad engagement
+        # RECORDING_CSV contains time-stamped joint drive target positions and pad engagement
         # states. Load and extract the time-stamps, the joint drive target positions and the
         # pad engagement states.
         # Apply gaussian smoothing to the raw drive target after loading.
-        self.robot_arm_playback = RobotPlayback(RECORDING_JSONL, SMOOTHING_SIGMA, NUM_ARM_DOFS)
+        self.robot_arm_playback = RobotPlayback(RECORDING_CSV, SMOOTHING_SIGMA, NUM_ARM_DOFS)
 
         # Build ONE environment (arm with pad cylinders + pick boxes + pallets), then replicate it across
         # self.world_count worlds. The copies overlap at the origin (Newton's broad phase never collides across
@@ -1011,8 +1011,8 @@ class Example:
                 self.last_lo_wp,  # in/out: forward-search index, resumed and cached
                 self.sim_dt,
                 self.control.joint_target_q,
-                self.example_state_curr.gripper_command_engaged_wp,  # out: engagement command (ro[0]) for world 0
-                self.example_state_curr.gripper_command_preparing_wp,  # out: preparing flag (ro[2]) for world 0
+                self.example_state_curr.gripper_command_engaged_wp,  # out: engagement command (gripper_close) for world 0
+                self.example_state_curr.gripper_command_preparing_wp,  # out: preparing flag (prepare_to_engage) for world 0
             )
             # The playback only fills world 0; fan its arm targets and gripper commands out to the rest.
             if self.world_count > 1:
@@ -1155,7 +1155,7 @@ class Example:
         self.viewer.end_frame()
 
     def gui(self, ui):
-        # commanded grip (recorded ro[0], sampled per sub-step by sample_playback_kernel) vs the
+        # commanded grip (recorded gripper_close, sampled per sub-step by sample_playback_kernel) vs the
         # actual latched seal (command AND-ed with the break/proximity logic in update_seal_break_kernel /
         # attach_seal) -- the two differ if a seal fractured or failed to grab.
         commanded = bool(self.example_state_prev.gripper_command_engaged_wp.numpy()[0])

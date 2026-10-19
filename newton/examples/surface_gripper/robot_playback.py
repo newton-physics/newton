@@ -13,44 +13,46 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Playback of a recorded FANUC palletizer cycle (``robot_recording.jsonl``).
+"""Playback of a recorded palletizer cycle (``palletizer_trajectory.csv``).
 
 Simulator-agnostic: this module only loads the recording and steps through it. It has no Newton (or
 any other framework) dependency -- callers read each :class:`Frame` and apply it to their own robot
 (joint targets, gripper) via callbacks. Used by ``example_surface_gripper``.
 
-Recording format -- JSON Lines, one object per frame (~24 Hz)::
+Recording format -- a CSV table with a header row and one row per frame (~24 Hz)::
 
-    {"ts": "2026-06-05T16:40:10.191", "joints": [<9 floats, deg>],
-     "ro": [<4 bools>], "do": {"301": 0, ...}}
+    time_s, J1_deg, J2_deg, J3_deg_rel_J2, J4_deg, J5_deg, J6_deg, gripper_close, prepare_to_engage
+    0.000, 160.5714, -3.4991, -7.3408, 0.0000, -82.6592, -116.5714, 0, 0
 
-``joints`` indices 0-5 are the arm joints J1-J6 (degrees); 6-8 are always 0 (finger DOFs, excluded
-from arm playback). J3 is stored relative to J2 -- the real J3 command is ``joints[2] + joints[1]``,
-a coupling the caller applies at drive time. ``ro[0]`` is the gripper signal (rising edge = close,
-falling edge = open); ``do`` is observational digital I/O.
+``time_s`` is the time since the first frame [s]. ``J1_deg`` to ``J6_deg`` are the arm joint
+targets [deg]. J3 is stored relative to J2 -- the real J3 command is ``J3_deg_rel_J2 + J2_deg``, a
+coupling the caller applies at drive time. ``gripper_close`` is the gripper signal (1 = closed;
+rising edge = close, falling edge = open). ``prepare_to_engage`` is 1 in the short lead-in before
+each close.
 """
 
-import json
+import csv
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 
 import numpy as np
 import warp as wp
+
+JOINT_COLUMNS = ("J1_deg", "J2_deg", "J3_deg_rel_J2", "J4_deg", "J5_deg", "J6_deg")
 
 
 @dataclass
 class Frame:
     """One recorded frame, as stored (no coupling or unit conversion applied)."""
 
-    joints_deg: list[float]  # 9 raw joint angles [deg]; indices 0-5 are J1-J6, 6-8 are unused fingers
-    ro: list[bool]  # 4 robot-output booleans; ro[0] is the gripper signal
-    do: dict[int, int]  # 40 digital outputs keyed by integer signal id (301-340), values 0/1
-    ts: str | None = None  # wall-clock timestamp string, for time-accurate replay
+    time_s: float  # time since the first frame [s]
+    joints_deg: list[float]  # 6 raw joint angles [deg], J1-J6; J3 is relative to J2
+    gripper_close: bool  # gripper signal: True = closed
+    prepare_to_engage: bool  # True in the lead-in before each close
 
 
 def load_recording(path: str | Path) -> list[Frame]:
-    """Read a ``.jsonl`` recording into a flat list of :class:`Frame` (blank lines skipped).
+    """Read a ``.csv`` recording into a flat list of :class:`Frame`.
 
     Raises:
         FileNotFoundError: if ``path`` does not exist (with a clear message rather than a deep parse
@@ -60,33 +62,31 @@ def load_recording(path: str | Path) -> list[Frame]:
     if not path.is_file():
         raise FileNotFoundError(f"robot recording not found: {path}")
     frames: list[Frame] = []
-    for line in path.read_text().splitlines():
-        if not line.strip():
-            continue
-        obj = json.loads(line)
-        frames.append(
-            Frame(
-                joints_deg=[float(x) for x in obj["joints"]],
-                ro=[bool(x) for x in obj["ro"]],
-                do={int(k): int(v) for k, v in obj["do"].items()},
-                ts=obj.get("ts"),
+    with path.open(newline="") as file:
+        for row in csv.DictReader(file):
+            joints_deg = []
+            for column in JOINT_COLUMNS:
+                joints_deg.append(float(row[column]))
+            frames.append(
+                Frame(
+                    time_s=float(row["time_s"]),
+                    joints_deg=joints_deg,
+                    gripper_close=bool(int(row["gripper_close"])),
+                    prepare_to_engage=bool(int(row["prepare_to_engage"])),
+                )
             )
-        )
     return frames
 
 
 def recorded_times(frames: list[Frame]) -> list[float]:
-    """Seconds of each frame relative to the first, parsed from the ``ts`` timestamps.
+    """Seconds of each frame relative to the first.
 
-    Used for time-accurate playback -- interpolating targets between frames by wall-clock time rather
-    than stepping one frame per simulation step. Requires every frame to carry a ``ts``.
+    Used for time-accurate playback -- interpolating targets between frames by time rather than
+    stepping one frame per simulation step.
     """
-    if not frames:
-        return []
-    t0 = datetime.fromisoformat(frames[0].ts)
-    times = [0.0] * len(frames)
-    for i in range(len(frames)):
-        times[i] = (datetime.fromisoformat(frames[i].ts) - t0).total_seconds()
+    times = []
+    for frame in frames:
+        times.append(frame.time_s - frames[0].time_s)
     return times
 
 
@@ -94,8 +94,8 @@ def recorded_times(frames: list[Frame]) -> list[float]:
 def sample_playback_kernel(
     rec_times: wp.array[float],  # [N] recorded sample times [s], monotonic
     rec_targets: wp.array2d[float],  # [N, num_dofs] coupled arm targets [rad]
-    rec_engaged: wp.array[wp.bool],  # [N] suction-cup engagement command (ro[0]) per frame
-    rec_preparing: wp.array[wp.bool],  # [N] preparing-to-engage signal (ro[2]) per frame
+    rec_engaged: wp.array[wp.bool],  # [N] suction-cup engagement command (gripper_close) per frame
+    rec_preparing: wp.array[wp.bool],  # [N] preparing-to-engage signal per frame
     sim_step_count: wp.array[int],  # in: device sub-step counter (current time = sim_step_count[0] * dt)
     last_lo: wp.array[int],  # in: cached lower sample index; the forward search resumes from here
     dt: float,  # physics sub-step [s]; sim time = sim_step_count * dt
@@ -191,15 +191,15 @@ def _load_playback(path: str | Path, num_arm_dofs: int) -> tuple[np.ndarray, np.
     Returns ``(rec_times, rec_targets, rec_engaged, rec_preparing, rec_duration)``:
         - ``rec_times``: sample times [s], shape [N], starting at 0 (:func:`recorded_times`).
         - ``rec_targets``: coupled arm joint targets [rad], shape [N, num_arm_dofs].
-        - ``rec_engaged``: suction-cup engagement command (robot output ro[0]) per frame, shape [N] bool.
-        - ``rec_preparing``: preparing-to-engage signal (robot output ro[2], baked in) per frame, shape [N] bool.
+        - ``rec_engaged``: suction-cup engagement command (``gripper_close``) per frame, shape [N] bool.
+        - ``rec_preparing``: preparing-to-engage signal (``prepare_to_engage``) per frame, shape [N] bool.
         - ``rec_duration``: recording length [s] (``rec_times[-1]``).
     """
     frames = load_recording(path)
     rec_times = np.asarray(recorded_times(frames), dtype=np.float64)
     rec_targets = np.stack([_arm_targets_rad(f, num_arm_dofs) for f in frames]).astype(np.float64)
-    rec_engaged = np.array([f.ro[0] for f in frames], dtype=bool)  # [N]
-    rec_preparing = np.array([f.ro[2] for f in frames], dtype=bool)  # [N]
+    rec_engaged = np.array([f.gripper_close for f in frames], dtype=bool)  # [N]
+    rec_preparing = np.array([f.prepare_to_engage for f in frames], dtype=bool)  # [N]
     return rec_times, rec_targets, rec_engaged, rec_preparing, float(rec_times[-1])
 
 
