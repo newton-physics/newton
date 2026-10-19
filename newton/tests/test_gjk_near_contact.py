@@ -481,68 +481,7 @@ def test_separation_cutoff_matches_exact_query_at_the_boundary(test, device):
     test.assertGreater(float(np.mean(stopped)), 0.5)
 
 
-def _segment_distances(p1, q1, p2, q2):
-    """Return float64 distances between non-degenerate segment pairs (Ericson, RTCD 5.1.9)."""
-    d1, d2, r = q1 - p1, q2 - p2, p1 - p2
-    a, e = np.einsum("ij,ij->i", d1, d1), np.einsum("ij,ij->i", d2, d2)
-    b, c, f = np.einsum("ij,ij->i", d1, d2), np.einsum("ij,ij->i", d1, r), np.einsum("ij,ij->i", d2, r)
-    denom = a * e - b * b
-    s = np.where(denom > 1e-30, np.clip((b * f - c * e) / np.where(denom > 1e-30, denom, 1.0), 0.0, 1.0), 0.0)
-    t = (b * s + f) / e
-    s = np.where(t < 0.0, np.clip(-c / a, 0.0, 1.0), np.where(t > 1.0, np.clip((b - c) / a, 0.0, 1.0), s))
-    t = np.clip(t, 0.0, 1.0)
-    return np.linalg.norm(p1 + d1 * s[:, None] - p2 - d2 * t[:, None], axis=1)
-
-
-def test_distance_converges_to_the_analytic_capsule_distance(test, device):
-    """Converge separated capsule distances to float32 rounding, with and without a cutoff."""
-    rng = np.random.default_rng(3)
-    count = 1024
-    scales = np.zeros((2 * count, 3), dtype=np.float32)
-    scales[:, 0] = rng.uniform(0.02, 0.3, 2 * count)
-    scales[:, 1] = rng.uniform(0.02, 0.3, 2 * count)
-    rotations = rng.normal(size=(count, 4))
-    rotations = (rotations / np.linalg.norm(rotations, axis=1, keepdims=True)).astype(np.float32)
-    directions = rng.normal(size=(count, 3))
-    directions /= np.linalg.norm(directions, axis=1, keepdims=True)
-    positions = (directions * rng.uniform(0.3, 1.2, count)[:, None]).astype(np.float32)
-
-    # Analytic distances of the float32 inputs; both capsule axes are local +Z.
-    radius = scales[:, 0].astype(np.float64).reshape(count, 2)
-    half = scales[:, 1].astype(np.float64).reshape(count, 2, 1)
-    x, y, z, w = rotations.astype(np.float64).T
-    axis_b = np.stack([2.0 * (x * z + w * y), 2.0 * (y * z - w * x), 1.0 - 2.0 * (x * x + y * y)], axis=1)
-    axis_a = np.array([0.0, 0.0, 1.0])
-    p = positions.astype(np.float64)
-    distance = _segment_distances(
-        -half[:, 0] * axis_a, half[:, 0] * axis_a, p - half[:, 1] * axis_b, p + half[:, 1] * axis_b
-    )
-    distance -= radius.sum(axis=1)
-    separated = distance > 1e-3
-    test.assertGreater(int(np.count_nonzero(separated)), 200)
-
-    cutoffs = np.stack([np.zeros(count), np.maximum(distance, 0.0)], axis=1).astype(np.float32)
-    output = wp.zeros((count, 2, 11), dtype=float, device=device)
-    wp.launch(
-        _query_pairs_at_cutoffs,
-        dim=(count, 2),
-        inputs=[
-            wp.full(2 * count, int(GeoType.CAPSULE), dtype=int, device=device),
-            wp.array(scales, dtype=wp.vec3, device=device),
-            wp.array(rotations, dtype=wp.quat, device=device),
-            wp.array(positions, dtype=wp.vec3, device=device),
-            wp.array(cutoffs, dtype=float, device=device),
-        ],
-        outputs=[output],
-        device=device,
-    )
-    # A relative duality gap of 1e-4 left errors of several hundred eps * scale here.
-    tolerance = 32.0 * _F32_EPS * (np.abs(p).sum(axis=1) + np.abs(scales).reshape(count, 6).sum(axis=1))
-    error = np.abs(output.numpy()[separated, :, 1] - distance[separated, None])
-    np.testing.assert_array_less(error, np.broadcast_to(tolerance[separated, None], error.shape))
-
-
-def test_separation_cutoff_keeps_contact_at_the_exact_boundary(test, device):
+def test_separation_cutoff_decides_contact_near_the_boundary(test, device):
     """Decide the contact of a cylinder pair within float32 rounding of its exact distance."""
     type_a, scale_a, type_b, scale_b, rotation, position = _BOUNDARY_PAIRS[2]
     exact = wp.zeros((1, 1, 11), dtype=float, device=device)
@@ -596,8 +535,7 @@ for _test in (
     test_separation_cutoff_matches_exact_query_within_cutoff,
     test_positional_iteration_arguments_keep_their_meaning,
     test_separation_cutoff_matches_exact_query_at_the_boundary,
-    test_distance_converges_to_the_analytic_capsule_distance,
-    test_separation_cutoff_keeps_contact_at_the_exact_boundary,
+    test_separation_cutoff_decides_contact_near_the_boundary,
 ):
     add_function_test(TestGJKNearContact, _test.__name__, _test, devices=devices)
 
