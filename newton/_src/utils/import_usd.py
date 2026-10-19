@@ -1115,6 +1115,8 @@ def parse_usd(
         if recurse:
             _load_visual_shape_children(parent_body_id, prim, body_xform, articulation_root_xform, allow_visual_shapes)
 
+    reported_unsupported_body_gravity = False
+
     def add_body(
         prim: Usd.Prim,
         xform: wp.transform,
@@ -1124,17 +1126,26 @@ def parse_usd(
         is_kinematic: bool = False,
     ) -> int:
         """Add a rigid body to the builder and optionally load its visual shapes and sites among the body prim's children. Returns the resulting body index."""
+        nonlocal reported_unsupported_body_gravity
         # Extract custom attributes for this body
         body_custom_attrs = usd.get_custom_attribute_values(
             prim, builder_custom_attr_body, context={"builder": builder}
         )
 
-        # Preserve authored native compensation; import the PhysX exclusion only
-        # when the target backend's existing custom attribute is registered.
-        if "mujoco:gravcomp" in builder.custom_attributes and "mujoco:gravcomp" not in body_custom_attrs:
-            gravcomp = R.get_value(prim, prim_type=PrimType.BODY, key="gravity_compensation")
-            if gravcomp is not None:
-                body_custom_attrs["mujoco:gravcomp"] = gravcomp
+        # Preserve authored native compensation and translate the neutral flag only at the backend boundary.
+        if "mujoco:gravcomp" not in body_custom_attrs:
+            gravity_enabled = R.get_value(prim, prim_type=PrimType.BODY, key="gravity_enabled")
+            if gravity_enabled is not None:
+                if "mujoco:gravcomp" in builder.custom_attributes:
+                    body_custom_attrs["mujoco:gravcomp"] = 0.0 if gravity_enabled else 1.0
+                elif not gravity_enabled and not reported_unsupported_body_gravity:
+                    logger.warning(
+                        "Skipping per-body gravity exclusions (first body: %s): "
+                        "MuJoCo's 'mujoco:gravcomp' attribute is not registered. "
+                        "Other solvers do not support this setting.",
+                        label,
+                    )
+                    reported_unsupported_body_gravity = True
 
         b = builder.add_link(
             xform=xform,

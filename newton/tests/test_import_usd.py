@@ -3966,12 +3966,27 @@ def Xform "NotPSD" (
             if native is not None:
                 prim.CreateAttribute("mjc:gravcomp", Sdf.ValueTypeNames.Float).Set(native)
 
-        for registered, physx_resolver in ((False, True), (True, False), (True, True)):
+        for registered, physx_resolver in ((False, False), (False, True), (True, False), (True, True)):
             with self.subTest(registered=registered, physx_resolver=physx_resolver):
                 builder = newton.ModelBuilder()
                 if registered:
                     SolverMuJoCo.register_custom_attributes(builder)
-                result = builder.add_usd(stage, schema_resolvers=[usd.SchemaResolverPhysx()] if physx_resolver else [])
+                skipped = physx_resolver and not registered
+                log_capture = (
+                    self.assertLogs("newton", level=logging.WARNING)
+                    if skipped
+                    else self.assertNoLogs("newton", level=logging.WARNING)
+                )
+                with log_capture as logs:
+                    result = builder.add_usd(
+                        stage, schema_resolvers=[usd.SchemaResolverPhysx()] if physx_resolver else []
+                    )
+                if skipped:
+                    # Three authored exclusions still produce only one diagnostic for the import.
+                    self.assertEqual(len(logs.records), 1)
+                    self.assertEqual(logs.records[0].levelno, logging.WARNING)
+                    self.assertIn("mujoco:gravcomp", logs.records[0].getMessage())
+                    self.assertRegex(logs.records[0].getMessage(), r"/Body[034]")
                 self.assertEqual(builder.body_count, 5)
                 if not registered:
                     self.assertNotIn("mujoco:gravcomp", builder.custom_attributes)
@@ -3981,6 +3996,12 @@ def Xform "NotPSD" (
                 for index, expected in enumerate((float(physx_resolver), 0.0, 0.0, 0.5, 0.0)):
                     body = result["path_body_map"][f"/Body{index}"]
                     self.assertEqual(float(values[body]), expected)
+
+        # Authored false and absent flags need no diagnostic without the target backend.
+        for index in (0, 3, 4):
+            stage.GetPrimAtPath(f"/Body{index}").GetAttribute("physxRigidBody:disableGravity").Clear()
+        with self.assertNoLogs("newton", level=logging.WARNING):
+            newton.ModelBuilder().add_usd(stage, schema_resolvers=[usd.SchemaResolverPhysx()])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_joint_stiffness_damping(self):
