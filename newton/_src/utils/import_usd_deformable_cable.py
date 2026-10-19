@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 
 import warp as wp
 
+from ..core._warnings import _external_warning_stacklevel
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..sim.rod import _CIRCULAR_SECTION_TRANSVERSE_SHEAR_CORRECTION, Rod
 from ..usd import utils as usd
@@ -1075,10 +1076,10 @@ def _deformable_prepare_cable_topology(
         }
         if len(authored_self_collisions) > 1:
             warnings.warn(
-                f"cable graph '{cid}': welded curves author differing newton:selfCollisionEnabled values; "
+                f"cable graph '{cid}': welded curves author differing self-collision settings; "
                 "self-collision is disabled for the whole graph.",
                 NewtonWarning,
-                stacklevel=2,
+                stacklevel=_external_warning_stacklevel(),
             )
         if authored_self_collisions:
             ctx.articulation_has_self_collision[builder.articulation_count - 1] = all(authored_self_collisions)
@@ -1416,9 +1417,6 @@ def _deformable_import_cable(
                         label=label,
                         wrap_in_articulation=True,
                     )
-                # A cable rooted on a rigid articulation keeps that articulation's flag instead.
-                if self_collision is not None:
-                    ctx.articulation_has_self_collision[builder.articulation_count - 1] = self_collision
             else:
                 articulation_root_joints: list[int] = []
 
@@ -1452,6 +1450,9 @@ def _deformable_import_cable(
                     ),
                 )
                 path_attachment_map[articulation_root.attachment_path] = articulation_root_joints
+            # A cable rooted on a rigid articulation keeps that articulation's flag instead.
+            if self_collision is not None and (articulation_root is None or articulation_root.parent_body == -1):
+                ctx.articulation_has_self_collision[builder.articulation_count - 1] = self_collision
             for body, segment_radius in zip(bodies, curve_radii, strict=True):
                 _set_cable_body_radius(builder, body, segment_radius)
             _apply_local_rod_material_gains(

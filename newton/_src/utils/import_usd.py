@@ -1674,7 +1674,6 @@ def parse_usd(
                     break
                 current_prim = current_prim.GetParent()
 
-    # maps from articulation_id to bool indicating if self-collisions are enabled
     articulation_has_self_collision = {}
 
     _deformable_ctx = _DeformableImportContext(
