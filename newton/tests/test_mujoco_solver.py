@@ -3439,8 +3439,11 @@ class TestMuJoCoSolverGeomProperties(unittest.TestCase):
 
     def test_separate_worlds_batches_geom_bounds_per_world(self):
         """Per-world geom sizes need per-world geom_aabb/geom_rbound, or every world writes the same row."""
+        import mujoco
+
         half_extents = [(0.1, 0.2, 0.3), (0.2, 0.4, 0.6)]
         builder = newton.ModelBuilder()
+        builder.add_ground_plane()
         for i, (hx, hy, hz) in enumerate(half_extents):
             world = newton.ModelBuilder()
             body = world.add_link(mass=1.0, com=wp.vec3(0.0), inertia=wp.mat33(np.eye(3)))
@@ -3458,21 +3461,29 @@ class TestMuJoCoSolverGeomProperties(unittest.TestCase):
         self.assertEqual(solver.mjw_model.geom_rbound.shape[0], 2)
 
         mapping = solver.mjc_geom_to_newton_shape.numpy()
+        geom_type = solver.mj_model.geom_type
+        box_geom = next(g for g in range(solver.mj_model.ngeom) if geom_type[g] == mujoco.mjtGeom.mjGEOM_BOX)
+        plane_geom = next(g for g in range(solver.mj_model.ngeom) if geom_type[g] == mujoco.mjtGeom.mjGEOM_PLANE)
+        # the kernel visits the plane in every world, so it must leave the plane bounds alone
+        self.assertTrue((mapping[:, plane_geom] >= 0).all())
+        plane_aabb = solver.mj_model.geom_aabb[plane_geom].reshape(2, 3)
 
         def check_bounds(expected_half_extents):
             aabb = solver.mjw_model.geom_aabb.numpy()
             rbound = solver.mjw_model.geom_rbound.numpy()
             for world_idx, extents in enumerate(expected_half_extents):
-                geom_idx = next(g for g in range(solver.mj_model.ngeom) if mapping[world_idx, g] >= 0)
-                assert_np_equal(aabb[world_idx, geom_idx, 0], np.zeros(3), tol=1e-6)
-                assert_np_equal(aabb[world_idx, geom_idx, 1], np.array(extents), tol=1e-6)
-                self.assertAlmostEqual(float(rbound[world_idx, geom_idx]), float(np.linalg.norm(extents)), places=6)
+                assert_np_equal(aabb[world_idx, box_geom, 0], np.zeros(3), tol=1e-6)
+                assert_np_equal(aabb[world_idx, box_geom, 1], np.array(extents), tol=1e-6)
+                self.assertAlmostEqual(float(rbound[world_idx, box_geom]), float(np.linalg.norm(extents)), places=6)
+                # plane bounds do not depend on the size and stay what MuJoCo computed
+                assert_np_equal(aabb[world_idx, plane_geom], plane_aabb)
+                self.assertEqual(float(rbound[world_idx, plane_geom]), 0.0)
 
         check_bounds(half_extents)
 
         # Resizing one world's shape at runtime must move only that world's bounds.
         scale = model.shape_scale.numpy()
-        scale[1] = np.array(half_extents[1]) * 0.5
+        scale[mapping[1, box_geom]] = np.array(half_extents[1]) * 0.5
         model.shape_scale.assign(scale)
         solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
         check_bounds([half_extents[0], tuple(0.5 * np.array(half_extents[1]))])
