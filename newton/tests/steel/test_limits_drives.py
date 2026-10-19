@@ -1914,9 +1914,13 @@ class TestSteelJointFriction(unittest.TestCase):
         """Raise for joint types, values and solver options the friction rows do not support."""
         with self.assertRaisesRegex(NotImplementedError, "matrix_free"):
             SolverSteel(_single_dof_model("revolute"), solve_mode="split", enable_joint_friction=True)
-        for option in ("enable_bilateral_preelimination", "contact_compliance"):
+        # Point friction keeps contact_compliance from warning about friction patches first.
+        for option, extra in (
+            ("enable_bilateral_preelimination", {}),
+            ("contact_compliance", {"friction_anchor_beta": 0.0}),
+        ):
             with self.subTest(option=option), self.assertRaisesRegex(NotImplementedError, option):
-                _friction_solver(_single_dof_model("revolute"), **{option: True})
+                _friction_solver(_single_dof_model("revolute"), **{option: True}, **extra)
         for value in (-1.0, float("nan"), float("inf")):
             with self.subTest(value=value), self.assertRaisesRegex(ValueError, "finite and non-negative"):
                 _friction_solver(_single_dof_model("revolute", friction=value))
