@@ -222,6 +222,106 @@ class TestMujocoSpatialTendon(unittest.TestCase):
                     ["spatial_tendon_test/worldbody/base/s0", "spatial_tendon_test/worldbody/base/link2/s1"],
                 )
 
+    def test_spatial_tendon_geom_suffix_names(self):
+        """Resolve complete geom names independently of matching suffixes."""
+        prefixed = '<geom name="prefix/wrap" type="cylinder" size="0.05 0.1" pos="0.1 0 0"/>'
+        plain = '<geom name="wrap" type="cylinder" size="0.05 0.1" pos="0.3 0 0"/>'
+        for prefixed_first in (True, False):
+            with self.subTest(prefixed_first=prefixed_first):
+                geoms = prefixed + plain if prefixed_first else plain + prefixed
+                mjcf = f"""<mujoco><worldbody><body name="base">
+                  {geoms}<site name="start" pos="-0.2 0 0"/><site name="end" pos="0.5 0 0"/>
+                </body></worldbody><tendon>
+                  <spatial name="prefixed"><site site="start"/><geom geom="prefix/wrap"/><site site="end"/></spatial>
+                  <spatial name="plain"><site site="start"/><geom geom="wrap"/><site site="end"/></spatial>
+                </tendon></mujoco>"""
+                builder = newton.ModelBuilder()
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    builder.add_mjcf(mjcf)
+                self.assertEqual([str(w.message) for w in caught], [])
+                model = builder.finalize(device="cpu")
+                route = model.mujoco.tendon_wrap_shape.numpy()
+                np.testing.assert_array_equal(model.mujoco.tendon_wrap_type.numpy(), [0, 1, 0] * 2)
+                start = model.shape_label.index("worldbody/base/start")
+                end = model.shape_label.index("worldbody/base/end")
+                for name, offset, position in (("prefix/wrap", 0, [0.1, 0, 0]), ("wrap", 3, [0.3, 0, 0])):
+                    with self.subTest(name=name):
+                        expected = model.shape_label.index(f"worldbody/base/{name}")
+                        np.testing.assert_array_equal(route[offset : offset + 3], [start, expected, end])
+                        np.testing.assert_allclose(model.shape_transform.numpy()[route[offset + 1], :3], position)
+
+    def test_spatial_tendon_explicit_geom_names(self):
+        """Keep explicit geom names independent of unnamed geoms' generated labels."""
+        upper = '<body name="upper"><geom name="lower_geom_0" type="cylinder" size="0.05 0.1" pos="0.1 0 0"/></body>'
+        lower = '<body name="lower"><geom type="cylinder" size="0.05 0.1" pos="0.3 0 0"/></body>'
+        for named_first in (True, False):
+            with self.subTest(named_first=named_first):
+                bodies = upper + lower if named_first else lower + upper
+                mjcf = f"""<mujoco><worldbody>
+                  <site name="start" pos="-0.2 0 0"/><site name="end" pos="0.5 0 0"/>{bodies}
+                </worldbody><tendon><spatial name="wrapped">
+                  <site site="start"/><geom geom="lower_geom_0"/><site site="end"/>
+                </spatial></tendon></mujoco>"""
+                builder = newton.ModelBuilder()
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    builder.add_mjcf(mjcf)
+                self.assertEqual([str(w.message) for w in caught], [])
+                model = builder.finalize(device="cpu")
+                route = model.mujoco.tendon_wrap_shape.numpy()
+                expected = model.shape_label.index("worldbody/upper/lower_geom_0")
+                unnamed = model.shape_label.index("worldbody/lower/lower_geom_0")
+                self.assertNotEqual(expected, unnamed)
+                self.assertFalse(model.shape_flags.numpy()[unnamed] & newton.ShapeFlags.SITE)
+                self.assertEqual(model.body_label[model.shape_body.numpy()[unnamed]], "worldbody/lower")
+                np.testing.assert_allclose(model.shape_transform.numpy()[unnamed, :3], [0.3, 0, 0])
+                np.testing.assert_array_equal(model.mujoco.tendon_wrap_type.numpy(), [0, 1, 0])
+                np.testing.assert_array_equal(
+                    route,
+                    [model.shape_label.index("worldbody/start"), expected, model.shape_label.index("worldbody/end")],
+                )
+                self.assertEqual(model.body_label[model.shape_body.numpy()[route[1]]], "worldbody/upper")
+                np.testing.assert_allclose(model.shape_transform.numpy()[route[1], :3], [0.1, 0, 0])
+
+    def test_spatial_tendon_unmatched_geom_names(self):
+        """Reject generated labels and suffix aliases without reusing earlier imports."""
+        for name_attribute, reference, label in (
+            ("", "lower_geom_0", "lower_geom_0"),
+            ('name="prefix/wrap"', "wrap", "prefix/wrap"),
+        ):
+            with self.subTest(reference=reference):
+                mjcf = f"""<mujoco><worldbody><body name="lower">
+                  <geom {name_attribute} type="cylinder" size="0.05 0.1" pos="0.3 0 0"/>
+                  <site name="start" pos="-0.2 0 0"/><site name="end" pos="0.5 0 0"/>
+                </body></worldbody><tendon><spatial name="wrapped">
+                  <site site="start"/><geom geom="{reference}"/><site site="end"/>
+                </spatial></tendon></mujoco>"""
+                builder = newton.ModelBuilder()
+                previous = mjcf.replace(f"<geom {name_attribute} type=", f'<geom name="{reference}" type=')
+                builder.add_mjcf(previous)
+                start_shape = builder.shape_count
+                with warnings.catch_warnings(record=True) as caught:
+                    warnings.simplefilter("always")
+                    builder.add_mjcf(mjcf)
+                self.assertEqual(
+                    [str(w.message) for w in caught],
+                    [f"Spatial tendon 'wrapped' references unknown geom '{reference}', skipping element."],
+                )
+                model = builder.finalize(device="cpu")
+                retained = model.shape_label.index(f"worldbody/lower/{label}", start_shape)
+                self.assertFalse(model.shape_flags.numpy()[retained] & newton.ShapeFlags.SITE)
+                np.testing.assert_allclose(model.shape_transform.numpy()[retained, :3], [0.3, 0, 0])
+                np.testing.assert_array_equal(model.mujoco.tendon_wrap_num.numpy(), [3, 2])
+                np.testing.assert_array_equal(model.mujoco.tendon_wrap_type.numpy()[3:], [0, 0])
+                np.testing.assert_array_equal(
+                    model.mujoco.tendon_wrap_shape.numpy()[3:],
+                    [
+                        model.shape_label.index("worldbody/lower/start", start_shape),
+                        model.shape_label.index("worldbody/lower/end", start_shape),
+                    ],
+                )
+
     def test_spatial_tendon_explicit_site_names(self):
         """Keep explicit endpoint and sidesite names independent of generated labels."""
         # Complete mzamoramora-nvidia's collision snippet from review 5471987942 in both orders.

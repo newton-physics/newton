@@ -1026,6 +1026,7 @@ def parse_mjcf(
             geom_defaults = resolve_class_defaults(geom_class, defaults)
             geom_attrib = merge_attrib(geom_defaults.get("geom", {}), geom.attrib)
 
+            raw_geom_name = geom.attrib.get("name")
             geom_name = geom_attrib.get("name", f"{body_name}_geom_{geo_count}{'_visual' if just_visual else ''}")
             geom_type = geom_attrib.get("type", "sphere")
             fit_to_mesh = False
@@ -1285,6 +1286,7 @@ def parse_mjcf(
                             center_offset = wp.vec3(*com)
                             tf = tf * wp.transform(center_offset, fit_rot)
 
+            geom_shape_start = len(shapes)
             if geom_type == "sphere":
                 s = shape_builder.add_shape_sphere(
                     xform=tf,
@@ -1486,6 +1488,10 @@ def parse_mjcf(
             else:
                 if verbose:
                     print(f"MJCF parsing shape {geom_name} issue: geom type {geom_type} is unsupported")
+
+            if shape_builder is builder and raw_geom_name and len(shapes) > geom_shape_start:
+                # Preserve the first shape for multi-part meshes and visual/collider copies.
+                raw_geom_name_to_idx.setdefault(raw_geom_name, shapes[geom_shape_start])
 
             # Handle explicit mass: compute inertia using existing functions, add to body.
             # Visual geoms can still contribute authored mass when parse_visuals=True.
@@ -2775,8 +2781,9 @@ def parse_mjcf(
     # Used to resolve equality constraints and actuators that reference entities by their short name.
     body_name_to_idx: dict[str, int] = {}
     site_name_to_idx: dict[str, int] = {}
-    # Spatial tendons need exact site names within this import, without sanitized aliases.
+    # Spatial tendons need exact authored names within this import, without label aliases.
     raw_site_name_to_idx: dict[str, int] = {}
+    raw_geom_name_to_idx: dict[str, int] = {}
     joint_name_to_idx: dict[str, int] = {}
 
     # Extract articulation label early for hierarchical label construction
@@ -3081,7 +3088,7 @@ def parse_mjcf(
                 print(f"Parsed fixed tendon: {tendon_name} ({joint_names_str})")
 
         def find_shape_by_name(name: str, want_site: bool) -> int:
-            """Find a shape index by name, disambiguating sites from geoms.
+            """Find a shape index by its exact MJCF name, disambiguating sites from geoms.
 
             MuJoCo allows sites and geoms to share the same name (different namespaces).
             Newton stores both as shapes in shape_label, so we need to pick the right one
@@ -3091,13 +3098,7 @@ def parse_mjcf(
             """
             if want_site:
                 return raw_site_name_to_idx.get(name, -1)
-            for i in range(start_shape_count, len(builder.shape_label)):
-                label = builder.shape_label[i]
-                if label == name or label.endswith(f"/{name}"):
-                    is_site = bool(builder.shape_flags[i] & ShapeFlags.SITE)
-                    if is_site == want_site:
-                        return i
-            return -1
+            return raw_geom_name_to_idx.get(name, -1)
 
         for spatial in tendon_section.findall("spatial"):
             # Apply default class inheritance for spatial tendon attributes.
