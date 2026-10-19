@@ -41,6 +41,7 @@ __all__ = ["SolverImplicitMPM"]
 
 from .implicit_mpm_solver_kernels import (
     EPSILON,
+    GIMP_MIN_OVERLAP_FRACTION,
     INFINITY,
     YIELD_PARAM_LENGTH,
     YieldMomentVec,
@@ -3055,7 +3056,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     else:
                         weight *= (hi[a] - split[a]) / size
                         centroid[a] = 0.5 * (split[a] + hi[a])
-                if weight <= 1.0e-6:
+                if weight <= GIMP_MIN_OVERLAP_FRACTION:
                     continue
 
                 # Grid cells are axis-aligned cubes of edge voxel_size

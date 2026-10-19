@@ -18,6 +18,7 @@ from warp.fem.linalg import array_axpy
 from warp.optim.linear import LinearOperator, cg, cr, gmres
 
 from .contact_solver_kernels import (
+    BOUNDARY_CONTACT_THREADS,
     apply_nodal_impulse_warmstart,
     apply_subgrid_impulse,
     apply_subgrid_impulse_warmstart,
@@ -915,7 +916,7 @@ class _GaussSeidelSolver(_RheologySolver):
             self.boundary_counts.zero_()
             wp.launch(
                 build_boundary_cell_colors,
-                dim=(self.color_count, 256),
+                dim=(self.color_count, BOUNDARY_CONTACT_THREADS),
                 inputs=[
                     self.rheology.color_offsets,
                     self.rheology.color_blocks,
@@ -926,7 +927,7 @@ class _GaussSeidelSolver(_RheologySolver):
             )
             self.contact_launch = wp.launch(
                 make_boundary_contact_gs_kernel(c.colored_velocity_nodes_per_cell == 8),
-                dim=256,
+                dim=BOUNDARY_CONTACT_THREADS,
                 block_dim=1,
                 inputs=[
                     0,

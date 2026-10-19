@@ -336,6 +336,9 @@ def _solve_cell_contacts_gs_generic(
                 velocity[node] += inv_volume[node] * values[b] * delta
 
 
+BOUNDARY_CONTACT_THREADS = wp.constant(256)
+"""Threads striding over the boundary cells of one color in colored contact solves"""
+
 _ContactScalar8 = wp.types.vector(length=8, dtype=float)
 _ContactIndex8 = wp.types.vector(length=8, dtype=int)
 
@@ -436,7 +439,7 @@ def build_boundary_cell_colors(
     boundary_cells: wp.array2d[int],
 ):
     color, thread = wp.tid()
-    for b in range(color_offsets[color] + thread, color_offsets[color + 1], 256):
+    for b in range(color_offsets[color] + thread, color_offsets[color + 1], BOUNDARY_CONTACT_THREADS):
         beg, end = color_blocks[0, b], color_blocks[1, b]
         if end > beg:
             cell = beg // (end - beg)
@@ -469,7 +472,7 @@ def make_boundary_contact_gs_kernel(cache_cell_velocity: bool):
         inv_volume: wp.array[float],
         velocity: wp.array[wp.vec3],
     ):
-        for b in range(wp.tid(), boundary_counts[color], 256):
+        for b in range(wp.tid(), boundary_counts[color], BOUNDARY_CONTACT_THREADS):
             wp.static(solve_cell)(
                 boundary_cells[color, b],
                 cell_offsets,

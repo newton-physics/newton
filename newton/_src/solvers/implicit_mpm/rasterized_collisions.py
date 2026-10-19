@@ -28,6 +28,12 @@ _INFINITY = wp.constant(1.0e12)
 _CLOSEST_POINT_NORMAL_EPSILON = wp.constant(1.0e-3)
 """Maximum neighborhood radius for closest point normal calculation"""
 
+_SLIVER_NORMAL_RATIO = wp.constant(1.0e-6)
+"""Faces whose doubled area is below this fraction of their squared longest edge are slivers."""
+
+_NORMAL_RADIUS_EDGE_FRACTION = wp.constant(0.1)
+"""Normal neighborhoods are capped at this fraction of each face's shortest edge."""
+
 _CANCELLED_NORMAL_RATIO = wp.constant(1.0e-4)
 """Relative length below which an averaged normal is cancelled by opposing faces.
 
@@ -117,11 +123,13 @@ def _triangle_distance_sq_and_pseudonormal(q: wp.vec3, e1: wp.vec3, e2: wp.vec3,
     normal = wp.cross(e1, e2)
     normal_sq = wp.length_sq(normal)
     edge_scale = wp.max(wp.max(e1_sq, e2_sq), e3_sq)
-    if normal_sq <= 1.0e-12 * edge_scale * edge_scale:
+    if normal_sq <= (_SLIVER_NORMAL_RATIO * edge_scale) * (_SLIVER_NORMAL_RATIO * edge_scale):
         return float(_INFINITY), wp.vec3(0.0)
 
     # Keep vertex neighborhoods disjoint, even on faces smaller than the search radius.
-    eps_sq = wp.min(eps_sq, 0.01 * wp.min(wp.min(e1_sq, e2_sq), e3_sq))
+    eps_sq = wp.min(
+        eps_sq, _NORMAL_RADIUS_EDGE_FRACTION * _NORMAL_RADIUS_EDGE_FRACTION * wp.min(wp.min(e1_sq, e2_sq), e3_sq)
+    )
 
     e1q = wp.dot(e1, q)
     e2q = wp.dot(e2, q)
@@ -264,7 +272,7 @@ def _query_collider_sdf(
 
         if wp.static(_SDF_SIGN_FROM_AVERAGE_NORMAL):
             face_normal = get_average_face_normal(mesh, cp)
-            if wp.length_sq(face_normal) < 1.0e-12:
+            if wp.length_sq(face_normal) == 0.0:
                 # Edge rounding or cancellation can leave the average normal zero.
                 face_normal = wp.mesh_eval_face_normal(mesh, query.face)
             sign = wp.where(wp.dot(face_normal, x_local - cp) > 0.0, 1.0, -1.0)

@@ -51,6 +51,9 @@ _NAN_THRESHOLD = wp.constant(1.0e16)
 _EIGENVALUE_FLOOR = wp.constant(1.0e-6)
 """Eigenvalues at or below this value are treated as zero (mode is dropped)"""
 
+GIMP_MIN_OVERLAP_FRACTION = wp.constant(1.0e-6)
+"""Particle-domain overlaps with a smaller volume fraction are left out"""
+
 vec6 = wp.types.vector(length=6, dtype=wp.float32)
 mat66 = wp.types.matrix(shape=(6, 6), dtype=wp.float32)
 mat63 = wp.types.matrix(shape=(6, 3), dtype=wp.float32)
@@ -1553,11 +1556,14 @@ def integrate_gimp_point_stress(
     cell = fem.element_partition_index(domain, s.element_index)
     value = particle_stress[p]
     center = domain(fem.make_free_sample(s.element_index, fem.Coords(0.5)))
+    # Partition indices change when the grid is rebuilt; cell centers lie on the voxel
+    # lattice, so the stored center either matches up to roundoff or is a voxel away.
+    match_distance_sq = 0.01 * voxel_size * voxel_size
     for k in range(8):
         if (
             gimp_cells[p, k] == cell
             and point_valid[p, k] > 0.0
-            and wp.length_sq(point_centers[p, k] - center) < 0.01 * voxel_size * voxel_size
+            and wp.length_sq(point_centers[p, k] - center) < match_distance_sq
         ):
             value = point_stress[p, k]
     return wp.ddot(tau(s), value) * inv_cell_volume
