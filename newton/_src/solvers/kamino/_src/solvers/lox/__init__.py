@@ -5,7 +5,8 @@
 
 ``solver`` orchestrates the solve. ``problem`` owns the body topology and the
 constraint rows loaded from Kamino, and ``system`` assembles and factorizes the
-body system with Kamino's RCM-reordered blocked LLT. ``projection`` runs the
+body system with Kamino's RCM-reordered blocked LLT, whose solves ``llt`` runs
+over the nonzero tiles of the factor. ``projection`` runs the
 unilateral sweeps over joint limits, joint friction and contacts as Jacobi or
 colored Gauss--Seidel sweeps (colored by ``coloring``), optionally accelerated
 by ``apgd`` or ``anderson``; ``contact`` holds the local contact laws and

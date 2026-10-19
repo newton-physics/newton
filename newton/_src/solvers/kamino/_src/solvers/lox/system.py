@@ -18,7 +18,7 @@ import warp as wp
 
 from ...core.types import vec6f
 from ...linalg import DenseLinearOperatorData
-from ...linalg.factorize.llt_blocked_rcm_solver import LLTBlockedRCMSolver
+from .llt import LLTBlockedRCMTraversalSolver
 from .system_kernels import (
     _assemble_body_inertial_systems,
     _assemble_joint_rows,
@@ -130,7 +130,7 @@ class LOXSystem:
         if active_dimensions != storage_dimensions:
             info.dim = wp.array(active_dimensions, dtype=wp.int32, device=self.device)
         self._data = LOXSystemData(body_block, body_local, body_vector_index, info, self.device)
-        self.linear_solver: LLTBlockedRCMSolver | None = None
+        self.linear_solver: LLTBlockedRCMTraversalSolver | None = None
         """Sparse LLT of the multi-body blocks, or ``None`` when every block holds a single body."""
         if self.num_sparse_blocks > 0:
             # The totals of the sparse prefix cover the single-body blocks, so that captured steps
@@ -148,7 +148,7 @@ class LOXSystem:
             sparse_info.total_vec_size = info.total_vec_size
             # Small tiles skip most of the zero blocks of a tree-like body graph,
             # and one warp per world matches the work of a single-RHS tile solve.
-            self.linear_solver = LLTBlockedRCMSolver(
+            self.linear_solver = LLTBlockedRCMTraversalSolver(
                 operator=DenseLinearOperatorData(info=sparse_info, mat=self._data.matrix),
                 block_size=16,
                 solve_block_dim=32,
