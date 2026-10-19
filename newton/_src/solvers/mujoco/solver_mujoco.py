@@ -235,7 +235,7 @@ def _warn_if_mujoco_versions_mismatch(mujoco: Any, mujoco_warp: Any) -> None:
             "MuJoCo dependency version mismatch with Newton's declared requirements: "
             + "; ".join(mismatches)
             + '. Reinstall Newton dependencies, for example `uv pip install -e ".[examples]"`.',
-            RuntimeWarning,
+            NewtonWarning,
             stacklevel=3,
         )
 
@@ -2191,15 +2191,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 pass
             context = context or {}
             prim = context.get("prim")
-            # Every frame above this parser is Newton-internal, so no stacklevel points at the
-            # offending prim or element and the message has to name it.
             source = f"prim '{prim.GetPath()}'" if prim is not None else f"actuator '{context.get('actuator_name')}'"
             fallback = next(name for name, ordinal in mapping.items() if ordinal == 0)
-            warnings.warn(
-                f"Unsupported MuJoCo actuator {attribute} {value!r} on {source}; "
-                f"falling back to {fallback!r}. Supported values are {sorted(mapping)}.",
-                RuntimeWarning,
-                stacklevel=2,
+            logger.warning(
+                "Unsupported MuJoCo actuator %s %r on %s; falling back to %r. Supported values are %s.",
+                attribute,
+                value,
+                source,
+                fallback,
+                sorted(mapping),
             )
             return 0
 

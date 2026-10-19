@@ -1722,12 +1722,10 @@ class SolverSteel(SolverBase):
                 of different sizes overlap. Results are unchanged; CPU devices and models with
                 one size group ignore it.
             double_buffer: Keep two sets of the grouped mass-matrix and Jacobian buffers and
-                clear the set a step used on a separate CUDA stream while the next step runs
-                on the other set. Results are unchanged; CPU devices and the sparse mass
-                factors ignore it. Within a captured graph the clearing overlaps the next
-                step; after an eager step, the stream's later work waits for its clearing.
-                Steps and graph launches of one solver must be ordered on one stream (or
-                through explicit stream dependencies).
+                clear the set a step used on a separate CUDA stream, which the step joins
+                before it returns. Results are unchanged; CPU devices and the sparse mass
+                factors ignore it. Steps and graph launches of one solver must be ordered
+                on one stream (or through explicit stream dependencies).
             friction_anchor_beta: Position-correction gain of persistent friction patches;
                 ``0`` selects point friction. ``None`` selects ``0.2`` with
                 ``solve_mode="matrix_free"``, and point friction with ``solve_mode="split"``,
@@ -6299,9 +6297,6 @@ class SolverSteel(SolverBase):
         )
         self._buffer_index = 0
         self._double_buffer_selected = False
-        # Per buffer set: the event that ends its clearing and the capture it was recorded in.
-        self._memset_done_event = [None, None]
-        self._memset_done_capture = [None, None]
         streams = [
             *self._size_streams.values(),
             self._memset_stream,
@@ -6333,13 +6328,8 @@ class SolverSteel(SolverBase):
             for stream in self._size_streams.values():
                 main_stream.wait_event(stream.record_event())
 
-    def _current_capture(self):
-        """Return the graph the current stream captures into, or ``None`` outside a capture."""
-        stream = wp.get_stream(self.model.device)
-        return self.model.device.captures.get(stream) if stream.is_capturing else None
-
     def _select_double_buffer(self) -> None:
-        """Make the current buffer set active and wait until it was cleared."""
+        """Make the current buffer set active; the step that cleared it joined the clearing before returning."""
         self._double_buffer_selected = True
         # Set by the mass-matrix stage; a step that raises before it wrote no mass matrices.
         self._mass_update_global_flag = 0
@@ -6348,30 +6338,18 @@ class SolverSteel(SolverBase):
         self._J_by_size = self._J_bufs[index]
         if self._jy_world_aliased:
             self._J_world = self._J_by_size[self._size_groups[0]]
-        # Only a clearing recorded earlier in the same capture is pending here: an eager step joins its
-        # clearing before it returns, and a graph launch ends after its clearing.
-        event = self._memset_done_event[index]
-        capture = self._current_capture()
-        if event is not None and capture is not None and self._memset_done_capture[index] is capture:
-            wp.get_stream(self.model.device).wait_event(event)
 
     def _clear_double_buffer(self) -> None:
         """Clear the buffer set of this step on the memset stream and switch to the other set."""
         self._double_buffer_selected = False
         index = self._buffer_index
-        with wp.ScopedStream(self._memset_stream):
+        # Join on exit: a capture paused between steps (e.g. by a conditional node) rejects unjoined streams.
+        with wp.ScopedStream(self._memset_stream, sync_enter=True, sync_exit=True):
             for size in self._size_groups:
                 # A step without a global mass refresh wrote no mass matrices.
                 if self._mass_update_global_flag:
                     self._H_bufs[index][size].zero_()
                 self._J_bufs[index][size].zero_()
-        event = self._memset_stream.record_event()
-        capture = self._current_capture()
-        if capture is None:
-            # A graph captured after this step cannot wait on an event recorded outside it.
-            wp.get_stream(self.model.device).wait_event(event)
-        self._memset_done_event[index] = event
-        self._memset_done_capture[index] = capture
         self._buffer_index = 1 - index
 
     def _accumulate_row_watermarks(self, contacts: Contacts | None) -> None:

@@ -23,6 +23,8 @@ axes, and enforce the latter during Standards review.
    numerical invariants. For performance changes, examine setup and steady-state
    complexity, allocations, synchronization, transfers, and whether benchmarks
    exercise the changed path. Run a minimal adversarial probe when feasible.
+   Apply the guides' schema and importer checks to authorable features,
+   including behavioral equivalence and explicit acceptance of deferrals.
 4. Freeze candidate findings before reading existing reviews. Record the
    location, triggering input or condition, mechanism, observable impact,
    evidence, and confidence for each candidate.
