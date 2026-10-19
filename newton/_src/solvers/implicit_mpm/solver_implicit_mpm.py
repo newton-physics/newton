@@ -1019,12 +1019,16 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         ``"pic27"``. Any ``"picN"`` form with integer ``N`` is accepted.
         Particle bases require an explicit per-cell limit (``"picN"``) for graph capture.
 
-        Discontinuous polynomial bases use experimental nodal mass orthogonalization.
+        Discontinuous polynomial bases use nodal mass orthogonalization.
         P1d/Q1d recover the full-cell reference basis; Q1d uses Gauss--Legendre
         reference nodes. Rank-deficient cells drop null modes and orthogonalize
         the supported subspace. Pressure-related parameters use positive basis
         weights, shear strength uses absolute weights, and viscosity uses squared
-        weights. This prototype behavior may change without prior notice.
+        weights.
+
+        .. experimental::
+
+            Nodal mass orthogonalization of discontinuous strain bases may change.
         """
         velocity_basis: _MPMVelocityBasisName = "Q1"
         """Velocity basis function. Common values are ``"Q1"``, ``"B2"``,

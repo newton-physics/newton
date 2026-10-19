@@ -1,4 +1,1 @@
-Activate implicit MPM particle contacts within 0.25 voxels of colliders.
-Use a gap-based speculative normal velocity bound for activated contacts,
-allowing material to reach the surface during the step without early stopping.
-Grid-based collider nodes keep enforcing the full contact condition.
+Activate implicit MPM particle contacts (`pic*` collider bases) within 0.25 voxels of colliders and let them close the remaining gap within the step. Penetration that already exists is no longer recovered by contacts; call `SolverImplicitMPM.project_outside()` to push particles out of colliders. Grid-based collider nodes keep enforcing the full contact condition.

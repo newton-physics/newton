@@ -1,0 +1,1 @@
+Solve implicit MPM particle contacts inside the Gauss-Seidel strain color loop by default for `gs` and `gs-soa` with `pic*` collider bases and discontinuous strain bases. This experimental ordering reduces contact violations from the material solve; set `SolverImplicitMPM.Config.gs_colored_contacts = False` to keep contacts in a separate pass.

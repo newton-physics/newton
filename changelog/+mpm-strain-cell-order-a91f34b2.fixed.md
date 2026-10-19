@@ -1,2 +1,1 @@
-Preserve sequential updates of a cell's strain modes in GS-SOA. Keep stress
-reads frozen within each cell during GS-BATCHED's solve phase.
+Fix implicit MPM `gs-soa` updating a cell's strain modes concurrently and `gs-batched` reading stresses changed during its solve phase.

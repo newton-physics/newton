@@ -1,1 +1,1 @@
-Improve the implicit MPM solver's handling of partly filled grid cells and particles with different material properties. Existing `strain_basis` settings remain valid, but simulation results may change.
+Orthogonalize P1d and Q1d implicit MPM strain modes in their nodal basis (experimental), keeping supported modes in partially filled cells. Existing `strain_basis` settings remain valid, but results can change in partially filled cells.
