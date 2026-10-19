@@ -8,7 +8,6 @@ import os
 import numpy as np
 import warp as wp
 
-from ..geometry.collision_core import MINKOWSKI_CORE_RADIUS
 from ..geometry.support_function import GenericShapeData, GeoTypeEx
 
 
@@ -364,8 +363,8 @@ def get_triangle_shape_from_heightfield(
     return shape_data, v0_world
 
 
-_CELL_REJECT_SHELL_PADDING = wp.constant(2.0 * MINKOWSKI_CORE_RADIUS)
-"""Absolute cell-rejection padding [m]: twice the narrow-phase core radius, as a conservative margin.
+_CELL_REJECT_PADDING = wp.constant(2.0e-4)
+"""Absolute cell-rejection padding [m], a conservative margin.
 
 The narrow phase admits a contact only within the summed contact gap, which the query AABB already includes, so this
 padding only retains extra cells and never drops a contact the narrow phase admits.
@@ -499,7 +498,7 @@ def heightfield_vs_convex_midphase(
     padding = float(0.0)
     can_reject = bool(False)
     if reject_cells:
-        # Retain the narrow-phase query shell, plus roundoff from world-coordinate
+        # Retain a conservative margin, plus roundoff from world-coordinate
         # cancellation, transformed extents and height reconstruction.
         scale = (
             1.0
@@ -513,7 +512,7 @@ def heightfield_vs_convex_midphase(
             + wp.abs(hfd.max_z - hfd.min_z)
             + wp.abs(contact_threshold)
         )
-        padding = _CELL_REJECT_SHELL_PADDING + _CELL_REJECT_ROUNDOFF * scale
+        padding = _CELL_REJECT_PADDING + _CELL_REJECT_ROUNDOFF * scale
         can_reject = wp.isfinite(aabb_lower[2]) and wp.isfinite(padding)
     for r in range(row_min, row_max + 1):
         for c in range(col_min, col_max + 1):
