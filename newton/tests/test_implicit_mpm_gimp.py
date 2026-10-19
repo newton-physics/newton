@@ -401,6 +401,25 @@ def test_pic_speculative_contact(test, device, capture=False):
             np.testing.assert_allclose(state.particle_qd.numpy()[0], expected, atol=2.0e-4)
 
 
+def test_grid_contact_full_condition(test, device):
+    """Enforce the full contact condition at active grid collider nodes, with no speculative gap."""
+    solver, state = _make_solver(
+        device,
+        positions=((0.4, 0.4, 0.6),),
+        contact=True,
+        collider_basis="S2",
+        solver_class=SolverImplicitMPM,
+        integration_scheme="pic",
+        young_modulus=12000.0,
+        air_drag=1.0e-4,
+        max_iterations=50,
+    )
+    # Serendipity edge nodes at z = 0.5 are active 0.05 above the ground.
+    state.particle_qd.assign(((0.0, 0.0, -0.4),))
+    solver.step(state, state, None, None, 0.1)
+    test.assertGreater(state.particle_qd.numpy()[0, 2], -0.01)
+
+
 def test_colored_contact_dynamic_collider(test, device, capture=False):
     """Share impact momentum with a finite-mass collider across separated contact cells."""
 
@@ -463,6 +482,7 @@ for name, func in (
     ("test_colored_contact_velocity_bases", test_colored_contact_velocity_bases),
     ("test_colored_contact_default", test_colored_contact_default),
     ("test_pic_speculative_contact", test_pic_speculative_contact),
+    ("test_grid_contact_full_condition", test_grid_contact_full_condition),
     ("test_colored_contact_dynamic_collider", test_colored_contact_dynamic_collider),
 ):
     add_function_test(TestImplicitMPMGimp, name, func, devices=get_test_devices(mode="basic"))

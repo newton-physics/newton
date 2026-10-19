@@ -490,6 +490,7 @@ def rasterize_collider_kernel(
     body_q_prev: wp.array[wp.transform],
     voxel_size: float,
     activation_distance: float,
+    speculative: bool,
     dt: float,
     node_positions: wp.array[wp.vec3],
     node_environment_offsets: wp.array[int],
@@ -516,12 +517,13 @@ def rasterize_collider_kernel(
         body_q_prev: Previous rigid body transforms (for finite-difference velocity).
         voxel_size: Grid voxel size [m], used to scale the activation distance.
         activation_distance: Distance (in voxels) below which to activate the collider.
+        speculative: Whether to offset the collider velocity so a positive gap can close within the step.
         dt: Timestep length (used to scale adhesion and finite-difference velocity).
         node_positions: Grid node positions to sample at.
         node_environment_offsets: Packed node offsets by world, or null to query every collider.
         node_volumes: Per-node integration volumes.
         collider_sdf: Output signed distance per node.
-        collider_velocity: Output collider velocity, offset to allow closing a positive gap within the step.
+        collider_velocity: Output collider velocity per node, with the speculative offset if enabled.
         collider_normals: Output contact normals per node.
         collider_friction: Output friction coefficient per node, or -1 if inactive.
         collider_adhesion: Output scaled adhesion per node.
@@ -559,7 +561,7 @@ def rasterize_collider_kernel(
     collider_adhesion[i] = collider.material_adhesion[material_id] * dt * node_volumes[i] / voxel_size
 
     # Allow approach until the end-of-step gap closes; do not recover penetration.
-    if dt > 0.0:
+    if speculative and dt > 0.0:
         sdf_vel -= (wp.max(sdf, 0.0) / dt) * sdf_gradient
     collider_velocity[i] = sdf_vel
 
@@ -734,6 +736,11 @@ def normalize_gradient(
     normal[i] = corrected_normal
 
 
+def _is_speculative(field: fem.DiscreteField) -> bool:
+    """Point (particle) contacts close positive gaps within the step; grid contacts keep their activation band."""
+    return field.degree == 0
+
+
 def rasterize_collider(
     collider: Collider,
     body_q: wp.array[wp.transform],
@@ -771,7 +778,7 @@ def rasterize_collider(
         collider_position_field: Output world-space node positions.
         collider_distance_field: Output signed-distance values per node.
         collider_normal_field: Output outward normals per node.
-        collider_velocity: Output collider velocity with speculative normal offset [m/s].
+        collider_velocity: Output collider velocity [m/s], with a speculative normal offset for point contacts.
         collider_friction: Output Coulomb friction coefficient per node.
         collider_adhesion: Output adhesion per node [Pa].
         collider_ids: Output collider index per node, or ``_NULL_COLLIDER_ID``.
@@ -806,6 +813,7 @@ def rasterize_collider(
             body_q_prev,
             voxel_size,
             activation_distance,
+            _is_speculative(collider_position_field),
             dt,
             collider_position_field.dof_values,
             node_environment_offsets,
@@ -862,7 +870,7 @@ def interpolate_collider_normals(
             collider_normal_field.dof_values,
             collider_distance_field.dof_values,
             collider_velocity,
-            dt,
+            dt if _is_speculative(collider_normal_field) else 0.0,
         ],
     )
 
