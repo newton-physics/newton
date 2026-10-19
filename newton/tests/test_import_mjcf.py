@@ -2,16 +2,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import importlib.util
-import io
 import os
 import struct
-import sys
 import tempfile
 import unittest
 import warnings
 import zlib
 from pathlib import Path
-from unittest import mock
 
 import numpy as np
 import warp as wp
@@ -63,6 +60,136 @@ MASSLESS_FIXED_ROOT_WITH_INTERNAL_FIXED_MJCF = """
 
 
 class TestImportMjcfBasic(unittest.TestCase):
+    def test_nested_option_flags_match_native_mujoco(self):
+        """Preserve later flag overrides and apply gravity to the Newton model."""
+        mjcf = """
+<mujoco>
+    <option><flag gravity="disable" contact="disable" energy="enable" multiccd="enable"/></option>
+    <option><flag gravity="enable"/></option>
+    <worldbody><body><freejoint/><geom type="sphere" size="0.1"/></body></worldbody>
+</mujoco>
+"""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        native = mujoco.MjModel.from_xml_string(mjcf)
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model)
+        self.assertEqual(solver.mj_model.opt.disableflags, native.opt.disableflags)
+        self.assertEqual(solver.mj_model.opt.enableflags, native.opt.enableflags)
+        np.testing.assert_allclose(model.gravity.numpy(), [[0, 0, -9.81]])
+
+        builder = newton.ModelBuilder()
+        builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_mjcf(mjcf.replace('gravity="enable"', 'gravity="disable"'))
+        builder.add_mjcf('<mujoco><option><flag gravity="enable"/></option><worldbody/></mujoco>')
+        np.testing.assert_array_equal(builder.finalize().gravity.numpy(), [[0, 0, 0]])
+
+        builder = newton.ModelBuilder(gravity=(0, 0, -3))
+        for enabled in ("disable", "enable"):
+            builder.begin_world()
+            builder.add_mjcf(mjcf.replace('gravity="enable"', f'gravity="{enabled}"'))
+            builder.end_world()
+        np.testing.assert_array_equal(builder.finalize().gravity.numpy(), [[0, 0, 0], [0, 0, -3], [0, 0, -3]])
+
+    def test_option_flag_bits_match_native_mujoco(self):
+        """Match each supported flag to native MuJoCo while retaining Newton defaults."""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        names = (
+            "constraint",
+            "equality",
+            "frictionloss",
+            "limit",
+            "contact",
+            "spring",
+            "damper",
+            "clampctrl",
+            "warmstart",
+            "actuation",
+            "refsafe",
+            "sensor",
+            "eulerdamp",
+            "nativeccd",
+            "island",
+            "multiccd",
+            "energy",
+            "invdiscrete",
+        )
+        for value in ("enable", "disable"):
+            with self.subTest(value=value):
+                flags = " ".join(f'{name}="{value}"' for name in names)
+                mjcf = f"""
+<mujoco>
+    <option><flag {flags}/></option>
+    <worldbody><body><freejoint/><geom type="sphere" size="0.1"/></body></worldbody>
+</mujoco>
+"""
+                native = mujoco.MjModel.from_xml_string(mjcf)
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf)
+                solver = SolverMuJoCo(builder.finalize(device="cpu"), use_mujoco_cpu=True)
+                self.assertEqual(solver.mj_model.opt.disableflags, native.opt.disableflags)
+                self.assertEqual(solver.mj_model.opt.enableflags, native.opt.enableflags)
+
+    def test_unknown_option_flag_warns(self):
+        """Warn and ignore unsupported flags without breaking Warp model construction."""
+        for name in ("mysteryflag", "filterparent", "override", "fwdinv", "diagexact", "midphase", "autoreset"):
+            with self.subTest(flag=name):
+                value = "disable" if name in ("filterparent", "midphase", "autoreset") else "enable"
+                mjcf = f"""
+<mujoco>
+    <option><flag {name}="{value}"/></option>
+    <worldbody><body><freejoint/><geom type="sphere" size="0.1"/></body></worldbody>
+</mujoco>
+"""
+                builder = newton.ModelBuilder()
+                with self.assertWarnsRegex(newton.exceptions.NewtonWarning, name):
+                    builder.add_mjcf(mjcf)
+                solver = SolverMuJoCo(builder.finalize())
+                self.assertEqual(solver.mj_model.opt.enableflags, 0)
+
+    def test_constructor_overrides_imported_option_flags(self):
+        """Resolve explicit arguments before MJCF or USD flags and Newton defaults."""
+        mjcf = """
+<mujoco>
+    <option><flag contact="disable" sensor="enable" multiccd="enable"/></option>
+    <worldbody><body><freejoint/><geom type="sphere" size="0.1"/></body></worldbody>
+</mujoco>
+"""
+        mujoco, _ = SolverMuJoCo.import_mujoco()
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        builders = [builder]
+        if importlib.util.find_spec("pxr") is not None:
+            from pxr import Sdf, Usd, UsdGeom, UsdPhysics
+
+            stage = Usd.Stage.CreateInMemory()
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            scene = UsdPhysics.Scene.Define(stage, "/physicsScene").GetPrim()
+            for name, value in (("contact", False), ("sensor", True), ("multiccd", True)):
+                scene.CreateAttribute(f"mjc:flag:{name}", Sdf.ValueTypeNames.Bool).Set(value)
+            usd_builder = newton.ModelBuilder()
+            SolverMuJoCo.register_custom_attributes(usd_builder)
+            usd_builder.add_usd(stage)
+            usd_builder.add_mjcf(mjcf, parse_mujoco_options=False)
+            builders.append(usd_builder)
+        for builder in builders:
+            with self.subTest(source="mjcf" if builder is builders[0] else "usd"):
+                model = builder.finalize()
+                imported = SolverMuJoCo(model)
+                self.assertTrue(imported.mj_model.opt.disableflags & mujoco.mjtDisableBit.mjDSBL_CONTACT)
+                self.assertFalse(imported.mj_model.opt.disableflags & mujoco.mjtDisableBit.mjDSBL_MULTICCD)
+                overridden = SolverMuJoCo(model, disable_contacts=False, disable_sensors=True, enable_multiccd=False)
+                self.assertEqual(
+                    overridden.mj_model.opt.disableflags,
+                    mujoco.mjtDisableBit.mjDSBL_SENSOR | mujoco.mjtDisableBit.mjDSBL_MULTICCD,
+                )
+                self.assertEqual(overridden.mj_model.opt.enableflags, 0)
+        default_builder = newton.ModelBuilder()
+        default_builder.add_mjcf(mjcf, parse_mujoco_options=False)
+        default_solver = SolverMuJoCo(default_builder.finalize())
+        self.assertEqual(default_solver.mj_model.opt.disableflags, mujoco.mjtDisableBit.mjDSBL_MULTICCD)
+
     def test_geom_rgba_preserves_opacity(self):
         """Preserve authored MJCF geometry opacity."""
         mjcf = """
@@ -4726,8 +4853,7 @@ class TestImportMjcfSolverParams(unittest.TestCase):
                 builder.default_joint_cfg.damping = default_damping
                 builder.add_mjcf(mjcf_content)
                 joint_index = builder.joint_type.index(newton.JointType.BALL)
-                with mock.patch("newton.use_coord_layout_targets", True):
-                    model = builder.finalize()
+                model = builder.finalize()
 
                 dof_start = int(model.joint_qd_start.numpy()[joint_index])
                 np.testing.assert_allclose(
@@ -7026,21 +7152,14 @@ class TestImportMjcfComposition(unittest.TestCase):
         builder = newton.ModelBuilder()
         mjcf_filename = os.path.join(os.path.dirname(__file__), "assets", "mjcf_exclude_test.xml")
 
-        # Capture verbose output
-        captured_output = io.StringIO()
-        old_stdout = sys.stdout
-        sys.stdout = captured_output
-
-        try:
+        with self.assertLogs("newton", level="INFO") as logs:
             builder.add_mjcf(
                 mjcf_filename,
                 enable_self_collisions=True,
                 verbose=True,
             )
-        finally:
-            sys.stdout = old_stdout
 
-        output = captured_output.getvalue()
+        output = "\n".join(logs.output)
 
         # Check that the verbose output includes information about the exclude
         self.assertIn("Parsed collision exclude", output)
@@ -7136,7 +7255,7 @@ class TestImportMjcfComposition(unittest.TestCase):
         self.assertIn("worldbody/body1", builder.body_label)
 
     def test_exclude_tag_warnings_verbose(self):
-        """Test that warnings are printed for invalid exclude tags when verbose=True."""
+        """Test that warnings are logged for invalid exclude tags when verbose=True."""
         mjcf_content = """
 <mujoco>
   <worldbody>
@@ -7155,21 +7274,10 @@ class TestImportMjcfComposition(unittest.TestCase):
 """
         builder = newton.ModelBuilder()
 
-        # Capture verbose output
-        captured_output = io.StringIO()
-        old_stdout = sys.stdout
-        sys.stdout = captured_output
-
-        try:
+        with self.assertLogs("newton", level="WARNING") as logs:
             builder.add_mjcf(mjcf_content, enable_self_collisions=True, verbose=True)
-        finally:
-            sys.stdout = old_stdout
 
-        output = captured_output.getvalue()
-
-        # Check that warnings were printed for invalid exclude entries
-        self.assertIn("Warning", output)
-        self.assertIn("<exclude>", output)
+        self.assertIn("<exclude>", "\n".join(logs.output))
 
     def test_base_joint_on_fixed_root(self):
         """Test that base_joint works on MJCF with fixed root (no freejoint)."""

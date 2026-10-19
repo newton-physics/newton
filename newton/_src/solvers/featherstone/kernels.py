@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from functools import cache
+
 import warp as wp
 
 from ...math import transform_twist, velocity_at_point
@@ -1682,89 +1684,52 @@ def dense_gemm(
 #         dense_gemm(p, n, m, True, False, add_to_C, A_start, B_start, C_start, A, wp.adjoint[C], wp.adjoint[B])
 
 
-def create_inertia_matrix_kernel(num_joints, num_dofs):
+def _create_inertia_matrix_func(num_joints: int, num_dofs: int):
+    @wp.func
+    def eval_inertia_matrix_tile(J: wp.array2d[float], M: wp.array2d[float]):
+        # Accumulate H = J^T M J per 6x6 diagonal block of M; forming P = M J with tile_assign() breaks the adjoint.
+        H = wp.tile_zeros(shape=(num_dofs, num_dofs), dtype=float, storage="shared")
+        for i in range(num_joints):
+            M_body = wp.tile_load(M, shape=(6, 6), offset=(i * 6, i * 6))
+            J_body = wp.tile_load(J, shape=(6, num_dofs), offset=(i * 6, 0))
+            wp.tile_matmul(wp.tile_transpose(J_body), wp.tile_matmul(M_body, J_body), H)
+        return H
+
+    return eval_inertia_matrix_tile
+
+
+@cache
+def create_inertia_matrix_kernel(num_joints: int, num_dofs: int):
+    eval_inertia_matrix_tile = _create_inertia_matrix_func(num_joints, num_dofs)
+
     @wp.kernel(module="unique")
-    def eval_dense_gemm_tile(J_arr: wp.array3d[float], M_arr: wp.array3d[float], H_arr: wp.array3d[float]):
-        articulation = wp.tid()
-
-        J = wp.tile_load(J_arr[articulation], shape=(wp.static(6 * num_joints), num_dofs))
-        P = wp.tile_zeros(shape=(wp.static(6 * num_joints), num_dofs), dtype=float)
-
-        # compute P = M*J where M is a 6x6 block diagonal mass matrix
-        for i in range(int(num_joints)):
-            # 6x6 block matrices are on the diagonal
-            M_body = wp.tile_load(M_arr[articulation], shape=(6, 6), offset=(i * 6, i * 6))
-
-            # load a 6xN row from the Jacobian
-            J_body = wp.tile_view(J, offset=(i * 6, 0), shape=(6, num_dofs))
-
-            # compute weighted row
-            P_body = wp.tile_matmul(M_body, J_body)
-
-            # assign to the P slice
-            wp.tile_assign(P, P_body, offset=(i * 6, 0))
-
-        # compute H = J^T*P
-        H = wp.tile_matmul(wp.tile_transpose(J), P)
-
-        wp.tile_store(H_arr[articulation], H)
+    def eval_dense_gemm_tile(J: wp.array3d[float], M: wp.array3d[float], H: wp.array3d[float]):
+        idx = wp.tid()
+        wp.tile_store(H[idx], eval_inertia_matrix_tile(J[idx], M[idx]))
 
     return eval_dense_gemm_tile
 
 
-def create_batched_cholesky_kernel(num_dofs):
-    assert num_dofs == 18
+@cache
+def create_inertia_matrix_cholesky_kernel(num_joints: int, num_dofs: int):
+    eval_inertia_matrix_tile = _create_inertia_matrix_func(num_joints, num_dofs)
 
-    @wp.kernel(module="unique")
-    def eval_tiled_dense_cholesky_batched(A: wp.array3d[float], R: wp.array2d[float], L: wp.array3d[float]):
-        articulation = wp.tid()
-
-        a = wp.tile_load(A[articulation], shape=(num_dofs, num_dofs), storage="shared")
-        r = wp.tile_load(R[articulation], shape=num_dofs, storage="shared")
-        a_r = wp.tile_diag_add(a, r)
-        l = wp.tile_cholesky(a_r)
-        wp.tile_store(L[articulation], wp.tile_transpose(l))
-
-    return eval_tiled_dense_cholesky_batched
-
-
-def create_inertia_matrix_cholesky_kernel(num_joints, num_dofs):
     @wp.kernel(module="unique")
     def eval_dense_gemm_and_cholesky_tile(
-        J_arr: wp.array3d[float],
-        M_arr: wp.array3d[float],
-        R_arr: wp.array2d[float],
-        H_arr: wp.array3d[float],
-        L_arr: wp.array3d[float],
+        J: wp.array3d[float],
+        M: wp.array3d[float],
+        group_to_art: wp.array[int],
+        articulation_dof_start: wp.array[int],
+        armature: wp.array[float],
+        H: wp.array3d[float],
+        L: wp.array3d[float],
     ):
-        articulation = wp.tid()
+        idx = wp.tid()
+        H_tile = eval_inertia_matrix_tile(J[idx], M[idx])
+        wp.tile_store(H[idx], H_tile)
 
-        J = wp.tile_load(J_arr[articulation], shape=(wp.static(6 * num_joints), num_dofs))
-        P = wp.tile_zeros(shape=(wp.static(6 * num_joints), num_dofs), dtype=float)
-
-        # compute P = M*J where M is a 6x6 block diagonal mass matrix
-        for i in range(int(num_joints)):
-            # 6x6 block matrices are on the diagonal
-            M_body = wp.tile_load(M_arr[articulation], shape=(6, 6), offset=(i * 6, i * 6))
-
-            # load a 6xN row from the Jacobian
-            J_body = wp.tile_view(J, offset=(i * 6, 0), shape=(6, num_dofs))
-
-            # compute weighted row
-            P_body = wp.tile_matmul(M_body, J_body)
-
-            # assign to the P slice
-            wp.tile_assign(P, P_body, offset=(i * 6, 0))
-
-        # compute H = J^T*P
-        H = wp.tile_matmul(wp.tile_transpose(J), P)
-        wp.tile_store(H_arr[articulation], H)
-
-        # cholesky L L^T = (H + diag(R))
-        R = wp.tile_load(R_arr[articulation], shape=num_dofs, storage="shared")
-        H_R = wp.tile_diag_add(H, R)
-        L = wp.tile_cholesky(H_R)
-        wp.tile_store(L_arr[articulation], L)
+        R = wp.tile_load(armature, shape=num_dofs, offset=articulation_dof_start[group_to_art[idx]], storage="shared")
+        wp.tile_store(L[idx], wp.tile_cholesky(wp.tile_diag_add(H_tile, R)))
 
     return eval_dense_gemm_and_cholesky_tile
 

@@ -203,7 +203,7 @@ def test_compliance_opt_in_selects_point_friction(test, device):
     for articulated in (False, True):
         with test.subTest(articulated=articulated):
             options = {"articulated": articulated, "enabled": True, "steps": 20, "friction_scale": 0.4}
-            with test.assertWarnsRegex(UserWarning, "point friction"):
+            with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "point friction"):
                 actual, paths, solver, _ = run_fixture(
                     device=device, **options, solver_options={"friction_anchor_beta": None}
                 )

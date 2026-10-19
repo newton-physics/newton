@@ -12,6 +12,7 @@ from typing import NamedTuple, overload
 
 import warp as wp
 
+from ..exceptions import NewtonDeprecationWarning
 from ..sim.rod import _compute_parallel_transport_quaternions
 
 
@@ -97,7 +98,7 @@ def create_cable_stiffness_from_elastic_moduli(
     warnings.warn(
         "newton.utils.create_cable_stiffness_from_elastic_moduli() is deprecated in Newton 1.6; "
         "supply material through newton.Rod(...) or direct stiffness to newton.ModelBuilder.add_rod() instead.",
-        DeprecationWarning,
+        NewtonDeprecationWarning,
         stacklevel=2,
     )
 
@@ -162,7 +163,7 @@ def create_parallel_transport_cable_quaternions(
         "newton.utils.create_parallel_transport_cable_quaternions() is deprecated in Newton 1.6; "
         "use rod = newton.Rod(points) and read rod.quaternions instead; for nonzero twist_total, "
         "call rod.compute_frames(twist_total=twist_total) first.",
-        DeprecationWarning,
+        NewtonDeprecationWarning,
         stacklevel=2,
     )
     return _compute_parallel_transport_quaternions(points, twist_total=twist_total)
@@ -182,7 +183,7 @@ def create_straight_cable_points(
     warnings.warn(
         "newton.utils.create_straight_cable_points() is deprecated in Newton 1.6; "
         "use newton.Rod.create_straight().points instead.",
-        DeprecationWarning,
+        NewtonDeprecationWarning,
         stacklevel=2,
     )
     return _legacy_straight_points(start, direction, length, num_segments)
@@ -204,7 +205,7 @@ def create_straight_cable_points_and_quaternions(
     warnings.warn(
         "newton.utils.create_straight_cable_points_and_quaternions() is deprecated in Newton 1.6; "
         "use newton.Rod.create_straight() instead.",
-        DeprecationWarning,
+        NewtonDeprecationWarning,
         stacklevel=2,
     )
     points = _legacy_straight_points(start, direction, length, num_segments)

@@ -17,6 +17,7 @@ import numpy as np
 import warp as wp
 
 from ...core.types import override
+from ...exceptions import NewtonDeprecationWarning
 from ...geometry.types import GeoType
 from ...sim import (
     Contacts,
@@ -771,7 +772,15 @@ class SolverKamino(SolverBase, CouplingInterface):
         self._config = config
 
         # Create a Kamino model from the Newton model
-        self._model_kamino = self._kamino.ModelKamino.from_newton(model)
+        collision_config = config.collision_detector
+        include_shape_contact_pairs = config.use_collision_detector and (
+            collision_config is None
+            or collision_config.pipeline == "primitive"
+            or collision_config.broadphase == "explicit"
+        )
+        self._model_kamino = self._kamino.ModelKamino.from_newton(
+            model, include_shape_contact_pairs=include_shape_contact_pairs
+        )
 
         # Store for which joints the limits are finite. This is used to validate that finiteness of limits is not changed at runtime.
         q_min = self._model_kamino.joints.q_j_min.numpy()
@@ -860,7 +869,6 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         # Initialize the internal Kamino control wrapper
         self._control_kamino = self._kamino.ControlKamino()
-        self._control_kamino.finalize(self._model_kamino)
 
     @property
     def status(self) -> wp.array[Any]:
@@ -1122,7 +1130,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         # internal control arrays if None is provided.
         if control is None:
             control = self.model.control(clone_variables=False)
-        self._control_kamino.from_newton(control, self._model_kamino)
+        self._control_kamino.from_newton(control)
 
         # Internal detection is authoritative when enabled for this solver.
         if self._config.use_collision_detector:
@@ -1297,7 +1305,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             warnings.warn(
                 "SolverKamino.update_contacts() force export is deprecated in Newton 1.7; request "
                 "SolverBase.ObservableKind.CONTACT_F and pass SolverBase.Observables to step().",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=2,
             )
         self._populate_contact_observables(contacts, state, contacts.force)

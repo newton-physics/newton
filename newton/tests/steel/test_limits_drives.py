@@ -1162,7 +1162,9 @@ def test_drive_rows_precede_limit_rows_and_count_against_capacity(test, device):
         test.assertTrue(np.all(row_type[world, 3:9] == PGS_CONSTRAINT_TYPE_JOINT_LIMIT))
     test.assertFalse(np.any(solver.constraint_overflow.numpy()))
 
-    with test.assertWarnsRegex(UserWarning, r"need at least 6 dense rows .* articulation_constraint_max=2"):
+    with test.assertWarnsRegex(
+        newton.exceptions.NewtonWarning, r"need at least 6 dense rows .* articulation_constraint_max=2"
+    ):
         small = SolverSteel(
             model,
             solve_mode="matrix_free",
