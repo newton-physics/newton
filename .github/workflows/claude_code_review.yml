@@ -15,17 +15,22 @@ name: Claude Auto Review
 # cannot run code, read tokens from the environment, or post anything itself.
 # Trusted workflow steps prepare its inputs and publish its findings as inline
 # review comments and a summary.
+#
+# Reviews are throttled: a pull request is reviewed only after it has had no
+# new commits for REVIEW_QUIET_MINUTES, waiting in a job that uses no model
+# time and that a newer push cancels. A review that has started is never
+# cancelled; a newer commit waits for it, and only the latest commit is
+# reviewed.
 on:
   pull_request_target:
     branches: [main]
     types: [opened, synchronize, ready_for_review]
 
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
-  cancel-in-progress: true
+env:
+  REVIEW_QUIET_MINUTES: 30
 
 jobs:
-  review:
+  throttle:
     # Review non-draft, human-authored pull requests, including from forks.
     # Skip events triggered by bots or by the Copilot coding agent (actor
     # "Copilot", without a [bot] suffix), which the action rejects.
@@ -35,7 +40,47 @@ jobs:
       github.actor != 'Copilot' &&
       !endsWith(github.actor, '[bot]')
     runs-on: ubuntu-latest
+    # Must exceed REVIEW_QUIET_MINUTES.
+    timeout-minutes: 45
+    permissions:
+      pull-requests: read
+    # A newer push cancels a run that is still waiting here.
+    concurrency:
+      group: ${{ github.workflow }}-wait-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    outputs:
+      review: ${{ steps.latest.outputs.review }}
+    steps:
+      - name: Wait for the pull request to settle
+        run: sleep "$((REVIEW_QUIET_MINUTES * 60))"
+
+      - id: latest
+        name: Check that this commit is still the one to review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          info=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '"\(.state) \(.draft) \(.head.sha)"')
+          read -r state draft latest <<< "${info}"
+          if [ "${state}" = open ] && [ "${draft}" = false ] && [ "${latest}" = "${HEAD_SHA}" ]; then
+            echo "review=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "Skipping: the pull request is ${state}, draft=${draft}, latest commit ${latest}."
+            echo "review=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+  review:
+    needs: throttle
+    if: needs.throttle.outputs.review == 'true'
+    runs-on: ubuntu-latest
     timeout-minutes: 60
+    # Never cancel a review in progress; a newer run waits for it, and GitHub
+    # keeps only the latest pending run.
+    concurrency:
+      group: ${{ github.workflow }}-review-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
     env:
       # REVIEW_MODEL is passed to the reviewer; the published comments show
       # only REVIEW_MODEL_NAME and REVIEW_EFFORT.
@@ -46,12 +91,32 @@ jobs:
       contents: read
       pull-requests: write
     steps:
+      # This job may have waited for an earlier review of the same pull
+      # request, so check again before doing any work.
+      - id: latest
+        name: Check that this commit is still the one to review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          info=$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" --jq '"\(.state) \(.draft) \(.head.sha)"')
+          read -r state draft latest <<< "${info}"
+          if [ "${state}" = open ] && [ "${draft}" = false ] && [ "${latest}" = "${HEAD_SHA}" ]; then
+            echo "review=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "Skipping: the pull request is ${state}, draft=${draft}, latest commit ${latest}."
+            echo "review=false" >> "${GITHUB_OUTPUT}"
+          fi
+
       # Trusted checkout of the current base branch at the workspace root
       # (github.sha under pull_request_target). It supplies the review
       # guidelines and the scripts the steps below run, which may not exist
       # at an older pull_request.base.sha; the action also restores Claude
       # configuration paths from the base branch here.
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+        if: steps.latest.outputs.review == 'true'
         with:
           fetch-depth: 1
           persist-credentials: false
@@ -60,6 +125,7 @@ jobs:
       # and it is not passed with --add-dir, so its .claude/ directory is not
       # loaded as configuration.
       - uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
+        if: steps.latest.outputs.review == 'true'
         with:
           ref: ${{ github.event.pull_request.head.sha }}
           path: pr-head
@@ -77,6 +143,7 @@ jobs:
       #   ast and never imports or runs code from them.
       # - Save the pull request description and existing comments as files.
       - name: Prepare review inputs
+        if: steps.latest.outputs.review == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -114,6 +181,7 @@ jobs:
             --jq '.[] | {id, user: .user.login, path, line, in_reply_to_id, body}' > .pr-review/review-comments.jsonl
 
       - id: review
+        if: steps.latest.outputs.review == 'true'
         uses: anthropics/claude-code-action@1d6de8cb0c237e7c15e9e1bdf973826ebae490cc  # v1.0.248
         env:
           # Route inference through the NVIDIA gateway, which serves the
@@ -334,7 +402,7 @@ jobs:
       # updated on each run. Both link this run and name the model and effort
       # level, including any fallback model the run used.
       - name: Publish review
-        if: steps.review.outputs.structured_output != ''
+        if: steps.latest.outputs.review == 'true' && steps.review.outputs.structured_output != ''
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
