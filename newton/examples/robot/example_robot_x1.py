@@ -151,8 +151,11 @@ class Example:
         self.motion_time = wp.zeros(1, dtype=wp.float32, device=self.device)
         self.controlled_coordinates = np.asarray([joint_coordinates[label] for label in pose], dtype=np.int32)
         self.base_body = next(
-            index for index, label in enumerate(builder.body_label) if label.rsplit("/", 1)[-1] == "base_link"
+            (index for index, label in enumerate(builder.body_label) if label.rsplit("/", 1)[-1] == "base_link"),
+            None,
         )
+        if self.base_body is None:
+            raise ValueError("X1 base body is missing: base_link")
 
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
         self.initial_base_transform = self.state_0.body_q.numpy()[self.base_body].copy()
@@ -219,6 +222,7 @@ class Example:
         if not np.isfinite(joint_q).all() or not np.isfinite(self.state_0.joint_qd.numpy()).all():
             raise ValueError("X1 joint state contains non-finite values")
         if motion_time < PREGRASP_TIME:
+            # The CPU test uses 10 frames as an intentional finite-value smoke test.
             return
 
         base_transform = self.state_0.body_q.numpy()[self.base_body]

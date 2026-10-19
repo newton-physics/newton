@@ -3,9 +3,10 @@
 
 """Solve a shared-object dual-arm reach task on the OneRobotics A1 stand.
 
-One :class:`newton.ik.IKSolver` solves position objectives for both terminal
-links simultaneously. A single interactive object frame moves both grasp
-targets together, while a joint-limit objective keeps the solution valid.
+One :class:`newton.ik.IKSolver` solves position and rotation objectives for
+both terminal links simultaneously. A single interactive object frame moves
+both grasp poses together while preserving each wrist's orientation relative
+to that frame; a joint-limit objective keeps the solution valid.
 
 Command: python -m newton.examples ik_a1
 """
@@ -150,7 +151,7 @@ class Example:
             self.graph = None
 
     def simulate(self):
-        """Solve both terminal-link position objectives and update forward kinematics."""
+        """Solve both terminal-link pose objectives and update forward kinematics."""
         self.solver.step(self.joint_q, self.joint_q, iterations=24)
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state)
 
