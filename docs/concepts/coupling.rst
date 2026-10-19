@@ -108,29 +108,24 @@ only the methods that need solver-specific behavior. A solver that cannot
 support a hook raises :class:`NotImplementedError` from that hook instead of
 silently using an invalid path.
 
-The protocol currently covers these concepts:
+The coupling contract connects public simulation state to solver-specific
+physics. Input-state notifications use :class:`newton.StateFlags` to keep
+private pose history and collider caches consistent after the coupler changes
+public arrays. Effective mass and gravity-like acceleration describe how a
+solver responds to forces, including any internal scaling or compensation.
+Proxy preparation and feedback let destination solvers account for previously
+applied forces, prepare contacts, and report the resulting reaction forces.
 
-- ``coupling_notify_input_state_update()`` tells a solver that public state
-  arrays or force-input buffers were changed by the coupler. Its ``flags``
-  argument uses :class:`newton.StateFlags`. VBD uses this to realign private
-  previous-pose state after proxy synchronization or ADMM iteration restarts.
-  MPM uses it to keep collider caches consistent.
-- ``coupling_eval_gravity_acceleration()`` lets a solver report the body and
-  particle acceleration that it applies internally for gravity-like forces.
-  Proxy and ADMM couplers pass these acceleration arrays explicitly to rewind
-  and harvest hooks so solvers that scale or compensate gravity can avoid
-  double-applying it.
-- ``coupling_rewind_proxy_body()`` and
-  ``coupling_rewind_proxy_particle()`` let a
-  destination solver prepare proxy velocities before a lagged proxy pass.
-- ``coupling_harvest_proxy_wrenches()`` and
-  ``coupling_harvest_proxy_particle_forces()`` let a destination solver
-  report feedback forces from solver-native contact or transfer data.
-- ``coupling_prepare_proxy_contacts()`` lets a destination solver filter or prepare
-  proxy-local contacts before its step.
-- ``coupling_eval_effective_mass()`` and
-  ``coupling_eval_effective_mass_block()`` let a solver provide endpoint
-  effective mass instead of using raw model mass and inertia.
+Capability properties describe which optional coupling behavior a solver
+supports, such as refreshing inertial data during graph capture or consuming
+edge and face soft contacts. They are cheap, side-effect-free boolean reads.
+Solver subclasses override them with ``@property``; legacy method overrides
+raise :class:`TypeError` when the subclass is defined so a bound method cannot
+silently enable an unsupported path.
+
+See the :class:`~newton.solvers.experimental.coupled.CouplingInterface` API
+reference for the complete hook signatures, capability properties, and their
+defaults.
 
 Force injection itself is not a hook. Couplers write into public
 ``state.body_f``, ``state.particle_f``, and ``control.joint_f`` buffers, then

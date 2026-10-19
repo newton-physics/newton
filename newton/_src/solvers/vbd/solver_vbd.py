@@ -1502,10 +1502,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         ):
             self._refresh_rod_rest_bend_twist_cache()
 
+    @property
     @override
     def coupling_supports_inertial_property_refresh(self) -> bool:
         return True
 
+    @property
     @override
     def coupling_supports_full_surface_soft_contacts(self) -> bool:
         return True
