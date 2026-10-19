@@ -19,7 +19,10 @@ model and effort level, including any fallback model recorded in the run's
 execution file. Only display names are published, never model IDs.
 
 With ``REVIEW_MODE=follow-up`` (the workflow has reviewed the pull request
-before), only P0 and P1 findings are published.
+before), only P0 and P1 findings are published, and the summary comment keeps
+the first review and replaces only its follow-up section. The workflow's
+prepare step detects follow-ups from ``SUMMARY_MARKER`` and the last
+``Reviewed commit <sha>`` line, so keep both formats in sync with it.
 
 Environment: ``REVIEW_OUTPUT``, ``GITHUB_REPOSITORY``, ``PR_NUMBER``,
 ``HEAD_SHA``, ``RUNNER_TEMP``, ``REVIEW_MODEL_NAME``, ``REVIEW_EFFORT``,
@@ -39,11 +42,13 @@ import sys
 from pathlib import Path
 
 SUMMARY_MARKER = "<!-- newton-automated-review -->"
+FOLLOW_UP_MARKER = "<!-- newton-automated-review-follow-up -->"
 FINDING_MARKER = "<!-- newton-automated-review-finding:{} -->"
 FINDING_MARKER_RE = re.compile(r"newton-automated-review-finding:([0-9a-f]{16})")
 BOT_LOGIN = "github-actions[bot]"
 MAX_INLINE_COMMENTS = 15
 MAX_BODY_CHARS = 6000
+MAX_FIRST_REVIEW_CHARS = 30000
 REVIEWER_NAME = "Claude Code Action review"
 WORKFLOW_PATH = ".github/workflows/claude_code_review.yml"
 SEVERITY_LABELS = {"P0": "🔴 P0", "P1": "🟠 P1", "P2": "🔵 P2", "nit": "⚪ Nit"}
@@ -192,11 +197,23 @@ def run_details(execution_file: str | None) -> list[str]:
 
 
 def summary_body(
-    output: dict, inline_findings: list[dict], elsewhere: list[dict], head_sha: str, details: list[str]
+    output: dict,
+    inline_findings: list[dict],
+    elsewhere: list[dict],
+    head_sha: str,
+    details: list[str],
+    previous: str | None = None,
 ) -> str:
-    """Format the summary comment: the assessment, a count of inline comments, and findings without a line."""
+    """Format the summary comment: the assessment, a count of inline comments, and findings without a line.
+
+    With ``previous``, the body of the existing summary comment, keep its first review and replace its follow-up section.
+    """
     summary = re.sub(r"\A(\s*#{1,6}[^\n]*\n)+", "", str(output.get("summary", "")).strip() + "\n").strip()
-    lines = [SUMMARY_MARKER, f"### {REVIEWER_NAME}", "", clip(summary, 3000)]
+    if previous is None:
+        lines = [SUMMARY_MARKER, f"### {REVIEWER_NAME}", "", clip(summary, 3000)]
+    else:
+        first_review = clip(previous.split(FOLLOW_UP_MARKER, 1)[0], MAX_FIRST_REVIEW_CHARS)
+        lines = [first_review, "", FOLLOW_UP_MARKER, "#### Latest follow-up review", "", clip(summary, 3000)]
     if inline_findings:
         lines += ["", count_line(inline_findings)]
     if elsewhere:
@@ -233,7 +250,8 @@ def main() -> int:
     head_sha = os.environ["HEAD_SHA"]
     findings = [f for f in output.get("findings", []) if isinstance(f, dict)]
     details = run_details(os.environ.get("EXECUTION_FILE"))
-    if os.environ.get("REVIEW_MODE") == "follow-up":
+    follow_up = os.environ.get("REVIEW_MODE") == "follow-up"
+    if follow_up:
         # Follow-up reviews only gate merges, so drop anything below P1 even if the reviewer reported it.
         blocking = [f for f in findings if f.get("severity") in FOLLOW_UP_SEVERITIES]
         print(f"Follow-up review: dropped {len(findings) - len(blocking)} finding(s) below P1")
@@ -261,18 +279,21 @@ def main() -> int:
             inline, inline_findings = [], []
     print(f"Inline comments: {len(inline)}; summary-only findings: {len(elsewhere)}; already posted: {skipped}")
 
-    summary_path = Path(os.environ["RUNNER_TEMP"]) / "review-summary.md"
-    summary_path.write_text(summary_body(output, inline_findings, elsewhere, head_sha, details), encoding="utf-8")
     result = gh_api(
         "--paginate",
         f"repos/{repo}/issues/{pr}/comments",
         "--jq",
-        f'.[] | select(.user.login == "{BOT_LOGIN}" and (.body | startswith("{SUMMARY_MARKER}"))) | .id',
+        f'.[] | select(.user.login == "{BOT_LOGIN}" and (.body | startswith("{SUMMARY_MARKER}"))) | {{id, body}}',
     )
-    comment_ids = result.stdout.split()
-    if comment_ids:
+    comments = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    previous = comments[-1]["body"] if comments and follow_up else None
+    summary_path = Path(os.environ["RUNNER_TEMP"]) / "review-summary.md"
+    summary_path.write_text(
+        summary_body(output, inline_findings, elsewhere, head_sha, details, previous), encoding="utf-8"
+    )
+    if comments:
         result = gh_api(
-            "--method", "PATCH", f"repos/{repo}/issues/comments/{comment_ids[-1]}", "-F", f"body=@{summary_path}"
+            "--method", "PATCH", f"repos/{repo}/issues/comments/{comments[-1]['id']}", "-F", f"body=@{summary_path}"
         )
     else:
         result = gh_api("--method", "POST", f"repos/{repo}/issues/{pr}/comments", "-F", f"body=@{summary_path}")
