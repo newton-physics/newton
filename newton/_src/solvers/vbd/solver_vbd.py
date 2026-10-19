@@ -2499,13 +2499,21 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             for segment, left_guide in enumerate(segment_left_guides):
                 body_l = int(guide_bodies[left_guide])
                 body_r = int(guide_bodies[left_guide + 1])
-                if body_l != body_r and len(model.body_color_groups) > 0 and body_colors[body_l] == body_colors[body_r]:
+                if (
+                    body_l >= 0
+                    and body_r >= 0
+                    and body_l != body_r
+                    and len(model.body_color_groups) > 0
+                    and body_colors[body_l] == body_colors[body_r]
+                ):
                     raise ValueError(
                         "model.body_color_groups does not separate tendon segment endpoints; "
                         "call ModelBuilder.color() after adding tendons"
                     )
-                body_segments[body_l].add(segment)
-                body_segments[body_r].add(segment)
+                if body_l >= 0:
+                    body_segments[body_l].add(segment)
+                if body_r >= 0:
+                    body_segments[body_r].add(segment)
 
                 right_guide = left_guide + 1
                 # Deactivation reuses the left authored segment for the bypass to the following guide.
@@ -2514,7 +2522,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 ] == segment:
                     bypass_body = int(guide_bodies[right_guide + 1])
                     if (
-                        bypass_body != body_l
+                        bypass_body >= 0
+                        and body_l >= 0
+                        and bypass_body != body_l
                         and len(model.body_color_groups) > 0
                         and body_colors[bypass_body] == body_colors[body_l]
                     ):
@@ -2522,7 +2532,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                             "model.body_color_groups does not separate dynamic tendon bypass endpoints; "
                             "call ModelBuilder.color() after adding tendons"
                         )
-                    body_segments[bypass_body].add(segment)
+                    if bypass_body >= 0:
+                        body_segments[bypass_body].add(segment)
 
         offsets = np.zeros(model.body_count + 1, dtype=np.int32)
         for body, segments in enumerate(body_segments):

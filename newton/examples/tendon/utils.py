@@ -33,8 +33,9 @@ def get_tendon_attachment_worlds(solver, model, state):
             att_l_world[seg] = att_l[seg]
             att_r_world[seg] = att_r[seg]
             continue
-        att_l_world[seg] = _transform_point_np(body_q[guide_body[guide_l]], local_l[seg])
-        att_r_world[seg] = _transform_point_np(body_q[guide_body[guide_r]], local_r[seg])
+        body_l, body_r = guide_body[guide_l], guide_body[guide_r]
+        att_l_world[seg] = _transform_point_np(body_q[body_l], local_l[seg]) if body_l >= 0 else local_l[seg]
+        att_r_world[seg] = _transform_point_np(body_q[body_r], local_r[seg]) if body_r >= 0 else local_r[seg]
 
     return att_l_world, att_r_world
 
@@ -77,7 +78,7 @@ def get_tendon_cable_lines(solver, model, state):
                 if guide_active[i] == 0:
                     continue
                 b = guide_body[i]
-                pose = body_q[b]
+                pose = body_q[b] if b >= 0 else np.asarray(wp.transform_identity())
                 p = pose[:3]
                 q = pose[3:]
                 off = guide_offset[i]
@@ -188,7 +189,7 @@ def get_tendon_total_lengths(solver, model, state):
             if guide_active[i] == 0:
                 continue
 
-            pose = body_q[guide_body[i]]
+            pose = body_q[guide_body[i]] if guide_body[i] >= 0 else np.asarray(wp.transform_identity())
             center = _transform_point_np(pose, guide_offset[i])
             normal = _transform_vector_np(pose, guide_axis[i])
             pt_left = None

@@ -33,7 +33,10 @@ values there are rejected. For a linear span, compliance is `1 / stiffness`
 (m/N versus N/m); zero compliance requests an inextensible XPBD constraint.
 
 The builder validates the entire route before changing any tendon arrays.
-At least two guides are required, all attached to bodies in the same world.
+At least two guides are required, all belonging to the same simulation world.
+Use `TendonGuide(body=-1, ...)` for a world-attached anchor, pinhole, or roller.
+Its offset and axis are world-space coordinates, and it belongs to the builder's
+current world. Body-attached guides retain body-local offsets and axes.
 Routes are open and do not implicitly form loops. Internal anchors are allowed;
 they prevent material transfer between their incoming and outgoing spans.
 
@@ -80,7 +83,9 @@ than its guide range.
 
 `add_builder`, `add_world`, and `replicate` copy guide and segment data and remap
 body indices. Local offsets and axes follow the copied body transforms;
-fixed-joint collapse transforms them into the retained body's frame.
+fixed-joint collapse transforms them into the retained body's frame, or world
+space when the body is merged into the world. Placement transforms apply directly
+to world-attached guides when composing or replicating builders.
 
 ## Guide types
 

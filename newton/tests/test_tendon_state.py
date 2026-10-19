@@ -9,10 +9,116 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton.examples.tendon.utils import get_tendon_cable_lines, get_tendon_total_lengths
 from newton.tests.test_tendon_capstan import build_explicit_inactive_dynamic_route, build_kinematic_rolling_transport
 
 
 class TestTendonState(unittest.TestCase):
+    def test_world_guides_match_stationary_bodies(self):
+        """Match frictional, damped anchor/roller/pinhole routes and body impulses against stationary guides."""
+
+        def build(world_attached, guide_type, device):
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            pose = wp.transform(wp.vec3(0.2, 0.3, 0.4), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.3))
+            fixed = builder.add_body(xform=pose, mass=0.0)
+            moving = builder.add_body(
+                xform=wp.transform(p=wp.transform_point(pose, wp.vec3(0.5, 0.0, -0.5))),
+                mass=1.0,
+                inertia=wp.mat33(np.eye(3)),
+                com=(0.02, 0.0, 0.0),
+            )
+            axis = wp.vec3(0.0, 1.0, 0.0)
+            guides = []
+            for offset, kind in ((wp.vec3(-0.5, 0.0, -0.5), newton.TendonGuideType.ANCHOR), (wp.vec3(), guide_type)):
+                guides.append(
+                    newton.TendonGuide(
+                        body=-1 if world_attached else fixed,
+                        offset=wp.transform_point(pose, offset) if world_attached else offset,
+                        axis=wp.transform_vector(pose, axis) if world_attached else axis,
+                        guide_type=kind,
+                        radius=0.1 if kind == newton.TendonGuideType.ROLLER else 0.0,
+                        mu=0.2,
+                        compliance=0.01 if guides else 0.0,
+                        damping=0.3 if guides else 0.0,
+                        rest_length=0.6 if guides else -1.0,
+                    )
+                )
+            guides.append(newton.TendonGuide(body=moving, compliance=0.02, damping=0.5, rest_length=0.6))
+            builder.add_tendon(guides)
+            builder.color()
+            return builder.finalize(device=device)
+
+        for device in wp.get_devices():
+            for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
+                for guide_type in (newton.TendonGuideType.ROLLER, newton.TendonGuideType.PINHOLE):
+                    with self.subTest(device=device, solver=solver_type.__name__, guide_type=guide_type):
+                        results = []
+                        for world_attached in (False, True):
+                            model = build(world_attached, guide_type, device)
+                            solver = solver_type(model, iterations=4)
+                            a, b = model.state(), model.state()
+                            velocity = a.body_qd.numpy()
+                            velocity[1] = [0.1, 0.0, -0.2, 0.0, 0.3, 0.1]
+                            a.body_qd.assign(velocity)
+                            for _ in range(8):
+                                solver.step(a, b, model.control(), None, 0.01)
+                                a, b = b, a
+                            results.append(
+                                [
+                                    a.body_q.numpy(),
+                                    a.body_qd.numpy(),
+                                    a.tendon_segment_rest_length.numpy(),
+                                    solver.tendon_segment_material_tension.numpy(),
+                                    solver.tendon_segment_damping_tension.numpy(),
+                                    get_tendon_total_lengths(solver, model, a),
+                                    *(lines.numpy() for lines in get_tendon_cable_lines(solver, model, a)),
+                                ]
+                            )
+                        self.assertGreater(np.max(results[0][3]), 0.1)
+                        for reference, actual in zip(*results, strict=True):
+                            np.testing.assert_allclose(actual, reference, atol=2e-5, rtol=2e-5)
+
+    def test_world_dynamic_roller(self):
+        """Activate and detach a world-fixed roller as its neighboring anchors move."""
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        endpoints = builder.add_body(mass=0.0)
+        builder.add_tendon(
+            [
+                newton.TendonGuide(body=endpoints, offset=(0.0, 0.0, -0.5), axis=(0.0, 1.0, 0.0)),
+                newton.TendonGuide(
+                    body=-1,
+                    guide_type=newton.TendonGuideType.ROLLER,
+                    offset=(0.25, 0.0, 0.0),
+                    axis=(0.0, 1.0, 0.0),
+                    radius=0.1,
+                    dynamic=True,
+                    mu=0.2,
+                    compliance=0.01,
+                ),
+                newton.TendonGuide(body=endpoints, offset=(0.0, 0.0, 0.5), axis=(0.0, 1.0, 0.0), compliance=0.01),
+            ]
+        )
+        builder.color()
+        for device in wp.get_devices():
+            for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
+                with self.subTest(device=device, solver=solver_type.__name__):
+                    model = builder.finalize(device=device)
+                    solver = solver_type(model, iterations=2)
+                    a, b = model.state(), model.state()
+                    self.assertFalse(solver.tendon_guide_active.numpy()[1])
+                    initial_rest = solver.tendon_segment_rest_length.numpy().copy()
+                    for x, active in ((0.2, True), (0.0, False)):
+                        poses = a.body_q.numpy()
+                        poses[0, 0] = x
+                        a.body_q.assign(poses)
+                        solver.step(a, b, model.control(), None, 0.01)
+                        a, b = b, a
+                        self.assertEqual(bool(a.tendon_guide_active.numpy()[1]), active)
+                        self.assertTrue(np.isfinite(a.tendon_segment_rest_length.numpy()).all())
+                    solver.reset(a)
+                    np.testing.assert_allclose(a.tendon_segment_rest_length.numpy(), initial_rest)
+                    self.assertFalse(a.tendon_guide_active.numpy()[1])
+
     def test_checkpoint_preserves_activation_hysteresis(self):
         """Restore the accepted activity even where the same pose permits either route."""
         for device in wp.get_devices():
@@ -61,10 +167,9 @@ class TestTendonState(unittest.TestCase):
             for solver_type in (newton.solvers.SolverXPBD, newton.solvers.SolverVBD):
                 with self.subTest(device=device, solver=solver_type.__name__):
                     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-                    a = builder.add_body(mass=0.0)
                     b = builder.add_body(xform=wp.transform(p=(1.0, 0.0, 0.0)), mass=0.0)
                     builder.add_tendon(
-                        [newton.TendonGuide(body=a), newton.TendonGuide(body=b, compliance=0.01, rest_length=0.9)]
+                        [newton.TendonGuide(body=-1), newton.TendonGuide(body=b, compliance=0.01, rest_length=0.9)]
                     )
                     builder.color()
                     model = builder.finalize(device=device)

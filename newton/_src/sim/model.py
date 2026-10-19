@@ -949,7 +949,7 @@ class Model:
         self.tendon_start: wp.array[wp.int32] | None = None
         """Start index into guide arrays for each tendon, shape [tendon_count + 1], int."""
         self.tendon_guide_body: wp.array[wp.int32] | None = None
-        """Body index for each tendon guide, shape [tendon_guide_count], int."""
+        """Body index for each tendon guide, or -1 for world, shape [tendon_guide_count], int."""
         self.tendon_guide_type: wp.array[wp.int32] | None = None
         """Guide type for each tendon guide (TendonGuideType enum), shape [tendon_guide_count], int."""
         self.tendon_guide_radius: wp.array[wp.float32] | None = None
@@ -961,9 +961,9 @@ class Model:
         self.tendon_guide_flags: wp.array[wp.int32] | None = None
         """Routing flags for each tendon guide, shape [tendon_guide_count], int."""
         self.tendon_guide_offset: wp.array[wp.vec3] | None = None
-        """Local-frame offset of the cable plane center on each body [m], shape [tendon_guide_count], vec3."""
+        """Cable plane center in body-local coordinates, or world space for body -1 [m], shape [tendon_guide_count], vec3."""
         self.tendon_guide_axis: wp.array[wp.vec3] | None = None
-        """Local-frame normal of the cable plane on each body [dimensionless], shape [tendon_guide_count], vec3."""
+        """Cable plane normal in body-local coordinates, or world space for body -1 [dimensionless], shape [tendon_guide_count], vec3."""
         self.tendon_segment_compliance: wp.array[wp.float32] | None = None
         """Compliance [m/N] for each tendon segment, shape [tendon_segment_count], float."""
         self.tendon_segment_damping: wp.array[wp.float32] | None = None

@@ -155,6 +155,7 @@ _TENDON_HISTORY_FIELDS = (
 
 _TENDON_FIXED_MODEL_FIELDS = (
     "tendon_start",
+    "tendon_world",
     "tendon_guide_body",
     "tendon_guide_type",
     "tendon_guide_radius",
@@ -599,8 +600,8 @@ class TendonStateMixin:
 
                 guide_l = i - 1
                 guide_r = i + 1
-                pose_l = body_q_np[guide_body[guide_l]]
-                pose_r = body_q_np[guide_body[guide_r]]
+                pose_l = body_q_np[guide_body[guide_l]] if guide_body[guide_l] >= 0 else wp.transform_identity()
+                pose_r = body_q_np[guide_body[guide_r]] if guide_body[guide_r] >= 0 else wp.transform_identity()
                 center_l = _transform_point_np(pose_l, guide_offset[guide_l]).astype(np.float64)
                 center_r = _transform_point_np(pose_r, guide_offset[guide_r]).astype(np.float64)
                 normal_l = _transform_vector_np(pose_l, guide_axis[guide_l])
@@ -648,8 +649,8 @@ class TendonStateMixin:
                 body_r = guide_body_np[i + 1]
                 off_l = guide_offset_np[i]
                 off_r = guide_offset_np[i + 1]
-                att_l[seg] = _transform_point_np(body_q_np[body_l], off_l)
-                att_r[seg] = _transform_point_np(body_q_np[body_r], off_r)
+                att_l[seg] = _transform_point_np(body_q_np[body_l], off_l) if body_l >= 0 else off_l
+                att_r[seg] = _transform_point_np(body_q_np[body_r], off_r) if body_r >= 0 else off_r
                 att_l_local[seg] = off_l
                 att_r_local[seg] = off_r
                 seg += 1
@@ -780,7 +781,7 @@ class TendonStateMixin:
                     if not guide_active_np[i]:
                         continue
                     body_idx = guide_body_np[i]
-                    q = body_q_np[body_idx]
+                    q = body_q_np[body_idx] if body_idx >= 0 else wp.transform_identity()
                     center = _transform_point_np(q, guide_offset_np[i])
                     normal = _transform_vector_np(q, guide_axis_np[i])
                     radius = guide_radius_np[i]
@@ -814,15 +815,14 @@ class TendonStateMixin:
             name: getattr(model, name).numpy().copy() for name in _TENDON_FIXED_MODEL_FIELDS
         }
         self._tendon_authored_rest_length = model.tendon_segment_rest_length.numpy().copy()
-        guide_body = model.tendon_guide_body.numpy()
-        body_world = model.body_world.numpy()
-        guide_world = body_world[guide_body]
+        tendon_world = model.tendon_world.numpy()
         segment_left_guide = self.tendon_segment_guide_l.numpy()
         tendon_start = model.tendon_start.numpy()
+        guide_world = np.repeat(tendon_world, np.diff(tendon_start))
 
         self._tendon_segment_world = wp.array(guide_world[segment_left_guide], dtype=wp.int32, device=model.device)
         self._tendon_guide_world = wp.array(guide_world, dtype=wp.int32, device=model.device)
-        self._tendon_world = wp.array(guide_world[tendon_start[:-1]], dtype=wp.int32, device=model.device)
+        self._tendon_world = wp.array(tendon_world, dtype=wp.int32, device=model.device)
         self._tendon_pose_rebaseline_mask = wp.zeros(model.world_count + 1, dtype=wp.bool, device=model.device)
 
         for field in (*_TENDON_SEGMENT_STATE_FIELDS, *_TENDON_GUIDE_STATE_FIELDS, *_TENDON_STATE_FIELDS):
