@@ -38,8 +38,6 @@ class RodDirectLayout:
     bnd_joint: wp.array  # one-sided ROD joints (other end kinematic, or closing a loop)
     body_node: wp.array  # (body_count,) node index of a directly solved body, -1 otherwise
     body_dynamic: wp.array  # (body_count,) 1 if the body was dynamic when the layout was written
-    rod_count: int = 0  # rods in the current layout
-    node_count: int = 0  # directly solved bodies in the current layout
     is_rod_body: np.ndarray | None = None  # host mask (body_count,) of the current layout
 
 
@@ -191,8 +189,6 @@ def update_rod_direct_layout(layout: RodDirectLayout, model) -> None:
     body_node[rods["node_body"]] = np.arange(node_count, dtype=np.int32)
     layout.body_node.assign(body_node)
     layout.body_dynamic.assign(dynamic.astype(np.int32))
-    layout.rod_count = len(rods["rod_start"]) - 1
-    layout.node_count = node_count
     layout.is_rod_body = body_node >= 0
 
 

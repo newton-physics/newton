@@ -78,11 +78,12 @@ def test_refused_steps_keep_the_pose_and_raise(test, device):
                 wp.synchronize_device(device)  # flush the kernel's printf into the capture
             finally:
                 out = capture.end()
-            test.assertIn("rigid_rod_direct_solve", out)
+            test.assertRegex(out, r"rod containing body \d+")
             # kept at the iteration's start pose, which is the at-rest initial pose up to float32 re-rounding
             np.testing.assert_allclose(s1.body_q.numpy()[bodies], q0[bodies], rtol=0.0, atol=1.0e-6)
-            with test.assertRaises(RuntimeError):
+            with test.assertRaises(RuntimeError) as raised:
                 solver.check_rod_direct_status()
+            test.assertTrue(any(repr(model.body_label[b]) in str(raised.exception) for b in bodies[1:]))
             solver.reset(s1, flags=0)  # clears the status of the reset worlds
             solver.check_rod_direct_status()
 
@@ -123,9 +124,9 @@ def test_captured_step_follows_model_changes(test, device):
     """Replay a step captured before ``notify_model_changed``: it follows the rewritten rod layout and status array.
 
     Disabling the rod joints, making the tip kinematic, or doubling or zeroing its mass after capture gives the eager
-    result; a refused step replayed after a notification still raises; a layout rewrite during capture raises, while an
-    inertial-property notification is captured and refuses the rod steps once an inverse mass crosses zero (reported
-    until reset).
+    result; a refused step replayed after a notification still raises; a layout rewrite (``JOINT_PROPERTIES``) during
+    capture raises, while body-flag and inertial-property notifications are captured and refuse the rod steps once a
+    body stops being dynamic (reported until reset). Without ROD joints every notification stays capturable.
     """
     if not is_graph_capture_allocation_enabled(device):
         test.skipTest("graph capture needs the CUDA memory pool")
@@ -201,7 +202,7 @@ def test_captured_step_follows_model_changes(test, device):
     s0, s1, control = model.state(), model.state(), model.control()
     with wp.ScopedCapture(device) as capture:
         solver.step(s0, s1, control, None, dt)
-    solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)  # same layout, rewritten in place
+    solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)  # same layout, rewritten in place
     ke = model.joint_target_ke.numpy()
     ke[model.joint_qd_start.numpy()[joints[-1]] + 2] = np.nan
     model.joint_target_ke.assign(ke)
@@ -221,37 +222,59 @@ def test_captured_step_follows_model_changes(test, device):
     finally:
         wp.capture_end(device)
 
-    builder, bodies, _ = clamped_chain(device, segments=4)
+    def flag_kinematic(model, body):
+        flags = model.body_flags.numpy()
+        flags[body] = int(newton.BodyFlags.KINEMATIC)
+        model.body_flags.assign(flags)
+
+    def zero_inverse_mass(model, body):
+        inv_mass = model.body_inv_mass.numpy()
+        inv_mass[body] = 0.0
+        model.body_inv_mass.assign(inv_mass)
+
+    # a pose reset notifies BODY_PROPERTIES; coupled solvers notify inertial changes on every step
+    for flag, stop_being_dynamic in (
+        (newton.ModelFlags.BODY_PROPERTIES, flag_kinematic),
+        (newton.ModelFlags.BODY_INERTIAL_PROPERTIES, zero_inverse_mass),
+    ):
+        with test.subTest(captured_notification=stop_being_dynamic.__name__):
+            builder, bodies, _ = clamped_chain(device, segments=4)
+            builder.color()
+            model = builder.finalize(device=device)
+            solver = newton.solvers.SolverVBD(model, iterations=2, rigid_rod_direct_solve=True)
+            s0, s1, control = model.state(), model.state(), model.control()
+            with wp.ScopedCapture(device) as capture:
+                solver.notify_model_changed(flag)
+                solver.step(s0, s1, control, None, dt)
+            wp.capture_launch(capture.graph)
+            solver.check_rod_direct_status()
+            stop_being_dynamic(model, bodies[-1])
+            out = StdOutCapture()
+            out.begin()
+            try:
+                wp.capture_launch(capture.graph)
+                wp.synchronize_device(device)
+            finally:
+                out.end()
+            with test.assertRaisesRegex(RuntimeError, "stopped being dynamic"):
+                solver.check_rod_direct_status()
+            solver.notify_model_changed(flag)  # outside capture: rewrites the layout
+            with test.assertRaisesRegex(RuntimeError, "reset"):  # the refused steps stay reported
+                solver.check_rod_direct_status()
+            solver.reset(s0, flags=0)
+            solver.check_rod_direct_status()
+
+    builder = newton.ModelBuilder()
+    builder.add_shape_sphere(builder.add_body(), radius=0.1)
     builder.color()
-    model = builder.finalize(device=device)
-    solver = newton.solvers.SolverVBD(model, iterations=2, rigid_rod_direct_solve=True)
-    s0, s1, control = model.state(), model.state(), model.control()
-    with wp.ScopedCapture(device) as capture:  # coupled solvers notify inertial changes on every step
-        solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
-        solver.step(s0, s1, control, None, dt)
-    wp.capture_launch(capture.graph)
-    solver.check_rod_direct_status()
-    inv_mass = model.body_inv_mass.numpy()
-    inv_mass[bodies[-1]] = 0.0
-    model.body_inv_mass.assign(inv_mass)
-    out = StdOutCapture()
-    out.begin()
-    try:
-        wp.capture_launch(capture.graph)
-        wp.synchronize_device(device)
-    finally:
-        out.end()
-    with test.assertRaisesRegex(RuntimeError, "crossed zero"):
-        solver.check_rod_direct_status()
-    solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)  # outside capture: rewrites the layout
-    with test.assertRaisesRegex(RuntimeError, "reset"):  # the refused steps stay reported
-        solver.check_rod_direct_status()
-    solver.reset(s0, flags=0)
-    solver.check_rod_direct_status()
+    solver = newton.solvers.SolverVBD(builder.finalize(device=device), rigid_rod_direct_solve=True)
+    with wp.ScopedCapture(device):
+        solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES | newton.ModelFlags.BODY_PROPERTIES)
 
 
 def test_unsupported_options_raise(test, device):
-    """Refuse options the direct rod solve does not support, and keep the flag-off solver free of direct state."""
+    """Refuse options the direct rod solve does not support, keep the flag-off solver free of direct state, and keep
+    the option fixed after construction."""
     model, _ = clamped_tree(device)
     with test.assertRaises(NotImplementedError):
         newton.solvers.SolverVBD(
@@ -263,6 +286,8 @@ def test_unsupported_options_raise(test, device):
     solver = newton.solvers.SolverVBD(model)
     test.assertIsNone(solver._rod_direct)
     solver.check_rod_direct_status()  # no-op without direct rod solves
+    with test.assertRaises(AttributeError):
+        solver.rigid_rod_direct_solve = True
 
     points = [(i * SEG, 0.0, 1.0) for i in range(4)]
     builder = newton.ModelBuilder()

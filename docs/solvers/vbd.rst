@@ -89,12 +89,31 @@ bodies joined by :attr:`~newton.JointType.ROD` joints) as one block per
 iteration instead. See :class:`~newton.solvers.SolverVBD` for the supported
 options.
 
+Each rod step is one Newton step on the rod's incremental potential: inertia,
+the contact and non-rod joint terms accumulated per body, and the exact
+stretch/shear and bend/twist energies at their material stiffness (no
+augmented-Lagrangian dual or penalty ramp; the two bend axes may differ through
+the per-DOF ``joint_target_ke``/``joint_target_kd``). The Hessian is
+Gauss-Newton plus the tension part of the joints' geometric stiffness, which
+carries a tensioned rod's transverse stiffness. It is eliminated along the rod
+tree in float64, and the step is line-searched on the rod energy. Rod joints
+that close a loop, or join a rod body to a kinematic or static body, enter the
+block diagonal only. Rods are solved in parallel, so a contact or non-rod joint
+between two directly solved bodies couples simultaneous block solves. The
+accumulated contact, attachment and non-rod joint Hessian is therefore weighted
+by 2 in the step: on shared terms this majorizes the omitted cross terms, and on
+one-sided terms it under-relaxes friction and contact activation, which enter
+the line search only as this quadratic model. Gradients are not weighted, so
+the force balance at convergence is unchanged; the weight only shortens steps.
+
 The option allocates its arrays once, so a step captured in a CUDA graph stays
 valid after :meth:`~newton.solvers.SolverVBD.notify_model_changed` changes rod
-membership (joint enablement, body flags, inverse masses). Notifications with
-``JOINT_PROPERTIES`` or ``BODY_PROPERTIES`` rewrite the layout on the host, so
-call them outside capture; ``BODY_INERTIAL_PROPERTIES`` alone is checked on the
-device and can be captured. Create a new solver if joints become ROD joints.
+membership (joint enablement, body flags, inverse masses).
+``JOINT_PROPERTIES`` rewrites the layout on the host, so notify it outside
+capture. ``BODY_PROPERTIES`` and ``BODY_INERTIAL_PROPERTIES`` are checked on the
+device and can be captured; a body that becomes or stops being dynamic under
+capture refuses the rod steps until the next notification outside capture.
+Create a new solver if joints become ROD joints.
 
 .. experimental::
 

@@ -214,8 +214,8 @@ def solve_rod_direct(
         status[r] = status[r] | ROD_DIRECT_STALE
         if r == 0:
             wp.printf(
-                "Warning: SolverVBD rigid_rod_direct_solve: an inverse mass crossed zero under graph capture; rod "
-                "steps are refused until notify_model_changed() runs outside capture.\n"
+                "Warning: SolverVBD rigid_rod_direct_solve: a body became or stopped being dynamic under graph "
+                "capture; rod steps are refused until notify_model_changed() runs outside capture.\n"
             )
         return
 
@@ -340,7 +340,9 @@ def solve_rod_direct(
     if not ok:
         status[r] = status[r] | ROD_DIRECT_FAILED
         wp.printf(
-            "Warning: SolverVBD rigid_rod_direct_solve: rod %d gave a singular or non-finite step; pose kept.\n", r
+            "Warning: SolverVBD rigid_rod_direct_solve: the rod containing body %d gave a singular or non-finite "
+            "step; pose kept.\n",
+            node_body[s],
         )
         return
 
@@ -379,7 +381,11 @@ def solve_rod_direct(
     )
     if not wp.isfinite(phi0):
         status[r] = status[r] | ROD_DIRECT_FAILED
-        wp.printf("Warning: SolverVBD rigid_rod_direct_solve: rod %d has a non-finite energy; pose kept.\n", r)
+        wp.printf(
+            "Warning: SolverVBD rigid_rod_direct_solve: the rod containing body %d has a non-finite energy; pose "
+            "kept.\n",
+            node_body[s],
+        )
         return
     accepted = bool(False)
     finite_trial = bool(True)
@@ -429,9 +435,9 @@ def solve_rod_direct(
         if not finite_trial:
             status[r] = status[r] | ROD_DIRECT_FAILED
             wp.printf(
-                "Warning: SolverVBD rigid_rod_direct_solve: rod %d has a non-finite energy at the smallest trial "
-                "step; pose kept.\n",
-                r,
+                "Warning: SolverVBD rigid_rod_direct_solve: the rod containing body %d has a non-finite energy at "
+                "the smallest trial step; pose kept.\n",
+                node_body[s],
             )
         elif alpha * wp.float64(2.0) * pred > noise:
             status[r] = status[r] | ROD_DIRECT_STALLED

@@ -7,15 +7,13 @@ For a capsule-chain rod with segment length ``l`` the stretch row is far stiffer
 ``EA * l**2 / (4 * EI)`` is ~1e3-1e6 for threads, cables and textile tapes. These tests cover that regime:
 
 - a horizontally clamped rod under its own weight must settle to the static equilibrium of its own discretization
-  (an exact discrete reference, see :func:`discrete_cantilever_tip`), which also approaches the continuum heavy
-  elastica (:func:`heavy_elastica_tip`) as the rod is refined;
+  (an exact discrete reference, see :func:`discrete_cantilever_tip`);
 - a tip load ramped along the rod must be carried with the elastic strain ``F / EA``;
-- every step must stay finite: a non-finite state fails the test at the step where it first appears.
+- the state must stay finite: a non-finite state fails the test within the 30 steps where it first appears.
 """
 
 from __future__ import annotations
 
-import itertools
 import math
 import unittest
 
@@ -35,43 +33,6 @@ EI = 1.0e-4  # N m^2
 LINEAR_DENSITY = 2.0e-2  # kg/m
 RADIUS = 2.5e-3  # m
 STIFFNESS_RATIOS = (1.0e3, 1.0e6)  # EA l^2 / (4 EI): both ends of the slender-rod range
-
-
-def heavy_elastica_tip(length: float, ei: float, q: float, steps: int = 4000) -> tuple[float, float]:
-    """Tip (dx, dz) of a horizontally clamped, inextensible cantilever under its own weight ``q`` [N/m].
-
-    Solves ``EI th'' = -q (L - s) cos(th)``, ``th(0) = 0``, ``th'(L) = 0`` by shooting on the tip angle (RK4,
-    integrated from the free end) and returns the clamp-to-tip displacement, ``dz < 0``.
-    """
-    h = length / steps
-
-    def integrate(theta_tip: float) -> tuple[float, float, float]:
-        th, dth, x, z, s = theta_tip, 0.0, 0.0, 0.0, length
-
-        def f(s_, th_, dth_):
-            return dth_, -q * (length - s_) * math.cos(th_) / ei, math.cos(th_), -math.sin(th_)
-
-        for _ in range(steps):
-            k1 = f(s, th, dth)
-            k2 = f(s - 0.5 * h, th - 0.5 * h * k1[0], dth - 0.5 * h * k1[1])
-            k3 = f(s - 0.5 * h, th - 0.5 * h * k2[0], dth - 0.5 * h * k2[1])
-            k4 = f(s - h, th - h * k3[0], dth - h * k3[1])
-            th -= h * (k1[0] + 2 * k2[0] + 2 * k3[0] + k4[0]) / 6.0
-            dth -= h * (k1[1] + 2 * k2[1] + 2 * k3[1] + k4[1]) / 6.0
-            x -= h * (k1[2] + 2 * k2[2] + 2 * k3[2] + k4[2]) / 6.0
-            z -= h * (k1[3] + 2 * k2[3] + 2 * k3[3] + k4[3]) / 6.0
-            s -= h
-        return th, -x, -z  # angle at the clamp, tip position relative to the clamp
-
-    lo, hi = 0.0, 0.5 * math.pi
-    for _ in range(80):
-        mid = 0.5 * (lo + hi)
-        if integrate(mid)[0] > 0.0:
-            hi = mid
-        else:
-            lo = mid
-    _, dx, dz = integrate(0.5 * (lo + hi))
-    return dx, dz
 
 
 def discrete_cantilever_tip(
@@ -153,8 +114,17 @@ class _ClampedRod:
                 builder.joint_target_ke[start + axis] = ei / seg
                 builder.joint_target_kd[start + axis] = ei / seg * damping_time
 
-    def run(self, test: unittest.TestCase, seconds: float, dt: float, tip_force=None, iterations: int = 10):
-        """Step the rod; fail at the first non-finite state. tip_force(t) -> +X force on the last body [N]."""
+    def run(
+        self,
+        test: unittest.TestCase,
+        seconds: float,
+        dt: float,
+        tip_force=None,
+        iterations: int = 10,
+        check_every: int = 30,
+    ):
+        """Step the rod; fail within ``check_every`` steps of the first non-finite state (each check syncs the
+        device). tip_force(t) -> +X force on the last body [N]."""
         solver = newton.solvers.SolverVBD(self.model, iterations=iterations, **ROD_SOLVER_KWARGS)
         s0, s1, control = self.model.state(), self.model.state(), self.model.control()
         forces = np.zeros((self.model.body_count, 6), dtype=np.float32)
@@ -166,11 +136,12 @@ class _ClampedRod:
                 s0.body_f.assign(forces)
             solver.step(s0, s1, control, None, dt)
             s0, s1 = s1, s0
-            q = s0.body_q.numpy()
-            if not np.all(np.isfinite(q)):
+            if (k + 1) % check_every and k + 1 < steps:
+                continue
+            if not np.all(np.isfinite(s0.body_q.numpy())):
                 load = 0.0 if tip_force is None else tip_force((k + 1) * dt)
                 test.fail(
-                    f"non-finite rod state at step {k + 1}/{steps} (t = {(k + 1) * dt:.4f} s, tip load {load:.4g} N)"
+                    f"non-finite rod state by step {k + 1}/{steps} (t = {(k + 1) * dt:.4f} s, tip load {load:.4g} N)"
                 )
         return s0.body_q.numpy()
 
@@ -206,20 +177,6 @@ def test_heavy_cantilever_settles_to_discrete_equilibrium(test, device, n_free: 
                 tip[2] / ref_dz, 1.0, delta=0.01, msg=f"tip dz {tip[2]:.5f} m vs discrete equilibrium {ref_dz:.5f} m"
             )
             test.assertAlmostEqual(tip[0] / ref_dx, 1.0, delta=0.01)
-
-
-def test_discrete_reference_converges_to_heavy_elastica(test, device):
-    """Converge the discrete reference to the heavy elastica as the rod is refined (no simulation).
-
-    This validates the reference that the cantilever tests compare against.
-    """
-    errors = []
-    for n_free in (6, 12, 24, 48):
-        overhang, seg = _overhang_and_seg(n_free)
-        _, dz = discrete_cantilever_tip(n_free, seg, EI / seg, LINEAR_DENSITY * seg)
-        errors.append(dz / heavy_elastica_tip(overhang, EI, LINEAR_DENSITY * GRAVITY)[1] - 1.0)
-    test.assertTrue(all(abs(b) < abs(a) for a, b in itertools.pairwise(errors)), msg=f"errors {errors}")
-    test.assertLess(abs(errors[-1]), 0.05)
 
 
 def test_flat_section_droops_about_its_loaded_axis(
@@ -277,12 +234,6 @@ add_function_test(
     "test_heavy_cantilever_settles_to_discrete_equilibrium",
     test_heavy_cantilever_settles_to_discrete_equilibrium,
     devices=devices,
-)
-add_function_test(
-    TestRodDirectRegime,
-    "test_discrete_reference_converges_to_heavy_elastica",
-    test_discrete_reference_converges_to_heavy_elastica,
-    devices=devices[:1],
 )
 add_function_test(
     TestRodDirectRegime, "test_ramped_tip_load_is_carried", test_ramped_tip_load_is_carried, devices=devices

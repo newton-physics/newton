@@ -655,37 +655,14 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             rigid_rod_direct_solve: If ``True``, every connected set of dynamic bodies joined by
                 :attr:`~newton.JointType.ROD` joints (a chain, a tree, a loop, or a single segment
                 held by rod joints to kinematic or static bodies) is solved as one block in each rigid
-                iteration: a Newton step on the rod's incremental potential (inertia, the contact and
-                non-rod joint terms accumulated per body, and the exact rod stretch/shear and
-                bend/twist energies with their material stiffness), eliminated exactly along the rod
-                tree in float64 and line-searched. The step's Hessian is Gauss-Newton plus the
-                tension part of the joints' geometric stiffness, which carries a tensioned rod's
-                transverse stiffness. This removes the slow convergence of per-body updates on
-                slender, light rods, whose stretch stiffness dwarfs their bending stiffness, while
-                carrying axial load. Rod rows use their material stiffness directly (no
-                augmented-Lagrangian dual or penalty ramp), and the two bend axes may differ
-                (``joint_target_ke``/``joint_target_kd`` per angular DOF). Rod joints that close a
-                loop, or join a rod body to a kinematic body, enter the block diagonal only. Rods are
-                solved in parallel, so contacts and non-rod joints between two directly solved bodies
-                couple simultaneous block solves. The accumulated contact, attachment and non-rod joint
-                Hessian is weighted by 2 in the step: on those shared terms this majorizes the omitted
-                cross terms, and on one-sided terms it under-relaxes friction and contact activation,
-                which enter the line search only as this weighted quadratic model. Gradients are not
-                weighted, so the force balance at convergence is unchanged; the weight only shortens
-                steps. Rod membership follows joint enablement, body flags and inverse masses. It is
-                rewritten in place by :meth:`notify_model_changed` with
-                :attr:`~newton.ModelFlags.JOINT_PROPERTIES` or :attr:`~newton.ModelFlags.BODY_PROPERTIES`,
-                which cannot run during graph capture, so a graph captured before the notification replays
-                the new membership. With :attr:`~newton.ModelFlags.BODY_INERTIAL_PROPERTIES` alone the
-                membership is checked on the device, which is capturable; an inverse mass crossing zero
-                under capture refuses the rod steps until the next notification outside capture. Each rod
-                is solved serially by one thread, so a few long rods use a GPU poorly; see
-                :doc:`/solvers/vbd` for costs. A singular or non-finite step, or a non-finite energy
-                at the start or at the smallest trial step, is refused, and a line search that finds no
-                decrease above an estimate of the energy's round-off keeps the pose;
-                :meth:`check_rod_direct_status` reports both until :meth:`reset`. Not supported together with
-                ``rigid_soft_enable_dat``, Dahl rod friction or tendons routed over rod bodies. Joints
-                cannot become ROD joints after construction. Defaults to ``False``.
+                iteration, by a line-searched Newton step eliminated along the rod tree in float64. This
+                removes the slow convergence of per-body updates on slender rods, whose stretch stiffness
+                dwarfs their bending stiffness, and lets the two bend axes differ. Rod membership follows
+                joint enablement, body flags and inverse masses through :meth:`notify_model_changed`. A
+                refused or stalled step keeps the rod's pose and is reported by
+                :meth:`check_rod_direct_status` until :meth:`reset`. Not supported together with
+                ``rigid_soft_enable_dat``, Dahl rod friction or tendons routed over rod bodies. See
+                :doc:`/solvers/vbd` for the method, graph capture and cost. Defaults to ``False``.
 
                 .. experimental::
                     The direct rod solve and its status reporting may change without a deprecation
@@ -1025,7 +1002,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
 
         # Common parameters
         self.iterations = iterations
-        self.rigid_rod_direct_solve = bool(rigid_rod_direct_solve)
+        self._rigid_rod_direct_solve = bool(rigid_rod_direct_solve)
         self.friction_epsilon = friction_epsilon
         self.rigid_soft_contact_use_log_barrier = bool(rigid_soft_contact_use_log_barrier)
         self._joint_mode_deprecation_warned = False
@@ -1096,7 +1073,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         # Direct (tree) solve of rod joints; None keeps the per-body path unchanged
         self._rod_direct = None
         self._rod_direct_max_halvings = _ROD_DIRECT_MAX_HALVINGS
-        if self.rigid_rod_direct_solve and self._integrates_rigid_bodies:
+        if self._rigid_rod_direct_solve and self._integrates_rigid_bodies:
             self._init_rod_direct(model)
 
         # Controls whether the next step() refreshes contact state derived from
@@ -1561,12 +1538,13 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             ModelFlags.JOINT_PROPERTIES | ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES
         ):
             self._refresh_rod_rest_bend_twist_cache()
-        if self.rigid_rod_direct_solve and self._integrates_rigid_bodies:
-            if flags & (ModelFlags.JOINT_PROPERTIES | ModelFlags.BODY_PROPERTIES):
-                # rod membership follows joint enablement and body flags: rewrite the layout on the host
+        if self._rigid_rod_direct_solve and self._integrates_rigid_bodies:
+            if flags & ModelFlags.JOINT_PROPERTIES:
+                # rod membership follows joint enablement: rewrite the layout on the host
                 self._update_rod_direct(self.model)
-            elif flags & ModelFlags.BODY_INERTIAL_PROPERTIES:
-                # mass changes are checked on the device, so per-step notifications stay capturable
+            elif flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
+                # body flags and masses are checked on the device, so pose resets and per-step notifications
+                # stay capturable
                 self._refresh_rod_direct_membership(self.model)
 
     @override
@@ -1917,7 +1895,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     "SolverVBD requires JointType.ROD to have three linear and three angular DOFs; "
                     f"joint {joint} has dimensions {(linear_count, angular_count)}."
                 )
-            if not self.rigid_rod_direct_solve and (
+            if not self._rigid_rod_direct_solve and (
                 joint_target_ke[dof_start] != joint_target_ke[dof_start + 1]
                 or joint_target_kd[dof_start] != joint_target_kd[dof_start + 1]
                 or joint_target_ke[angular_dof] != joint_target_ke[angular_dof + 1]
@@ -2173,7 +2151,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                             f"Got joint_index={j}, joint_qd_start={dof0}, "
                             f"len(joint_target_ke)={len(jtarget_ke)}, len(joint_target_kd)={len(jtarget_kd)}."
                         )
-                    if not self.rigid_rod_direct_solve and (
+                    if not self._rigid_rod_direct_solve and (
                         jtarget_ke[dof0] != jtarget_ke[dof0 + 1]
                         or jtarget_kd[dof0] != jtarget_kd[dof0 + 1]
                         or jtarget_ke[angular_dof] != jtarget_ke[angular_dof + 1]
@@ -4458,20 +4436,21 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         :meth:`check_rod_direct_status`.
 
         Raises:
-            RuntimeError: During graph capture, or if the ROD joints outgrew the layout's capacity.
+            RuntimeError: During graph capture if the model has ROD joints, or if the ROD joints outgrew the layout's
+                capacity.
         """
-        if self.device.is_capturing:
-            raise RuntimeError(
-                "SolverVBD rigid_rod_direct_solve: notify_model_changed() rebuilds the rod layout on the host and "
-                "cannot run during graph capture; call it before capturing or between graph launches."
-            )
         if self._rod_direct is None:
-            if rod_candidates(model)[0].size:
+            if not self.device.is_capturing and rod_candidates(model)[0].size:
                 raise RuntimeError(
                     "SolverVBD rigid_rod_direct_solve: the model gained ROD joints after the solver was created; "
                     "create a new solver (and re-capture any graph that steps it)."
                 )
             return
+        if self.device.is_capturing:
+            raise RuntimeError(
+                "SolverVBD rigid_rod_direct_solve: notify_model_changed(JOINT_PROPERTIES) rebuilds the rod layout on "
+                "the host and cannot run during graph capture; call it before capturing or between graph launches."
+            )
         bits = int(np.bitwise_or.reduce(self._rod_direct_status.numpy(), initial=0))
         self._rod_direct_prior_status.fill_(bits | int(self._rod_direct_prior_status.numpy()[0]))
         self._rod_direct_status.zero_()
@@ -4480,7 +4459,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         self._check_rod_direct_tendons(model, self._rod_direct)
 
     def _refresh_rod_direct_membership(self, model: Model) -> None:
-        """Check rod membership on the device after an inertial-property change (capturable).
+        """Check rod membership on the device after a body-flag or inertial-property change (capturable).
 
         Outside capture the layout is rewritten only if a body became dynamic or stopped being dynamic, at the cost of
         reading one flag. Under capture such a change marks the layout stale, and the rod steps refuse until the next
@@ -4543,7 +4522,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         Raises:
             RuntimeError: If called during graph capture, or if any rod reported a refused step.
         """
-        if not self.rigid_rod_direct_solve:
+        if not self._rigid_rod_direct_solve:
             return
         if self.device.is_capturing:
             raise RuntimeError("Cannot inspect rod direct-solve status during graph capture")
@@ -4551,33 +4530,48 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             return
         if self._rod_direct_stale.numpy()[0]:
             raise RuntimeError(
-                "SolverVBD rigid_rod_direct_solve: an inverse mass crossed zero under graph capture, so rod steps were "
-                "refused; call notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES) outside capture."
+                "SolverVBD rigid_rod_direct_solve: a body became or stopped being dynamic (inverse mass or KINEMATIC "
+                "flag) under graph capture, so rod steps were refused; call notify_model_changed() with "
+                "ModelFlags.BODY_PROPERTIES or BODY_INERTIAL_PROPERTIES outside capture."
             )
         status = self._rod_direct_status.numpy()
         prior = int(self._rod_direct_prior_status.numpy()[0])
         stale = np.flatnonzero(status & ROD_DIRECT_STALE)
         if stale.size or prior & ROD_DIRECT_STALE:
             raise RuntimeError(
-                "SolverVBD rigid_rod_direct_solve: rod steps were refused while an inverse mass that crossed zero under "
-                "graph capture had not been notified outside capture; reset() clears this report."
+                "SolverVBD rigid_rod_direct_solve: rod steps were refused while a body that became or stopped being "
+                "dynamic under graph capture had not been notified outside capture; reset() clears this report."
             )
         failed = np.flatnonzero(status & ROD_DIRECT_FAILED)
         if failed.size or prior & ROD_DIRECT_FAILED:
             raise RuntimeError(
-                f"SolverVBD rigid_rod_direct_solve: rods {failed[:8].tolist()} (current layout) "
-                f"{'and rods of an earlier layout ' if prior & ROD_DIRECT_FAILED else ''}"
+                f"SolverVBD rigid_rod_direct_solve: {self._describe_rods(failed, prior & ROD_DIRECT_FAILED)} "
                 "gave a singular or non-finite step; their poses were kept."
             )
         stalled = np.flatnonzero(status & ROD_DIRECT_STALLED)
         if stalled.size or prior & ROD_DIRECT_STALLED:
             warnings.warn(
-                f"SolverVBD rigid_rod_direct_solve: the line search of rods {stalled[:8].tolist()} (current layout) "
-                f"{'and of an earlier layout ' if prior & ROD_DIRECT_STALLED else ''}"
-                "found no decrease above the estimated round-off; their poses were kept for that iteration.",
+                f"SolverVBD rigid_rod_direct_solve: the line search of "
+                f"{self._describe_rods(stalled, prior & ROD_DIRECT_STALLED)} found no decrease above the estimated "
+                "round-off; their poses were kept for that iteration.",
                 NewtonWarning,
                 stacklevel=2,
             )
+
+    def _describe_rods(self, rods: np.ndarray, earlier: int) -> str:
+        """Name flagged rods by the label of their first body; rods of an earlier layout can only be counted."""
+        rd = self._rod_direct
+        first_body = rd.node_body.numpy()[rd.rod_start.numpy()[rods[:8]]]
+        names = [self.model.body_label[b] for b in first_body]
+        text = f"the rods containing bodies {names}{' and more' if rods.size > 8 else ''}" if rods.size else ""
+        if earlier:
+            text += f"{' and ' if text else ''}rods of a layout before the last notify_model_changed()"
+        return text
+
+    @property
+    def rigid_rod_direct_solve(self) -> bool:
+        """Whether rods are solved directly (read-only, set at construction; see :doc:`/solvers/vbd`)."""
+        return self._rigid_rod_direct_solve
 
     def _solve_rods_direct(self, state_in: State, control: Control, dt: float, contacts: Contacts | None) -> None:
         """Accumulate contact and non-rod joint terms on rod bodies, then one direct Gauss-Newton step per rod.
