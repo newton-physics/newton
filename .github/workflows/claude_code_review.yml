@@ -21,6 +21,12 @@ name: Claude Auto Review
 # time and that a newer push cancels. A review that has started is never
 # cancelled; a newer commit waits for it, and only the latest commit is
 # reviewed.
+#
+# The first review of a pull request is a full review. Later reviews are
+# follow-ups that report only blocking (P0/P1) issues in the changes since the
+# last review: real bugs, performance regressions, substantial bloat, and
+# public API changes that do not conform to CODING_GUIDELINES.rst. The publish
+# step enforces this, so the bot falls silent once a pull request is in shape.
 on:
   pull_request_target:
     branches: [main]
@@ -142,7 +148,11 @@ jobs:
       #   scripts/ci/detect_api_changes.py, which only parses the trees with
       #   ast and never imports or runs code from them.
       # - Save the pull request description and existing comments as files.
-      - name: Prepare review inputs
+      # - Choose the review mode: "first" if this workflow has not reviewed
+      #   the pull request before, otherwise "follow-up", with a diff of the
+      #   changes since the last reviewed commit.
+      - id: prepare
+        name: Prepare review inputs
         if: steps.latest.outputs.review == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -180,6 +190,25 @@ jobs:
           gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/comments" \
             --jq '.[] | {id, user: .user.login, path, line, in_reply_to_id, body}' > .pr-review/review-comments.jsonl
 
+          previous=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- newton-automated-review -->"))) | .body')
+          mode=first
+          last_reviewed=""
+          : > .pr-review/since-last-review.diff
+          if [ -n "${previous}" ]; then
+            mode=follow-up
+            last_reviewed=$(grep -oE 'Reviewed commit [0-9a-f]{40}' <<< "${previous}" | tail -n 1 | cut -d' ' -f3 || true)
+            if [ -n "${last_reviewed}" ] && [ "${last_reviewed}" != "${HEAD_SHA}" ] \
+              && git -C pr-head fetch --no-tags --depth=1 origin "${last_reviewed}"; then
+              git -C pr-head diff --no-ext-diff --no-textconv "${last_reviewed}" HEAD > .pr-review/since-last-review.diff
+            fi
+          fi
+          echo "Review mode: ${mode}; last reviewed commit: ${last_reviewed:-none}; $(wc -l < .pr-review/since-last-review.diff) lines changed since"
+          {
+            echo "review_mode=${mode}"
+            echo "last_reviewed=${last_reviewed}"
+          } >> "${GITHUB_OUTPUT}"
+
       - id: review
         if: steps.latest.outputs.review == 'true'
         uses: anthropics/claude-code-action@1d6de8cb0c237e7c15e9e1bdf973826ebae490cc  # v1.0.248
@@ -203,6 +232,30 @@ jobs:
             maintainer would. Your findings are posted as inline review
             comments on the lines they concern, plus one summary comment, so
             make each one specific enough that the author can act on it.
+
+            ## Review mode
+
+            This is a **${{ steps.prepare.outputs.review_mode }}** review.
+
+            - A `first` review is the one full review of this pull request.
+              Follow all sections below.
+            - A `follow-up` review means this workflow already reviewed the
+              pull request (last at commit `${{ steps.prepare.outputs.last_reviewed }}`), and authors
+              should not get a fresh round of comments on every push. Act only
+              as a gatekeeper and report only P0 or P1 findings of these kinds:
+              real bugs (wrong results, crashes, data loss, security problems),
+              performance regressions, substantial bloat added to code or tests,
+              and public API changes that do not conform to
+              `CODING_GUIDELINES.rst`. Report nothing else: no P2 or nits, no
+              documentation, naming, or test-style suggestions, and nothing
+              that earlier reviews already raised. Focus on
+              `.pr-review/since-last-review.diff`, the changes since that commit
+              (it can also contain changes merged from the base branch; if it is
+              empty, use the full diff), and read the rest only for context.
+              Most follow-up reviews should have no findings.
+
+            In either mode, a review with no findings is a good outcome when
+            nothing qualifies. Do not look for issues to fill the review.
 
             ## Inputs
 
@@ -303,8 +356,10 @@ jobs:
 
             ## What to report
 
-            Report every issue a careful maintainer would raise, including
-            small ones, using the priorities in `REVIEW_GUIDELINES.rst`:
+            In a first review, report every issue a careful maintainer would
+            raise, including small ones, using the priorities in
+            `REVIEW_GUIDELINES.rst` (a follow-up review reports only the P0 and
+            P1 kinds listed under Review mode):
 
             - `P0`: merge-blocking: wrong results, crashes, data loss, security
               problems, breaking or removing released API without deprecation,
@@ -329,8 +384,7 @@ jobs:
             support from the code. Only claim that sibling APIs follow a
             naming pattern when most of them do, and name them. Do not repeat
             a concern already raised in the existing reviews or comments, by
-            people or bots. A trivial pull request may have no findings; a
-            substantial one usually has several.
+            people or bots.
 
             ## Writing findings
 
@@ -364,9 +418,10 @@ jobs:
             sentences (not a description of the change; the author knows it).
             Add a one-sentence Fit verdict (see `REVIEW_GUIDELINES.rst`) only
             for new or changed public API or large cross-cutting changes. If
-            you did not review part of the change, name it briefly. Do not list
-            what you checked, do not restate other reviewers' comments, and do
-            not start with a heading.
+            you did not review part of the change, name it briefly. In a
+            follow-up review, one sentence is usually enough. Do not list what
+            you checked, do not restate other reviewers' comments, and do not
+            start with a heading.
 
             Set `complete` to false if you could not review the whole change.
             Never say a change or area has no problems unless you examined it
@@ -409,4 +464,5 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           REVIEW_OUTPUT: ${{ steps.review.outputs.structured_output }}
           EXECUTION_FILE: ${{ steps.review.outputs.execution_file }}
+          REVIEW_MODE: ${{ steps.prepare.outputs.review_mode }}
         run: python3 -I scripts/ci/publish_automated_review.py

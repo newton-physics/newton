@@ -18,9 +18,12 @@ Both name the reviewer and link the workflow run, and the summary states the
 model and effort level, including any fallback model recorded in the run's
 execution file. Only display names are published, never model IDs.
 
+With ``REVIEW_MODE=follow-up`` (the workflow has reviewed the pull request
+before), only P0 and P1 findings are published.
+
 Environment: ``REVIEW_OUTPUT``, ``GITHUB_REPOSITORY``, ``PR_NUMBER``,
 ``HEAD_SHA``, ``RUNNER_TEMP``, ``REVIEW_MODEL_NAME``, ``REVIEW_EFFORT``,
-``EXECUTION_FILE`` (optional), and the default ``GITHUB_SERVER_URL``,
+``EXECUTION_FILE`` and ``REVIEW_MODE`` (optional), and the default ``GITHUB_SERVER_URL``,
 ``GITHUB_RUN_ID``, and ``GITHUB_RUN_ATTEMPT``. The diff is read from
 ``.pr-review/pr.diff``.
 """
@@ -44,6 +47,7 @@ MAX_BODY_CHARS = 6000
 REVIEWER_NAME = "Claude Code Action review"
 WORKFLOW_PATH = ".github/workflows/claude_code_review.yml"
 SEVERITY_LABELS = {"P0": "🔴 P0", "P1": "🟠 P1", "P2": "🔵 P2", "nit": "⚪ Nit"}
+FOLLOW_UP_SEVERITIES = ("P0", "P1")
 HUNK_RE = re.compile(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
@@ -229,6 +233,12 @@ def main() -> int:
     head_sha = os.environ["HEAD_SHA"]
     findings = [f for f in output.get("findings", []) if isinstance(f, dict)]
     details = run_details(os.environ.get("EXECUTION_FILE"))
+    if os.environ.get("REVIEW_MODE") == "follow-up":
+        # Follow-up reviews only gate merges, so drop anything below P1 even if the reviewer reported it.
+        blocking = [f for f in findings if f.get("severity") in FOLLOW_UP_SEVERITIES]
+        print(f"Follow-up review: dropped {len(findings) - len(blocking)} finding(s) below P1")
+        findings = blocking
+        details.append("Follow-up reviews report only blocking (P0/P1) issues.")
 
     result = gh_api(
         "--paginate", f"repos/{repo}/pulls/{pr}/comments", "--jq", f'.[] | select(.user.login == "{BOT_LOGIN}") | .body'
