@@ -1986,38 +1986,55 @@ class TestRigidContactNormal(unittest.TestCase):
     pass
 
 
-def _rounded_convex_separations(probes, placements, device, rigid_gap):
-    """Collide each probe kind against a box and a convex hull at known gaps; return (probe, target, placement, gap,
-    separation) per contact and the list of cases.
+def _rounded_convex_separations(probes, placements, device, rigid_gap, targets):
+    """Collide each probe kind against each target at known gaps; return (probe, target, placement, gap, separation)
+    per contact and the list of cases.
 
-    A ``("face", gap)`` placement puts the probe ``gap`` from the box's +y face; an ``("edge", gap)`` placement puts it
-    ``gap`` from the box's +x/+y edge along the diagonal, where the AABBs overlap even beyond the summed contact gap,
-    so the narrow phase decides whether the pair is admitted.
+    The box, convex hull and triangle mesh targets share one box shape. A ``("face", gap)`` placement puts the probe
+    ``gap`` from its +y face; an ``("edge", gap)`` placement puts it ``gap`` from its +x/+y edge along the diagonal,
+    where the AABBs overlap even beyond the summed contact gap, so the narrow phase decides whether the pair is
+    admitted. A ``"heightfield"`` target is a flat heightfield with the probe ``gap`` above it (face placements only),
+    the capsule lying flat on it.
     """
     with wp.ScopedDevice(device):
         half = (0.05, 0.01, 0.05)
         hull = newton.Mesh.create_box(*half, duplicate_vertices=False, compute_inertia=False)
+        flat = newton.Heightfield(
+            data=np.zeros((5, 5), dtype=np.float32), nrow=5, ncol=5, hx=0.1, hy=0.1, min_z=0.0, max_z=0.0
+        )
+        lying = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.5 * math.pi)  # capsule axis along y
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         builder.rigid_gap = rigid_gap
         cases = []
-        for i, (probe, target, (placement, gap)) in enumerate(itertools.product(probes, ("box", "hull"), placements)):
+        for i, (probe, target, (placement, gap)) in enumerate(itertools.product(probes, targets, placements)):
             x = 0.25 * i
             radius = 0.01
-            body = builder.add_body(xform=wp.transform(wp.vec3(x, 0.0, 0.0), wp.quat_identity()))
+            on_heightfield = target == "heightfield"
+            rotation = lying if on_heightfield else wp.quat_identity()
+            body = builder.add_body(xform=wp.transform(wp.vec3(x, 0.0, 0.0), rotation))
             if probe == "sphere":
                 builder.add_shape_sphere(body, radius=radius)
             else:
                 builder.add_shape_capsule(body, radius=radius, half_height=0.02)
-            if placement == "face":
+            if on_heightfield:
+                # the sphere's lowest point off the grid lines and the cell diagonal
+                offset = wp.vec3(0.013, 0.017, -(radius + gap))
+            elif placement == "face":
                 offset = wp.vec3(0.0, -(radius + gap + half[1]), 0.0)
             else:
                 diagonal = (radius + gap) / math.sqrt(2.0)
                 offset = wp.vec3(-(diagonal + half[0]), -(diagonal + half[1]), 0.0)
-            other = builder.add_body(xform=wp.transform(wp.vec3(x, 0.0, 0.0) + offset, wp.quat_identity()))
-            if target == "box":
-                builder.add_shape_box(other, hx=half[0], hy=half[1], hz=half[2])
+            xform = wp.transform(wp.vec3(x, 0.0, 0.0) + offset, wp.quat_identity())
+            if on_heightfield:
+                builder.add_shape_heightfield(xform=xform, heightfield=flat)
             else:
-                builder.add_shape_convex_hull(other, mesh=hull)
+                other = builder.add_body(xform=xform)
+                if target == "box":
+                    builder.add_shape_box(other, hx=half[0], hy=half[1], hz=half[2])
+                elif target == "hull":
+                    builder.add_shape_convex_hull(other, mesh=hull)
+                else:
+                    builder.add_shape_mesh(other, mesh=hull)
             cases.append((probe, target, placement, gap))
         model = builder.finalize()
         state = model.state()
@@ -2037,6 +2054,8 @@ def _rounded_convex_separations(probes, placements, device, rigid_gap):
         shape_body = model.shape_body.numpy()
 
         def to_world(point, shape):
+            if shape_body[shape] < 0:  # static shape (the heightfield): contact points are in world frame
+                return np.array(point)
             q = body_q[shape_body[shape]]
             return q[:3] + np.array(wp.quat_rotate(wp.quat(*q[3:7]), wp.vec3(*point)))
 
@@ -2052,11 +2071,12 @@ def _rounded_convex_separations(probes, placements, device, rigid_gap):
 
 
 def test_rounded_convex_contact_separation(test, device):
-    """Spheres and capsules against a box and a convex hull report their true surface separation.
+    """Report the true surface separation for spheres and capsules against a box, a convex hull and a triangle mesh.
 
     The GJK/MPR path shrinks a sphere or capsule to its core plus a small inflation radius and restores the rest of
     the radius afterwards, so the written separation must equal the geometric surface gap. Each probe sits at a known
-    gap from a box face and from a convex hull of the same box: deep enough that its core overlaps the target (MPR),
+    gap from a box face, and from a convex hull and a triangle mesh of the same box: deep enough that its core
+    overlaps the target (MPR),
     penetrating, touching, and separated within the contact gap. Off a box edge, a probe just inside the summed contact
     gap must be admitted and one just beyond it rejected. The tolerance is far below the inflation radius, so restoring
     the whole radius instead of the remainder fails. A sphere-only model runs the lean post-processor
@@ -2073,9 +2093,11 @@ def test_rounded_convex_contact_separation(test, device):
         ("edge", summed_gap - 1.0e-4),
         outside,
     )
-    for probes in (("sphere",), ("sphere", "capsule")):
-        with test.subTest(probes=probes):
-            rows, cases = _rounded_convex_separations(probes, placements, device, rigid_gap)
+    solids = (("box", "hull"), placements)
+    surface = (("mesh",), placements[1:])  # a triangle mesh has no interior to hold the deep probe's centre
+    for probes, (targets, at) in itertools.product((("sphere",), ("sphere", "capsule")), (solids, surface)):
+        with test.subTest(probes=probes, targets=targets):
+            rows, cases = _rounded_convex_separations(probes, at, device, rigid_gap, targets)
             for probe, target, placement, gap, separation in rows:
                 msg = f"{probe} vs {target} {placement} at gap {gap}"
                 test.assertNotEqual((placement, gap), outside, f"{msg}: admitted beyond the summed contact gap")
@@ -2090,6 +2112,37 @@ add_function_test(
     TestCollisionPipeline,
     "test_rounded_convex_contact_separation",
     test_rounded_convex_contact_separation,
+    devices=get_test_devices(),
+)
+
+
+def test_rounded_heightfield_contact_separation(test, device):
+    """Report the true surface separation for spheres and capsules on heightfield triangles.
+
+    The same GJK/MPR radius restore as against convex shapes: a sphere and a capsule lying flat sit penetrating,
+    touching, and separated within and beyond the summed contact gap above a flat heightfield.
+    Every admitted contact must report the geometric gap to well below the inflation radius, and the probe beyond
+    the summed gap must be rejected.
+    """
+    rigid_gap = 0.002
+    summed_gap = 2.0 * rigid_gap
+    outside = ("face", summed_gap + 5.0e-5)
+    placements = (("face", -2.0e-4), ("face", 0.0), ("face", 3.0e-4), ("face", summed_gap - 1.0e-4), outside)
+    rows, cases = _rounded_convex_separations(("sphere", "capsule"), placements, device, rigid_gap, ("heightfield",))
+    for probe, target, placement, gap, separation in rows:
+        msg = f"{probe} vs {target} at gap {gap}"
+        test.assertNotEqual((placement, gap), outside, f"{msg}: admitted beyond the summed contact gap")
+        # GJK stops ~12 um long on the sphere just inside the summed gap (with or without this fix); still a fifth
+        # of the inflation radius
+        test.assertAlmostEqual(separation, gap, delta=2.0e-5, msg=msg)
+    seen = {row[:4] for row in rows}
+    test.assertEqual(seen, {case for case in cases if case[2:] != outside}, "every admitted probe must contact")
+
+
+add_function_test(
+    TestCollisionPipeline,
+    "test_rounded_heightfield_contact_separation",
+    test_rounded_heightfield_contact_separation,
     devices=get_test_devices(),
 )
 
