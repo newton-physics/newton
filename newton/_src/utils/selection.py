@@ -2742,7 +2742,6 @@ class _DeformableViewBase:
 
         # Keep every model world in the partition, including worlds without a
         # match. Equal adjacent offsets make empty worlds explicit to consumers.
-        world_count = model.world_count
         counts_per_world = [len(ids) for ids in object_ids]
         object_count = sum(counts_per_world)
 
@@ -2754,7 +2753,6 @@ class _DeformableViewBase:
             )
 
         if object_count == 0 and global_object_ids:
-            world_count = 1
             object_count = len(global_object_ids)
             counts_per_world = [object_count]
             object_ids = [global_object_ids]
@@ -2764,8 +2762,6 @@ class _DeformableViewBase:
 
         self.count = object_count
         """Number of selected deformable objects across all worlds."""
-        self.world_count = world_count
-        """Number of model worlds, including unmatched worlds; one for a global-only selection."""
         self.count_per_world = counts_per_world[0] if all_equal(counts_per_world) else None
         """Number of selected deformable objects per world, or None when the counts vary."""
         flat_ids = [i for ids in object_ids for i in ids]
@@ -2786,7 +2782,10 @@ class _DeformableViewBase:
         self.deformable_object_boundaries: wp.array[wp.int32] = wp.array(
             deformable_object_boundaries, dtype=wp.int32, device=self.device
         )
-        """Device-side deformable-object boundaries by world, shape ``(world_count + 1,)``.
+        """Device-side deformable-object boundaries by world.
+
+        There is one boundary per model world plus a final end boundary.
+        A global-only selection has two boundaries.
 
         World ``i`` spans selected deformable object indices from ``deformable_object_boundaries[i]`` to
         ``deformable_object_boundaries[i + 1]``, excluding the end. The final entry is the
@@ -2853,12 +2852,11 @@ class _DeformableViewBase:
         model world ID.
 
         Returns:
-            selected deformable-object ranges in model-world order, including empty worlds.
+            One range per model world, including empty worlds, or one range for
+            a global-only selection.
         """
-        return [
-            (self._deformable_object_boundaries[i], self._deformable_object_boundaries[i + 1])
-            for i in range(self.world_count)
-        ]
+        boundaries = self._deformable_object_boundaries
+        return [(boundaries[i], boundaries[i + 1]) for i in range(len(boundaries) - 1)]
 
     def element_count(
         self,

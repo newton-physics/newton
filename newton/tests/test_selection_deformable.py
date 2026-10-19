@@ -211,13 +211,13 @@ class TestDeformableSelection(unittest.TestCase):
     """Match labels and partition selected deformable objects by world."""
 
     def test_soft_view_over_global_objects(self):
-        """Select global deformable objects (world -1) as a single-world view."""
+        """Select global deformable objects (world -1) as a single partition."""
         builder = newton.ModelBuilder()
         _add_test_soft_body(builder, label="/World/Soft")
         model = builder.finalize()
 
         view = DeformableVolumeView(model, "/World/Soft")
-        self.assertEqual((view.count, view.world_count), (1, 1))
+        self.assertEqual(view.count, 1)
         self.assertEqual(view.deformable_object_ranges(), [(0, 1)])
         np.testing.assert_array_equal(view.deformable_object_boundaries.numpy(), [0, 1])
         np.testing.assert_array_equal(view.worlds_device.numpy(), [-1])
@@ -252,7 +252,7 @@ class TestDeformableSelection(unittest.TestCase):
 
         view = DeformableSurfaceView(scene.finalize(), "/World/Cloth*")
 
-        self.assertEqual((view.count, view.world_count, view.count_per_world), (3, 3, None))
+        self.assertEqual((view.count, view.count_per_world), (3, None))
         self.assertEqual(view.worlds, [0, 1, 1])
         self.assertEqual(view.deformable_object_ranges(), [(0, 1), (1, 3), (3, 3)])
         np.testing.assert_array_equal(view.deformable_object_boundaries.numpy(), [0, 1, 3, 3])
@@ -797,7 +797,7 @@ class TestDeformableAndArticulationViews(unittest.TestCase):
                     (soft, "particle", "particle_qd", [1, 2], [0, 0, 1, 2], soft.set_particle_velocities),
                 ):
                     with self.subTest(family=view.family):
-                        self.assertEqual((view.world_count, view.count_per_world), (3, None))
+                        self.assertIsNone(view.count_per_world)
                         self.assertEqual(view.worlds, worlds)
                         np.testing.assert_array_equal(view.worlds_device.numpy(), worlds)
                         np.testing.assert_array_equal(view.deformable_object_boundaries.numpy(), boundaries)
@@ -1054,7 +1054,7 @@ class TestDeformableStateReads(unittest.TestCase):
             for getter, setter, attribute in _state_accessors(model):
                 with self.subTest(device=device, attribute=attribute):
                     view = getter.__self__
-                    self.assertEqual((view.count, view.world_count, view.count_per_world), (3, 3, 1))
+                    self.assertEqual((view.count, view.count_per_world), (3, 1))
                     self.assertEqual(view.worlds, [0, 1, 2])
                     state = model.state()
                     target = getattr(state, attribute)
@@ -1694,7 +1694,7 @@ class TestUSDDeformableObjects(unittest.TestCase):
         model = scene.finalize()
 
         view = DeformableSurfaceView(model, "/World/Cloth")
-        self.assertEqual((view.count, view.world_count, view.count_per_world), (3, 3, 1))
+        self.assertEqual((view.count, view.count_per_world), (3, 1))
         self.assertEqual(view.labels, ["/World/Cloth"] * 3)
         self.assertEqual(view.worlds, [0, 1, 2])
         self.assertEqual(view.ranges("particle"), [(4 * w, 4 * w + 4) for w in range(3)])
