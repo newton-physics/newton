@@ -683,6 +683,9 @@ class ViewerGL(ViewerBase):
 
                 wp.load_module(module=_raycast_module, device=model.device)
                 wp.load_module(module="newton._src.viewer.kernels", device=model.device)
+                # Picking an articulated body evaluates its Jacobian and mass matrix.
+                if model.articulation_count:
+                    wp.load_module(module="newton._src.sim.articulation", device=model.device)
             except Exception:
                 pass
 
