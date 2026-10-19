@@ -2025,6 +2025,13 @@ class TestImportMjcfInlineMesh(unittest.TestCase):
         <mesh name="tetra"
               vertex="1 0 0  2 0 0  1 1 0  1 0 1"
               face="0 2 1  0 1 3  0 3 2  1 2 3"
+              normal="1 1 0  1 1 0  1 1 0  1 1 0"
+              refpos="1 0 0"
+              refquat="0.7071067811865476 0 0 0.7071067811865476"
+              scale="2 3 4"/>
+        <mesh name="tetra_shared"
+              vertex="1 0 0  2 0 0  1 1 0  1 0 1"
+              face="0 2 1  0 1 3  0 3 2  1 2 3"
               normal="1 1 0"
               refpos="1 0 0"
               refquat="0.7071067811865476 0 0 0.7071067811865476"
@@ -2032,21 +2039,24 @@ class TestImportMjcfInlineMesh(unittest.TestCase):
     </asset>
     <worldbody>
         <geom type="mesh" mesh="tetra" mass="1"/>
+        <geom type="mesh" mesh="tetra_shared" mass="1"/>
     </worldbody>
 </mujoco>
 """
         builder = newton.ModelBuilder()
         builder.add_mjcf(mjcf)
 
-        mesh = builder.shape_source[0]
-        np.testing.assert_allclose(
-            mesh.vertices,
-            [[0.0, 0.0, 0.0], [0.0, -3.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.0, 4.0]],
-            atol=1e-5,
-        )
         expected_normal = np.array([0.5, -1.0 / 3.0, 0.0])
         expected_normal /= np.linalg.norm(expected_normal)
-        np.testing.assert_allclose(mesh.normals, np.tile(expected_normal, (4, 1)), atol=1e-5)
+        self.assertEqual(builder.shape_count, 2)
+        for i, mesh in enumerate(builder.shape_source):
+            with self.subTest(mesh=i):
+                np.testing.assert_allclose(
+                    mesh.vertices,
+                    [[0.0, 0.0, 0.0], [0.0, -3.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.0, 4.0]],
+                    atol=1e-5,
+                )
+                np.testing.assert_allclose(mesh.normals, np.tile(expected_normal, (4, 1)), atol=1e-5)
 
     def test_inline_mesh_rejects_malformed_vertex_attributes(self):
         """Reject normals and texture coordinates with the wrong vertex count."""
