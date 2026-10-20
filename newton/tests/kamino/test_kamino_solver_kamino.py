@@ -441,7 +441,9 @@ class TestSolverKaminoConfig(unittest.TestCase):
         SolverKaminoImpl.Config(dynamics_solver="lox", sparse_jacobian=True, sparse_dynamics=True)
         self.assertEqual(SolverKaminoImpl.Config(dynamics_solver="lox", integrator="moreau").integrator, "moreau")
         kamino_config.LOXSolverConfig(gauss_seidel_max_colors=4, projection_acceleration="anderson")
-        kamino_config.LOXSolverConfig(contact_compliance=True, contact_restitution=True, contact_spatial_friction=True)
+        kamino_config.LOXSolverConfig(
+            contact_compliance=True, contact_implicit_restitution=True, contact_spatial_friction=True
+        )
 
         invalid_values = (
             ({"contact_warmstart_method": "geom_pair_net_wrench"}, "contact warmstart method is not implemented"),

@@ -160,7 +160,7 @@ class LOXProblem:
         rotation_correction: JointCorrectionMode = JointCorrectionMode.TWOPI,
         joint_proximal_relaxation: float = 0.0,
         contact_compliance: bool = False,
-        contact_restitution: bool = False,
+        contact_implicit_restitution: bool = False,
         contact_spatial_friction: bool = False,
     ):
         self.model = model
@@ -179,7 +179,7 @@ class LOXProblem:
         self._joint_translation_dead_zone = 0.0
         self._joint_rotation_dead_zone = 0.0
         self.contact_compliance = contact_compliance
-        self.contact_restitution = contact_restitution
+        self.contact_implicit_restitution = contact_implicit_restitution
         self.contact_spatial_friction = contact_spatial_friction
 
         if jacobians._J_cts is None or jacobians._J_dofs is None:
@@ -1318,10 +1318,12 @@ class LOXProblem:
         if self.contact_spatial_friction:
             source_capacity = self.contacts.model_max_contacts_host if self.contacts is not None else 0
             self._data.contact_rows = SpatialContactRows(
-                contact_capacities, self.device, source_capacity, compliant, self.contact_restitution
+                contact_capacities, self.device, source_capacity, compliant, self.contact_implicit_restitution
             )
         else:
-            self._data.contact_rows = ContactRows(contact_capacities, self.device, compliant, self.contact_restitution)
+            self._data.contact_rows = ContactRows(
+                contact_capacities, self.device, compliant, self.contact_implicit_restitution
+            )
 
         body_count = self.model.size.sum_of_num_bodies
         self._data.body_incidence = wp.zeros((body_count, 1), dtype=wp.int32, device=self.device)
@@ -1482,7 +1484,7 @@ class LOXProblem:
                     dead_zone,
                     self.contacts.stiffness if self.contact_compliance else None,
                     self.contacts.damping if self.contact_compliance else None,
-                    self.contact_restitution,
+                    self.contact_implicit_restitution,
                     self._data.contact_rows.source_to_internal,
                 ],
                 outputs=[

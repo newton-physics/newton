@@ -234,7 +234,7 @@ class LOXSolver:
             rotation_correction=rotation_correction,
             joint_proximal_relaxation=config.joint_proximal_relaxation,
             contact_compliance=config.contact_compliance,
-            contact_restitution=config.contact_restitution,
+            contact_implicit_restitution=config.contact_implicit_restitution,
             contact_spatial_friction=config.contact_spatial_friction,
         )
         self._problem.prepare_patch_schur()

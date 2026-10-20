@@ -147,9 +147,11 @@ Enable these features through ``config.lox`` after selecting
   the spring-damper, so they ignore restitution. Contacts without a positive
   stiffness, and contacts detected by Kamino's own collision pipelines, remain
   hard.
-* ``contact_restitution=True`` reevaluates the speculative impact branch in
-  each local contact update using its current reaction-free normal velocity.
-  Better preserve energy for speculative impacts.
+* ``contact_implicit_restitution=True`` decides the restitution of speculative
+  impacts inside each local contact update, from its current reaction-free normal
+  velocity, which better preserves energy in speculative impacts. Restitution
+  applies either way: by default, the bounce target is fixed at the beginning of
+  the step.
 * ``contact_spatial_friction=True`` accounts for the shape ``mu_torsional`` and
   ``mu_rolling`` coefficients, both in metres.  Sliding, torsion, and rolling
   share one elliptic friction budget. Contacts with zero angular coefficients

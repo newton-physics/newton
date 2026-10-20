@@ -139,7 +139,7 @@ class TestSolverKaminoLOXContacts(unittest.TestCase):
         outcomes = []
         for restitution in (0.0, 0.5):
             model = self._sphere(gap=-0.001, velocity=(0.0, 0.0, -1.0, 0.0, 0.0, 0.0), restitution=restitution)
-            solver = self._solver(model, contact_compliance=True, contact_restitution=True)
+            solver = self._solver(model, contact_compliance=True, contact_implicit_restitution=True)
             outcomes.append(self._step(model, solver, stiffness=500.0).body_qd.numpy())
         np.testing.assert_allclose(outcomes[1], outcomes[0], rtol=0.0, atol=1.0e-6)
         self.assertLess(float(outcomes[0][0, 2]), 0.0)
@@ -151,7 +151,7 @@ class TestSolverKaminoLOXContacts(unittest.TestCase):
                 model = self._sphere(
                     gap=gap, gravity=0.0, velocity=(0.0, 0.0, velocity, 0.0, 0.0, 0.0), restitution=0.5
                 )
-                solver = self._solver(model, contact_restitution=True)
+                solver = self._solver(model, contact_implicit_restitution=True)
                 state = self._step(model, solver)
                 self.assertAlmostEqual(float(state.body_qd.numpy()[0, 2]), expected, delta=2.0e-4)
 
@@ -280,7 +280,7 @@ class TestSolverKaminoLOXContacts(unittest.TestCase):
         with self.subTest(case="restitution"):
             # Restitution is a solver strategy, measured against the hard-contact problem
             model = self._sphere(gravity=0.0, velocity=(0.0, 0.0, -2.0, 0.0, 0.0, 0.0), restitution=0.5)
-            solver = self._solver(model, compute_solution_metrics=True, contact_restitution=True)
+            solver = self._solver(model, compute_solution_metrics=True, contact_implicit_restitution=True)
             self._step(model, solver)
             metrics = solver._solver_kamino.metrics.data
             for name in world_residuals + dual_residuals:
@@ -300,7 +300,7 @@ class TestSolverKaminoLOXContacts(unittest.TestCase):
                     model,
                     method=method,
                     contact_compliance=True,
-                    contact_restitution=True,
+                    contact_implicit_restitution=True,
                     contact_spatial_friction=True,
                     use_graph_conditionals=use_graph_conditionals,
                 )

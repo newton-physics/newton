@@ -1287,11 +1287,14 @@ class LOXSolverConfig:
     detected by Kamino's own collision pipelines, remain hard.
     """
 
-    contact_restitution: bool = False
-    """Enable restitution switching within each local contact solve.
+    contact_implicit_restitution: bool = False
+    """Whether each local contact solve decides the restitution of a speculative impact implicitly.
 
-    The switch uses the current reaction-free normal velocity and the frozen
-    beginning-of-step gap and impact velocity.
+    Restitution applies either way. By default, the bounce target of each contact is fixed at the
+    beginning of the step from its gap and impact velocity. When enabled, each local contact solve
+    chooses between closing the speculative gap and bouncing from its current reaction-free normal
+    velocity, with the beginning-of-step gap and impact velocity, which better preserves energy in
+    speculative impacts.
     """
 
     contact_spatial_friction: bool = False
@@ -1476,7 +1479,7 @@ class LOXSolverConfig:
             or self.joint_warmstart_factor > 1.0
         ):
             raise ValueError(f"Invalid joint_warmstart_factor: {self.joint_warmstart_factor}. Must be in range [0, 1].")
-        for name in ("contact_compliance", "contact_restitution", "contact_spatial_friction"):
+        for name in ("contact_compliance", "contact_implicit_restitution", "contact_spatial_friction"):
             if not isinstance(getattr(self, name), bool):
                 raise ValueError(f"Invalid {name}: {getattr(self, name)}. Must be a boolean.")
         WarmstarterContacts.Method.from_string(self.contact_warmstart_method)
