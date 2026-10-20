@@ -39,7 +39,6 @@ from ...sim.articulation import eval_fk
 from ...sim.collide import _estimate_rigid_contact_max, _estimate_rigid_contact_max_per_world
 from ...sim.contacts import GENERATION_SENTINEL as _GENERATION_SENTINEL
 from ...sim.graph_coloring import color_graph, plot_graph
-from ...sim.joint_springs import finalize_legacy_joint_spring
 from ...utils import topological_sort
 from ...utils.benchmark import event_scope
 from ...utils.import_utils import string_to_warp
@@ -70,6 +69,7 @@ from .equality import (
     _register_equality_tendon_attributes,
 )
 from .geometry import build_shape_layout, compile_layout_collision_masks
+from .joint_springs import finalize_springref, finalize_stiffness
 from .kernels import (
     _sync_nacon_count,
     apply_mjc_body_f_kernel,
@@ -1390,8 +1390,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """
         Declare custom attributes to be allocated on the Model object within the ``mujoco`` namespace.
         Legacy ``dof_passive_stiffness`` and ``dof_springref`` inputs are converted once into
-        ``Model.joint_stiffness`` and ``Model.joint_rest_q`` during finalization; they are not
-        exposed as runtime attributes.
+        ``Model.joint_stiffness`` and ``Model.joint_rest_q`` during finalization.
+        Runtime ``dof_passive_stiffness`` remains a deprecated alias to the core stiffness
+        array; accessing or assigning the removed runtime ``dof_springref`` raises an error.
         Custom attributes use ``CustomAttribute.usd_attribute_name`` with the ``mjc:`` prefix (e.g. ``"mjc:condim"``)
         to leverage the MuJoCo USD schema where attributes are named ``"mjc:attr"`` rather than ``"newton:mujoco:attr"``.
         """
@@ -1787,8 +1788,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             )
         )
         # Accept legacy builder inputs, but keep spring state only in the core model arrays.
-        for name in ("dof_passive_stiffness", "dof_springref"):
-            builder._add_custom_attribute_model_finalizer("mujoco:" + name, finalize_legacy_joint_spring)
+        builder._add_custom_attribute_model_finalizer("mujoco:dof_passive_stiffness", finalize_stiffness)
+        builder._add_custom_attribute_model_finalizer("mujoco:dof_springref", finalize_springref)
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
                 name="dof_ref",

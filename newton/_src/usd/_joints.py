@@ -47,7 +47,14 @@ def _resolve_scalar_spring(
 ) -> tuple[float, float | None, float]:
     """Resolve scalar stiffness, rest coordinate and reference offset in Newton units."""
     resolver = joint_properties.resolver
-    stiffness = resolver.get_value(prim, PrimType.JOINT, "stiffness", default=builder.default_joint_cfg.stiffness)
+    legacy_stiffness = custom_attrs.pop("mujoco:dof_passive_stiffness", None)
+    legacy_springref = custom_attrs.pop("mujoco:dof_springref", None)
+    stiffness = resolver.get_value(
+        prim,
+        PrimType.JOINT,
+        "stiffness",
+        default=builder.default_joint_cfg.stiffness if legacy_stiffness is None else legacy_stiffness,
+    )
     springref = resolver.get_value(prim, PrimType.JOINT, "springref", default=None)
     ref = resolver.get_value(prim, PrimType.JOINT, "ref", default=None)
     angle_scale = 1.0
@@ -55,14 +62,16 @@ def _resolve_scalar_spring(
         angle_attr = physics_scene_prim.GetAttribute("mjc:compiler:angle") if physics_scene_prim else None
         if not angle_attr or not angle_attr.HasAuthoredValue() or str(angle_attr.Get()) == "degree":
             angle_scale = joint_properties.degrees_to_radian
+    # Registered custom values have already passed through their unit transformers.
+    if springref is not None:
+        springref = float(springref) * (1.0 if joint_properties.legacy_springref_units else angle_scale)
+    else:
+        springref = legacy_springref
+    ref = custom_attrs.get("mujoco:dof_ref", None if ref is None else float(ref) * angle_scale)
     rest_q = builder.default_joint_cfg.rest_q
     if springref is not None or ref is not None:
-        rest_q = (float(springref or 0.0) - float(ref or 0.0)) * angle_scale
-    ref = custom_attrs.get("mujoco:dof_ref", float(ref or 0.0) * angle_scale)
-    # The core values own springs resolved through the schema importer.
-    if joint_properties.mjc_resolver is not None:
-        custom_attrs.pop("mujoco:dof_passive_stiffness", None)
-        custom_attrs.pop("mujoco:dof_springref", None)
+        rest_q = float(springref or 0.0) - float(ref or 0.0)
+    ref = float(ref or 0.0)
     return stiffness, rest_q, ref
 
 
@@ -225,11 +234,12 @@ def parse_joint(
         )
         _, joint_damping = joint_properties.resolve_joint_damping(joint_prim)
         joint_params["stiffness"] = R.get_value(
-            joint_prim, PrimType.JOINT, "stiffness", default=builder.default_joint_cfg.stiffness
+            joint_prim,
+            PrimType.JOINT,
+            "stiffness",
+            default=joint_custom_attrs.pop("mujoco:dof_passive_stiffness", builder.default_joint_cfg.stiffness),
         )
-        if joint_properties.mjc_resolver is not None:
-            joint_custom_attrs.pop("mujoco:dof_passive_stiffness", None)
-            joint_custom_attrs.pop("mujoco:dof_springref", None)
+        joint_custom_attrs.pop("mujoco:dof_springref", None)
         joint_params["damping"] = joint_damping
         joint_index = builder.add_joint_ball(**joint_params)
     elif key == UsdPhysics.ObjectType.D6Joint:
@@ -247,6 +257,12 @@ def parse_joint(
             )
             for attr_key in unsupported_ref_attrs:
                 del joint_custom_attrs[attr_key]
+        joint_stiffness = R.get_value(
+            joint_prim,
+            PrimType.JOINT,
+            "stiffness",
+            default=joint_custom_attrs.pop("mujoco:dof_passive_stiffness", builder.default_joint_cfg.stiffness),
+        )
         joint_armature = R.get_value(
             joint_prim, prim_type=PrimType.JOINT, key="armature", default=default_joint_armature, verbose=verbose
         )
@@ -387,6 +403,7 @@ def parse_joint(
                         target_ke=target_ke,
                         target_kd=target_kd,
                         damping=joint_linear_damping,
+                        stiffness=joint_stiffness,
                         armature=joint_armature,
                         effort_limit=effort_limit,
                         velocity_limit=joint_velocity_limit
@@ -455,6 +472,7 @@ def parse_joint(
                         target_ke=target_ke / DegreesToRadian / joint_drive_gains_scaling,
                         target_kd=target_kd / DegreesToRadian / joint_drive_gains_scaling,
                         damping=joint_angular_damping,
+                        stiffness=joint_stiffness,
                         armature=joint_armature,
                         effort_limit=effort_limit,
                         velocity_limit=joint_velocity_limit * DegreesToRadian

@@ -479,6 +479,13 @@ def serialize(obj, callback, _visited=None, _path="", format_type="json", cache:
                 if pair_count is not None:
                     attributes["shape_contact_pair_count"] = pair_count
                 attributes.pop("_shape_contact_pair_counts", None)
+            elif isinstance(obj, Model.AttributeNamespace):
+                # Runtime compatibility hooks are not model state; record the canonical arrays instead.
+                attributes = {
+                    name: value
+                    for name, value in attributes.items()
+                    if name not in ("_deprecated_aliases", "_removed_attributes")
+                }
             return {
                 "__type__": obj.__class__.__name__,
                 "__module__": obj.__class__.__module__,

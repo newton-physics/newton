@@ -109,30 +109,44 @@ Native MuJoCo attributes remain absolute and are not shifted. Core
 the solver exports them as ``qpos_spring = joint_rest_q + ref`` for scalar
 joints.
 
-.. deprecated:: 1.7
+.. _mujoco-joint-spring-migration:
+
+Passive spring migration
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+MuJoCo's ``ref`` is the coordinate assigned to the authored pose;
+``springref`` is the spring equilibrium in that coordinate system.
+Newton stores the relative coordinate ``rest_q = springref - ref``,
+after conversion to meters or radians. If ``springref`` is omitted,
+MuJoCo defaults it to zero, giving ``rest_q = -ref``.
+
+.. deprecated:: 1.8
 
     Use :attr:`~newton.Model.joint_stiffness` instead of
-    ``mujoco.dof_passive_stiffness``, and :attr:`~newton.Model.joint_rest_q`
-    instead of ``mujoco.dof_springref``. The latter requires subtracting
-    ``mujoco.dof_ref`` and uses coordinate indexing, not DOF indexing.
+    ``model.mujoco.dof_passive_stiffness``. The old name remains a warning
+    alias to the same DOF-sized array for at least one minor release.
+    Reads and writes through this alias emit a ``NewtonDeprecationWarning``.
+    In-place updates affect the core array directly.
 
 Legacy ``mujoco:dof_passive_stiffness`` and ``mujoco:dof_springref``
-custom-attribute inputs remain accepted by registered builders. Finalization
-converts them once into the core arrays and emits a ``DeprecationWarning``,
-using ``rest_q = springref - ref`` for scalar joints. For a legacy stiffness
+custom-attribute inputs remain accepted by registered builders but are also
+deprecated since Newton 1.8. Finalization converts explicit programmatic inputs
+once into the core arrays and emits a ``NewtonDeprecationWarning``.
+Ordinary MJCF and USD spring imports populate the core arrays without these
+deprecation warnings. For a legacy stiffness
 input without ``springref``, the default is zero in MuJoCo coordinates
 (``rest_q = -ref``), unless a core rest coordinate is already configured.
 An explicit ``rest_q=0.0`` also takes precedence over that default; use
 ``rest_q=None`` to leave it unspecified. Conflicting explicitly configured
 core rest coordinates and authored legacy rest values raise an error.
-The finalized model exposes only the core spring arrays. The old runtime
-names are removed without a deprecation period, independently of the retained,
-deprecated builder inputs. ``dof_passive_stiffness`` is a direct rename to
-``joint_stiffness`` with the same DOF layout. ``dof_springref`` additionally
-changes from absolute MuJoCo coordinates in DOF layout to relative Newton
-coordinates in coordinate layout, so it cannot directly alias ``joint_rest_q``.
-The runtime removal is an intentional compatibility break for both names;
-existing runtime reads and writes must be migrated to the core arrays.
+
+Runtime ``model.mujoco.dof_springref`` is removed in Newton 1.8 without a
+deprecation period. It cannot directly alias :attr:`~newton.Model.joint_rest_q`:
+the reference changes from absolute MuJoCo coordinates in DOF layout to
+relative Newton coordinates in coordinate layout. Reads, assignments, and
+deletions raise an ``AttributeError`` with migration guidance. Replace runtime
+accesses with ``joint_rest_q``, subtract ``ref`` from legacy values, and index
+by :attr:`~newton.Model.joint_q_start`.
 
 To change a spring at runtime, edit :attr:`~newton.Model.joint_stiffness`
 or :attr:`~newton.Model.joint_rest_q` and notify the solver with

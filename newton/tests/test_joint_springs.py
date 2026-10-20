@@ -11,7 +11,7 @@ import warp as wp
 
 import newton
 from newton.solvers import SolverFeatherstone, SolverMuJoCo, SolverSemiImplicit
-from newton.solvers.experimental.coupled import SolverCoupled
+from newton.solvers.experimental.coupled import ModelView, SolverCoupled
 from newton.tests.unittest_utils import USD_AVAILABLE
 from newton.usd import SchemaResolverMjc, SchemaResolverNewton
 
@@ -172,8 +172,13 @@ class TestJointSprings(unittest.TestCase):
                     builder = newton.ModelBuilder()
                     if register:
                         SolverMuJoCo.register_custom_attributes(builder)
-                    builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()])
-                    model = builder.finalize(device="cpu")
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("error", DeprecationWarning)
+                        if register and not merged:
+                            builder.add_usd(stage)
+                        else:
+                            builder.add_usd(stage, schema_resolvers=[SchemaResolverMjc(), SchemaResolverNewton()])
+                        model = builder.finalize(device="cpu")
                     np.testing.assert_allclose(model.joint_stiffness.numpy(), [5, 3] if merged else [3])
                     np.testing.assert_allclose(model.joint_rest_q.numpy(), [0.2, rest] if merged else [rest], atol=1e-6)
                     offset = np.deg2rad(ref) if angle == "degree" else ref
@@ -209,7 +214,20 @@ class TestJointSprings(unittest.TestCase):
                 )
                 stiffness = model.joint_stiffness.numpy()
                 stiffness[-1] = 4.0
-                model.joint_stiffness.assign(stiffness)
+                if legacy:
+                    with self.assertWarns(DeprecationWarning):
+                        model.mujoco.dof_passive_stiffness.assign(stiffness)
+                else:
+                    model.joint_stiffness.assign(stiffness)
+                if solver_cls == SolverMuJoCo:
+                    compact_view = solver._entries["slider"].view
+                    with self.assertWarns(DeprecationWarning):
+                        self.assertIs(compact_view.mujoco.dof_passive_stiffness, compact_view.joint_stiffness)
+                    with self.assertWarns(DeprecationWarning):
+                        compact_view.mujoco.dof_passive_stiffness = [3.0]
+                    np.testing.assert_allclose(model.joint_stiffness.numpy()[-1], 4.0)
+                    with self.assertRaisesRegex(AttributeError, "joint_rest_q"):
+                        compact_view.mujoco.dof_springref = [0.5]
                 rest = model.joint_rest_q.numpy()
                 rest[-1] = 0.5
                 model.joint_rest_q.assign(rest)
@@ -220,13 +238,32 @@ class TestJointSprings(unittest.TestCase):
                 newton.eval_ik(model, out, out.joint_q, out.joint_qd)
                 np.testing.assert_allclose(out.joint_qd.numpy()[-1], 0.002, atol=1e-7)
 
-    def test_legacy_spring_inputs_are_builder_only(self):
-        """Expose only core spring arrays after converting legacy builder inputs."""
+    def test_legacy_spring_runtime_compatibility(self):
+        """Keep stiffness edits live through the warning alias and reject removed rest-reference access."""
         model = _slider_builder(register=True).finalize(device="cpu")
-        self.assertIs(type(model.mujoco), newton.Model.AttributeNamespace)
-        self.assertFalse(hasattr(model.mujoco, "dof_passive_stiffness"))
-        self.assertFalse(hasattr(model.mujoco, "dof_springref"))
-        self.assertIsNone(model._attribute_spec("mujoco:dof_passive_stiffness"))
+        view = ModelView(model, "spring")
+        view.joint_stiffness = wp.clone(model.joint_stiffness)
+        for owner in (model, view):
+            with self.subTest(owner=type(owner).__name__):
+                with self.assertWarnsRegex(DeprecationWarning, "joint_stiffness") as warning:
+                    self.assertIs(owner.mujoco.dof_passive_stiffness, owner.joint_stiffness)
+                self.assertEqual(warning.filename, __file__)
+                with self.assertWarns(DeprecationWarning):
+                    owner.mujoco.dof_passive_stiffness.assign([4.0])
+                np.testing.assert_array_equal(owner.joint_stiffness.numpy(), [4.0])
+                with self.assertWarns(DeprecationWarning):
+                    owner.mujoco.dof_passive_stiffness = [5.0]
+                np.testing.assert_array_equal(owner.joint_stiffness.numpy(), [5.0])
+                with self.assertRaisesRegex(AttributeError, "joint_rest_q.*springref - ref"):
+                    _ = owner.mujoco.dof_springref
+                with self.assertRaisesRegex(AttributeError, "joint_rest_q.*springref - ref"):
+                    owner.mujoco.dof_springref = [0.5]
+                with self.assertRaisesRegex(AttributeError, "joint_rest_q.*springref - ref"):
+                    del owner.mujoco.dof_springref
+        view.joint_stiffness.assign([7.0])
+        np.testing.assert_array_equal(model.joint_stiffness.numpy(), [5.0])
+        self.assertTrue(model._attribute_spec("mujoco:dof_passive_stiffness").deprecated)
+        self.assertNotIn("mujoco:dof_passive_stiffness", dict(model._iter_attribute_specs()))
         self.assertIsNone(model._attribute_spec("mujoco:dof_springref"))
 
     def test_builder_composition_and_coordinate_layout(self):
@@ -573,7 +610,8 @@ class TestJointSprings(unittest.TestCase):
         SolverMuJoCo.register_custom_attributes(builder)
         builder.add_usd(stage)
         builder.add_articulation([0])
-        with self.assertWarns(DeprecationWarning):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
             model = builder.finalize(device="cpu")
         np.testing.assert_allclose(model.joint_stiffness.numpy(), [3])
         np.testing.assert_allclose(model.joint_rest_q.numpy(), [-0.2], atol=1e-7)
@@ -595,7 +633,11 @@ class TestJointSprings(unittest.TestCase):
                         newton.ModelBuilder.JointDofConfig(axis=newton.Axis.X, stiffness=2, rest_q=0.3),
                         newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Y, stiffness=4, rest_q=0.2),
                     ],
-                    angular_axes=[newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z, stiffness=5, rest_q=0.1)],
+                    angular_axes=[
+                        newton.ModelBuilder.JointDofConfig(axis=newton.Axis.X, stiffness=2, rest_q=0.1),
+                        newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Y, stiffness=4, rest_q=-0.2),
+                        newton.ModelBuilder.JointDofConfig(axis=newton.Axis.Z, stiffness=5, rest_q=0.3),
+                    ],
                 )
                 builder.add_articulation([joint])
                 model = builder.finalize(device="cpu")
@@ -605,7 +647,9 @@ class TestJointSprings(unittest.TestCase):
                 newton.eval_fk(model, model.joint_q, model.joint_qd, state)
                 solver.step(state, out, model.control(), None, 0.001)
                 newton.eval_ik(model, out, out.joint_q, out.joint_qd)
-                np.testing.assert_allclose(out.joint_qd.numpy()[3:], [0.0006, 0.0008, 0.0005], atol=1e-7)
+                np.testing.assert_allclose(
+                    out.joint_qd.numpy()[3:], [0.0006, 0.0008, 0.0002, -0.0008, 0.0015], atol=1e-7
+                )
 
     def test_spring_parameter_gradients(self):
         """Differentiate a slider's acceleration with respect to its stiffness and rest coordinate."""

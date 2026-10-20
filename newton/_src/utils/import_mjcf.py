@@ -2983,6 +2983,7 @@ def parse_mjcf(
         warnings.warn(
             "Converting three hinges to a ball joint uses an identity spring rest orientation; "
             "set convert_3d_hinge_to_ball_joints=False to preserve scalar spring rest coordinates.",
+            NewtonWarning,
             stacklevel=3,
         )
 

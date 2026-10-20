@@ -608,7 +608,7 @@ class _BuilderShapeCollisionFilterPairs:
 def _resolve_joint_target_alias(value: float | None, legacy: float | None, name: str, old_name: str) -> float | None:
     """Resolve a deprecated joint target keyword without silently accepting conflicting values."""
     if legacy is not None:
-        warnings.warn(f"{old_name} is deprecated; use {name} instead.", DeprecationWarning, stacklevel=3)
+        warnings.warn(f"{old_name} is deprecated; use {name} instead.", NewtonDeprecationWarning, stacklevel=3)
         if value is not None and value != legacy:
             raise ValueError(f"Conflicting {name} and deprecated {old_name} values")
         return legacy
@@ -1289,30 +1289,30 @@ class ModelBuilder:
         def target_pos(self) -> float:
             """Deprecated position target.
 
-            .. deprecated:: 1.7
+            .. deprecated:: 1.8
                 Use :attr:`target_q` instead.
             """
-            warnings.warn("target_pos is deprecated; use target_q instead.", DeprecationWarning, stacklevel=2)
+            warnings.warn("target_pos is deprecated; use target_q instead.", NewtonDeprecationWarning, stacklevel=2)
             return self.target_q
 
         @target_pos.setter
         def target_pos(self, value: float) -> None:
-            warnings.warn("target_pos is deprecated; use target_q instead.", DeprecationWarning, stacklevel=2)
+            warnings.warn("target_pos is deprecated; use target_q instead.", NewtonDeprecationWarning, stacklevel=2)
             self.target_q = value
 
         @property
         def target_vel(self) -> float:
             """Deprecated velocity target.
 
-            .. deprecated:: 1.7
+            .. deprecated:: 1.8
                 Use :attr:`target_qd` instead.
             """
-            warnings.warn("target_vel is deprecated; use target_qd instead.", DeprecationWarning, stacklevel=2)
+            warnings.warn("target_vel is deprecated; use target_qd instead.", NewtonDeprecationWarning, stacklevel=2)
             return self.target_qd
 
         @target_vel.setter
         def target_vel(self, value: float) -> None:
-            warnings.warn("target_vel is deprecated; use target_qd instead.", DeprecationWarning, stacklevel=2)
+            warnings.warn("target_vel is deprecated; use target_qd instead.", NewtonDeprecationWarning, stacklevel=2)
             self.target_qd = value
 
         @classmethod
@@ -6100,8 +6100,8 @@ class ModelBuilder:
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
-            target_pos: Deprecated since 1.7; use ``target_q``.
-            target_vel: Deprecated since 1.7; use ``target_qd``.
+            target_pos: Deprecated since 1.8; use ``target_q``.
+            target_vel: Deprecated since 1.8; use ``target_qd``.
 
         Returns:
             The index of the added joint.
@@ -6208,8 +6208,8 @@ class ModelBuilder:
             collision_filter_parent: Whether to filter collisions between shapes of the parent and child bodies. Defaults to ``False`` for joints to world, ``True`` otherwise.
             enabled: Whether the joint is enabled.
             custom_attributes: Dictionary of custom attribute values for JOINT, JOINT_DOF, or JOINT_COORD frequency attributes.
-            target_pos: Deprecated since 1.7; use ``target_q``.
-            target_vel: Deprecated since 1.7; use ``target_qd``.
+            target_pos: Deprecated since 1.8; use ``target_q``.
+            target_vel: Deprecated since 1.8; use ``target_qd``.
 
         Returns:
             The index of the added joint.

@@ -5163,7 +5163,7 @@ def Xform "Articulation" (
                     with warning:
                         result = builder.add_usd(stage, **kwargs)
                     model = builder.finalize(device="cpu")
-                    springref = model.mujoco.dof_springref.numpy()
+                    rest_q = model.joint_rest_q.numpy()
                     reference = model.mujoco.dof_ref.numpy()
                     angular_factor = 1.0 if angle_units == "radian" else np.pi / 180.0
                     expected_springref = 30.0 if legacy else 30.0 * angular_factor
@@ -5176,7 +5176,8 @@ def Xform "Articulation" (
                     ):
                         joint = result["path_joint_map"][f"/World/{path}"]
                         dof = builder.joint_qd_start[joint] + offset
-                        self.assertAlmostEqual(springref[dof], expected_spring, places=5)
+                        coord = builder.joint_q_start[joint] + offset
+                        self.assertAlmostEqual(rest_q[coord], expected_spring - expected_ref, places=5)
                         self.assertAlmostEqual(reference[dof], expected_ref, places=5)
 
                     self.assertEqual(stage.GetPrimAtPath("/World/Revolute").GetAttribute("mjc:springref").Get(), 30.0)
@@ -5265,7 +5266,8 @@ def Xform "Articulation" (
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
         builder.add_usd(stage)
-        with self.assertWarnsRegex(DeprecationWarning, "mujoco:dof_springref"):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
             model = builder.finalize()
 
         rest_q = model.joint_rest_q.numpy()
@@ -5367,7 +5369,8 @@ def Xform "Articulation" (
         builder = newton.ModelBuilder()
         SolverMuJoCo.register_custom_attributes(builder)
         builder.add_usd(stage)
-        with self.assertWarnsRegex(DeprecationWarning, "mujoco:dof_springref"):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", DeprecationWarning)
             model = builder.finalize()
 
         qd_start = model.joint_qd_start.numpy()

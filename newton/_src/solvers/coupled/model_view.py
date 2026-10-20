@@ -5,11 +5,14 @@
 
 from __future__ import annotations
 
+import warnings
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import warp as wp
 
+from ...exceptions import NewtonDeprecationWarning
 from ...geometry import ParticleFlags
 from ...sim import BodyFlags, JointType, Model
 
@@ -44,11 +47,22 @@ def _type_summary(value) -> str:
 class _AttributeNamespaceView(Model.AttributeNamespace):
     """Copy-on-write namespace overlay used by compact model views."""
 
-    def __init__(self, parent: Model.AttributeNamespace) -> None:
+    def __init__(self, parent: Model.AttributeNamespace, view: ModelView) -> None:
         super().__init__(object.__getattribute__(parent, "_name"))
         object.__setattr__(self, "_parent_namespace", parent)
+        self._removed_attributes.update(parent._removed_attributes)
+        for name, (getter, message) in parent._deprecated_aliases.items():
+            spec = view.parent._attribute_spec(f"{self._name}:{name}")
+            view_getter = (
+                partial(getattr, view, spec.alias_of) if spec is not None and spec.alias_of is not None else getter
+            )
+            self._add_deprecated_alias(name, view_getter, message)
 
     def __getattr__(self, name: str):
+        if name in self._deprecated_aliases:
+            getter, message = self._deprecated_aliases[name]
+            warnings.warn(message, NewtonDeprecationWarning, stacklevel=2)
+            return getter()
         try:
             return super().__getattr__(name)
         except AttributeError:
@@ -98,7 +112,13 @@ class ModelView:
         overrides = object.__getattribute__(self, "_overrides")
         if name in overrides:
             return self._count_limited_attribute(name, overrides[name])
-        return self._count_limited_attribute(name, getattr(parent, name))
+        value = getattr(parent, name)
+        if isinstance(value, Model.AttributeNamespace) and (value._deprecated_aliases or value._removed_attributes):
+            cache = object.__getattribute__(self, "_cache")
+            if name not in cache:
+                cache[name] = _AttributeNamespaceView(value, self)
+            return cache[name]
+        return self._count_limited_attribute(name, value)
 
     def __setattr__(self, name: str, value) -> None:
         if name == "shape_contact_pair_count":
