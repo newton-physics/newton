@@ -196,8 +196,10 @@ jobs:
           gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/comments" \
             --jq '.[] | {id, user: .user.login, path, line, in_reply_to_id, body}' > .pr-review/review-comments.jsonl
 
+          # Use only the last summary comment, the one the publish script updates.
           previous=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" \
-            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- newton-automated-review -->"))) | .body')
+            --jq '.[] | select(.user.login == "github-actions[bot]" and (.body | startswith("<!-- newton-automated-review -->"))) | {body}' \
+            | tail -n 1 | jq -r '.body // empty')
           mode=first
           last_reviewed=""
           : > .pr-review/since-last-review.diff
