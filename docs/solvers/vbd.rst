@@ -159,11 +159,12 @@ The contact methods are described in:
 Key Constructor Parameters
 ~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-*In development.* One compact orientation table over the three constructor
-parameter groups — common, ``particle_*``, and ``rigid_*`` — with a one-line
-role per parameter, cross-linked to :class:`~newton.solvers.SolverVBD` for
-defaults and to :ref:`Tuning VBD` for effects and recommended values.
-Detailed tuning guidance intentionally lives on the tuning page, not here.
+*In development.* One compact orientation table over the four constructor
+parameter groups — common, ``particle_*``, ``rigid_*``, and ``tendon_*`` —
+with a one-line role per parameter, cross-linked to
+:class:`~newton.solvers.SolverVBD` for defaults and to :ref:`Tuning VBD` for
+effects and recommended values. Detailed tuning guidance intentionally lives
+on the tuning page, not here.
 
 Examples
 --------
