@@ -9,6 +9,8 @@ from collections.abc import Callable
 from functools import wraps
 from typing import Any, ParamSpec, TypeVar, cast
 
+from ..exceptions import NewtonDeprecationWarning
+
 _P = ParamSpec("_P")
 _R = TypeVar("_R")
 
@@ -99,7 +101,7 @@ def deprecate_nonkeyword_arguments(func: Callable[_P, _R]) -> Callable[_P, _R]:
         warnings.warn(
             f"Passing {parameter_list} positionally to {func.__qualname__}() is deprecated. "
             "Pass these arguments as keyword arguments instead.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         return func(*args[:positional_count], **kwargs)

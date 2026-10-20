@@ -1,6 +1,10 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import contextlib
+import subprocess
+import sys
+import textwrap
 import unittest
 from unittest import mock
 
@@ -8,7 +12,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton.tests.unittest_utils import USD_AVAILABLE
+from newton.tests.unittest_utils import USD_AVAILABLE, get_strict_warning_args, patch_sys_module
 from newton.viewer import ViewerRTX
 
 if USD_AVAILABLE:
@@ -20,14 +24,42 @@ class TestViewerRTXMarkers(unittest.TestCase):
     def setUp(self):
         self.ovrtx = mock.MagicMock()
         self.ovrtx.__version__ = "0.3.0"
-        patcher = mock.patch.dict("sys.modules", {"ovrtx": self.ovrtx})
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        stack = contextlib.ExitStack()
+        self.addCleanup(stack.close)
+        stack.enter_context(patch_sys_module("ovrtx", self.ovrtx))
         self.viewer = ViewerRTX(headless=True)
         self.addCleanup(self.viewer.close)
         self.viewer._phase = ViewerRTX._PHASE_RENDER
         self.viewer._rtx = self.ovrtx.Renderer()
         self.viewer._make_laned_array_dltensor = mock.Mock(side_effect=lambda values, lanes: values)
+
+    def test_mock_cleanup_preserves_cpu_capture_imports(self):
+        """Keep lazily imported Warp launch types alive after mocked RTX initialization."""
+        # A fresh runtime must initialize inside the mock to expose module-cache rollback.
+        script = textwrap.dedent(
+            """
+            import unittest
+            import warp as wp
+            from newton.tests.test_viewer_rtx_markers import TestViewerRTXMarkers
+            from newton.examples.basic.example_basic_pendulum import Example
+            from newton.viewer import ViewerNull
+
+            result = unittest.TestResult()
+            TestViewerRTXMarkers("test_add_markers_after_first_frame").run(result)
+            assert result.wasSuccessful(), result.errors or result.failures
+            with wp.ScopedDevice("cpu"):
+                example = Example(ViewerNull(), None)
+                wp.capture_launch(example.graph)
+            """
+        )
+        result = subprocess.run(
+            [sys.executable, *get_strict_warning_args(), "-c", script],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def _log_spheres(self, count, *, hidden=False, color=(1.0, 0.0, 0.0)):
         xforms = wp.array([wp.transform_identity()] * count, dtype=wp.transform, device="cpu")
