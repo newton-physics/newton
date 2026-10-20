@@ -1,1 +1,1 @@
-Fix intermittent NaN states in Kamino DVI simulations of closed-loop robots with the default ``LLTB`` bilateral solver by refactoring blocks whose Cholesky factorization fails because of float32 round-off with a small diagonal shift, as ``LLTBRCM`` already does.
+Fix intermittent NaN states in Kamino DVI simulations of closed-loop robots with the default ``LLTB`` bilateral solver by refactorizing blocks whose Cholesky factorization fails because of float32 round-off with a small diagonal shift, as ``LLTBRCM`` already does.

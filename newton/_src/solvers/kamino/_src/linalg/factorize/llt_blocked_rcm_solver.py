@@ -159,7 +159,8 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
                 pattern is still rebuilt each time. Defaults to ``True``.
             failed_pivot_shift: diagonal shift added to blocks whose
                 factorization produced a non-finite pivot before they are
-                refactored. Zero disables the retry. Defaults to ``0.0``.
+                refactorized. Zero disables the retry. Must be non-negative.
+                Defaults to ``0.0``.
             capacity_stride: whether each block is stored with its capacity
                 (maximum dimension) as row stride instead of its active
                 dimension. Capacities rounded up to ``block_size`` keep all
@@ -212,6 +213,8 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         self._rcm_max_bfs_iters = rcm_max_bfs_iters
         self._reuse_permutation = reuse_permutation
         self._parallel_factorization = parallel_factorization
+        if failed_pivot_shift < 0.0:
+            raise ValueError(f"failed_pivot_shift must be non-negative, got {failed_pivot_shift}.")
         self._failed_pivot_shift = failed_pivot_shift
         self._capacity_stride = capacity_stride
 
@@ -617,7 +620,7 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
                 clear_skipped=clear_skipped,
             )
         if self._failed_pivot_shift > 0.0:
-            # Round-off can break near-singular blocks; refactor only those,
+            # Round-off can break near-singular blocks; refactorize only those,
             # since the per-block kernel exits immediately for zero dimensions.
             self._retry_dim.zero_()
             retry_shape = (num_blocks, self._max_dim)

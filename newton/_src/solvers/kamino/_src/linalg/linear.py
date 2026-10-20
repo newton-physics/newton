@@ -614,8 +614,9 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
                 launch the factorization kernel.
             failed_pivot_shift: Diagonal shift added to blocks whose
                 factorization produced a non-finite pivot before they are
-                refactored once. The shift is removed from the matrix again
-                afterwards. Zero disables the retry. Defaults to ``0.0``.
+                refactorized once. The shift is removed from the matrix again
+                afterwards, up to round-off. Zero disables the retry. Must be
+                non-negative. Defaults to ``0.0``.
             atol: Absolute solve tolerance.
             rtol: Relative solve tolerance.
             ftol: Factorization tolerance.
@@ -629,7 +630,9 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
         self._y: wp.array[ScalarType] | None = None
         """A flat array containing the intermediate results for the solve operation."""
         self._retry_dim: wp.array[wp.int32] | None = None
-        """The dimension of each block to refactor after a failed pivot, zero for the others."""
+        """The dimension of each block to refactorize after a failed pivot, zero for the others."""
+        if failed_pivot_shift < 0.0:
+            raise ValueError(f"failed_pivot_shift must be non-negative, got {failed_pivot_shift}.")
         self._failed_pivot_shift: float = failed_pivot_shift
 
         self._factorize_block_size: int = factorize_block_size
@@ -708,7 +711,7 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
             L=self._L,
         )
         if self._failed_pivot_shift > 0.0:
-            # Round-off can break near-singular blocks; refactor only those,
+            # Round-off can break near-singular blocks; refactorize only those,
             # since the per-block kernel exits immediately for zero dimensions.
             info = self._operator.info
             self._retry_dim.zero_()

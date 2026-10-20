@@ -88,7 +88,7 @@ def flag_failed_llt_factors(
     L: wp.array[wp.float32],
     retry_dim: wp.array[wp.int32],
 ):
-    """Select blocks with a non-finite pivot for refactoring.
+    """Select blocks with a non-finite pivot for refactorization.
 
     Sets ``retry_dim`` to the dimension of each such block and leaves it unchanged for the
     others, which should start at zero. Launch with shape ``(num_blocks, max_dim)``.
