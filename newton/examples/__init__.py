@@ -5,13 +5,16 @@ import ast
 import copy
 import gc
 import importlib
+import logging
 import math
 import os
 import sys
 import time
 import warnings
 from collections import defaultdict
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
+from typing import TYPE_CHECKING
 
 import numpy as np
 import warp as wp
@@ -19,7 +22,11 @@ import warp as wp
 import newton
 from newton.tests.unittest_utils import find_nan_members
 
+if TYPE_CHECKING:
+    from newton.viewer import ViewerBase
+
 _DEPRECATED_WARP_CONFIG_KEYS = {"quiet", "verbose"}
+logger = logging.getLogger(__name__)
 
 
 def get_source_directory() -> str:
@@ -340,6 +347,83 @@ def _coupled_view_state(example, name: str):
     return solver.entry_state(name)
 
 
+@contextmanager
+def _preserve_display_options(viewer: "ViewerBase", *, switching: bool = False) -> Iterator[None]:
+    """Keep display choices while rebuilding layers, using each new model's force calibration."""
+    option_names = {
+        "visible",
+        "sdf_margin_mode",
+        "contact_mode_eps_force",
+        "contact_mode_eps_velocity",
+        "contact_viz_scale",
+        "gaussians_max_points",
+    }
+    saved = {
+        layer_id: {
+            name: value for name, value in vars(layer).items() if name.startswith("show_") or name in option_names
+        }
+        for layer_id, layer in getattr(viewer, "layers", {}).items()
+    }
+    force_gains = {
+        layer_id: layer.contact_force_scale / layer._contact_force_scale_default
+        for layer_id, layer in getattr(viewer, "layers", {}).items()
+    }
+    active_id = getattr(getattr(viewer, "layer", None), "layer_id", None)
+    defaults = {name: value for name, value in saved.get(active_id, {}).items() if name != "visible"}
+    globals_saved = {
+        name: getattr(viewer, name) for name in ("show_ui", "vsync", "_paused", "camera_speed") if hasattr(viewer, name)
+    }
+    camera = getattr(viewer, "camera", None)
+    camera_saved = {name: getattr(camera, name) for name in ("fov", "near", "far") if hasattr(camera, name)}
+    renderer = getattr(viewer, "renderer", None)
+    render_saved = {
+        name: copy.deepcopy(getattr(renderer, name))
+        for name in (
+            "draw_sky",
+            "draw_shadows",
+            "draw_wireframe",
+            "draw_edges",
+            "_light_color",
+            "sky_upper",
+            "sky_lower",
+            "arrow_scale",
+            "joint_scale",
+            "com_scale",
+        )
+        if hasattr(renderer, name)
+    }
+    try:
+        yield
+    finally:
+        for layer_id, layer in getattr(viewer, "layers", {}).items():
+            options = dict(saved.get(layer_id, defaults))
+            # Example defaults can hide mesh vertices but must not hide a new
+            # scene's loose particles. Only carry an explicit GUI choice.
+            if switching:
+                choice = getattr(viewer, "_particle_visibility_user", None)
+                options.pop("show_particles", None)
+                if choice is not None:
+                    options["show_particles"] = choice
+            options["contact_force_scale"] = layer._contact_force_scale_default * force_gains.get(
+                layer_id, force_gains.get(active_id, 1.0)
+            )
+            for name, value in options.items():
+                setattr(layer, name, value)
+                if layer is viewer.layer and name != "visible":
+                    setattr(viewer, name, value)
+            layer.model_changed = True
+            if layer is viewer.layer:
+                viewer.model_changed = True
+        for name, value in globals_saved.items():
+            setattr(viewer, name, value)
+        camera = getattr(viewer, "camera", None)
+        for name, value in camera_saved.items():
+            if hasattr(camera, name):
+                setattr(camera, name, value)
+        for name, value in render_saved.items():
+            setattr(renderer, name, value)
+
+
 class _ExampleBrowser:
     """Manages the example browser UI and switching/reset logic for the run loop."""
 
@@ -348,6 +432,8 @@ class _ExampleBrowser:
         self.switch_target: str | None = None
         self._reset_requested = False
         self.callback = None
+        self.load_error: str | None = None
+        self.failed_target: str | None = None
         self._tree: dict[str, list[tuple[str, str]]] = {}
         # Deep-copy so later mutations to the caller's namespace (or to
         # nested mutable fields like ``args.warp_config``) do not change
@@ -375,6 +461,14 @@ class _ExampleBrowser:
             return
 
         def _browser_ui(imgui):
+            if self.load_error is not None:
+                imgui.text_wrapped(self.load_error)
+                if imgui.button("Retry##example_load"):
+                    if self.failed_target is not None:
+                        self.switch_target = self.failed_target
+                    else:
+                        self._reset_requested = True
+                imgui.separator()
             imgui.set_next_item_open(False, imgui.Cond_.appearing)
             if imgui.collapsing_header("Examples"):
                 for category in sorted(self._tree.keys()):
@@ -417,28 +511,47 @@ class _ExampleBrowser:
             self.viewer.clear_model()
         # Each example starts with picking enabled and may opt out in its constructor.
         self.viewer.picking_enabled = True
+        # Clear callback references before collecting cycles, so old resources
+        # cannot be destroyed during the next constructor's CUDA graph capture.
+        gc.collect()
+
+    def report_error(self, error: BaseException, module_path: str, *, phase: str, retry_switch: bool = False) -> None:
+        """Report the original failure and discard the partial scene, keeping the browser."""
+        logger.error("Failed to %s example %s", phase, module_path, exc_info=(type(error), error, error.__traceback__))
+        self.load_error = f"Failed to {phase} {module_path}:\n{type(error).__name__}: {error}"
+        self.failed_target = module_path if retry_switch else None
+        try:
+            self._clear_viewer_scene()
+        finally:
+            self._hide_splash()
 
     def switch(self, example_class):
-        """Switch to the selected example. Returns (new_example, new_class) or (None, example_class)."""
+        """Return (new_example, new_class), or (None, example_class) on failure.
+
+        The caller must drop its reference to the old example before switching.
+        """
         module_path, self.switch_target = self.switch_target, None
-        self._show_splash(f"Loading {module_path.rsplit('.', 1)[-1]}...")
-        self._clear_viewer_scene()
+        self._reset_requested = False
+        self.load_error = self.failed_target = None
         try:
-            mod = importlib.import_module(module_path)
-            parser = getattr(mod.Example, "create_parser", create_parser)()
-            new_args = default_args(parser)
-            example = mod.Example(self.viewer, new_args)
-        except Exception as e:
-            warnings.warn(f"Failed to load example {module_path}: {e}", stacklevel=2)
+            self._show_splash(f"Loading {module_path.rsplit('.', 1)[-1]}...")
+            with _preserve_display_options(self.viewer, switching=True):
+                self._clear_viewer_scene()
+                try:
+                    mod = importlib.import_module(module_path)
+                    parser = getattr(mod.Example, "create_parser", create_parser)()
+                    new_args = default_args(parser)
+                    # Snapshot before the constructor can mutate the namespace.
+                    initial_args = copy.deepcopy(new_args)
+                    example = mod.Example(self.viewer, new_args)
+                    self._register_ui(example)
+                except (Exception, SystemExit) as error:
+                    self.report_error(error, module_path, phase="load", retry_switch=True)
+                    return None, example_class
+            self._initial_args = initial_args
+            return example, type(example)
+        finally:
             self._hide_splash()
-            return None, example_class
-        # Track the args used to launch the current example so a subsequent
-        # Reset reuses the new example's args, not the originally launched
-        # example's args (different parsers expose different fields).
-        self._initial_args = copy.deepcopy(new_args)
-        self._register_ui(example)
-        self._hide_splash()
-        return example, type(example)
 
     def reset(self, example_class):
         """Reset the current example by re-creating it. Returns the new example or None.
@@ -447,25 +560,26 @@ class _ExampleBrowser:
         this method.
         """
         self._reset_requested = False
-        self._show_splash("Resetting...")
-        self._clear_viewer_scene()
+        self.load_error = self.failed_target = None
         try:
-            if self._initial_args is not None:
-                # Re-create the example with the user's original CLI args so
-                # options like --world-count survive a reset; deep-copy so
-                # the new instance cannot mutate the snapshot.
-                args = copy.deepcopy(self._initial_args)
-            else:
-                parser = getattr(example_class, "create_parser", create_parser)()
-                args = default_args(parser)
-            new_example = example_class(self.viewer, args)
-        except Exception as e:
-            warnings.warn(f"Failed to reset example: {e}", stacklevel=2)
+            self._show_splash("Resetting...")
+            with _preserve_display_options(self.viewer):
+                self._clear_viewer_scene()
+                try:
+                    if self._initial_args is not None:
+                        # Keep the user's CLI args, including nested mutable fields.
+                        args = copy.deepcopy(self._initial_args)
+                    else:
+                        parser = getattr(example_class, "create_parser", create_parser)()
+                        args = default_args(parser)
+                    new_example = example_class(self.viewer, args)
+                    self._register_ui(new_example)
+                except (Exception, SystemExit) as error:
+                    self.report_error(error, example_class.__module__, phase="reset")
+                    return None
+            return new_example
+        finally:
             self._hide_splash()
-            return None
-        self._register_ui(new_example)
-        self._hide_splash()
-        return new_example
 
 
 def _format_fps(fps: float) -> str:
@@ -544,7 +658,16 @@ def run(example, args):
     if perform_test and not test_final:
         raise NotImplementedError("Examples must implement test_final() to run in test mode")
 
-    browser = _ExampleBrowser(viewer, args) if not perform_test else None
+    interactive = (
+        not perform_test
+        and not getattr(args, "headless", False)
+        and not getattr(viewer, "_headless", False)
+        and getattr(args, "benchmark", False) is False
+        and not getattr(viewer, "benchmark", False)
+        and getattr(args, "viewer", None) not in ("null", "usd", "rerun")
+        and (hasattr(viewer, "register_ui_callback") or hasattr(viewer, "_configure_example_browser"))
+    )
+    browser = _ExampleBrowser(viewer, args) if interactive else None
 
     if hasattr(example, "gui") and hasattr(viewer, "register_ui_callback"):
         viewer.register_ui_callback(lambda ui, ex=example: ex.gui(ui), position="side")
@@ -553,16 +676,13 @@ def run(example, args):
         frame_start_time = time.perf_counter()
 
         if browser is not None and browser.switch_target is not None:
+            example = None
             example, example_class = browser.switch(example_class)
             continue
 
         if browser is not None and browser._reset_requested:
-            # Drop our reference and force cycle collection so the old
-            # example's destructors finish before reset() enters the new
-            # CUDA graph capture; otherwise late texture/array __del__
-            # calls could fire mid-capture and CUDA rejects them.
+            # Scene cleanup drops callbacks and collects cycles before construction.
             example = None
-            gc.collect()
             example = browser.reset(example_class)
             continue
 
@@ -572,14 +692,21 @@ def run(example, args):
             _throttle_render_fps(frame_start_time, render_fps)
             continue
 
-        if viewer.should_step():
-            with wp.ScopedTimer("step", active=False):
-                example.step()
-        if test_post_step:
-            example.test_post_step()
+        try:
+            if viewer.should_step():
+                with wp.ScopedTimer("step", active=False):
+                    example.step()
+            if test_post_step:
+                example.test_post_step()
 
-        with wp.ScopedTimer("render", active=False):
-            example.render()
+            with wp.ScopedTimer("render", active=False):
+                example.render()
+        except (Exception, SystemExit) as error:
+            if browser is None:
+                raise
+            example = None
+            with _preserve_display_options(viewer):
+                browser.report_error(error, example_class.__module__, phase="run")
 
         _throttle_render_fps(frame_start_time, render_fps)
 

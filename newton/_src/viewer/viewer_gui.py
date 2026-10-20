@@ -878,6 +878,8 @@ class ViewerGui:
                                 "Arrow Thickness", renderer.arrow_scale, 0.25, 5.0
                             )
                     _changed, viewer.show_particles = imgui.checkbox("Show Particles", viewer.show_particles)
+                    if _changed:
+                        viewer._particle_visibility_user = viewer.show_particles
                     _changed, viewer.show_springs = imgui.checkbox("Show Springs", viewer.show_springs)
                     _changed, viewer.show_com = imgui.checkbox("Show Center of Mass", viewer.show_com)
                     if viewer.show_com and renderer is not None and hasattr(renderer, "com_scale"):

@@ -9,12 +9,20 @@ manual smoke test and does not contain any auto-discovered ``TestCase``
 classes.
 """
 
+import argparse
+import gc
 import types
 import unittest
+import weakref
+from collections.abc import Callable
 from unittest.mock import patch
 
+import warp as wp
+
+import newton
 import newton.examples
 from newton.examples import _ExampleBrowser
+from newton.viewer import ViewerNull
 
 
 class _StubViewer:
@@ -61,7 +69,281 @@ class _OtherStubExample:
         return parser
 
 
+class _BrowserViewer(ViewerNull):
+    """Use real layer/model management with an in-memory browser UI."""
+
+    def __init__(self) -> None:
+        self.callbacks: dict[str, list[Callable]] = {}
+        self.splash: str | None = None
+        self.closed = False
+        self.on_frame: Callable[[], None] = lambda: None
+        self.reset_callback: Callable[[], None] | None = None
+        super().__init__(num_frames=6)
+
+    def register_ui_callback(self, callback: Callable, position: str = "side") -> None:
+        self.callbacks.setdefault(position, []).append(callback)
+
+    def set_reset_callback(self, callback: Callable[[], None]) -> None:
+        self.reset_callback = callback
+
+    def clear_model(self) -> None:
+        self.callbacks.pop("side", None)
+        self.callbacks.pop("free", None)
+        super().clear_model()
+
+    def show_loading_splash(self, text: str) -> None:
+        self.splash = text
+
+    def hide_loading_splash(self) -> None:
+        self.splash = None
+
+    def end_frame(self) -> None:
+        super().end_frame()
+        if self.splash is None:
+            self.on_frame()
+
+    def close(self) -> None:
+        self.closed = True
+
+
 class TestExampleBrowserReset(unittest.TestCase):
+    def test_display_options_survive_reset_and_switch(self) -> None:
+        """Keep layer choices while recalibrating forces for the new model."""
+        models = []
+        for mass in (1.0, 10.0):
+            builder = newton.ModelBuilder()
+            builder.add_body(mass=mass, inertia=wp.mat33(mass, 0.0, 0.0, 0.0, mass, 0.0, 0.0, 0.0, mass))
+            models.append(builder.finalize(device="cpu"))
+
+        class Scene(_StubExample):
+            def __init__(self, viewer: ViewerNull, args: argparse.Namespace) -> None:
+                super().__init__(viewer, args)
+                viewer.activate("scene")
+                viewer.set_model(models[0])
+
+        class OtherScene(_StubExample):
+            def __init__(self, viewer: ViewerNull, args: argparse.Namespace) -> None:
+                super().__init__(viewer, args)
+                viewer.activate("other")
+                viewer.set_model(models[1])
+                viewer.show_particles = True
+
+        with wp.ScopedDevice("cpu"):
+            viewer = ViewerNull(num_frames=1)
+            Scene(viewer, newton.examples.default_args())
+            viewer.show_contacts = True
+            viewer.show_visual = False
+            viewer.show_contact_normals = False
+            viewer.contact_viz_scale = 3.5
+            viewer.contact_mode_eps_force = 0.2
+            viewer.contact_force_scale *= 2.0
+            original_force_scale = viewer.contact_force_scale
+            viewer.layer.visible = False
+            browser = _ExampleBrowser(viewer)
+            self.assertIsNotNone(browser.reset(Scene))
+            self.assertFalse(viewer.layer.visible)
+            self.assertAlmostEqual(viewer.contact_force_scale, original_force_scale)
+
+            browser.switch_target = "test.other"
+            with patch(
+                "newton.examples.importlib.import_module", return_value=types.SimpleNamespace(Example=OtherScene)
+            ):
+                example, example_class = browser.switch(Scene)
+            self.assertIsInstance(example, OtherScene)
+            self.assertTrue(viewer.layer.visible)
+            self.assertTrue(viewer.show_contacts)
+            self.assertFalse(viewer.show_visual)
+            self.assertFalse(viewer.show_contact_normals)
+            self.assertEqual(viewer.contact_viz_scale, 3.5)
+            self.assertEqual(viewer.contact_mode_eps_force, 0.2)
+            self.assertAlmostEqual(viewer.contact_force_scale, original_force_scale / 10.0)
+            # A previous scene's default must not hide loose particles.
+            self.assertTrue(viewer.show_particles)
+            viewer._particle_visibility_user = viewer.show_particles = False
+            self.assertIsNotNone(browser.reset(example_class))
+            self.assertFalse(viewer.show_particles)
+            browser.switch_target = "test.other"
+            with patch(
+                "newton.examples.importlib.import_module", return_value=types.SimpleNamespace(Example=OtherScene)
+            ):
+                browser.switch(example_class)
+            self.assertFalse(viewer.show_particles)
+
+    def test_load_failures_clear_partial_scenes_and_allow_retry(self) -> None:
+        """Recover from parser exits and partial constructors on switch and reset."""
+        builder = newton.ModelBuilder()
+        model = builder.finalize(device="cpu")
+
+        class FailingScene(_StubExample):
+            failure: str | None = None
+            last_instance: weakref.ReferenceType | None = None
+
+            @staticmethod
+            def create_parser() -> argparse.ArgumentParser:
+                parser = _StubExample.create_parser()
+                if FailingScene.failure == "parser":
+                    parser.add_argument("--required", required=True)
+                return parser
+
+            def __init__(self, viewer: _BrowserViewer, args: argparse.Namespace) -> None:
+                super().__init__(viewer, args)
+                FailingScene.last_instance = weakref.ref(self)
+                self.cycle = self
+                viewer.activate("partial")
+                viewer.set_model(model)
+                viewer.register_ui_callback(lambda ui: self.args)
+                if self.failure == "constructor":
+                    raise RuntimeError("construction failed")
+                if self.failure == "exit":
+                    raise SystemExit(2)
+
+        for operation in ("switch", "reset"):
+            for failure in ("parser", "constructor", "exit"):
+                with self.subTest(operation=operation, failure=failure), wp.ScopedDevice("cpu"):
+                    viewer = _BrowserViewer()
+                    browser = _ExampleBrowser(viewer)
+                    module = types.SimpleNamespace(Example=FailingScene)
+                    FailingScene.failure = failure
+                    with patch("newton.examples.importlib.import_module", return_value=module):
+                        with self.assertLogs("newton", level="ERROR") as logs:
+                            if operation == "switch":
+                                browser.switch_target = "test.failing"
+                                result, _ = browser.switch(_StubExample)
+                            else:
+                                result = browser.reset(FailingScene)
+                        self.assertIsNone(result)
+                        self.assertIn(
+                            "SystemExit" if failure != "constructor" else "construction failed", logs.output[0]
+                        )
+                        self.assertIsNone(viewer.splash)
+                        self.assertIsNone(viewer.model)
+                        self.assertEqual(len(viewer.layers), 1)
+                        self.assertNotIn("side", viewer.callbacks)
+                        self.assertIn("panel", viewer.callbacks)
+                        self.assertFalse(viewer.closed)
+                        # LogRecord.exc_info also owns the failed constructor's traceback.
+                        del logs
+                        gc.collect()
+                        if failure != "parser":
+                            self.assertIsNone(FailingScene.last_instance())
+                        FailingScene.failure = None
+                        if operation == "switch":
+                            browser.switch_target = "test.failing"
+                            result, _ = browser.switch(_StubExample)
+                        else:
+                            result = browser.reset(FailingScene)
+                        self.assertIsInstance(result, FailingScene)
+                        self.assertIs(viewer.model, model)
+                        self.assertIsNone(viewer.splash)
+
+    def test_cleanup_precedes_new_constructor(self) -> None:
+        """Collect callback-owned cycles before a replacement starts graph capture."""
+
+        class Scene(_StubExample):
+            def __init__(self, viewer: _BrowserViewer, args: argparse.Namespace) -> None:
+                self.cycle = self
+                self.previous_released = not viewer.old_refs or viewer.old_refs[-1]() is None
+                viewer.old_refs.append(weakref.ref(self))
+                super().__init__(viewer, args)
+
+            def gui(self, ui: object) -> None:
+                pass
+
+            def step(self) -> None:
+                pass
+
+            def render(self) -> None:
+                self.viewer.begin_frame(0.0)
+                self.viewer.end_frame()
+
+        def make_browser(viewer: _BrowserViewer, args: argparse.Namespace) -> _ExampleBrowser:
+            browser = _ExampleBrowser(viewer, args)
+
+            def replace() -> None:
+                if args.operation == "switch":
+                    browser.switch_target = "test.scene"
+                else:
+                    viewer.reset_callback()
+                viewer.on_frame = lambda: None
+
+            viewer.on_frame = replace
+            return browser
+
+        for operation in ("switch", "reset"):
+            with self.subTest(operation=operation), wp.ScopedDevice("cpu"):
+                viewer = _BrowserViewer()
+                viewer.old_refs = []
+                args = newton.examples.default_args()
+                args.operation = operation
+
+                with (
+                    patch("newton.examples._ExampleBrowser", side_effect=make_browser),
+                    patch("newton.examples.importlib.import_module", return_value=types.SimpleNamespace(Example=Scene)),
+                ):
+                    newton.examples.run(Scene(viewer, args), args)
+                self.assertEqual(len(viewer.old_refs), 2)
+                self.assertIsNone(viewer.old_refs[0]())
+                self.assertTrue(viewer.old_refs[1]().previous_released)
+
+    def test_runtime_failure_recovers_but_automated_runs_raise(self) -> None:
+        """Keep browsing after step/render errors and propagate automated failures."""
+
+        class Scene(_StubExample):
+            fail = True
+
+            def __init__(self, viewer: _BrowserViewer, args: argparse.Namespace) -> None:
+                super().__init__(viewer, args)
+                viewer.activate("runtime")
+
+            def step(self) -> None:
+                if self.args.failure_phase == "step" and Scene.fail:
+                    raise self.args.failure
+
+            def render(self) -> None:
+                self.viewer.begin_frame(0.0)
+                if self.args.failure_phase == "render" and Scene.fail:
+                    raise self.args.failure
+                self.viewer.render_count += 1
+                self.viewer.end_frame()
+
+            def test_final(self) -> None:
+                pass
+
+        for phase in ("step", "render"):
+            for mode in ("interactive", "test", "headless", "benchmark", "null"):
+                with self.subTest(phase=phase, mode=mode), wp.ScopedDevice("cpu"):
+                    viewer = _BrowserViewer()
+                    viewer.render_count = 0
+                    args = newton.examples.default_args()
+                    if mode == "null":
+                        args.viewer = "null"
+                    elif mode != "interactive":
+                        setattr(args, mode, None if mode == "benchmark" else True)
+                    args.failure_phase = phase
+                    args.failure = RuntimeError(f"{phase} failed")
+                    Scene.fail = True
+
+                    if mode != "interactive":
+                        with self.assertRaises(RuntimeError) as raised:
+                            newton.examples.run(Scene(viewer, args), args)
+                        self.assertIs(raised.exception, args.failure)
+                    else:
+
+                        def retry(viewer: _BrowserViewer = viewer) -> None:
+                            self.assertIsNone(viewer.model)
+                            self.assertEqual(len(viewer.layers), 1)
+                            Scene.fail = False
+                            viewer.reset_callback()
+                            viewer.on_frame = lambda: None
+
+                        viewer.on_frame = retry
+                        with self.assertLogs("newton", level="ERROR") as logs:
+                            newton.examples.run(Scene(viewer, args), args)
+                        self.assertIn(f"{phase} failed", logs.output[0])
+                        self.assertGreater(viewer.render_count, 0)
+                        self.assertTrue(viewer.closed)
+                        self.assertIsNone(viewer.splash)
+
     def test_reset_preserves_user_provided_args(self):
         # Simulate the user invoking the example with `--world-count 2`.
         args = _StubExample.create_parser().parse_args(["--world-count", "2"])

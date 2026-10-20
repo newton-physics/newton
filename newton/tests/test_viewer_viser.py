@@ -251,6 +251,9 @@ class TestViewerViserInteraction(unittest.TestCase):
             self.assertTrue(self.viewer.picking_enabled)
             example.render()
             self.assertTrue(self.viewer._picking_click_callbacks)
+            self.update_gui(self.viewer._viewer_option_handles["show_particles"], True)
+            self.wait_for(lambda: self.viewer.show_particles)
+            self.viewer.show_contacts = True
             self.viewer.picking_enabled = False
             self.assertFalse(self.viewer._picking_click_callbacks)
             del example
@@ -259,6 +262,9 @@ class TestViewerViserInteraction(unittest.TestCase):
             self.assertTrue(self.viewer.picking_enabled)
             example.render()
             self.assertTrue(self.viewer._picking_click_callbacks)
+            self.assertTrue(self.viewer.show_contacts)
+            self.assertTrue(self.viewer.show_particles)
+            self.assertTrue(self.viewer._particle_visibility_user)
 
     def test_gizmo_roundtrip_and_disconnect(self):
         """Mutate a caller-owned transform through real drag messages and release on disconnect."""
