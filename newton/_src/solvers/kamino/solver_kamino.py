@@ -164,10 +164,13 @@ class SolverKamino(SolverBase, CouplingInterface):
     massless body finite inertia) will raise a :class:`RuntimeError` from
     :meth:`notify_model_changed`.
 
-    Kamino's integrator does not advance a kinematic/proxy body's pose from its
-    velocity. To animate such a body along a trajectory, write the target
-    pose into ``state_in.body_q`` (and optionally ``state_in.body_qd``)
-    externally between steps.
+    With the PADMM and DVI backends, Kamino's integrator does not advance an
+    immovable body's pose from its velocity. To animate such a body along a
+    trajectory, write the target pose into ``state_in.body_q`` (and optionally
+    ``state_in.body_qd``) externally between steps. The LOX backend advances
+    immovable bodies with their velocity in ``state_in.body_qd``: write the
+    velocity that reaches the target pose within the step, or write the target
+    pose together with a zero velocity.
 
     Example
     -------

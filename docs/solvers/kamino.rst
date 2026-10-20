@@ -102,6 +102,16 @@ Both support dense and sparse operators and bilateral Schur elimination.
 See the :class:`~newton.solvers.SolverKamino` configuration reference for
 subsolver selection and iteration controls.
 
+LOX prescribed bodies
+---------------------
+
+LOX advances immovable bodies, i.e. bodies flagged
+:attr:`~newton.BodyFlags.KINEMATIC` or :attr:`~newton.BodyFlags.PROXY` and
+massless bodies, with their velocity in ``state_in.body_qd``. To animate such a
+body, write the velocity that reaches its target pose within the step, or write
+the target pose together with a zero velocity. PADMM and DVI keep the pose of
+these bodies and only read their velocity.
+
 LOX unilateral projection
 -------------------------
 

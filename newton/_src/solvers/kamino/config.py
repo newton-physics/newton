@@ -1108,6 +1108,9 @@ class LOXSolverConfig:
         The LOX backend, including all of its options, may change without
         following the normal deprecation policy. It supports rigid bodies
         only; cable and deformable extensions are not supported.
+
+    Unlike the PADMM and DVI backends, LOX advances immovable (kinematic, proxy, and
+    massless) bodies with their velocity in ``state_in.body_qd``.
     """
 
     max_iterations: int = 16
