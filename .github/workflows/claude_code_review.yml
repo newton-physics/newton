@@ -17,9 +17,9 @@ name: Claude Auto Review
 # review comments and a summary.
 #
 # Reviews are throttled: a pull request is reviewed only after it has had no
-# new commits for 30 minutes, the wait timer of the automated-review
-# environment (Settings > Environments). The throttle job waits without a
-# runner, and a newer push cancels it. A review that has started is never
+# new commits for the wait timer of the automated-review environment
+# (Settings > Environments; 30 minutes when this was written). The throttle job
+# waits without a runner, and a newer push cancels it. A review that has started is never
 # cancelled; a newer commit waits for it, and only the latest commit is
 # reviewed.
 #
@@ -149,7 +149,7 @@ jobs:
       # - Save the pull request description and existing comments as files.
       # - Choose the review mode and the diff to focus on. Skip commits that
       #   were already reviewed or change none of the pull request's files
-      #   since then; after an incomplete first review, use the full diff.
+      #   since then; after an incomplete review, use the full diff.
       #   publish_automated_review.py writes the markers and "Reviewed commit"
       #   line parsed here, and escapes reviewer text so it cannot forge them.
       - id: prepare
@@ -219,9 +219,9 @@ jobs:
                 exit 0
               fi
             fi
-            follow_up_marker='<!-- newton-automated-review-follow-up -->'
-            if grep -qF '<!-- newton-automated-review-incomplete -->' <<< "${previous%%"${follow_up_marker}"*}"; then
-              echo "The first review was incomplete, so this follow-up covers the full diff."
+            # Summaries posted before the incomplete marker existed only have the warning line.
+            if grep -qE -- '<!-- newton-automated-review-incomplete -->|^> This review did not cover the whole change\.$' <<< "${previous}"; then
+              echo "The last review was incomplete, so this follow-up covers the full diff."
               : > .pr-review/since-last-review.diff
               full_diff=true
             fi
@@ -280,8 +280,8 @@ jobs:
             - `follow-up`: this workflow reviewed the pull request before.
               Report only P0 or P1 findings, using the priorities under "How
               to review". Focus on `.pr-review/since-last-review.diff` (empty
-              if unavailable or if the first review was incomplete; then use
-              the full diff). It can include changes merged from `main`; review
+              if unavailable or if the last review was incomplete; then use the
+              full diff). It can include changes merged from `main`; review
               only changes that are also in `.pr-review/pr.diff`. Most
               follow-up reviews have no findings.
 

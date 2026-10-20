@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import importlib.util
+import re
 import unittest
 from pathlib import Path
 
@@ -40,7 +41,7 @@ class TestPublishAutomatedReview(unittest.TestCase):
         self.assertNotIn("Second assessment.", third)
         self.assertIn("Third assessment.", third)
         self.assertEqual(third.count(publisher.FOLLOW_UP_MARKER), 1)
-        self.assertEqual(publisher.re.findall(r"Reviewed commit ([0-9a-f]{40})", third)[-1], LATER_SHA)
+        self.assertEqual(re.findall(r"Reviewed commit ([0-9a-f]{40})", third)[-1], LATER_SHA)
 
     def test_clipping_keeps_incomplete_marker_and_footer(self):
         """Clipping a long first review keeps its incomplete-review warning and footer."""
@@ -57,14 +58,17 @@ class TestPublishAutomatedReview(unittest.TestCase):
                 self.assertEqual(publisher.INCOMPLETE_MARKER in kept, not complete)
 
     def test_complete_full_diff_follow_up_clears_incomplete_state(self):
-        """A complete follow-up of the full diff clears the first review's incomplete state."""
+        """A complete follow-up of the full diff clears the first review's incomplete state, in either format."""
         first = _summary(None, "First.", FIRST_SHA, complete=False)
-        partial = _summary(first, "Follow-up.", FOLLOW_UP_SHA)
-        covered = _summary(first, "Follow-up.", FOLLOW_UP_SHA, covered_rest=True)
+        legacy = first.replace(f" {publisher.INCOMPLETE_MARKER}", "")
+        for name, previous in (("current", first), ("legacy", legacy)):
+            with self.subTest(previous=name):
+                partial = _summary(previous, "Follow-up.", FOLLOW_UP_SHA)
+                covered = _summary(previous, "Follow-up.", FOLLOW_UP_SHA, covered_rest=True)
 
-        self.assertIn(publisher.INCOMPLETE_MARKER, partial)
-        self.assertNotIn(publisher.INCOMPLETE_MARKER, covered)
-        self.assertIn("A later follow-up checked the full diff", covered)
+                self.assertRegex(partial, publisher.INCOMPLETE_LINE_RE)
+                self.assertNotRegex(covered, publisher.INCOMPLETE_LINE_RE)
+                self.assertIn("A later follow-up checked the full diff", covered)
 
     def test_reviewer_text_cannot_forge_markers(self):
         """Markers in reviewer text are broken, so only generated markers are parsed."""

@@ -26,13 +26,15 @@ also posted in the body of its pull request review, which stays. The workflow's
 prepare step detects follow-ups from ``SUMMARY_MARKER``, ``FOLLOW_UP_MARKER``,
 ``INCOMPLETE_MARKER``, and the last ``Reviewed commit <sha>`` line, so keep
 these formats in sync with it. Reviewer text is escaped so it cannot forge any
-of these markers.
+of these markers. After a complete follow-up of the full diff (``FULL_DIFF``),
+the first review's incomplete warning is marked as covered, including warnings
+posted before ``INCOMPLETE_MARKER`` existed.
 
 Environment: ``REVIEW_OUTPUT``, ``GITHUB_REPOSITORY``, ``PR_NUMBER``,
 ``HEAD_SHA``, ``RUNNER_TEMP``, ``REVIEW_MODEL_NAME``, ``REVIEW_EFFORT``,
-``EXECUTION_FILE``, ``REVIEW_MODE``, and ``FULL_DIFF`` (optional), and the default ``GITHUB_SERVER_URL``,
-``GITHUB_RUN_ID``, and ``GITHUB_RUN_ATTEMPT``. The diff is read from
-``.pr-review/pr.diff``.
+``EXECUTION_FILE``, ``REVIEW_MODE``, and ``FULL_DIFF`` (optional), and the
+default ``GITHUB_SERVER_URL``, ``GITHUB_RUN_ID``, and ``GITHUB_RUN_ATTEMPT``.
+The diff is read from ``.pr-review/pr.diff``.
 """
 
 from __future__ import annotations
@@ -49,6 +51,7 @@ SUMMARY_MARKER = "<!-- newton-automated-review -->"
 FOLLOW_UP_MARKER = "<!-- newton-automated-review-follow-up -->"
 INCOMPLETE_MARKER = "<!-- newton-automated-review-incomplete -->"
 INCOMPLETE_TEXT = "This review did not cover the whole change."
+INCOMPLETE_LINE_RE = re.compile(rf"^> {re.escape(INCOMPLETE_TEXT)}(?: {re.escape(INCOMPLETE_MARKER)})?$", re.MULTILINE)
 FINDING_MARKER = "<!-- newton-automated-review-finding:{} -->"
 FINDING_MARKER_RE = re.compile(r"<!-- newton-automated-review-finding:([0-9a-f]{16}) -->")
 BOT_LOGIN = "github-actions[bot]"
@@ -266,9 +269,8 @@ def summary_body(
         # Reviewer text is neutralized, so the first marker is the generated section boundary.
         first_review = keep_tail_clip(previous.split(FOLLOW_UP_MARKER, 1)[0].strip(), MAX_FIRST_REVIEW_CHARS)
         if covered_rest:
-            first_review = first_review.replace(
-                f"{INCOMPLETE_TEXT} {INCOMPLETE_MARKER}",
-                f"{INCOMPLETE_TEXT} A later follow-up checked the full diff for blocking issues.",
+            first_review = INCOMPLETE_LINE_RE.sub(
+                f"> {INCOMPLETE_TEXT} A later follow-up checked the full diff for blocking issues.", first_review
             )
         lines = [first_review, "", FOLLOW_UP_MARKER, "#### Latest follow-up review", "", summary]
     if inline_findings:
