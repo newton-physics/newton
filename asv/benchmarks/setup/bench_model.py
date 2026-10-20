@@ -17,7 +17,7 @@ import warp as wp
 wp.config.enable_backward = False
 wp.config.log_level = wp.LOG_WARNING
 
-from asv_runner.benchmarks.mark import skip_benchmark_if
+from asv_runner.benchmarks.mark import SkipNotImplemented, skip_benchmark_if
 
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.append(parent_dir)
@@ -415,7 +415,7 @@ class FastInitializeModelStackedBoxes:
             and "separate_worlds" not in inspect.signature(newton.ModelBuilder.replicate).parameters
         ):
             # Skips commits that predate replicate(separate_worlds=...).
-            raise NotImplementedError
+            raise SkipNotImplemented
 
     @staticmethod
     def _build(method, nx, ny, nz):
