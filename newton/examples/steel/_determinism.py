@@ -139,9 +139,9 @@ class DeterminismExample:
         """Draw both copies of each mode overlaid, the default pair left and the deterministic pair right."""
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_scalar("Default copies, max divergence [mm]", 1.0e3 * self.max_divergence["default"])
+        self.viewer.log_scalar("Default (left), max divergence [mm]", 1.0e3 * self.max_divergence["default"])
         self.viewer.log_scalar(
-            "Deterministic copies, max divergence [mm]", 1.0e3 * self.max_divergence["deterministic"]
+            "Deterministic (right), max divergence [mm]", 1.0e3 * self.max_divergence["deterministic"]
         )
         self.viewer.end_frame()
 

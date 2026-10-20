@@ -67,8 +67,8 @@ class Example(DeterminismExample):
                 "articulation_constraint_max": 384,
                 "free_body_constraint_max": 128,
             },
-            side_offset=(1.9, 0.0, 0.0),
-            camera={"pos": wp.vec3(0.2, -5.6, 2.2), "pitch": -18.0, "yaw": 90.0},
+            side_offset=(0.0, -1.3, 0.0),
+            camera={"pos": wp.vec3(-4.6, 0.0, 2.4), "pitch": -24.0, "yaw": 0.0},
         )
 
 
