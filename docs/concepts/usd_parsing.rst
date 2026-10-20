@@ -134,7 +134,7 @@ across three families:
   usable by any solver that supports rod joints. A ``wrap=periodic`` curve also gets a body
   for the closing segment.
 * **Surface / cloth** -- a ``UsdGeom.Mesh`` with ``PhysicsSurfaceDeformableSimAPI`` becomes
-  cloth: particles with FEM triangles and bending edges. Polygonal faces (such as quads) are
+  cloth: particles with triangle elements and bending edges. Polygonal faces (such as quads) are
   fan-triangulated on import as a Newton extension to the proposal's triangle-only input.
 * **Volume** -- a ``UsdGeom.TetMesh`` with ``PhysicsVolumeDeformableSimAPI`` becomes a soft
   body. Under a ``PhysicsDeformableBodyAPI`` ancestor exactly one simulation TetMesh is
@@ -229,22 +229,24 @@ The first release deliberately supports a narrow, predictable set of inputs:
   mass relative to Newton's former direct point interpretation, which untyped arrays retain during
   the deprecation window with a warning.
 * Simulation points, topology, normals, and rest arrays are read at the USD default time.
-  Cloth and volume ``restShapePoints`` with optional disjoint
-  ``restTriVertexIndices`` / ``restTetVertexIndices`` determine FEM rest bases and mass
-  distribution while simulation ``points`` remain the initial state. Cloth also honors
-  ``restAdjTriPairs`` / ``restBendAngles`` overrides, converting authored degrees to radians.
-  On a fan-triangulated polygonal mesh, ``restAdjTriPairs`` names pairs of authored faces and
-  ``restTriVertexIndices`` lists one rest triangle per fan triangle in face order.
-  Missing cloth bend arrays use ``physics:restBendAnglesDefault = "flat"``; ``"restShape"``
-  uses the rest geometry dihedral with the same vertex roles and sign as
-  :meth:`~newton.ModelBuilder.add_cloth_mesh` derives from live geometry. With disjoint rest
-  topology, that dihedral is measured between the two rest copies of the shared edge as placed in
-  ``restShapePoints``, so coplanar, consistently oriented rest panels yield flat rest angles.
-  If neither a valid rest shape nor any valid bend overrides are applied, the token is
-  unauthored, and the imported cloth is non-planar, Newton warns that the proposal's flat
-  fallback changes the previous rest state and points to ``"restShape"`` as the preservation
-  choice. Rejected rest data does not suppress this warning; an applied zero-angle override
-  does. Explicit ``"flat"`` authoring and planar cloth do not emit this migration warning.
+* Cloth and volume ``restShapePoints`` define element rest poses and mass distribution.
+  Simulation ``points`` remain the initial pose. Optional ``restTriVertexIndices`` /
+  ``restTetVertexIndices`` allow disjoint rest topology. For fan-triangulated polygons,
+  provide one rest triangle per fan triangle, in face order.
+* Cloth supports ``restAdjTriPairs`` / ``restBendAngles`` overrides. Angles are authored in
+  degrees and converted to radians. Pairs refer to authored faces, including on
+  fan-triangulated meshes.
+
+  ``physics:restBendAnglesDefault`` controls edges without overrides. The default,
+  ``"flat"``, sets zero rest angles. ``"restShape"`` uses rest-geometry dihedrals with the
+  same vertex roles and sign as :meth:`~newton.ModelBuilder.add_cloth_mesh`.
+  For disjoint topology, the dihedral uses both copies of the shared edge as placed in
+  ``restShapePoints``. Coplanar, consistently oriented rest panels therefore remain flat.
+
+  For non-planar cloth, Newton warns when the unauthored flat default applies without a
+  valid rest shape or bend override. Set ``"restShape"`` to preserve the imported dihedrals.
+  Rejected rest data does not suppress this warning; a valid zero-angle override does.
+  Explicit ``"flat"`` authoring and planar cloth do not emit this migration warning.
 * Cable ``physics:restShapePoints`` and ``physics:restNormals`` set a rest shape separate from
   the initial pose. This works for individual curves, periodic curves, cables rooted in an
   articulation, and welded cable graphs. Rest lengths set capsule sizes, mass volume weights,
@@ -303,21 +305,24 @@ Limitations
 
 Known gaps of the experimental importer, tracked as follow-ups:
 
-* **Rest-state limits** -- rest geometry is read once at the default time during import;
-  time-varying rest shapes are not updated during simulation. Invalid cloth or volume rest
-  geometry falls back to the simulation shape for the whole prim. Disjoint cloth rest edges
-  may have different lengths; Newton logs a warning and uses the last adjacent triangle's rest
-  length for bending while preserving both triangles' rest bases and masses. Cloth with
-  degenerate live triangles is skipped as a whole. Volume import drops inverted or degenerate
-  live tetrahedra individually; with valid rest geometry, surviving tetrahedra use their
-  corresponding rest poses, volumes, and authored element masses. A volume with valid rest
-  geometry is skipped before builder mutation if its live points or tetrahedron volumes are
-  non-finite, or no tetrahedra survive. Without valid rest geometry, the existing live-shape
-  fallback applies. Partial volume import retains the builder's existing particle storage and
-  collision surface generation; surfaces associated with dropped tetrahedra are not removed.
-  Rest geometry is transformed in float64 without the world translation, while simulation
-  points are stored in float32, so at very large world offsets an asset authored at rest can
-  start slightly strained by the float32 rounding of its live points.
+* **Rest geometry** -- rest shapes are fixed at import time and do not update during
+  simulation. Invalid cloth or volume rest geometry falls back to the simulation shape
+  for the whole prim.
+* **Disjoint cloth edges** -- adjacent rest triangles may give their shared edge different
+  lengths. Newton logs a warning and uses the last adjacent triangle's rest length for
+  bending. Both triangles retain their own rest bases and masses.
+* **Invalid simulation geometry** -- cloth with degenerate live triangles is skipped as a
+  whole. Inverted or degenerate live tetrahedra are dropped individually. With valid rest
+  geometry, surviving tetrahedra keep their matching rest poses, volumes, and element masses.
+
+  A volume with valid rest geometry is skipped before builder mutation if its live points
+  or tetrahedron volumes are non-finite, or no tetrahedra survive. Without valid rest
+  geometry, the existing live-shape fallback applies.
+* **Dropped tetrahedra** -- partial volume import keeps the existing particle storage and
+  collision surface generation. Surfaces associated with dropped tetrahedra are not removed.
+* **Precision** -- rest geometry is transformed in float64 without world translation;
+  simulation points are stored in float32. At very large world offsets, rounding of the
+  live points can introduce slight initial strain even when an asset is authored at rest.
 * **Cable attachment positions** -- attachments use native rod material endpoints and
   rest-length segment coordinates. When initial and rest segment lengths differ, these
   positions can differ from the proposal's positions on the initial curve. Import preserves
@@ -376,20 +381,24 @@ TetMesh keeps ``ModelBuilder.default_tet_density`` for compatibility. Cable elem
 resolved rest lengths and physical thickness: ``V = L_rest * pi * diameter**2 / 4``.
 Density-derived masses and total-mass weights use these rest volumes, as the proposal requires.
 Explicit segment masses still apply directly. Newton retains its capsule inertia approximation,
-scaled to each resolved segment mass. Cloth element volumes use rest triangle areas with geometry
-thickness, and volume deformables use rest tetrahedron volumes. Typed mass conversion and total-mass
-distribution use these same element volumes.
-Rest topology and bend-pair arrays must contain integer values; arrays authored with floating-point
-or other non-integer types are invalid, rather than being truncated to point or face indices.
-Invalid cloth or volume rest data is logged at ``WARNING`` level and falls back to simulation
-geometry before builder mutation. Mismatched bend-array lengths are logged and fall back to
-``restBendAnglesDefault``. Invalid individual bend entries are logged and skipped; duplicate pairs
-are logged and use the last valid angle.
-Malformed cloth or TetMesh topology, non-finite or degenerate cloth simulation geometry, and
-invalid ``restBendAnglesDefault`` tokens are also reported through the ``newton`` logger at
-``WARNING`` level; capture these diagnostics with logging handlers rather than warning filters.
-Compatibility and deprecation notices, including the unauthored non-planar cloth flat-bend
-migration notice, remain Python warnings.
+scaled to each resolved segment mass.
+
+Cloth element volumes use rest triangle areas and geometry thickness. Volume deformables use
+rest tetrahedron volumes. Typed mass conversion and total-mass distribution use these same volumes.
+
+**Rest-data validation** requires integer topology and bend-pair arrays. Non-integer values are
+rejected, not truncated to indices. Invalid cloth or volume rest geometry falls back to the
+simulation shape before builder mutation.
+
+Mismatched bend-array lengths fall back to ``restBendAnglesDefault``. Invalid individual entries
+are skipped. For duplicate pairs, the last valid angle wins. Each of these cases is logged.
+
+**Diagnostics** for malformed rest data use the ``newton`` logger at ``WARNING`` level. This also
+applies to malformed cloth or TetMesh topology, non-finite or degenerate cloth simulation geometry,
+and invalid ``restBendAnglesDefault`` tokens. Capture these with logging handlers.
+
+Compatibility and deprecation notices remain Python warnings. This includes the migration notice
+when the unauthored flat-bend default replaces non-planar cloth dihedrals.
 
 Every imported deformable can be looked up by its prim path in the mapping
 :meth:`~newton.ModelBuilder.add_usd` returns when called with ``return_deformable_results=True``:

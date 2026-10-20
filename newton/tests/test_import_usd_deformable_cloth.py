@@ -34,7 +34,7 @@ from newton.usd import SchemaResolverPhysx
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
 class TestUSDDeformableCloth(unittest.TestCase):
-    """Surface-deformable (cloth) parsing into particles + FEM triangles + bending edges."""
+    """Surface-deformable (cloth) parsing into particles, triangle elements, and bending edges."""
 
     def test_cloth_quad_mesh_is_triangulated(self):
         """Verify that import fan-triangulates quad faces to support n-gons."""
@@ -109,7 +109,7 @@ class TestUSDDeformableCloth(unittest.TestCase):
         np.testing.assert_allclose(typed_builder.particle_mass, [3.0, 1.0, 3.0, 2.0])
 
     def test_disjoint_rest_topology_keeps_conflicting_edge_lengths(self):
-        """Keep rest FEM state when shared edges disagree and use the last rest length."""
+        """Keep triangle rest poses and masses when shared rest-edge lengths disagree."""
         from pxr import Sdf, UsdGeom
 
         stage = _deformable_stage()
