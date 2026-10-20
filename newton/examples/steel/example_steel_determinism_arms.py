@@ -11,9 +11,9 @@
 # deterministic=wp.DeterministicMode.RUN_TO_RUN and
 # CollisionPipeline(deterministic=True) (right). Each side overlays its two
 # copies at one place, one magenta and one green, both half transparent.
-# The default copies push the boxes to different places and come apart
-# into two ghosts; the deterministic copies stay bitwise identical and
-# blend into one gray scene.
+# The default copies push the boxes to different places; in the GL
+# viewer they come apart into two ghosts, while the deterministic copies
+# stay bitwise identical and blend into one gray scene.
 #
 # Command: python -m newton.examples steel_determinism_arms
 #

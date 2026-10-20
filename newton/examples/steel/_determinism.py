@@ -11,8 +11,8 @@ import warp as wp
 import newton
 from newton.solvers import SolverSteel
 
-# Each mode draws its two copies at one place, magenta and green and half transparent:
-# coincident copies blend to one gray body, diverging copies split into two colored ghosts.
+# Each mode draws its two copies at one place, magenta and green and half transparent. The GL
+# viewer blends coincident copies to one gray body and shows diverging copies as two ghosts.
 COPY_COLORS = ((0.9, 0.2, 0.8), (0.2, 0.8, 0.3))
 COPY_OPACITY = 0.5
 
