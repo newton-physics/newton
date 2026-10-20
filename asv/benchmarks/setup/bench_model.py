@@ -398,7 +398,7 @@ class FastInitializeModelStackedBoxes:
 
     params = (["add_builder", "replicate"],)
     param_names = ["method"]
-    grid = (40, 20, 40)
+    grid = (16, 8, 16)
 
     rounds = 1
     repeat = 3

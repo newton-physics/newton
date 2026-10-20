@@ -653,6 +653,10 @@ class ModelBuilder:
            main.add_world(robot)  # All robot entities -> world 0
            main.replicate(robot, world_count=2)  # Add more worlds from the same source
 
+       With ``separate_worlds=False``, :meth:`replicate` instead adds all copies to the
+       current world context in one batched pass, as repeated :meth:`add_builder` calls
+       would.
+
     :attr:`current_world` is builder-managed, read-only state. Use
     :meth:`begin_world`, :meth:`end_world`, :meth:`add_world`, or
     :meth:`replicate` to manage world assignment.
@@ -5419,6 +5423,10 @@ class ModelBuilder:
         Use :meth:`begin_world`, :meth:`end_world`, :meth:`add_world`, or
         :meth:`replicate` to manage world assignment. :attr:`current_world`
         is read-only and should not be set directly.
+
+        To add many copies of the same builder to the current world, call
+        :meth:`replicate` with ``separate_worlds=False`` instead of calling this method in
+        a loop; it merges all copies in one batched pass.
 
         The source builder acts as a template: merged entries may share objects
         with it (and across copies when replicating). Mutating such entries in
