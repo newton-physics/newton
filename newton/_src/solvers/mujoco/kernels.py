@@ -463,7 +463,6 @@ def convert_newton_contacts_to_mjwarp_kernel(
     contact_generation: wp.array[wp.int32],
     last_contact_generation: wp.array[wp.int32],
     tid_to_cid: wp.array[wp.int32],
-    last_nacon_count: wp.array[wp.int32],
 ):
     # nacon_out must be zeroed before this kernel is launched so that
     # wp.atomic_add below produces the correct compacted count.
@@ -727,10 +726,9 @@ def convert_newton_contacts_to_mjwarp_kernel(
         # and is invariant across substeps.  The fast path is only correct
         # when collide() has not been called since the last full pass.
 
+        # _snapshot_nacon_count restores nacon_out from the full pass.
         if tid == 0:
             ncollision_out[0] = 0
-            # Restore the compacted contact count from the full pass
-            nacon_out[0] = last_nacon_count[0]
 
         cid = tid_to_cid[tid]
         # Defensive bounds check: a stale tid_to_cid (e.g. cached from a
@@ -785,8 +783,12 @@ def _snapshot_nacon_count(
     contact_generation: wp.array[wp.int32],
     last_contact_generation: wp.array[wp.int32],
 ):
-    last_nacon_count[0] = nacon[0]
-    last_contact_generation[0] = contact_generation[0]
+    gen = contact_generation[0]
+    if gen == last_contact_generation[0]:
+        nacon[0] = last_nacon_count[0]
+    else:
+        last_nacon_count[0] = nacon[0]
+        last_contact_generation[0] = gen
 
 
 @wp.kernel

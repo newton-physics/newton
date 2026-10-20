@@ -5466,7 +5466,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._last_rigid_contact_max = contacts.rigid_contact_max
 
         # Zero nacon before the kernel — the full path uses atomic_add to count
-        # contacts; the fast path restores the count from last_nacon_count.
+        # contacts; on the fast path _snapshot_nacon_count restores the count.
         self.mjw_data.nacon.zero_()
 
         bodies_per_world = self.model.body_count // self.model.world_count
@@ -5537,16 +5537,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 contacts.contact_generation,
                 self._last_contact_generation,
                 self._contact_tid_to_cid,
-                self._last_nacon_count,
             ],
             device=model.device,
         )
 
-        # Snapshot the final nacon count and generation so the fast path can
-        # restore them on subsequent substeps.  Runs as a separate dim=1
-        # kernel AFTER the main kernel completes so that:
-        #  - nacon_out has its final value (from atomic_add on full path, or
-        #    restored from last_nacon_count on fast path)
+        # On the full path, snapshot the final nacon count and generation; on
+        # the fast path, restore nacon from that snapshot.  Runs as a separate
+        # dim=1 kernel AFTER the main kernel completes so that:
+        #  - nacon has its final value from the full path's atomic_add, and
+        #    the main kernel never writes nacon directly (deterministic mode
+        #    rejects mixing direct writes with atomic updates)
         #  - last_contact_generation is only updated after ALL threads in the
         #    main kernel have read it (avoids a cross-block race)
         wp.launch(
