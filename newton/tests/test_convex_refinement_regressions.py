@@ -260,6 +260,122 @@ def test_refinement_triangle_box_depth(test, device):
             test.assertLessEqual(float(np.max(np.sum(local[:, :2], axis=1))), 0.01 + 1.0e-5)
 
 
+def test_refinement_triangle_above_wide_ground(test, device):
+    """Report the true gap for a small triangle hovering above a wide ground.
+
+    The witness points sum support coordinates hundreds of metres long, so a
+    normal rebuilt from them tilted by a few degrees for a millimetre gap. The
+    manifold then measured depth along that normal to a far ground corner and
+    reported contacts metres deep, launching objects resting on the ground.
+    """
+    # Mesh triangles captured from SimReady assets resting on a benchmark ground [m].
+    cases = {
+        "toaster": (
+            np.array(
+                [
+                    [-0.116287656, 0.057376586, 0.000993134],
+                    [-0.116287656, 0.058698855, 0.000993129],
+                    [-0.115889244, 0.058659613, 0.000993134],
+                ]
+            ),
+            500.0,
+            10.0,
+        ),
+        "hammer": (
+            np.array(
+                [
+                    [-1.2480534e-02, 2.1553008e-01, 1.3521127e-04],
+                    [-6.1373673e-03, 2.0449370e-01, 1.2469478e-04],
+                    [-1.2529907e-02, 2.0449370e-01, 1.2479909e-04],
+                ]
+            ),
+            50.0,
+            2.0,
+        ),
+    }
+    hull_faces = [
+        0,
+        1,
+        2,
+        0,
+        2,
+        3,
+        4,
+        6,
+        5,
+        4,
+        7,
+        6,
+        0,
+        4,
+        5,
+        0,
+        5,
+        1,
+        1,
+        5,
+        6,
+        1,
+        6,
+        2,
+        2,
+        6,
+        7,
+        2,
+        7,
+        3,
+        3,
+        7,
+        4,
+        3,
+        4,
+        0,
+    ]
+    for (name, (triangle, half, thickness)), hull, swap in product(cases.items(), (False, True), (False, True)):
+        with test.subTest(triangle=name, hull=hull, swap=swap):
+            builder = newton.ModelBuilder()
+            cfg = builder.ShapeConfig(gap=1.0e-2, density=0.0)
+            body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            ground_index = -1
+            for ground in (False, True) if swap else (True, False):
+                if not ground:
+                    mesh = newton.Mesh(
+                        triangle.astype(np.float32), np.array([0, 1, 2], dtype=np.int32), compute_inertia=False
+                    )
+                    builder.add_shape_mesh(body, mesh=mesh, cfg=cfg)
+                elif hull:
+                    corners = [
+                        [x, y, z]
+                        for z in (0.0, -thickness)
+                        for x, y in ((-half, -half), (half, -half), (half, half), (-half, half))
+                    ]
+                    mesh = newton.Mesh(
+                        np.array(corners, dtype=np.float32), np.array(hull_faces, dtype=np.int32), compute_inertia=False
+                    )
+                    ground_index = builder.add_shape_convex_hull(-1, mesh=mesh, cfg=cfg)
+                else:
+                    xform = wp.transform(wp.vec3(0.0, 0.0, -0.5 * thickness), wp.quat_identity())
+                    ground_index = builder.add_shape_box(-1, xform=xform, hx=half, hy=half, hz=0.5 * thickness, cfg=cfg)
+            model = builder.finalize(device)
+            pipeline = newton.CollisionPipeline(model, broad_phase="explicit")
+            contacts = pipeline.contacts()
+            pipeline.collide(model.state(), contacts)
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            test.assertGreater(count, 0)
+            ground_first = contacts.rigid_contact_shape0.numpy()[:count] == ground_index
+            normals = contacts.rigid_contact_normal.numpy()[:count]
+            points0 = contacts.rigid_contact_point0.numpy()[:count]
+            points1 = contacts.rigid_contact_point1.numpy()[:count]
+            # The body sits at the origin, so its local points are world points.
+            up = np.where(ground_first[:, None], normals, -normals)
+            gaps = np.where(
+                ground_first, np.sum((points1 - points0) * up, axis=1), np.sum((points0 - points1) * up, axis=1)
+            )
+            np.testing.assert_allclose(up, np.tile([0.0, 0.0, 1.0], (count, 1)), atol=1.0e-4)
+            test.assertGreaterEqual(float(np.min(gaps)), float(np.min(triangle[:, 2])) - 1.0e-5)
+            test.assertLessEqual(float(np.max(gaps)), float(np.max(triangle[:, 2])) + 1.0e-5)
+
+
 def test_refinement_resting_box_stack(test, device):
     """Report face contacts for centered, nearly aligned resting cubes.
 
@@ -408,6 +524,7 @@ for function in (
     test_refinement_failed_query_separation,
     test_refinement_unconverged_query_separation,
     test_refinement_triangle_box_depth,
+    test_refinement_triangle_above_wide_ground,
     test_refinement_resting_box_stack,
     test_refinement_box_hull_depth,
 ):

@@ -400,7 +400,6 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
         dist_sq = wp.length_sq(v)
 
         last_search_dir = wp.vec3(1.0, 0.0, 0.0)
-        certified_near = bool(False)
         # Largest support-point coordinate scale seen, for the cutoff's rounding margin.
         cutoff_scale = float(0.0)
 
@@ -422,8 +421,6 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
                             geom_a, geom_b, near_normal, orientation_b, position_b, extend, data_provider
                         )
                         support_plane = wp.dot(near_normal, support.BtoA)
-                        if support_plane < 0.0 and dist_sq > EPSILON * EPSILON:
-                            certified_near = True
                         if support_plane <= 0.0 and dist_sq <= EPSILON * EPSILON:
                             point_a, point_b = simplex_get_closest(simplex_v, simplex_barycentric, simplex_usage_mask)
                             if support_plane < 0.0:
@@ -548,35 +545,13 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
             support = minkowski_support(geom_a, geom_b, near_normal, orientation_b, position_b, extend, data_provider)
             if wp.dot(near_normal, support.BtoA) >= 0.0:
                 return False, point_a, point_b, wp.vec3(0.0), 0.0
-            certified_near = True
 
-        if certified_near:
-            # Preserve the certified direction rather than subtracting two
-            # large witness coordinates to reconstruct a tiny separation.
-            normal = wp.normalize(-v)
-            return True, point_a, point_b, normal, wp.dot(point_b - point_a, normal)
-
-        # Prefer A->B vector if reliable; otherwise fall back to -v or last search dir
-        delta = point_b - point_a
-        delta_len_sq = wp.length_sq(delta)
-        if delta_len_sq > EPSILON * EPSILON:
-            # Use the witness length for both outputs so distance agrees with
-            # the returned points without a second square root.
-            distance = wp.sqrt(delta_len_sq)
-            normal = delta * (1.0 / distance)
-        else:
-            distance = wp.sqrt(dist_sq)
-            if distance > COLLIDE_EPSILON:
-                # Separated but delta is tiny: use -v
-                normal = v * (-1.0 / distance)
-            else:
-                # Overlap/near-contact: use last search direction, then a stable axis.
-                nsq = wp.length_sq(last_search_dir)
-                if nsq > 0.0:
-                    normal = last_search_dir * (1.0 / wp.sqrt(nsq))
-                else:
-                    normal = wp.vec3(1.0, 0.0, 0.0)
-        return True, point_a, point_b, normal, distance
+        # Take the normal from the projected closest point. Rebuilding it from the
+        # witnesses sums large support coordinates, and that tangential roundoff
+        # tilts the normal of a small gap toward a distant hull corner (e.g. a
+        # millimetre gap above a 1000 m ground box).
+        normal = wp.normalize(-v)
+        return True, point_a, point_b, normal, wp.dot(point_b - point_a, normal)
 
     @wp.func
     def solve_closest_distance(
