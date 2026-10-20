@@ -55,7 +55,6 @@ class Example:
         # Create the multi-world model by duplicating the single-robot
         # builder for the specified number of worlds
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        builder.request_contact_attributes("force")
         for _ in range(self.world_count):
             builder.add_world(robot_builder)
 
@@ -214,7 +213,7 @@ class Example:
             ("body_qd", self.state_0.body_qd),
             ("joint_q", self.state_0.joint_q),
             ("joint_qd", self.state_0.joint_qd),
-            ("contact_force", self.contacts.rigid_contact_force),
+            ("contact_f", self.solver_observables.contact_f),
         ):
             if not np.isfinite(array.numpy()).all():
                 invalid.append(name)
