@@ -220,10 +220,6 @@ class LOXProblem:
     # Public API
     ###
 
-    def dynamic_body_topology_changed(self) -> bool:
-        """Return whether current body flags require a different primal topology."""
-        return self._classify_dynamic_bodies() != self.system.dynamic_bodies
-
     def rebuild_dynamic_body_topology(self) -> None:
         """Reallocate the body system and the rows after the set of dynamic bodies changed."""
         model = self.model

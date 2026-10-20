@@ -248,9 +248,11 @@ class LOXSolver:
         self._initialize_splitting()
 
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
-        """Refresh or rebuild the LOX problem after model changes."""
-        if flags & ModelFlags.BODY_PROPERTIES and self._problem.dynamic_body_topology_changed():
-            self._rebuild_rigid_topology()
+        """Accept model changes, which keep the LOX topology.
+
+        Kamino rejects updates that change the immovability of a body, which is all the topology depends on.
+        """
+        del flags
 
     def validate_model_changed(self, flags: ModelFlags | int) -> None:
         """Validate the joint friction and effort limits of the Newton model when its joint DOF values change."""
@@ -414,13 +416,6 @@ class LOXSolver:
     ###
     # Internals - Setup
     ###
-
-    def _rebuild_rigid_topology(self) -> None:
-        """Rebuild rigid allocations after dynamic-body classification changes."""
-        self._problem.rebuild_dynamic_body_topology()
-        self._problem.prepare_patch_schur()
-        self._build_projection_schedule()
-        self.reset()
 
     def _build_projection_schedule(self) -> None:
         """(Re)create the projection schedule for the current problem layout."""
