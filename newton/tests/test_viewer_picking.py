@@ -396,25 +396,6 @@ def test_picking_articulated_operational_space_mass(test: TestPickingSetup, devi
         test.assertLess(felt_mass, mass.sum())
 
 
-def test_picking_oblique_pull_per_direction_mass(test: TestPickingSetup, device):
-    """An oblique pull resolves each direction with its own mass, so the blocked part does not inflate the reachable one."""
-    model = _make_arm_and_finger_model(device, 10.0)
-    state = model.state()
-    picking = Picking(model, pick_stiffness=_PICK_STIFFNESS, pick_damping=0.0, pick_max_acceleration=5.0)
-    picking.pick(state, *_FINGER_RAY)
-    os_inertia = picking._pick_os_inertia.numpy()[0]
-
-    picked = np.array(picking.pick_state.numpy()[0]["picked_point_world"], dtype=float)
-    target = picked + _PICK_DISPLACEMENT * np.array([1.0, 1.0, 0.0])
-    force = _apply_picking_target(picking, state, tuple(target), body=1)[:3]
-
-    # The radial x direction is blocked by both hinges and the tangent y is reachable through j1.
-    command = _PICK_STIFFNESS * _PICK_DISPLACEMENT
-    test.assertAlmostEqual(force[1] / command, os_inertia[1, 1], delta=os_inertia[1, 1] * 1.0e-3)
-    test.assertAlmostEqual(force[0] / command, os_inertia[0, 0], delta=os_inertia[0, 0] * 1.0e-3)
-    test.assertLess(os_inertia[1, 1], 0.2 * os_inertia[0, 0])
-
-
 def test_picking_inertia_rotates_with_link(test: TestPickingSetup, device):
     """The felt mass follows the link as it turns, so the tangent stays light after a 90 degree swing."""
     model = _make_arm_and_finger_model(device, 10.0)
@@ -622,12 +603,6 @@ add_function_test(
     TestPickingSetup,
     "test_picking_articulated_operational_space_mass",
     test_picking_articulated_operational_space_mass,
-    devices=get_test_devices(),
-)
-add_function_test(
-    TestPickingSetup,
-    "test_picking_oblique_pull_per_direction_mass",
-    test_picking_oblique_pull_per_direction_mass,
     devices=get_test_devices(),
 )
 add_function_test(

@@ -101,10 +101,15 @@ def apply_picking_force_kernel(
 
     max_acceleration = pick_state[0].pick_max_acceleration * 9.81
 
-    # F = Lambda a, so each eigen-direction of the anisotropic inertia gets its own mass and
-    # an oblique pull does not over-command the reachable direction.
-    body_rotation = wp.transform_get_rotation(X_wb)
-    pick_force = wp.quat_rotate(body_rotation, pick_os_inertia[0] * wp.quat_rotate_inv(body_rotation, pick_accel))
+    # Operational-space mass resolved along the pull direction, so the force stays
+    # parallel to the commanded acceleration.
+    accel_mag = wp.length(pick_accel)
+    pick_mass = body_mass[pick_body]
+    if accel_mag > 1.0e-9:
+        accel_dir = wp.quat_rotate_inv(wp.transform_get_rotation(X_wb), pick_accel / accel_mag)
+        pick_mass = wp.dot(accel_dir, pick_os_inertia[0] * accel_dir)
+
+    pick_force = pick_accel * pick_mass
 
     # Clamp force magnitude to prevent runaway divergence on light objects.
     # The articulation total bounds the force so picking a light link can still
@@ -120,6 +125,7 @@ def apply_picking_force_kernel(
     # links, so bound it using the picked body's own mass and inertia.
     mass = body_mass[pick_body]
     if mass > 0.0:
+        body_rotation = wp.transform_get_rotation(X_wb)
         torque_body = wp.quat_rotate_inv(body_rotation, pick_torque)
         angular_acceleration_body = body_inv_inertia[pick_body] * torque_body
         rotational_acceleration_sq = wp.dot(torque_body, angular_acceleration_body) / mass
