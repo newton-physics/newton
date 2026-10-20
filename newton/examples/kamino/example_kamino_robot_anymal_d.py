@@ -26,7 +26,7 @@ class Example:
         self.sim_time = 0.0
         self.world_count = args.world_count if args else 1
         self.use_kamino_contacts = args.use_kamino_contacts if args else False
-        self.dynamics_solver = getattr(args, "dynamics_solver", "padmm") if args else "padmm"
+        self.dynamics_solver = args.dynamics_solver if args else "padmm"
         self.viewer = viewer
         self.device = wp.get_device()
 
