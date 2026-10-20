@@ -67,9 +67,10 @@ class GeoTypeEx(enum.IntEnum):
 
 @wp.struct
 class SupportMapDataProvider:
-    """Optional model-owned hull validation data for support mapping."""
+    """Optional model-owned hull validation and topology data for support mapping."""
 
     shape_support_data: wp.array[wp.vec4i]
+    support_neighbors: wp.array[int]
 
 
 @wp.struct
@@ -140,6 +141,24 @@ def _has_verified_hull(geom: Any, provider: Any) -> bool:
         return False
     packed = provider.shape_support_data[geom.shape_index][3]
     return packed > 0 and (packed & _CONVEX_HULL_VALID) != 0
+
+
+@wp.func
+def _hull_edge_block(geom: Any, provider: Any) -> int:
+    """Return the start of a verified hull's edge block in ``support_neighbors``, or -1.
+
+    The block holds the edge count followed by one ``(a, b, c1, c2)`` record per
+    edge, where ``cross(b - a, c1 - a)`` and ``cross(c2 - a, b - a)`` are the
+    outward normals of the edge's two faces in the unscaled mesh frame.
+    """
+    if not _has_verified_hull(geom, provider) or geom.shape_type != int(GeoType.CONVEX_MESH):
+        return -1
+    start = provider.shape_support_data[geom.shape_index][2]
+    if start < 0 or start >= provider.support_neighbors.shape[0]:
+        return -1
+    if start + 1 + 4 * provider.support_neighbors[start] > provider.support_neighbors.shape[0]:
+        return -1
+    return start
 
 
 @wp.func
@@ -356,8 +375,8 @@ def support_map(geom: GenericShapeData, direction: wp.vec3, data_provider: Any) 
         dir_xy_len_sq = wp.length_sq(dir_xy)
 
         if barrel_radius == 0.0:
-            # Keep the regular-cylinder path unchanged.
-            if dir_xy_len_sq > eps:
+            # Resolve lateral directions independently of the query magnitude.
+            if dir_xy_len_sq > eps * wp.length_sq(direction):
                 n_xy = dir_xy * _support_rsqrt_rn(dir_xy_len_sq)
                 lateral_point = wp.vec3(n_xy[0] * radius, n_xy[1] * radius, 0.0)
             else:

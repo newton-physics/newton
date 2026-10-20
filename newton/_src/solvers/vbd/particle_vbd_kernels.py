@@ -32,6 +32,7 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
 
 from ...geometry import ParticleFlags
 from ...geometry.kernels import triangle_closest_point
+from ...geometry.soft_contacts_mesh import _soft_contact_force_enabled, _SoftContactFilterData
 from ...geometry.tri_mesh_collision import (
     TriMeshCollisionInfo,
     get_edge_colliding_edges_count,
@@ -2221,7 +2222,7 @@ def build_particle_body_contact_adjacency_active(
     particle_contact_head: wp.array[int],
     particle_contact_next: wp.array[int],
 ):
-    """Build linked per-particle incidence lists over the compact active contact prefix."""
+    """Build per-particle candidate lists independent of current force eligibility."""
     contact_index = wp.tid()
     if contact_index >= min(body_particle_contact_max, body_particle_contact_count[0]):
         return
@@ -2270,6 +2271,7 @@ def gather_particle_body_contact_force_and_hessian(
     contact_normal: wp.array[wp.vec3],
     shape_margin: wp.array[float],
     contact_barycentric: wp.array[wp.vec3],
+    contact_filter: _SoftContactFilterData,
     # outputs
     particle_forces: wp.array[wp.vec3],
     particle_hessians: wp.array[wp.mat33],
@@ -2300,6 +2302,8 @@ def gather_particle_body_contact_force_and_hessian(
         last = node
 
         contact_index = node // 3
+        if not _soft_contact_force_enabled(contact_index, contact_filter):
+            continue
         corner = node - 3 * contact_index
         corners = body_particle_contact_indices[contact_index]
         contact_ke = body_particle_contact_penalty_k[contact_index]
@@ -2381,6 +2385,7 @@ def scatter_particle_body_contact_force_and_hessian(
     particle_radius: wp.array[float],
     body_particle_contact_indices: wp.array[wp.vec3i],
     body_particle_contact_count: wp.array[int],
+    contact_filter: _SoftContactFilterData,
     body_particle_contact_max: int,
     worker_count: int,
     # per-contact soft AVBD parameters for body-particle contacts (shared with rigid side)
@@ -2424,7 +2429,9 @@ def scatter_particle_body_contact_force_and_hessian(
         if corners[1] < 0:
             # Particle record (p, -1, -1).
             particle_index = corners[0]
-            if particle_colors[particle_index] == current_color:
+            if particle_colors[particle_index] == current_color and _soft_contact_force_enabled(
+                contact_index, contact_filter
+            ):
                 contact_force, contact_hessian = _eval_body_particle_contact(
                     particle_index,
                     pos[particle_index],
@@ -2458,7 +2465,7 @@ def scatter_particle_body_contact_force_and_hessian(
                 if corner_index >= 0:
                     if particle_colors[corner_index] == current_color:
                         active = True
-            if active:
+            if active and _soft_contact_force_enabled(contact_index, contact_filter):
                 bary = contact_barycentric[contact_index]
                 contact_force, contact_hessian, _cp_world = _eval_soft_ef_contact(
                     contact_index,
