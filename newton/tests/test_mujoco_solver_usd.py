@@ -129,7 +129,7 @@ class Xform "Proto"
         prepend apiSchemas = ["NewtonMuJoCoSceneAPI"]
     )
     {
-        uniform int newton:mujoco:nconmax = 11
+        uniform int newton:mjwarp:nconmax = 11
     }
 }
 
@@ -167,7 +167,7 @@ def Xform "World"
         prepend apiSchemas = ["NewtonMuJoCoSceneAPI"]
     )
     {
-        uniform int newton:mujoco:nconmax = 5
+        uniform int newton:mjwarp:nconmax = 5
     }
 }
 """
@@ -190,14 +190,14 @@ def Xform "World"
         prepend apiSchemas = ["NewtonMuJoCoSceneAPI"]
     )
     {
-        uniform int newton:mujoco:nconmax = 5
+        uniform int newton:mjwarp:nconmax = 5
     }
 
     def PhysicsScene "B_Mujoco" (
         prepend apiSchemas = ["NewtonMuJoCoSceneAPI"]
     )
     {
-        uniform int newton:mujoco:nconmax = 99
+        uniform int newton:mjwarp:nconmax = 99
     }
 }
 """
@@ -209,7 +209,7 @@ def Xform "World"
 
     def test_invalid_value_raises(self):
         """Reject out-of-range authored integers."""
-        path = self._write(_stage_source("uniform int newton:mujoco:nconmax = -5"))
+        path = self._write(_stage_source("uniform int newton:mjwarp:nconmax = -5"))
         with self.assertRaisesRegex(ValueError, "nconmax"):
             SolverMuJoCo.create_from_usd(path, self._build_model(path))
 
@@ -224,8 +224,8 @@ def Xform "World"
         path = self._write(
             _stage_source(
                 """
-        uniform int newton:mujoco:nconmax = 123
-        uniform int newton:mujoco:njmax = -1
+        uniform int newton:mjwarp:nconmax = 123
+        uniform int newton:mjwarp:njmax = -1
         uniform bool newton:mujoco:useMujocoCpu = true
         uniform bool mjc:flag:multiccd = true
         uniform bool mjc:flag:contact = false
@@ -253,7 +253,7 @@ def Xform "World"
 
     def test_uses_provided_model(self):
         """Pass the caller's model to the constructor unchanged."""
-        path = self._write(_stage_source("uniform int newton:mujoco:nconmax = 7"))
+        path = self._write(_stage_source("uniform int newton:mjwarp:nconmax = 7"))
         model = newton.ModelBuilder().finalize()
         with mock.patch.object(SolverMuJoCo, "__init__", return_value=None) as init:
             SolverMuJoCo.create_from_usd(path, model)
@@ -334,9 +334,9 @@ def Xform "World"
         path = self._write(
             _stage_source(
                 """
-        uniform int newton:mujoco:nconmax = 64
-        uniform int newton:mujoco:njmax = 128
-        uniform int newton:mujoco:nvmax = 1
+        uniform int newton:mjwarp:nconmax = 64
+        uniform int newton:mjwarp:njmax = 128
+        uniform int newton:mjwarp:nvmax = 1
         uniform double mjc:option:sleep_tolerance = 0.02
         """,
                 scene_apis='"NewtonMuJoCoSceneAPI", "MjcSceneAPI"',
@@ -378,7 +378,7 @@ def Xform "World"
         }
         for name, argument in automatic.items():
             with self.subTest(attribute=name):
-                self.assertEqual(scene.GetAttribute(f"newton:mujoco:{name}").Get(), -1)
+                self.assertEqual(scene.GetAttribute(f"newton:mjwarp:{name}").Get(), -1)
                 self.assertIsNone(parameters[argument].default)
         for name, argument in plain.items():
             with self.subTest(attribute=name):

@@ -1124,10 +1124,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             )
 
         kwargs: dict[str, Any] = {
-            "njmax": authored_count("newton:mujoco:njmax"),
-            "njmax_nnz": authored_count("newton:mujoco:njmax_nnz"),
-            "nconmax": authored_count("newton:mujoco:nconmax"),
-            "nvmax": authored_count("newton:mujoco:nvmax"),
+            "njmax": authored_count("newton:mjwarp:njmax"),
+            "njmax_nnz": authored_count("newton:mjwarp:njmax_nnz"),
+            "nconmax": authored_count("newton:mjwarp:nconmax"),
+            "nvmax": authored_count("newton:mjwarp:nvmax"),
             "deterministic": None if deterministic is None else deterministic_modes[str(deterministic)],
             "update_data_interval": authored_count("newton:mujoco:updateDataInterval", minimum=0),
             "use_mujoco_cpu": authored_bool("newton:mujoco:useMujocoCpu"),
