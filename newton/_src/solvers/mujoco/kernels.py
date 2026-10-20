@@ -2494,9 +2494,11 @@ def update_geom_properties_kernel(
     and copies shape properties to geom properties.
 
     Note: geom_aabb and geom_rbound (the broadphase bounds) are recomputed here
-    for primitive geoms from the per-world size, the way mj_setConst does, so
-    worlds with different shape sizes are not culled with another world's
-    bounds. Mesh, SDF and height field geoms keep the bounds from put_model.
+    for sphere, capsule, cylinder, ellipsoid and box geoms from the per-world
+    size, the way mj_setConst does, so worlds with different shape sizes are not
+    culled with another world's bounds. Planes get MuJoCo's size-independent
+    bounds. Mesh (including cones and convex meshes, which are meshes in MuJoCo),
+    SDF and height field geoms keep the bounds from put_model.
 
     Note: geom_gap is forwarded from shape_gap (MuJoCo 3.9 semantics:
     gap widens the detection envelope without affecting force generation).
