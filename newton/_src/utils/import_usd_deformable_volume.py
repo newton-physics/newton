@@ -18,6 +18,7 @@ import numpy as np
 import warp as wp
 
 from ..exceptions import NewtonWarning
+from ..geometry.rest_shape import _tet_rest_geometry
 from ..sim.model import Model
 from .import_usd_deformable_utils import (
     _AOUSD_DEFAULT_POISSONS_RATIO,
@@ -44,18 +45,17 @@ from .import_usd_deformable_utils import (
 logger = logging.getLogger(__name__)
 
 
-def _tet_edge_matrices(points: np.ndarray, indices: np.ndarray) -> np.ndarray:
-    """Stack each tetrahedron's three edge vectors from its first vertex as matrix columns."""
+def _tet_geometry(points: np.ndarray, indices: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Gather tetrahedron edges for the builder's rest-matrix and volume calculation."""
     tets = points[indices]
-    return np.stack((tets[:, 1] - tets[:, 0], tets[:, 2] - tets[:, 0], tets[:, 3] - tets[:, 0]), axis=2)
+    return _tet_rest_geometry(tets[:, 1] - tets[:, 0], tets[:, 2] - tets[:, 0], tets[:, 3] - tets[:, 0])
 
 
 def _tet_rest_data(points: np.ndarray, indices: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Compute inverse rest matrices and positive volumes for ordered tetrahedra."""
     if not np.all(np.isfinite(points)):
         raise ValueError("non-finite point coordinates")
-    matrices = _tet_edge_matrices(points, indices)
-    volumes = np.linalg.det(matrices) / 6.0
+    matrices, volumes = _tet_geometry(points, indices)
     if not np.all(np.isfinite(volumes)):
         raise ValueError("non-finite tetrahedron volume")
     # Accept the same elements ModelBuilder.add_tetrahedron accepts: any strictly positive volume.
@@ -282,7 +282,7 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             # Match add_tetrahedron's float32 edge arithmetic and preserve source indices when
             # it drops an element, so later tets receive their own rest poses and authored masses.
             with np.errstate(over="ignore", invalid="ignore"):
-                builder_volumes = np.linalg.det(_tet_edge_matrices(world_vertices, simulation_indices)) / 6.0
+                _, builder_volumes = _tet_geometry(world_vertices, simulation_indices)
             if not np.all(np.isfinite(builder_volumes)):
                 logger.warning("%s: simulation TetMesh has non-finite tetrahedron volumes; skipping the prim.", path)
                 continue
@@ -337,9 +337,8 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             if rest_data is None:
                 mass_indices = simulation_indices
                 # Preserve the existing unsigned live-volume mass policy on the fallback path.
-                mass_volumes = np.abs(
-                    np.linalg.det(_tet_edge_matrices(np.asarray(world_vertices, dtype=np.float64), mass_indices)) / 6.0
-                )
+                _, mass_volumes = _tet_geometry(np.asarray(world_vertices, dtype=np.float64), mass_indices)
+                mass_volumes = np.abs(mass_volumes)
             else:
                 mass_indices = retained_indices
                 mass_volumes = rest_data[1]

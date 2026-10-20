@@ -18,6 +18,7 @@ import numpy as np
 import warp as wp
 
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
+from ..geometry.rest_shape import _dihedral_angles, _triangle_rest_geometry
 from .import_usd_deformable_utils import (
     _AOUSD_DEFAULT_POISSONS_RATIO,
     _AOUSD_DEFAULT_THICKNESS,
@@ -181,15 +182,12 @@ def _resolve_surface_structural_stiffnesses(
     )
 
 
-def _cloth_rest_data(
-    points: np.ndarray, triangles: np.ndarray, *, with_poses: bool = True
-) -> tuple[np.ndarray | None, np.ndarray]:
-    """Compute areas, and unless ``with_poses`` is false the inverse rest bases, for ordered cloth elements.
+def _cloth_rest_geometry(points: np.ndarray, triangles: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Validate and return rest bases and areas for ordered cloth elements.
 
     Raises ``ValueError`` naming the offending triangles for non-finite or degenerate input. The
     1e-12 margins keep the released cloth preflight and leave headroom over
-    :meth:`ModelBuilder.add_triangles`, which drops only non-positive areas computed with a
-    slightly different float64 formula.
+    :meth:`ModelBuilder.add_triangles`, which drops only non-positive areas.
     """
 
     def reject(mask: np.ndarray, what: str) -> None:
@@ -207,21 +205,10 @@ def _cloth_rest_data(
     edge_lengths = np.linalg.norm(np.stack((qp, rp, rp - qp), axis=1), axis=2)
     reject(~np.isfinite(normal_lengths) | ~np.isfinite(edge_lengths).all(axis=1), "non-finite triangle")
     reject((normal_lengths <= 1.0e-12) | (edge_lengths <= 1.0e-12).any(axis=1), "degenerate triangle")
-    normals /= normal_lengths[:, None]
-    e1 = qp / edge_lengths[:, 0:1]
-    e2 = np.cross(normals, e1)
-    rest_basis = np.stack((e1, e2), axis=1) @ np.stack((qp, rp), axis=2)
-    areas = np.linalg.det(rest_basis) * 0.5
+    rest_basis, areas = _triangle_rest_geometry(qp, rp)
     reject(~np.isfinite(areas), "non-finite triangle")
     reject(areas <= 1.0e-12, "degenerate triangle")
-    return (np.linalg.inv(rest_basis) if with_poses else None), areas
-
-
-def _normalized_rows(vectors: np.ndarray) -> np.ndarray:
-    """Normalize rows, leaving zero rows unchanged like :meth:`ModelBuilder.add_edges`."""
-    lengths = np.linalg.norm(vectors, axis=1, keepdims=True)
-    lengths[lengths == 0.0] = 1.0
-    return vectors / lengths
+    return rest_basis, areas
 
 
 def _rest_corners(
@@ -250,9 +237,7 @@ def _cloth_rest_default_angles(
     interior = np.flatnonzero(edge_tris[:, 1] != -1)
     if default_mode != "restShape" or len(interior) == 0:
         return rest_angles
-    # Use the vertex roles and sign convention of ModelBuilder.add_edges, evaluated on each
-    # triangle's own rest copy, so the dihedral matches the builder's live computation and does
-    # not depend on the authored face winding.
+    # Map the builder's vertex roles to each triangle's own rest copy.
     sim_triangles = adjacency.indices
     tri0, tri1 = edge_tris[interior, 0], edge_tris[interior, 1]
     o0, o1, v0, v1 = (edges[interior, column] for column in range(4))
@@ -262,12 +247,7 @@ def _cloth_rest_default_angles(
     x2 = _rest_corners(rest_points, rest_triangles, sim_triangles, tri1, o1)
     x3_other = _rest_corners(rest_points, rest_triangles, sim_triangles, tri1, v0)
     x4_other = _rest_corners(rest_points, rest_triangles, sim_triangles, tri1, v1)
-    n1 = _normalized_rows(np.cross(x3 - x1, x4 - x1))
-    n2 = _normalized_rows(np.cross(x4_other - x2, x3_other - x2))
-    edge_dir = _normalized_rows(x4 - x3)
-    cos_theta = np.clip(np.einsum("ij,ij->i", n1, n2), -1.0, 1.0)
-    sin_theta = np.einsum("ij,ij->i", np.cross(n1, n2), edge_dir)
-    rest_angles[interior] = np.arctan2(sin_theta, cos_theta)
+    rest_angles[interior] = _dihedral_angles(x1, x2, x3, x4, x3_other, x4_other)
     return rest_angles
 
 
@@ -478,8 +458,9 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
 
         # Validate the live geometry like a rest shape before any builder mutation; its areas are
         # the mass fallback when no authored rest shape applies.
+        # Skip pose inversion here; add_cloth_mesh computes the live poses below.
         try:
-            _, live_areas = _cloth_rest_data(cloth_vertices_np, tri_faces, with_poses=False)
+            _, live_areas = _cloth_rest_geometry(cloth_vertices_np, tri_faces)
         except (ValueError, np.linalg.LinAlgError) as exc:
             logger.warning("%s: invalid cloth simulation shape (%s); skipping the prim.", path, exc)
             continue
@@ -500,7 +481,8 @@ def _deformable_import_cloth(ctx: _DeformableImportContext) -> None:
                 )
                 if rest_indices_value is not None and np.size(rest_indices_value) and flip_winding:
                     rest_triangles = rest_triangles[:, ::-1]
-                rest_poses, rest_areas = _cloth_rest_data(rest_points, rest_triangles)
+                rest_basis, rest_areas = _cloth_rest_geometry(rest_points, rest_triangles)
+                rest_poses = np.linalg.inv(rest_basis)
                 rest_shape_applied = True
             except (TypeError, ValueError, np.linalg.LinAlgError) as exc:
                 logger.warning(
