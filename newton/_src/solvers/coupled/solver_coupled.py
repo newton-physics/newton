@@ -1222,13 +1222,13 @@ class SolverCoupled(SolverBase, CouplingInterface):
             allow_global=True,
         )
         if body_order is None:
-            self._warn_compaction_fallback(cfg, "the selected bodies do not have a homogeneous world layout")
+            self._warn_compaction_fallback(cfg, "the selected bodies are not grouped by world")
             return None
         if joint_order is None:
-            self._warn_compaction_fallback(cfg, "the selected joints do not have a homogeneous world layout")
+            self._warn_compaction_fallback(cfg, "the selected joints are not grouped by world")
             return None
         if shape_order is None:
-            self._warn_compaction_fallback(cfg, "the selected shapes do not have a homogeneous world layout")
+            self._warn_compaction_fallback(cfg, "the selected shapes are not grouped by world")
             return None
 
         # Particle connectivity remains globally indexed for now. Keeping its
@@ -1239,9 +1239,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             {int(i) for i in cfg.particles},
         )
         if attachment_order is None:
-            self._warn_compaction_fallback(
-                cfg, "the selected particle-body attachments do not have a homogeneous world layout"
-            )
+            self._warn_compaction_fallback(cfg, "the selected particle-body attachments are not grouped by world")
             return None
         compact, failure_reason = self._compact_index_lists(
             view,
@@ -1317,7 +1315,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         *,
         allow_global: bool = False,
     ) -> list[int] | None:
-        """Return indices ordered by compact world layout, or None if not homogeneous."""
+        """Return indices ordered by compact world layout, or None when they do not follow the model's world grouping."""
         if not indices:
             return []
 
@@ -1349,15 +1347,11 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 return None
             buckets[world].append(index - start)
 
-        template = sorted(buckets[0])
-        for bucket in buckets[1:]:
-            if sorted(bucket) != template:
-                return None
-
+        # Worlds may select different rows; the compact world-start arrays follow each world's count.
         ordered = sorted(global_front)
         for world in range(world_count):
             start = self._world_start_for_index(starts, total_count, world_count, world)
-            ordered.extend(start + offset for offset in template)
+            ordered.extend(start + offset for offset in sorted(buckets[world]))
         return ordered
 
     @staticmethod
@@ -1414,7 +1408,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
         mimic_order = self._compact_mimic_constraint_order(joint_global_to_local)
         if mimic_order is None:
-            return None, "the selected mimic constraints do not have a homogeneous world layout"
+            return None, "the selected mimic constraints are not grouped by world"
 
         joint_q_start = model.joint_q_start.numpy()
         joint_qd_start = model.joint_qd_start.numpy()
@@ -1500,7 +1494,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         }
         custom_frequency_orders = self._compact_custom_frequency_orders(built_in_frequency_orders)
         if custom_frequency_orders is None:
-            return None, "a selected custom-frequency domain does not have a homogeneous world layout"
+            return None, "a selected custom-frequency domain is not grouped by world"
 
         frequency_orders = {
             frequency: (order, model._attribute_frequency_count(frequency))

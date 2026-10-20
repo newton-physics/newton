@@ -1272,9 +1272,12 @@ class TestSolverCoupledBasic(unittest.TestCase):
         np.testing.assert_array_equal(view.attachment_particle_body_particle.numpy(), [owned_particle])
 
     def test_noncompact_views_hide_cross_entry_attachments(self):
-        """Filter attachment ownership even when heterogeneous worlds prevent compaction."""
+        """Filter attachment ownership even when an owned joint's out-of-entry child prevents compaction."""
         world = newton.ModelBuilder()
         body = world.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        other = world.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        root = world.add_joint_free(body)
+        world.add_articulation([root, world.add_joint_ball(body, other)])
         particle = world.add_particle(pos=wp.vec3(), vel=wp.vec3(), mass=1.0)
         world.add_attachment_particle_body(particle, body)
 
@@ -1284,8 +1287,10 @@ class TestSolverCoupledBasic(unittest.TestCase):
         builder.color()
         model = builder.finalize(device="cpu")
         body_start = model.body_world_start.numpy()
+        joint_start = model.joint_world_start.numpy()
         particle_start = model.particle_world_start.numpy()
 
+        # Each entry owns its world's ball joint but not the joint's child body.
         coupled = SolverCoupled(
             model,
             (
@@ -1293,12 +1298,14 @@ class TestSolverCoupledBasic(unittest.TestCase):
                     "world0",
                     _StepCountingCopySolver,
                     bodies=(int(body_start[0]),),
+                    joints=(int(joint_start[0]), int(joint_start[0]) + 1),
                     particles=(int(particle_start[0]),),
                 ),
                 SolverCoupled.Entry(
                     "world1",
                     _StepCountingCopySolver,
                     bodies=(int(body_start[1]),),
+                    joints=(int(joint_start[1]), int(joint_start[1]) + 1),
                     particles=(int(particle_start[1]),),
                 ),
             ),
@@ -1462,6 +1469,49 @@ class TestSolverCoupledBasic(unittest.TestCase):
 
         self.assertRegex("\n".join(logs.output), r"entry 'child'.*joint.*outside.*full model layout")
         self.assertEqual(coupled.view("child").body_count, model.body_count)
+
+    def test_uneven_world_selection_compacts(self):
+        """Compact entries that select different rows in different worlds."""
+        builder = newton.ModelBuilder()
+        bodies = []
+        for count in (2, 1):
+            builder.begin_world()
+            for i in range(count):
+                body = builder.add_body(
+                    xform=wp.transform(wp.vec3(float(i), 0.0, 1.0), wp.quat_identity()),
+                    mass=1.0,
+                    inertia=wp.mat33(np.eye(3)),
+                )
+                bodies.append(body)
+            builder.end_world()
+        model = builder.finalize(device="cpu")
+
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(name="first", solver=SolverFeatherstone, bodies=bodies[:2], joints=[0, 1]),
+                SolverCoupled.Entry(name="second", solver=SolverFeatherstone, bodies=bodies[2:], joints=[2]),
+            ],
+        )
+
+        for name, body_count, world_start in (("first", 2, [0, 2, 2, 2]), ("second", 1, [0, 0, 1, 1])):
+            view = coupled.view(name)
+            self.assertEqual(view.body_count, body_count)
+            self.assertEqual(view.joint_count, body_count)
+            self.assertTrue(bool(np.all(view.joint_enabled.numpy())))
+            np.testing.assert_array_equal(view.body_world_start.numpy(), world_start)
+            np.testing.assert_array_equal(view.joint_world_start.numpy(), world_start)
+
+        state_0, state_1 = model.state(), model.state()
+        for _ in range(5):
+            coupled.step(state_0, state_1, None, None, 0.01)
+            state_0, state_1 = state_1, state_0
+        reference_0, reference_1 = model.state(), model.state()
+        reference = SolverFeatherstone(model)
+        for _ in range(5):
+            reference.step(reference_0, reference_1, None, None, 0.01)
+            reference_0, reference_1 = reference_1, reference_0
+        np.testing.assert_allclose(state_0.body_q.numpy(), reference_0.body_q.numpy(), atol=1.0e-6)
 
     @staticmethod
     def _seeded_full_surface_contacts(model, corners, particle=None):
