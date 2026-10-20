@@ -3744,6 +3744,50 @@ add_function_test(
 )
 
 
+def test_triangle_contact_independent_of_hull_tessellation(test, device):
+    """Keep triangle contacts for a hull sunk below the mean of its unevenly spaced vertices."""
+    # A 41 x 54 x 13 mm sole whose 5 mm bottom fillets carry most of its
+    # vertices. Its vertex mean sits 3.0 mm above the bottom and its volume
+    # centroid 6.6 mm. Sunk 5 mm into a floor, it must keep the floor contacts.
+    half_x, half_y, half_z, radius = 0.0205, 0.027, 0.0065, 0.005
+    profile = [(-half_x, half_z), (half_x, half_z)]
+    for center_x, start in ((half_x - radius, 0.0), (radius - half_x, -0.5 * np.pi)):
+        for angle in np.linspace(start, start - 0.5 * np.pi, 9):
+            profile.append((center_x + radius * np.cos(angle), radius - half_z + radius * np.sin(angle)))
+    vertices = np.array([[x, y, z] for y in (-half_y, half_y) for x, z in profile])
+    hull = newton.Mesh(vertices, [0, 1, 2], compute_inertia=False).compute_convex_hull()
+    depth = 0.005
+    builder = newton.ModelBuilder()
+    cfg = builder.ShapeConfig(margin=0.0, gap=0.01)
+    floor = [[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [1.0, 1.0, 0.0], [-1.0, 1.0, 0.0]]
+    builder.add_shape_mesh(-1, mesh=newton.Mesh(floor, [0, 1, 2, 0, 2, 3], compute_inertia=False), cfg=cfg)
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, half_z - depth), wp.quat_identity()))
+    builder.add_shape_convex_hull(body, mesh=hull, cfg=cfg)
+    model = builder.finalize(device=device)
+    state = model.state()
+    interior_point = model._shape_interior_point
+    # Cover both the finalized interior points and the narrow-phase fallback.
+    for reduction, precomputed in itertools.product((False, True), (True, False)):
+        with test.subTest(reduce_contacts=reduction, precomputed=precomputed):
+            model._shape_interior_point = interior_point if precomputed else None
+            pipeline = newton.CollisionPipeline(model, reduce_contacts=reduction)
+            contacts = pipeline.contacts()
+            pipeline.collide(state, contacts)
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            test.assertGreater(count, 0)
+            distances = wp.empty(contacts.rigid_contact_max, dtype=float, device=device)
+            newton.eval_rigid_contact_kinematics(model, state, contacts, out_distance=distances)
+            test.assertAlmostEqual(float(distances.numpy()[:count].min()), -depth, delta=1.0e-5)
+
+
+add_function_test(
+    TestMeshConvexMidphase,
+    "test_triangle_contact_independent_of_hull_tessellation",
+    test_triangle_contact_independent_of_hull_tessellation,
+    devices=get_test_devices(),
+)
+
+
 def test_mesh_convex_midphase_queries_margin_shell(test, device):
     margin = 0.02
     gap = 0.005

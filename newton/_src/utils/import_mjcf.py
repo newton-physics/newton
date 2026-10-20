@@ -1092,7 +1092,7 @@ def parse_mjcf(
             geom_type = geom_attrib.get("type", "sphere")
             fit_to_mesh = False
             if "mesh" in geom_attrib:
-                if "type" in geom_attrib and geom_type in {"sphere", "capsule", "cylinder", "ellipsoid", "box"}:
+                if geom_type in {"sphere", "capsule", "cylinder", "ellipsoid", "box"}:
                     fit_to_mesh = True
                 else:
                     geom_type = "mesh"

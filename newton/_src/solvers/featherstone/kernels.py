@@ -122,13 +122,14 @@ def reduce_mimic_inertia(
                     )
 
     # Follower columns are unused by the reduced mapping. Give each one a unit
-    # diagonal so the fixed-size matrix remains positive definite.
+    # diagonal so the fixed-size matrix remains positive definite. These entries
+    # are still zero; adding keeps deterministic mode from rejecting a direct write.
     for joint in range(joint_start, joint_end):
         if joint_mimic_joint[joint] >= 0:
             dof_count = joint_qd_start[joint + 1] - joint_qd_start[joint]
             for axis in range(dof_count):
                 follower_dof = joint_qd_start[joint] + axis - dof_start
-                H_reduced[matrix_start + follower_dof * matrix_rows + follower_dof] = 1.0
+                wp.atomic_add(H_reduced, matrix_start + follower_dof * matrix_rows + follower_dof, 1.0)
 
 
 @wp.kernel
@@ -1586,7 +1587,6 @@ def dense_gemm(
     p: int,
     transpose_A: bool,
     transpose_B: bool,
-    add_to_C: bool,
     A_start: int,
     B_start: int,
     C_start: int,
@@ -1610,37 +1610,7 @@ def dense_gemm(
                     b_j = k * n + j
                 sum += A[A_start + a_i] * B[B_start + b_j]
 
-            if add_to_C:
-                C[C_start + i * n + j] += sum
-            else:
-                C[C_start + i * n + j] = sum
-
-
-# @wp.func_grad(dense_gemm)
-# def adj_dense_gemm(
-#     m: int,
-#     n: int,
-#     p: int,
-#     transpose_A: bool,
-#     transpose_B: bool,
-#     add_to_C: bool,
-#     A_start: int,
-#     B_start: int,
-#     C_start: int,
-#     A: wp.array[float],
-#     B: wp.array[float],
-#     # outputs
-#     C: wp.array[float],
-# ):
-#     add_to_C = True
-#     if transpose_A:
-#         dense_gemm(p, m, n, False, True, add_to_C, A_start, B_start, C_start, B, wp.adjoint[C], wp.adjoint[A])
-#         dense_gemm(p, n, m, False, False, add_to_C, A_start, B_start, C_start, A, wp.adjoint[C], wp.adjoint[B])
-#     else:
-#         dense_gemm(
-#             m, p, n, False, not transpose_B, add_to_C, A_start, B_start, C_start, wp.adjoint[C], B, wp.adjoint[A]
-#         )
-#         dense_gemm(p, n, m, True, False, add_to_C, A_start, B_start, C_start, A, wp.adjoint[C], wp.adjoint[B])
+            C[C_start + i * n + j] = sum
 
 
 def _create_inertia_matrix_func(num_joints: int, num_dofs: int):
@@ -1710,7 +1680,6 @@ def eval_dense_gemm_batched(
     # on the CPU each thread computes the whole matrix multiply
     # on the GPU each block computes the multiply with one output per-thread
     batch = wp.tid()  # /kNumThreadsPerBlock;
-    add_to_C = False
 
     dense_gemm(
         m[batch],
@@ -1718,7 +1687,6 @@ def eval_dense_gemm_batched(
         p[batch],
         transpose_A,
         transpose_B,
-        add_to_C,
         A_start[batch],
         B_start[batch],
         C_start[batch],
