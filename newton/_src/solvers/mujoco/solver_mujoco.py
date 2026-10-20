@@ -119,7 +119,6 @@ from .kernels import (
     update_joint_limit_solref_mode_kernel,
     update_joint_mimic_eq_data_kernel,
     update_joint_transforms_kernel,
-    update_kinematic_targets_kernel,
     update_kinematic_weld_active_kernel,
     update_mimic_eq_data_and_active_kernel,
     update_mocap_transforms_kernel,
@@ -4497,6 +4496,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self.kinematic_target_eq: wp.array[wp.int32] | None = None
         """MuJoCo weld equality holding each kinematic root to its target. Shape [ntarget], dtype int32."""
         self._kinematic_needs_target: np.ndarray | None = None
+        self._jnt_kinematic_mocap: wp.array[wp.int32] | None = None
         self.mjc_actuator_ctrl_source: wp.array[wp.int32] | None = None
         """Control source for each MuJoCo actuator.
 
@@ -4952,10 +4952,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             raise ValueError("use_speculative_contacts=True requires a finite positive timestep.")
         if self.use_mujoco_cpu:
             self._apply_mjc_control(self.model, state_in, control, self.mj_data)
-            if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
+            push_state = self.update_data_interval > 0 and self._step % self.update_data_interval == 0
+            if push_state or self._jnt_kinematic_mocap is not None:
                 # XXX updating the mujoco state at every step may introduce numerical instability
-                self._update_mjc_data(self.mj_data, self.model, state_in)
-            self._update_kinematic_targets(state_in, dt)
+                self._update_mjc_data(self.mj_data, self.model, state_in, dt=dt, write_state=push_state)
             self.mj_model.opt.timestep = dt
             needs_body_observables = (
                 state_out.body_qdd is not None
@@ -4977,9 +4977,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             with wp.ScopedDevice(self.model.device), self._scoped_mujoco_warp_execution():
                 self._enable_rne_postconstraint(state_out, observables)
                 self._apply_mjc_control(self.model, state_in, control, self.mjw_data)
-                if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
-                    self._update_mjc_data(self.mjw_data, self.model, state_in)
-                self._update_kinematic_targets(state_in, dt)
+                push_state = self.update_data_interval > 0 and self._step % self.update_data_interval == 0
+                if push_state or self._jnt_kinematic_mocap is not None:
+                    self._update_mjc_data(self.mjw_data, self.model, state_in, dt=dt, write_state=push_state)
                 self.mjw_model.opt.timestep.fill_(dt)
                 if not self.mjw_model.opt.run_collision_detection:
                     if contacts is None:
@@ -6004,7 +6004,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         model: Model,
         state: State | None = None,
         world_mask: wp.array[wp.bool] | None = None,
+        dt: float = 0.0,
+        write_state: bool = True,
     ):
+        """Push Newton joint state to MuJoCo and place kinematic-root mocap targets.
+
+        Args:
+            dt: Step size the targets lead the prescribed pose by; ``0`` places
+                them exactly at the prescribed pose.
+            write_state: If ``False``, only the kinematic targets are updated.
+        """
         is_mjwarp = SolverMuJoCo._data_is_mjwarp(mj_data)
         single_world_template = False
         if is_mjwarp:
@@ -6036,6 +6045,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
         mujoco_attrs = getattr(model, "mujoco", None)
         dof_ref = getattr(mujoco_attrs, "dof_ref", None) if mujoco_attrs is not None else None
+        mjw_data = getattr(self, "mjw_data", None)
+        jnt_kinematic_mocap = self._jnt_kinematic_mocap if mjw_data is not None else None
+        lookahead = 0.0
+        if dt > 0.0:
+            # Lead by the weld's damping-to-stiffness ratio; REFSAFE floors its time constant at 2*dt.
+            timeconst, dampratio = KINEMATIC_WELD_SOLREF
+            lookahead = 2.0 * max(timeconst, 2.0 * dt) * dampratio * dampratio
+        sleep_redirect = is_mjwarp and self.enable_sleeping and write_state
         wp.launch(
             convert_warp_coords_to_mj_kernel,
             dim=(nworld, joints_per_world),
@@ -6051,16 +6068,31 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 model.joint_child,
                 model.joint_X_p,
                 model.joint_X_c,
+                model.joint_axis,
                 model.body_com,
                 dof_ref,
                 self.mj_q_start,
                 self.mj_qd_start,
+                jnt_kinematic_mocap,
+                lookahead,
+                write_state,
             ],
-            outputs=[self._sleep_qpos if is_mjwarp and self.enable_sleeping else qpos, qvel],
+            outputs=[
+                self._sleep_qpos if sleep_redirect else qpos,
+                qvel,
+                mjw_data.mocap_pos if jnt_kinematic_mocap is not None else None,
+                mjw_data.mocap_quat if jnt_kinematic_mocap is not None else None,
+            ],
             device=model.device,
         )
 
-        if is_mjwarp and self.enable_sleeping:
+        if not is_mjwarp and jnt_kinematic_mocap is not None:
+            mj_data.mocap_pos[:] = mjw_data.mocap_pos.numpy()[0]
+            mj_data.mocap_quat[:] = mjw_data.mocap_quat.numpy()[0]
+        if not write_state:
+            return
+
+        if sleep_redirect:
             self._sleep_tree_changed.zero_()
             wp.launch(
                 copy_qpos_and_detect_tree_change_kernel,
@@ -8872,6 +8904,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     [int(self.mj_model.body(name).mocapid[0]) for name in kinematic_target_names], dtype=wp.int32
                 )
                 self.kinematic_target_eq = wp.array(kinematic_target_eq_ids, dtype=wp.int32)
+                jnt_kinematic_mocap = np.full(n_template_joints, -1, dtype=np.int32)
+                jnt_kinematic_mocap[template_jnt] = self.kinematic_target_mocap.numpy()
+                self._jnt_kinematic_mocap = wp.array(jnt_kinematic_mocap, dtype=wp.int32)
 
             # Create mjc_jnt_to_newton_jnt: MuJoCo[world, joint] -> Newton joint index
             # selected_joints[idx] is the Newton template joint index
@@ -9505,41 +9540,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             outputs=[self.mjw_data.eq_active],
             device=self.model.device,
         )
-
-    def _update_kinematic_targets(self, state: State, dt: float):
-        """Move kinematic-root mocap targets to the prescribed pose for this step."""
-        if self.kinematic_target_mocap is None:
-            return
-        # Lead the target by b/k of the weld so its spring cancels its damping
-        # against the zero mocap velocity; REFSAFE floors the time constant at 2*dt.
-        timeconst, dampratio = KINEMATIC_WELD_SOLREF
-        lookahead = 2.0 * max(timeconst, 2.0 * dt) * dampratio * dampratio
-        wp.launch(
-            update_kinematic_targets_kernel,
-            dim=self.kinematic_target_jnt.shape,
-            inputs=[
-                self.kinematic_target_jnt,
-                self.kinematic_target_mocap,
-                self.model.joint_type,
-                self.model.joint_q_start,
-                self.model.joint_qd_start,
-                self.model.joint_dof_dim,
-                self.model.joint_child,
-                self.model.joint_X_p,
-                self.model.joint_X_c,
-                self.model.joint_axis,
-                state.joint_q,
-                state.joint_qd,
-                state.body_qd,
-                self.model.body_com,
-                lookahead,
-            ],
-            outputs=[self.mjw_data.mocap_pos, self.mjw_data.mocap_quat],
-            device=self.model.device,
-        )
-        if self.use_mujoco_cpu:
-            self.mj_data.mocap_pos[:] = self.mjw_data.mocap_pos.numpy()[0]
-            self.mj_data.mocap_quat[:] = self.mjw_data.mocap_quat.numpy()[0]
 
     def _update_joint_dof_friction_damping_properties(self):
         """Publish friction, damping, and their solver parameters with one scatter kernel."""

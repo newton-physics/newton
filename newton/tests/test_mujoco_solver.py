@@ -2393,6 +2393,152 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "child"):
             solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
 
+    @staticmethod
+    def _build_kinematic_root(kind: str, *, gravity: float = 0.0):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, gravity))
+        body = builder.add_link(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()), is_kinematic=True)
+        builder.add_shape_box(
+            body,
+            xform=wp.transform((0.2, 0.0, 0.0), wp.quat_identity()),
+            hx=0.1,
+            hy=0.05,
+            hz=0.05,
+            cfg=newton.ModelBuilder.ShapeConfig(density=1000.0),
+        )
+        parent_xform = wp.transform((0.0, 0.0, 1.0), wp.quat_identity())
+        dof = newton.ModelBuilder.JointDofConfig
+        if kind == "free":
+            joint = builder.add_joint_free(body)
+        elif kind == "revolute":
+            joint = builder.add_joint_revolute(-1, body, parent_xform=parent_xform, axis=newton.Axis.Z)
+        elif kind == "prismatic":
+            joint = builder.add_joint_prismatic(-1, body, parent_xform=parent_xform, axis=newton.Axis.X)
+        elif kind == "ball":
+            joint = builder.add_joint_ball(-1, body, parent_xform=parent_xform)
+        else:
+            joint = builder.add_joint_d6(
+                -1,
+                body,
+                parent_xform=parent_xform,
+                linear_axes=[dof(axis=newton.Axis.X), dof(axis=newton.Axis.Y)],
+                angular_axes=[dof(axis=newton.Axis.Z), dof(axis=newton.Axis.X)],
+            )
+        builder.add_articulation([joint])
+        return builder.finalize(), body
+
+    @staticmethod
+    def _prescribed_root_motion(model: newton.Model, kind: str, t: float) -> tuple[np.ndarray, np.ndarray]:
+        """Constant-rate root motion; rotations stay about world Z so joint frames agree."""
+        w, v = 1.5, 0.4
+        q = model.joint_q.numpy().copy()
+        qd = np.zeros(model.joint_dof_count, dtype=np.float32)
+        rot = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), w * t)
+        if kind == "free":
+            q[0:3] = (v * t, 0.0, 1.0)
+            q[3:7] = rot
+            # Free-joint linear velocity refers to the COM.
+            r_com = wp.quat_rotate(rot, wp.vec3(*model.body_com.numpy()[0]))
+            qd[:] = (v - w * r_com[1], w * r_com[0], 0.0, 0.0, 0.0, w)
+        elif kind in ("revolute", "prismatic"):
+            rate = w if kind == "revolute" else v
+            q[0], qd[0] = rate * t, rate
+        elif kind == "ball":
+            q[0:4] = rot
+            qd[:] = (0.0, 0.0, w)
+        else:
+            rates = np.array([v, -0.5 * v, w, 0.5 * w])
+            q[:] = rates * t
+            qd[:] = rates
+        return q, qd
+
+    def test_kinematic_roots_track_between_state_pushes(self):
+        """MuJoCo keeps each kinematic root joint type on its prescribed path when Newton skips state pushes."""
+        dt = 0.002
+        for kind in ("free", "revolute", "prismatic", "ball", "d6"):
+            for use_mujoco_cpu in (False, True):
+                with self.subTest(kind=kind, use_mujoco_cpu=use_mujoco_cpu):
+                    model, body = self._build_kinematic_root(kind)
+                    solver = SolverMuJoCo(
+                        model, use_mujoco_cpu=use_mujoco_cpu, update_data_interval=5, disable_contacts=True
+                    )
+                    mjc_body = int(np.flatnonzero(solver.mjc_body_to_newton.numpy()[0] == body)[0])
+                    state_0, state_1, control = model.state(), model.state(), model.control()
+                    for i in range(40):
+                        q, qd = self._prescribed_root_motion(model, kind, i * dt)
+                        state_0.joint_q.assign(q)
+                        state_0.joint_qd.assign(qd)
+                        newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+                        expected = state_0.body_q.numpy()[body]
+                        solver.step(state_0, state_1, control, None, dt)
+                        # xpos/xquat hold the pose MuJoCo started this step from; between
+                        # pushes it comes from MuJoCo's own integration against the targets.
+                        if use_mujoco_cpu:
+                            xpos, xquat = solver.mj_data.xpos[mjc_body], solver.mj_data.xquat[mjc_body]
+                        else:
+                            xpos = solver.mjw_data.xpos.numpy()[0, mjc_body]
+                            xquat = solver.mjw_data.xquat.numpy()[0, mjc_body]
+                        np.testing.assert_allclose(xpos, expected[:3], atol=1.0e-6)
+                        dq = wp.quat_inverse(wp.quat(*expected[3:7])) * wp.quat(*xquat[1:4], xquat[0])
+                        self.assertLess(np.linalg.norm([dq[0], dq[1], dq[2]]), 1.0e-6)
+                        state_0, state_1 = state_1, state_0
+
+    def test_kinematic_platform_wakes_sleeping_payload(self):
+        """A resting payload falls asleep on a kinematic platform and is carried once it moves."""
+        if wp.get_cuda_device_count() == 0:
+            self.skipTest("Sleeping requires MuJoCo Warp on CUDA")
+        builder = newton.ModelBuilder()
+        cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, mu=1.0)
+        platform = builder.add_body(xform=wp.transform((0.0, 0.0, 0.45), wp.quat_identity()), is_kinematic=True)
+        builder.add_shape_box(platform, hx=1.0, hy=1.0, hz=0.05, cfg=cfg)
+        box = builder.add_body(xform=wp.transform((0.0, 0.0, 0.6), wp.quat_identity()))
+        builder.add_shape_box(box, hx=0.1, hy=0.1, hz=0.1, cfg=cfg)
+        model = builder.finalize()
+        solver = SolverMuJoCo(model, enable_sleeping=True, njmax=100, nconmax=20)
+
+        state_0, state_1, control = model.state(), model.state(), model.control()
+        dt, x = 0.002, 0.0
+        for i in range(1250):
+            v = 0.0 if i < 750 else 0.3 * min(1.0, (i - 750) / 100)
+            q = state_0.joint_q.numpy()
+            qd = state_0.joint_qd.numpy()
+            q[0], qd[0] = x, v
+            state_0.joint_q.assign(q)
+            state_0.joint_qd.assign(qd)
+            solver.step(state_0, state_1, control, None, dt)
+            x += v * dt
+            state_0, state_1 = state_1, state_0
+            if i == 749:
+                self.assertTrue(np.all(solver.mjw_data.tree_asleep.numpy()[0] >= 0))
+
+        body_q = state_0.body_q.numpy()
+        self.assertGreater(float(body_q[platform, 0]), 0.1)
+        self.assertLess(abs(float(body_q[box, 0] - body_q[platform, 0])), 5.0e-3)
+
+    def test_kinematic_targets_update_in_captured_step(self):
+        """Replaying a captured step moves the mocap target with the prescribed state."""
+        if wp.get_cuda_device_count() == 0:
+            self.skipTest("CUDA graph capture requires a CUDA device")
+        device = wp.get_cuda_device(0)
+        if not wp.is_mempool_enabled(device):
+            self.skipTest("CUDA graph capture requires the CUDA mempool allocator")
+        with wp.ScopedDevice(device):
+            model, _ = self._build_kinematic_root("prismatic")
+            solver = SolverMuJoCo(model, disable_contacts=True)
+            state_0, state_1, control = model.state(), model.state(), model.control()
+            dt = 0.002
+            solver.step(state_0, state_1, control, None, dt)
+            with wp.ScopedCapture() as capture:
+                solver.step(state_0, state_1, control, None, dt)
+            mocap = int(solver.kinematic_target_mocap.numpy()[0])
+            for x in (0.1, 0.25):
+                state_0.joint_q.fill_(x)
+                state_0.joint_qd.fill_(0.5)
+                wp.capture_launch(capture.graph)
+                # The target leads the prescribed pose by the weld's 4 * dt look-ahead.
+                np.testing.assert_allclose(
+                    solver.mjw_data.mocap_pos.numpy()[0, mocap], (x + 0.5 * 4.0 * dt, 0.0, 1.0), atol=1.0e-6
+                )
+
     def test_making_unconverted_root_kinematic_raises(self):
         model, root_body = self._build_model(root_kinematic=False)
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)

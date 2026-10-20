@@ -11,7 +11,7 @@ import warp as wp
 
 from ...core.types import vec5
 from ...sim import BodyFlags, JointTargetMode, JointType
-from ...sim.articulation import com_twist_to_origin_twist, eval_joint_child_state, eval_joint_motion
+from ...sim.articulation import eval_joint_motion
 from ...sim.contacts import contact_surface_point, contact_surface_separation
 from .constants import (
     DEFAULT_LIMIT_SOLREF_DAMPRATIO,
@@ -920,6 +920,30 @@ def convert_mj_coords_to_warp_kernel(
             joint_qd[wqd_i + i] = qvel[worldid, qd_i + i]
 
 
+@wp.func
+def kinematic_root_target(
+    jtype: int,
+    X_pj: wp.transform,
+    X_cj: wp.transform,
+    X_j: wp.transform,
+    v_j: wp.spatial_vector,
+    body_com: wp.vec3,
+    lookahead: float,
+):
+    """World pose of a root body under prescribed joint motion, advanced by ``lookahead`` seconds."""
+    X_wcj = X_pj * X_j
+    X_wc = X_wcj * wp.transform_inverse(X_cj)
+    lin = wp.quat_rotate(X_pj.q, wp.spatial_top(v_j))
+    ang = wp.quat_rotate(X_pj.q, wp.spatial_bottom(v_j))
+    if jtype == JointType.FREE or jtype == JointType.DISTANCE or jtype == JointType.ROD:
+        # Free-joint linear velocity refers to the COM; shift it to the body origin.
+        v_origin = lin - wp.cross(ang, wp.quat_rotate(X_wc.q, body_com))
+    else:
+        v_origin = lin + wp.cross(ang, X_wc.p - X_wcj.p)
+    q = X_wc.q + wp.quat(ang * (0.5 * lookahead), 0.0) * X_wc.q
+    return wp.transform(X_wc.p + v_origin * lookahead, wp.normalize(q))
+
+
 @wp.kernel
 def convert_warp_coords_to_mj_kernel(
     joint_q: wp.array[wp.float32],
@@ -933,20 +957,61 @@ def convert_warp_coords_to_mj_kernel(
     joint_child: wp.array[wp.int32],
     joint_X_p: wp.array[wp.transform],
     joint_X_c: wp.array[wp.transform],
+    joint_axis: wp.array[wp.vec3],
     body_com: wp.array[wp.vec3],
     dof_ref: wp.array[wp.float32],
     mj_q_start: wp.array[wp.int32],
     mj_qd_start: wp.array[wp.int32],
+    jnt_kinematic_mocap: wp.array[wp.int32],
+    kinematic_lookahead: float,
+    write_state: bool,
     # outputs
     qpos: wp.array2d[wp.float32],
     qvel: wp.array2d[wp.float32],
+    mocap_pos: wp.array2d[wp.vec3],
+    mocap_quat: wp.array2d[wp.quat],
 ):
+    """Push Newton joint coordinates to MuJoCo and place kinematic-root mocap targets.
+
+    ``jnt_kinematic_mocap`` maps template joints to the mocap target welded to
+    their child (``-1`` if none). Targets lead the prescribed pose by
+    ``kinematic_lookahead`` so the weld's spring cancels its damping against
+    the mocap's zero velocity. With ``write_state`` False only targets are written.
+    """
     worldid, jntid = wp.tid()
 
     if world_mask and not world_mask[worldid]:
         return
 
     joint_id = joints_per_world * worldid + jntid
+
+    if jnt_kinematic_mocap:
+        mocap = jnt_kinematic_mocap[jntid]
+        if mocap >= 0:
+            X_j, v_j = eval_joint_motion(
+                joint_type[joint_id],
+                joint_q_start[joint_id],
+                joint_qd_start[joint_id],
+                joint_dof_dim[joint_id, 0],
+                joint_dof_dim[joint_id, 1],
+                joint_q,
+                joint_qd,
+                joint_axis,
+            )
+            target = kinematic_root_target(
+                joint_type[joint_id],
+                joint_X_p[joint_id],
+                joint_X_c[joint_id],
+                X_j,
+                v_j,
+                body_com[joint_child[joint_id]],
+                kinematic_lookahead,
+            )
+            mocap_pos[worldid, mocap] = target.p
+            mocap_quat[worldid, mocap] = quat_xyzw_to_wxyz(target.q)
+
+    if not write_state:
+        return
 
     # Skip loop joints — they have no MuJoCo qpos/qvel entries
     q_i = mj_q_start[jntid]
@@ -2252,61 +2317,6 @@ def update_dof_armature_kernel(
     if newton_dof < 0:
         return
     dof_armature[world, mjc_dof] = joint_armature[newton_dof]
-
-
-@wp.kernel
-def update_kinematic_targets_kernel(
-    target_jnt: wp.array2d[wp.int32],
-    target_mocap: wp.array[wp.int32],
-    joint_type: wp.array[wp.int32],
-    joint_q_start: wp.array[wp.int32],
-    joint_qd_start: wp.array[wp.int32],
-    joint_dof_dim: wp.array2d[wp.int32],
-    joint_child: wp.array[wp.int32],
-    joint_X_p: wp.array[wp.transform],
-    joint_X_c: wp.array[wp.transform],
-    joint_axis: wp.array[wp.vec3],
-    joint_q: wp.array[float],
-    joint_qd: wp.array[float],
-    body_qd: wp.array[wp.spatial_vector],
-    body_com: wp.array[wp.vec3],
-    lookahead: float,
-    # outputs
-    mocap_pos: wp.array2d[wp.vec3],
-    mocap_quat: wp.array2d[wp.quat],
-):
-    """Place each kinematic root's mocap target at its prescribed pose, advanced by ``lookahead``.
-
-    MuJoCo mocap bodies have zero velocity, so the weld damping drags the
-    kinematic body toward rest; leading the target by ``b / k`` of the weld
-    cancels that drag for the prescribed velocity.
-    """
-    world, target = wp.tid()
-    j = target_jnt[world, target]
-    if j < 0:
-        return
-    child = joint_child[j]
-    X_j, v_j = eval_joint_motion(
-        joint_type[j],
-        joint_q_start[j],
-        joint_qd_start[j],
-        joint_dof_dim[j, 0],
-        joint_dof_dim[j, 1],
-        joint_q,
-        joint_qd,
-        joint_axis,
-    )
-    X_wc, v_com = eval_joint_child_state(
-        joint_type[j], -1, child, wp.transform_identity(), joint_X_p[j], joint_X_c[j], X_j, v_j, body_qd, body_com
-    )
-    v_origin = com_twist_to_origin_twist(v_com, X_wc, body_com[child])
-    w = wp.spatial_bottom(v_origin)
-    p = wp.transform_get_translation(X_wc) + wp.spatial_top(v_origin) * lookahead
-    q = wp.transform_get_rotation(X_wc)
-    q = wp.normalize(q + wp.quat(w * (0.5 * lookahead), 0.0) * q)
-    mocap = target_mocap[target]
-    mocap_pos[world, mocap] = p
-    mocap_quat[world, mocap] = quat_xyzw_to_wxyz(q)
 
 
 @wp.kernel

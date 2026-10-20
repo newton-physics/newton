@@ -1124,7 +1124,9 @@ by joint type:
   gets a mocap target body and a weld equality to it. Every step the
   target is moved to the prescribed pose, led by the weld's
   damping-to-stiffness ratio so the weld does not drag the body toward
-  rest. The weld is active exactly while the body is kinematic, so
+  rest. Targets follow :attr:`~newton.State.joint_q` and
+  :attr:`~newton.State.joint_qd` on every step, including steps where
+  ``update_data_interval`` skips pushing the rest of the state. The weld is active exactly while the body is kinematic, so
   :attr:`~newton.Model.body_flags` can switch these roots between
   kinematic and dynamic after
   ``notify_model_changed(ModelFlags.BODY_PROPERTIES)``. To start a
