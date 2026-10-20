@@ -247,7 +247,9 @@ class Example:
 
         self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.contacts = self.collision_pipeline.contacts()
-        self.solver_observables = self.solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+        self.solver_observables = self.solver.observables(
+            kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F}, contacts=self.contacts
+        )
 
         # Setup ik and tasks
         self.state = self.model.state()
@@ -346,6 +348,7 @@ class Example:
             floating=False,
             enable_self_collisions=False,
             parse_visuals_as_colliders=False,
+            joint_damping_mode="passive",
         )
 
         builder.joint_q[:9] = [

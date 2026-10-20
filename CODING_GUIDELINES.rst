@@ -101,6 +101,25 @@ maturity. Follow the `experimental-feature documentation procedure
 <https://newton-physics.github.io/newton/latest/guide/development.html#experimental-features>`__
 for directive syntax and generated API documentation.
 
+USD schema and importer support
+-------------------------------
+
+New or substantially changed user-authorable simulation features should ship
+with USD schema and importer support. Design the schema alongside the public
+API, and test equivalent behavior in USD-authored and builder-created models,
+including applicable defaults, units, frames, references, and invalid inputs.
+Document the supported subset and limitations.
+
+Reuse standard OpenUSD schemas or AOUSD proposals already supported by Newton;
+extend Newton-owned schemas when needed, with compatible schema-package
+versions. Existing solver-native schemas such as ``mjc:*`` are also supported
+when parsed through OpenUSD without an Omniverse dependency. The normal path
+should require no Omniverse or additional vendor schema packages.
+
+Each feature must state its disposition: supported; deferred with explicit
+review acceptance, reason, issue, owner, and target milestone; or not applicable
+with an explanation that the feature is runtime-only or non-authorable.
+
 Naming
 ------
 
@@ -372,6 +391,51 @@ Tests and repository conventions
 - In SPDX copyright lines, use the year the file was first created. Do not use
   date ranges or update the year when modifying an existing file.
 
+.. _test-organization-and-runtime:
+
+Test organization and runtime
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Treat CI runtime and test setup/teardown overhead as part of the cost of every
+change. Preserve meaningful coverage while avoiding redundant test execution.
+
+- **Test real technical functionality.** Tests must exercise the actual
+  implementation and verify meaningful observable results, such as numerical
+  outputs, state changes, parsed data, or error handling. Do not replace the
+  functionality being tested with mocks or fake interfaces, or add tests that
+  only check that fake interfaces agree, expected calls occur, or canned
+  responses are returned. ``newton/tests/test_api.py`` may contain targeted
+  checks of actual API contracts, such as public signatures and argument
+  validation. This exception does not permit mock-only interface checks or
+  replace functional coverage.
+- **Reuse existing coverage first.** Before adding a test, contributors must
+  identify the coverage gap and inspect related tests. Extend an existing method
+  when its setup or simulation results can expose the defect. Each new test
+  method needs a distinct scenario or independent execution; each additional
+  simulation needs an explanation of why existing scenarios are insufficient.
+  Keep failures easy to diagnose and preserve existing coverage.
+- **Group tests by responsibility.** New solver-specific test modules must live
+  under ``newton/tests/<solver>/``. Extend existing flat solver modules in place;
+  defer moves to a planned migration. Group other tests by the feature or
+  subsystem they exercise. Related tests with compatible fixtures should share a
+  test class and module rather than being scattered across small files or
+  assigned a new class for each regression. Create a new class or module only
+  when a distinct responsibility or fixture lifecycle warrants it. Keep shared
+  and cross-solver tests in an appropriate common location. New test packages
+  must remain discoverable by the existing test runner.
+- **Reuse expensive setup safely.** The test runner defaults to class-level
+  parallelism. Reuse compatible fixtures and share expensive initialization at
+  class scope where safe to reduce repeated setup and teardown. Grouping tests
+  alone does not eliminate per-test setup costs. Reset mutable state as needed
+  so tests remain independent and do not depend on execution order.
+  Each class runs serially on one worker by default; keep independent expensive
+  scenarios in separate classes when they do not share setup.
+- **Bound execution cost.** Use the smallest reliable models, step counts, and
+  parameter combinations. Avoid repeated simulations and fixture builds that
+  add equivalent coverage. For new or expanded expensive scenarios, report
+  before/after runtime, including setup and teardown, and justify the added cost
+  in the PR. Assess cumulative cost rather than test count alone.
+
 Public API review checklist
 ---------------------------
 
@@ -386,6 +450,7 @@ When reviewing a new or substantially changed public API, check that:
   options, and safe defaults;
 - new categorical types use an enum where the execution boundary supports it;
 - new public nouns are necessary and have clear ownership;
+- authorable features satisfy the schema and importer policy above;
 - optional parameters are keyword-only unless an established idiom justifies
   positional use;
 - reusable Warp-native math is placed at the appropriate ownership layer; and

@@ -1756,17 +1756,9 @@ class Mesh:
         Returns:
             Mesh: A new Mesh instance.
         """
-        from ..usd.utils import get_mesh  # noqa: PLC0415
+        from ..usd._mesh_loading import _create_mesh  # noqa: PLC0415
 
-        if prim is not None:
-            if source is not None:
-                raise TypeError("Mesh.create_from_usd() received both 'source' and legacy 'prim'; pass only one.")
-            source = prim
-
-        result = get_mesh(source, **kwargs)
-        if isinstance(result, tuple):
-            return result[0]
-        return result
+        return _create_mesh(source, prim=prim, **kwargs)
 
     @staticmethod
     def create_from_file(filename: str, method: str | None = None, **kwargs) -> "Mesh":

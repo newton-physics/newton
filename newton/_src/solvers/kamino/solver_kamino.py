@@ -11,7 +11,6 @@ from __future__ import annotations
 import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass, replace
-from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
@@ -38,7 +37,6 @@ from ...sim.collide import (
     _estimate_rigid_contact_max,
 )
 from ..coupled.interface import CouplingInterface
-from ..observables import SolverObservableFlags, SolverObservables
 from ..solver import SolverBase
 
 if TYPE_CHECKING:
@@ -122,7 +120,7 @@ class SolverKamino(SolverBase, CouplingInterface):
     Proximal ADMM. An opt-in DVI backend uses projected iterations with a direct
     bilateral block solve.
 
-    When requested, the solver populates :attr:`~newton.solvers.SolverObservables.body_qdd` with the
+    When requested, the solver populates :attr:`~newton.solvers.SolverBase.Observables.body_qdd` with the
     discrete step-average center-of-mass acceleration in the world frame
     [m/s², rad/s²]. The value is computed from the input and output body twists
     over each step, so impacts include their velocity impulse divided by the
@@ -183,7 +181,7 @@ class SolverKamino(SolverBase, CouplingInterface):
                 state_in, state_out = state_out, state_in
     """
 
-    SUPPORTED_OBSERVABLE_FLAGS = frozenset({SolverObservableFlags.BODY_QDD, SolverObservableFlags.CONTACT_F})
+    SUPPORTED_OBSERVABLES = frozenset({SolverBase.ObservableKind.BODY_QDD, SolverBase.ObservableKind.CONTACT_F})
 
     @dataclass
     class Config:
@@ -774,7 +772,15 @@ class SolverKamino(SolverBase, CouplingInterface):
         self._config = config
 
         # Create a Kamino model from the Newton model
-        self._model_kamino = self._kamino.ModelKamino.from_newton(model)
+        collision_config = config.collision_detector
+        include_shape_contact_pairs = config.use_collision_detector and (
+            collision_config is None
+            or collision_config.pipeline == "primitive"
+            or collision_config.broadphase == "explicit"
+        )
+        self._model_kamino = self._kamino.ModelKamino.from_newton(
+            model, include_shape_contact_pairs=include_shape_contact_pairs
+        )
 
         # Store for which joints the limits are finite. This is used to validate that finiteness of limits is not changed at runtime.
         q_min = self._model_kamino.joints.q_j_min.numpy()
@@ -863,7 +869,6 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         # Initialize the internal Kamino control wrapper
         self._control_kamino = self._kamino.ControlKamino()
-        self._control_kamino.finalize(self._model_kamino)
 
     @property
     def status(self) -> wp.array[Any]:
@@ -1039,25 +1044,41 @@ class SolverKamino(SolverBase, CouplingInterface):
         if isinstance(config.base_pose, SolverKamino.ResetConfig.FromBaseQ):
             config.base_pose = config_cache
 
-    def observables(self, flags: Iterable[Enum], *, requires_grad: bool | None = None) -> SolverObservables:
-        """Allocate solver observables and the input poses needed for contact export."""
-        with self._create_observables(flags, requires_grad=requires_grad) as observables:
-            if observables.is_requested(SolverObservableFlags.CONTACT_F):
-                if self._collision_detector_kamino is not None:
-                    native_max = (
-                        self._contacts_kamino.model_max_contacts_host if self._contacts_kamino is not None else 0
-                    )
-                    if native_max > self.model.rigid_contact_max:
-                        raise ValueError(
-                            f"Kamino contact capacity ({native_max}) exceeds CollisionPipeline capacity "
-                            f"({self.model.rigid_contact_max}). Increase rigid_contact_max before requesting contact observables."
-                        )
+    def observables(
+        self, kinds: Iterable[str], *, contacts: Contacts | None = None, requires_grad: bool | None = None
+    ) -> SolverBase.Observables:
+        """Allocate solver observables and the input poses needed for contact export.
+
+        Supply ``contacts`` when requesting contact-indexed fields; their
+        capacities size the contact arrays.
+
+        See :meth:`SolverBase.observables` for the shared allocation contract and
+        errors, and :ref:`solver_observables` for usage and native collision setup.
+
+        Raises:
+            ValueError: If the native contact export capacity exceeds the
+                rigid contact capacity of ``contacts``.
+        """
+        with self._create_observables(kinds, contacts=contacts, requires_grad=requires_grad) as observables:
+            if observables.is_requested(SolverBase.ObservableKind.CONTACT_F):
+                self._validate_native_contact_export(observables, observables.contacts)
                 if self._contact_observable_state is None:
                     # Preserve input poses for in-place steps; publish scratch only after allocation succeeds.
                     state = State()
                     state.body_q = wp.empty(self.model.body_count, dtype=wp.transform, device=self.device)
                     self._contact_observable_state = state
             return observables
+
+    @override
+    def _validate_native_contact_export(self, observables: SolverBase.Observables, contacts: Contacts) -> None:
+        if not observables.is_requested(SolverBase.ObservableKind.CONTACT_F) or self._collision_detector_kamino is None:
+            return
+        native_max = self._contacts_kamino.model_max_contacts_host if self._contacts_kamino is not None else 0
+        if native_max > contacts.rigid_contact_max:
+            raise ValueError(
+                f"Kamino contact capacity ({native_max}) exceeds Contacts capacity "
+                f"({contacts.rigid_contact_max}). Increase rigid_contact_max before requesting contact observables."
+            )
 
     @override
     def step(
@@ -1068,7 +1089,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         contacts: Contacts | None,
         dt: float,
         *,
-        observables: SolverObservables | None = None,
+        observables: SolverBase.Observables | None = None,
     ):
         """
         Simulate the model for a given time step using the given control input.
@@ -1097,7 +1118,7 @@ class SolverKamino(SolverBase, CouplingInterface):
                 retain these input poses.
         """
         self.validate_observables(observables, contacts)
-        if observables is not None and observables.is_requested(SolverObservableFlags.CONTACT_F):
+        if observables is not None and observables.is_requested(SolverBase.ObservableKind.CONTACT_F):
             wp.copy(self._contact_observable_state.body_q, state_in.body_q)
         # Interface the input state containers to Kamino's equivalents
         # NOTE: These should produce zero-copy views/references
@@ -1109,7 +1130,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         # internal control arrays if None is provided.
         if control is None:
             control = self.model.control(clone_variables=False)
-        self._control_kamino.from_newton(control, self._model_kamino)
+        self._control_kamino.from_newton(control)
 
         # Internal detection is authoritative when enabled for this solver.
         if self._config.use_collision_detector:
@@ -1142,7 +1163,7 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         body_qdd = (
             observables.body_qdd
-            if observables is not None and observables.is_requested(SolverObservableFlags.BODY_QDD)
+            if observables is not None and observables.is_requested(SolverBase.ObservableKind.BODY_QDD)
             else None
         )
         if body_qdd is None:
@@ -1185,7 +1206,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             body_q=state_out_kamino.q_i,
         )
 
-        if observables is not None and observables.is_requested(SolverObservableFlags.CONTACT_F):
+        if observables is not None and observables.is_requested(SolverBase.ObservableKind.CONTACT_F):
             observable_contacts = observables.contacts
             if observable_contacts is None:
                 raise ValueError("Contact storage is missing from solver observables.")
@@ -1193,7 +1214,7 @@ class SolverKamino(SolverBase, CouplingInterface):
                 observable_contacts, self._contact_observable_state, observables.contact_f
             )
             if observable_contacts.force is not None and observable_contacts.force.ptr != observables.contact_f.ptr:
-                observable_contacts.force.assign(observables.contact_f)
+                wp.copy(observable_contacts.force, observables.contact_f, count=observable_contacts.force.shape[0])
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
@@ -1276,14 +1297,14 @@ class SolverKamino(SolverBase, CouplingInterface):
 
         .. deprecated:: 1.7
             Exporting ``contacts.force`` is deprecated. Request
-            :attr:`~newton.solvers.SolverObservableFlags.CONTACT_F` and pass the
+            :attr:`~newton.solvers.SolverBase.ObservableKind.CONTACT_F` and pass the
             resulting container to :meth:`step` instead. Geometry-only export
             is not deprecated.
         """
         if contacts.force is not None:
             warnings.warn(
                 "SolverKamino.update_contacts() force export is deprecated in Newton 1.7; request "
-                "SolverObservableFlags.CONTACT_F and pass SolverObservables to step().",
+                "SolverBase.ObservableKind.CONTACT_F and pass SolverBase.Observables to step().",
                 NewtonDeprecationWarning,
                 stacklevel=2,
             )

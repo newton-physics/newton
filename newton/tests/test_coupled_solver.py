@@ -353,10 +353,10 @@ class _StepCountingCopySolver(SolverBase, CouplingInterface):
 class _BodyObservableCopySolver(_StepCountingCopySolver):
     """Copy solver that fills body-indexed solver observables."""
 
-    SUPPORTED_OBSERVABLE_FLAGS = frozenset(
+    SUPPORTED_OBSERVABLES = frozenset(
         {
-            newton.solvers.SolverObservableFlags.BODY_QDD,
-            newton.solvers.SolverObservableFlags.BODY_PARENT_F,
+            newton.solvers.SolverBase.ObservableKind.BODY_QDD,
+            newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F,
         }
     )
 
@@ -366,9 +366,9 @@ class _BodyObservableCopySolver(_StepCountingCopySolver):
         if observables is None:
             return
         value = 1.0 if self.model.name == "left" else 2.0
-        if observables.is_requested(newton.solvers.SolverObservableFlags.BODY_QDD):
+        if observables.is_requested(newton.solvers.SolverBase.ObservableKind.BODY_QDD):
             observables.body_qdd.fill_(value)
-        if observables.is_requested(newton.solvers.SolverObservableFlags.BODY_PARENT_F):
+        if observables.is_requested(newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F):
             observables.body_parent_f.fill_(value + 10.0)
 
 
@@ -533,7 +533,7 @@ class TestModelView(unittest.TestCase):
         self.assertEqual(parent_flags[1] & kinematic, 0)
 
     def test_disable_joints_rewrites_rod_type_in_view(self):
-        """Verify disabled rod joints are exposed as D6 in the view."""
+        """Preserve the Rod pose layout as FREE when disabling joints in a view."""
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         parent = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
         child = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
@@ -549,7 +549,7 @@ class TestModelView(unittest.TestCase):
         view.disable_joints(wp.array([joint], dtype=int, device="cpu"))
 
         self.assertFalse(bool(view.joint_enabled.numpy()[joint]))
-        self.assertEqual(int(view.joint_type.numpy()[joint]), int(newton.JointType.D6))
+        self.assertEqual(int(view.joint_type.numpy()[joint]), int(newton.JointType.FREE))
         self.assertEqual(int(model.joint_type.numpy()[joint]), int(newton.JointType.ROD))
         np.testing.assert_array_equal(view.joint_dof_dim.numpy()[joint], model.joint_dof_dim.numpy()[joint])
 
@@ -1134,10 +1134,11 @@ class TestSolverCoupledBasic(unittest.TestCase):
             ],
         )
         flags = {
-            newton.solvers.SolverObservableFlags.BODY_QDD,
-            newton.solvers.SolverObservableFlags.BODY_PARENT_F,
+            newton.solvers.SolverBase.ObservableKind.BODY_QDD,
+            newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F,
         }
-        observables = coupled.observables(flags)
+        observables = coupled.observables(coupled.supported_observables)
+        self.assertEqual(observables.kinds, flags)
         state_in, state_out = self.model.state(), self.model.state()
 
         coupled.step(state_in, state_out, None, None, 0.01, observables=observables)
@@ -1155,8 +1156,8 @@ class TestSolverCoupledBasic(unittest.TestCase):
                 SolverCoupled.Entry("left", _BodyObservableCopySolver, bodies=[0]),
             ],
         )
-        flags = newton.solvers.SolverObservableFlags
-        observables = coupled.observables({flags.BODY_QDD, flags.BODY_PARENT_F}, requires_grad=True)
+        flags = newton.solvers.SolverBase.ObservableKind
+        observables = coupled.observables(kinds={flags.BODY_QDD, flags.BODY_PARENT_F}, requires_grad=True)
         seeds = np.arange(12, dtype=np.float32).reshape(2, 6)
         with wp.Tape() as tape:
             coupled._reconcile_observables(observables)
@@ -1180,8 +1181,8 @@ class TestSolverCoupledBasic(unittest.TestCase):
                 SolverCoupled.Entry("right", _BodyObservableCopySolver, bodies=[1]),
             ],
         )
-        flags = newton.solvers.SolverObservableFlags
-        observables = coupled.observables({flags.BODY_QDD, flags.BODY_PARENT_F})
+        flags = newton.solvers.SolverBase.ObservableKind
+        observables = coupled.observables(kinds={flags.BODY_QDD, flags.BODY_PARENT_F})
         observables.body_parent_f.fill_(-1.0)
         for entry in observables.entry_observables.values():
             entry.body_parent_f.fill_(-2.0)
@@ -1220,9 +1221,9 @@ class TestSolverCoupledBasic(unittest.TestCase):
                 SolverCoupled.Entry("particles", _StepCountingCopySolver, particles=[0]),
             ],
         )
-        flags = newton.solvers.SolverObservableFlags
-        observables = coupled.observables({flags.BODY_QDD})
-        self.assertEqual(observables.entry_observables["particles"].flags, frozenset())
+        flags = newton.solvers.SolverBase.ObservableKind
+        observables = coupled.observables(kinds={flags.BODY_QDD})
+        self.assertEqual(observables.entry_observables["particles"].kinds, frozenset())
 
         state_in, state_out = model.state(), model.state()
         coupled.step(state_in, state_out, None, None, 0.01, observables=observables)
@@ -1681,6 +1682,36 @@ class TestSolverCoupledBasic(unittest.TestCase):
         coupled.notify_model_changed(newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES)
         np.testing.assert_allclose(view.mujoco.dof_ref.numpy(), 0.2)
         np.testing.assert_allclose(view.mujoco.dof_springref.numpy(), 0.3)
+
+    def test_joint_properties_refresh_compacted_targets(self):
+        """Refresh position targets in a compact model view."""
+        builder = newton.ModelBuilder()
+        bodies = [builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3))) for _ in range(2)]
+        joints = [builder.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z) for body in bodies]
+        for joint in joints:
+            builder.add_articulation([joint])
+        model = builder.finalize(device="cpu")
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="joint",
+                    solver=_StepCountingCopySolver,
+                    bodies=[bodies[1]],
+                    joints=[joints[1]],
+                )
+            ],
+        )
+        view = coupled.view("joint")
+
+        model.joint_target_q.assign(np.array([2.0, 3.0], dtype=np.float32))
+        np.testing.assert_array_equal(view.joint_target_q.numpy(), [0.0])
+        coupled.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+        np.testing.assert_array_equal(view.joint_target_q.numpy(), [3.0])
+
+        model.joint_target_q.assign(np.array([4.0, 5.0], dtype=np.float32))
+        coupled.notify_model_changed(newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES)
+        np.testing.assert_array_equal(view.joint_target_q.numpy(), [5.0])
 
     def test_custom_control_arrays_are_mapped_to_entries(self):
         """Custom CONTROL attributes should follow their compact frequency map."""
@@ -4091,6 +4122,63 @@ add_function_test(
     _coupled_soft_contact_filter_preserves_unified_fields,
     devices=get_test_devices(mode="basic"),
 )
+
+
+class TestSolverCoupledProxyPipelineCapacity(unittest.TestCase):
+    """Keep parent contact observables independent of proxy-local collision pipelines."""
+
+    def test_proxy_pipeline_keeps_parent_observables(self):
+        """Step parent-model contact observables beside a larger proxy-local pipeline."""
+        _ContactRecordingBodyHarvestSolver.instances.clear()
+        builder = newton.ModelBuilder()
+        ground = builder.add_ground_plane()
+        src_body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.09), wp.quat_identity()))
+        builder.add_shape_sphere(src_body, radius=0.1)
+        dst_body = builder.add_body(xform=wp.transform(wp.vec3(1.0, 0.0, 0.09), wp.quat_identity()))
+        dst_shape = builder.add_shape_sphere(dst_body, radius=0.1)
+        model = builder.finalize(device="cpu")
+        pipeline = newton.CollisionPipeline(model, rigid_contact_max=16, soft_contact_max=0)
+        contacts = pipeline.contacts()
+        solver = SolverXPBD(model)
+        observables = solver.observables({SolverBase.ObservableKind.CONTACT_F}, contacts=contacts)
+
+        coupled = SolverCoupledProxy(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(name="src", solver=_StepCountingCopySolver, bodies=[src_body]),
+                SolverCoupled.Entry(
+                    name="dst",
+                    solver=_ContactRecordingBodyHarvestSolver,
+                    bodies=[dst_body],
+                    shapes=[ground, dst_shape],
+                ),
+            ],
+            coupling=SolverCoupledProxy.Config(
+                proxies=[
+                    SolverCoupledProxy.Proxy(
+                        source="src",
+                        destination="dst",
+                        bodies=[src_body],
+                        collision_pipeline=lambda view: newton.CollisionPipeline(
+                            view, rigid_contact_max=128, soft_contact_max=0
+                        ),
+                    ),
+                ],
+            ),
+        )
+        self.assertEqual((model.rigid_contact_max, model.soft_contact_max), (16, 0))
+
+        state_in = model.state()
+        pipeline.collide(state_in, contacts)
+        coupled.step(state_in, model.state(), None, contacts, 1.0 / 60.0)
+        proxy_contacts = _ContactRecordingBodyHarvestSolver.instances["dst"].step_contacts[0]
+        self.assertEqual(proxy_contacts.rigid_contact_max, 128)
+        solver.step(state_in, model.state(), None, contacts, 1.0 / 60.0, observables=observables)
+        self.assertIs(observables.contacts, contacts)
+        self.assertEqual(observables.contact_f.shape, (16,))
+        count = int(contacts.rigid_contact_count.numpy()[0])
+        self.assertGreater(count, 0)
+        self.assertTrue(np.any(observables.contact_f.numpy()[:count, 2] != 0.0))
 
 
 if __name__ == "__main__":

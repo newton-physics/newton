@@ -360,9 +360,7 @@ class WorkspaceHistory(TimelineTransport):
         # capacity. Give replay its own normally allocated container and bind
         # it to separate contacts; never rebind or overwrite live observables.
         if observables is not self._observables_source:
-            self.display_observables = (
-                example.solver.observables(observables.flags, requires_grad=False) if observables is not None else None
-            )
+            self.display_observables = None
             self._observables_source = observables
             self.display_contacts = None
             self.loaded_index = -1
@@ -377,7 +375,12 @@ class WorkspaceHistory(TimelineTransport):
             or self.display_contacts.soft_contact_max < soft_capacity
         ):
             self.display_contacts = Contacts(rigid_capacity, soft_capacity, device=self.model.device)
+            self.display_observables = None
             self.loaded_index = -1
+        if observables is not None and self.display_observables is None:
+            self.display_observables = example.solver.observables(
+                kinds=observables.kinds, contacts=self.display_contacts, requires_grad=False
+            )
         if self.loaded_index != self.index:
             live_state = getattr(example, "state_0", getattr(example, "state", None))
             _restore_component(self.display_state, live_state, frame.state)

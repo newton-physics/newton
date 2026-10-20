@@ -294,8 +294,6 @@ class PropertyInspector:
                     if stop > len(value):
                         continue
                 custom = spec.assignment is not None or ":" in name or name not in domain.model._CORE_ATTRIBUTE_SPECS
-                # joint_target_q is registered according to the active coordinate layout.
-                custom &= name != "joint_target_q"
                 # None identifies built-in fields; the empty namespace is a
                 # distinct tab for unnamespaced custom attributes.
                 namespace = (name.split(":", 1)[0] if ":" in name else "") if custom else None
@@ -676,7 +674,7 @@ class PropertyInspector:
     def _joint_widget(self, label, values, model, joint, kind, attr, editable, reason):
         ws, w = self.workspace, self.workspace.widgets
         values = values.reshape(-1)
-        coord = attr == "joint_q" or (attr == "joint_target_q" and model.use_coord_layout_targets)
+        coord = attr in ("joint_q", "joint_target_q")
         args = {"editable": editable, "reason": reason}
         if coord and kind in (JointType.FREE, JointType.DISTANCE) and len(values) == 7:
             return w.transform(label, values, **args)

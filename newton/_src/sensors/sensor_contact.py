@@ -14,11 +14,10 @@ import warp as wp
 from ..exceptions import NewtonDeprecationWarning
 from ..sim import Contacts, Model, State
 from ..sim.contacts import contact_surface_point
-from ..solvers.observables import SolverObservableFlags, SolverObservables
+from ..solvers.solver import SolverBase
 from ..utils.selection import match_labels
 
 logger = logging.getLogger(__name__)
-
 
 _SENSING_KIND_SHAPE = 1
 _SENSING_KIND_BODY = 2
@@ -262,90 +261,89 @@ def _assign_counterpart_columns(
 class SensorContact:
     """Measures contact forces, friction, and force-weighted positions on **sensing objects** (bodies or shapes).
 
-        In its simplest form the sensor reports :attr:`total_force` — the total contact force on each sensing object — and
-        :attr:`total_force_friction`, its tangential (friction) component. Optionally, specify **counterparts** to separate
-        these measurements by interacting body or shape. :attr:`force_matrix` reports the per-counterpart contact forces,
-        :attr:`force_matrix_friction` reports their frictional (tangential) components, and :attr:`position_matrix` reports
-        the average interaction positions. In each matrix, row ``i`` corresponds to ``sensing_indices[i]`` and column ``j``
-        within that row corresponds to ``counterpart_indices[i][j]``. Columns beyond a row's counterpart list are zero
-        padding.
+    In its simplest form the sensor reports :attr:`total_force` — the total contact force on each sensing object — and
+    :attr:`total_force_friction`, its tangential (friction) component. Optionally, specify **counterparts** to separate
+    these measurements by interacting body or shape. :attr:`force_matrix` reports the per-counterpart contact forces,
+    :attr:`force_matrix_friction` reports their frictional (tangential) components, and :attr:`position_matrix` reports
+    the average interaction positions. In each matrix, row ``i`` corresponds to ``sensing_indices[i]`` and column ``j``
+    within that row corresponds to ``counterpart_indices[i][j]``. Columns beyond a row's counterpart list are zero
+    padding.
 
-        Each :attr:`position_matrix` entry is the average of the contact midpoints accumulated at that index, weighted by
-        contact-force magnitude. It provides a representative location for where each counterpart interacts with the
-        sensing object. Force weighting reduces the influence of weak contacts, so adding or removing a low-force contact
-        perturbs the reported position less.
+    Each :attr:`position_matrix` entry is the average of the contact midpoints accumulated at that index, weighted by
+    contact-force magnitude. It provides a representative location for where each counterpart interacts with the
+    sensing object. Force weighting reduces the influence of weak contacts, so adding or removing a low-force contact
+    perturbs the reported position less.
 
-        :attr:`total_force` and :attr:`total_force_friction` are ``None`` when ``measure_total=False``. Per-counterpart
-        outputs :attr:`force_matrix`, :attr:`force_matrix_friction`, and :attr:`position_matrix` are ``None`` when
-        no counterparts are specified.
+    :attr:`total_force` and :attr:`total_force_friction` are ``None`` when ``measure_total=False``. Per-counterpart
+    outputs :attr:`force_matrix`, :attr:`force_matrix_friction`, and :attr:`position_matrix` are ``None`` when
+    no counterparts are specified.
 
-        .. rubric:: Multi-world behavior
+    .. rubric:: Multi-world behavior
 
-        When the model contains multiple worlds, counterpart mappings are resolved per-world. The collision pipeline and
-        solver are expected to produce only within-world contacts, so cross-world force accumulation does not arise in
-        practice. Global counterparts (e.g. ground plane) contribute to every world they contact.
+    When the model contains multiple worlds, counterpart mappings are resolved per-world. The collision pipeline and
+    solver are expected to produce only within-world contacts, so cross-world force accumulation does not arise in
+    practice. Global counterparts (e.g. ground plane) contribute to every world they contact.
 
-        In single-world models where no ``add_world()`` call was made (all entities are global / ``world=-1``), the sensor
-        treats the entire model as one implicit world and all entities are valid sensing objects.
+    In single-world models where no ``add_world()`` call was made (all entities are global / ``world=-1``), the sensor
+    treats the entire model as one implicit world and all entities are valid sensing objects.
 
-        When counterparts are specified, the per-counterpart matrices have shape
-        ``(sum_of_sensors_across_worlds, max_counterparts)``, where ``max_counterparts`` is the maximum counterpart count
-        of any single world. Row order matches
-        :attr:`sensing_indices`. Columns beyond a world's own counterpart count are zero-padded.
+    When counterparts are specified, the per-counterpart matrices have shape
+    ``(sum_of_sensors_across_worlds, max_counterparts)``, where ``max_counterparts`` is the maximum counterpart count
+    of any single world. Row order matches
+    :attr:`sensing_indices`. Columns beyond a world's own counterpart count are zero-padded.
 
-        :attr:`sensing_indices` and :attr:`counterpart_indices` are flat lists that describe the structure of the output
-        arrays.
+    :attr:`sensing_indices` and :attr:`counterpart_indices` are flat lists that describe the structure of the output
+    arrays.
 
-        .. rubric:: Terms
+    .. rubric:: Terms
 
-        - **Sensing object** -- body or shape carrying a contact sensor.
-        - **Counterpart** -- the other body or shape in a contact interaction.
+    - **Sensing object** -- body or shape carrying a contact sensor.
+    - **Counterpart** -- the other body or shape in a contact interaction.
 
-        .. rubric:: Construction and update order
+    .. rubric:: Construction and update order
 
-        Construct a :class:`~newton.CollisionPipeline` before requesting
-        :attr:`~newton.solvers.SolverObservableFlags.CONTACT_F` from the solver. Pass the resulting
-        :class:`~newton.solvers.SolverObservables` and the pipeline's :class:`~newton.Contacts`
-        buffer to both the solver step and :meth:`update`. The sensor uses only the linear part of
-        each ``CONTACT_F`` wrench (force [N]); the torque part is ignored.
+    Construct a :class:`~newton.CollisionPipeline` and pass its contacts to
+    :meth:`~newton.solvers.SolverBase.observables` when requesting
+    :attr:`~newton.solvers.SolverBase.ObservableKind.CONTACT_F` from the solver. Pass the resulting
+    :class:`~newton.solvers.SolverBase.Observables` and the pipeline's :class:`~newton.Contacts`
+    buffer to both the solver step and :meth:`update`. The sensor uses only the linear part of
+    each ``CONTACT_F`` wrench (force [N]); the torque part is ignored.
 
-        Parameters that select bodies or shapes accept label patterns -- see :ref:`label-matching`.
+    Parameters that select bodies or shapes accept label patterns -- see :ref:`label-matching`.
 
-        Example:
-            Measure total contact force on a sphere resting on the ground:
+    Example:
+        Measure total contact force on a sphere resting on the ground:
 
-            .. testcode::
+        .. testcode::
 
-                import warp as wp
+            import warp as wp
+            import newton
+            from newton.sensors import SensorContact
 
-    from ..exceptions import NewtonDeprecationWarning
-                import newton
-                from newton.sensors import SensorContact
+            builder = newton.ModelBuilder()
+            builder.add_ground_plane()
+            body = builder.add_body(xform=wp.transform((0, 0, 0.1), wp.quat_identity()))
+            builder.add_shape_sphere(body, radius=0.1, label="ball")
+            model = builder.finalize()
 
-                builder = newton.ModelBuilder()
-                builder.add_ground_plane()
-                body = builder.add_body(xform=wp.transform((0, 0, 0.1), wp.quat_identity()))
-                builder.add_shape_sphere(body, radius=0.1, label="ball")
-                model = builder.finalize()
+            sensor = SensorContact(model, sensing_shapes="ball", request_contact_attributes=False)
+            solver = newton.solvers.SolverMuJoCo(model)
+            state = model.state()
+            collision_pipeline = newton.CollisionPipeline(
+                model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0
+            )
+            contacts = collision_pipeline.contacts()
+            observables = solver.observables(kinds=sensor.solver_observable_kinds, contacts=contacts)
 
-                sensor = SensorContact(model, sensing_shapes="ball", request_contact_attributes=False)
-                solver = newton.solvers.SolverMuJoCo(model)
-                state = model.state()
-                collision_pipeline = newton.CollisionPipeline(
-                    model, rigid_contact_max=solver.get_max_contact_count(), soft_contact_max=0
-                )
-                contacts = collision_pipeline.contacts()
-                observables = solver.observables(sensor.solver_observable_flags)
+            solver.step(state, state, None, contacts, dt=1.0 / 60.0, observables=observables)
+            sensor.update(state, contacts, observables=observables)
+            force = sensor.total_force.numpy()  # (n_sensing, 3)
 
-                solver.step(state, state, None, contacts, dt=1.0 / 60.0, observables=observables)
-                sensor.update(state, contacts, observables=observables)
-                force = sensor.total_force.numpy()  # (n_sensing, 3)
-
-        Raises:
-            ValueError: If the configuration of sensing/counterpart objects is invalid.
+    Raises:
+        ValueError: If the configuration of sensing/counterpart objects is invalid.
     """
 
-    solver_observable_flags = frozenset({SolverObservableFlags.CONTACT_F})
+    solver_observable_kinds = frozenset({SolverBase.ObservableKind.CONTACT_F})
     """Solver observables required by :meth:`update`.
 
     .. experimental::
@@ -435,8 +433,8 @@ class SensorContact:
                 Pass False and supply solver observables to :meth:`update` instead.
 
                 .. deprecated:: 1.7
-                    Passing True is deprecated. Allocate :attr:`solver_observable_flags`
-                    through the solver and pass :class:`~newton.solvers.SolverObservables`
+                    Passing True is deprecated. Allocate :attr:`solver_observable_kinds`
+                    through the solver and pass :class:`~newton.solvers.SolverBase.Observables`
                     to :meth:`update` instead.
         """
         if (sensing_bodies is None) == (sensing_shapes is None):
@@ -452,7 +450,7 @@ class SensorContact:
         if request_contact_attributes:
             warnings.warn(
                 "SensorContact(request_contact_attributes=True) is deprecated in Newton 1.7; "
-                "allocate SolverObservables with solver.observables(sensor.solver_observable_flags) "
+                "allocate SolverBase.Observables with solver.observables(kinds=sensor.solver_observable_kinds, contacts=contacts) "
                 "and pass them to update(..., observables=...).",
                 NewtonDeprecationWarning,
                 stacklevel=2,
@@ -623,7 +621,7 @@ class SensorContact:
         self._sensing_kinds = wp.full(n_rows, sensing_kind, dtype=wp.int32, device=self.device)
         self.sensing_transforms = wp.zeros(n_rows, dtype=wp.transform, device=self.device)
 
-    def update(self, state: State | None, contacts: Contacts, *, observables: SolverObservables | None = None):
+    def update(self, state: State | None, contacts: Contacts, *, observables: SolverBase.Observables | None = None):
         """Update the contact sensor readings based on the provided state and contacts.
 
         Computes world-frame transforms for all sensing objects and evaluates contact forces and their friction
@@ -635,15 +633,16 @@ class SensorContact:
                 :attr:`sensing_transforms` is left unchanged and :attr:`position_matrix` is reset to zero.
                 Contact-force outputs are updated in either case.
             contacts: The contact data to evaluate.
-            observables: Solver observable arrays containing :attr:`~newton.solvers.SolverObservables.contact_f`.
+            observables: Solver observable arrays containing :attr:`~newton.solvers.SolverBase.Observables.contact_f`.
                 If omitted, the deprecated ``contacts.force`` array is used when available.
-                On first use, validates and binds contact storage. Before the first
-                solver step, newly allocated observables report zero contact forces.
+                ``contacts`` must be the buffer that produced ``contact_f`` (``observables.contacts``).
+                Before the first solver step, newly allocated observables report zero contact forces.
+                See :ref:`solver_observables` for allocation and usage examples.
 
         Raises:
             ValueError: If ``observables`` belong to a different model, no contact-force
-                output is available, or the observables are bound to a different ``contacts`` instance.
-            ValueError: If the contact device or capacities do not match the allocated observables.
+                output is available, or ``contact_f`` was produced with a different ``contacts`` instance.
+            ValueError: If legacy contacts are on a different device from the sensor.
         """
         if observables is not None and observables.model is not self._model:
             raise ValueError("Solver observables must belong to the sensor's model.")
@@ -651,11 +650,15 @@ class SensorContact:
         if contact_f is None:
             raise ValueError(
                 "SensorContact requires contact-force solver observables. Request "
-                "SolverObservableFlags.CONTACT_F and pass the SolverObservables to update()."
+                "SolverBase.ObservableKind.CONTACT_F and pass the SolverBase.Observables to update()."
             )
         if observables is not None:
-            observables.bind_contacts(contacts)
-        if contacts.device != self.device:
+            if observables.contacts is not contacts:
+                raise ValueError(
+                    "Contact solver observables were produced with a different Contacts instance; "
+                    "pass the Contacts used by the step that produced them."
+                )
+        elif contacts.device != self.device:
             raise ValueError(f"Contacts device ({contacts.device}) does not match sensor device ({self.device}).")
 
         # update sensing transforms

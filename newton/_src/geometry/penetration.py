@@ -83,6 +83,26 @@ def _box_triangle_depth(half: wp.vec3, first: wp.vec3, second: wp.vec3, third: w
 
 
 @wp.func
+def _box_face_depth(half_a: wp.vec3, half_b: wp.vec3, rotation: wp.quat, position: wp.vec3) -> tuple[wp.vec3, float]:
+    """Bound separation depth along the face normals of two enclosing boxes."""
+    axes_b = wp.quat_to_matrix(rotation)
+    normal = wp.vec3(1.0, 0.0, 0.0)
+    depth = float(1.0e30)
+    for index in range(3):
+        overlap_a = half_a[index] + wp.dot(wp.abs(axes_b[index]), half_b) - wp.abs(position[index])
+        if overlap_a < depth:
+            depth = overlap_a
+            normal = _axis(index) if position[index] >= 0.0 else -_axis(index)
+        axis_b = axes_b * _axis(index)
+        offset_b = wp.dot(axis_b, position)
+        overlap_b = half_b[index] + wp.dot(wp.abs(axis_b), half_a) - wp.abs(offset_b)
+        if overlap_b < depth:
+            depth = overlap_b
+            normal = axis_b if offset_b >= 0.0 else -axis_b
+    return normal, depth
+
+
+@wp.func
 def _box_box_depth(half_a: wp.vec3, half_b: wp.vec3, rotation: wp.quat, position: wp.vec3) -> tuple[wp.vec3, float]:
     """Return the minimum-depth normal and depth of two boxes in A's frame.
 
@@ -117,11 +137,11 @@ def _box_box_depth(half_a: wp.vec3, half_b: wp.vec3, rotation: wp.quat, position
 def create_solve_box_penetration(support: Any):
     """Find minimum depth for a box against a box, triangle, or convex mesh.
 
-    Box and triangle pairs use the closed-form separating-axis test. For convex meshes,
-    cheap certificates come first: a box plus a triangle of genuine partner
-    points is an inner Minkowski body, so its depth bounds the minimum from
-    below, and a support plane bounds it from above. Only pairs neither
-    certificate resolves stream the complete separating-axis basis: face
+    Box and triangle pairs use the closed-form separating-axis test. For
+    convex meshes, cheap certificates come first: a box plus a triangle of
+    genuine partner points is an inner Minkowski body, so its depth bounds
+    the minimum from below, and a support plane bounds it from above. Only
+    pairs neither certificate resolves stream the complete separating-axis basis: face
     normals and edge cross products include every Minkowski facet normal of
     a hull triangulation. Storage is constant and no expanding polytope is
     constructed.

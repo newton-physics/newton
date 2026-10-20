@@ -9,6 +9,8 @@ from time import perf_counter
 
 logger = logging.getLogger(__name__)
 
+logger = logging.getLogger(__name__)
+
 
 class UI:
     def __init__(self, window):

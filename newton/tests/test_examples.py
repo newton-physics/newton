@@ -726,6 +726,13 @@ add_example_test(
 )
 add_example_test(
     TestCableExamples,
+    name="cable.example_cable_initial_rest_pose",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 120},
+)
+add_example_test(
+    TestCableExamples,
     name="cable.example_cable_pile",
     devices=test_devices,
     use_viewer=True,
@@ -737,6 +744,47 @@ add_example_test(
     devices=cuda_test_devices,
     use_viewer=True,
     test_options={"num-frames": 20},
+)
+
+
+class TestTendonExamples(unittest.TestCase):
+    """Exercise the experimental massless tendon examples."""
+
+
+add_example_test(
+    TestTendonExamples,
+    name="tendon.example_tendon_pulley",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 30},
+)
+add_example_test(
+    TestTendonExamples,
+    name="tendon.example_tendon_pinhole",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 30},
+)
+add_example_test(
+    TestTendonExamples,
+    name="tendon.example_tendon_capstan_friction",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 45},
+)
+add_example_test(
+    TestTendonExamples,
+    name="tendon.example_tendon_mujoco_switch",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 210},
+)
+add_example_test(
+    TestTendonExamples,
+    name="tendon.example_tendon_3d_routing",
+    devices=test_devices,
+    use_viewer=True,
+    test_options={"num-frames": 60},
 )
 
 
@@ -1389,7 +1437,13 @@ class TestContactsExamples(NewtonTestCase):
 
 def test_pyramid_kamino_impact(test, device):
     """Check Kamino pyramid ground clearance through the wrecking-ball impact."""
-    from newton.examples.contacts.example_pyramid import CUBE_HALF, Y_STACK, Example  # noqa: PLC0415
+    from newton.examples.contacts.example_pyramid import (  # noqa: PLC0415
+        CUBE_HALF,
+        RAMP_THICKNESS,
+        WRECKING_BALL_RADIUS,
+        Y_STACK,
+        Example,
+    )
 
     with contextlib.redirect_stdout(io.StringIO()), wp.ScopedDevice(device):
         example = Example(
@@ -1403,14 +1457,30 @@ def test_pyramid_kamino_impact(test, device):
                 broad_phase="sap",
             ),
         )
-        for frame in range(451):
+        # Start near the ramp's foot at approximately the normal impact speed.
+        # Retain the post-impact rollout while skipping the ramp traversal.
+        ramp = example.model.shape_transform.numpy()[-1]
+        ramp_pose = wp.transform(wp.vec3(*ramp[:3]), wp.quat(*ramp[3:]))
+        poses = example.state_0.body_q.numpy()
+        velocities = example.state_0.body_qd.numpy()
+        ball_speed = 9.5
+        poses[example.box_count, :3] = wp.transform_point(
+            ramp_pose, wp.vec3(0.0, -7.0, WRECKING_BALL_RADIUS + 0.5 * RAMP_THICKNESS)
+        )
+        velocities[example.box_count, :3] = wp.transform_vector(ramp_pose, wp.vec3(0.0, -ball_speed, 0.0))
+        velocities[example.box_count, 3:] = (ball_speed / WRECKING_BALL_RADIUS, 0.0, 0.0)
+        example.state_0.body_q.assign(poses)
+        example.state_0.body_qd.assign(velocities)
+
+        num_frames = 160
+        for frame in range(num_frames + 1):
             poses = example.state_0.body_q.numpy()[: example.box_count]
             bottom = min(
                 pose[2] - CUBE_HALF * np.abs(np.asarray(wp.quat_to_matrix(wp.quat(*pose[3:7]))).reshape(3, 3)[2]).sum()
                 for pose in poses
             )
-            test.assertGreater(bottom, -0.1, f"Frame {frame}: a cube penetrated the ground by {-bottom:.3f} m")
-            if frame < 450:
+            test.assertGreater(bottom, -0.05, f"Frame {frame}: a cube penetrated the ground by {-bottom:.3f} m")
+            if frame < num_frames:
                 example.step()
         ball_y = example.state_0.body_q.numpy()[example.box_count, 1]
         test.assertLess(ball_y, Y_STACK - 5.0, "The wrecking ball did not pass through the pyramid")

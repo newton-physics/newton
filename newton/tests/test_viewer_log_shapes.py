@@ -2,12 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
 import warp as wp
 
 import newton
+from newton._src.viewer.viewer_history import WorkspaceHistory
 from newton.tests.unittest_utils import assert_np_equal
 from newton.viewer import ViewerNull
 
@@ -149,7 +151,7 @@ class TestLogContacts(unittest.TestCase):
         assert_np_equal(viewer._contact_disk_scales.numpy()[:, 0], np.array([0.02, 0.1]), tol=1.0e-6)
 
         solver = newton.solvers.SolverXPBD(model)
-        observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+        observables = solver.observables(contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F})
         solver.validate_observables(observables, contacts)
         observables.contact_f.assign([wp.spatial_vector(0.0, 0.0, 1.0, 0.0, 0.0, 0.0)] * 2)
         self.assertIsNone(contacts.force)
@@ -185,6 +187,36 @@ class TestLogContacts(unittest.TestCase):
             tol=1.0e-6,
         )
         viewer.contact_normal_scale = 1.0
+
+        # Replay must bind forces to its own Contacts storage without changing
+        # the live solver's force arrays or contact identity.
+        example = SimpleNamespace(
+            viewer=viewer,
+            solver=solver,
+            state=model.state(),
+            contacts=contacts,
+            solver_observables=observables,
+            sim_time=0.0,
+        )
+        example.render = lambda: viewer.log_contacts(
+            example.contacts, example.state, observables=example.solver_observables
+        )
+        history = WorkspaceHistory(example)
+        history.capture()
+        observables.contact_f.zero_()
+        example.sim_time = 1.0 / 60.0
+        history.capture()
+        history.select(0)
+        history.render()
+        solver.validate_observables(history.display_observables, history.display_contacts)
+        assert_np_equal(viewer._contact_disk_colors.numpy(), loaded_colors)
+        self.assertIs(example.solver_observables, observables)
+        self.assertIs(example.contacts, contacts)
+        self.assertIsNot(history.display_contacts, contacts)
+        self.assertFalse(np.any(observables.contact_f.numpy()))
+        history.select(1)
+        history.render()
+        assert_np_equal(viewer._contact_disk_colors.numpy(), unloaded_colors)
 
         # Paired glyphs use both body-local witnesses, including static bodies,
         # offsets, and the same world/layer placement as the scene geometry.

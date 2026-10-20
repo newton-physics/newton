@@ -48,7 +48,7 @@ def _register_cuda_gl_buffer(buffer, device):
         if "unavailable" not in _CUDA_INTEROP_WARNINGS:
             warnings.warn(
                 "CUDA-OpenGL interoperability is unavailable; using host buffer uploads.",
-                RuntimeWarning,
+                NewtonWarning,
                 stacklevel=3,
             )
             _CUDA_INTEROP_WARNINGS.add("unavailable")
@@ -1283,6 +1283,8 @@ class RendererGL:
         else:
             self.headless = headless
         self.app = pyglet.app
+        # Closing the last window sets pyglet's process-wide exit flag.
+        self.app.event_loop.has_exit = False
 
         # making window current opengl rendering context
         self._make_current()

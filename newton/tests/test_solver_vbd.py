@@ -46,6 +46,7 @@ from newton._src.solvers.vbd.rigid_vbd_kernels import (
     accumulate_body_particle_attachments_per_body,
     build_body_body_contact_lists,
     build_body_particle_contact_lists,
+    compute_kappa_and_jacobian,
     compute_rigid_contact_forces,
     evaluate_angular_constraint_force_hessian,
     evaluate_body_particle_attachment_particle_force_hessian,
@@ -450,11 +451,12 @@ def _eval_directional_joint_projection_kernel(
     linear_force_out[0] = force
 
     q_free = wp.quat_from_axis_angle(a, 0.5)
-    torque, _Haa_ang, _kappa, _J = evaluate_angular_constraint_force_hessian(
+    kappa, J_world = compute_kappa_and_jacobian(q_id, q_free, q_id, q_id)
+    torque, _Haa_ang = evaluate_angular_constraint_force_hessian(
         q_id,
         q_free,
-        q_id,
-        q_id,
+        kappa,
+        J_world,
         q_id,
         q_id,
         True,
