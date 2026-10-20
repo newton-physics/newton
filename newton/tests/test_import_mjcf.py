@@ -1991,6 +1991,41 @@ class TestImportMjcfInlineMesh(unittest.TestCase):
         )
         np.testing.assert_array_equal(mesh.indices, [0, 1, 2, 0, 3, 1, 0, 2, 3, 1, 3, 2])
 
+    @unittest.skipUnless(wp.is_cuda_available(), "SDF construction requires CUDA")
+    def test_inline_mesh_preserves_sdf_defaults(self):
+        """Build mesh SDFs at finalize using the builder's shape defaults."""
+        mjcf = """
+<mujoco>
+    <asset>
+        <mesh name="tetra" vertex="0 0 0  1 0 0  0 1 0  0 0 1"/>
+    </asset>
+    <worldbody><geom type="mesh" mesh="tetra"/></worldbody>
+</mujoco>
+"""
+        for resolution in ({"sdf_max_resolution": 32}, {"sdf_target_voxel_size": 0.05}):
+            with self.subTest(**resolution):
+                defaults = {
+                    **resolution,
+                    "sdf_narrow_band_range": (-0.2, 0.3),
+                    "sdf_texture_format": "float32",
+                    "sdf_padding": 0.1,
+                }
+                builder = newton.ModelBuilder()
+                builder.default_shape_cfg = newton.ModelBuilder.ShapeConfig(**defaults)
+                builder.add_mjcf(mjcf)
+
+                self.assertEqual(builder.shape_count, 1)
+                for name, value in defaults.items():
+                    self.assertEqual(getattr(builder, f"shape_{name}")[0], value)
+                    self.assertEqual(getattr(builder.default_shape_cfg, name), value)
+                self.assertIsNone(builder.shape_source[0].sdf)
+
+                model = builder.finalize(device="cuda:0")
+                sdf_index = int(model._shape_sdf_index.numpy()[0])
+                self.assertGreaterEqual(sdf_index, 0)
+                self.assertGreater(model._texture_sdf_data.shape[0], sdf_index)
+                self.assertIsNotNone(model._texture_sdf_coarse_textures[sdf_index])
+
     def test_inline_mesh_preserves_texcoords_for_textures(self):
         """Preserve per-vertex UVs on a textured inline mesh."""
         with tempfile.TemporaryDirectory() as tmpdir:

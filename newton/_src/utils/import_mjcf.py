@@ -1420,12 +1420,15 @@ def parse_mjcf(
                         if verbose:
                             logger.warning("mesh %s has a texture but no UVs; texture will be ignored.", mesh_label)
                         m_mesh.texture = None
-                    # Mesh shapes must not use cfg.sdf_*; SDFs are built on the mesh itself.
+                    # Defer mesh SDF construction to finalize(), as in USD import.
+                    shape_cfg.validate(shape_type=GeoType.MESH)
                     mesh_shape_kwargs = dict(shape_kwargs)
                     mesh_cfg = shape_cfg.copy()
                     mesh_cfg.sdf_max_resolution = None
                     mesh_cfg.sdf_target_voxel_size = None
                     mesh_cfg.sdf_narrow_band_range = (-0.1, 0.1)
+                    mesh_cfg.sdf_texture_format = "uint16"
+                    mesh_cfg.sdf_padding = None
                     if explicit_mesh_density is not None:
                         mesh_cfg.density = explicit_mesh_density
                     mesh_shape_kwargs["cfg"] = mesh_cfg
@@ -1434,6 +1437,14 @@ def parse_mjcf(
                         mesh=m_mesh,
                         **mesh_shape_kwargs,
                     )
+                    for name in (
+                        "sdf_max_resolution",
+                        "sdf_target_voxel_size",
+                        "sdf_narrow_band_range",
+                        "sdf_texture_format",
+                        "sdf_padding",
+                    ):
+                        getattr(shape_builder, f"shape_{name}")[s] = getattr(shape_cfg, name)
                     shapes.append(s)
 
             elif geom_type in {"capsule", "cylinder"}:
