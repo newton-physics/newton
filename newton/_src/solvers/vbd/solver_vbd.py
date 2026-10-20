@@ -15,6 +15,7 @@ import warp as wp
 from ...core.types import override
 from ...exceptions import NewtonDeprecationWarning
 from ...geometry import ParticleFlags
+from ...geometry.soft_contacts_mesh import _make_soft_contact_filter_data
 from ...geometry.tri_mesh_collision import (
     TriMeshCollisionDetector,
     TriMeshCollisionInfo,
@@ -628,8 +629,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     continue to honor this control during migration; keep the effective beta
                     at ``0`` (the default behavior) and author fixed contact stiffness instead.
             rigid_body_contact_buffer_size: Max body-body contacts per rigid body for per-body contact lists.
-            rigid_body_particle_contact_buffer_size: Max body-particle soft contacts tracked per rigid
-                body, covering both particle-vs-surface and full-surface edge/face contacts.
+            rigid_body_particle_contact_buffer_size: Capacity of the per-body soft-contact adjacency
+                list, including currently ineligible mesh candidates. If a body's list overflows, force
+                evaluation and coupling feedback scan all stored soft contacts for that body instead.
+                This preserves reactions but can increase evaluation cost.
             rigid_soft_contact_use_log_barrier: Whether body-particle normal contacts use the same C2
                 log-barrier law as particle self-contact. When ``False`` (default), they use the legacy quadratic
                 penalty law.
@@ -729,7 +732,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             - `particle_vertex_contact_buffer_size`, `particle_edge_contact_buffer_size`, `rigid_body_contact_buffer_size`,
               and `rigid_body_particle_contact_buffer_size` are fixed and will not be dynamically resized during runtime.
               Setting them too small may result in undetected collisions (particles) or contact overflow (rigid body
-              contacts).
+              contacts). Body-particle list overflow uses the complete stored soft-contact buffer as
+              a fallback; it cannot recover records lost to overflow of that collision buffer itself.
               Setting them excessively large may increase memory usage and degrade performance.
             - Dahl hysteresis friction for rod angular response is controlled by custom model attributes
               ``model.vbd.dahl_eps_max`` and ``model.vbd.dahl_tau``. Register them with
@@ -1340,6 +1344,10 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 rigid_body_particle_contact_buffer_size if model.shape_count > 0 and model.particle_count > 0 else 0
             )
             self.body_particle_contact_buffer_pre_alloc = bp_pre_alloc
+            # Large cloths need more lanes to accumulate their contacts onto each rigid body.
+            self._body_particle_contact_threads = (
+                128 if self.device.is_cuda and model.particle_count // max(model.body_count, 1) >= 4096 else 4
+            )
             self.body_particle_contact_counts = wp.zeros(model.body_count, dtype=wp.int32, device=self.device)
             self.body_particle_contact_indices = wp.zeros(
                 model.body_count * bp_pre_alloc, dtype=wp.int32, device=self.device
@@ -1661,9 +1669,8 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             )
 
         if contacts.soft_contact_max > 0 and self.body_particle_contact_penalty_k.shape[0] >= contacts.soft_contact_max:
-            # Per-body, mirroring accumulate_body_particle_contacts_per_body: the harvest reads the
-            # same truncated adjacency list the destination solve consumed, so the reaction reported
-            # to the source is by construction the one the solve applied.
+            # Use the solve's candidate list and force law, evaluating eligibility at
+            # the feedback state. Retain the same per-body capacity limit as the solve.
             wp.launch(
                 _harvest_vbd_body_particle_contact_forces_on_proxy_bodies_kernel,
                 dim=self.model.body_count * _NUM_CONTACT_THREADS_PER_BODY,
@@ -1694,6 +1701,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     self.body_particle_contact_buffer_pre_alloc,
                     self.body_particle_contact_counts,
                     self.body_particle_contact_indices,
+                    _make_soft_contact_filter_data(self.model, contacts, state_out.particle_q, state_out.body_q),
                     out_body_f,
                 ],
                 device=self.device,
@@ -1759,6 +1767,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     self.rigid_soft_contact_use_log_barrier,
                     self.model.particle_radius,
                     contacts.soft_contact_count,
+                    _make_soft_contact_filter_data(self.model, contacts, state.particle_q, body_q_for_particles),
                     contacts.soft_contact_particle,
                     self.body_particle_contact_penalty_k,
                     self.body_particle_contact_material_kd,
@@ -3060,11 +3069,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 "(pass collision_pipeline=CollisionPipeline(...) to SolverVBD): the DAT reference poses "
                 "must be snapshotted at the exact detection instants the solver drives."
             )
-        has_rigid_soft_queries = (
-            self.collision_pipeline.soft_contact_pair_count > 0
-            or len(self.collision_pipeline.soft_edge_rigid_pairs) > 0
-            or len(self.collision_pipeline.soft_face_rigid_pairs) > 0
-        )
+        has_rigid_soft_queries = self.collision_pipeline._has_rigid_soft_queries
         if self.integrate_with_external_rigid_solver:
             raise ValueError("rigid_soft_enable_dat is not supported with an external rigid solver.")
 
@@ -3977,6 +3982,12 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         if model.particle_count == 0:
             return
 
+        contact_filter = (
+            _make_soft_contact_filter_data(model, contacts, state_in.particle_q, body_q_for_particles)
+            if contacts is not None
+            else None
+        )
+
         # Zero out forces and hessians
         self.particle_forces.zero_()
         self.particle_hessians.zero_()
@@ -4041,6 +4052,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                             self._particle_contact_head,
                             self._particle_contact_next,
                             *contact_material_and_body_inputs,
+                            contact_filter,
                         ],
                         outputs=[
                             self.particle_forces,
@@ -4065,6 +4077,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                             model.particle_radius,
                             contacts.soft_contact_indices,
                             contacts.soft_contact_count,
+                            contact_filter,
                             contacts.soft_contact_max,
                             self._particle_contact_worker_count,
                             *contact_material_and_body_inputs,
@@ -4356,6 +4369,16 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         and updates AVBD penalty parameters (dual update).
         """
         model = self.model
+        contact_filter = (
+            _make_soft_contact_filter_data(
+                model,
+                contacts,
+                state_in.particle_q,
+                state_out.body_q if self.integrate_with_external_rigid_solver else state_in.body_q,
+            )
+            if contacts is not None
+            else None
+        )
         # Body-particle soft contacts still need penalty updates when VBD skips rigid solves:
         # external rigid mode uses state_out.body_q, while static-shape contacts use _empty_body_q.
         skip_rigid_solve = not self._integrates_rigid_bodies
@@ -4370,6 +4393,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     dim=contacts.soft_contact_max,
                     inputs=[
                         contacts.soft_contact_count,
+                        contact_filter,
                         contacts.soft_contact_indices,
                         contacts.soft_contact_shape,
                         contacts.soft_contact_body_pos,
@@ -4434,10 +4458,11 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             if model.particle_count > 0 and contacts is not None:
                 wp.launch(
                     kernel=accumulate_body_particle_contacts_per_body,
-                    dim=color_group.size * _NUM_CONTACT_THREADS_PER_BODY,
+                    dim=color_group.size * self._body_particle_contact_threads,
                     inputs=[
                         dt,
                         color_group,
+                        self._body_particle_contact_threads,
                         state_in.particle_q,
                         self.particle_q_prev,
                         model.particle_radius,
@@ -4464,6 +4489,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         self.body_particle_contact_buffer_pre_alloc,
                         self.body_particle_contact_counts,
                         self.body_particle_contact_indices,
+                        contact_filter,
                     ],
                     outputs=[
                         self.body_forces,
@@ -4472,7 +4498,9 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         self.body_hessian_al,
                         self.body_hessian_aa,
                     ],
-                    block_dim=_select_rigid_block_dim(color_group.size * _NUM_CONTACT_THREADS_PER_BODY, self.device),
+                    block_dim=_select_rigid_block_dim(
+                        color_group.size * self._body_particle_contact_threads, self.device
+                    ),
                     device=self.device,
                 )
 
@@ -4665,6 +4693,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 dim=contacts.soft_contact_max,
                 inputs=[
                     contacts.soft_contact_count,
+                    contact_filter,
                     contacts.soft_contact_indices,
                     contacts.soft_contact_shape,
                     contacts.soft_contact_body_pos,
@@ -4839,6 +4868,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 self.body_particle_contact_material_kd,
                 self.body_particle_contact_material_mu,
                 contacts.soft_contact_count,
+                _make_soft_contact_filter_data(model, contacts, state_in.particle_q, body_q),
                 contacts.soft_contact_indices,
                 contacts.soft_contact_shape,
                 contacts.soft_contact_body_pos,

@@ -14,6 +14,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.geometry.soft_contacts_mesh import _SoftContactFilterData
 from newton._src.geometry.tri_mesh_collision import TriMeshCollisionInfo, build_tri_mesh_collision_info
 from newton._src.solvers.vbd.particle_vbd_kernels import (
     NUM_THREADS_PER_COLLISION_PRIMITIVE,
@@ -2227,6 +2228,7 @@ def _body_particle_contact_damping_ignores_penalty_ramp(test, device):
                 contact_normal,
                 wp.zeros(0, dtype=float, device=device),
                 wp.zeros(4, dtype=wp.vec3, device=device),  # barycentric (unused on the particle path)
+                _SoftContactFilterData(),
             ],
             outputs=[forces, hessians],
             device=device,
@@ -2350,6 +2352,7 @@ def _launch_particle_contact_gather(data, contact_count, contact_head, contact_n
                 contact_head,
                 contact_next,
                 *_particle_contact_gather_material_inputs(data),
+                _SoftContactFilterData(),
             ],
             outputs=[forces, hessians],
             device=device,
@@ -2411,6 +2414,7 @@ def _particle_contact_gather_order_pinned(test, device):
                     rev_head_wp,
                     rev_next_wp,
                     *_particle_contact_gather_material_inputs(data),
+                    _SoftContactFilterData(),
                 ],
                 outputs=[forces_rev, hessians_rev],
                 device=device,
@@ -2650,6 +2654,7 @@ def _launch_particle_contact_scatter(data, contact_count, worker_count, forces, 
                 data["particle_radius"],
                 data["contact_indices"],
                 contact_count,
+                _SoftContactFilterData(),
                 data["capacity"],
                 worker_count,
                 *_particle_contact_gather_material_inputs(data),
@@ -2848,6 +2853,7 @@ def _launch_body_particle_dual_prefix(data, contact_count, capacity, beta, penal
         dim=capacity,
         inputs=[
             contact_count,
+            _SoftContactFilterData(),
             data["indices"],
             data["shape"],
             data["body_pos"],
@@ -6703,6 +6709,7 @@ def _run_face_section2(device, shape_margin):
             contacts.soft_contact_normal,
             shape_margin,
             contacts.soft_contact_barycentric,
+            _SoftContactFilterData(),
         ],
         outputs=[forces, hessians],
         device=device,
