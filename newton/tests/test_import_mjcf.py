@@ -2031,7 +2031,6 @@ class TestImportMjcfInlineMesh(unittest.TestCase):
               scale="2 3 4"/>
         <mesh name="tetra_shared"
               vertex="1 0 0  2 0 0  1 1 0  1 0 1"
-              face="0 2 1  0 1 3  0 3 2  1 2 3"
               normal="1 1 0"
               refpos="1 0 0"
               refquat="0.7071067811865476 0 0 0.7071067811865476"
