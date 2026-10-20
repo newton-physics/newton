@@ -3630,7 +3630,7 @@ class ModelBuilder:
             # extend would silently misbehave on ndarrays).
             return values if isinstance(values, list) else list(values)
 
-        def rotate_vectors(rotation: wp.quat | np.ndarray, vectors: np.ndarray) -> None:
+        def rotate_vectors(rotation: np.ndarray, vectors: np.ndarray) -> None:
             # In-place SO(3) on (..., 3), with rotations (..., 4) broadcast against the
             # vectors. Translation is not applied: a pure offset must leave linear and
             # angular velocity unchanged. This keeps the cross-product form that velocity

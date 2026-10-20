@@ -327,6 +327,7 @@ class TestModelBuilderReplicate(unittest.TestCase):
         self.assertEqual(model.body_count, 7)
 
     def test_replicate_world_count_is_deprecated(self):
+        """Warn for the deprecated world_count keyword and reject conflicting or missing counts."""
         source = self._make_source()
         expected = self._make_destination()
         expected.replicate(source, copy_count=2)
