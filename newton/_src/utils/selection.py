@@ -2968,7 +2968,7 @@ class _DeformableViewBase:
         if array.shape[0] < required:
             raise ValueError(f"Expected state array with at least {required} {kind} elements, got {array.shape[0]}")
 
-    def _get_attribute_array(self, kind: str, name: str, source: Model | State):
+    def _get_attribute_array(self, kind: str, name: str, source: Model | State) -> tuple[wp.array2d[Any], bool]:
         """Cache per source container and follow its current data and gradient arrays."""
         src = getattr(source, name)
         src_grad = src.grad if src.requires_grad else None
@@ -2989,11 +2989,12 @@ class _DeformableViewBase:
             entries[key] = (result, src, src_grad)
         return result
 
-    def _create_attribute_array(self, kind: str, src: wp.array[Any]):
+    def _create_attribute_array(self, kind: str, src: wp.array[Any]) -> tuple[wp.array2d[Any], bool]:
+        """Return the read buffer and whether it needs a gather on each read."""
         count = self._element_count(kind)
         shape = (self.count, count)
         if count == 0:
-            return wp.empty(shape, dtype=src.dtype, device=src.device, requires_grad=src.requires_grad)
+            return wp.empty(shape, dtype=src.dtype, device=src.device, requires_grad=src.requires_grad), False
 
         starts = [start for start, _end in self._ranges[kind]]
 
@@ -3015,16 +3016,9 @@ class _DeformableViewBase:
             grad = None if src.grad is None else make_view(src.grad, starts[0], self.count, row_stride)
             result = make_view(src, starts[0], self.count, row_stride)
             result.grad = grad
-            return result
+            return result, False
 
-        # A sliding-window view turns arbitrary equal-sized ranges into row indices
-        # without copying their source values.
-        grad = None if src.grad is None else make_view(src.grad, 0, src.shape[0] - count + 1, 1)
-        windows = make_view(src, 0, src.shape[0] - count + 1, 1)
-        windows.grad = grad
-        result = windows[self._starts[kind], :]
-        result._staging_array = wp.empty(shape, dtype=src.dtype, device=src.device, requires_grad=src.requires_grad)
-        return result
+        return wp.empty(shape, dtype=src.dtype, device=src.device, requires_grad=src.requires_grad), True
 
     def _gather(
         self,
@@ -3037,11 +3031,9 @@ class _DeformableViewBase:
         count = self._element_count(kind)
         src = getattr(source, name)
         self._validate_state_array(kind, src, dtype)
-        attribute = self._get_attribute_array(kind, name, source)
-        if not isinstance(attribute, wp.indexedarray):
-            return attribute
-        out = attribute._staging_array
-        wp.launch(kernel, dim=(self.count, count), inputs=[src, self._starts[kind], out], device=self.device)
+        out, needs_gather = self._get_attribute_array(kind, name, source)
+        if needs_gather:
+            wp.launch(kernel, dim=(self.count, count), inputs=[src, self._starts[kind], out], device=self.device)
         return out
 
     def set_mask_from_indices(
