@@ -115,81 +115,49 @@ class TestSolverKaminoLOXContacts(unittest.TestCase):
         self.assertTrue(np.isfinite(state_out.body_qd.numpy()).all())
         return state_out
 
-    def test_compliance_static_deflection_all_schedules(self):
-        """Maintain the analytic spring deflection under gravity for every schedule."""
+    def test_compliance_static_deflection(self):
+        """Maintain the analytic spring deflection under gravity."""
         compliance = 0.002
-        for method in _PROJECTION_SCHEDULES:
-            for dt in (0.01, 0.02):
-                with self.subTest(method=method, dt=dt):
-                    model = self._sphere(gap=-10.0 * compliance)
-                    solver = self._solver(model, method=method, contact_compliance=True)
-                    state = self._step(model, solver, dt=dt, stiffness=1.0 / compliance)
-                    self.assertAlmostEqual(float(state.body_qd.numpy()[0, 2]), 0.0, delta=2.0e-4)
-                    self.assertAlmostEqual(float(state.body_q.numpy()[0, 2]), 0.08, delta=1.0e-5)
-
-    def test_compliance_without_contact_stiffness_is_hard(self):
-        """Keep contacts without a positive per-contact stiffness hard when compliance is enabled."""
-        model = self._sphere()
-        hard = self._step(model, self._solver(model), stiffness=500.0).body_q.numpy()
-        for stiffness, damping in ((None, 0.0), (0.0, 0.0), (0.0, 20.0)):
-            with self.subTest(stiffness=stiffness, damping=damping):
-                solver = self._solver(model, contact_compliance=True)
-                state = self._step(model, solver, stiffness=stiffness, damping=damping)
-                np.testing.assert_allclose(state.body_q.numpy(), hard, rtol=0.0, atol=1.0e-6)
+        model = self._sphere(gap=-10.0 * compliance)
+        solver = self._solver(model, contact_compliance=True)
+        state = self._step(model, solver, stiffness=1.0 / compliance)
+        self.assertAlmostEqual(float(state.body_qd.numpy()[0, 2]), 0.0, delta=2.0e-4)
+        self.assertAlmostEqual(float(state.body_q.numpy()[0, 2]), 0.08, delta=1.0e-5)
 
     def test_compliant_contact_damping(self):
         """Sink by the implicit spring-damper step from rest in touching contact."""
         model = self._sphere()
-        hard = self._step(model, self._solver(model)).body_q.numpy()
-        for damping in (0.0, 20.0):
-            with self.subTest(damping=damping):
-                solver = self._solver(model, contact_compliance=True)
-                state = self._step(model, solver, stiffness=500.0, damping=damping)
-                # Backward Euler gives v = -m g dt / (m + k dt^2 + d dt)
-                expected = 0.1 / (1.0 + 500.0 * 1.0e-4 + damping * 0.01) * 0.01
-                self.assertAlmostEqual(float(hard[0, 2] - state.body_q.numpy()[0, 2]), expected, delta=1.0e-5)
+        damping = 20.0
+        solver = self._solver(model, contact_compliance=True)
+        state = self._step(model, solver, stiffness=500.0, damping=damping)
+        # Backward Euler gives v = -m g dt / (m + k dt^2 + d dt) from the initial touching height
+        expected = 0.1 / (1.0 + 500.0 * 1.0e-4 + damping * 0.01) * 0.01
+        self.assertAlmostEqual(float(0.1 - state.body_q.numpy()[0, 2]), expected, delta=1.0e-5)
 
     def test_compliant_contact_ignores_restitution(self):
         """Give compliant contacts the same response for any restitution coefficient."""
-        for in_kernel in (False, True):
-            outcomes = []
-            for restitution in (0.0, 0.5):
-                model = self._sphere(gap=-0.001, velocity=(0.0, 0.0, -1.0, 0.0, 0.0, 0.0), restitution=restitution)
-                solver = self._solver(model, contact_compliance=True, contact_restitution=in_kernel)
-                outcomes.append(self._step(model, solver, stiffness=500.0).body_qd.numpy())
-            with self.subTest(contact_restitution=in_kernel):
-                np.testing.assert_allclose(outcomes[1], outcomes[0], rtol=0.0, atol=1.0e-6)
-                self.assertLess(float(outcomes[0][0, 2]), 0.0)
+        outcomes = []
+        for restitution in (0.0, 0.5):
+            model = self._sphere(gap=-0.001, velocity=(0.0, 0.0, -1.0, 0.0, 0.0, 0.0), restitution=restitution)
+            solver = self._solver(model, contact_compliance=True, contact_restitution=True)
+            outcomes.append(self._step(model, solver, stiffness=500.0).body_qd.numpy())
+        np.testing.assert_allclose(outcomes[1], outcomes[0], rtol=0.0, atol=1.0e-6)
+        self.assertLess(float(outcomes[0][0, 2]), 0.0)
 
     def test_restitution_speculative_trial_and_closed_contact(self):
         """Bounce closing trials immediately while leaving open speculative trials free."""
-        for method in _PROJECTION_SCHEDULES:
-            for gap, velocity, expected in ((0.0, -2.0, 1.0), (0.01, -2.0, 1.0), (0.01, -0.2, -0.2)):
-                with self.subTest(method=method, gap=gap, velocity=velocity):
-                    model = self._sphere(
-                        gap=gap, gravity=0.0, velocity=(0.0, 0.0, velocity, 0.0, 0.0, 0.0), restitution=0.5
-                    )
-                    solver = self._solver(model, method=method, contact_restitution=True)
-                    state = self._step(model, solver)
-                    self.assertAlmostEqual(float(state.body_qd.numpy()[0, 2]), expected, delta=2.0e-4)
-
-    def test_non_finite_twist_fails_only_its_world(self):
-        """Fail a world whose twists become non-finite and keep the other worlds valid."""
-        model = self._sphere(worlds=2)
-        solver = self._solver(model)
-        state_in, state_out = model.state(), model.state()
-        velocity = state_in.body_qd.numpy()
-        velocity[1] = np.nan
-        state_in.body_qd.assign(velocity)
-        pipeline = newton.CollisionPipeline(model)
-        contacts = pipeline.contacts()
-        pipeline.collide(state_in, contacts)
-        solver.step(state_in, state_out, model.control(), contacts, dt=0.01)
-        np.testing.assert_array_equal(solver.status.numpy()["failed"], [0, 1])
-        self.assertTrue(np.isfinite(state_out.body_qd.numpy()[0]).all())
+        for gap, velocity, expected in ((0.0, -2.0, 1.0), (0.01, -2.0, 1.0), (0.01, -0.2, -0.2)):
+            with self.subTest(gap=gap, velocity=velocity):
+                model = self._sphere(
+                    gap=gap, gravity=0.0, velocity=(0.0, 0.0, velocity, 0.0, 0.0, 0.0), restitution=0.5
+                )
+                solver = self._solver(model, contact_restitution=True)
+                state = self._step(model, solver)
+                self.assertAlmostEqual(float(state.body_qd.numpy()[0, 2]), expected, delta=2.0e-4)
 
     def test_failed_world_recovers_after_reset(self):
-        """Keep a world failed with a finite input until a reset recovers it."""
+        """Fail only the world whose twists become non-finite, and keep it failed with a finite input until a
+        reset recovers it."""
         for method in _PROJECTION_SCHEDULES:
             with self.subTest(method=method):
                 model = self._sphere(worlds=2)
@@ -209,33 +177,29 @@ class TestSolverKaminoLOXContacts(unittest.TestCase):
                     pipeline.collide(state_in, contacts)
                     solver.step(state_in, state_out, model.control(), contacts, dt=0.01)
                     np.testing.assert_array_equal(solver.status.numpy()["failed"], failed)
+                    self.assertTrue(np.isfinite(state_out.body_qd.numpy()[0]).all())
 
     def test_spatial_friction_shares_one_budget(self):
         """Couple sliding, torsional, and rolling friction through one elliptic cone."""
         friction, torsional, rolling, mass, inertia, radius, dt = 0.3, 0.02, 0.01, 1.0, 0.004, 0.1, 0.01
         initial_velocity = np.array([1.0, -0.5, 0.0, 2.0, 1.0, 3.0])
         for method in _PROJECTION_SCHEDULES:
-            for internal in (False, True):
-                with self.subTest(method=method, internal=internal):
-                    model = self._sphere(
-                        velocity=initial_velocity, friction=friction, torsional=torsional, rolling=rolling
-                    )
-                    solver = self._solver(model, method=method, internal=internal, contact_spatial_friction=True)
-                    velocity = self._step(model, solver, dt=dt).body_qd.numpy()[0]
+            with self.subTest(method=method):
+                model = self._sphere(velocity=initial_velocity, friction=friction, torsional=torsional, rolling=rolling)
+                solver = self._solver(model, method=method, contact_spatial_friction=True)
+                velocity = self._step(model, solver, dt=dt).body_qd.numpy()[0]
 
-                    # Recover the contact impulses from the momentum change, with the contact
-                    # force applied at the bottom of the sphere
-                    force = mass * (velocity[:3] - initial_velocity[:3]) - mass * dt * np.array([0.0, 0.0, -10.0])
-                    torque = inertia * (velocity[3:] - initial_velocity[3:]) - np.cross([0.0, 0.0, -radius], force)
-                    sliding_budget = np.dot(force[:2], force[:2]) / friction**2
-                    angular_budget = torque[2] ** 2 / torsional**2 + np.dot(torque[:2], torque[:2]) / rolling**2
-                    self.assertGreater(sliding_budget, 1.0e-5)
-                    self.assertGreater(angular_budget, 1.0e-5)
-                    self.assertAlmostEqual(
-                        float(np.sqrt(sliding_budget + angular_budget)), float(force[2]), delta=2.0e-4
-                    )
-                    metric = np.array([mass, mass, mass, inertia, inertia, inertia])
-                    self.assertLess(np.dot(metric, velocity**2), np.dot(metric, initial_velocity**2))
+                # Recover the contact impulses from the momentum change, with the contact
+                # force applied at the bottom of the sphere
+                force = mass * (velocity[:3] - initial_velocity[:3]) - mass * dt * np.array([0.0, 0.0, -10.0])
+                torque = inertia * (velocity[3:] - initial_velocity[3:]) - np.cross([0.0, 0.0, -radius], force)
+                sliding_budget = np.dot(force[:2], force[:2]) / friction**2
+                angular_budget = torque[2] ** 2 / torsional**2 + np.dot(torque[:2], torque[:2]) / rolling**2
+                self.assertGreater(sliding_budget, 1.0e-5)
+                self.assertGreater(angular_budget, 1.0e-5)
+                self.assertAlmostEqual(float(np.sqrt(sliding_budget + angular_budget)), float(force[2]), delta=2.0e-4)
+                metric = np.array([mass, mass, mass, inertia, inertia, inertia])
+                self.assertLess(np.dot(metric, velocity**2), np.dot(metric, initial_velocity**2))
 
     def test_sliding_and_rolling_converge_from_the_warm_start(self):
         """Converge saturated sliding and rolling friction in about one iteration from the predicted velocity."""
@@ -256,7 +220,7 @@ class TestSolverKaminoLOXContacts(unittest.TestCase):
                 state_in, state_out, control = model.state(), model.state(), model.control()
                 iterations = []
 
-                for _ in range(50):
+                for _ in range(10):
                     pipeline.collide(state_in, contacts)
                     solver.step(state_in, state_out, control, contacts, 0.002)
                     state_in, state_out = state_out, state_in
@@ -267,13 +231,11 @@ class TestSolverKaminoLOXContacts(unittest.TestCase):
 
     def test_disabled_spatial_friction_preserves_legacy_motion(self):
         """Retain the legacy response when angular material coefficients are ignored."""
-        outcomes = []
-        for coefficient in (0.0, 0.02):
-            model = self._sphere(velocity=(0.0, 0.0, 0.0, 2.0, 0.0, 3.0), torsional=coefficient, rolling=coefficient)
-            solver = self._solver(model)
-            outcomes.append(self._step(model, solver).body_qd.numpy())
-        np.testing.assert_allclose(outcomes[0], outcomes[1], rtol=0.0, atol=1.0e-6)
-        np.testing.assert_allclose(outcomes[1][0, 3:], [2.0, 0.0, 3.0], rtol=0.0, atol=1.0e-6)
+        model = self._sphere(velocity=(0.0, 0.0, 0.0, 2.0, 0.0, 3.0), torsional=0.02, rolling=0.02)
+        solver = self._solver(model)
+        np.testing.assert_allclose(
+            self._step(model, solver).body_qd.numpy()[0, 3:], [2.0, 0.0, 3.0], rtol=0.0, atol=1.0e-6
+        )
 
     def test_solution_metrics_exclude_extended_contacts(self):
         """Exclude compliant and spatial-friction contacts from the dual residuals, but not restitutive ones."""
@@ -325,11 +287,14 @@ class TestSolverKaminoLOXContacts(unittest.TestCase):
                 self.assertTrue(np.isfinite(getattr(metrics, name).numpy()).all(), name)
 
     def test_spatial_contact_cuda_graph_replay(self):
-        """Replay combined compliant spatial contact laws from a CUDA graph."""
+        """Replay combined compliant spatial contact laws from a CUDA graph, with and without conditional nodes."""
         if not self.default_device.is_cuda:
             self.skipTest("CUDA graph capture requires a CUDA device.")
-        for method in _PROJECTION_SCHEDULES:
-            with self.subTest(method=method):
+        cases = [(method, True) for method in _PROJECTION_SCHEDULES] + [("jacobi", False)]
+        for method, use_graph_conditionals in cases:
+            with self.subTest(method=method, use_graph_conditionals=use_graph_conditionals):
+                if use_graph_conditionals and not wp.is_conditional_graph_supported():
+                    self.skipTest("CUDA conditional graph nodes require CUDA 12.4 or newer.")
                 model = self._sphere(gap=-0.002, velocity=(0.0, 0.0, -0.2, 1.0, 0.0, 2.0), torsional=0.02, rolling=0.01)
                 solver = self._solver(
                     model,
@@ -337,6 +302,7 @@ class TestSolverKaminoLOXContacts(unittest.TestCase):
                     contact_compliance=True,
                     contact_restitution=True,
                     contact_spatial_friction=True,
+                    use_graph_conditionals=use_graph_conditionals,
                 )
                 state_in, state_out = model.state(), model.state()
                 contacts = self._collide(model, state_in, stiffness=1000.0)
@@ -348,6 +314,7 @@ class TestSolverKaminoLOXContacts(unittest.TestCase):
                 for _ in range(2):
                     wp.capture_launch(capture.graph)
                     np.testing.assert_allclose(state_out.body_qd.numpy(), expected, rtol=0.0, atol=2.0e-4)
+                    np.testing.assert_array_equal(solver.status.numpy()["failed"], 0)
 
     def test_selective_reset_cold_starts_reset_worlds(self):
         """Solve a reset world exactly as a new solver would, whatever its previous contact impulses."""

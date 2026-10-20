@@ -264,9 +264,11 @@ class TestLOXContactLaw(unittest.TestCase):
         """Approach the hard-contact impulse and avoid attractive separated forces."""
         rows = [[0.0, -1.0, -1.0, 0.0, 0.1, 1.0, stiffness, 0.5] for stiffness in (100.0, 1.0e8, 0.0)]
         rows.append([0.01, 0.0, 1.0, 0.0, 0.1, 1.0, 100.0, 0.5])
+        # Damping alone leaves a contact without stiffness hard
+        rows.append([0.0, -1.0, -1.0, 0.0, 0.1, 1.0, 0.0, 0.5, 20.0])
         result = self._evaluate(rows)
-        np.testing.assert_allclose(result[:, 0], [1.0, 1.0e-6, 0.0, 1.0], atol=1.0e-6)
-        np.testing.assert_allclose(result[:, 3], [2.0 / 3.0, 2.0, 2.0, 0.0], atol=5.0e-6)
+        np.testing.assert_allclose(result[:, 0], [1.0, 1.0e-6, 0.0, 1.0, 0.0], atol=1.0e-6)
+        np.testing.assert_allclose(result[:, 3], [2.0 / 3.0, 2.0, 2.0, 0.0, 2.0], atol=5.0e-6)
 
     def test_compliance_damping(self):
         """Stiffen the approach and slow the penetration recovery of a damped spring."""
