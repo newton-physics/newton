@@ -1,10 +1,11 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import importlib
 import inspect
 
 import warp as wp
-from asv_runner.benchmarks.mark import skip_benchmark_if
+from asv_runner.benchmarks.mark import SkipNotImplemented, skip_benchmark_if
 
 wp.config.enable_backward = False
 wp.config.log_level = wp.LOG_WARNING
@@ -44,6 +45,35 @@ class FastExampleCablePile:
         wp.synchronize_device()
 
 
+class FastExampleCableViscoelasticRelease:
+    """Benchmark VBD cable bending with persistent SLS material state."""
+
+    timeout = 300
+    number = 1
+    rounds = 2
+    repeat = 3
+
+    def setup(self):
+        try:
+            module = importlib.import_module("newton.examples.cable.example_cable_viscoelastic_release")
+        except ModuleNotFoundError as error:
+            raise SkipNotImplemented from error
+        if not hasattr(newton.examples, "default_args"):
+            raise SkipNotImplemented
+
+        self.num_frames = 100
+        args = newton.examples.default_args(module.Example.create_parser())
+        args.release_time = 0.1
+        self.example = module.Example(ViewerNull(num_frames=self.num_frames), args)
+        wp.synchronize_device()
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def time_simulate(self):
+        for _ in range(self.num_frames):
+            self.example.step()
+        wp.synchronize_device()
+
+
 if __name__ == "__main__":
     import argparse
 
@@ -51,6 +81,7 @@ if __name__ == "__main__":
 
     benchmark_list = {
         "FastExampleCablePile": FastExampleCablePile,
+        "FastExampleCableViscoelasticRelease": FastExampleCableViscoelasticRelease,
     }
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)

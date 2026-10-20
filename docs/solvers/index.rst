@@ -505,6 +505,74 @@ row whose body or particle is owned by no solver applies no force at all. The
 coupler also warns when both endpoints belong to one entry whose solver does not
 support attachments.
 
+VBD Cable Viscoelasticity
+-------------------------
+
+.. experimental::
+
+   VBD cable bending-viscoelasticity behavior and the ``visco_bend_ke`` and
+   ``visco_bend_tau`` custom attributes may change without prior notice.
+
+:class:`~newton.solvers.SolverVBD` optionally augments soft ROD bend slots with a
+standard-linear-solid branch. Register the VBD custom attributes before adding the
+cable, then author positive parameters before constructing the solver:
+
+.. code-block:: python
+
+   builder = newton.ModelBuilder()
+   newton.solvers.SolverVBD.register_custom_attributes(builder)
+
+   _bodies, _joints = builder.add_rod(
+       rod=newton.Rod(points, radius=radius),
+       bend_stiffness=relaxed_bend_stiffness,
+       body_frame_origin="com",
+   )
+   builder.color()
+   model = builder.finalize()
+   model.vbd.visco_bend_ke.fill_(transient_bend_stiffness)
+   model.vbd.visco_bend_tau.fill_(relaxation_time)
+   solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
+
+``bend_stiffness`` is the relaxed per-joint stiffness :math:`K_\infty`
+[N·m/rad], ``visco_bend_ke`` is the transient branch stiffness :math:`K_1`
+[N·m/rad], and ``visco_bend_tau`` is the relaxation time :math:`\tau` [s].
+The instantaneous stiffness is :math:`K_0 = K_\infty + K_1`. For a rod segment
+of length :math:`\ell`, convert continuum bending rigidity with
+:math:`K = EI / \ell`.
+
+For bending strain :math:`\kappa`, the transient moment :math:`m` obeys
+:math:`\dot m + m / \tau = K_1 \dot\kappa`. Each timestep uses
+
+.. math::
+
+   a = \frac{\tau}{\tau + \Delta t}, \qquad
+   m_{n+1} = a m_n + a K_1 (\kappa_{n+1} - \kappa_n).
+
+The history bias :math:`a(m_n-K_1\kappa_n)` and tangent :math:`a K_1` are
+frozen during VBD iterations, then the converged strain and moment are stored.
+The branch does not affect twist or hard bend constraints in legacy AVBD mode.
+Both parameters must be finite and nonnegative; zero in either disables the
+branch for that joint. Parameter activation is determined when the solver is
+constructed, so author the values before constructing it.
+
+This experimental feature currently supports Python-authored models. The USD
+cable importer does not yet map SLS parameters onto generated rod joints;
+registering the attributes alone does not enable SLS in a USD cable asset.
+
+The branch uses a backward-Euler update with a consistent tangent during VBD
+iterations. :meth:`~newton.solvers.SolverVBD.reset` clears its moment when the
+next input pose is rebaselined, treating that pose as relaxed. Disabling a
+temporary end joint to release a cable does not reset the cable's material
+history.
+
+The ``cable_viscoelastic_release`` example demonstrates the model with
+illustrative parameters:
+
+.. code-block:: console
+
+   python -m newton.examples cable_viscoelastic_release
+
+
 .. _Differentiability:
 
 Differentiability

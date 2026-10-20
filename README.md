@@ -388,6 +388,18 @@ If you run the examples from a source checkout with uv, use
     </td>
   </tr>
   <tr>
+    <td align="center" colspan="3">
+      <a href="https://github.com/newton-physics/newton/blob/main/newton/examples/cable/example_cable_viscoelastic_release.py">
+        <img width="320" src="https://raw.githubusercontent.com/newton-physics/newton/main/docs/images/examples/example_cable_viscoelastic_release.jpg" alt="Cable Viscoelastic Release">
+      </a>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" colspan="3">
+      <code>python -m newton.examples cable_viscoelastic_release</code>
+    </td>
+  </tr>
+  <tr>
     <td colspan="3"><h3>Tendon Examples</h3></td>
   </tr>
   <tr>
