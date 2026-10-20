@@ -4255,8 +4255,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 general_args["damping"] = [damping, *dampingpoly]
             if armature_arr is not None:
                 general_args["armature"] = float(armature_arr[mujoco_act_idx])
-            # Only pass range to MuJoCo when explicitly set in MJCF (has_*range flags),
-            # so MuJoCo can correctly resolve auto-limited flags via spec.compiler.autolimits.
+            # Pass authored or natively resolved ranges (has_*range flags), then
+            # let MuJoCo resolve auto-limited flags via spec.compiler.autolimits.
             if has_ctrlrange_arr is not None and has_ctrlrange_arr[mujoco_act_idx]:
                 general_args["ctrlrange"] = tuple(ctrlrange_arr[mujoco_act_idx])
             if ctrllimited_arr is not None:
@@ -8697,7 +8697,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 "SolverMuJoCo's MuJoCo-Warp backend does not support actuator armature. "
                 "This property is ignored; use use_mujoco_cpu=True to preserve its dynamics.",
                 NewtonWarning,
-                stacklevel=2,
+                stacklevel=3,
             )
         self.mj_data = mujoco.MjData(self.mj_model)
 

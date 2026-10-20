@@ -73,7 +73,7 @@ def add_actuator_dcmotor(
     controller: Sequence[float] = (0.0,),
     thermal: Sequence[float] = (0.0,),
     lugre: Sequence[float] = (0.0,),
-    input: str = "voltage",
+    input: str | int = "voltage",
     gear: Sequence[float] = (1.0,),
     damping: Sequence[float] = (0.0,),
     armature: float = 0.0,
@@ -113,7 +113,8 @@ def add_actuator_dcmotor(
             temperatures [degrees Celsius].
         lugre: Bristle stiffness [N·m/rad], damping [N·m·s/rad], Coulomb and static
             friction torques [N·m], and Stribeck speed [rad/s].
-        input: Single control input: ``voltage``, ``pos``, or ``vel``.
+        input: Single control input: ``voltage`` (8), ``pos`` (1), or ``vel`` (2).
+            Accepts a native keyword or its integer control signature.
             Other signatures raise :class:`NotImplementedError`.
         gear: Native transmission gear, padded to six values. Ball/free joints
             require explicit native gear as described in :class:`ActuatorTarget`.

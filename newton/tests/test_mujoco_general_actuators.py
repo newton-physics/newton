@@ -529,6 +529,7 @@ class TestMuJoCoActuators(unittest.TestCase):
                 if passive_warnings:
                     self.assertTrue(issubclass(passive_warnings[0].category, NewtonWarning))
                     self.assertIn("use_mujoco_cpu=True", str(passive_warnings[0].message))
+                    self.assertEqual(passive_warnings[0].filename, __file__)
 
     def test_actuator_damping_survives_property_updates(self):
         """Keep folded joint/tendon damping without double-counting it on the CPU."""
