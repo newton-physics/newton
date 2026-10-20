@@ -827,15 +827,15 @@ for device in devices:
             devices=[device],
             solver_fn=solver_fn,
         )
-        # LOX runs the prescribed-motion tests; Kamino freezes body immovability when constructing the solver.
+        add_function_test(
+            TestKinematicLinksCanonical,
+            f"test_kinematic_fixed_root_static_force_immune_{solver_name}",
+            test_kinematic_fixed_root_static_force_immune,
+            devices=[device],
+            solver_fn=solver_fn,
+        )
+        # Kamino freezes body immovability when constructing the solver.
         if solver_name != "lox":
-            add_function_test(
-                TestKinematicLinksCanonical,
-                f"test_kinematic_fixed_root_static_force_immune_{solver_name}",
-                test_kinematic_fixed_root_static_force_immune,
-                devices=[device],
-                solver_fn=solver_fn,
-            )
             add_function_test(
                 TestKinematicLinksCanonical,
                 f"test_kinematic_runtime_toggle_{solver_name}",
