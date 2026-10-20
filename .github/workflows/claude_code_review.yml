@@ -155,8 +155,9 @@ jobs:
       #   commit was already reviewed, for example after a draft round trip,
       #   or has no changes since the last reviewed commit.
       #   If the first review was incomplete, follow-ups cover the full diff.
-      #   publish_automated_review.py writes the markers, the "Reviewed
-      #   commit" line, and the incomplete-review warning parsed here.
+      #   publish_automated_review.py writes the markers and the "Reviewed
+      #   commit" line parsed here, and escapes reviewer text so it cannot
+      #   forge them.
       - id: prepare
         name: Prepare review inputs
         if: steps.latest.outputs.review == 'true'
@@ -212,7 +213,7 @@ jobs:
               exit 0
             fi
             follow_up_marker='<!-- newton-automated-review-follow-up -->'
-            if grep -qF 'This review did not cover the whole change' <<< "${previous%%"${follow_up_marker}"*}"; then
+            if grep -qF '<!-- newton-automated-review-incomplete -->' <<< "${previous%%"${follow_up_marker}"*}"; then
               echo "The first review was incomplete, so this follow-up covers the full diff."
             elif [ -n "${last_reviewed}" ] \
               && git -C pr-head fetch --no-tags --depth=1 origin "${last_reviewed}"; then

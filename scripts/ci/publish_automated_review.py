@@ -24,8 +24,9 @@ the first review and replaces only its follow-up section. Because the next
 follow-up replaces that section, a follow-up's findings without a line are
 also posted in the body of its pull request review, which stays. The workflow's
 prepare step detects follow-ups from ``SUMMARY_MARKER``, ``FOLLOW_UP_MARKER``,
-the last ``Reviewed commit <sha>`` line, and ``INCOMPLETE_WARNING``, so keep
-these formats in sync with it.
+``INCOMPLETE_MARKER``, and the last ``Reviewed commit <sha>`` line, so keep
+these formats in sync with it. Reviewer text is escaped so it cannot forge any
+of these markers.
 
 Environment: ``REVIEW_OUTPUT``, ``GITHUB_REPOSITORY``, ``PR_NUMBER``,
 ``HEAD_SHA``, ``RUNNER_TEMP``, ``REVIEW_MODEL_NAME``, ``REVIEW_EFFORT``,
@@ -46,9 +47,9 @@ from pathlib import Path
 
 SUMMARY_MARKER = "<!-- newton-automated-review -->"
 FOLLOW_UP_MARKER = "<!-- newton-automated-review-follow-up -->"
-INCOMPLETE_WARNING = "This review did not cover the whole change."
+INCOMPLETE_MARKER = "<!-- newton-automated-review-incomplete -->"
 FINDING_MARKER = "<!-- newton-automated-review-finding:{} -->"
-FINDING_MARKER_RE = re.compile(r"newton-automated-review-finding:([0-9a-f]{16})")
+FINDING_MARKER_RE = re.compile(r"<!-- newton-automated-review-finding:([0-9a-f]{16}) -->")
 BOT_LOGIN = "github-actions[bot]"
 MAX_INLINE_COMMENTS = 15
 MAX_BODY_CHARS = 6000
@@ -98,6 +99,20 @@ def clip(text: object, limit: int = MAX_BODY_CHARS) -> str:
     return text if len(text) <= limit else text[: limit - 20].rstrip() + "\n\n*(truncated)*"
 
 
+def neutralize(text: str) -> str:
+    """Escape HTML comments in reviewer text so it cannot forge the markers that this script and the workflow parse."""
+    return text.replace("<!--", "&lt;!--")
+
+
+def keep_tail_clip(text: str, limit: int) -> str:
+    """Clip a previous review section from the middle, keeping its incomplete-review warning and footer."""
+    if len(text) <= limit:
+        return text
+    starts = [i for i in (text.rfind("\n> [!WARNING]"), text.rfind("\n<sub>Reviewed commit")) if i >= 0]
+    split = min(starts) if starts else len(text)
+    return clip(text[:split], max(limit - (len(text) - split), 100)) + text[split:]
+
+
 def severity_label(finding: dict) -> str:
     return SEVERITY_LABELS.get(str(finding.get("severity")), SEVERITY_LABELS["nit"])
 
@@ -105,7 +120,8 @@ def severity_label(finding: dict) -> str:
 def comment_body(finding: dict, with_suggestion: bool = True) -> str:
     """Format a finding as an inline comment body, optionally without its suggestion block."""
     label = severity_label(finding)
-    parts = [f"{label[0]} **{label[2:]}: {clip(finding.get('title'), 300)}**", "", clip(finding.get("body"))]
+    title, body = neutralize(clip(finding.get("title"), 300)), neutralize(clip(finding.get("body")))
+    parts = [f"{label[0]} **{label[2:]}: {title}**", "", body]
     suggestion = finding.get("suggestion")
     if with_suggestion and isinstance(suggestion, str) and suggestion.strip() and "```" not in suggestion:
         parts += ["", "```suggestion", suggestion.rstrip("\n"), "```"]
@@ -207,10 +223,8 @@ def finding_lines(findings: list[dict], with_marker: bool = False) -> list[str]:
         path, line = finding.get("path"), finding.get("line")
         location = f"`{path}:{line}`" if path and line else f"`{path}`" if path else "General"
         marker = f" {FINDING_MARKER.format(fingerprint(finding))}" if with_marker else ""
-        lines.append(
-            f"- {severity_label(finding)} {location}: **{clip(finding.get('title'), 300)}** "
-            f"{clip(finding.get('body'), 800)}{marker}"
-        )
+        title, body = neutralize(clip(finding.get("title"), 300)), neutralize(clip(finding.get("body"), 800))
+        lines.append(f"- {severity_label(finding)} {location}: **{title}** {body}{marker}")
     return lines
 
 
@@ -239,11 +253,13 @@ def summary_body(
     With ``previous``, the body of the existing summary comment, keep its first review and replace its follow-up section.
     """
     summary = re.sub(r"\A(\s*#{1,6}[^\n]*\n)+", "", str(output.get("summary", "")).strip() + "\n").strip()
+    summary = neutralize(clip(summary, 3000))
     if previous is None:
-        lines = [SUMMARY_MARKER, f"### {REVIEWER_NAME}", "", clip(summary, 3000)]
+        lines = [SUMMARY_MARKER, f"### {REVIEWER_NAME}", "", summary]
     else:
-        first_review = clip(previous.split(FOLLOW_UP_MARKER, 1)[0], MAX_FIRST_REVIEW_CHARS)
-        lines = [first_review, "", FOLLOW_UP_MARKER, "#### Latest follow-up review", "", clip(summary, 3000)]
+        # Reviewer text is neutralized, so the first marker is the generated section boundary.
+        first_review = keep_tail_clip(previous.split(FOLLOW_UP_MARKER, 1)[0].strip(), MAX_FIRST_REVIEW_CHARS)
+        lines = [first_review, "", FOLLOW_UP_MARKER, "#### Latest follow-up review", "", summary]
     if inline_findings:
         lines += ["", count_line(inline_findings)]
     if elsewhere:
@@ -252,7 +268,7 @@ def summary_body(
         lines += [
             "",
             "> [!WARNING]",
-            f"> {INCOMPLETE_WARNING}",
+            f"> This review did not cover the whole change. {INCOMPLETE_MARKER}",
         ]
     lines += ["", f"<sub>Reviewed commit {head_sha}. {' '.join(details)}</sub>"]
     return "\n".join(lines) + "\n"
