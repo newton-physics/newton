@@ -797,7 +797,7 @@ class Mesh:
         """
         Create a copy of this mesh, optionally with new vertices or indices.
 
-        Mesh data is copied independently; the SDF is shared when geometry is unchanged.
+        Mesh data is copied independently; the SDF is shared when ``vertices`` and ``indices`` are omitted.
 
         Args:
             vertices: New vertices to use (default: current vertices).
