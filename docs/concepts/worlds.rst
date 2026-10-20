@@ -254,7 +254,7 @@ While :meth:`~newton.ModelBuilder.begin_world` and :meth:`~newton.ModelBuilder.e
 
    scene = newton.ModelBuilder()
    scene.add_ground_plane()
-   scene.replicate(arm, world_count=4, spacing=(2.0, 0.0, 0.0))
+   scene.replicate(arm, copy_count=4, spacing=(2.0, 0.0, 0.0))
 
    replicated_model = scene.finalize()
    print("world_count:", replicated_model.world_count)
@@ -283,7 +283,7 @@ While :meth:`~newton.ModelBuilder.begin_world` and :meth:`~newton.ModelBuilder.e
    arm.approximate_meshes(method="convex_hull")
 
    scene = newton.ModelBuilder()
-   scene.replicate(arm, world_count=4)
+   scene.replicate(arm, copy_count=4)
 
    replicated_model = scene.finalize()
    print("world_count:", replicated_model.world_count)
@@ -310,7 +310,7 @@ current world context in a single batched pass, which is much faster than callin
    scene.add_ground_plane()
    scene.replicate(
        box,
-       3,
+       copy_count=3,
        separate_worlds=False,
        xforms=[wp.transform((0.0, 0.0, 0.5 + 1.1 * i), wp.quat_identity()) for i in range(3)],
    )

@@ -25,13 +25,13 @@ import warp as wp
 
 from ..core._warnings import _external_warning_stacklevel
 from ..core.host_transform import (
+    pack_transforms,
     pack_warp_values,
     store_transform_rows,
     transform_inverse,
     transform_inverse_rows,
     transform_multiply,
     transform_multiply_rows,
-    transform_rows,
     warp_array_from_values,
 )
 from ..core.types import (
@@ -171,6 +171,9 @@ _ADD_ROD_POSITIONS_DEPRECATION_MSG = (
 _ADD_ROD_GRAPH_DEPRECATION_MSG = (
     "ModelBuilder.add_rod_graph() is deprecated in Newton 1.6; "
     "construct newton.Rod(..., edges=...) and pass it with add_rod(rod=...) instead."
+)
+_REPLICATE_WORLD_COUNT_DEPRECATION_MSG = (
+    "ModelBuilder.replicate(world_count=...) is deprecated in Newton 1.8; use copy_count=... instead."
 )
 
 # Plain constructors, not wp.transform_identity()/wp.quat_identity(): builtins
@@ -651,7 +654,7 @@ class ModelBuilder:
 
            main = ModelBuilder()
            main.add_world(robot)  # All robot entities -> world 0
-           main.replicate(robot, world_count=2)  # Add more worlds from the same source
+           main.replicate(robot, copy_count=2)  # Add more worlds from the same source
 
        With ``separate_worlds=False``, :meth:`replicate` instead adds all copies to the
        current world context in one batched pass, as repeated :meth:`add_builder` calls
@@ -3459,12 +3462,13 @@ class ModelBuilder:
     def replicate(
         self,
         builder: ModelBuilder,
-        world_count: int,
+        copy_count: int | None = None,
         spacing: tuple[float, float, float] = (0.0, 0.0, 0.0),
         *,
         separate_worlds: bool = True,
         xforms: Sequence[Transform] | None = None,
         label_prefixes: Sequence[str | None] | None = None,
+        world_count: int | None = None,
     ):
         """
         Replicates the given builder multiple times, offsetting each copy according to the supplied spacing.
@@ -3480,6 +3484,9 @@ class ModelBuilder:
         :meth:`add_world` or :meth:`add_builder` once per copy; subclass overrides of those methods are
         not invoked during replication. Merged entries may share objects with ``builder`` and across
         the copies; see :meth:`add_builder` for the supported life-cycle.
+
+        .. deprecated:: 1.8
+            ``world_count`` is deprecated. Use ``copy_count`` instead.
 
         Note:
             For visual separation of worlds, it is recommended to use the viewer's
@@ -3507,8 +3514,7 @@ class ModelBuilder:
 
         Args:
             builder: The builder to replicate. All entities from this builder will be copied.
-            world_count: The number of copies to add. With ``separate_worlds=True``, this is the
-                number of worlds to create.
+            copy_count: The number of copies to add.
             spacing: The spacing between each copy along each axis. Ignored when
                 ``xforms`` is provided.
                 For example, (5.0, 5.0, 0.0) arranges copies in a 2D grid in the XY plane.
@@ -3516,27 +3522,41 @@ class ModelBuilder:
             separate_worlds: Whether to assign each copy to a new world. If ``False``, add all
                 copies to the current world context (see :attr:`current_world`) instead.
             xforms: Optional sequence of transforms, one per copy.
-                When provided, its length must equal ``world_count``.
+                When provided, its length must equal ``copy_count``.
             label_prefixes: Optional prefix prepended to all labels from the source builder,
                 one per copy, applied as :meth:`add_builder` applies its
                 ``label_prefix``. Labels are joined with ``/``. A ``None`` entry leaves that
                 copy's labels as they are in ``builder``; an empty source label remains
                 unlabeled.
+            world_count: Deprecated alias for ``copy_count``.
 
         Raises:
+            TypeError: Neither or both of ``copy_count`` and ``world_count`` are supplied.
             RuntimeError: ``separate_worlds`` is ``True`` inside a world context.
-            ValueError: ``xforms`` or ``label_prefixes`` does not have ``world_count`` entries.
+            ValueError: ``xforms`` or ``label_prefixes`` does not have ``copy_count`` entries.
         """
+        if world_count is not None:
+            if copy_count is not None:
+                raise TypeError("Specify only one of `copy_count` and `world_count`")
+            warnings.warn(
+                _REPLICATE_WORLD_COUNT_DEPRECATION_MSG,
+                NewtonDeprecationWarning,
+                stacklevel=_external_warning_stacklevel(),
+            )
+            copy_count = world_count
+        elif copy_count is None:
+            raise TypeError("ModelBuilder.replicate() missing required argument: 'copy_count'")
+
         gc_was_enabled = gc.isenabled()
         gc.disable()
         try:
-            if world_count < 0:
+            if copy_count < 0:
                 return
-            if xforms is not None and len(xforms) != world_count:
-                raise ValueError(f"xforms must contain {world_count} entries, got {len(xforms)}")
-            if label_prefixes is not None and len(label_prefixes) != world_count:
-                raise ValueError(f"label_prefixes must contain {world_count} entries, got {len(label_prefixes)}")
-            if world_count == 0:
+            if xforms is not None and len(xforms) != copy_count:
+                raise ValueError(f"xforms must contain {copy_count} entries, got {len(xforms)}")
+            if label_prefixes is not None and len(label_prefixes) != copy_count:
+                raise ValueError(f"label_prefixes must contain {copy_count} entries, got {len(label_prefixes)}")
+            if copy_count == 0:
                 return
             if separate_worlds and self.current_world != -1:
                 raise RuntimeError(
@@ -3545,23 +3565,23 @@ class ModelBuilder:
                 )
             if xforms is None:
                 if tuple(spacing) == (0, 0, 0):
-                    xforms = [None] * world_count
+                    xforms = [None] * copy_count
                 else:
-                    offsets = compute_world_offsets(world_count, spacing, self.up_axis)
+                    offsets = compute_world_offsets(copy_count, spacing, self.up_axis)
                     xforms = [wp.transform(offset, wp.quat_identity()) for offset in offsets]
             if label_prefixes is None:
-                label_prefixes = [None] * world_count
+                label_prefixes = [None] * copy_count
 
             if separate_worlds:
-                worlds = list(range(self.world_count, self.world_count + world_count))
+                worlds = list(range(self.world_count, self.world_count + copy_count))
             else:
-                worlds = [self.current_world] * world_count
+                worlds = [self.current_world] * copy_count
             with self._raw_array_access():
                 self._merge_builder_copies(builder, worlds, xforms, label_prefixes, array_backed=True)
 
             if separate_worlds:
-                self.world_gravity.extend(builder._gravity_as_vector() for _ in range(world_count))
-                self.world_count += world_count
+                self.world_gravity.extend(builder._gravity_as_vector() for _ in range(copy_count))
+                self.world_count += copy_count
             else:
                 self._adopt_builder_gravity(builder)
         finally:
@@ -3613,7 +3633,9 @@ class ModelBuilder:
         def rotate_vectors(rotation: wp.quat | np.ndarray, vectors: np.ndarray) -> None:
             # In-place SO(3) on (..., 3), with rotations (..., 4) broadcast against the
             # vectors. Translation is not applied: a pure offset must leave linear and
-            # angular velocity unchanged.
+            # angular velocity unchanged. This keeps the cross-product form that velocity
+            # copies have always used, so they stay bit-identical; poses go through
+            # transform_multiply_rows(), which mirrors Warp's quat_rotate instead.
             q = np.asarray(rotation, dtype=np.float32)
             xyz = q[..., :3]
             w = q[..., 3:]
@@ -3714,7 +3736,7 @@ class ModelBuilder:
         if counts["shape"] and len(moved_worlds):
             static_shapes = np.flatnonzero(np.asarray(builder.shape_body, dtype=np.int64) == -1)
             if len(static_shapes):
-                source = transform_rows([builder.shape_transform[shape] for shape in static_shapes.tolist()])
+                source = pack_transforms([builder.shape_transform[shape] for shape in static_shapes.tolist()])
                 transformed = transform_multiply_rows(moved_xforms[:, None], source[None])
                 targets = shape_transform_start + moved_worlds[:, None] * counts["shape"] + static_shapes[None]
                 store_transform_rows(self.shape_transform, targets.ravel(), transformed.reshape(-1, 7))
@@ -3748,7 +3770,7 @@ class ModelBuilder:
             joint_parents = np.asarray(builder.joint_parent, dtype=np.int64)
             nonfree_roots = np.flatnonzero((joint_parents == -1) & (joint_types != int(JointType.FREE)))
             if len(nonfree_roots):
-                source = transform_rows([builder.joint_X_p[joint] for joint in nonfree_roots.tolist()])
+                source = pack_transforms([builder.joint_X_p[joint] for joint in nonfree_roots.tolist()])
                 transformed = transform_multiply_rows(moved_xforms[:, None], source[None])
                 targets = joint_X_p_start + moved_worlds[:, None] * counts["joint"] + nonfree_roots[None]
                 store_transform_rows(self.joint_X_p, targets.ravel(), transformed.reshape(-1, 7))
@@ -3759,7 +3781,7 @@ class ModelBuilder:
                 q_index = np.asarray(builder.joint_q_start, dtype=np.int64)[free_roots, None] + np.arange(7)
                 qd_index = np.asarray(builder.joint_qd_start, dtype=np.int64)[free_roots, None] + np.arange(6)
                 xform_prev = joint_q_source[q_index]
-                X_pj = transform_rows([builder.joint_X_p[joint] for joint in free_roots.tolist()])
+                X_pj = pack_transforms([builder.joint_X_p[joint] for joint in free_roots.tolist()])
                 X_pj_inv = transform_inverse_rows(X_pj)
                 xform_local = transform_multiply_rows(
                     transform_multiply_rows(X_pj_inv[None], moved_xforms[:, None]), X_pj[None]
@@ -3793,7 +3815,7 @@ class ModelBuilder:
 
         attribute_specs.pop("body_q")
         if counts["body"]:
-            body_q_source = transform_rows(builder.body_q)
+            body_q_source = pack_transforms(builder.body_q)
             body_q = np.tile(body_q_source, (world_count, 1))
             if translations_only:
                 if np.any(offsets):
@@ -9253,7 +9275,7 @@ class ModelBuilder:
                 arm.approximate_meshes(method="convex_hull")
 
                 scene = newton.ModelBuilder()
-                scene.replicate(arm, world_count=N)
+                scene.replicate(arm, copy_count=N)
 
         Args:
             method: The method to use for approximating the mesh shapes.

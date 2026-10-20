@@ -8,6 +8,7 @@ import warp as wp
 
 from newton._src.core.host_transform import (
     join_warp_values,
+    pack_transforms,
     pack_warp_values,
     quat_rotate_rows,
     store_transform_rows,
@@ -21,7 +22,6 @@ from newton._src.core.host_transform import (
     transform_multiply,
     transform_multiply_rows,
     transform_point,
-    transform_rows,
     transform_to_matrix,
     transform_to_position_wxyz,
     transform_vector,
@@ -65,6 +65,18 @@ class TestHostTransform(unittest.TestCase):
         )
         np.testing.assert_allclose(transform_point(self.transform, point), wp.transform_point(self.transform, point))
         np.testing.assert_allclose(transform_vector(self.transform, point), wp.transform_vector(self.transform, point))
+
+    def test_non_contiguous_inputs(self):
+        """Accept strided matrix and transform inputs."""
+        matrix = np.asfortranarray(transform_to_matrix(self.transform))
+        self.assertFalse(matrix.flags.c_contiguous)
+        from_matrix = wp.transform_identity()
+        transform_assign_matrix(from_matrix, matrix)
+        np.testing.assert_allclose(from_matrix, self.transform, rtol=1.0e-6, atol=1.0e-6)
+
+        strided = np.repeat(np.asarray(self.transform, dtype=np.float32), 2)[::2]
+        self.assertFalse(strided.flags.c_contiguous)
+        np.testing.assert_array_equal(transform_from_array(strided), self.transform)
 
     def test_array_copy_and_translation_preserve_inputs(self):
         """Create fast views and copies without replacing caller-owned values."""
@@ -123,7 +135,7 @@ class TestHostTransform(unittest.TestCase):
         np.testing.assert_array_equal(array.numpy(), wp.array(matrices, dtype=wp.mat33, device="cpu").numpy())
 
         pair = (wp.vec3(1.0, 2.0, 3.0), wp.quat_identity())
-        np.testing.assert_array_equal(transform_rows([self.transform, pair]), [self.transform, wp.transform(*pair)])
+        np.testing.assert_array_equal(pack_transforms([self.transform, pair]), [self.transform, wp.transform(*pair)])
 
     def test_store_transform_rows(self):
         """Write transform rows into list and array storage."""

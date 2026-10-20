@@ -528,7 +528,7 @@ out many copies of a template environment builder into separate worlds in one ca
     # Combined builder: global geometry + 1024 replicated worlds
     main = newton.ModelBuilder()
     main.add_ground_plane()  # global (world -1), shared across all worlds
-    main.replicate(env_builder, world_count=1024)
+    main.replicate(env_builder, copy_count=1024)
     model = main.finalize()
 
 .. note::

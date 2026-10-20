@@ -171,7 +171,7 @@ def warp_array_from_values(values: Any, dtype: type, **kwargs: Any) -> wp.array:
     return wp.array(values if joined is None else joined, dtype=dtype, **kwargs)
 
 
-def transform_rows(values: Sequence[Any] | np.ndarray) -> np.ndarray:
+def pack_transforms(values: Sequence[Any] | np.ndarray) -> np.ndarray:
     """Pack transform-like values into a float32 array of shape ``(N, 7)``. The result may be read-only."""
     if isinstance(values, np.ndarray):
         return np.asarray(values, dtype=np.float32).reshape(-1, 7)

@@ -12,6 +12,7 @@ import warp as wp
 from newton import Mesh, Model, ModelBuilder, Rod
 from newton._src.sim.builder import _ARRAY_BACKED_ATTRIBUTE_DTYPES, _materialize_array_backed_list
 from newton.actuators import DrivePD
+from newton.exceptions import NewtonDeprecationWarning
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 from newton.utils import compute_world_offsets
 
@@ -309,14 +310,14 @@ class TestModelBuilderReplicate(unittest.TestCase):
         source.add_shape_box(body, hx=0.5, hy=0.5, hz=0.5)
 
         builder = ModelBuilder()
-        builder.replicate(source, 5, spacing=(1.5, 0.0, 0.0), separate_worlds=False)
+        builder.replicate(source, copy_count=5, spacing=(1.5, 0.0, 0.0), separate_worlds=False)
         self.assertEqual(builder.world_count, 0)
         self.assertEqual(builder.body_count, 5)
         self.assertEqual(builder.body_world, [-1] * 5)
         np.testing.assert_allclose(np.asarray(builder._gravity_as_vector()), [0.0, 0.0, -3.0])
 
         builder.begin_world()
-        builder.replicate(source, 2, separate_worlds=False)
+        builder.replicate(source, copy_count=2, separate_worlds=False)
         builder.end_world()
         self.assertEqual(builder.world_count, 1)
         self.assertEqual(builder.body_world, [-1] * 5 + [0] * 2)
@@ -325,12 +326,27 @@ class TestModelBuilderReplicate(unittest.TestCase):
         model = builder.finalize(device="cpu")
         self.assertEqual(model.body_count, 7)
 
+    def test_replicate_world_count_is_deprecated(self):
+        source = self._make_source()
+        expected = self._make_destination()
+        expected.replicate(source, copy_count=2)
+
+        actual = self._make_destination()
+        with self.assertWarnsRegex(NewtonDeprecationWarning, r"replicate\(world_count=\.\.\.\)"):
+            actual.replicate(source, world_count=2)
+        self.assert_builder_merge_state_equal(expected, actual)
+
+        with self.assertRaisesRegex(TypeError, "only one of"):
+            ModelBuilder().replicate(source, 2, world_count=2)
+        with self.assertRaisesRegex(TypeError, "copy_count"):
+            ModelBuilder().replicate(source)
+
     def test_replicate_separate_worlds_rejects_world_context(self):
         """Reject separate-world replication inside an active world context."""
         builder = ModelBuilder()
         builder.begin_world()
         with self.assertRaisesRegex(RuntimeError, "already in world context"):
-            builder.replicate(self._make_source(), world_count=2)
+            builder.replicate(self._make_source(), copy_count=2)
 
     def test_replicate_remaps_joint_mimic_references(self):
         """Verify replication remaps dense mimic references per world."""
@@ -357,7 +373,7 @@ class TestModelBuilderReplicate(unittest.TestCase):
             ModelBuilder().replicate(self._make_source(), 2, xforms=[wp.transform_identity()])
 
     def test_replicate_zero_copies_validates_per_copy_inputs(self):
-        """Reject per-copy inputs with entries when replicating zero copies, and add nothing otherwise."""
+        """Reject per-copy inputs with entries for zero copies, and add nothing for zero or negative counts."""
         source = self._make_source()
         with self.assertRaisesRegex(ValueError, "xforms must contain 0 entries, got 1"):
             ModelBuilder().replicate(source, 0, xforms=[wp.transform_identity()])
@@ -368,6 +384,7 @@ class TestModelBuilderReplicate(unittest.TestCase):
         builder.begin_world()
         builder.replicate(source, 0, xforms=[], label_prefixes=[])
         builder.end_world()
+        builder.replicate(source, -1)
         self.assertEqual(builder.world_count, 1)
         self.assertEqual(builder.body_count, 0)
 
