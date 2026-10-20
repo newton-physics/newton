@@ -2004,8 +2004,11 @@ class SolverSteel(SolverBase):
                 earliest contacts and drops the rest, so unchanged inputs drop the same contacts every step;
                 overflowed steps remain flagged in :attr:`constraint_overflow`. The mode adds a per-step
                 sort of the contacts by world and 16 bytes of storage per contact slot.
-                Requires ``articulated_contact_response="immediate"``. ``GPU_TO_GPU`` is not supported.
-                Steel's kernel modules always opt out of Warp's ``deterministic`` module option, so a
+                Requires ``articulated_contact_response="immediate"``; ``GPU_TO_GPU`` is not supported. Passing
+                an unsupported mode raises :class:`ValueError`. An inherited unsupported mode emits a
+                :class:`~newton.exceptions.NewtonWarning` and falls back to the strongest supported one:
+                ``GPU_TO_GPU`` runs ``RUN_TO_RUN``, and any mode runs ``NOT_GUARANTEED`` with the propagation
+                responses. Steel's kernel modules always opt out of Warp's ``deterministic`` module option, so a
                 process-wide ``wp.config.deterministic`` only selects this mode.
         """
         self._kernel_overrides = current_kernel_overrides()
@@ -2226,19 +2229,34 @@ class SolverSteel(SolverBase):
                 f"got {articulated_contact_response!r}"
             )
         self._articulated_contact_response = articulated_contact_response
-        if deterministic is None:
+        if articulated_contact_response == "immediate":
+            supported_mode = wp.DeterministicMode.RUN_TO_RUN
+        else:
+            supported_mode = wp.DeterministicMode.NOT_GUARANTEED
+        inherited = deterministic is None
+        if inherited:
             deterministic = wp.config.deterministic
         if not isinstance(deterministic, wp.DeterministicMode):
             raise TypeError(f"deterministic must be a warp.DeterministicMode or None, got {deterministic!r}")
+        if inherited and deterministic.value > supported_mode.value:
+            warnings.warn(
+                f"wp.config.deterministic is {deterministic.name}; SolverSteel with "
+                f"articulated_contact_response={articulated_contact_response!r} supports at most "
+                f"{supported_mode.name} and runs that mode. Pass deterministic explicitly to select a mode "
+                "without this warning.",
+                NewtonWarning,
+                stacklevel=2,
+            )
+            deterministic = supported_mode
         if deterministic == wp.DeterministicMode.GPU_TO_GPU:
             raise ValueError("SolverSteel supports deterministic=RUN_TO_RUN or NOT_GUARANTEED, not GPU_TO_GPU")
-        self._deterministic = deterministic
-        self._ordered_rows = deterministic == wp.DeterministicMode.RUN_TO_RUN
-        if self._ordered_rows and articulated_contact_response != "immediate":
+        if deterministic.value > supported_mode.value:
             raise ValueError(
                 "deterministic=RUN_TO_RUN requires articulated_contact_response='immediate', "
                 f"got {articulated_contact_response!r}"
             )
+        self._deterministic = deterministic
+        self._ordered_rows = deterministic == wp.DeterministicMode.RUN_TO_RUN
         self._propagation_same_articulation_rows = bool(propagation_same_articulation_rows)
         self._propagation_cached_response = bool(propagation_cached_response)
         self._propagation_cached_response_body_max = int(propagation_cached_response_body_max)
