@@ -187,7 +187,8 @@ class ModelView:
         """Record which disabled joints of this view another entry or the coupling algorithm simulates.
 
         Replaces the previously recorded indices. The joints are not disabled by this call; see
-        :meth:`disable_joints`.
+        :meth:`disable_joints`. Call it before constructing the sub-solver for this view: a solver may
+        read the indices once, at construction.
 
         Args:
             joint_indices: 1-D int array of view-local joint indices.
