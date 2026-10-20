@@ -2372,6 +2372,27 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                 solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
                 self._assert_kinematic_state_matches_flags(model, solver)
 
+    def test_kinematic_switchable_roots_option(self):
+        model, root_body = self._build_model(root_kinematic=False)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, kinematic_switchable_roots=True)
+        self.assertEqual(solver.mj_model.nmocap, 1)
+        self._assert_kinematic_state_matches_flags(model, solver)
+
+        body_flags = model.body_flags.numpy()
+        body_flags[root_body] = int(BodyFlags.KINEMATIC)
+        model.body_flags.assign(body_flags)
+        solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
+        self._assert_kinematic_state_matches_flags(model, solver)
+
+    def test_making_non_root_kinematic_raises(self):
+        model, root_body = self._build_model(root_kinematic=True)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, kinematic_switchable_roots=True)
+        body_flags = model.body_flags.numpy()
+        body_flags[root_body + 1] = int(BodyFlags.KINEMATIC)
+        model.body_flags.assign(body_flags)
+        with self.assertRaisesRegex(ValueError, "child"):
+            solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
+
     def test_making_unconverted_root_kinematic_raises(self):
         model, root_body = self._build_model(root_kinematic=False)
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)

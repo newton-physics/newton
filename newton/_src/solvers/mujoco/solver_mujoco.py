@@ -4317,6 +4317,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         skip_visual_only_geoms: bool = True,
         deterministic: wp.DeterministicMode | None = None,
         strict_capacity: bool = False,
+        kinematic_switchable_roots: bool = False,
     ):
         """
         Solver options (e.g., ``impratio``) follow this resolution priority:
@@ -4392,6 +4393,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 via a ``wp.printf`` message; to detect it in Python without a
                 GPU sync, request ``ObservableKind.OVERFLOW`` via
                 :meth:`observables` and check the bitmask after each step.
+            kinematic_switchable_roots: If ``True``, every movable root body can
+                be switched to kinematic at runtime through
+                :attr:`~newton.Model.body_flags`. Otherwise only roots that are
+                kinematic or have ``mujoco:kinematic_switchable`` set at
+                construction can. Each switchable root adds a mocap body and an
+                inactive weld to the MuJoCo model.
         """
         super().__init__(model)
         if use_speculative_contacts and (use_mujoco_contacts or use_mujoco_cpu):
@@ -4452,6 +4459,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._initial_model_sync = True
         self._deterministic = deterministic if deterministic is not None else wp.config.deterministic
         self._strict_capacity = strict_capacity
+        self._kinematic_switchable_roots = kinematic_switchable_roots
         self._deterministic_max_records = 0
         if not use_mujoco_cpu:
             # MJWarp's step pipeline spans several modules (forward dynamics,
@@ -4488,7 +4496,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """MuJoCo mocap index of each kinematic target. Shape [ntarget], dtype int32."""
         self.kinematic_target_eq: wp.array[wp.int32] | None = None
         """MuJoCo weld equality holding each kinematic root to its target. Shape [ntarget], dtype int32."""
-        self._movable_root_bodies: np.ndarray | None = None
+        self._kinematic_needs_target: np.ndarray | None = None
         self.mjc_actuator_ctrl_source: wp.array[wp.int32] | None = None
         """Control source for each MuJoCo actuator.
 
@@ -7815,7 +7823,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # MJWarp worlds share one topology, so a root kinematic in any world needs a target.
         template_bodies = model.body_count // model.world_count
         needs_target = (body_flags & int(BodyFlags.KINEMATIC)) != 0
-        if body_kinematic_switchable is not None:
+        if self._kinematic_switchable_roots:
+            needs_target[:] = True
+        elif body_kinematic_switchable is not None:
             needs_target |= body_kinematic_switchable.astype(bool)
         body_needs_target = (
             needs_target[: template_bodies * model.world_count].reshape(model.world_count, -1).any(axis=0)
@@ -8849,9 +8859,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             else:
                 self.mjc_mocap_to_newton_jnt = None
 
-            movable_roots = (joint_parent == -1) & (joint_dof_dim[:, 0] + joint_dof_dim[:, 1] > 0)
-            self._movable_root_bodies = np.zeros(model.body_count, dtype=bool)
-            self._movable_root_bodies[joint_child[movable_roots]] = True
+            # Bodies that need a weld target to be kinematic: movable roots and every non-root body.
+            fixed_roots = (joint_parent == -1) & (joint_dof_dim[:, 0] + joint_dof_dim[:, 1] == 0)
+            self._kinematic_needs_target = np.ones(model.body_count, dtype=bool)
+            self._kinematic_needs_target[joint_child[fixed_roots]] = False
             if kinematic_target_roots:
                 template_jnt = np.array([j for j, _, _ in kinematic_target_roots], dtype=np.int32) % joints_per_world
                 self.kinematic_target_jnt = wp.array(
@@ -9473,10 +9484,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if self.kinematic_target_jnt is not None:
                 targeted = self.model.joint_child.numpy()[self.kinematic_target_jnt.numpy().ravel()]
                 kinematic[targeted] = False
-            if np.any(kinematic & self._movable_root_bodies):
+            invalid = np.flatnonzero(kinematic & self._kinematic_needs_target)
+            if invalid.size:
                 raise ValueError(
-                    "SolverMuJoCo can only make a root body kinematic if it was kinematic or had "
-                    "mujoco:kinematic_switchable set when the solver was created."
+                    f"Body {self.model.body_label[invalid[0]]!r} cannot be kinematic: SolverMuJoCo only supports "
+                    "kinematic root bodies that were kinematic, had mujoco:kinematic_switchable set, or were "
+                    "covered by kinematic_switchable_roots=True when the solver was created."
                 )
         if self.kinematic_target_eq is None:
             return

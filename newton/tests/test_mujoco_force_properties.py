@@ -165,7 +165,9 @@ class TestMuJoCoForceProperties(unittest.TestCase):
                 with self.subTest(cpu=cpu, kinematic=kinematic):
                     model = _make_model(worlds=1)
                     if kinematic:
-                        model.body_flags.fill_(int(newton.BodyFlags.KINEMATIC))
+                        body_flags = model.body_flags.numpy()
+                        body_flags[0] = int(newton.BodyFlags.KINEMATIC)
+                        model.body_flags.assign(body_flags)
                     solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
                     armature = solver.mjw_model.dof_armature.numpy().copy()
                     meaninertia = (
