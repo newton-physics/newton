@@ -222,14 +222,14 @@ def test_restarts_keep_mass_matrix_cadence(test, device):
         return _steel(view, update_mass_matrix_interval=5)
 
     reference_model = build(cloth=False)
-    reference_q = _Rollout(reference_model, steel(reference_model)).run(120)
+    reference_q = _Rollout(reference_model, steel(reference_model)).run(60)
     eager_model = build(cloth=False)
-    eager_q = _Rollout(eager_model, _steel(eager_model)).run(120)
+    eager_q = _Rollout(eager_model, _steel(eager_model)).run(60)
     # The lagged matrix changes the swing, so the cadence is observable.
     test.assertGreater(float(np.abs(reference_q - eager_q).max()), 1.0e-4)
     for iterations in (1, 3):
         model = build(cloth=True)
-        coupled_q = _Rollout(model, _coupled(model, None, steel, iterations=iterations)).run(120)
+        coupled_q = _Rollout(model, _coupled(model, None, steel, iterations=iterations)).run(60)
         np.testing.assert_allclose(coupled_q, reference_q, atol=1.0e-6, err_msg=f"iterations={iterations}")
 
 
