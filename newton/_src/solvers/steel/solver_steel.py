@@ -1348,15 +1348,8 @@ class SolverSteel(SolverBase):
         sleeps; pass ``sleep_skip_constraints=False`` (or leave sleeping off) to keep the
         solved forces.
 
-        With ``enable_sleeping``, :attr:`SolverSteel.Observables.body_awake` is populated when
-        :attr:`SolverSteel.ObservableKind.BODY_AWAKE` is requested. A step that receives the
-        container overwrites it with ``True`` for each awake body and ``False`` for each sleeping
-        one, as of the end of that step; other steps leave it unchanged. A new container holds
-        the solver's current flags. :meth:`reset` and :meth:`notify_model_changed` wake islands
-        as described under ``enable_sleeping`` but do not write existing containers; the next
-        step that receives one reports the result. Bodies of articulations with no responding
-        degrees of freedom always read ``True``. Without ``enable_sleeping`` the kind is not in
-        :attr:`supported_observables`, so requesting it raises.
+        With ``enable_sleeping``, :attr:`SolverSteel.Observables.body_awake` reports per-body sleep
+        flags; see :ref:`steel_sleep_observable`.
 
     Example:
 
@@ -1395,7 +1388,7 @@ class SolverSteel(SolverBase):
             dtype=wp.bool,
             frequency=Model.AttributeFrequency.BODY,
         )
-        """Per-body awake flags from the last step that requested them, shape ``(body_count,)``."""
+        """Per-body awake flags, shape ``(body_count,)``; see :ref:`steel_sleep_observable`."""
 
     SUPPORTED_OBSERVABLES = frozenset(
         {
