@@ -415,6 +415,40 @@ def test_picking_oblique_pull_per_direction_mass(test: TestPickingSetup, device)
     test.assertLess(os_inertia[1, 1], 0.2 * os_inertia[0, 0])
 
 
+def test_picking_inertia_ignores_stale_joint_q(test: TestPickingSetup, device):
+    """The inertia follows the body poses when ``state.joint_q`` is stale, as under maximal-coordinate solvers."""
+    builder = newton.ModelBuilder()
+    link = builder.add_link(
+        xform=wp.transform((0.3, 0.0, 0.0), wp.quat_identity()),
+        mass=1.0,
+        inertia=wp.mat33(np.diag([0.01, 0.02, 0.03])),
+    )
+    joint = builder.add_joint_d6(
+        -1,
+        link,
+        angular_axes=[
+            newton.ModelBuilder.JointDofConfig(axis=(0.0, 0.0, 1.0)),
+            newton.ModelBuilder.JointDofConfig(axis=(0.0, 1.0, 0.0)),
+        ],
+        child_xform=wp.transform((-0.3, 0.0, 0.0), wp.quat_identity()),
+    )
+    builder.add_articulation([joint])
+    model = builder.finalize(device=device)
+
+    posed = model.state()
+    posed.joint_q.assign(np.array([0.7, 0.4], dtype=np.float32))
+    newton.eval_fk(model, posed.joint_q, posed.joint_qd, posed)
+    stale = model.state()
+    wp.copy(stale.body_q, posed.body_q)
+
+    point = wp.vec3(*wp.transform_point(wp.transform(*posed.body_q.numpy()[link]), wp.vec3(0.3, 0.0, 0.0)))
+    picking = Picking(model)
+    picking._update_os_inertia(posed, link, point)
+    expected = picking._pick_os_inertia.numpy()[0].copy()
+    picking._update_os_inertia(stale, link, point)
+    assert_np_equal(picking._pick_os_inertia.numpy()[0], expected, tol=1.0e-4)
+
+
 def test_picking_inertia_rotates_with_link(test: TestPickingSetup, device):
     """The felt mass follows the link as it turns, so the tangent stays light after a 90 degree swing."""
     model = _make_arm_and_finger_model(device, 10.0)
@@ -628,6 +662,12 @@ add_function_test(
     TestPickingSetup,
     "test_picking_oblique_pull_per_direction_mass",
     test_picking_oblique_pull_per_direction_mass,
+    devices=get_test_devices(),
+)
+add_function_test(
+    TestPickingSetup,
+    "test_picking_inertia_ignores_stale_joint_q",
+    test_picking_inertia_ignores_stale_joint_q,
     devices=get_test_devices(),
 )
 add_function_test(
