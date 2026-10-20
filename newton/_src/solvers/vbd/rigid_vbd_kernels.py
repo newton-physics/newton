@@ -1849,16 +1849,6 @@ class RigidForceElementAdjacencyInfo:
     body_adj_joints: wp.array[wp.int32]
     body_adj_joints_offsets: wp.array[wp.int32]
 
-    def to(self, device):
-        if device == self.body_adj_joints.device:
-            return self
-        else:
-            adjacency_gpu = RigidForceElementAdjacencyInfo()
-            adjacency_gpu.body_adj_joints = self.body_adj_joints.to(device)
-            adjacency_gpu.body_adj_joints_offsets = self.body_adj_joints_offsets.to(device)
-
-            return adjacency_gpu
-
 
 @wp.func
 def get_body_num_adjacent_joints(adjacency: RigidForceElementAdjacencyInfo, body: wp.int32):
