@@ -20,7 +20,6 @@ from ...core.types import override
 from ...exceptions import NewtonDeprecationWarning
 from ...geometry.types import GeoType
 from ...sim import (
-    BodyFlags,
     Contacts,
     Control,
     JointType,
@@ -1557,12 +1556,11 @@ class SolverKamino(SolverBase, CouplingInterface):
 
     @staticmethod
     def _find_unsupported_singular_inertia_bodies(model: Model) -> list[str]:
-        """Find bodies whose singular inertial properties make them unsafe to simulate.
+        """Finds bodies whose singular inertial properties make them unsafe to simulate.
 
         A body with singular inverse mass or inertia cannot respond to all applied wrenches in the
-        dual formulation. Such a body is only safe in these situations:
+        dual formulation. Such a body is only safe in two situations:
 
-        - It is explicitly kinematic, so its velocity is prescribed independently of inertia.
         - It is welded to the world, so a permanently frozen velocity is the correct answer.
         - It only has a free joint to the world, and is not attached to any other bodies.
           It then stays at its initial velocity.
@@ -1582,12 +1580,7 @@ class SolverKamino(SolverBase, CouplingInterface):
         inv_mass = model.body_inv_mass.numpy()
         inv_inertia = model.body_inv_inertia.numpy()
         singular_inertia = np.linalg.matrix_rank(inv_inertia) < 3
-        body_flags = model.body_flags.numpy()
-        singular = [
-            b
-            for b in range(model.body_count)
-            if not (body_flags[b] & int(BodyFlags.KINEMATIC)) and (inv_mass[b] == 0.0 or singular_inertia[b])
-        ]
+        singular = [b for b in range(model.body_count) if inv_mass[b] == 0.0 or singular_inertia[b]]
         if not singular:
             return []
 

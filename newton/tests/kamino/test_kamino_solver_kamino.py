@@ -2005,18 +2005,6 @@ class TestSolverKaminoImpl(unittest.TestCase):
 class TestSolverKaminoMasslessBodies(unittest.TestCase):
     """Massless bodies are supported when fixed or prescribed and rejected otherwise."""
 
-    def test_massless_kinematic_body_attached_to_dynamic_body_is_supported(self):
-        """Accept an explicitly kinematic body coupled to a dynamic body."""
-        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
-        base = builder.add_link(mass=0.0, label="kinematic_base")
-        link = builder.add_link(mass=1.0, inertia=UNIT_INERTIA, label="dynamic_link")
-        builder.body_flags[base] = int(newton.BodyFlags.KINEMATIC)
-        joint = builder.add_joint_revolute(parent=base, child=link, axis=newton.Axis.Y)
-        builder.add_articulation([joint])
-        model = builder.finalize()
-
-        self.assertEqual(SolverKamino._find_unsupported_singular_inertia_bodies(model), [])
-
     def test_massless_body_welded_to_world_stays_at_rest(self):
         """Verify a massless body welded to the world stays at rest, along with its welded child.
 
