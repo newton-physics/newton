@@ -199,8 +199,6 @@ def test_mujoco_sparse_articulation_construction(test, device):
 def _make_articulation_solver(model, solver_name):
     if solver_name == "featherstone":
         return newton.solvers.SolverFeatherstone(model, deterministic=DETERMINISTIC_MODE)
-    if solver_name == "steel":
-        return newton.solvers.SolverSteel(model, deterministic=DETERMINISTIC_MODE)
     if solver_name == "mujoco":
         return newton.solvers.SolverMuJoCo(
             model,
@@ -466,7 +464,7 @@ for solver_name in ("xpbd", "semi_implicit", "vbd"):
         check_output=False,
     )
 
-for solver_name in ("featherstone", "mujoco", "steel"):
+for solver_name in ("featherstone", "mujoco"):
     add_function_test(
         TestSolverDeterminism,
         f"test_articulation_determinism_{solver_name}",
