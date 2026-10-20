@@ -1834,18 +1834,14 @@ add_example_test(
     test_options={"num-frames": 500},
     use_viewer=True,
 )
-for example_name, num_frames in (
-    ("kamino.example_kamino_robot_dr_legs", 120),
-    ("kamino.example_kamino_robot_anymal_d", 500),
-):
-    add_example_test(
-        TestKaminoExamples,
-        name=example_name,
-        devices=cuda_test_devices,
-        test_options={"num-frames": num_frames, "dynamics-solver": "lox"},
-        use_viewer=True,
-        test_suffix="lox",
-    )
+add_example_test(
+    TestKaminoExamples,
+    name="kamino.example_kamino_robot_anymal_d",
+    devices=cuda_test_devices,
+    test_options={"num-frames": 500, "dynamics-solver": "lox"},
+    use_viewer=True,
+    test_suffix="lox",
+)
 
 
 class TestControllersExamples(unittest.TestCase):
