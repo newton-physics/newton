@@ -268,9 +268,10 @@ class LOXSolver:
 
         LOX simulates bodies with singular inverse mass or inertia, such as helper links welded to
         movable bodies, as long as their joints transmit the motion that they cannot resist. It
-        prescribes kinematic bodies and the bodies welded to them or to the world. Any other such
-        body is unsupported when one of its joints has a free DOF without armature: no inertia then
-        acts on that DOF, and the smooth system of LOX is singular.
+        prescribes kinematic bodies, massless bodies whose only joints are free joints to the world,
+        and the bodies welded to them or to the world. Any other such body is unsupported when one
+        of its joints, a free joint to the world included, has a DOF without armature: no inertia
+        then acts on that DOF, and the smooth system of LOX is singular.
 
         Args:
             model: The Newton model to validate.
@@ -297,17 +298,19 @@ class LOXSolver:
         # `-1` denotes the world. Kinematic bodies and the bodies welded to them or to the world are prescribed.
         welded_neighbors: dict[int, list[int]] = {}
         unarmed_joints: dict[int, list[int]] = {}
+        constrained = set()
         for j in range(model.joint_count):
             joint = int(joint_type[j])
             parent, child = int(joint_parent[j]), int(joint_child[j])
+            if not (joint == JointType.FREE and parent == -1):
+                constrained.update((parent, child))
             if joint == JointType.FIXED:
                 welded_neighbors.setdefault(parent, []).append(child)
                 welded_neighbors.setdefault(child, []).append(parent)
-            elif not (joint == JointType.FREE and parent == -1):
-                if np.any(joint_armature[joint_qd_start[j] : joint_qd_start[j + 1]] <= 0.0):
-                    for endpoint in (parent, child):
-                        if endpoint >= 0:
-                            unarmed_joints.setdefault(endpoint, []).append(j)
+            elif np.any(joint_armature[joint_qd_start[j] : joint_qd_start[j + 1]] <= 0.0):
+                for endpoint in (parent, child):
+                    if endpoint >= 0:
+                        unarmed_joints.setdefault(endpoint, []).append(j)
 
         body_flags = model.body_flags.numpy()
         prescribed = {-1, *np.flatnonzero(body_flags & int(BodyFlags.KINEMATIC)).tolist()}
@@ -321,6 +324,9 @@ class LOXSolver:
         descriptions = []
         for b in singular:
             if b in prescribed or b not in unarmed_joints:
+                continue
+            # LOX prescribes massless bodies whose only joints are free joints to the world
+            if inv_mass[b] == 0.0 and not inv_inertia[b].any() and b not in constrained:
                 continue
             reasons = []
             if inv_mass[b] == 0.0:

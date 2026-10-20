@@ -713,7 +713,7 @@ class TestSolverKaminoLOXJoints(_LOXTestCase):
         np.testing.assert_allclose(seed.numpy(), fresh_seed, rtol=1.0e-4)
 
     def test_massless_link_needs_inertia_on_its_free_joint_dof(self):
-        """Reject a massless link whose revolute DOF has no armature, and step it once the DOF has armature."""
+        """Reject singular links on joint DOFs without armature, and step a massless link once its DOF has armature."""
         for armature in (0.0, 0.01):
             with self.subTest(armature=armature):
                 builder = newton.ModelBuilder()
@@ -743,6 +743,15 @@ class TestSolverKaminoLOXJoints(_LOXTestCase):
                     solver.step(state_previous, state_next, model.control(), contacts=None, dt=0.01)
                     state_previous, state_next = state_next, state_previous
                 np.testing.assert_array_equal(solver.status.numpy()["failed"], [0])
+
+        # A free body with mass but a singular inverse inertia leaves its rotation without inertia
+        builder = newton.ModelBuilder()
+        SolverKamino.register_custom_attributes(builder)
+        builder.add_body(mass=1.0)
+        model = builder.finalize(device=self.default_device)
+        model.body_inv_inertia.zero_()
+        with self.assertRaisesRegex(ValueError, "joint DOFs without armature"):
+            SolverKamino(model, config=self.make_config())
 
     def test_joint_proximal_uses_frozen_frame_for_full_position_blocks(self):
         """Constrain offset anchors while a prescribed parent rotates substantially."""
