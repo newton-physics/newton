@@ -528,12 +528,7 @@ class TestSolverKaminoConfig(unittest.TestCase):
         with self.assertRaises(ValueError):
             SolverKaminoImpl.Config(dynamics_solver="invalid")
         SolverKaminoImpl.Config(dynamics_solver="lox", sparse_jacobian=True)
-        with self.assertRaises(ValueError):
-            SolverKaminoImpl.Config(
-                dynamics_solver="lox",
-                sparse_jacobian=True,
-                sparse_dynamics=True,
-            )
+        SolverKaminoImpl.Config(dynamics_solver="lox", sparse_jacobian=True, sparse_dynamics=True)
         config = SolverKaminoImpl.Config(dynamics_solver="lox", integrator="moreau")
         self.assertEqual(config.integrator, "moreau")
 
