@@ -726,10 +726,7 @@ def test_kinematic_runtime_toggle(
     pos_after_dynamic = state_0.body_q.numpy()[body, :3].copy()
     test.assertGreater(pos_after_dynamic[0], 0.05, "Dynamic body should move under applied force")
 
-    # Toggle back to kinematic and prescribe a stationary state.
-    body_qd = state_0.body_qd.numpy()
-    body_qd[body] = 0.0
-    state_0.body_qd.assign(body_qd)
+    # Toggle back to kinematic.
     flags = model.body_flags.numpy()
     flags[body] = int(BodyFlags.KINEMATIC)
     model.body_flags.assign(flags)
