@@ -67,7 +67,7 @@ from newton._src.solvers.kamino._src.solvers.dvi.sparse_kernels import (
 from newton._src.solvers.kamino._src.solvers.dvi.types import DVIConfigStruct, DVIState, convert_config_to_struct
 from newton._src.solvers.kamino._src.solvers.metrics import SolutionMetrics
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
-from newton.tests.kamino import CONTACT_CAPACITY_WARNING_RE, setup_tests, test_context
+from newton.tests.kamino import expect_contact_capacity_warning, setup_tests, test_context
 from newton.tests.kamino.test_kamino_solvers_padmm import TestSetup
 from newton.tests.kamino.utils.extract import extract_delassus, extract_problem_vector
 from newton.tests.kamino.utils.make import make_containers, make_test_problem_fourbar, update_containers
@@ -567,7 +567,7 @@ class TestDVISolver(NewtonTestCase):
 
     def test_00a2_dvi_contact_capacity_reports_per_world_overflow(self):
         """Report contacts dropped when one world exhausts its capacity."""
-        self.expectOutputRegex(CONTACT_CAPACITY_WARNING_RE, stream="stdout")
+        expect_contact_capacity_warning(self)
         builder = newton.ModelBuilder()
         builder.add_ground_plane()
         for world_index in range(50):

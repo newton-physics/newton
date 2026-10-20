@@ -31,7 +31,7 @@ from newton._src.solvers.kamino._src.solvers.warmstart import (
     warmstart_contacts_by_matched_geom_pair_key_and_position_with_net_force_backup,
 )
 from newton._src.solvers.kamino._src.utils import logger as msg
-from newton.tests.kamino import CONTACT_CAPACITY_WARNING_RE, setup_tests, test_context
+from newton.tests.kamino import expect_contact_capacity_warning, setup_tests, test_context
 from newton.tests.unittest_utils import MODULE_LOAD_OUTPUT_RE, NewtonTestCase
 
 _NEWTON_CONTACT_CAPACITY = 64
@@ -1488,7 +1488,7 @@ class TestGeometryContactConversions(NewtonTestCase):
         - Missing ``remap`` array on the existing-contacts path raises a
           clear ``ValueError`` when ``convert_forces=True``.
         """
-        self.expectOutputRegex(CONTACT_CAPACITY_WARNING_RE, stream="stdout")
+        expect_contact_capacity_warning(self)
         # 1) No-collision scene -> 0 Kamino contacts.
         model_nc, state_nc, contacts_nc = self._setup_newton_scene(
             builder_fn=lambda: build_nunchaku_scene(ground=False),
@@ -1566,7 +1566,7 @@ class TestGeometryContactConversions(NewtonTestCase):
         Test the following regression:
         Scanning with the lower Kamino contact capacity would miss contacts.
         """
-        self.expectOutputRegex(CONTACT_CAPACITY_WARNING_RE, stream="stdout")
+        expect_contact_capacity_warning(self)
         scene = ModelBuilder()
         scene.add_ground_plane()
         scene.add_world(build_nunchaku_scene(ground=False))
