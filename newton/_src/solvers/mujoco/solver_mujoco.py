@@ -1402,9 +1402,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 options from, so that the solver arguments and the model's ``mjc:option:*`` values
                 come from the same scene.
             **overrides: Keyword arguments for the :class:`SolverMuJoCo` constructor, such as
-                ``iterations=20``. They take precedence over the values authored in USD, because
-                a solver cannot be reconfigured after it is created. An override of ``None``
-                restores the constructor default for that option.
+                ``iterations=20``. They are passed to the constructor unchanged and take
+                precedence over the values authored in USD, because a solver cannot be
+                reconfigured after it is created.
 
         Returns:
             A solver for ``model``.
