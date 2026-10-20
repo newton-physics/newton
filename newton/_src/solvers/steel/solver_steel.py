@@ -221,6 +221,12 @@ _DEFAULT_ANGULAR_DAMPING = 0.05
 _ATTRIBUTE_NAMESPACE = "steel"
 # Per-world preset of the first rejected row slot: no reservation was rejected.
 _ROW_SLOT_UNBOUNDED = 2**31 - 1
+# Strength order of Warp's deterministic modes, independent of their enum values.
+_DETERMINISM_RANK = {
+    wp.DeterministicMode.NOT_GUARANTEED: 0,
+    wp.DeterministicMode.RUN_TO_RUN: 1,
+    wp.DeterministicMode.GPU_TO_GPU: 2,
+}
 _CONTACT_BUILD_THREAD_CAP = 65536
 _CONTACT_JACOBIAN_WORKER_CAP = 4096
 _CONTACT_JACOBIAN_MAX_DOF = 10
@@ -2303,7 +2309,7 @@ class SolverSteel(SolverBase):
             deterministic = wp.config.deterministic
         if not isinstance(deterministic, wp.DeterministicMode):
             raise TypeError(f"deterministic must be a warp.DeterministicMode or None, got {deterministic!r}")
-        if inherited and deterministic.value > supported_mode.value:
+        if inherited and _DETERMINISM_RANK[deterministic] > _DETERMINISM_RANK[supported_mode]:
             warnings.warn(
                 f"wp.config.deterministic is {deterministic.name}; SolverSteel with "
                 f"articulated_contact_response={articulated_contact_response!r} supports at most "
@@ -2315,7 +2321,7 @@ class SolverSteel(SolverBase):
             deterministic = supported_mode
         if deterministic == wp.DeterministicMode.GPU_TO_GPU:
             raise ValueError("SolverSteel supports deterministic=RUN_TO_RUN or NOT_GUARANTEED, not GPU_TO_GPU")
-        if deterministic.value > supported_mode.value:
+        if _DETERMINISM_RANK[deterministic] > _DETERMINISM_RANK[supported_mode]:
             raise ValueError(
                 "deterministic=RUN_TO_RUN requires articulated_contact_response='immediate', "
                 f"got {articulated_contact_response!r}"
