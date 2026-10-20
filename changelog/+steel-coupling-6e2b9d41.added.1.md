@@ -1,0 +1,1 @@
+Add `ModelView.coupling_disabled_joints`, the view-local joints a coupled solver disabled because another entry or the coupling algorithm simulates them, so a solver can accept those joints and still reject joints the caller disabled.

@@ -380,6 +380,24 @@ MuJoCo provides GPU effective-mass hooks from MuJoCo Warp data so proxy virtual
 inertia and ADMM endpoint weights can use articulated mass estimates rather than
 raw body mass.
 
+:class:`~newton.solvers.SolverSteel` can own rigid bodies and articulations as a
+proxy source or an ADMM entry. It consumes coupling forces through
+``state.body_f`` and reports articulated effective mass as the inverse of the
+axis mean of the endpoint mobility ``J H^-1 J^T``, where ``H`` is the tree-only
+joint-space mass matrix with armature at ``model.joint_q``. The effective mass is
+evaluated on the host, so query it outside graph capture. Its input-state hook
+saves the friction-patch history on the first coupler write of a step and
+restores it after an iteration restart, so repeated solves of one step start
+from the same history; a reset cancels the pending restore. Steel accepts the
+tree joints its view disables because another entry or the ADMM coupler
+simulates them; any other disabled tree joint still raises. Owning particles,
+acting as a proxy destination, sleeping, contact warm starting, contact
+compliance and contact torsion raise :class:`NotImplementedError`. Coupled use
+is validated with ``solve_mode="matrix_free"`` and the ``"immediate"``
+articulated contact response. Set ``model.rigid_contact_max`` to the capacity of
+the coupled contact buffer before constructing the coupled solver, because Steel
+sizes its contact scratch from the model.
+
 Current Limitations
 -------------------
 
