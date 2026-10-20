@@ -31,6 +31,15 @@ Patterns accept glob strings, lists of globs, and compiled regular expressions,
 as in :class:`~newton.selection.ArticulationView`. A broad pattern selects only
 the class's family. A pattern with no matches in that family raises ``KeyError``.
 
+An integer list selects indices in the family's Model label array. Indices must
+be unique, in ascending order, and within that array:
+
+.. code-block:: python
+
+    cloths = DeformableSurfaceView(model, [0, 2])
+    # Select model.surface_label[0] and model.surface_label[2].
+    # They become rows 0 and 1 of this view.
+
 Separate classes make the family clear at the call site. For example, a cloth
 and a soft volume can share a label without sharing a selection:
 

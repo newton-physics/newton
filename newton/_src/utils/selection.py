@@ -625,12 +625,12 @@ def find_matching_ids(
     matching_ids = match_labels(labels, pattern)
 
     if isinstance(pattern, list) and pattern and isinstance(pattern[0], int):
-        # ArticulationView derives its layouts from model order. String patterns already produce this order.
+        # Views derive their layouts from model order. String patterns already produce this order.
         for idx in range(1, len(matching_ids)):
             if matching_ids[idx] <= matching_ids[idx - 1]:
-                raise ValueError("Articulation indices must be unique and in ascending order")
+                raise ValueError("Selection indices must be unique and in ascending order")
         if matching_ids[0] < 0 or matching_ids[-1] >= len(labels):
-            raise ValueError(f"Articulation indices must be in range [0, {len(labels)})")
+            raise ValueError(f"Selection indices must be in range [0, {len(labels)})")
 
     grouped_ids = [[] for _ in range(world_count)]  # ids grouped by world (exclude world -1)
     global_ids = []  # ids in world -1
@@ -2724,7 +2724,7 @@ class _DeformableViewBase:
     def __init__(
         self,
         model: Model,
-        pattern: str | list[str] | re.Pattern[str],
+        pattern: str | list[str] | re.Pattern[str] | list[int],
         *,
         family: Literal["curve", "surface", "volume"],
         verbose: bool | None = None,
@@ -3471,7 +3471,8 @@ class DeformableCurveView(_DeformableBodyView):
 
     Args:
         model: Model containing the finalized deformable objects.
-        pattern: Label glob, list of label globs, or compiled regular expression.
+        pattern: Label glob, list of label globs, compiled regular expression,
+            or unique ascending indices into :attr:`~newton.Model.curve_label`.
         verbose: If True, log a short selection summary. If None, follow Warp's
             logging level.
     """
@@ -3479,7 +3480,7 @@ class DeformableCurveView(_DeformableBodyView):
     def __init__(
         self,
         model: Model,
-        pattern: str | list[str] | re.Pattern[str],
+        pattern: str | list[str] | re.Pattern[str] | list[int],
         *,
         verbose: bool | None = None,
     ) -> None:
@@ -3503,7 +3504,8 @@ class DeformableSurfaceView(_DeformableParticleView):
 
     Args:
         model: Model containing the finalized deformable objects.
-        pattern: Label glob, list of label globs, or compiled regular expression.
+        pattern: Label glob, list of label globs, compiled regular expression,
+            or unique ascending indices into :attr:`~newton.Model.surface_label`.
         verbose: If True, log a short selection summary. If None, follow Warp's
             logging level.
     """
@@ -3511,7 +3513,7 @@ class DeformableSurfaceView(_DeformableParticleView):
     def __init__(
         self,
         model: Model,
-        pattern: str | list[str] | re.Pattern[str],
+        pattern: str | list[str] | re.Pattern[str] | list[int],
         *,
         verbose: bool | None = None,
     ) -> None:
@@ -3535,7 +3537,8 @@ class DeformableVolumeView(_DeformableParticleView):
 
     Args:
         model: Model containing the finalized deformable objects.
-        pattern: Label glob, list of label globs, or compiled regular expression.
+        pattern: Label glob, list of label globs, compiled regular expression,
+            or unique ascending indices into :attr:`~newton.Model.volume_label`.
         verbose: If True, log a short selection summary. If None, follow Warp's
             logging level.
     """
@@ -3543,7 +3546,7 @@ class DeformableVolumeView(_DeformableParticleView):
     def __init__(
         self,
         model: Model,
-        pattern: str | list[str] | re.Pattern[str],
+        pattern: str | list[str] | re.Pattern[str] | list[int],
         *,
         verbose: bool | None = None,
     ) -> None:

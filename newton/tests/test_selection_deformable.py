@@ -230,12 +230,22 @@ class TestDeformableSelection(unittest.TestCase):
         builder = newton.ModelBuilder()
         builder.replicate(prototype, 2)
         model = builder.finalize(device="cpu")
-        for pattern in ("/World/Cloth*", ["/World/ClothA", "/World/ClothB"], re.compile(r"/World/Cloth[AB]")):
+        for pattern in (
+            "/World/Cloth*",
+            ["/World/ClothA", "/World/ClothB"],
+            re.compile(r"/World/Cloth[AB]"),
+            [0, 1, 2, 3],
+        ):
             with self.subTest(pattern=pattern):
                 view = DeformableSurfaceView(model, pattern)
                 self.assertEqual((view.count, view.count_per_world), (4, 2))
                 self.assertEqual(view.labels, ["/World/ClothA", "/World/ClothB"] * 2)
                 self.assertEqual(view.ranges("triangle"), [(0, 2), (2, 4), (4, 6), (6, 8)])
+
+        view = DeformableSurfaceView(model, [0, 2])
+        self.assertEqual(view.labels, ["/World/ClothA"] * 2)
+        self.assertEqual(view.worlds, [0, 1])
+        self.assertEqual(view.ranges("triangle"), [(0, 2), (4, 6)])
 
     def test_varying_object_counts_across_worlds_remain_selectable(self):
         """Worlds may contribute different deformable object counts while retaining stable order."""
