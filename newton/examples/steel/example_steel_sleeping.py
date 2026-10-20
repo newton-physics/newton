@@ -15,6 +15,7 @@
 ###########################################################################
 
 import math
+import warnings
 
 import numpy as np
 import warp as wp
@@ -152,6 +153,11 @@ class Example:
         self.awake_shape_color = wp.clone(self.model.shape_color)
         self.sleep_color = wp.vec3(*SLEEP_COLOR)
 
+        if isinstance(self.viewer, newton.viewer.ViewerRTX):
+            warnings.warn(
+                "ViewerRTX keeps the first frame's shape colors, so sleeping bodies keep their awake color.",
+                stacklevel=2,
+            )
         self.viewer.set_model(self.model)
         self.viewer.set_camera(pos=wp.vec3(0.0, -5.2, 2.0), pitch=-14.0, yaw=90.0)
 
