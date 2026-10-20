@@ -140,6 +140,18 @@ class TestPrimitiveMeshes(unittest.TestCase):
         self.assertIsNone(mesh.normals)
         self.assertIsNone(mesh.uvs)
 
+        # Zero-radius shapes remain accepted as degenerate lines or points.
+        for half_height in (0.0, 0.1):
+            with self.subTest(radius=0.0, half_height=half_height):
+                mesh = newton.Mesh.create_capsule(0.0, half_height, segments=3, compute_inertia=False)
+                np.testing.assert_array_equal(mesh.vertices[:, [0, 2]], 0.0)
+                self.assertAlmostEqual(float(np.max(mesh.vertices[:, 1])), half_height)
+                self.assertAlmostEqual(float(np.min(mesh.vertices[:, 1])), -half_height)
+                self.assertTrue(np.all(np.isfinite(mesh.normals)))
+                self.assertTrue(np.all(np.isfinite(mesh.uvs)))
+                self.assertGreaterEqual(mesh.indices.min(), 0)
+                self.assertLess(mesh.indices.max(), len(mesh.vertices))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

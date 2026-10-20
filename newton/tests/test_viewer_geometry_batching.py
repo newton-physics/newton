@@ -10,7 +10,7 @@ import warp as wp
 import newton
 from newton._src.viewer.gl.opengl import MeshInstancerGL
 from newton.tests.test_viewer_get_frame import _make_headless_viewer_gl_or_skip
-from newton.tests.unittest_utils import assert_np_equal
+from newton.tests.unittest_utils import assert_np_equal, get_test_devices
 from newton.viewer import ViewerNull
 
 
@@ -189,6 +189,31 @@ class TestViewerGeometryBatching(unittest.TestCase):
         viewer.end_frame()
         delta = np.abs(viewer.get_frame().numpy().astype(np.int16) - expected.astype(np.int16))
         self.assertLess(np.mean(np.any(delta > 3, axis=-1)), 0.01)
+
+        # Visibility filtering reuses shape_0 for different geometry. Exercise both
+        # the CPU updates and CUDA's packed upload, which bypasses log_instances.
+        viewer.clear_all_layers()
+        builder = newton.ModelBuilder()
+        builder.begin_world()
+        builder.add_shape_capsule(-1, radius=0.4, half_height=0.1)
+        builder.end_world()
+        builder.begin_world()
+        builder.add_shape_box(-1, hx=0.4, hy=0.4, hz=0.4)
+        builder.end_world()
+        for device in get_test_devices(mode="basic"):
+            model = builder.finalize(device=device)
+            viewer.set_model(model)
+            state = model.state()
+            for world in (0, 1, 0):
+                with self.subTest(device=device, visible_world=world):
+                    viewer.set_visible_worlds([world])
+                    viewer.begin_frame(0.0)
+                    viewer.log_state(state)
+                    viewer.end_frame()
+                    self.assertEqual(len(viewer._shape_instances), 1)
+                    batch = next(iter(viewer._shape_instances.values()))
+                    mesh_path = viewer._get_capsule_mesh() if world == 0 else batch.mesh
+                    self.assertIs(viewer.objects[batch.name].mesh, viewer.objects[mesh_path])
 
     def test_mesh_visual_attributes_have_distinct_prototypes(self):
         """Cache normals and UVs separately without changing physical mesh identity."""
