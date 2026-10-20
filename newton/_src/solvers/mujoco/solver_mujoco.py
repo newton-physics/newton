@@ -1384,7 +1384,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         return owners
 
     @classmethod
-    def create_from_usd(cls, scene_prim: Usd.Prim | UsdPhysics.Scene, model: Model, **overrides: Any) -> SolverMuJoCo:
+    def create_from_usd(cls, model: Model, scene_prim: Usd.Prim | UsdPhysics.Scene, **overrides: Any) -> SolverMuJoCo:
         """Create a solver from a ``UsdPhysics.Scene`` that applies ``NewtonMuJoCoSceneAPI``.
 
         The ``newton:mujoco:*`` and ``newton:mjwarp:*`` attributes of ``NewtonMuJoCoSceneAPI``,
@@ -1394,15 +1394,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         defaults; integer attributes authored as ``-1`` request the solver's automatic default.
 
         Args:
+            model: The model to simulate, typically built from the same stage. ``mjc:option:*``
+                values reach the solver only if the model was built after calling
+                :meth:`register_custom_attributes` on its builder.
             scene_prim: A ``UsdPhysics.Scene`` prim with ``NewtonMuJoCoSceneAPI`` applied, or its
                 typed schema object. Pass the scene that :meth:`ModelBuilder.add_usd` imports model
                 options from, so that the solver arguments and the model's ``mjc:option:*`` values
                 come from the same scene.
-            model: The model to simulate, typically built from the same stage. ``mjc:option:*``
-                values reach the solver only if the model was built after calling
-                :meth:`register_custom_attributes` on its builder.
-            **overrides: Keyword arguments for the :class:`SolverMuJoCo` constructor. They take
-                precedence over the values authored in USD.
+            **overrides: Keyword arguments for the :class:`SolverMuJoCo` constructor, such as
+                ``iterations=20``. They take precedence over the values authored in USD, because
+                a solver cannot be reconfigured after it is created. An override of ``None``
+                restores the constructor default for that option.
 
         Returns:
             A solver for ``model``.

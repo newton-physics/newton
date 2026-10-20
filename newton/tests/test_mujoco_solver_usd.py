@@ -128,7 +128,7 @@ class TestSolverMuJoCoCreateFromUsd(unittest.TestCase):
         """Reject a stage whose scene does not apply NewtonMuJoCoSceneAPI."""
         path = self._write(_stage_source(scene_apis='"NewtonSceneAPI"'))
         with self.assertRaisesRegex(ValueError, "NewtonMuJoCoSceneAPI is not applied"):
-            SolverMuJoCo.create_from_usd(self._scene(path), self._build_model(path))
+            SolverMuJoCo.create_from_usd(self._build_model(path), self._scene(path))
 
     def test_scene_inside_instance(self):
         """Accept a scene prim that is only reachable through an instance proxy."""
@@ -163,7 +163,7 @@ def Xform "World"
         self.assertTrue(prim.IsInstanceProxy())
         model = newton.ModelBuilder().finalize()
         with mock.patch.object(SolverMuJoCo, "__init__", return_value=None) as init:
-            SolverMuJoCo.create_from_usd(prim, model)
+            SolverMuJoCo.create_from_usd(model, prim)
         self.assertEqual(init.call_args.kwargs, {"nconmax": 11})
 
     def test_uses_given_scene(self):
@@ -196,7 +196,7 @@ def Xform "World"
         model = newton.ModelBuilder().finalize()
         for name, expected in (("A_Mujoco", 5), ("B_Mujoco", 99)):
             with self.subTest(scene=name), mock.patch.object(SolverMuJoCo, "__init__", return_value=None) as init:
-                SolverMuJoCo.create_from_usd(stage.GetPrimAtPath(f"/World/{name}"), model)
+                SolverMuJoCo.create_from_usd(model, stage.GetPrimAtPath(f"/World/{name}"))
                 self.assertEqual(init.call_args.kwargs, {"nconmax": expected})
 
     def test_accepts_typed_scene(self):
@@ -207,7 +207,7 @@ def Xform "World"
         scene = UsdPhysics.Scene(self._scene(path))
         model = newton.ModelBuilder().finalize()
         with mock.patch.object(SolverMuJoCo, "__init__", return_value=None) as init:
-            SolverMuJoCo.create_from_usd(scene, model)
+            SolverMuJoCo.create_from_usd(model, scene)
         self.assertEqual(init.call_args.kwargs, {"nconmax": 7})
 
     def test_non_scene_prim_raises(self):
@@ -217,7 +217,7 @@ def Xform "World"
         articulation = self._stage(path).GetPrimAtPath("/World/Articulation")
         for prim in (articulation, None):
             with self.subTest(prim=prim), self.assertRaisesRegex(TypeError, "UsdPhysics.Scene"):
-                SolverMuJoCo.create_from_usd(prim, model)
+                SolverMuJoCo.create_from_usd(model, prim)
 
     def test_overrides_take_precedence(self):
         """Pass keyword overrides to the constructor ahead of authored values."""
@@ -232,27 +232,27 @@ def Xform "World"
         scene = self._scene(path)
         model = newton.ModelBuilder().finalize()
         with mock.patch.object(SolverMuJoCo, "__init__", return_value=None) as init:
-            SolverMuJoCo.create_from_usd(scene, model, nconmax=7, iterations=3)
+            SolverMuJoCo.create_from_usd(model, scene, nconmax=7, iterations=3)
         self.assertEqual(init.call_args.kwargs, {"nconmax": 7, "njmax": 64, "iterations": 3})
         # An explicit None replaces the authored value with the constructor default.
         with mock.patch.object(SolverMuJoCo, "__init__", return_value=None) as init:
-            SolverMuJoCo.create_from_usd(scene, model, nconmax=None)
+            SolverMuJoCo.create_from_usd(model, scene, nconmax=None)
         self.assertEqual(init.call_args.kwargs, {"nconmax": None, "njmax": 64})
         # Unknown keywords are rejected by the constructor.
         with self.assertRaises(TypeError):
-            SolverMuJoCo.create_from_usd(scene, model, not_an_option=1)
+            SolverMuJoCo.create_from_usd(model, scene, not_an_option=1)
 
     def test_invalid_value_raises(self):
         """Reject out-of-range authored integers."""
         path = self._write(_stage_source("uniform int newton:mjwarp:nconmax = -5"))
         with self.assertRaisesRegex(ValueError, "nconmax"):
-            SolverMuJoCo.create_from_usd(self._scene(path), self._build_model(path))
+            SolverMuJoCo.create_from_usd(self._build_model(path), self._scene(path))
 
     def test_invalid_deterministic_raises(self):
         """Reject an unknown determinism token."""
         path = self._write(_stage_source('uniform token newton:deterministic = "bogus"'))
         with self.assertRaisesRegex(ValueError, "deterministic"):
-            SolverMuJoCo.create_from_usd(self._scene(path), self._build_model(path))
+            SolverMuJoCo.create_from_usd(self._build_model(path), self._scene(path))
 
     def test_authored_values_reach_constructor(self):
         """Pass authored attributes to the constructor and omit unauthored or -1 values."""
@@ -270,7 +270,7 @@ def Xform "World"
             )
         )
         with mock.patch.object(SolverMuJoCo, "__init__", return_value=None) as init:
-            solver = SolverMuJoCo.create_from_usd(self._scene(path), self._build_model(path))
+            solver = SolverMuJoCo.create_from_usd(self._build_model(path), self._scene(path))
         self.assertIsInstance(solver, SolverMuJoCo)
         args, kwargs = init.call_args
         self.assertIsInstance(args[0], newton.Model)
@@ -291,7 +291,7 @@ def Xform "World"
         path = self._write(_stage_source("uniform int newton:mjwarp:nconmax = 7"))
         model = newton.ModelBuilder().finalize()
         with mock.patch.object(SolverMuJoCo, "__init__", return_value=None) as init:
-            SolverMuJoCo.create_from_usd(self._scene(path), model)
+            SolverMuJoCo.create_from_usd(model, self._scene(path))
         args, kwargs = init.call_args
         self.assertIs(args[0], model)
         self.assertEqual(kwargs, {"nconmax": 7})
@@ -323,7 +323,7 @@ def Xform "World"
                 scene_apis='"NewtonMuJoCoSceneAPI", "MjcSceneAPI"',
             )
         )
-        solver = SolverMuJoCo.create_from_usd(self._scene(path), self._build_model(path))
+        solver = SolverMuJoCo.create_from_usd(self._build_model(path), self._scene(path))
         opt = solver.mj_model.opt
         self.assertTrue(solver.use_mujoco_cpu)
         self.assertTrue(solver._use_mujoco_contacts)
@@ -349,7 +349,7 @@ def Xform "World"
         except ImportError:
             self.skipTest("MuJoCo is not installed")
         path = self._write(_stage_source("uniform bool newton:mujoco:useMujocoCpu = true"))
-        solver = SolverMuJoCo.create_from_usd(self._scene(path), self._build_model(path))
+        solver = SolverMuJoCo.create_from_usd(self._build_model(path), self._scene(path))
         opt = solver.mj_model.opt
         self.assertEqual(solver.update_data_interval, 1)
         self.assertTrue(solver._use_mujoco_contacts)
@@ -380,7 +380,7 @@ def Xform "World"
         model = self._build_model(path)
         # NewtonMuJoCoSceneAPI has no sleeping flag, so enable sleeping through the model attribute.
         model.mujoco.enable_sleeping.assign(np.array([True]))
-        solver = SolverMuJoCo.create_from_usd(self._scene(path), model)
+        solver = SolverMuJoCo.create_from_usd(model, self._scene(path))
         self.assertFalse(solver.use_mujoco_cpu)
         self.assertEqual(solver.mjw_data.naconmax, 64)
         self.assertEqual(solver.mjw_data.njmax, 128)
@@ -432,7 +432,7 @@ def Xform "World"
             self.skipTest("MuJoCo is not installed")
         path = self._write(_stage_source())
         model = self._build_model(path)
-        solver = SolverMuJoCo.create_from_usd(self._scene(path), model)
+        solver = SolverMuJoCo.create_from_usd(model, self._scene(path))
         reference = SolverMuJoCo(model)
 
         for attribute in (
