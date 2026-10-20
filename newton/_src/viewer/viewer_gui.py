@@ -55,6 +55,7 @@ class ViewerGui:
         self._camera_orbit_sensitivity = 0.1
         self._camera_dolly_scroll_sensitivity = 0.15
         self._camera_dolly_drag_sensitivity = 0.01
+        self._camera_drag_buttons = 0
 
         # Gizmo active-frame tracking (handles snap_to on release)
         self._gizmo_active = {}
@@ -108,8 +109,7 @@ class ViewerGui:
             return False
         return bool(
             self.ui.io.want_capture_mouse
-            or (self.show_ui and self._gizmo_hovered)
-            or (self.show_ui and getattr(self._viewer, "gizmo_is_using", False))
+            or (self.show_ui and (self._gizmo_hovered or getattr(self._viewer, "gizmo_is_using", False)))
         )
 
     def is_keyboard_capturing(self) -> bool:
@@ -120,14 +120,17 @@ class ViewerGui:
     def on_rendering_paused(self) -> None:
         """Release camera motion and gizmos when the displayed image freezes."""
         self._cam_vel.fill(0.0)
+        self._camera_drag_buttons = 0
         self._gizmo_active.clear()
         self._gizmo_hovered = False
         self._viewer.gizmo_is_using = False
 
-    def should_ignore_mouse_input(self, allow_active_pick_drag: bool = False) -> bool:
+    def should_ignore_mouse_input(
+        self, allow_active_pick_drag: bool = False, *, allow_active_camera_drag: bool = False
+    ) -> bool:
         if self._viewer.is_rendering_paused():
             return True
-        if allow_active_pick_drag and self.is_pick_active():
+        if allow_active_camera_drag or (allow_active_pick_drag and self.is_pick_active()):
             return False
         return self.is_mouse_capturing()
 
@@ -332,12 +335,15 @@ class ViewerGui:
             self._viewer._camera_dirty = True
 
     def handle_mouse_press(self, x: float, y: float, button: int, to_framebuffer_coords) -> None:
-        """Handle mouse button press: start picking on right-click."""
+        """Handle mouse button press: start camera navigation or right-click picking."""
+        self._camera_drag_buttons &= ~button
         if self.should_ignore_mouse_input():
             return
         import pyglet
 
         viewer = self._viewer
+        if button in (pyglet.window.mouse.LEFT, pyglet.window.mouse.MIDDLE):
+            self._camera_drag_buttons |= button
         if (
             button == pyglet.window.mouse.RIGHT
             and getattr(viewer, "picking_enabled", False)
@@ -346,9 +352,10 @@ class ViewerGui:
             self.start_picking_from_screen(x, y, to_framebuffer_coords)
 
     def handle_mouse_release(self, x: float, y: float, button: int) -> None:
-        """Handle mouse button release: end picking on right-click."""
+        """Handle mouse button release: end camera navigation or right-click picking."""
         import pyglet
 
+        self._camera_drag_buttons &= ~button
         if button == pyglet.window.mouse.RIGHT and getattr(self._viewer, "picking", None) is not None:
             self.release_picking()
 
@@ -386,12 +393,18 @@ class ViewerGui:
             and getattr(self._viewer, "picking_enabled", False)
             and self.is_pick_active()
         )
-        if self.should_ignore_mouse_input(allow_active_pick_drag=allow_active_pick_drag):
+        camera_buttons = buttons & self._camera_drag_buttons
+        # ImGuizmo can request ImGui mouse capture even when only hovered.
+        # Keep navigation that began in the scene active until its release.
+        if self.should_ignore_mouse_input(
+            allow_active_pick_drag=allow_active_pick_drag,
+            allow_active_camera_drag=bool(camera_buttons),
+        ):
             return
         viewer = self._viewer
         camera = getattr(viewer, "camera", None)
 
-        if buttons & pyglet.window.mouse.MIDDLE and camera is not None:
+        if camera_buttons & pyglet.window.mouse.MIDDLE and camera is not None:
             if modifiers & pyglet.window.key.MOD_CTRL:
                 camera.dolly(dy * self._camera_dolly_drag_sensitivity)
             elif modifiers & pyglet.window.key.MOD_SHIFT:
@@ -406,7 +419,7 @@ class ViewerGui:
                 viewer._camera_dirty = True
             return
 
-        if buttons & pyglet.window.mouse.LEFT:
+        if camera_buttons & pyglet.window.mouse.LEFT:
             self.rotate_camera_from_drag(dx, dy)
             if camera is not None:
                 camera.sync_pivot_to_view()
