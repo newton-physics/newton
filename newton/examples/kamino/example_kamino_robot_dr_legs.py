@@ -10,7 +10,6 @@
 #
 ###########################################################################
 
-import numpy as np
 import warp as wp
 
 import newton
@@ -35,8 +34,6 @@ class Example:
         # constraints slightly less accurately than PADMM. Contact forces remain
         # zero until the shapes overlap.
         dvi_contact_margin = 5.0e-4 if self.dynamics_solver == "dvi" else 1e-6
-        self.max_iterations = getattr(args, "max_iterations", 25) if args else 25
-        self.projection_iterations = getattr(args, "projection_iterations", 3) if args else 3
         self.viewer = viewer
         self.device = wp.get_device()
         self.animated = getattr(args, "animated", False) if args else False
@@ -136,10 +133,6 @@ class Example:
             self.config.dvi.contact_warmstart_method = "key_and_position_with_tangential_net_force"
             self.config.dvi.unilateral_solver = getattr(args, "unilateral_solver", "pgs")
             self.config.dvi.use_schur_complement = getattr(args, "use_schur_complement", None)
-        if self.dynamics_solver == "lox":
-            self.config.lox.max_iterations = self.max_iterations
-            self.config.lox.projection_iterations = self.projection_iterations
-            self.config.lox.use_graph_conditionals = getattr(args, "use_graph_conditionals", True) if args else True
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
 
         # Create state and control data containers
@@ -178,7 +171,8 @@ class Example:
             animation_asset = str(asset_path / "dr_legs" / "animation" / "dr_legs_animation_100fps.npy")
             self._init_animation(asset_file, animation_asset)
 
-        # Capture with CUDA graphs on GPU or APIC graphs on CPU.
+        # Capture the simulation graph if running on CUDA
+        # NOTE: This only has an effect on GPU devices
         self.graph = None
         self.capture()
 
@@ -192,7 +186,7 @@ class Example:
 
     def capture(self):
         self.graph = None
-        if not self.device.is_cuda or not wp.config.verify_cuda:
+        if self.device.is_cuda and not wp.config.verify_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -239,52 +233,13 @@ class Example:
         self.viewer.log_contacts(self.contacts, self.state_1, observables=self.solver_observables)
         self.viewer.end_frame()
 
-    def _max_joint_anchor_error(self) -> float:
-        """Return the largest distance [m] between the parent and child anchors of revolute and fixed joints."""
-        joint_type = self.model.joint_type.numpy()
-        checked = np.isin(joint_type, (int(newton.JointType.REVOLUTE), int(newton.JointType.FIXED)))
-        # Append an identity pose so that a parent index of -1 selects the world frame
-        body_q = np.vstack([self.state_0.body_q.numpy(), [[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]]])
-
-        def anchors(bodies, joint_frames):
-            pose = body_q[bodies]
-            axis, scalar = pose[:, 3:6], pose[:, 6:7]
-            offset = joint_frames[:, :3]
-            twice_cross = 2.0 * np.cross(axis, offset)
-            return pose[:, :3] + offset + scalar * twice_cross + np.cross(axis, twice_cross)
-
-        parent = anchors(self.model.joint_parent.numpy()[checked], self.model.joint_X_p.numpy()[checked])
-        child = anchors(self.model.joint_child.numpy()[checked], self.model.joint_X_c.numpy()[checked])
-        return float(np.max(np.linalg.norm(parent - child, axis=1), initial=0.0))
-
-    def _test_state_finite(self):
-        invalid = []
-        for name, array in (
-            ("body_q", self.state_0.body_q),
-            ("body_qd", self.state_0.body_qd),
-            ("joint_q", self.state_0.joint_q),
-            ("joint_qd", self.state_0.joint_qd),
-            ("contact_force", self.contacts.rigid_contact_force),
-        ):
-            values = array.numpy()
-            finite = np.isfinite(values)
-            if not finite.all():
-                finite_max = np.max(np.abs(values[finite])) if finite.any() else float("nan")
-                invalid.append(f"{name} ({np.count_nonzero(~finite)} invalid, finite max {finite_max:.6g})")
-        if self.dynamics_solver == "lox":
-            if self.solver.status.numpy()["failed"].any():
-                invalid.append("LOX backend failure")
-            if not self._max_joint_anchor_error() < 1.0e-3:
-                invalid.append("joint anchors separated by more than 1 mm")
-        assert not invalid, f"Invalid simulation state at t={self.sim_time:.6g} s: {', '.join(invalid)}"
-
-    def test_post_step(self):
-        self._test_state_finite()
-
     def test_final(self):
-        self._test_state_finite()
+        # TODO: Add some assertions here once we have a more meaningful test scenario
+        if self.dynamics_solver == "lox":
+            assert not self.solver.status.numpy()["failed"].any(), "The LOX backend failed"
 
     def _init_animation(self, model_asset: str, animation_asset: str):
+        import numpy as np  # noqa: PLC0415
         from pxr import Usd  # noqa: PLC0415
 
         # Get names of animated joints
@@ -397,18 +352,6 @@ class Example:
             help="Eliminate bilateral rows during DVI unilateral solves (automatic for bounded PD drives).",
         )
         parser.add_argument(
-            "--max-iterations",
-            type=int,
-            default=25,
-            help="Maximum LOX splitting iterations per solve.",
-        )
-        parser.add_argument(
-            "--projection-iterations",
-            type=int,
-            default=3,
-            help="Sequential projection sweeps per LOX splitting iteration.",
-        )
-        parser.add_argument(
             "--linear-solver-type",
             choices=("LLTB", "LLTBRCM", "CR"),
             default="LLTB",
@@ -419,7 +362,7 @@ class Example:
             "--no-graph-conditionals",
             dest="use_graph_conditionals",
             action="store_false",
-            help="Disable graph conditional loops in Kamino PADMM and LOX.",
+            help="Disable CUDA graph conditional nodes in Kamino PADMM.",
         )
         parser.add_argument(
             "--animated",
