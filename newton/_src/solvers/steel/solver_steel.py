@@ -7106,7 +7106,11 @@ class SolverSteel(SolverBase):
         return iterations - min(self._contact_friction_position_iterations, iterations)
 
     def _stage4_delassus(self, size: int) -> None:
-        """Accumulate one size group's ``C += J Y^T`` and its diagonal."""
+        """Accumulate one size group's ``C += J Y^T`` and its diagonal.
+
+        A row couples at most two articulations, so each zeroed entry takes at most two atomic terms, whose sum
+        is the same in either order; ``deterministic=RUN_TO_RUN`` relies on this.
+        """
         n_arts = self._n_arts_by_size[size]
         kernel = self._delassus_kernels_by_size[size]
         if kernel is not None:

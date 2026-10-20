@@ -417,6 +417,7 @@ def test_deterministic_launches_replay_identically(test, device):
             newton.eval_fk(scene, scene.joint_q, scene.joint_qd, state_0)
             _actuate(scene, control)
             varied = set()
+            coupling_contacts = 0
             for _ in range(12):
                 state_0.clear_forces()
                 pipeline.collide(state_0, contacts)
@@ -426,8 +427,21 @@ def test_deterministic_launches_replay_identically(test, device):
                 ):
                     solver.step(state_0, state_1, control, contacts, 0.005)
                 state_0, state_1 = state_1, state_0
+                coupling_contacts += _count_articulation_coupling_contacts(solver, contacts)
             test.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
+            if name == "split":
+                # Ant-on-ant contacts give Delassus entries terms from both articulations of a world.
+                test.assertGreater(coupling_contacts, 0)
             test.assertEqual(varied, set())
+
+
+def _count_articulation_coupling_contacts(solver, contacts):
+    """Count the dense-path contacts between two articulations."""
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    art_a = solver._contact_art_a.numpy()[:count]
+    art_b = solver._contact_art_b.numpy()[:count]
+    dense = solver._contact_path.numpy()[:count] == 0
+    return int((dense & (art_a >= 0) & (art_b >= 0) & (art_a != art_b)).sum())
 
 
 def _route_contacts(model, state, contacts, **options):
