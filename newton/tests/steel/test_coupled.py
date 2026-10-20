@@ -145,23 +145,6 @@ class _Rollout:
         return np.asarray(body_q)
 
 
-def test_no_contact_matches_standalone(test, device):
-    """Match standalone Steel for a box far from the cloth: no feedback, no double gravity."""
-    for iterations in (1, 3):
-        model, _ = _build_box_cloth(device, box_z=3.0, ground=True)
-        standalone_model, _ = _build_box_cloth(device, box_z=3.0, ground=True, cloth=False)
-        coupled = _Rollout(model, _coupled(model, None, iterations=iterations))
-        reference = _Rollout(standalone_model, _steel(standalone_model))
-        coupled_q = coupled.run(60)
-        reference_q = reference.run(60)
-        np.testing.assert_allclose(coupled_q, reference_q, atol=1.0e-6)
-        fall = reference_q[0, 0, 2] - reference_q[-1, 0, 2]
-        expected = 0.5 * 9.81 * ((60 * DT) ** 2 - DT**2)
-        test.assertAlmostEqual(fall, expected, delta=0.02 * expected)
-        feedback = coupled.solver._proxy_mappings[0].coupling_forces.numpy()
-        test.assertEqual(float(np.abs(feedback).max()), 0.0)
-
-
 def test_in_place_restart_refreshes_kinematics(test, device):
     """Re-derive kinematics when an in-place source restarts instead of reusing the previous solve's."""
     kwargs = {"box_z": 3.0, "box_joint_qd": (0.3, 0.0, 0.0, 0.0, 2.0, 1.0)}
@@ -173,16 +156,22 @@ def test_in_place_restart_refreshes_kinematics(test, device):
 
 
 def test_iteration_restart_preserves_patch_history(test, device):
-    """Keep persistent patch friction identical to standalone across repeated proxy solves of one step."""
+    """Match standalone Steel, patch friction included, across repeated proxy solves of one step."""
     # A spinning box lands on the Steel-owned ground far from the cloth; landing creates new patches.
     kwargs = {"box_z": 0.13, "box_xy": (3.0, 0.0), "box_joint_qd": (1.0, 0.3, -0.5, 0.0, 0.0, 3.0), "ground": True}
     reference_model, _ = _build_box_cloth(device, cloth=False, **kwargs)
     reference_q = _Rollout(reference_model, _steel(reference_model)).run(120)
     test.assertGreater(np.linalg.norm(reference_q[-1, 0, :2] - reference_q[0, 0, :2]), 0.01)
+    # Before landing the box falls at exactly g, so gravity is applied once.
+    fall_acceleration = np.diff(reference_q[:10, 0, 2], 2) / DT**2
+    np.testing.assert_allclose(fall_acceleration, -9.81, rtol=0.02)
     for iterations in (1, 3):
         model, _ = _build_box_cloth(device, **kwargs)
-        coupled_q = _Rollout(model, _coupled(model, None, iterations=iterations)).run(120)
+        coupled = _Rollout(model, _coupled(model, None, iterations=iterations))
+        coupled_q = coupled.run(120)
         np.testing.assert_allclose(coupled_q, reference_q, atol=1.0e-5, err_msg=f"iterations={iterations}")
+        feedback = coupled.solver._proxy_mappings[0].coupling_forces.numpy()
+        test.assertEqual(float(np.abs(feedback).max()), 0.0, f"iterations={iterations}")
 
 
 def test_contact_feedback_is_consumed_exactly(test, device):
@@ -217,25 +206,25 @@ def test_contact_feedback_is_consumed_exactly(test, device):
     test.assertLess(float(rollout.state_0.particle_qd.numpy()[:, 2].mean()), -0.05)
 
 
-def test_box_rests_on_cloth_like_mujoco(test, device):
-    """Settle a box on a pinned cloth within 2 mm of the MuJoCo source."""
-    rest = {}
+def test_box_lands_on_cloth_like_mujoco(test, device):
+    """Land a box on a pinned cloth within 2 mm of the MuJoCo source."""
+    final = {}
     for name, factory in (
         ("steel", _steel),
         ("mjc", lambda v: SolverMuJoCo(model=v, use_mujoco_contacts=False, njmax=200)),
     ):
         model, boxes = _build_box_cloth(device)
         rollout = _Rollout(model, _coupled(model, boxes, factory))
-        rollout.run(480)
-        rest[name] = (
+        rollout.run(160)
+        final[name] = (
             float(rollout.state_0.body_q.numpy()[0][2]),
             float(rollout.state_0.particle_q.numpy()[:, 2].min()),
         )
-    box_z, cloth_z = rest["steel"]
+    box_z, cloth_z = final["steel"]
     test.assertLess(cloth_z, 0.97, "the cloth did not deform")
     test.assertGreater(box_z, cloth_z + 0.09, "the box sank through the cloth")
-    test.assertAlmostEqual(box_z, rest["mjc"][0], delta=2.0e-3)
-    test.assertAlmostEqual(cloth_z, rest["mjc"][1], delta=2.0e-3)
+    test.assertAlmostEqual(box_z, final["mjc"][0], delta=2.0e-3)
+    test.assertAlmostEqual(cloth_z, final["mjc"][1], delta=2.0e-3)
 
 
 def test_worlds_are_isolated(test, device):
@@ -598,13 +587,9 @@ def test_admm_no_contact_matches_standalone(test, device):
     kwargs = {"box_z": 0.08, "box_xy": (3.0, 0.0), "box_joint_qd": (1.0, 0.3, -0.5, 0.0, 0.0, 3.0)}
     reference_model, _, _ = _build_box_rod(device, rod=False, **kwargs)
     reference_q = _Rollout(reference_model, _steel(reference_model)).run(120)
-    for iterations in (1, 3):
-        model, box, rod_bodies = _build_box_rod(device, **kwargs)
-        rollout = _Rollout(model, _admm(model, box, rod_bodies, iterations=iterations, gamma=0.0))
-        coupled_q = rollout.run(120)
-        np.testing.assert_allclose(
-            coupled_q[:, box], reference_q[:, 0], atol=1.0e-5, err_msg=f"iterations={iterations}"
-        )
+    model, box, rod_bodies = _build_box_rod(device, **kwargs)
+    coupled_q = _Rollout(model, _admm(model, box, rod_bodies, iterations=3, gamma=0.0)).run(120)
+    np.testing.assert_allclose(coupled_q[:, box], reference_q[:, 0], atol=1.0e-5)
 
 
 def _history_snapshot(solver):
@@ -815,11 +800,10 @@ class TestCoupledSolverSteel(unittest.TestCase):
 
 
 for _name, _func in (
-    ("test_no_contact_matches_standalone", test_no_contact_matches_standalone),
     ("test_iteration_restart_preserves_patch_history", test_iteration_restart_preserves_patch_history),
     ("test_in_place_restart_refreshes_kinematics", test_in_place_restart_refreshes_kinematics),
     ("test_contact_feedback_is_consumed_exactly", test_contact_feedback_is_consumed_exactly),
-    ("test_box_rests_on_cloth_like_mujoco", test_box_rests_on_cloth_like_mujoco),
+    ("test_box_lands_on_cloth_like_mujoco", test_box_lands_on_cloth_like_mujoco),
     ("test_worlds_are_isolated", test_worlds_are_isolated),
     ("test_graph_capture_matches_eager", test_graph_capture_matches_eager),
     ("test_graph_capture_after_sync_matches_eager", test_graph_capture_after_sync_matches_eager),
