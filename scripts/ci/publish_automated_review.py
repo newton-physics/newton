@@ -21,8 +21,9 @@ execution file. Only display names are published, never model IDs.
 With ``REVIEW_MODE=follow-up`` (the workflow has reviewed the pull request
 before), only P0 and P1 findings are published, and the summary comment keeps
 the first review and replaces only its follow-up section. The workflow's
-prepare step detects follow-ups from ``SUMMARY_MARKER`` and the last
-``Reviewed commit <sha>`` line, so keep both formats in sync with it.
+prepare step detects follow-ups from ``SUMMARY_MARKER``, ``FOLLOW_UP_MARKER``,
+the last ``Reviewed commit <sha>`` line, and ``INCOMPLETE_WARNING``, so keep
+these formats in sync with it.
 
 Environment: ``REVIEW_OUTPUT``, ``GITHUB_REPOSITORY``, ``PR_NUMBER``,
 ``HEAD_SHA``, ``RUNNER_TEMP``, ``REVIEW_MODEL_NAME``, ``REVIEW_EFFORT``,
@@ -43,6 +44,7 @@ from pathlib import Path
 
 SUMMARY_MARKER = "<!-- newton-automated-review -->"
 FOLLOW_UP_MARKER = "<!-- newton-automated-review-follow-up -->"
+INCOMPLETE_WARNING = "This review did not cover the whole change."
 FINDING_MARKER = "<!-- newton-automated-review-finding:{} -->"
 FINDING_MARKER_RE = re.compile(r"newton-automated-review-finding:([0-9a-f]{16})")
 BOT_LOGIN = "github-actions[bot]"
@@ -229,7 +231,7 @@ def summary_body(
         lines += [
             "",
             "> [!WARNING]",
-            "> This review did not cover the whole change.",
+            f"> {INCOMPLETE_WARNING}",
         ]
     lines += ["", f"<sub>Reviewed commit {head_sha}. {' '.join(details)}</sub>"]
     return "\n".join(lines) + "\n"

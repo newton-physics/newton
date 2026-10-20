@@ -153,8 +153,9 @@ jobs:
       #   the pull request before, otherwise "follow-up", with a diff of the
       #   changes since the last reviewed commit. Skip the review if this
       #   commit was already reviewed, for example after a draft round trip.
-      #   publish_automated_review.py writes the summary marker and the
-      #   "Reviewed commit" line parsed here.
+      #   If the first review was incomplete, follow-ups cover the full diff.
+      #   publish_automated_review.py writes the markers, the "Reviewed
+      #   commit" line, and the incomplete-review warning parsed here.
       - id: prepare
         name: Prepare review inputs
         if: steps.latest.outputs.review == 'true'
@@ -207,7 +208,10 @@ jobs:
               echo "run=false" >> "${GITHUB_OUTPUT}"
               exit 0
             fi
-            if [ -n "${last_reviewed}" ] \
+            follow_up_marker='<!-- newton-automated-review-follow-up -->'
+            if grep -qF 'This review did not cover the whole change' <<< "${previous%%"${follow_up_marker}"*}"; then
+              echo "The first review was incomplete, so this follow-up covers the full diff."
+            elif [ -n "${last_reviewed}" ] \
               && git -C pr-head fetch --no-tags --depth=1 origin "${last_reviewed}"; then
               git -C pr-head diff --no-ext-diff --no-textconv "${last_reviewed}" HEAD > .pr-review/since-last-review.diff
             fi
@@ -268,8 +272,9 @@ jobs:
               public API changes that do not conform to `CODING_GUIDELINES.rst`
               or are inconsistent with sibling APIs, and documentation the
               changes make wrong or leave clearly missing. Focus on
-              `.pr-review/since-last-review.diff` (empty if unavailable; then
-              use the full diff). It can include changes merged from `main`;
+              `.pr-review/since-last-review.diff` (empty if unavailable or if
+              the first review was incomplete; then use the full diff). It can
+              include changes merged from `main`;
               review only changes that are also in `.pr-review/pr.diff`. Most
               follow-up reviews have no findings.
 
@@ -286,7 +291,8 @@ jobs:
               diffs in chunks.
             - `.pr-review/api-changes.md` and `.json`: public API symbols the
               change adds, removes, or modifies, with signatures (at most 20 per
-              category; find any others in the diff).
+              category; find any others in the diff, and set `complete` to false
+              if you could not check them).
             - `.pr-review/pr.json`, `reviews.jsonl`, `review-comments.jsonl`:
               the description and existing comments, including from other bots.
 
@@ -297,18 +303,21 @@ jobs:
             documentation matter equally: Newton is a library, and an
             inconsistent API or wrong documentation is as costly as a bug once
             released. Treat API inconsistencies and wrong, outdated, or clearly
-            missing documentation as at least P1.
+            missing documentation as at least P1, as well as missing changelog
+            fragments for user-facing changes, tests that do not guard the fix
+            (propose updating them), significant added CI time, and performance
+            regressions.
 
             1. **Correctness.** For every changed behavior, read the full
                changed functions in `pr-head/` and their callers, and compare
                with the code before the change. Ask what worked before and now
                raises, returns different results, or silently drops data, and
-               whether the change does what its description claims. Check Warp specifics
-               (index math and -1 sentinels, writes past capacity, atomics and
-               determinism, host synchronization or allocation in per-step or
-               graph-captured code, CPU versus CUDA, dtypes), numerics (NaN,
-               infinity, float32 precision), and for importers, unit scaling
-               and parity between MJCF, USD, and URDF.
+               whether the change does what its description claims. Check Warp
+               specifics (index math and -1 sentinels, writes past capacity,
+               atomics and determinism, host synchronization or allocation in
+               per-step or graph-captured code, CPU versus CUDA, dtypes),
+               numerics (NaN, infinity, float32 precision), and for importers,
+               unit scaling and parity between MJCF, USD, and URDF.
             2. **Public API.** For each entry in `api-changes.md` and any other
                user-visible change, find the closest existing Newton APIs with
                Grep and compare naming (for example, all solvers call their
