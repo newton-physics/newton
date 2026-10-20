@@ -21,6 +21,7 @@ per-singular-direction gain differs.
 from __future__ import annotations
 
 import enum
+import functools
 from typing import Any
 
 import warp as wp
@@ -229,7 +230,7 @@ def _projected_error(u: wp.array3d[float], robot_idx: int, i: int, error: wp.spa
 
 @wp.kernel
 def _qd_in_singular_basis_damped_kernel(
-    u: wp.array3d[float],  # (robot_count, 6, 6) from _svd_one_sided_jacobi_kernel on J_w
+    u: wp.array3d[float],  # (robot_count, 6, 6) from the SVD kernel on J_w
     s: wp.array2d[float],  # (robot_count, max_dofs) singular values of J_w, sorted descending
     pose_error_active: wp.array[wp.spatial_vector],  # (robot_count,) e_w = diag(w) @ e, compact slot order
     damping: wp.array[wp.float32],  # (robot_count,) DLS damping λ; 0 for DifferentialIKMethod.PSEUDO_INVERSE
@@ -268,7 +269,7 @@ def _qd_in_singular_basis_damped_kernel(
 
 @wp.kernel
 def _qd_in_singular_basis_truncated_kernel(
-    u: wp.array3d[float],  # (robot_count, 6, 6) from _svd_one_sided_jacobi_kernel on J_w
+    u: wp.array3d[float],  # (robot_count, 6, 6) from the SVD kernel on J_w
     s: wp.array2d[float],  # (robot_count, max_dofs) singular values of J_w, sorted descending
     pose_error_active: wp.array[wp.spatial_vector],  # (robot_count,) e_w = diag(w) @ e, compact slot order
     singular_value_threshold: wp.array[wp.float32],  # (robot_count,) sigma below which a direction is dropped
@@ -355,7 +356,7 @@ def _svd_reconstruct_scaled_kernel(
 
 @wp.kernel
 def _qd_from_singular_basis_kernel(
-    v: wp.array3d[float],  # (robot_count, max_dofs, max_dofs) from _svd_one_sided_jacobi_kernel on J_w
+    v: wp.array3d[float],  # (robot_count, max_dofs, max_dofs) from the SVD kernel on J_w
     qd_in_singular_basis: wp.array2d[
         float
     ],  # (robot_count, max_dofs) from _qd_in_singular_basis_damped_kernel/_qd_in_singular_basis_truncated_kernel
@@ -619,9 +620,9 @@ def _integrate_position_kernel(
 # isolation by ``test_svd_one_sided_jacobi_*`` in the test suite.
 #
 # The primary task solve (``_gather_and_weight_jacobian_kernel`` +
-# ``_svd_one_sided_jacobi_kernel`` on ``J_w = diag(w) @ J``) and the
+# ``get_svd_one_sided_jacobi_kernel`` on ``J_w = diag(w) @ J``) and the
 # null-space projector's own solve (``_gather_jacobian_by_axis_kernel`` +
-# ``_svd_one_sided_jacobi_kernel`` on the unweighted ``J``) each run one SVD
+# ``get_svd_one_sided_jacobi_kernel`` on the unweighted ``J``) each run one SVD
 # per step; every method-specific pseudo-inverse singular value (damped
 # least squares, the zero-damping Moore-Penrose pseudo-inverse, adaptive
 # damping, truncated SVD) is then just a different per-singular-direction
@@ -777,56 +778,77 @@ def _svd_one_sided_jacobi(A: Any, n_columns: int, tol: Any, max_sweeps: int):
     return wp.transpose(ut), s_vec, wp.transpose(vt)
 
 
-@wp.kernel
-def _svd_one_sided_jacobi_kernel(
-    matrix: wp.array[Any],  # (batch_count,) matrix-typed elements, any fixed (m, n) shape
-    n_columns: wp.array[wp.int32],  # (batch_count,) number of true, unpadded leftmost columns of each matrix
-    tol: wp.float32,
-    max_sweeps: wp.int32,
-    # outputs
-    u: wp.array[Any],  # (batch_count,) m x m
-    s: wp.array[Any],  # (batch_count,) length n
-    v: wp.array[Any],  # (batch_count,) n x n
-):
-    """Batched, size-generic instantiation of :func:`_svd_one_sided_jacobi`.
+@functools.cache
+def get_svd_one_sided_jacobi_kernel(rows: int, cols: int) -> wp.Kernel:
+    """Return the batched :func:`_svd_one_sided_jacobi` kernel for ``rows x cols`` float32 matrices.
 
-    Generic over ``matrix``'s (and so ``u``/``s``/``v``'s) concrete element
-    type -- Warp compiles one specialization per distinct matrix shape
-    actually launched with, so this single kernel definition covers every
-    size, rather than needing a hand-written kernel per shape. Wide active
-    problems are decomposed in their transposed orientation and the singular
-    vectors swapped back. Only computed singular-vector columns are defined;
-    unused columns do not provide an orthonormal completion.
-
-    ``Any`` here is broader than the real requirement: every array argument
-    must hold a matrix-shaped element type (e.g. ``wp.mat33``), not an
-    arbitrary Warp dtype -- a vector or scalar would fail to compile inside
-    :func:`_svd_one_sided_jacobi` (e.g. at its ``wp.transpose(A)`` call),
-    not silently misbehave, but that constraint isn't expressible in the
-    type hint itself. Warp's kernel-genericity mechanism only dispatches on
-    ``Any``; the more precise ``warp._src.types.Matrix[Scalar, Rows, Cols]``
-    both isn't public API and (confirmed by testing) isn't actually wired
-    into that dispatch mechanism, so it isn't a usable substitute here.
+    Each shape gets its own module: overloads added lazily to a shared generic
+    kernel would change its module hash, so its compiled binary would depend on
+    which shapes were launched before.
     """
-    idx = wp.tid()
-    a = matrix[idx]
-    at = wp.transpose(a)
-    row0 = type(a[0])()
-    col0 = type(at[0])()
-    if n_columns[idx] > len(col0):
-        # Ignore unused input columns, which are rows after transposition.
-        for j in range(n_columns[idx], len(row0)):
-            at[j] = col0
-        # Sweep over the rows of wide matrices to avoid numerical null columns.
-        u_t, s_t, v_t = _svd_one_sided_jacobi(at, len(col0), tol, max_sweeps)
-        s_local = type(row0)()
-        for i in range(wp.min(len(row0), len(col0))):
-            s_local[i] = s_t[i]
-        u[idx] = v_t
+
+    @wp.kernel(module="unique", name=f"_svd_one_sided_jacobi_kernel_{rows}x{cols}")
+    def svd_kernel(
+        matrix: wp.array[Any],  # (batch_count,) matrix-typed elements, any fixed (m, n) shape
+        n_columns: wp.array[wp.int32],  # (batch_count,) number of true, unpadded leftmost columns of each matrix
+        tol: wp.float32,
+        max_sweeps: wp.int32,
+        # outputs
+        u: wp.array[Any],  # (batch_count,) m x m
+        s: wp.array[Any],  # (batch_count,) length n
+        v: wp.array[Any],  # (batch_count,) n x n
+    ):
+        """Batched instantiation of :func:`_svd_one_sided_jacobi`.
+
+        Wide active problems are decomposed in their transposed orientation and
+        the singular vectors swapped back. Only computed singular-vector columns
+        are defined; unused columns do not provide an orthonormal completion.
+
+        ``Any`` here is broader than the real requirement: every array argument
+        must hold a matrix-shaped element type (e.g. ``wp.mat33``), not an
+        arbitrary Warp dtype -- a vector or scalar would fail to compile inside
+        :func:`_svd_one_sided_jacobi` (e.g. at its ``wp.transpose(A)`` call),
+        not silently misbehave, but that constraint isn't expressible in the
+        type hint itself. Warp's kernel-genericity mechanism only dispatches on
+        ``Any``; the more precise ``warp._src.types.Matrix[Scalar, Rows, Cols]``
+        both isn't public API and (confirmed by testing) isn't actually wired
+        into that dispatch mechanism, so it isn't a usable substitute here.
+        """
+        idx = wp.tid()
+        a = matrix[idx]
+        at = wp.transpose(a)
+        row0 = type(a[0])()
+        col0 = type(at[0])()
+        if n_columns[idx] > len(col0):
+            # Ignore unused input columns, which are rows after transposition.
+            for j in range(n_columns[idx], len(row0)):
+                at[j] = col0
+            # Sweep over the rows of wide matrices to avoid numerical null columns.
+            u_t, s_t, v_t = _svd_one_sided_jacobi(at, len(col0), tol, max_sweeps)
+            s_local = type(row0)()
+            for i in range(wp.min(len(row0), len(col0))):
+                s_local[i] = s_t[i]
+            u[idx] = v_t
+            s[idx] = s_local
+            v[idx] = u_t
+            return
+        u_local, s_local, v_local = _svd_one_sided_jacobi(a, n_columns[idx], tol, max_sweeps)
+        u[idx] = u_local
         s[idx] = s_local
-        v[idx] = u_t
-        return
-    u_local, s_local, v_local = _svd_one_sided_jacobi(a, n_columns[idx], tol, max_sweeps)
-    u[idx] = u_local
-    s[idx] = s_local
-    v[idx] = v_local
+        v[idx] = v_local
+
+    def mat(r: int, c: int):
+        return wp.types.matrix(shape=(r, c), dtype=wp.float32)
+
+    return wp.overload(
+        svd_kernel,
+        [
+            wp.array[mat(rows, cols)],
+            wp.array[wp.int32],
+            wp.float32,
+            wp.int32,
+            wp.array[mat(rows, rows)],
+            wp.array[wp.types.vector(length=cols, dtype=wp.float32)],
+            wp.array[mat(cols, cols)],
+        ],
+    )

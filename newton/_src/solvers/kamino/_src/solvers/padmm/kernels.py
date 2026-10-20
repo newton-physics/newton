@@ -213,7 +213,7 @@ def make_initialize_solver_kernel(use_acceleration: bool = False):
         The kernel function to initialize the PADMM solver.
     """
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def _initialize_solver(
         # Inputs:
         solver_config: wp.array[PADMMConfigStruct],
@@ -282,7 +282,7 @@ def make_initialize_solver_kernel(use_acceleration: bool = False):
 
 
 def make_update_proximal_regularization_kernel(method: PADMMPenaltyUpdate):
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def _update_proximal_regularization(
         # Inputs:
         solver_config: wp.array[PADMMConfigStruct],
@@ -708,7 +708,7 @@ def make_update_dual_variables_and_compute_primal_dual_residuals(use_acceleratio
         The kernel function to update dual variables and compute residuals.
     """
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def _update_dual_variables_and_compute_primal_dual_residuals(
         # Inputs:
         problem_dim: wp.array[wp.int32],
@@ -1383,7 +1383,7 @@ def make_collect_solver_info_kernel(use_acceleration: bool):
         The kernel function to collect solver convergence information.
     """
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def _collect_solver_convergence_info(
         # Inputs:
         problem_nbc: wp.array[wp.int32],
@@ -1619,7 +1619,7 @@ def make_collect_solver_info_kernel_sparse(use_acceleration: bool):
         The kernel function to collect solver convergence information.
     """
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def _collect_solver_convergence_info_sparse(
         # Inputs:
         problem_nbc: wp.array[wp.int32],

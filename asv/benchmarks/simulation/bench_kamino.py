@@ -50,6 +50,51 @@ def _collect_metrics_dr_legs(robot, world_count, num_frames, samples, use_policy
     )
 
 
+class G1DVI:
+    """Measure steady G1 DVI frames for small and large batches.
+
+    Reuse the warmed simulation across samples to amortize model construction
+    and graph capture. Keep this benchmark outside the fast PR gate; run it
+    explicitly with ``uvx --with virtualenv asv run --bench G1DVI``.
+    """
+
+    version = "2"  # Measure consecutive samples from one warmed simulation.
+    params = [[4, 512]]
+    param_names = ["world_count"]
+    number = 1
+    rounds = 1
+    repeat = 3
+    warmup_time = 0
+    timeout = 600
+
+    def setup(self, world_count):
+        if wp.get_cuda_device_count() == 0:
+            raise SkipNotImplemented
+
+        # ASV calls setup before each sample; retain the settled simulation.
+        if getattr(self, "_world_count", None) == world_count:
+            return
+
+        from newton.examples.robot.example_robot_g1 import Example  # noqa: PLC0415
+        from newton.viewer import ViewerNull  # noqa: PLC0415
+
+        args = Example.create_parser().parse_args(["--solver", "kamino", "--world-count", str(world_count)])
+        with wp.ScopedDevice("cuda:0"):
+            self.example = Example(ViewerNull(), args)
+            for _ in range(100):
+                self.example.step()
+        wp.synchronize_device(self.example.model.device)
+        self._world_count = world_count
+
+    def time_simulate(self, world_count):
+        for _ in range(200):
+            self.example.step()
+        wp.synchronize_device(self.example.model.device)
+
+    def teardown(self, world_count):
+        self.example.test_final()
+
+
 class _FastBenchmark:
     """Utility base class for fast Kamino benchmarks."""
 
@@ -232,6 +277,7 @@ if __name__ == "__main__":
     from newton.utils import run_benchmark
 
     benchmark_list = {
+        "G1DVI": G1DVI,
         "FastDRLegs": FastDRLegs,
         "FastMetricsDRLegs": FastMetricsDRLegs,
         "KpiDRLegs": KpiDRLegs,

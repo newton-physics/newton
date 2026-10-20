@@ -1,0 +1,1 @@
+Enforce Kamino joint effort limits on explicit actuator commands when armature or viscous damping routes actuation through joint dynamics, preserving passive joint reactions. Commands on DoFs without an authored effort limit pass through unchanged on every actuation path.

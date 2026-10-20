@@ -106,7 +106,8 @@ def test_mesh_surface_velocity_moves_rigid_body(test, device, solver_name):
     model = builder.finalize(device=device)
     mesh.mesh.velocities.fill_(wp.vec3(1.0, 0.0, 0.0))
     solver = _make_solver(solver_name, model)
-    pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+    # Keep equal-scored mesh contacts independent of CUDA allocation order.
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=True)
     contacts = pipeline.contacts()
     state_in = model.state()
     state_out = model.state()
@@ -279,7 +280,8 @@ def test_mesh_surface_velocity_moves_rigid_body_through_coupled_solver(test, dev
             )
         ],
     )
-    pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+    # Keep the conveyor trajectory independent of CUDA contact-reduction ties.
+    pipeline = newton.CollisionPipeline(model, broad_phase="nxn", deterministic=True)
     contacts = pipeline.contacts()
     state_in = model.state()
     state_out = model.state()

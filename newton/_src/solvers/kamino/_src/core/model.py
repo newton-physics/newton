@@ -562,20 +562,6 @@ class ModelKamino:
         """Whether the model was finalized (see :meth:`ModelBuilder.finalize`) with gradient computation enabled."""
         return self._requires_grad
 
-    @property
-    def use_coord_layout_targets(self) -> bool:
-        """Target-layout snapshot. Returns the wrapped
-        :class:`newton.Model`'s snapshot when this ``ModelKamino`` was built
-        via :meth:`from_newton`; falls back to the live module global
-        :data:`newton.use_coord_layout_targets` for native Kamino models (no
-        wrapped Newton model).
-        """
-        if self._model is not None:
-            return self._model.use_coord_layout_targets
-        import newton  # noqa: PLC0415
-
-        return newton.use_coord_layout_targets
-
     ###
     # Factories
     ###
@@ -764,22 +750,18 @@ class ModelKamino:
                 ),
             )
 
-        # Post-processing to finalize the control container
-        # NOTE: This is currently necessary to handle the case when
-        # the total number of joint coordinates and DoFs differ, in
-        # which case a temporary buffer is allocated for the conversion.
-        control.finalize(self, device=device)
-
         # Return the constructed control container
         return control
 
     @staticmethod
-    def from_newton(model: Model | ModelView) -> ModelKamino:
+    def from_newton(model: Model | ModelView, *, include_shape_contact_pairs: bool = True) -> ModelKamino:
         """
         Finalizes the :class:`ModelKamino` from an existing instance of :class:`newton.Model`.
 
         Args:
             model: The source :class:`newton.Model` instance to be converted.
+            include_shape_contact_pairs: Include explicit collision-pair identities.
+                Required for primitive or explicit collision detection. Defaults to `True`.
 
         Returns:
             Kamino model converted from the input Newton model.
@@ -864,6 +846,7 @@ class ModelKamino:
                 model_size=model_size,
                 model_bodies=model_bodies,
                 materials_manager=materials_manager,
+                include_shape_contact_pairs=include_shape_contact_pairs,
             )
 
             # Materials

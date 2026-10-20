@@ -1,0 +1,1 @@
+Size full-surface mesh contact buffers with an internal per-query budget instead of multiplying every particle query by a nearby-face estimate. Mesh overflow warnings report the current capacity and the required count for that collision pass; set `CollisionPipeline.soft_contact_max` explicitly to increase storage.

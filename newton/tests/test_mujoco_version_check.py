@@ -7,6 +7,7 @@ import warnings
 from unittest import mock
 
 from newton._src.solvers.mujoco import solver_mujoco
+from newton.exceptions import NewtonWarning
 
 _MOCK_REQUIREMENTS = (
     "mujoco~=3.8.0 ; extra == 'sim'",
@@ -38,7 +39,7 @@ class TestMuJoCoVersionCheck(unittest.TestCase):
 
         with mock.patch.object(solver_mujoco.importlib_metadata, "version", side_effect=versions.get):
             with self.assertWarnsRegex(
-                RuntimeWarning,
+                NewtonWarning,
                 r"MuJoCo dependency version mismatch.*mujoco==0\.0\.0.*mujoco-warp==0\.0\.0",
             ):
                 solver_mujoco._warn_if_mujoco_versions_mismatch(
@@ -53,7 +54,7 @@ class TestMuJoCoVersionCheck(unittest.TestCase):
 
         versions = {"mujoco": _matching_version(specs["mujoco"]), "mujoco-warp": mujoco_warp_bad_version}
         with mock.patch.object(solver_mujoco.importlib_metadata, "version", side_effect=versions.get):
-            with self.assertWarnsRegex(RuntimeWarning, f"mujoco-warp=={mujoco_warp_bad_version}"):
+            with self.assertWarnsRegex(NewtonWarning, f"mujoco-warp=={mujoco_warp_bad_version}"):
                 solver_mujoco._warn_if_mujoco_versions_mismatch(
                     types.SimpleNamespace(),
                     types.SimpleNamespace(),
@@ -76,7 +77,7 @@ class TestMuJoCoVersionCheck(unittest.TestCase):
             solver_mujoco.SolverMuJoCo._versions_checked = False
 
             with mock.patch.object(solver_mujoco.importlib_metadata, "version", side_effect=versions.get):
-                with self.assertWarnsRegex(RuntimeWarning, "MuJoCo dependency version mismatch"):
+                with self.assertWarnsRegex(NewtonWarning, "MuJoCo dependency version mismatch"):
                     solver_mujoco.SolverMuJoCo.import_mujoco()
         finally:
             solver_mujoco.SolverMuJoCo._mujoco = previous_mujoco

@@ -185,6 +185,14 @@ class TestMuJoCoSleeping(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "does not support integrator='rk4'"):
             SolverMuJoCo(custom_integrator_model, enable_sleeping=True)
 
+        no_island_model = _build_sleep_model(register_custom_attributes=True)
+        no_island_model.mujoco.flag_island.fill_(False)
+        no_island_model.mujoco.enable_sleeping.fill_(True)
+        for enable_sleeping in (None, True):
+            with self.subTest(enable_sleeping=enable_sleeping):
+                with self.assertRaisesRegex(ValueError, "requires island detection"):
+                    SolverMuJoCo(no_island_model, enable_sleeping=enable_sleeping)
+
     def test_invalid_per_world_sleep_tolerance_fails_early(self):
         model = _build_sleep_model(world_count=2, register_custom_attributes=True)
         model.mujoco.sleep_tolerance.assign(np.array([0.01, -1.0], dtype=np.float32))

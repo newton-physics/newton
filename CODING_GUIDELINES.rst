@@ -101,6 +101,25 @@ maturity. Follow the `experimental-feature documentation procedure
 <https://newton-physics.github.io/newton/latest/guide/development.html#experimental-features>`__
 for directive syntax and generated API documentation.
 
+USD schema and importer support
+-------------------------------
+
+New or substantially changed user-authorable simulation features should ship
+with USD schema and importer support. Design the schema alongside the public
+API, and test equivalent behavior in USD-authored and builder-created models,
+including applicable defaults, units, frames, references, and invalid inputs.
+Document the supported subset and limitations.
+
+Reuse standard OpenUSD schemas or AOUSD proposals already supported by Newton;
+extend Newton-owned schemas when needed, with compatible schema-package
+versions. Existing solver-native schemas such as ``mjc:*`` are also supported
+when parsed through OpenUSD without an Omniverse dependency. The normal path
+should require no Omniverse or additional vendor schema packages.
+
+Each feature must state its disposition: supported; deferred with explicit
+review acceptance, reason, issue, owner, and target milestone; or not applicable
+with an explanation that the feature is runtime-only or non-authorable.
+
 Naming
 ------
 
@@ -245,6 +264,96 @@ Python source conventions
   distribution. Update license metadata and notices when required. Treat an
   unknown or undeclared dependency license as requiring review before merge.
 
+Errors and warnings
+-------------------
+
+Choose how to report a problem by who has to act on it:
+
+- Raise an exception when Newton cannot do what the caller asked. Do not warn
+  and continue with a guessed result.
+- Call :func:`warnings.warn` when the caller should change how they call
+  Newton, for example to stop using a deprecated feature or to remove an
+  option that has no effect.
+- Log problems in data Newton processes, such as asset content an importer
+  skips, and conditions the caller cannot change; see
+  :ref:`logging-guidelines`.
+
+Every warning must use a :mod:`newton.exceptions` category so applications can
+filter Newton warnings without matching messages:
+
+- :class:`~newton.exceptions.NewtonDeprecationWarning` for deprecations, as
+  required by the deprecation policy; and
+- :class:`~newton.exceptions.NewtonWarning`, or a subclass of it, for
+  everything else.
+
+Keep deprecations out of the :class:`~newton.exceptions.NewtonWarning`
+hierarchy so :class:`UserWarning` filters do not change how they are reported.
+
+Pass a ``stacklevel`` that attributes the warning to the caller's code rather
+than to Newton internals, and do not start the message with ``Warning:``
+because the category already conveys it. CI runs tests with ``--strict-warnings``, which turns
+Newton warnings into errors; a test that triggers a warning on purpose must
+assert it, for example with :meth:`~unittest.TestCase.assertWarns`.
+
+.. _logging-guidelines:
+
+Logging
+-------
+
+Library code reports diagnostics, progress, and results through
+:mod:`logging`, never with ``print()``; Ruff rejects ``print()`` in
+``newton/_src`` except where marked ``# noqa: T201``, such as in Warp kernels.
+Declare one logger per module and use it for every message:
+
+.. code-block:: python
+
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    def load(path: str, *, verbose: bool = False) -> None:
+        if verbose:
+            logger.info("Loading %s", path)
+
+Choose the level by audience:
+
+- ``DEBUG``: details that help Newton developers investigate a problem.
+- ``INFO``: output the user asked for, such as ``verbose=True`` diagnostics, or
+  the outcome of a user action, such as a saved file or a server URL.
+- ``WARNING``: a problem Newton worked around that may cause unexpected
+  results, such as skipped or approximated asset content.
+- ``ERROR``: an operation failed and Newton continued without its result.
+
+Until the application configures logging, the ``newton`` logger prints
+``INFO`` records to stdout and ``WARNING`` and higher to stderr, prefixed with
+``Warning:`` or ``Error:``. ``INFO`` is therefore visible by default: reserve it
+for output a user would otherwise miss and use ``DEBUG`` for everything else.
+Once the application installs any handler, such as with
+:func:`logging.basicConfig`, Newton records go only to that handler.
+
+When writing a message:
+
+- pass values as arguments, as in ``logger.info("Loaded %s", path)``, so
+  formatting is skipped for disabled levels;
+- do not start with the level, such as ``Warning:``, because the level already
+  conveys it;
+- log one record per event, joining multi-line summaries into one message; and
+- do not add handlers, change levels, or call :func:`logging.basicConfig`;
+  the application owns logging configuration, and the default output above
+  is set up once in ``newton/_src/diagnostics.py``.
+
+Test log output with :meth:`~unittest.TestCase.assertLogs` on the ``newton``
+logger rather than by capturing stdout, which depends on how the test process
+configured logging.
+
+``wp.printf()`` in Warp kernels bypasses logging, so users cannot filter or
+silence it. Use it only for conditions the host cannot report without an extra
+synchronization, and keep a ``Warning:`` or ``Error:`` prefix there because
+nothing else marks the level.
+
+:ref:`diagnostics` documents this behavior for users; update it when changing
+the defaults.
+
 Documentation and comments
 --------------------------
 
@@ -282,6 +391,51 @@ Tests and repository conventions
 - In SPDX copyright lines, use the year the file was first created. Do not use
   date ranges or update the year when modifying an existing file.
 
+.. _test-organization-and-runtime:
+
+Test organization and runtime
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Treat CI runtime and test setup/teardown overhead as part of the cost of every
+change. Preserve meaningful coverage while avoiding redundant test execution.
+
+- **Test real technical functionality.** Tests must exercise the actual
+  implementation and verify meaningful observable results, such as numerical
+  outputs, state changes, parsed data, or error handling. Do not replace the
+  functionality being tested with mocks or fake interfaces, or add tests that
+  only check that fake interfaces agree, expected calls occur, or canned
+  responses are returned. ``newton/tests/test_api.py`` may contain targeted
+  checks of actual API contracts, such as public signatures and argument
+  validation. This exception does not permit mock-only interface checks or
+  replace functional coverage.
+- **Reuse existing coverage first.** Before adding a test, contributors must
+  identify the coverage gap and inspect related tests. Extend an existing method
+  when its setup or simulation results can expose the defect. Each new test
+  method needs a distinct scenario or independent execution; each additional
+  simulation needs an explanation of why existing scenarios are insufficient.
+  Keep failures easy to diagnose and preserve existing coverage.
+- **Group tests by responsibility.** New solver-specific test modules must live
+  under ``newton/tests/<solver>/``. Extend existing flat solver modules in place;
+  defer moves to a planned migration. Group other tests by the feature or
+  subsystem they exercise. Related tests with compatible fixtures should share a
+  test class and module rather than being scattered across small files or
+  assigned a new class for each regression. Create a new class or module only
+  when a distinct responsibility or fixture lifecycle warrants it. Keep shared
+  and cross-solver tests in an appropriate common location. New test packages
+  must remain discoverable by the existing test runner.
+- **Reuse expensive setup safely.** The test runner defaults to class-level
+  parallelism. Reuse compatible fixtures and share expensive initialization at
+  class scope where safe to reduce repeated setup and teardown. Grouping tests
+  alone does not eliminate per-test setup costs. Reset mutable state as needed
+  so tests remain independent and do not depend on execution order.
+  Each class runs serially on one worker by default; keep independent expensive
+  scenarios in separate classes when they do not share setup.
+- **Bound execution cost.** Use the smallest reliable models, step counts, and
+  parameter combinations. Avoid repeated simulations and fixture builds that
+  add equivalent coverage. For new or expanded expensive scenarios, report
+  before/after runtime, including setup and teardown, and justify the added cost
+  in the PR. Assess cumulative cost rather than test count alone.
+
 Public API review checklist
 ---------------------------
 
@@ -296,6 +450,7 @@ When reviewing a new or substantially changed public API, check that:
   options, and safe defaults;
 - new categorical types use an enum where the execution boundary supports it;
 - new public nouns are necessary and have clear ownership;
+- authorable features satisfy the schema and importer policy above;
 - optional parameters are keyword-only unless an established idiom justifies
   positional use;
 - reusable Warp-native math is placed at the appropriate ownership layer; and

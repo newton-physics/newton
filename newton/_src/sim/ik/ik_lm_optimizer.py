@@ -148,6 +148,10 @@ class IKOptimizerLM:
             integrated joints (free/ball/distance) must be masked
             all-or-nothing, which the constructor enforces. The mask array must
             not be modified after construction.
+
+    Raises:
+        ValueError: If ``model`` contains a :attr:`~newton.JointType.ROD`
+            joint, which is not supported by this optimizer.
     """
 
     TILE_N_DOFS = None
@@ -162,6 +166,9 @@ class IKOptimizerLM:
         *a: Any,
         **kw: Any,
     ) -> IKOptimizerLM:
+        if model._has_rod_joints and JointType.ROD in model.joint_type.numpy():  # pyright: ignore[reportPrivateUsage]
+            raise ValueError("IKOptimizerLM does not support JointType.ROD joints.")
+
         n_dofs = model.joint_dof_count
         n_residuals = sum(o.residual_dim() for o in objectives)
         arch = model.device.arch
@@ -797,7 +804,7 @@ class IKOptimizerLM:
             jcalc_transform,
         )
 
-        @wp.kernel
+        @wp.kernel(module="unique")
         def _integrate_dq_dof(
             # model-wide
             joint_type: wp.array[wp.int32],  # (n_joints)

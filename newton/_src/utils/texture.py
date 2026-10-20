@@ -11,6 +11,8 @@ from urllib.request import urlopen
 
 import numpy as np
 
+from ..exceptions import NewtonWarning
+
 _texture_url_cache: dict[str, bytes] = {}
 
 
@@ -67,11 +69,13 @@ def _read_usd_package_asset_bytes(path: str) -> bytes | None:
     try:
         asset = Ar.GetResolver().OpenAsset(Ar.ResolvedPath(path))
         if not asset:
-            warnings.warn(f"Failed to read packaged texture image: {path} (not found in package)", stacklevel=3)
+            warnings.warn(
+                f"Failed to read packaged texture image: {path} (not found in package)", NewtonWarning, stacklevel=3
+            )
             return None
         return bytes(asset.GetBuffer())
     except Exception as exc:
-        warnings.warn(f"Failed to read packaged texture image: {path} ({exc})", stacklevel=3)
+        warnings.warn(f"Failed to read packaged texture image: {path} ({exc})", NewtonWarning, stacklevel=3)
         return None
 
 
@@ -84,7 +88,7 @@ def _download_texture_from_file_bytes(url: str) -> bytes | None:
         _texture_url_cache[url] = data
         return data
     except Exception as exc:
-        warnings.warn(f"Failed to download texture image: {url} ({exc})", stacklevel=2)
+        warnings.warn(f"Failed to download texture image: {url} ({exc})", NewtonWarning, stacklevel=2)
         return None
 
 
@@ -123,7 +127,7 @@ def load_texture_from_file(texture_path: str | None) -> np.ndarray | None:
             img = source_img.convert("RGBA")
             return np.array(img)
     except Exception as exc:
-        warnings.warn(f"Failed to load texture image: {texture_path} ({exc})", stacklevel=2)
+        warnings.warn(f"Failed to load texture image: {texture_path} ({exc})", NewtonWarning, stacklevel=2)
         return None
 
 

@@ -7,7 +7,8 @@
 # This simulation demonstrates a coupled robot-cloth simulation
 # using the VBD solver for the cloth and Featherstone for the robot,
 # showcasing its ability to handle complex contacts while ensuring it
-# remains intersection-free.
+# remains intersection-free. The robot tracks end-effector keyframes
+# via Newton's IK solver.
 #
 # The simulation runs in centimeter scale for better numerical behavior
 # of the VBD solver. A vis_state is used to convert back to meter scale
@@ -25,9 +26,10 @@ from pxr import Usd
 
 import newton
 import newton.examples
+import newton.ik as ik
 import newton.usd
 import newton.utils
-from newton import Model, ModelBuilder, State, eval_fk
+from newton import ModelBuilder, eval_fk
 from newton.solvers import SolverFeatherstone, SolverVBD
 
 
@@ -46,25 +48,23 @@ def scale_body_transforms(src: wp.array[wp.transform], scale: float, dst: wp.arr
 
 
 @wp.kernel
-def compute_ee_delta(
-    body_q: wp.array[wp.transform],
-    offset: wp.transform,
-    body_id: int,
-    bodies_per_world: int,
-    target: wp.transform,
+def set_gripper_q(joint_q: wp.array2d[float], finger_pos: wp.array[float], idx0: int, idx1: int):
+    joint_q[0, idx0] = finger_pos[0]
+    joint_q[0, idx1] = finger_pos[0]
+
+
+@wp.kernel
+def compute_joint_qd(
+    target_q: wp.array2d[float],
+    current_q: wp.array[float],
+    inv_frame_dt: float,
     # outputs
-    ee_delta: wp.array[wp.spatial_vector],
+    out_qd: wp.array[float],
 ):
-    world_id = wp.tid()
-    tf = body_q[bodies_per_world * world_id + body_id] * offset
-    pos = wp.transform_get_translation(tf)
-    pos_des = wp.transform_get_translation(target)
-    pos_diff = pos_des - pos
-    rot = wp.transform_get_rotation(tf)
-    rot_des = wp.transform_get_rotation(target)
-    ang_diff = rot_des * wp.quat_inverse(rot)
-    # compute pose difference between end effector and target
-    ee_delta[world_id] = wp.spatial_vector(pos_diff[0], pos_diff[1], pos_diff[2], ang_diff[0], ang_diff[1], ang_diff[2])
+    # Indexing q and qd alike only holds for a fixed base; a floating base would
+    # need joint_q_start/joint_qd_start and a quaternion difference.
+    i = wp.tid()
+    out_qd[i] = (target_q[0, i] - current_q[i]) * inv_frame_dt
 
 
 class Example:
@@ -237,7 +237,7 @@ class Example:
 
         # initialize robot solver
         self.robot_solver = SolverFeatherstone(self.model, update_mass_matrix_interval=self.sim_substeps)
-        self.set_up_control()
+        self.set_up_ik()
 
         self.cloth_solver: SolverVBD | None = None
         if self.add_cloth:
@@ -312,58 +312,60 @@ class Example:
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
         # graph capture
+        self.graph = None
         if self.add_cloth:
             self.capture()
 
-    def set_up_control(self):
-        self.control = self.model.control()
+    def set_up_ik(self):
+        self.ik_joint_q = wp.array(self.model.joint_q, shape=(1, self.model.joint_coord_count))
+        self.finger_pos = wp.zeros(1, dtype=float)
 
-        # we are controlling the velocity
-        out_dim = 6
-        in_dim = self.model.joint_dof_count
+        # Interpolate the first keyframe from the initial end-effector pose
+        state = self.model.state()
+        eval_fk(self.model, self.model.joint_q, self.model.joint_qd, state)
+        ee_tf = wp.transform(*state.body_q.numpy()[self.endeffector_id])
+        ee_pos = wp.transform_point(ee_tf, self.endeffector_offset)
+        ee_rot = wp.transform_get_rotation(ee_tf)
+        self.initial_target = np.array([*ee_pos, *ee_rot, self.targets[0][-1]], dtype=np.float32)
 
-        def onehot(i, out_dim):
-            x = wp.array([1.0 if j == i else 0.0 for j in range(out_dim)], dtype=float)
-            return x
-
-        self.Jacobian_one_hots = [onehot(i, out_dim) for i in range(out_dim)]
-
-        @wp.kernel
-        def compute_body_out(
-            body_q: wp.array[wp.transform],
-            body_qd: wp.array[wp.spatial_vector],
-            body_com: wp.array[wp.vec3],
-            body_out: wp.array[float],
-        ):
-            # body_qd is COM-referenced (linear velocity at body COM, world
-            # frame).  Compute EE tip velocity in world frame, consistent with
-            # compute_ee_delta which measures the tip position as
-            # transform_point(body_q, ee_offset).
-            ee_id = wp.static(self.endeffector_id)
-            ee_offset = wp.static(wp.vec3(*self.endeffector_offset.p))
-            X_wb = body_q[ee_id]
-            # Vector from COM to EE tip, rotated to world frame
-            r_world = wp.transform_vector(X_wb, ee_offset - body_com[ee_id])
-            qd = body_qd[ee_id]
-            omega = wp.spatial_bottom(qd)
-            v_com = wp.spatial_top(qd)
-            v_tip = v_com + wp.cross(omega, r_world)
-            body_out[0] = v_tip[0]
-            body_out[1] = v_tip[1]
-            body_out[2] = v_tip[2]
-            body_out[3] = omega[0]
-            body_out[4] = omega[1]
-            body_out[5] = omega[2]
-
-        self.compute_body_out_kernel = compute_body_out
-        self.temp_state_for_jacobian = self.model.state(requires_grad=True)
-
-        self.body_out = wp.empty(out_dim, dtype=float, requires_grad=True)
-
-        self.J_flat = wp.empty(out_dim * in_dim, dtype=float)
-        self.J_shape = wp.array((out_dim, in_dim), dtype=int)
-        self.ee_delta = wp.empty(1, dtype=wp.spatial_vector)
-        self.initial_pose = self.model.joint_q.numpy()
+        self.pos_obj = ik.IKObjectivePosition(
+            link_index=self.endeffector_id,
+            link_offset=self.endeffector_offset,
+            target_positions=wp.array([ee_pos], dtype=wp.vec3),
+        )
+        self.rot_obj = ik.IKObjectiveRotation(
+            link_index=self.endeffector_id,
+            link_offset_rotation=wp.quat_identity(),
+            target_rotations=wp.array([wp.vec4(*ee_rot)], dtype=wp.vec4),
+            # keeps orientation tracking tight against the posture term below
+            weight=10.0,
+        )
+        joint_limit_obj = ik.IKObjectiveJointLimit(
+            joint_limit_lower=self.model.joint_limit_lower,
+            joint_limit_upper=self.model.joint_limit_upper,
+            weight=10.0,
+        )
+        # Zero-width limits act as a quadratic pull toward the initial posture, which
+        # keeps the redundant DOF from drifting; base yaw and fingers are left free.
+        rest_q = self.model.joint_q.numpy()
+        rest_lower = rest_q.copy()
+        rest_upper = rest_q.copy()
+        free = [self.base_joint_idx, self.finger_idx0, self.finger_idx1]
+        rest_lower[free] = -1.0e6
+        rest_upper[free] = 1.0e6
+        posture_obj = ik.IKObjectiveJointLimit(
+            joint_limit_lower=wp.array(rest_lower, dtype=float),
+            joint_limit_upper=wp.array(rest_upper, dtype=float),
+            weight=0.3,
+        )
+        self.ik_solver = ik.IKSolver(
+            model=self.model,
+            n_problems=1,
+            objectives=[self.pos_obj, self.rot_obj, joint_limit_obj, posture_obj],
+            lambda_initial=0.1,
+            jacobian_mode=ik.IKJacobianType.ANALYTIC,
+        )
+        self.ik_iters = 24
 
     def capture(self):
         with wp.ScopedCapture() as capture:
@@ -384,6 +386,7 @@ class Example:
             enable_self_collisions=False,
             collapse_fixed_joints=True,
             force_show_colliders=False,
+            joint_damping_mode="passive",
         )
         builder.joint_q[:6] = [0.0, 0.0, 0.0, -1.59695, 0.0, 2.5307]
 
@@ -437,122 +440,55 @@ class Example:
         )
         self.targets = self.robot_key_poses[:, 1:]
         self.transition_duration = self.robot_key_poses[:, 0]
-        self.target = self.targets[0]
 
         self.robot_key_poses_time = np.cumsum(self.robot_key_poses[:, 0])
-        self.endeffector_id = builder.body_count - 3
-        self.endeffector_offset = wp.transform(
-            [
-                0.0,
-                0.0,
-                22.0,
-            ],
-            wp.quat_identity(),
-        )
+        self.endeffector_id = builder.body_label.index("fr3/fr3_link7")
+        joint_q_idx = {label: builder.joint_q_start[j] for j, label in enumerate(builder.joint_label)}
+        self.base_joint_idx = joint_q_idx["fr3/fr3_joint1"]
+        self.finger_idx0 = joint_q_idx["fr3/fr3_finger_joint1"]
+        self.finger_idx1 = joint_q_idx["fr3/fr3_finger_joint2"]
+        self.endeffector_offset = wp.vec3(0.0, 0.0, 22.0)
 
-    def compute_body_jacobian(
-        self,
-        model: Model,
-        joint_q: wp.array,
-        joint_qd: wp.array,
-        include_rotation: bool = False,
-    ):
-        """
-        Compute the Jacobian of the end effector's velocity related to joint_q
-
-        """
-
-        joint_q.requires_grad = True
-        joint_qd.requires_grad = True
-
-        in_dim = model.joint_dof_count
-        out_dim = 6 if include_rotation else 3
-
-        tape = wp.Tape()
-        with tape:
-            eval_fk(model, joint_q, joint_qd, self.temp_state_for_jacobian)
-            wp.launch(
-                self.compute_body_out_kernel,
-                1,
-                inputs=[
-                    self.temp_state_for_jacobian.body_q,
-                    self.temp_state_for_jacobian.body_qd,
-                    self.model.body_com,
-                ],
-                outputs=[self.body_out],
-            )
-
-        for i in range(out_dim):
-            tape.backward(grads={self.body_out: self.Jacobian_one_hots[i]})
-            wp.copy(self.J_flat[i * in_dim : (i + 1) * in_dim], joint_qd.grad)
-            tape.zero()
-
-    def generate_control_joint_qd(
-        self,
-        state_in: State,
-    ):
-        # After the key poses sequence ends, hold position with zero velocity
+    def update_ik_targets(self):
+        # After the key poses sequence ends, hold the last target
         if self.sim_time >= self.robot_key_poses_time[-1]:
-            self.target_joint_qd.zero_()
             return
 
-        current_interval = np.searchsorted(self.robot_key_poses_time, self.sim_time)
-        self.target = self.targets[current_interval]
+        i = np.searchsorted(self.robot_key_poses_time, self.sim_time)
+        t_start = self.robot_key_poses_time[i - 1] if i > 0 else 0.0
+        alpha = np.clip((self.sim_time - t_start) / self.transition_duration[i], 0.0, 1.0)
+        prev = self.targets[i - 1] if i > 0 else self.initial_target
+        target = (1.0 - alpha) * prev + alpha * self.targets[i]
+        rot = target[3:7] / np.linalg.norm(target[3:7])
 
-        include_rotation = True
-
-        wp.launch(
-            compute_ee_delta,
-            dim=1,
-            inputs=[
-                state_in.body_q,
-                self.endeffector_offset,
-                self.endeffector_id,
-                self.bodies_per_world,
-                wp.transform(*self.target[:7]),
-            ],
-            outputs=[self.ee_delta],
-        )
-
-        self.compute_body_jacobian(
-            self.model,
-            state_in.joint_q,
-            state_in.joint_qd,
-            include_rotation=include_rotation,
-        )
-        J = self.J_flat.numpy().reshape(-1, self.model.joint_dof_count)
-        delta_target = self.ee_delta.numpy()[0]
-        J_inv = np.linalg.pinv(J)
-
-        I = np.eye(J.shape[1], dtype=np.float32)
-        N = I - J_inv @ J
-
-        q = state_in.joint_q.numpy()
-
-        q_des = q.copy()
-        q_des[1:] = self.initial_pose[1:]
-
-        K_null = 1.0
-        delta_q_null = K_null * (q_des - q)
-
-        delta_q = J_inv @ delta_target + N @ delta_q_null
-
-        # Apply gripper finger control (finger positions in cm)
-        delta_q[-2] = self.target[-1] * 4.0 - q[-2]
-        delta_q[-1] = self.target[-1] * 4.0 - q[-1]
-
-        self.target_joint_qd.assign(delta_q)
+        self.pos_obj.set_target_position(0, wp.vec3(*target[:3]))
+        self.rot_obj.set_target_rotation(0, wp.vec4(*rot))
+        # finger positions in cm
+        self.finger_pos.fill_(float(target[-1]) * 4.0)
 
     def step(self):
-        self.generate_control_joint_qd(self.state_0)
+        self.update_ik_targets()
         if self.graph:
             wp.capture_launch(self.graph)
+            self.sim_time += self.frame_dt
         else:
             self.simulate()
 
-        self.sim_time += self.frame_dt
-
     def simulate(self):
+        self.ik_solver.step(self.state_0.joint_q.reshape((1, -1)), self.ik_joint_q, iterations=self.ik_iters)
+        wp.launch(
+            set_gripper_q,
+            dim=1,
+            inputs=[self.ik_joint_q, self.finger_pos, self.finger_idx0, self.finger_idx1],
+        )
+        # Joint velocity that reaches the IK solution within one frame
+        wp.launch(
+            compute_joint_qd,
+            dim=self.model.joint_dof_count,
+            inputs=[self.ik_joint_q, self.state_0.joint_q, 1.0 / self.frame_dt],
+            outputs=[self.target_joint_qd],
+        )
+
         self.cloth_solver.rebuild_bvh(self.state_0)
         for _step in range(self.sim_substeps):
             # robot sim
@@ -569,8 +505,6 @@ class Example:
                 self.model.gravity.assign(self.gravity_zero)
 
                 # Update the robot pose - this will modify state_0 and copy to state_1
-                self.model.shape_contact_pair_count = 0
-
                 self.state_0.joint_qd.assign(self.target_joint_qd)
                 # Just update the forward kinematics to get body positions from joint coordinates
                 self.robot_solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)

@@ -212,6 +212,7 @@ def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None
     classes: list[str] = []
     functions: list[str] = []
     constants: list[str] = []
+    attributes: list[str] = []
     modules: list[str] = []
     deprecated: list[str] = []
 
@@ -227,6 +228,13 @@ def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None
         # ------------------------------------------------------------------
         if inspect.isclass(attr) or wp.types.type_is_struct(attr):
             classes.append(name)
+            continue
+
+        # ------------------------------------------------------------------
+        # Annotated mutable settings: document without capturing runtime values.
+        # ------------------------------------------------------------------
+        if name in getattr(module, "__annotations__", {}) and not name.isupper():
+            attributes.append(name)
             continue
 
         # ------------------------------------------------------------------
@@ -276,12 +284,9 @@ def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None
                 "   Because ``newton.solvers`` is a module rather than a package, use",
                 f"   ``from newton.solvers import {sub_name}`` instead of ``import {mod_name}``.",
                 "",
-                f".. currentmodule:: newton._src.solvers.{sub_name}",
-                "",
             ]
         )
-    else:
-        lines.extend([f".. py:module:: {mod_name}", f".. currentmodule:: {mod_name}", ""])
+    lines.extend([f".. py:module:: {mod_name}", f".. currentmodule:: {mod_name}", ""])
 
     # Render submodules as direct document links instead of autosummary stubs.
     # Child module pages still need hidden toctree edges to satisfy Sphinx.
@@ -366,6 +371,11 @@ def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None
                 ]
             )
         lines.append("")
+
+    if attributes:
+        lines.extend([".. rubric:: Attributes", ""])
+        for name in sorted(attributes):
+            lines.extend([f".. autodata:: {name}", "   :no-value:", ""])
 
     if constants:
         constants.sort()

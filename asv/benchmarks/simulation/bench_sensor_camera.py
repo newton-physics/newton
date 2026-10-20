@@ -155,11 +155,13 @@ def _build_franka_cabinet() -> newton.ModelBuilder:
         cabinet_folder / "urdf" / "sektion_cabinet_2.urdf",
         xform=wp.transform(wp.vec3(0.0, 0.0, 0.4), wp.quat_identity()),
         floating=False,
+        joint_damping_mode="passive",
     )
     builder.add_urdf(
         newton.utils.download_asset("franka_emika_panda") / "urdf/fr3_franka_hand.urdf",
         xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), math.pi)),
         floating=False,
+        joint_damping_mode="passive",
     )
     _set_joint_positions(builder, _FRANKA_CABINET_ARM_POSE)
     return builder
@@ -290,8 +292,8 @@ class _SensorCameraSceneRig:
             np.tile(camera_row, (world_count, 1)), dtype=wp.transformf, device=self.model.device
         )
 
-        self.color_image = self.sensor.create_color_image_output(world_count, resolution, resolution)
-        self.depth_image = self.sensor.create_depth_image_output(world_count, resolution, resolution)
+        self.color_image = self.sensor.allocate_image_color(world_count, resolution, resolution)
+        self.depth_image = self.sensor.allocate_image_depth(world_count, resolution, resolution)
 
         self.model.bvh_build_shapes(self.state, bvh_constructor=BVH_CONSTRUCTOR)
         self.model.bvh_build_particles(self.state, bvh_constructor=BVH_CONSTRUCTOR)

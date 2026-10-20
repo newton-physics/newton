@@ -3,17 +3,22 @@
 
 from __future__ import annotations
 
+import atexit
 import errno
 import hashlib
+import logging
 import os
 import re
 import shutil
 import stat
+import tempfile
 import threading
 import time
 from pathlib import Path
 
-from warp._src.thirdparty.appdirs import user_cache_dir
+from ... import config
+
+logger = logging.getLogger(__name__)
 
 # External asset repositories and their pinned revisions.
 # Pinning to commit SHAs ensures reproducible downloads for any given Newton
@@ -60,13 +65,6 @@ def _is_transient_git_error(error: Exception) -> bool:
     )
 
 
-def _get_newton_cache_dir() -> str:
-    """Gets the persistent Newton cache directory."""
-    if "NEWTON_CACHE_PATH" in os.environ:
-        return os.environ["NEWTON_CACHE_PATH"]
-    return user_cache_dir("newton", "newton-physics")
-
-
 def _handle_remove_readonly(func, path, exc):
     """Error handler for Windows readonly files during shutil.rmtree()."""
     if os.path.exists(path):
@@ -79,6 +77,13 @@ def _safe_rmtree(path):
     """Safely remove directory tree, handling Windows readonly files."""
     if os.path.exists(path):
         shutil.rmtree(path, onerror=_handle_remove_readonly)
+
+
+def _cleanup_temporary_cache(path: str, owner_pid: int) -> None:
+    """Remove temporary assets only when the process that downloaded them exits."""
+    # Forked children inherit atexit callbacks but must not delete their parent's assets.
+    if os.getpid() == owner_pid:
+        _safe_rmtree(path)
 
 
 def _safe_rename(src, dst, attempts=5, delay=0.1):
@@ -272,7 +277,11 @@ def _cleanup_old_versions(cache_path: Path, base_prefix: str, current_dir: Path)
 
 
 def download_git_folder(
-    git_url: str, folder_path: str, cache_dir: str | None = None, ref: str = "main", force_refresh: bool = False
+    git_url: str,
+    folder_path: str,
+    cache_dir: str | os.PathLike[str] | None = None,
+    ref: str = "main",
+    force_refresh: bool = False,
 ) -> Path:
     """Downloads a specific folder from a git repository into a local cache.
 
@@ -283,14 +292,16 @@ def download_git_folder(
     Args:
         git_url: The git repository URL (HTTPS or SSH).
         folder_path: Path to the folder within the repository.
-        cache_dir: Directory to cache downloads.  If ``None``, determined by
-            ``NEWTON_CACHE_PATH`` env-var or the system user cache directory.
+        cache_dir: Directory to cache downloads. If ``None``, use
+            :attr:`newton.config.cache_dir_assets`. If that setting is ``None``,
+            download into a fresh temporary directory kept until process exit.
+            An explicit directory overrides the global setting.
         ref: Git branch, tag, or commit SHA to checkout (default: ``"main"``).
         force_refresh: If ``True``, bypass TTL and verify the cached version
             against the remote.  Re-downloads only if the remote SHA differs.
 
     Returns:
-        Path to the downloaded folder in the local cache.
+        Path to the downloaded folder, available until process exit when caching is disabled.
     """
     try:
         import git as gitpython
@@ -302,7 +313,18 @@ def download_git_folder(
 
     # Set up cache directory
     if cache_dir is None:
-        cache_dir = _get_newton_cache_dir()
+        cache_dir = config.cache_dir_assets
+    if cache_dir is None:
+        # Callers receive a Path and may load referenced files later. Keep each
+        # uncached download alive until exit, without reusing it on later calls.
+        temporary_cache = tempfile.mkdtemp(prefix="newton-assets-")
+        try:
+            result = download_git_folder(git_url, folder_path, temporary_cache, ref, force_refresh)
+        except BaseException:
+            _safe_rmtree(temporary_cache)
+            raise
+        atexit.register(_cleanup_temporary_cache, temporary_cache, os.getpid())
+        return result
     cache_path = Path(cache_dir)
     cache_path.mkdir(parents=True, exist_ok=True)
 
@@ -389,12 +411,13 @@ def download_git_folder(
 
     try:
         if cached is not None:
-            print(
-                f"New version of {folder_path} found "
-                f"(cached: {cached.name.rsplit('_', 1)[-1]}, "
-                f"latest: {latest_commit[:8]}). Refreshing..."
+            logger.info(
+                "New version of %s found (cached: %s, latest: %s). Refreshing...",
+                folder_path,
+                cached.name.rsplit("_", 1)[-1],
+                latest_commit[:8],
             )
-        print(f"Cloning {git_url} (ref: {ref})...")
+        logger.info("Cloning %s (ref: %s)...", git_url, ref)
 
         is_sha = bool(_SHA_RE.fullmatch(ref))
         for attempt in range(_GIT_DOWNLOAD_ATTEMPTS):
@@ -433,7 +456,7 @@ def download_git_folder(
                 if attempt == _GIT_DOWNLOAD_ATTEMPTS - 1 or not _is_transient_git_error(e):
                     raise
                 delay = _GIT_DOWNLOAD_RETRY_DELAY * 2**attempt
-                print(f"Transient Git error. Retrying in {delay:g} seconds...")
+                logger.info("Transient Git error. Retrying in %g seconds...", delay)
                 time.sleep(delay)
 
         temp_target = temp_dir / folder_path
@@ -450,7 +473,7 @@ def download_git_folder(
         # Set mtime to now for TTL tracking
         os.utime(final_dir, None)
 
-        print(f"Successfully downloaded folder to: {final_dir / folder_path}")
+        logger.info("Successfully downloaded folder to: %s", final_dir / folder_path)
 
         # Best-effort cleanup of old versions
         _cleanup_old_versions(cache_path, base_prefix, final_dir)
@@ -471,30 +494,31 @@ def download_git_folder(
             pass
 
 
-def clear_git_cache(cache_dir: str | None = None) -> None:
+def clear_git_cache(cache_dir: str | os.PathLike[str] | None = None) -> None:
     """
     Clears the git download cache directory.
 
     Args:
-        cache_dir: Cache directory to clear.
-            If ``None``, the path is determined in the following order:
-            1. ``NEWTON_CACHE_PATH`` environment variable.
-            2. System's user cache directory (via ``appdirs.user_cache_dir``).
+        cache_dir: Cache directory to clear. If ``None``, use
+            :attr:`newton.config.cache_dir_assets`. If that setting is ``None``,
+            do nothing; temporary downloads remain available until process exit.
     """
     if cache_dir is None:
-        cache_dir = _get_newton_cache_dir()
+        cache_dir = config.cache_dir_assets
+    if cache_dir is None:
+        return
 
     cache_path = Path(cache_dir)
     if cache_path.exists():
         _safe_rmtree(cache_path)
-        print(f"Cleared git cache: {cache_path}")
+        logger.info("Cleared git cache: %s", cache_path)
     else:
-        print("Git cache directory does not exist")
+        logger.info("Git cache directory does not exist")
 
 
 def download_asset(
     asset_folder: str,
-    cache_dir: str | None = None,
+    cache_dir: str | os.PathLike[str] | None = None,
     force_refresh: bool = False,
     ref: str | None = None,
 ) -> Path:
@@ -502,17 +526,19 @@ def download_asset(
 
     Args:
         asset_folder: The folder within the repository to download (e.g., "assets/models")
-        cache_dir: Directory to cache downloads.
-            If ``None``, the path is determined in the following order:
-            1. ``NEWTON_CACHE_PATH`` environment variable.
-            2. System's user cache directory (via ``appdirs.user_cache_dir``).
+        cache_dir: Directory to cache downloads. If ``None``, use
+            :attr:`newton.config.cache_dir_assets`, which defaults to
+            ``NEWTON_CACHE_PATH`` or the platform's Newton cache directory.
+            Set that global setting to ``None`` to download each request into
+            a fresh temporary directory kept until process exit. An explicit
+            directory overrides the global setting.
         force_refresh: If ``True``, bypass TTL and verify the cached version
             against the remote.  Re-downloads only if the remote SHA differs.
         ref: Git branch, tag, or commit SHA to checkout.  Defaults to the
             revision pinned in :data:`NEWTON_ASSETS_REF`.
 
     Returns:
-        Path to the downloaded folder in the local cache.
+        Path to the downloaded folder, available until process exit when caching is disabled.
     """
     return download_git_folder(
         NEWTON_ASSETS_URL,

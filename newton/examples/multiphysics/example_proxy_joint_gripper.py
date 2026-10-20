@@ -98,7 +98,6 @@ class Example:
 
         vbd_kwargs = {
             "iterations": int(args.vbd_iterations),
-            "rigid_compliant_alm": True,
             "particle_enable_self_contact": False,
             "particle_enable_tile_solve": False,
             "rigid_body_particle_contact_buffer_size": 1024 if self.scenario == "harsh" else 512,

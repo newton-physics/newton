@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import unittest
+import warnings
 
 import numpy as np
 import warp as wp
@@ -26,7 +27,9 @@ def _build_model(*, custom_attrs: tuple[str, ...] = ()):
         actuator_mode=newton.JointTargetMode.POSITION_VELOCITY,
     )
     builder.add_articulation([joint])
-    builder.request_state_attributes("mujoco:qfrc_actuator")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        builder.request_state_attributes("mujoco:qfrc_actuator")
     for name in custom_attrs:
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(

@@ -54,6 +54,33 @@ class GaussianRenderMode(enum.IntEnum):
     """Quality Render Mode, collect hits until minimum transmittance is reached"""
 
 
+class AntiAliasing(enum.IntEnum):
+    """Anti-aliasing mode applied to multisampled camera-ray bundles."""
+
+    NONE = 0
+    """Resolve a single ray per pixel. Multisample ray bundles are rejected."""
+
+    SSAA = 1
+    """Supersample: trace and shade every ray in the bundle, then average the results.
+
+    Highest quality and highest cost; shading runs once per sample.
+    """
+
+    MSAA = 2
+    """Multisample: resolve every ray against its own nearest hit and reuse shading
+    for subsamples covering the same surface.
+
+    Anti-aliases silhouettes against both the background and other objects at a fraction of
+    the :attr:`SSAA` cost when shading is expensive. Each surface is shaded using
+    the first ray in bundle order that hits it, which may not be the covered ray
+    nearest the pixel center. The built-in ray helpers put a center ray first for
+    three or more samples, but surfaces missed by that ray can still be shaded
+    off-center. Interior shading is not supersampled.
+    Standalone particles and deformable triangle meshes use the particle or face index
+    alongside their shared hit IDs, so distinct surfaces are shaded separately.
+    """
+
+
 class TextureProjectionMode(enum.IntEnum):
     """Projection mode for texture-mapped shapes without authored UVs."""
 
@@ -116,6 +143,13 @@ class RenderConfig:
 
     render_order: RenderOrder = RenderOrder.PIXEL_PRIORITY
     """Render traversal order (see :class:`RenderOrder`)."""
+
+    anti_aliasing: AntiAliasing = AntiAliasing.NONE
+    """Anti-aliasing mode applied to multisampled ray bundles (see :class:`AntiAliasing`).
+
+    Has no effect on single-sample ray bundles. Multisampled bundles require
+    :attr:`AntiAliasing.SSAA` or :attr:`AntiAliasing.MSAA`.
+    """
 
     tile_width: int = 16
     """Tile width [px] for ``RenderOrder.TILED`` traversal."""

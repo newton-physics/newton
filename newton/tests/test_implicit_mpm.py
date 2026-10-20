@@ -300,7 +300,7 @@ def test_assembled_elastic_stiffness(test, device):
 
 
 @contextmanager
-def _coupled_rheology(device):
+def _coupled_rheology(device, grid_type="dense", max_active_cell_count=-1):
     with wp.ScopedDevice(device):
         builder = _make_mpm_particle_builder(gravity=(0, 0, 0), dimensions=(4, 2, 2))
         model = builder.finalize(device=device)
@@ -309,8 +309,9 @@ def _coupled_rheology(device):
         model.mpm.tensile_yield_ratio.fill_(1.0)
         config = SolverImplicitMPM.Config(
             voxel_size=0.1,
-            grid_type="dense",
+            grid_type=grid_type,
             grid_padding=0,
+            max_active_cell_count=max_active_cell_count,
             velocity_basis="Q1",
             strain_basis="P0",
             collider_basis="Q1",
@@ -632,6 +633,41 @@ def test_majorizer_capture(test, device):
             wp.capture_launch(capture.graph)
             for field, reference in zip(fields, expected, strict=True):
                 np.testing.assert_allclose(field.numpy(), reference, rtol=3e-6, atol=1e-9, equal_nan=False)
+
+
+def test_rheology_residual_inactive_strain_nodes(test, device):
+    """Converge when strain arrays reserve inactive nodes and borrow stale memory.
+
+    Sparse grids with reserved capacity size the strain arrays beyond the active
+    nodes, and colored solvers update only the active ones. The residual reads
+    every stress-delta entry, so the borrowed buffer is poisoned with NaN.
+    """
+    with _coupled_rheology(device, grid_type="sparse", max_active_cell_count=16) as (operator, _store):
+        offsets = operator.rheology.strain_mat.offsets.numpy()
+        test.assertTrue(np.any(offsets[1:] == offsets[:-1]), msg="expected inactive strain nodes")
+        nv = operator.momentum.velocity.shape[0]
+        velocity = np.linspace(-0.01, 0.01, 3 * nv, dtype=np.float32).reshape(nv, 3)
+        tolerance_scale = np.sqrt(1 + operator.size)
+        for mode in ("gs", "gs-soa", "gs-batched", "jacobi"):
+            with test.subTest(solver=mode):
+                # The fresh store's only stress-sized buffer becomes the solver's stress delta.
+                store = fem.TemporaryStore()
+                stale = fem.borrow_temporary(store, shape=operator.size, dtype=vec6)
+                stale.fill_(vec6(float("nan")))
+                stale.release()
+                operator.rheology.stress.zero_()
+                operator.momentum.velocity.assign(velocity)
+                solver = _RHEOLOGY_SOLVERS[mode](operator, store)
+                try:
+                    solver.apply_initial_guess()
+                    for _ in range(solver.solve_granularity):
+                        solver.solve()
+                    residual = solver.eval_residual().numpy()
+                finally:
+                    solver.release()
+                res_l2, res_linf = _nonlinear_solver_result_norms(residual, tolerance_scale)
+                test.assertLess(res_l2, 1e-5)
+                test.assertLess(res_linf, 1e-5)
 
 
 def _make_mpm_particle_builder(
@@ -1752,6 +1788,35 @@ def test_shared_solver_globalizes_external_multiworld_colliders(test, device):
     test.assertEqual(np.unique(collider.face_material_index.numpy()).shape[0], 2)
 
 
+def test_pic_strain_basis_empty_cells(test, device):
+    """Construct and step a particle-based strain basis on grids with empty cells.
+
+    Cell-based Gauss-Seidel coloring covers every partition cell, including
+    padding cells that hold no particles, so the colored cells outnumber the
+    particle-based strain nodes. Both grid types use the same partition type
+    as the other particle-based strain basis tests in this process.
+    """
+    for grid_type in ("dense", "fixed"):
+        with test.subTest(grid_type=grid_type):
+            model = _make_mpm_particle_builder().finalize(device=device)
+            config = SolverImplicitMPM.Config(
+                voxel_size=0.1,
+                grid_type=grid_type,
+                grid_padding=2,
+                max_active_cell_count=256,
+                strain_basis="pic8",
+                solver="gs",
+                max_iterations=50,
+            )
+            solver, state = _step_mpm(model, config, step_count=2)
+            scratch = solver._scratchpad
+            cell_count = scratch._strain_space_restriction.space_partition.geo_partition.cell_count()
+            test.assertGreater(cell_count, scratch.strain_node_count)
+            positions = state.particle_q.numpy()
+            test.assertTrue(np.isfinite(positions).all())
+            test.assertLess(np.max(positions[:, 1]), 0.075)
+
+
 def test_sand_cube_on_plane(test, device):
     # Emits a cube of particles on the ground
 
@@ -2019,6 +2084,76 @@ def test_cg_rheology_whole_step_graph_capture(test, device):
             test.assertTrue(np.all(np.isfinite(state_1.particle_q.numpy())))
 
 
+def test_bspline_velocity_sparse_whole_step_graph_capture(test, device):
+    """Capture whole steps with a B-spline velocity basis on a rebuildable sparse grid.
+
+    B-spline velocity bases previously bypassed the rebuildable sparse grid and
+    reallocated the grid every step, which fails inside graph capture.
+    """
+    if not wp.is_mempool_enabled(device):
+        test.skipTest("whole-step graph capture requires the Warp memory pool")
+    if not wp.is_conditional_graph_supported():
+        test.skipTest("whole-step graph capture requires conditional CUDA graph support")
+
+    voxel_size = 0.1
+    dt = 0.005
+    builder = newton.ModelBuilder(up_axis=newton.Axis.Y)
+    SolverImplicitMPM.register_custom_attributes(builder)
+    builder.add_particle_grid(
+        pos=wp.vec3(0.05, 0.2, 0.05),
+        rot=wp.quat_identity(),
+        vel=wp.vec3(25.0, 0.0, 0.0),
+        dim_x=2,
+        dim_y=2,
+        dim_z=2,
+        cell_x=0.05,
+        cell_y=0.05,
+        cell_z=0.05,
+        mass=1.0,
+        jitter=0.0,
+    )
+    builder.add_ground_plane()
+    model = builder.finalize(device=device)
+
+    def make_solver():
+        config = SolverImplicitMPM.Config(
+            grid_type="sparse",
+            voxel_size=voxel_size,
+            max_active_cell_count=64,
+            velocity_basis="B2",
+            strain_basis="P0",
+            solver="jacobi",
+            max_iterations=10,
+        )
+        return SolverImplicitMPM(model, config)
+
+    eager_solver = make_solver()
+    eager_state_0, eager_state_1 = model.state(), model.state()
+    for _ in range(5):
+        eager_solver.step(eager_state_0, eager_state_1, control=None, contacts=None, dt=dt)
+        eager_state_0, eager_state_1 = eager_state_1, eager_state_0
+
+    solver = make_solver()
+    state_0, state_1 = model.state(), model.state()
+    solver.step(state_0, state_1, control=None, contacts=None, dt=dt)
+    state_0, state_1 = state_1, state_0
+
+    with wp.ScopedCapture(device=device) as capture:
+        solver.step(state_0, state_1, control=None, contacts=None, dt=dt)
+        solver.step(state_1, state_0, control=None, contacts=None, dt=dt)
+
+    for _ in range(2):
+        wp.capture_launch(capture.graph)
+
+    solver.check_sparse_grid_rebuild_status()
+    positions = state_0.particle_q.numpy()
+    # Particles cross several voxels, so replays rebuild the grid topology.
+    initial_positions = model.particle_q.numpy()
+    test.assertGreater(np.min(positions[:, 0] - initial_positions[:, 0]), 2.0 * voxel_size)
+    np.testing.assert_allclose(positions, eager_state_0.particle_q.numpy(), rtol=1.0e-5, atol=1.0e-6)
+    np.testing.assert_allclose(state_0.particle_qd.numpy(), eager_state_0.particle_qd.numpy(), rtol=1.0e-5, atol=1.0e-5)
+
+
 def test_proxy_particle_gravity_is_not_coupling_feedback(test, device):
     gravity = -9.81
     dt = 1.0 / 60.0
@@ -2088,6 +2223,12 @@ add_function_test(
 )
 add_function_test(TestImplicitMPM, "test_majorized_rheology_solve", test_majorized_rheology_solve, devices=devices)
 add_function_test(TestImplicitMPM, "test_majorizer_capture", test_majorizer_capture, devices=get_cuda_test_devices())
+add_function_test(
+    TestImplicitMPM,
+    "test_rheology_residual_inactive_strain_nodes",
+    test_rheology_residual_inactive_strain_nodes,
+    devices=devices,
+)
 add_function_test(
     TestImplicitMPM,
     "test_majorized_rheology_capture",
@@ -2337,6 +2478,13 @@ add_function_test(
 )
 
 add_function_test(
+    TestImplicitMPM,
+    "test_pic_strain_basis_empty_cells",
+    test_pic_strain_basis_empty_cells,
+    devices=devices,
+)
+
+add_function_test(
     TestImplicitMPM, "test_sand_cube_on_plane", test_sand_cube_on_plane, devices=devices, check_output=False
 )
 
@@ -2353,6 +2501,14 @@ add_function_test(
     "test_cg_rheology_whole_step_graph_capture",
     test_cg_rheology_whole_step_graph_capture,
     devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestImplicitMPM,
+    "test_bspline_velocity_sparse_whole_step_graph_capture",
+    test_bspline_velocity_sparse_whole_step_graph_capture,
+    devices=basic_cuda_devices,
     check_output=False,
 )
 

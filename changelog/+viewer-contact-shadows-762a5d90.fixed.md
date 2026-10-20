@@ -1,0 +1,1 @@
+Fix detached and clipped ViewerGL shadows near small objects by comparing each shadow-map sample against the sloping receiver's depth instead of applying large normal and depth offsets, while avoiding false shadows on concave receivers.

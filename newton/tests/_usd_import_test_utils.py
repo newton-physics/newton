@@ -6,7 +6,7 @@
 import functools
 import warnings
 
-_INVALID_ARTICULATION_DESC = "Warning: Invalid ArticulationDesc descriptor"
+_INVALID_ARTICULATION_DESC = "Invalid ArticulationDesc descriptor"
 
 
 def _expect_jointless_articulation_warning(test):

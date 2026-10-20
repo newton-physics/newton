@@ -17,6 +17,8 @@ uv run -m newton.examples basic_pendulum
 
 ## Tests
 
+Follow the canonical [test organization and runtime guidelines](CODING_GUIDELINES.rst#test-organization-and-runtime) when changing or reviewing tests.
+
 ```bash
 uv run --extra dev -m newton.tests
 uv run --extra dev -m newton.tests -k test_viewer_log_shapes           # specific test

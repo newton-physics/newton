@@ -12,10 +12,11 @@ from typing import Any
 
 from newton._src.usd.utils import _resolve_asset_path, get_applied_api_schemas
 
+from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from .clamping import ClampingBase, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
 from .delay import Delay
 from .drives import DriveBase, DriveNeuralGRU, DriveNeuralLSTM, DriveNeuralMLP, DrivePD, DrivePID
-from .utils import load_metadata
+from .utils import _looks_like_torch_checkpoint, load_metadata
 
 _DEPRECATED_UNSET = object()
 _COMPONENT_KIND_CONTROLLER_DEPRECATION_MSG = (
@@ -34,13 +35,13 @@ class _ComponentKindMeta(enum.EnumMeta):
 
     def __getattr__(cls, name: str):
         if name == "CONTROLLER":
-            warnings.warn(_COMPONENT_KIND_CONTROLLER_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            warnings.warn(_COMPONENT_KIND_CONTROLLER_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
             return cls.DRIVE
         return super().__getattr__(name)
 
     def __getitem__(cls, name: str):
         if name == "CONTROLLER":
-            warnings.warn(_COMPONENT_KIND_CONTROLLER_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            warnings.warn(_COMPONENT_KIND_CONTROLLER_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
             return cls.DRIVE
         return super().__getitem__(name)
 
@@ -55,7 +56,7 @@ class ComponentKind(enum.Enum, metaclass=_ComponentKindMeta):
     @classmethod
     def _missing_(cls, value: object):
         if value == "controller":
-            warnings.warn(_COMPONENT_KIND_CONTROLLER_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            warnings.warn(_COMPONENT_KIND_CONTROLLER_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
             return cls.DRIVE
         return None
 
@@ -101,10 +102,10 @@ class ActuatorParsed:
             raise TypeError("Specify only one of 'drive_kwargs' and deprecated 'controller_kwargs'.")
 
         if controller_class is not _DEPRECATED_UNSET:
-            warnings.warn(_PARSED_CONTROLLER_CLASS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            warnings.warn(_PARSED_CONTROLLER_CLASS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
             drive_class = controller_class
         if controller_kwargs is not _DEPRECATED_UNSET:
-            warnings.warn(_PARSED_CONTROLLER_KWARGS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            warnings.warn(_PARSED_CONTROLLER_KWARGS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
             drive_kwargs = controller_kwargs
         if drive_class is _DEPRECATED_UNSET:
             raise TypeError("ActuatorParsed() missing required argument: 'drive_class'")
@@ -121,12 +122,12 @@ class ActuatorParsed:
         .. deprecated:: 1.6
             Use :attr:`drive_class` instead.
         """
-        warnings.warn(_PARSED_CONTROLLER_CLASS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_PARSED_CONTROLLER_CLASS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         return self.drive_class
 
     @controller_class.setter
     def controller_class(self, value: type[DriveBase]) -> None:
-        warnings.warn(_PARSED_CONTROLLER_CLASS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_PARSED_CONTROLLER_CLASS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         self.drive_class = value
 
     @property
@@ -136,12 +137,12 @@ class ActuatorParsed:
         .. deprecated:: 1.6
             Use :attr:`drive_kwargs` instead.
         """
-        warnings.warn(_PARSED_CONTROLLER_KWARGS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_PARSED_CONTROLLER_KWARGS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         return self.drive_kwargs
 
     @controller_kwargs.setter
     def controller_kwargs(self, value: dict[str, Any]) -> None:
-        warnings.warn(_PARSED_CONTROLLER_KWARGS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_PARSED_CONTROLLER_KWARGS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         self.drive_kwargs = value
 
 
@@ -292,6 +293,7 @@ def register_actuator_component(
     if schema_name in _SCHEMA_REGISTRY:
         warnings.warn(
             f"Actuator schema {schema_name!r} is already registered; overwriting",
+            NewtonWarning,
             stacklevel=2,
         )
     _SCHEMA_REGISTRY[schema_name] = _SchemaEntry(
@@ -300,12 +302,19 @@ def register_actuator_component(
     )
 
 
-def parse_actuator_prim(prim) -> ActuatorParsed | None:
+def parse_actuator_prim(prim, *, allow_unsafe_torch_checkpoints: bool = False) -> ActuatorParsed | None:
     """Parse a USD Actuator prim into a composed actuator specification.
 
     Each detected schema directly maps to a component class with its
     extracted params. Returns ``None`` if the prim is not a
     ``NewtonActuator``.
+
+    Args:
+        prim: USD prim to parse.
+        allow_unsafe_torch_checkpoints: Allow ``newton:modelPath`` to reference
+            a Torch checkpoint. Only use this for trusted USD assets and
+            checkpoints: ``torch.export.load`` may execute code during model
+            finalization. Defaults to ``False``.
 
     Raises:
         ValueError: If the prim is a ``NewtonActuator`` but:
@@ -314,7 +323,8 @@ def parse_actuator_prim(prim) -> ActuatorParsed | None:
               ``PhysicsRevoluteJoint`` / ``PhysicsPrismaticJoint``,
             - has multiple drive schemas applied,
             - has no drive schema, or
-            - has a ``NewtonNeuralControlAPI`` with an unsupported model.
+            - has a ``NewtonNeuralControlAPI`` with an unsupported model or an
+              unapproved Torch checkpoint.
     """
     if prim.GetTypeName() != SchemaNames.ACTUATOR:
         return None
@@ -329,6 +339,7 @@ def parse_actuator_prim(prim) -> ActuatorParsed | None:
         warnings.warn(
             f"Actuator prim {prim.GetPath()} has {len(target_paths)} targets; "
             f"only the first is used, additional targets are ignored",
+            NewtonWarning,
             stacklevel=2,
         )
         target_paths = target_paths[:1]
@@ -360,6 +371,15 @@ def parse_actuator_prim(prim) -> ActuatorParsed | None:
         detected.append(schema_name)
 
         kwargs = _read_schema_attrs(prim, schema_name)
+        if (
+            schema_name == SchemaNames.NEURAL_CONTROL
+            and not allow_unsafe_torch_checkpoints
+            and _looks_like_torch_checkpoint(kwargs.get("model_path") or "")
+        ):
+            raise ValueError(
+                f"Actuator prim '{prim.GetPath()}' references a Torch checkpoint via newton:modelPath; "
+                "pass allow_unsafe_torch_checkpoints=True only for trusted USD assets and checkpoints"
+            )
 
         if isinstance(entry.component_class, type):
             cls = entry.component_class

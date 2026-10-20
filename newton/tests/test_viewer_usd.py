@@ -133,6 +133,22 @@ class TestViewerUSD(unittest.TestCase):
                 np.testing.assert_array_equal(exported.GetFaceVertexIndicesAttr().Get(), mesh.indices)
                 np.testing.assert_allclose(exported.GetNormalsAttr().Get(viewer._frame_index), mesh.normals)
 
+    def test_log_mesh_authors_extent_per_frame(self):
+        """Author extent alongside deforming mesh points."""
+        viewer = self._make_viewer()
+        indices = wp.array([0, 1, 2], dtype=wp.int32)
+        frames = (
+            [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 2.0, 0.0]],
+            [[-1.0, 0.0, 0.0], [1.0, 0.0, 3.0], [0.0, 2.0, 0.0]],
+        )
+        for frame, points in enumerate(frames):
+            viewer.begin_frame(frame / viewer.fps)
+            viewer.log_mesh("/deforming", wp.array(points, dtype=wp.vec3), indices)
+
+        extent = UsdGeom.Mesh.Get(viewer.stage, "/root/deforming").GetExtentAttr()
+        for frame, points in enumerate(frames):
+            np.testing.assert_allclose(extent.Get(frame), [np.min(points, axis=0), np.max(points, axis=0)])
+
     def test_log_points_keeps_per_point_wp_vec3_colors_for_three_points(self):
         viewer = self._make_viewer()
 

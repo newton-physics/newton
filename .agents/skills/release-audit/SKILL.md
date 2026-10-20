@@ -388,6 +388,29 @@ Tag every matched entry internally as `experimental=True`. Do not alter the CHAN
 
 **Never drop the entry from the detailed audit.** Experimental status changes the stability interpretation, not the underlying API diff. A removed or signature-changed experimental symbol still appears in Breaking Changes and Changes to Existing API, but it is not presented as a release-manager warning.
 
+### 4h — Schema and importer completeness
+
+Apply the guides' schema/importer policy to new or substantially changed
+authorable features across the audited range, including existing-API extensions
+and commits without changelog entries. Inspect schema definitions/proposal
+revisions, parsing, compatible schema-package versions, and behavioral tests at
+the audited ref; schema representation alone is not complete support.
+
+Render **Schema & Importer Support** with columns
+`Feature | Disposition | Evidence / remaining work`:
+
+- **Supported**: record the supported subset and cite schema-to-builder-to-runtime
+  evidence, tests against equivalent builder-created models, and verified schema
+  semantics.
+- **Explicitly deferred**: cite review acceptance, reason, issue, owner, and
+  target milestone, plus the remaining limitation.
+- **Not applicable**: explain why the feature is runtime-only or non-authorable.
+- **Gap / decision required**: identify missing support, evidence, or accepted
+  deferral details for a keep/defer decision.
+
+For retrospective audits, distinguish current-policy gaps from violations of
+requirements in force at the target tag.
+
 ## Phase 5 — Review CHANGELOG language and bake
 
 ### 5a — Language review
@@ -548,7 +571,7 @@ Open the summary with a 2-3 sentence intro paragraph that names the shape of the
 
 ### 7b — Fill template
 
-Read `references/report-template.md`. Fill in every `{{PLACEHOLDER}}` marker, including `{{DOCUMENT_VERSION_CONTROL}}`, the `{{HEADLINE_SUMMARY}}` produced in 7a, and `{{DEPENDENCY_LICENSE_AUDIT}}` from Phase 5c. In retrospective mode, also fill the `{{CALIBRATION_NOTES}}` placeholder using the narrative composed in Phase 6c; leave it empty (and the template will elide the section) in pre-release / RC mode.
+Read `references/report-template.md`. Fill in every `{{PLACEHOLDER}}` marker, including `{{DOCUMENT_VERSION_CONTROL}}`, the `{{HEADLINE_SUMMARY}}` produced in 7a, `{{SCHEMA_IMPORTER_SUPPORT}}` from Phase 4h, and `{{DEPENDENCY_LICENSE_AUDIT}}` from Phase 5c. In retrospective mode, also fill the `{{CALIBRATION_NOTES}}` placeholder using the narrative composed in Phase 6c; leave it empty (and the template will elide the section) in pre-release / RC mode.
 
 For either gist destination, compose and validate the report as a normal markdown file at `/tmp/<gist-filename>`; do not stream the full report through chat or repeated command output. When revising an existing gist, first materialize its current file as the editable baseline:
 

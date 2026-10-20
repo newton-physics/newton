@@ -18,7 +18,6 @@ from newton._src.solvers.kamino._src.core.bodies import convert_body_com_to_orig
 from newton._src.solvers.kamino._src.core.conversions import (
     compute_material_first_shape,
     convert_model_materials,
-    convert_target_coords_to_target_dofs,
 )
 from newton._src.solvers.kamino._src.core.joints import (
     JOINT_TAUMAX,
@@ -1200,12 +1199,7 @@ class TestStateControlConversions(unittest.TestCase):
 
         # Create a Newton control container
         control_newton: Control = model_newton.control()
-        if newton.use_coord_layout_targets:
-            control_newton.joint_target_q = wp.clone(model_newton.joint_q, device=self.default_device)
-        else:
-            joint_target_q_dof_space = wp.zeros_like(control_newton.joint_target_q, device=self.default_device)
-            convert_target_coords_to_target_dofs(model_newton.joint_q, joint_target_q_dof_space, model_kamino)
-            control_newton.joint_target_q = joint_target_q_dof_space
+        control_newton.joint_target_q = wp.clone(model_newton.joint_q, device=self.default_device)
         # TODO: remove above lines if joint_target_q in newton gets updated to take into account
         # initial pose like joint_q does (cf issue #3380 in newton)
         self.assertIsInstance(control_newton.joint_f, wp.array)
@@ -1217,10 +1211,11 @@ class TestStateControlConversions(unittest.TestCase):
         self.assertEqual(control_kamino.tau_j.size, model_kamino.size.sum_of_num_joint_dofs)
 
         control_kamino_converted = ControlKamino()
-        control_kamino_converted.finalize(model_kamino)
-        control_kamino_converted.from_newton(control_newton, model_kamino)
+        control_kamino_converted.from_newton(control_newton)
         self.assertIsInstance(control_kamino_converted.tau_j, wp.array)
         self.assertIs(control_kamino_converted.tau_j, control_newton.joint_f)
+        self.assertIs(control_kamino_converted.q_j_ref, control_newton.joint_target_q)
+        self.assertIs(control_kamino_converted.dq_j_ref, control_newton.joint_target_qd)
         self.assertEqual(control_kamino_converted.tau_j.size, model_newton.joint_dof_count)
         self.assertIsNone(control_kamino_converted.tau_j_ref)
         test_util_checks.assert_control_equal(self, control_kamino_converted, control_kamino, excluded=["tau_j_ref"])
@@ -1229,9 +1224,11 @@ class TestStateControlConversions(unittest.TestCase):
         control_newton.joint_act.fill_(42.0)
         control_newton_converted: Control = model_newton.control()
         joint_act_before = control_newton_converted.joint_act.numpy().copy()
-        control_kamino_converted.to_newton(control_newton_converted, model_kamino)
+        control_kamino_converted.to_newton(control_newton_converted)
         self.assertIsInstance(control_newton_converted.joint_f, wp.array)
         self.assertIs(control_newton_converted.joint_f, control_kamino_converted.tau_j)
+        self.assertIs(control_newton_converted.joint_target_q, control_kamino_converted.q_j_ref)
+        self.assertIs(control_newton_converted.joint_target_qd, control_kamino_converted.dq_j_ref)
         self.assertEqual(control_newton_converted.joint_f.size, model_newton.joint_dof_count)
         np.testing.assert_array_equal(control_newton_converted.joint_act.numpy(), joint_act_before)
         test_util_checks.assert_array_attributes_equal(

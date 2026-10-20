@@ -6,7 +6,7 @@
 #
 # Inverse kinematics on a Franka FR3 arm targeting the TCP (fr3_hand_tcp).
 # - Single IKObjectivePosition + IKObjectiveRotation
-# - Gizmo controls the TCP target (with ViewerGL.log_gizmo)
+# - Gizmo controls the TCP target (with viewer.log_gizmo)
 # - On gizmo release, target snaps back to the solved TCP pose
 #
 # Command: python -m newton.examples ik_franka
@@ -28,6 +28,7 @@ class Example:
         self.sim_time = 0.0
 
         self.viewer = viewer
+        self.viewer.picking_enabled = False
 
         # ------------------------------------------------------------------
         # Build a single FR3 (fixed base) + ground
@@ -36,6 +37,7 @@ class Example:
         franka.add_urdf(
             newton.utils.download_asset("franka_emika_panda") / "urdf/fr3_franka_hand.urdf",
             floating=False,
+            joint_damping_mode="passive",
         )
         franka.add_ground_plane()
 
@@ -45,7 +47,7 @@ class Example:
 
         # Set camera to view the scene
         self.viewer.set_camera(
-            pos=wp.vec3(0.0, -2.0, 1.0),
+            pos=wp.vec3(0.0, -2.0, 0.5),
             pitch=0.0,
             yaw=90.0,
         )

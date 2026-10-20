@@ -156,7 +156,6 @@ class Example:
     def __init__(self, viewer, args=None):
         solver_type = getattr(args, "solver", "xpbd") if args is not None else "xpbd"
         self.solver_type = solver_type
-        newton.use_coord_layout_targets = True
         self.fps = 100
         self.frame_dt = 1.0 / self.fps
         self.sim_time = 0.0
@@ -390,7 +389,6 @@ class Example:
             self.solver = newton.solvers.SolverVBD(
                 self.model,
                 iterations=1,
-                rigid_compliant_alm=True,
                 rigid_body_contact_buffer_size=512,
             )
         elif solver_type == "kamino":

@@ -1124,6 +1124,7 @@ def expand_flat_ids(
 
 @wp.kernel
 def reorder_strain_mat(
+    flat_color_offsets: wp.array[int],
     flat_constraint_ids: wp.array[int],
     strain_mat_offsets: wp.array[int],
     strain_mat_columns: wp.array[int],
@@ -1134,8 +1135,14 @@ def reorder_strain_mat(
     reordered_vals_z: wp.array2d[float],
     reordered_n_entries: wp.array[int],
 ):
-    """Reorder strain_mat into entry-major SoA layout for coalesced access."""
+    """Reorder strain_mat into entry-major SoA layout for coalesced access.
+
+    Only the first ``flat_color_offsets[-1]`` flat slots hold colored strain
+    nodes; the remaining slots of capacity-sized arrays are left untouched.
+    """
     fi = wp.tid()
+    if fi >= flat_color_offsets[flat_color_offsets.shape[0] - 1]:
+        return
     tau_i = flat_constraint_ids[fi]
     beg = strain_mat_offsets[tau_i]
     n = strain_mat_offsets[tau_i + 1] - beg

@@ -416,7 +416,7 @@ def _create_unreduced_aggregate_kernel(mantissa_bits: int):
         mantissa_bits: Fixed-point mantissa width from :func:`_fixed_mantissa_bits`.
     """
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def accumulate_unreduced_aggregates_kernel(
         reducer_data: GlobalContactReducerData,
         fixed_accum: wp.array[wp.int64],
@@ -478,7 +478,7 @@ def _create_unreduced_moment_kernel(mantissa_bits: int):
     ``weight_sum`` and ``weighted_pos_sum`` have been finalized.
     """
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def accumulate_unreduced_moment_kernel(
         reducer_data: GlobalContactReducerData,
         fixed_accum: wp.array[wp.int64],
@@ -530,7 +530,7 @@ def _create_finalize_fixed_kernel(mantissa_bits: int):
     the moment accumulator needs them, and the moments last.
     """
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def finalize_fixed_aggregates_kernel(
         reducer_data: GlobalContactReducerData,
         fixed_accum: wp.array[wp.int64],
@@ -604,7 +604,7 @@ def get_reduce_hydroelastic_contacts_kernel(deterministic: bool = False):
         A Warp kernel that registers buffered contacts in the hashtable.
     """
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def reduce_hydroelastic_contacts_kernel(
         reducer_data: GlobalContactReducerData,
         shape_transform: wp.array[wp.transform],
@@ -767,7 +767,7 @@ def _create_accumulate_reduced_depth_kernel(deterministic: bool = False, mantiss
     """
     exported_ids_vec = wp.types.vector(length=VALUES_PER_KEY, dtype=wp.int32)
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def accumulate_reduced_depth_kernel(
         ht_keys: wp.array[wp.uint64],
         ht_values: wp.array[wp.uint64],
@@ -867,7 +867,7 @@ def _create_accumulate_moments_kernel(
     """
     exported_ids_vec = wp.types.vector(length=VALUES_PER_KEY, dtype=wp.int32)
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def accumulate_moments_kernel(
         ht_keys: wp.array[wp.uint64],
         ht_values: wp.array[wp.uint64],
@@ -1033,7 +1033,7 @@ def create_export_hydroelastic_reduced_contacts_kernel(
     exported_ny_vec = wp.types.vector(length=VALUES_PER_KEY, dtype=wp.float32)
     exported_nz_vec = wp.types.vector(length=VALUES_PER_KEY, dtype=wp.float32)
 
-    @wp.kernel(enable_backward=False)
+    @wp.kernel(enable_backward=False, module="unique")
     def export_hydroelastic_reduced_contacts_kernel(
         # Hashtable arrays
         ht_keys: wp.array[wp.uint64],

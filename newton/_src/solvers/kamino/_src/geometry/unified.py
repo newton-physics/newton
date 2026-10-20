@@ -464,6 +464,7 @@ class CollisionPipelineUnifiedKamino:
                     per_world_pairs += (n * (n - 1)) // 2
             self._max_shape_pairs: int = int(per_world_pairs)
         else:
+            wid_np = None
             self._max_shape_pairs: int = (self._num_geoms * (self._num_geoms - 1)) // 2
         self._max_contacts: int = self._max_shape_pairs * self._max_contacts_per_pair
 
@@ -514,19 +515,19 @@ class CollisionPipelineUnifiedKamino:
             self.shape_sdf_data = wp.empty(shape=(0,), dtype=TextureSDFData)
             self.shape_sdf_index = wp.full_like(self._model.geoms.type, -1)
 
+        # Local bounds also certify penetration depths for primitive pairs.
+        self.collision_aabb_lower = self._model.geoms.collision_aabb_lower
+        self.collision_aabb_upper = self._model.geoms.collision_aabb_upper
+
         # Wire mesh / heightfield data from the model when explicit shapes exist;
         # otherwise use empty placeholder arrays that satisfy the narrow-phase interface.
         if _has_explicit:
-            self.collision_aabb_lower = self._model.geoms.collision_aabb_lower
-            self.collision_aabb_upper = self._model.geoms.collision_aabb_upper
             self.voxel_resolution = self._model.geoms.voxel_resolution
             self.heightfield_index = self._model.geoms.heightfield_index
             self.heightfield_data = self._model.geoms.heightfield_data
             self.heightfield_elevations = self._model.geoms.heightfield_elevations
         else:
             with wp.ScopedDevice(self._device):
-                self.collision_aabb_lower = wp.empty(shape=(0,), dtype=wp.vec3)
-                self.collision_aabb_upper = wp.empty(shape=(0,), dtype=wp.vec3)
                 self.voxel_resolution = wp.empty(shape=(0,), dtype=wp.vec3i)
             self.heightfield_index = None
             self.heightfield_data = None
@@ -542,6 +543,11 @@ class CollisionPipelineUnifiedKamino:
                 self.sap_broadphase = BroadPhaseSAP(self.geom_wid, shape_flags=self.shape_flags, device=self._device)
             case "explicit":
                 self.explicit_broadphase = BroadPhaseExplicit()
+                self.explicit_broadphase._warn_large_pair_count(
+                    self.shape_pairs_filtered,
+                    wid_np,
+                    self._model.size.num_worlds,
+                )
             case _:
                 raise ValueError(f"Unsupported broad phase mode: {self._broadphase}")
 
@@ -785,6 +791,9 @@ class CollisionPipelineUnifiedKamino:
             shape_collision_aabb_lower=self.collision_aabb_lower,
             shape_collision_aabb_upper=self.collision_aabb_upper,
             shape_voxel_resolution=self.voxel_resolution,
+            shape_interior_point=self._model.geoms.interior_point,
+            mesh_boundary_flags=self._model.geoms.mesh_boundary_flags,
+            shape_mesh_boundary_start=self._model.geoms.mesh_boundary_start,
             shape_heightfield_index=self.heightfield_index,
             heightfield_data=self.heightfield_data,
             heightfield_elevations=self.heightfield_elevations,
