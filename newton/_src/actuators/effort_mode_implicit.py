@@ -61,6 +61,11 @@ class ImplicitOptions:
     max_iters: int = 8
     """Maximum Newton iterations per articulation group."""
 
+    ls_iterations: int = 8
+    """Maximum step lengths tried per Newton iteration, halving each time, until
+    the residual drops. Each try evaluates the residual once. ``0`` always takes
+    the full Newton step."""
+
     residual_tol: float = 1.0e-5
     """Stop when the residual vector norm falls below this [N·s or N·m·s]."""
 
@@ -192,9 +197,6 @@ _BLOCK_SOLVE_MAX_ROWS = 64
 """Largest padded group size solved by one thread block; larger groups use one thread each."""
 
 
-_LINE_SEARCH_STEPS = 8
-"""Step lengths tried (halving each time) before the solve stops with the current impulse."""
-
 _SUFFICIENT_DECREASE = 1.0e-4
 """Armijo factor: a step of length ``alpha`` is accepted when ``|r|^2`` drops by at least this times ``alpha``."""
 
@@ -275,6 +277,7 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
         params: wp.array2d[float],
         h: float,
         max_iters: int,
+        ls_iterations: int,
         residual_tol: float,
         update_tol: float,
         fd_epsilon: float,
@@ -402,7 +405,7 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
             # full step is always taken, so a step that converges is not shortened.
             alpha = wp.float64(1.0)
             accepted = int(0)
-            for _ls in range(_LINE_SEARCH_STEPS):
+            for _ls in range(wp.max(ls_iterations, 1)):
                 for i in range(ng):
                     vbuf[g, i] = pbuf[g, i] + alpha * rbuf[g, i]
                 rn_t = wp.float64(0.0)
@@ -426,7 +429,11 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
                     )
                     ri = vbuf[g, i] - hd * f_i
                     rn_t += ri * ri
-                if it == 0 or rn_t <= (wp.float64(1.0) - wp.float64(_SUFFICIENT_DECREASE) * alpha) * rn:
+                if (
+                    it == 0
+                    or ls_iterations == 0
+                    or rn_t <= (wp.float64(1.0) - wp.float64(_SUFFICIENT_DECREASE) * alpha) * rn
+                ):
                     accepted = 1
                     break
                 alpha = alpha * wp.float64(0.5)
@@ -435,9 +442,8 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
                 break
             dpn = wp.float64(0.0)
             for i in range(ng):
-                dv = vbuf[g, i] - pbuf[g, i]
                 pbuf[g, i] = vbuf[g, i]
-                dpn += dv * dv
+                dpn += rbuf[g, i] * rbuf[g, i]
             if dpn < upd_tol * upd_tol:
                 break
 
@@ -597,6 +603,7 @@ def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Funct
         params: wp.array2d[float],
         h: float,
         max_iters: int,
+        ls_iterations: int,
         residual_tol: float,
         update_tol: float,
         fd_epsilon: float,
@@ -665,7 +672,7 @@ def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Funct
             alpha = wp.float64(1.0)
             accepted = int(0)
             p_t = p
-            for _ls in range(_LINE_SEARCH_STEPS):
+            for _ls in range(wp.max(ls_iterations, 1)):
                 p_t = p + alpha * step
                 u_t = apply_response(A, P, lane, p_t)
                 r_t = wp.float64(0.0)
@@ -673,15 +680,18 @@ def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Funct
                     qd_t = qd0 + u_t
                     r_t = p_t - hd * force_at(q0 + hd * qd_t, qd_t, tq, tqd, ff, params, clamp_params, si)
                 rn_t = wp.tile_extract(wp.tile_sum(wp.tile(r_t * r_t)), 0)
-                if it == 0 or rn_t <= (wp.float64(1.0) - wp.float64(_SUFFICIENT_DECREASE) * alpha) * rn:
+                if (
+                    it == 0
+                    or ls_iterations == 0
+                    or rn_t <= (wp.float64(1.0) - wp.float64(_SUFFICIENT_DECREASE) * alpha) * rn
+                ):
                     accepted = 1
                     break
                 alpha = alpha * wp.float64(0.5)
             if accepted == 0:
                 break
-            dp = p_t - p
             p = p_t
-            dpn = wp.tile_extract(wp.tile_sum(wp.tile(dp * dp)), 0)
+            dpn = wp.tile_extract(wp.tile_sum(wp.tile(step * step)), 0)
             if dpn < upd_tol * upd_tol:
                 break
 
@@ -1053,6 +1063,7 @@ class _EffortModeImplicit:
                     self._params,
                     float(dt),
                     int(opts.max_iters),
+                    int(opts.ls_iterations),
                     float(opts.residual_tol),
                     float(opts.update_tol),
                     float(opts.fd_epsilon),
@@ -1087,6 +1098,7 @@ class _EffortModeImplicit:
                 self._params,
                 float(dt),
                 int(opts.max_iters),
+                int(opts.ls_iterations),
                 float(opts.residual_tol),
                 float(opts.update_tol),
                 float(opts.fd_epsilon),
