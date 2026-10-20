@@ -1323,6 +1323,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             self._body_contact_scratch = wp.zeros((11, body_count, 3), dtype=float, device=self.device)
             self.body_forces = self._body_contact_scratch[0].view(wp.vec3)
             self.body_torques = self._body_contact_scratch[1].view(wp.vec3)
+            # Hessian slices store consecutive per-body matrices, not scratch[row, body] matrix rows.
             self.body_hessian_ll = self._body_contact_scratch[2:5].reshape((body_count, 3, 3)).view(wp.mat33)
             self.body_hessian_al = self._body_contact_scratch[5:8].reshape((body_count, 3, 3)).view(wp.mat33)
             self.body_hessian_aa = self._body_contact_scratch[8:11].reshape((body_count, 3, 3)).view(wp.mat33)
@@ -3859,7 +3860,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             # solve iterations run on the predicted poses.
             self._rigid_penetration_free_truncation(state_in, contacts)
 
-            if model.joint_count > 0:
+            if self.joint_constraint_count > 0:
                 # Per-step joint setup: penalty-k decay, C0 snapshot, lambda retention,
                 # and automatic per-row rho refresh for compliant ALM.
                 joint_lambda_retention = _rigid_lambda_retention(

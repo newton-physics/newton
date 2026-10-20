@@ -1833,10 +1833,12 @@ def evaluate_rod_stretch_shear_force_hessian(
 @wp.struct
 class RigidForceElementAdjacencyInfo:
     r"""
-    Stores adjacency information for rigid bodies and their connected joints using CSR (Compressed Sparse Row) format.
+    Stores adjacency information for rigid bodies and constrained joints using CSR (Compressed Sparse Row) format.
+
+    FREE joints are excluded; disabled constraints are retained because they can be enabled between steps.
 
     - body_adj_joints: Flattened array of joint IDs. Size is sum over all bodies of N_i, where N_i is the
-      number of joints connected to body i.
+      number of constrained joints connected to body i.
 
     - body_adj_joints_offsets: Offset array indicating where each body's joint list starts.
       Size is |B|+1 (number of bodies + 1).
