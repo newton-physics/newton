@@ -2695,9 +2695,9 @@ class SolverSteel(SolverBase):
         factors (with restitution enabled), also read model data on the host, so issue those
         notifications outside CUDA graph capture.
 
-        With ``enable_joint_friction``, an eager joint DOF or DOF force notification raises
-        :class:`ValueError` for invalid :attr:`~newton.Model.joint_friction`, after applying every
-        other update.
+        With ``enable_joint_friction``, an eager joint DOF or DOF force notification also reads
+        :attr:`~newton.Model.joint_friction` on the host and raises :class:`ValueError` for invalid
+        values, after applying every other update. A captured notification skips this check.
 
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` indicating which model properties changed.
@@ -2778,7 +2778,7 @@ class SolverSteel(SolverBase):
             raise ValueError(f"joint_friction has shape {friction.shape}, expected ({model.joint_dof_count},)")
         if not np.all(np.isfinite(friction)) or np.any(friction < 0.0):
             raise ValueError("joint_friction must be finite and non-negative")
-        unsupported = np.flatnonzero((friction > 0.0) & (self._friction_dof_supported.numpy() == 0))
+        unsupported = np.flatnonzero((friction > 0.0) & ~self._friction_dof_supported_host)
         if unsupported.size:
             joint = int(np.searchsorted(model.joint_qd_start.numpy(), unsupported[0], side="right") - 1)
             if self._model_plan.loop_joint_articulation[joint] >= 0:
@@ -2794,6 +2794,7 @@ class SolverSteel(SolverBase):
             return
         # Joint types are fixed after finalize, so the DOFs that can carry friction rows are too.
         supported, world = self._joint_friction_support(model)
+        self._friction_dof_supported_host = supported
         self._friction_dof_supported = wp.array(supported.astype(np.int32), dtype=wp.int32, device=model.device)
         self._friction_dof_world = wp.array(world, dtype=wp.int32, device=model.device)
         sizes = set()
@@ -3019,7 +3020,7 @@ class SolverSteel(SolverBase):
         if self._joint_friction_warp_kernels:
             friction = model.joint_friction.numpy()
             with np.errstate(invalid="ignore"):
-                per_dof = (friction > 0.0) & np.isfinite(friction) & (self._friction_dof_supported.numpy() != 0)
+                per_dof = (friction > 0.0) & np.isfinite(friction) & self._friction_dof_supported_host
             per_dof &= self._kinematic_dof_mask_host == 0
             self._add_articulation_rows(friction_rows, per_dof.astype(np.int64), self._joint_friction_warp_kernels)
         return limit_rows, friction_rows
