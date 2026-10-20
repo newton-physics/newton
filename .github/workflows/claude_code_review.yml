@@ -152,7 +152,8 @@ jobs:
       # - Choose the review mode: "first" if this workflow has not reviewed
       #   the pull request before, otherwise "follow-up", with a diff of the
       #   changes since the last reviewed commit. Skip the review if this
-      #   commit was already reviewed, for example after a draft round trip.
+      #   commit was already reviewed, for example after a draft round trip,
+      #   or has no changes since the last reviewed commit.
       #   If the first review was incomplete, follow-ups cover the full diff.
       #   publish_automated_review.py writes the markers, the "Reviewed
       #   commit" line, and the incomplete-review warning parsed here.
@@ -214,6 +215,11 @@ jobs:
             elif [ -n "${last_reviewed}" ] \
               && git -C pr-head fetch --no-tags --depth=1 origin "${last_reviewed}"; then
               git -C pr-head diff --no-ext-diff --no-textconv "${last_reviewed}" HEAD > .pr-review/since-last-review.diff
+              if [ ! -s .pr-review/since-last-review.diff ]; then
+                echo "No changes since commit ${last_reviewed}; skipping."
+                echo "run=false" >> "${GITHUB_OUTPUT}"
+                exit 0
+              fi
             fi
           fi
           echo "Review mode: ${mode}; last reviewed commit: ${last_reviewed:-none}; $(wc -l < .pr-review/since-last-review.diff) lines changed since"

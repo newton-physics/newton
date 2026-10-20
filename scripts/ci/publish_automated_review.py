@@ -20,7 +20,9 @@ execution file. Only display names are published, never model IDs.
 
 With ``REVIEW_MODE=follow-up`` (the workflow has reviewed the pull request
 before), only P0 and P1 findings are published, and the summary comment keeps
-the first review and replaces only its follow-up section. The workflow's
+the first review and replaces only its follow-up section. Because the next
+follow-up replaces that section, a follow-up's findings without a line are
+also posted in the body of its pull request review, which stays. The workflow's
 prepare step detects follow-ups from ``SUMMARY_MARKER``, ``FOLLOW_UP_MARKER``,
 the last ``Reviewed commit <sha>`` line, and ``INCOMPLETE_WARNING``, so keep
 these formats in sync with it.
@@ -198,6 +200,32 @@ def run_details(execution_file: str | None) -> list[str]:
     return lines + fallback_notes(execution_file, model_name)
 
 
+def finding_lines(findings: list[dict], with_marker: bool = False) -> list[str]:
+    """Format findings that have no inline comment as list items, optionally with their fingerprint markers."""
+    lines = []
+    for finding in findings:
+        path, line = finding.get("path"), finding.get("line")
+        location = f"`{path}:{line}`" if path and line else f"`{path}`" if path else "General"
+        marker = f" {FINDING_MARKER.format(fingerprint(finding))}" if with_marker else ""
+        lines.append(
+            f"- {severity_label(finding)} {location}: **{clip(finding.get('title'), 300)}** "
+            f"{clip(finding.get('body'), 800)}{marker}"
+        )
+    return lines
+
+
+def review_payload(head_sha: str, inline: list[dict], inline_findings: list[dict], listed: list[dict]) -> dict:
+    """Build a pull request review with the inline comments and, in its body, the findings in ``listed``."""
+    count = count_line(inline_findings)
+    body = [f"**{REVIEWER_NAME}**: {count + '. ' if count else ''}The summary comment has the overview."]
+    if listed:
+        body += ["", "**Not attached to a line:**", "", *finding_lines(listed, with_marker=True)]
+    payload = {"commit_id": head_sha, "event": "COMMENT", "body": "\n".join(body)}
+    if inline:
+        payload["comments"] = inline
+    return payload
+
+
 def summary_body(
     output: dict,
     inline_findings: list[dict],
@@ -219,14 +247,7 @@ def summary_body(
     if inline_findings:
         lines += ["", count_line(inline_findings)]
     if elsewhere:
-        lines += ["", "**Not attached to a line:**", ""]
-        for finding in elsewhere:
-            path, line = finding.get("path"), finding.get("line")
-            location = f"`{path}:{line}`" if path and line else f"`{path}`" if path else "General"
-            lines.append(
-                f"- {severity_label(finding)} {location}: **{clip(finding.get('title'), 300)}** "
-                f"{clip(finding.get('body'), 800)}"
-            )
+        lines += ["", "**Not attached to a line:**", "", *finding_lines(elsewhere)]
     if not output.get("complete", True):
         lines += [
             "",
@@ -260,25 +281,36 @@ def main() -> int:
         findings = blocking
         details.append("Follow-up reviews report only blocking (P0/P1) issues.")
 
-    result = gh_api(
-        "--paginate", f"repos/{repo}/pulls/{pr}/comments", "--jq", f'.[] | select(.user.login == "{BOT_LOGIN}") | .body'
-    )
-    posted = set(FINDING_MARKER_RE.findall(result.stdout))
+    posted: set[str] = set()
+    for endpoint in ("comments", "reviews"):
+        result = gh_api(
+            "--paginate",
+            f"repos/{repo}/pulls/{pr}/{endpoint}",
+            "--jq",
+            f'.[] | select(.user.login == "{BOT_LOGIN}") | .body',
+        )
+        posted.update(FINDING_MARKER_RE.findall(result.stdout))
     valid_lines = commentable_lines(Path(".pr-review/pr.diff").read_text(encoding="utf-8", errors="replace"))
     inline, inline_findings, elsewhere, skipped = plan_comments(findings, valid_lines, posted)
 
-    if inline:
-        review = {
-            "commit_id": head_sha,
-            "event": "COMMENT",
-            "body": f"**{REVIEWER_NAME}**: {count_line(inline_findings)}. The summary comment has the overview.",
-            "comments": inline,
-        }
+    # The next follow-up replaces this follow-up's summary section, so also keep its findings without a line
+    # in the review body, which stays.
+    if inline or (follow_up and elsewhere):
+        review = review_payload(head_sha, inline, inline_findings, elsewhere if follow_up else [])
         result = gh_api("--method", "POST", f"repos/{repo}/pulls/{pr}/reviews", payload=review)
-        if result.returncode != 0:
+        if result.returncode != 0 and inline:
             print(f"::warning::Posting inline comments failed; listing them in the summary: {result.stderr[:500]}")
             elsewhere = [f for f in findings if fingerprint(f) not in posted]
             inline, inline_findings = [], []
+            if follow_up:
+                result = gh_api(
+                    "--method",
+                    "POST",
+                    f"repos/{repo}/pulls/{pr}/reviews",
+                    payload=review_payload(head_sha, [], [], elsewhere),
+                )
+        if result.returncode != 0:
+            print(f"::warning::Posting the review failed: {result.stderr[:500]}")
     print(f"Inline comments: {len(inline)}; summary-only findings: {len(elsewhere)}; already posted: {skipped}")
 
     result = gh_api(
