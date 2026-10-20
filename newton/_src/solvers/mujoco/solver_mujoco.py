@@ -124,6 +124,7 @@ if TYPE_CHECKING:
     from mujoco import MjData, MjModel
     from mujoco_warp import Data as MjWarpData
     from mujoco_warp import Model as MjWarpModel
+    from pxr import Usd, UsdPhysics
 else:
     MjModel = object
     MjData = object
@@ -1045,50 +1046,50 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         return owners
 
     @classmethod
-    def create_from_usd(cls, path: str, model: Model) -> SolverMuJoCo:
-        """Create a solver from a USD file that applies ``NewtonMuJoCoSceneAPI``.
+    def create_from_usd(cls, scene_prim: Usd.Prim | UsdPhysics.Scene, model: Model, **overrides: Any) -> SolverMuJoCo:
+        """Create a solver from a ``UsdPhysics.Scene`` that applies ``NewtonMuJoCoSceneAPI``.
 
-        The ``newton:mujoco:*`` attributes of ``NewtonMuJoCoSceneAPI`` and the
+        The ``newton:mujoco:*`` and ``newton:mjwarp:*`` attributes of ``NewtonMuJoCoSceneAPI``,
+        the ``newton:deterministic`` attribute of ``NewtonSceneAPI``, and the
         ``mjc:flag:contact``, ``mjc:flag:sensor``, and ``mjc:flag:multiccd`` flags authored on the
         scene are passed to the constructor. Only authored values override the constructor
         defaults; integer attributes authored as ``-1`` request the solver's automatic default.
 
         Args:
-            path: Path or URL of the USD stage. The first ``UsdPhysics.Scene`` prim, which is the
-                scene :meth:`ModelBuilder.add_usd` imports model options from, must apply
-                ``NewtonMuJoCoSceneAPI`` and configures the solver.
+            scene_prim: A ``UsdPhysics.Scene`` prim with ``NewtonMuJoCoSceneAPI`` applied, or its
+                typed schema object. Pass the scene that :meth:`ModelBuilder.add_usd` imports model
+                options from, so that the solver arguments and the model's ``mjc:option:*`` values
+                come from the same scene.
             model: The model to simulate, typically built from the same stage. ``mjc:option:*``
                 values reach the solver only if the model was built after calling
                 :meth:`register_custom_attributes` on its builder.
+            **overrides: Keyword arguments for the :class:`SolverMuJoCo` constructor. They take
+                precedence over the values authored in USD.
 
         Returns:
             A solver for ``model``.
 
         Raises:
             ImportError: If ``usd-core`` is not installed.
-            FileNotFoundError: If the stage cannot be opened.
-            ValueError: If the stage has no scene, its first scene does not apply
-                ``NewtonMuJoCoSceneAPI``, or an authored value is invalid.
+            TypeError: If ``scene_prim`` is not a valid ``UsdPhysics.Scene`` prim.
+            ValueError: If ``NewtonMuJoCoSceneAPI`` is not applied or an authored value is invalid.
         """
+        try:
+            from pxr import UsdPhysics
+        except ImportError as error:
+            raise ImportError("Creating a MuJoCo solver from USD requires usd-core.") from error
+
         from ...usd import utils as usd  # noqa: PLC0415
 
-        stage = usd._open_usd_stage(path)
-
-        # Use the scene that ModelBuilder.add_usd() imports model options from, so that the
-        # solver arguments and the model's ``mjc:option:*`` values come from the same scene.
-        scenes = usd.get_physics_scenes(stage)
-        if not scenes:
-            raise ValueError(f"{path}: the stage has no UsdPhysics.Scene prim.")
-        scene_prim = scenes[0].GetPrim()
-        if not usd.has_applied_api_schema(scene_prim, "NewtonMuJoCoSceneAPI"):
-            raise ValueError(
-                f"{path}: NewtonMuJoCoSceneAPI is not applied to {scene_prim.GetPath()}, the first "
-                "UsdPhysics.Scene prim, which is the scene that ModelBuilder.add_usd() uses."
-            )
-        scene_path = str(scene_prim.GetPath())
+        prim = scene_prim.GetPrim() if hasattr(scene_prim, "GetPrim") else scene_prim
+        if not prim or not prim.IsValid() or not prim.IsA(UsdPhysics.Scene):
+            raise TypeError("scene_prim must be a valid UsdPhysics.Scene prim.")
+        scene_path = str(prim.GetPath())
+        if not usd.has_applied_api_schema(prim, "NewtonMuJoCoSceneAPI"):
+            raise ValueError(f"{scene_path}: NewtonMuJoCoSceneAPI is not applied.")
 
         def authored(name: str):
-            attr = scene_prim.GetAttribute(name)
+            attr = prim.GetAttribute(name)
             if not attr or not attr.HasAuthoredValue():
                 return None
             return attr.Get()
@@ -1142,6 +1143,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         kwargs["disable_contacts"] = None if contact_flag is None else not contact_flag
         kwargs["disable_sensors"] = None if sensor_flag is None else not sensor_flag
         kwargs = {key: value for key, value in kwargs.items() if value is not None}
+        kwargs.update(overrides)
 
         return cls(model, **kwargs)
 
