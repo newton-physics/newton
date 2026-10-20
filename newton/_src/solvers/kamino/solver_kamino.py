@@ -264,6 +264,11 @@ class SolverKamino(SolverBase, CouplingInterface):
         Configurations for the LOX dynamics solver.\n
         See :class:`LOXSolverConfig` for more details.\n
         If `None`, default values will be used.
+
+        .. experimental::
+
+            The LOX backend, including all of its options, may change without
+            following the normal deprecation policy.
         """
 
         fk: ForwardKinematicsSolverConfig | None = None
@@ -301,6 +306,10 @@ class SolverKamino(SolverBase, CouplingInterface):
         The forward dynamics solver to use. Construct the config with this value
         so solver-dependent defaults are initialized consistently. Defaults to
         `"padmm"`.
+
+        .. experimental::
+
+            The ``"lox"`` backend may change without following the normal deprecation policy.
         """
 
         angular_velocity_damping: float = 0.0

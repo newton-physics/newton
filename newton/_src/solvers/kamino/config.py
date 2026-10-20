@@ -1022,7 +1022,7 @@ class DVISolverConfig:
 
         DVI-specific tuning options are currently Python-only. The shared
         ``max_solver_iterations`` attribute is registered by
-        :class:`PADMMSolverConfig` and parsed by both dynamics solvers.
+        :class:`PADMMSolverConfig` and parsed by every dynamics solver.
         """
 
     @override
@@ -1300,9 +1300,10 @@ class LOXSolverConfig:
     contact_spatial_friction: bool = False
     """Enable coupled sliding, torsional, and rolling friction.
 
-    Uses shape ``mu_torsional`` and ``mu_rolling`` coefficients [m], averaged
-    arithmetically between the two shapes. All friction components share one
-    elliptic friction budget. Zero angular coefficients retain the 3D path.
+    Uses shape ``mu_torsional`` and ``mu_rolling`` coefficients [m], mixed between the two
+    shapes like the sliding friction for Newton contacts, and averaged for Kamino's own pipelines.
+    All friction components share one elliptic friction budget. Zero angular coefficients
+    retain the 3D path.
     """
 
     contact_warmstart_method: Literal[
