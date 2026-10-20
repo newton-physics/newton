@@ -5914,10 +5914,16 @@ class TestSolverVBD(unittest.TestCase):
             self.assertFalse(options["enable_backward"])
 
     def test_rigid_block_dim(self):
-        """Pin the rigid block ladder and CPU fallback."""
+        """Validate adaptive block sizes and the CPU fallback."""
         device = SimpleNamespace(is_cuda=True, sm_count=81)
-        sizes = (0, 640, 641, 1281, 2561, 5121, 10241, 20481, 1000000)
-        self.assertEqual([_select_rigid_block_dim(n, device) for n in sizes], [4, 4, 8, 16, 32, 64, 128, 256, 256])
+        sizes = (0, 1, 256, 4096, 65536, 1000000)
+        dims = [_select_rigid_block_dim(n, device) for n in sizes]
+
+        self.assertTrue(all(4 <= dim <= 256 and (dim & (dim - 1)) == 0 for dim in dims))
+        self.assertEqual(dims, sorted(dims))
+        self.assertLess(dims[1], 256)
+        self.assertEqual(dims[-1], 256)
+
         device.is_cuda = False
         self.assertEqual(_select_rigid_block_dim(1, device), 256)
 

@@ -3885,27 +3885,6 @@ def reset_rigid_state(
 
 
 @wp.kernel
-def _build_body_joint_adjacency(
-    body_ids: wp.array[wp.int32],
-    joint_ids: wp.array[wp.int32],
-    counts: wp.array[wp.int32],
-    offsets: wp.array[wp.int32],
-    adjacent_joints: wp.array[wp.int32],
-):
-    # Build once on CPU to preserve joint order without atomics or sorting.
-    for edge in range(body_ids.shape[0]):
-        body = body_ids[edge]
-        counts[body] = counts[body] + 1
-    for body in range(counts.shape[0]):
-        offsets[body + 1] = offsets[body] + counts[body]
-        counts[body] = 0
-    for edge in range(body_ids.shape[0]):
-        body = body_ids[edge]
-        adjacent_joints[offsets[body] + counts[body]] = joint_ids[edge]
-        counts[body] = counts[body] + 1
-
-
-@wp.kernel
 def refresh_body_structural_k(
     joint_type: wp.array[int],
     joint_enabled: wp.array[bool],

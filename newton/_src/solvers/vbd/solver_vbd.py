@@ -69,7 +69,6 @@ from .rigid_vbd_kernels import (
     CONTACT_HISTORY_NO_BUFFER,
     RigidContactHistory,
     RigidForceElementAdjacencyInfo,
-    _build_body_joint_adjacency,
     _count_body_particle_attachments_per_body,
     _fill_body_particle_attachments_per_body,
     accumulate_body_body_contacts_per_body,
@@ -1355,6 +1354,18 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             )
             self.body_particle_contact_overflow_max = wp.zeros(1, dtype=wp.int32, device=self.device)
 
+            # Launch dimensions are fixed for the solver's lifetime.
+            self._rigid_body_block_dim = _select_rigid_block_dim(model.body_count, self.device)
+            self._rigid_joint_block_dim = _select_rigid_block_dim(model.joint_count, self.device)
+            self._rigid_color_block_dims = tuple(
+                (
+                    _select_rigid_block_dim(group.size, self.device),
+                    _select_rigid_block_dim(group.size * _NUM_CONTACT_THREADS_PER_BODY, self.device),
+                    _select_rigid_block_dim(group.size * self._body_particle_contact_threads, self.device),
+                )
+                for group in model.body_color_groups
+            )
+
             # Joint penalty state and material data.
             (
                 self.joint_penalty_k,
@@ -2473,23 +2484,13 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         joint_ids = np.repeat(constrained_joints, 2)
         valid = body_ids >= 0  # Exclude world endpoints.
         body_ids, joint_ids = body_ids[valid], joint_ids[valid]
-        with wp.ScopedDevice("cpu"):
-            adjacency.body_adj_joints = wp.empty(len(joint_ids), dtype=wp.int32)
-            adjacency.body_adj_joints_offsets = wp.zeros(model.body_count + 1, dtype=wp.int32)
-            if len(joint_ids):
-                wp.launch(
-                    _build_body_joint_adjacency,
-                    dim=1,
-                    inputs=[
-                        wp.array(body_ids, dtype=wp.int32),
-                        wp.array(joint_ids, dtype=wp.int32),
-                        wp.zeros(model.body_count, dtype=wp.int32),
-                        adjacency.body_adj_joints_offsets,
-                        adjacency.body_adj_joints,
-                    ],
-                    device="cpu",
-                )
-        return adjacency.to(self.device)
+        # A stable sort preserves ascending joint order within each body.
+        order = np.argsort(body_ids, kind="stable")
+        offsets = np.zeros(model.body_count + 1, dtype=np.int32)
+        offsets[1:] = np.cumsum(np.bincount(body_ids, minlength=model.body_count))
+        adjacency.body_adj_joints = wp.array(joint_ids[order], dtype=wp.int32, device=self.device)
+        adjacency.body_adj_joints_offsets = wp.array(offsets, dtype=wp.int32, device=self.device)
+        return adjacency
 
     def _compute_tendon_force_element_adjacency(self, model: Model) -> TendonForceElementAdjacencyInfo:
         """Build CSR adjacency for authored and possible dynamic bypass segments."""
@@ -3852,7 +3853,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     self.body_inertia_q,
                 ],
                 dim=model.body_count,
-                block_dim=_select_rigid_block_dim(model.body_count, self.device),
+                block_dim=self._rigid_body_block_dim,
                 device=self.device,
             )
 
@@ -3917,7 +3918,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         self.joint_limit_lambda,
                         self.joint_angle_prev,
                     ],
-                    block_dim=_select_rigid_block_dim(model.joint_count, self.device),
+                    block_dim=self._rigid_joint_block_dim,
                     device=self.device,
                 )
 
@@ -3953,7 +3954,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         self.joint_C_fric,
                     ],
                     dim=model.joint_count,
-                    block_dim=_select_rigid_block_dim(model.joint_count, self.device),
+                    block_dim=self._rigid_joint_block_dim,
                     device=self.device,
                 )
 
@@ -4423,6 +4424,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
         # Gauss-Seidel-style per-color updates
         for color in range(len(body_color_groups)):
             color_group = body_color_groups[color]
+            solve_block_dim, body_contact_block_dim, particle_contact_block_dim = self._rigid_color_block_dims[color]
 
             if model.attachment_particle_body_count > 0:
                 wp.launch(
@@ -4499,9 +4501,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         self.body_hessian_al,
                         self.body_hessian_aa,
                     ],
-                    block_dim=_select_rigid_block_dim(
-                        color_group.size * self._body_particle_contact_threads, self.device
-                    ),
+                    block_dim=particle_contact_block_dim,
                     device=self.device,
                 )
 
@@ -4552,7 +4552,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                         self.body_hessian_al,
                         self.body_hessian_aa,
                     ],
-                    block_dim=_select_rigid_block_dim(color_group.size * _NUM_CONTACT_THREADS_PER_BODY, self.device),
+                    block_dim=body_contact_block_dim,
                     device=self.device,
                 )
 
@@ -4636,7 +4636,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     state_in.body_q,
                 ],
                 dim=color_group.size,
-                block_dim=_select_rigid_block_dim(color_group.size, self.device),
+                block_dim=solve_block_dim,
                 device=self.device,
             )
             # Truncate this color's pose updates before the next color accumulates
@@ -4760,7 +4760,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     self.joint_drive_lambda,  # input/output
                     self.joint_limit_lambda,  # input/output
                 ],
-                block_dim=_select_rigid_block_dim(model.joint_count, self.device),
+                block_dim=self._rigid_joint_block_dim,
                 device=self.device,
             )
 
@@ -5067,7 +5067,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
             ],
             outputs=[self.body_q_prev, state_out.body_qd, state_in.body_qd, state_out.body_q],
             dim=model.body_count,
-            block_dim=_select_rigid_block_dim(model.body_count, self.device),
+            block_dim=self._rigid_body_block_dim,
             device=self.device,
         )
 
@@ -5096,7 +5096,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                     self.joint_dkappa_prev,
                 ],
                 dim=model.joint_count,
-                block_dim=_select_rigid_block_dim(model.joint_count, self.device),
+                block_dim=self._rigid_joint_block_dim,
                 device=self.device,
             )
 
