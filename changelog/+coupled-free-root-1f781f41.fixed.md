@@ -1,0 +1,1 @@
+Fix `SolverCoupled` entries that own a body whose incoming articulation joint the entry view hides: reduced-coordinate solvers welded the body in place and `SolverMuJoCo` raised. The compact entry view now gives such a body a FREE root joint matching `ModelBuilder.add_joint_free()`.

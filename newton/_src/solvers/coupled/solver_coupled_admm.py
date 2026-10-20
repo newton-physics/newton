@@ -1218,10 +1218,24 @@ class SolverCoupledADMM(SolverCoupled):
         for joint, child in enumerate(joint_child):
             incoming_joint_by_body.setdefault(int(child), joint)
 
+        # A synthesized FREE root joint moves its body together with the view
+        # articulation it belongs to.
+        free_root_dofs: dict[int, list[int]] = {}
+        free_root_joints = entry.free_root_joints
+        if free_root_joints is not None:
+            view_qd_start = entry.view.joint_qd_start.numpy()
+            for body_local, row in zip(free_root_joints.body_local, free_root_joints.articulation_local, strict=True):
+                free_root_dofs[body_local] = [
+                    dof
+                    for joint, joint_row in enumerate(free_root_joints.joint_articulation_local)
+                    if joint_row == row
+                    for dof in range(int(view_qd_start[joint]), int(view_qd_start[joint + 1]))
+                ]
+
         starts: list[int] = []
         counts: list[int] = []
         indices: list[int] = []
-        for global_body in entry.body_local_to_global.numpy():
+        for body_local, global_body in enumerate(entry.body_local_to_global.numpy()):
             starts.append(len(indices))
             joint = incoming_joint_by_body.get(int(global_body))
             if joint is None:
@@ -1249,6 +1263,7 @@ class SolverCoupledADMM(SolverCoupled):
                     local_dof = int(joint_dof_global_to_local[global_dof])
                     if local_dof >= 0:
                         local_dofs.append(local_dof)
+            local_dofs.extend(free_root_dofs.get(body_local, ()))
 
             unique_dofs = sorted(set(local_dofs))
             indices.extend(unique_dofs)

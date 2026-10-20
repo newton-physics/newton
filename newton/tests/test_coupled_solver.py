@@ -18,6 +18,7 @@ from newton._src.solvers.mujoco.equality import _add_equality_constraint
 from newton._src.solvers.mujoco.kernels import eval_mujoco_coupling_gravity_acceleration_kernel
 from newton.solvers import (
     SolverBase,
+    SolverFeatherstone,
     SolverImplicitMPM,
     SolverMuJoCo,
     SolverSemiImplicit,
@@ -2925,6 +2926,81 @@ class TestSolverCoupledMuJoCoVBDMultiEnv(unittest.TestCase):
         self.assertEqual(ends.tolist(), [2, 4])
         # End indices must stay within the compacted joint range (no OOB).
         self.assertTrue(all(e <= view.joint_count for e in ends))
+
+    def test_split_articulation_subtree_gets_free_root_joint_per_world(self):
+        """Root an entry's split articulation subtree at a FREE joint in every world.
+
+        The unowned ball joint between the entries is hidden from both views.
+        The arm entry's compact view replaces it with a FREE joint that heads
+        the remaining revolute subtree, so the reduced-coordinate arm falls
+        with the base instead of staying welded in place.
+        """
+        world_count = 2
+        template = newton.ModelBuilder()
+        inertia = wp.mat33(np.eye(3) * 0.01)
+        base = template.add_link(mass=1.0, inertia=inertia)
+        upper = template.add_link(
+            xform=wp.transform(wp.vec3(0.3, 0.0, 0.0), wp.quat_identity()), mass=1.0, inertia=inertia
+        )
+        lower = template.add_link(
+            xform=wp.transform(wp.vec3(0.6, 0.0, 0.0), wp.quat_identity()), mass=1.0, inertia=inertia
+        )
+        half = wp.transform(wp.vec3(0.15, 0.0, 0.0), wp.quat_identity())
+        half_back = wp.transform(wp.vec3(-0.15, 0.0, 0.0), wp.quat_identity())
+        root = template.add_joint_free(base)
+        shoulder = template.add_joint_ball(base, upper, parent_xform=half, child_xform=half_back)
+        elbow = template.add_joint_revolute(
+            upper, lower, axis=(0.0, 1.0, 0.0), parent_xform=half, child_xform=half_back
+        )
+        template.add_articulation([root, shoulder, elbow])
+        builder = newton.ModelBuilder()
+        builder.replicate(template, world_count=world_count)
+        model = builder.finalize(device="cpu")
+
+        bpw, jpw = template.body_count, template.joint_count
+
+        def expand(ids, stride):
+            return [w * stride + i for w in range(world_count) for i in ids]
+
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="base", solver=SolverFeatherstone, bodies=expand([base], bpw), joints=expand([root], jpw)
+                ),
+                SolverCoupled.Entry(
+                    name="arm",
+                    solver=SolverFeatherstone,
+                    bodies=expand([upper, lower], bpw),
+                    joints=expand([elbow], jpw),
+                ),
+            ],
+        )
+
+        view = coupled.view("arm")
+        free, revolute = int(newton.JointType.FREE), int(newton.JointType.REVOLUTE)
+        np.testing.assert_array_equal(view.joint_type.numpy(), [free, revolute] * world_count)
+        np.testing.assert_array_equal(view.joint_parent.numpy(), [-1, 0, -1, 2])
+        np.testing.assert_array_equal(view.joint_child.numpy(), [0, 1, 2, 3])
+        np.testing.assert_array_equal(view.joint_ancestor.numpy(), [-1, 0, -1, 2])
+        np.testing.assert_array_equal(view.joint_world.numpy(), [0, 0, 1, 1])
+        np.testing.assert_array_equal(view.articulation_start.numpy(), [0, 2, 4])
+        np.testing.assert_array_equal(view.articulation_end.numpy(), [2, 4])
+        np.testing.assert_array_equal(view.joint_q_start.numpy(), [0, 7, 8, 15, 16])
+        np.testing.assert_array_equal(view.joint_coord_world_start.numpy(), [0, 8, 16, 16])
+        np.testing.assert_array_equal(view.joint_dof_world_start.numpy(), [0, 7, 14, 14])
+        entry = coupled._entries["arm"]
+        np.testing.assert_array_equal(entry.joint_coord_local_to_global.numpy()[:7], [-1] * 7)
+        self.assertEqual(entry.joint_dynamics_disabled_local_indices.shape[0], 0)
+
+        state_0, state_1 = model.state(), model.state()
+        for _ in range(10):
+            coupled.step(state_0, state_1, model.control(), None, 1.0 / 120.0)
+            state_0, state_1 = state_1, state_0
+
+        body_z = state_0.body_q.numpy()[:, 2].reshape(world_count, bpw)
+        self.assertLess(body_z[0, base], -0.01)
+        np.testing.assert_allclose(body_z, np.full_like(body_z, body_z[0, base]), atol=1.0e-5)
 
 
 def _assert_proxy_reset_buffers(test, model, coupled, mapping, entity_world):
