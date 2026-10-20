@@ -52,24 +52,11 @@ _TRANSPARENT_INSTANCER_SUFFIX = "/__transparent__"
 
 
 @wp.kernel
-def _capsule_duplicate_vec3(in_values: wp.array[wp.vec3], out_values: wp.array[wp.vec3]):
-    # Duplicate N values into 2N values (two caps per capsule).
+def _capsule_render_scales(scales: wp.array[wp.vec3], out_scales: wp.array[wp.vec3]) -> None:
     tid = wp.tid()
-    out_values[tid] = in_values[tid // 2]
-
-
-@wp.kernel
-def _capsule_duplicate_vec4(in_values: wp.array[wp.vec4], out_values: wp.array[wp.vec4]):
-    # Duplicate N values into 2N values (two caps per capsule).
-    tid = wp.tid()
-    out_values[tid] = in_values[tid // 2]
-
-
-@wp.kernel
-def _capsule_duplicate_float(in_values: wp.array[wp.float32], out_values: wp.array[wp.float32]):
-    # Duplicate N values into 2N values (two caps per capsule).
-    tid = wp.tid()
-    out_values[tid] = in_values[tid // 2]
+    scale = scales[tid]
+    # Keep the axial basis nonzero for the zero-length (sphere) case.
+    out_scales[tid] = wp.vec3(scale[0], scale[1], scale[0] + scale[2])
 
 
 @wp.kernel
@@ -77,41 +64,16 @@ def _capsule_build_body_scales(
     shape_scale: wp.array[wp.vec3],
     shape_indices: wp.array[wp.int32],
     out_scales: wp.array[wp.vec3],
-):
+) -> None:
     # model.shape_scale stores capsule params as (radius, half_height, _unused).
     # ViewerGL instances scale meshes with a full (x, y, z) vector, so we expand to
-    # (radius, radius, half_height) for the cylinder body.
+    # (radius, radius, half_height) for the capsule instance parameters.
     tid = wp.tid()
     s = shape_indices[tid]
     scale = shape_scale[s]
     r = scale[0]
     half_height = scale[1]
     out_scales[tid] = wp.vec3(r, r, half_height)
-
-
-@wp.kernel
-def _capsule_build_cap_xforms_and_scales(
-    capsule_xforms: wp.array[wp.transform],
-    capsule_scales: wp.array[wp.vec3],
-    out_xforms: wp.array[wp.transform],
-    out_scales: wp.array[wp.vec3],
-):
-    tid = wp.tid()
-    i = tid // 2
-    # Each capsule has two caps; even tid is the +Z end, odd tid is the -Z end.
-    is_plus_end = (tid % 2) == 0
-
-    t = capsule_xforms[i]
-    p = wp.transform_get_translation(t)
-    q = wp.transform_get_rotation(t)
-
-    r = capsule_scales[i][0]
-    half_height = capsule_scales[i][2]
-    offset_local = wp.vec3(0.0, 0.0, half_height if is_plus_end else -half_height)
-    p2 = p + wp.quat_rotate(q, offset_local)
-
-    out_xforms[tid] = wp.transform(p2, q)
-    out_scales[tid] = wp.vec3(r, r, r)
 
 
 @wp.kernel
@@ -746,7 +708,7 @@ class ViewerGL(ViewerBase):
 
         # Write-index: maps model shape index → packed output position (-1 = skip)
         write_np = np.full(shape_count, -1, dtype=np.int32)
-        # World xforms output (capsules read these for cap sphere computation)
+        # World transforms for the capsule instancing path
         all_world_xforms = wp.empty(total, dtype=wp.transform, device=device)
 
         for _key, shapes, offset, n in groups:
@@ -1160,6 +1122,14 @@ class ViewerGL(ViewerBase):
         if isinstance(transparent_instancer, MeshInstancerGL):
             transparent_instancer.hidden = True
 
+    def _get_capsule_mesh(self) -> str:
+        """Share one closed prototype across all capsule sizes in this layer."""
+        name = self._qualify("/geometry/_capsule_instancer/mesh")
+        if name not in self.objects:
+            self.log_geo(name, nt.GeoType.CAPSULE, (1.0, 1.0), 0.0, True, hidden=True)
+            self.objects[name]._capsule_instancing = True
+        return name
+
     @override
     def log_capsules(
         self,
@@ -1171,117 +1141,33 @@ class ViewerGL(ViewerBase):
         materials: wp.array[wp.vec4] | None,
         hidden: bool = False,
         opacities: wp.array[wp.float32] | None = None,
-    ):
+    ) -> None:
+        """Render continuous capsule surfaces, batching arbitrary radii and lengths.
+
+        The shared prototype comes from :meth:`newton.Mesh.create_capsule`.
+        Instance scales are ``(radius, radius, half_height)``; the shader scales
+        the hemispheres uniformly and translates them to the cylinder ends.
+        The supplied mesh path is unused in this specialized backend.
         """
-        Render capsules using instanced cylinder bodies + instanced sphere end caps.
-
-        This specialized path improves batching for varying-length capsules by reusing two
-        prototype meshes (unit cylinder + unit sphere) and applying per-instance transforms/scales.
-
-        Args:
-            name: Unique name for the capsule instancer group.
-            mesh: Capsule prototype mesh path from ViewerBase (unused in this backend).
-            xforms: Capsule instance transforms (wp.transform), length N.
-            scales: Capsule body instance scales, expected (radius, radius, half_height), length N.
-            colors: Capsule instance colors (wp.vec3), length N or None (no update).
-            materials: Capsule instance materials (wp.vec4), length N or None (no update).
-            hidden: Whether the instances are hidden.
-            opacities: Capsule display opacities (wp.float32), length N or None (no update).
-        """
-        # Route the user-supplied capsule batch name through the active
-        # layer so two layers calling ``log_capsules`` with the same path
-        # don't overwrite each other (idempotent on already-qualified names).
-        name = self._qualify(name)
-
-        # Render capsules via instanced cylinder body + instanced sphere caps.
-        # Prototype mesh keys are qualified with the active layer so a
-        # ``clear_model()`` on one layer does not destroy prototypes shared
-        # by capsule instancers in other live layers.
-        sphere_mesh = self._qualify("/geometry/_capsule_instancer/sphere")
-        cylinder_mesh = self._qualify("/geometry/_capsule_instancer/cylinder")
-
-        if sphere_mesh not in self.objects:
-            self.log_geo(sphere_mesh, nt.GeoType.SPHERE, (1.0,), 0.0, True, hidden=True)
-        if cylinder_mesh not in self.objects:
-            self.log_geo(cylinder_mesh, nt.GeoType.CYLINDER, (1.0, 1.0), 0.0, True, hidden=True)
-
-        # Cylinder body uses the capsule transforms and (radius, radius, half_height) scaling.
-        cyl_name = f"{name}/capsule_cylinder"
-        cap_name = f"{name}/capsule_caps"
-
-        # If hidden, just hide the instancers (skip all per-frame cap buffer work).
-        if hidden:
-            self.log_instances(cyl_name, cylinder_mesh, None, None, None, None, hidden=True)
-            self.log_instances(cap_name, sphere_mesh, None, None, None, None, hidden=True)
-            return
-
+        render_scales = None
+        if not hidden and scales is not None:
+            render_scales = wp.empty_like(scales)
+            wp.launch(
+                _capsule_render_scales,
+                dim=len(scales),
+                inputs=[scales],
+                outputs=[render_scales],
+                device=self.device,
+                record_tape=False,
+            )
         self.log_instances(
-            cyl_name, cylinder_mesh, xforms, scales, colors, materials, opacities=opacities, hidden=hidden
-        )
-
-        # Sphere caps: two spheres per capsule, offset by ±half_height along local +Z.
-        n = len(xforms) if xforms is not None else 0
-        if n == 0:
-            self.log_instances(cap_name, sphere_mesh, None, None, None, None, hidden=True)
-            return
-
-        cap_count = n * 2
-        cap_xforms = wp.empty(cap_count, dtype=wp.transform, device=self.device)
-        cap_scales = wp.empty(cap_count, dtype=wp.vec3, device=self.device)
-
-        wp.launch(
-            _capsule_build_cap_xforms_and_scales,
-            dim=cap_count,
-            inputs=[xforms, scales],
-            outputs=[cap_xforms, cap_scales],
-            device=self.device,
-            record_tape=False,
-        )
-
-        cap_colors = None
-        if colors is not None:
-            cap_colors = wp.empty(cap_count, dtype=wp.vec3, device=self.device)
-            wp.launch(
-                _capsule_duplicate_vec3,
-                dim=cap_count,
-                inputs=[colors],
-                outputs=[cap_colors],
-                device=self.device,
-                record_tape=False,
-            )
-
-        cap_materials = None
-        if materials is not None:
-            cap_materials = wp.empty(cap_count, dtype=wp.vec4, device=self.device)
-            wp.launch(
-                _capsule_duplicate_vec4,
-                dim=cap_count,
-                inputs=[materials],
-                outputs=[cap_materials],
-                device=self.device,
-                record_tape=False,
-            )
-
-        cap_opacities = None
-        if opacities is not None:
-            cap_opacities = wp.empty(cap_count, dtype=wp.float32, device=self.device)
-            wp.launch(
-                _capsule_duplicate_float,
-                dim=cap_count,
-                inputs=[opacities],
-                outputs=[cap_opacities],
-                device=self.device,
-                record_tape=False,
-            )
-
-        self.log_instances(
-            cap_name,
-            sphere_mesh,
-            cap_xforms,
-            cap_scales,
-            cap_colors,
-            cap_materials,
-            opacities=cap_opacities,
+            name,
+            self._get_capsule_mesh(),
+            xforms,
+            render_scales,
+            colors,
+            materials,
+            opacities=opacities,
             hidden=hidden,
         )
 

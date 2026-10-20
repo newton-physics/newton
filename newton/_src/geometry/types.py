@@ -417,19 +417,22 @@ class Mesh:
         compute_uvs: bool = True,
         compute_inertia: bool = True,
     ) -> "Mesh":
-        """Create a capsule mesh.
+        """Create a watertight capsule mesh with shared equators and pole vertices.
 
         Args:
-            radius [m]: Radius of the capsule hemispheres and cylindrical body.
-            half_height [m]: Half-height of the cylindrical section.
+            radius [m]: Positive radius of the capsule hemispheres and cylindrical body.
+            half_height [m]: Nonnegative half-height of the cylindrical section. Zero creates a sphere.
             up_axis: Long axis as a ``newton.Axis`` value.
-            segments: Tessellation resolution for both caps and body.
+            segments: Tessellation resolution for both caps and body, at least 3.
             compute_normals: If ``True``, generate per-vertex normals.
             compute_uvs: If ``True``, generate per-vertex UV coordinates.
             compute_inertia: If ``True``, compute mesh mass properties.
 
         Returns:
             A capsule mesh.
+
+        Raises:
+            ValueError: If the dimensions, segment count, or up axis are invalid.
         """
         from ..utils.mesh import create_mesh_capsule  # noqa: PLC0415
 
