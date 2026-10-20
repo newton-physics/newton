@@ -85,9 +85,14 @@ class TestMuJoCoActuatorAuthoring(unittest.TestCase):
 
         for kwargs, error in (
             ({"input": "pos vel"}, NotImplementedError),
+            ({"input": "position"}, NotImplementedError),
+            ({"input": "velocity"}, NotImplementedError),
+            ({"input": "anything.pos"}, NotImplementedError),
+            ({"input": "anything_vel"}, NotImplementedError),
             ({"motorconst": (1.0, 2.0, 3.0)}, ValueError),
             ({"custom_attributes": {"mujoco:actuator_ctrlspec": 8}}, ValueError),
         ):
+            kwargs.setdefault("motorconst", (0.05,))
             with self.subTest(kwargs=kwargs), self.assertRaises(error):
                 mujoco.add_actuator_dcmotor(builder, target, resistance=2.0, **kwargs)
         self.assertEqual(builder._custom_frequency_counts["mujoco:actuator"], 3)

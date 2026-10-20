@@ -783,7 +783,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         - :attr:`GENERAL`: Used with :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.CTRL_DIRECT` mode for motor/general actuators
         - :attr:`DCMOTOR`: Set by the MJCF importer and :func:`~newton.solvers.mujoco.add_actuator_dcmotor`
           for natively resolved DC-motor parameters.
-          Do not set this value manually. Runtime edits to ``actuator_gainprm``, ``actuator_biasprm``,
+          Use the helper or importer to populate the associated parameters. Runtime edits to ``actuator_gainprm``, ``actuator_biasprm``,
           ``actuator_dynprm``, and ``actuator_forcerange`` are ignored for these rows.
           Compiled MJCF and USD DC motors instead use :attr:`GENERAL` with ``actuator_gaintype`` set to DC motor.
         """
@@ -10744,7 +10744,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         2. Entity types match across corresponding entities in each world
         3. Corresponding joints have the same linear/angular DOF counts in each world
         4. Global world (-1) only contains static shapes (no bodies, joints, or constraints)
-        5. High-level DC-motor actuator layouts and parameters match across worlds
+        5. Actuator layouts, template-only properties, and high-level DC-motor parameters match across worlds
 
         Args:
             model: The Newton model to validate.
@@ -10808,7 +10808,25 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if world_count <= 1:
             return
 
-        dcmotor.validate_worlds(model, dcmotor_type=SolverMuJoCo.CtrlType.DCMOTOR)
+        actuator_world_attribute = getattr(model.mujoco, "actuator_world", None)
+        if actuator_world_attribute is not None:
+            # Group once in actuator order; these fields are not batched by MuJoCo-Warp.
+            actuator_world = actuator_world_attribute.numpy()
+            rows = np.flatnonzero((actuator_world >= 0) & (actuator_world < world_count))
+            row_counts = np.bincount(actuator_world[rows], minlength=world_count)
+            if np.any(row_counts != row_counts[0]):
+                raise ValueError("SolverMuJoCo with separate_worlds=True requires matching actuator layouts.")
+            rows = rows[np.argsort(actuator_world[rows], kind="stable")].reshape(world_count, row_counts[0])
+            for name in ("actuator_damping", "actuator_dampingpoly", "actuator_armature", "actuator_ctrlspec"):
+                attribute = getattr(model.mujoco, name, None)
+                if attribute is not None:
+                    values = attribute.numpy()[rows]
+                    if np.any(values != values[0]):
+                        raise ValueError(
+                            "SolverMuJoCo with separate_worlds=True requires "
+                            f"identical actuator template parameters (mujoco:{name}) across worlds."
+                        )
+            dcmotor.validate_worlds(model, rows, dcmotor_type=SolverMuJoCo.CtrlType.DCMOTOR)
 
         # --- Check entity count homogeneity ---
         # Count entities per world (excluding global shapes)

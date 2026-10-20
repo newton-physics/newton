@@ -23,7 +23,6 @@ if TYPE_CHECKING:
 
 _INPUT_CODES = {"pos": 1, "vel": 2, "voltage": 8}
 _INPUT_NAMES = {code: name for name, code in _INPUT_CODES.items()}
-_INPUT_ALIASES = {"position": "pos", "velocity": "vel"}
 _CONSTRUCTION_PARAMETERS = (
     "actuator_gainprm",
     "actuator_biasprm",
@@ -35,19 +34,12 @@ _CONSTRUCTION_PARAMETERS = (
     "actuator_actearly",
     "actuator_forcerange",
     "actuator_forcelimited",
-    "actuator_ctrlspec",
 )
 
 
 def parse_input(value: str | int) -> int:
     """Parse a supported single-input control signature or reject unsupported inputs."""
-    text = str(value).strip().lower()
-    try:
-        signature = int(value) if isinstance(value, int | np.integer) else int(text)
-    except ValueError:
-        # Accept enum representations as well as the MJCF names and Newton aliases.
-        name = text.rsplit(".", 1)[-1].rsplit("_", 1)[-1]
-        signature = _INPUT_CODES.get(_INPUT_ALIASES.get(name, name))
+    signature = int(value) if isinstance(value, int | np.integer) else _INPUT_CODES.get(value)
     if signature not in _INPUT_CODES.values():
         raise NotImplementedError(
             "SolverMuJoCo supports one DC-motor control input per actuator row: "
@@ -96,37 +88,49 @@ def add_actuator_dcmotor(
     Requires the optional ``mujoco`` package (included in ``newton[sim]``),
     but not MuJoCo-Warp. Native MuJoCo resolves the electrical and controller
     parameters; these are construction-time properties, not runtime-editable
-    general-actuator gains. No model is compiled by this helper.
+    general-actuator gains. No model is compiled by this helper. Parameter
+    vectors are zero-padded before native default inference, as in MJCF.
+    Force limits are derived from ``saturation``, not separate
+    ``forcerange``/``forcelimited`` options, matching the native shortcut.
+
+    Parameter ordering and inference follow the
+    `MuJoCo DC-motor reference <https://mujoco.readthedocs.io/en/stable/XMLreference.html#actuator-dcmotor>`_.
 
     Args:
         builder: Model builder receiving the actuator.
         target: Typed actuator transmission target.
-        motorconst: Torque and back-EMF constants, up to two values.
+        motorconst: Torque constant [N·m/A] and back-EMF constant [V·s/rad].
         resistance: Winding resistance [ohm]. Supply sufficient nonzero
             ``motorconst``, ``resistance``, or ``nominal`` values for native inference.
-        nominal: Rated voltage, no-load current, and speed, up to three values.
-        saturation: Native current/torque saturation parameters, up to three values.
-        inductance: Native inductance parameters, up to two values.
-        cogging: Cogging amplitude, frequency, and phase, up to three values.
-        controller: Native cascaded controller parameters, up to six values.
-        thermal: Native winding thermal parameters, up to six values.
-        lugre: Native LuGre friction parameters, up to five values.
+        nominal: Voltage [V], stall torque [N·m], and no-load speed [rad/s].
+        saturation: Torque [N·m], current [A], and current-rate [A/s] limits.
+        inductance: Winding inductance [H] and electrical time constant [s].
+        cogging: Torque amplitude [N·m], pole count, and phase [rad].
+        controller: ``kp``, ``ki``, ``kd``, slew limit, integral limit, and voltage
+            limit; see the linked native reference for input-dependent units.
+        thermal: Thermal resistance [K/W], capacitance [J/K], time constant [s],
+            resistance temperature coefficient [1/K], reference and ambient
+            temperatures [degrees Celsius].
+        lugre: Bristle stiffness [N·m/rad], damping [N·m·s/rad], Coulomb and static
+            friction torques [N·m], and Stribeck speed [rad/s].
         input: Single control input: ``voltage``, ``pos``, or ``vel``.
-            ``position`` and ``velocity`` are also accepted. Other signatures
-            raise :class:`NotImplementedError`.
+            Other signatures raise :class:`NotImplementedError`.
         gear: Native transmission gear, padded to six values. Ball/free joints
             require explicit native gear as described in :class:`ActuatorTarget`.
-        damping: One to three passive damping coefficients.
-        armature: Passive rotor inertia. Currently supported only by native MuJoCo.
-        ctrlrange: Optional two-value control range, in the input's native units.
+        damping: Coefficients of ``-d0*v - d1*abs(v)*v - d2*v**3`` in actuator
+            velocity ``v``. Coefficient ``dn`` has units [N·m·(s/rad)^(n+1)]
+            for angular transmissions or [N·(s/m)^(n+1)] for linear ones.
+        armature: Passive rotor inertia [kg·m² or kg for linear transmissions].
+            Currently supported only by native MuJoCo.
+        ctrlrange: Optional two-value control range: voltage [V], position
+            [m or rad], or velocity [m/s or rad/s], in actuator coordinates.
         ctrllimited: Control-limit tri-state (false, true, or auto).
         cranklength: Slider-crank length [m]. Required for slider-crank targets.
-        ctrl: Initial MuJoCo control value.
+        ctrl: Initial control value, with the same units as ``ctrlrange``.
         custom_attributes: Additional registered ``mujoco:actuator`` attributes.
 
     Returns:
-        The ``mujoco:actuator`` row index. Parameter vectors are zero-padded
-        before native default inference, just as for an MJCF shortcut.
+        The ``mujoco:actuator`` row index.
     """
     from .solver_mujoco import SolverMuJoCo  # noqa: PLC0415
 
@@ -212,10 +216,6 @@ def _actuator_only_xml(root: ET.Element, motors: list[ET.Element]) -> str:
                     node.remove(child)
         native_root.append(copied)
     ET.SubElement(native_root, "actuator").extend(deepcopy(motor) for motor in motors)
-    for element in native_root.iter():
-        if "input" in element.attrib:
-            value = element.attrib["input"].strip().lower()
-            element.set("input", _INPUT_ALIASES.get(value, value))
     return ET.tostring(native_root, encoding="unicode")
 
 
@@ -246,27 +246,16 @@ def _parameter_attributes(actuator: MjsActuator) -> dict[str, str]:
     return values
 
 
-def validate_worlds(model: Model, *, dcmotor_type: int) -> None:
+def validate_worlds(model: Model, rows: np.ndarray, *, dcmotor_type: int) -> None:
     """Require matching shortcut layouts and construction parameters across worlds."""
-    world_count = model.world_count
-    attributes = getattr(model, "mujoco", None)
-    world_attribute = getattr(attributes, "actuator_world", None)
+    attributes = model.mujoco
     type_attribute = getattr(attributes, "ctrl_type", None)
-    if world_count <= 1 or world_attribute is None or type_attribute is None:
+    if type_attribute is None:
         return
-    ctrl_type = type_attribute.numpy()
-    if not np.any(ctrl_type == dcmotor_type):
+    dcmotor_rows = type_attribute.numpy()[rows] == dcmotor_type
+    if not np.any(dcmotor_rows):
         return
-
-    # Group once in actuator order, rather than scanning every row for each world.
-    actuator_world = world_attribute.numpy()
-    rows = np.flatnonzero((actuator_world >= 0) & (actuator_world < world_count))
-    row_counts = np.bincount(actuator_world[rows], minlength=world_count)
-    layout = "matching high-level DC-motor actuator layouts"
-    _require_matching_worlds(row_counts, layout)
-    rows = rows[np.argsort(actuator_world[rows], kind="stable")].reshape(world_count, row_counts[0])
-    dcmotor_rows = ctrl_type[rows] == dcmotor_type
-    _require_matching_worlds(dcmotor_rows, layout)
+    _require_matching_worlds(dcmotor_rows, "matching high-level DC-motor actuator layouts")
     rows = rows[:, dcmotor_rows[0]]
 
     # The template model is replicated across worlds. These resolved shortcut

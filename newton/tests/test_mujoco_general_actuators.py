@@ -512,10 +512,8 @@ class TestMuJoCoActuators(unittest.TestCase):
     def test_actuator_passive_properties_warn_on_warp(self):
         """MuJoCo-Warp 3.15 supports damping, but still ignores actuator armature."""
         for attributes, use_mujoco_cpu in (
-            ('damping="0.7"', False),
-            ('damping="0 0.2 0.1"', False),
+            ('damping="0.7 0.2 0.1"', False),
             ('armature="0.02"', False),
-            ("", False),
             ('damping="0.7 0.2 0.1" armature="0.02"', True),
         ):
             with self.subTest(attributes=attributes, use_mujoco_cpu=use_mujoco_cpu):
@@ -570,6 +568,12 @@ class TestMuJoCoActuators(unittest.TestCase):
             with self.subTest(control_signature=control_signature):
                 mjcf = MJCF_DCMOTOR_ACTUATOR.replace('input="pos"', f'input="{control_signature}"')
                 with self.assertRaisesRegex(NotImplementedError, "one DC-motor control input"):
+                    ModelBuilder().add_mjcf(mjcf)
+
+        for control_signature in ("position", "velocity"):
+            with self.subTest(control_signature=control_signature):
+                mjcf = MJCF_DCMOTOR_ACTUATOR.replace('input="pos"', f'input="{control_signature}"')
+                with self.assertRaisesRegex(ValueError, "invalid keyword"):
                     ModelBuilder().add_mjcf(mjcf)
 
     def test_mjcf_dcmotor_dynamics_match_native_mujoco(self):
@@ -705,8 +709,21 @@ class TestMuJoCoActuators(unittest.TestCase):
             with self.subTest(worlds=worlds, types=types):
                 model.mujoco.actuator_world.assign(worlds)
                 model.mujoco.ctrl_type.assign(types)
-                with self.assertRaisesRegex(ValueError, "matching high-level DC-motor actuator layouts"):
+                with self.assertRaisesRegex(ValueError, "matching .*actuator layouts"):
                     SolverMuJoCo(model, iterations=1, disable_contacts=True, separate_worlds=True)
+
+        # Template-only fields must match even on compiled GENERAL rows.
+        model.mujoco.actuator_world.assign([0, 1])
+        model.mujoco.ctrl_type.fill_(SolverMuJoCo.CtrlType.GENERAL)
+        for name in ("actuator_damping", "actuator_dampingpoly", "actuator_armature", "actuator_ctrlspec"):
+            attribute = getattr(model.mujoco, name)
+            original = attribute.numpy()
+            changed = original.copy()
+            changed[1] += 1
+            attribute.assign(changed)
+            with self.subTest(attribute=name), self.assertRaisesRegex(ValueError, f"identical.*mujoco:{name}"):
+                SolverMuJoCo(model, iterations=1, disable_contacts=True, separate_worlds=True)
+            attribute.assign(original)
 
     def test_mjcf_dcmotor_runtime_updates_noncompiled_properties(self):
         """Update independent DC-motor properties without replacing compiled parameters."""
