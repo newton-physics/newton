@@ -956,7 +956,10 @@ class SolverKamino(SolverBase, CouplingInterface):
         These residuals do not require solution metrics; they are NaN before
         solving and for failed worlds. LOX also provides a ``failed`` field; a
         world that is neither converged nor failed reached the iteration limit
-        and uses its last projected iterate.
+        and uses its last projected iterate. A failed LOX world stays failed until
+        :meth:`reset` resets it, for example with a ``world_mask``. Until then, LOX
+        skips its solve, and its bodies keep their input velocity, without gravity,
+        joint or contact forces.
 
         The returned array aliases the solver's device-resident storage; reading
         it does not synchronize or copy data to the host. Terminal status is

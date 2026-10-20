@@ -1115,6 +1115,9 @@ class LOXSolverConfig:
     Unlike the PADMM and DVI backends, LOX advances kinematic and massless bodies with
     their velocity in ``state_in.body_qd``, and it keeps speculative
     contacts regardless of :attr:`ConstrainedDynamicsConfig.cull_speculative_contacts`.
+    It solves its own primal problem, so ``sparse_dynamics`` and the linear solver and
+    preconditioning settings of :class:`ConstrainedDynamicsConfig` only affect the dual
+    problem of the optional solution metrics, and it always warm-starts from its containers.
     """
 
     max_iterations: int = 16

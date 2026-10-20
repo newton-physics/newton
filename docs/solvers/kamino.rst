@@ -102,8 +102,8 @@ Both support dense and sparse operators and bilateral Schur elimination.
 See the :class:`~newton.solvers.SolverKamino` configuration reference for
 subsolver selection and iteration controls.
 
-LOX prescribed bodies and speculative contacts
-----------------------------------------------
+LOX prescribed bodies and shared settings
+-----------------------------------------
 
 LOX advances bodies flagged :attr:`~newton.BodyFlags.KINEMATIC` and massless
 bodies with their velocity in ``state_in.body_qd``. To animate such a
@@ -114,6 +114,12 @@ these bodies and only read their velocity.
 LOX keeps speculative contacts, whose shapes are still separated, and lets each
 close its gap within the step. It ignores
 ``config.dynamics.cull_speculative_contacts``.
+
+LOX solves its own primal problem, so ``sparse_dynamics``,
+``config.dynamics.linear_solver_type``, ``config.dynamics.linear_solver_kwargs``
+and ``config.dynamics.preconditioning`` only affect the dual problem of the
+optional solution metrics. LOX always warm-starts from its containers;
+``config.lox.contact_warmstart_method`` selects how it matches contacts.
 
 LOX unilateral projection
 -------------------------
@@ -193,7 +199,10 @@ residual definitions are backend-specific:
   residuals do not require solution metrics; they are NaN before a solve and
   for failed worlds. LOX additionally reports ``failed``; a world that is
   neither converged nor failed reached the iteration limit and uses its last
-  projected iterate.
+  projected iterate. A failed world stays failed until it is reset, for example
+  with ``solver.reset(..., world_mask=...)``. Until then, LOX skips its solve,
+  and its bodies keep their input velocity, without gravity, joint or contact
+  forces, so check ``failed`` to detect and reset these worlds.
 
 These are absolute maxima: no backend divides them by a reference norm,
 constraint count, or tolerance. Additional fields are not portable between
