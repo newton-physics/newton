@@ -200,13 +200,12 @@ class _FreeRootJoints:
     """FREE root joints synthesized in a compact entry view.
 
     An entry-owned body whose incoming articulation joint the view hides
-    (enabled, unowned, and outside its proxy-kept joints) receives a FREE joint to the world,
-    matching what ``ModelBuilder.add_joint_free(body)`` produces. Each joint
-    occupies the hidden joint's position in the view's joint order, so it
-    precedes the body's visible descendants. It heads its own articulation,
-    or joins the view articulation that holds the entry's remaining joints of
-    the split parent-model articulation. Every local-to-global map stores
-    ``-1`` for these rows.
+    (enabled in the model and absent from the view) receives a FREE joint to
+    the world, matching what ``ModelBuilder.add_joint_free(body)`` produces.
+    Each FREE joint heads its own view articulation, followed by the visible
+    joints of the body's subtree; the remaining joints of the split
+    parent-model articulation keep its original root in their own row.
+    Every local-to-global map stores ``-1`` for these rows.
     """
 
     cut_joint: list[int]
@@ -1264,8 +1263,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
         """Return hidden incoming tree joints of entry-owned bodies that receive a FREE root joint.
 
         A reduced-coordinate solver moves a body only through its incoming
-        joint, so each entry-owned body whose enabled, unowned articulation
-        joint the entry view hides gets a FREE joint to the world.
+        joint, so each entry-owned body whose enabled articulation joint the
+        entry view hides gets a FREE joint to the world. This holds whether
+        the hidden joint is unowned or owned by another entry.
         """
         model = self.model
         if model.joint_count == 0 or model.articulation_count == 0 or not cfg.bodies:
@@ -1284,7 +1284,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             if any(joint in visible_joints for joint in joints):
                 continue
             for joint in joints:
-                if bool(joint_enabled[joint]) and self._joint_owner[joint] < 0:
+                if bool(joint_enabled[joint]):
                     cuts.add(joint)
                     break
         return cuts
@@ -1425,13 +1425,20 @@ class SolverCoupled(SolverBase, CouplingInterface):
         free_root_joints = None
         if free_root_cuts:
             free_root_joints = _FreeRootJoints([], [], [], [], [])
+            ordered_joints, block_starts, articulation_order = self._free_root_joint_layout(
+                joint_order, free_root_cuts, joint_parent, joint_child, free_root_joints
+            )
             joint_local_order: list[int] = []
             joint_keys: list[int] = []
             coord_keys: list[int] = []
             dof_keys: list[int] = []
-            for joint in joint_order:
+            for joint, block_start in zip(ordered_joints, block_starts, strict=True):
                 q_begin, q_end = int(joint_q_start[joint]), int(joint_q_start[joint + 1])
                 qd_begin, qd_end = int(joint_qd_start[joint]), int(joint_qd_start[joint + 1])
+                # Joints keep the position of their parent-model articulation
+                # block, which keeps the keys monotonic across reordered blocks.
+                joint_keys.append(block_start)
+                block_q, block_qd = int(joint_q_start[block_start]), int(joint_qd_start[block_start])
                 if joint in free_root_cuts:
                     free_root_joints.cut_joint.append(joint)
                     free_root_joints.body_global.append(int(joint_child[joint]))
@@ -1439,25 +1446,25 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     free_root_joints.coord_local.append(len(joint_coord_order))
                     free_root_joints.dof_local.append(len(joint_dof_order))
                     joint_local_order.append(-1)
-                    joint_keys.append(joint)
                     joint_coord_order.extend([-1] * _FREE_JOINT_COORD_COUNT)
-                    coord_keys.extend([q_begin] * _FREE_JOINT_COORD_COUNT)
+                    coord_keys.extend([block_q] * _FREE_JOINT_COORD_COUNT)
                     joint_dof_order.extend([-1] * _FREE_JOINT_DOF_COUNT)
-                    dof_keys.extend([qd_begin] * _FREE_JOINT_DOF_COUNT)
+                    dof_keys.extend([block_qd] * _FREE_JOINT_DOF_COUNT)
                     continue
                 joint_local_order.append(joint)
-                joint_keys.append(joint)
                 joint_coord_order.extend(range(q_begin, q_end))
-                coord_keys.extend(range(q_begin, q_end))
+                coord_keys.extend([block_q] * (q_end - q_begin))
                 joint_dof_order.extend(range(qd_begin, qd_end))
-                dof_keys.extend(range(qd_begin, qd_end))
+                dof_keys.extend([block_qd] * (qd_end - qd_begin))
                 joint_constraint_order.extend(
                     range(int(self._joint_constraint_starts[joint]), int(self._joint_constraint_starts[joint + 1]))
                 )
-            articulation_order, articulation_keys = self._free_root_articulation_rows(
-                joint_local_order, articulation_order, free_root_joints
-            )
+            free_root_joints.articulation_local = [
+                free_root_joints.joint_articulation_local[local] for local in free_root_joints.joint_local
+            ]
             joint_order = joint_local_order
+            body_order = self._free_root_body_order(body_order, ordered_joints, joint_child)
+            articulation_keys = list(range(len(articulation_order)))
             position_keys = {
                 model.AttributeFrequency.JOINT: joint_keys,
                 model.AttributeFrequency.JOINT_COORD: coord_keys,
@@ -1514,56 +1521,109 @@ class SolverCoupled(SolverBase, CouplingInterface):
             None,
         )
 
-    def _free_root_articulation_rows(
+    def _free_root_body_order(
+        self,
+        body_order: Sequence[int],
+        ordered_joints: Sequence[int],
+        joint_child: np.ndarray,
+    ) -> list[int]:
+        """Order joint child bodies like their joints after a FREE root layout.
+
+        Reduced-coordinate solvers such as :class:`~newton.solvers.SolverFeatherstone`
+        expect articulated bodies in the order of their incoming joints, as
+        builder models list them. The child bodies of view joints take the
+        view joint order within the slots they already occupy in each world's
+        run of bodies; every other body keeps its position.
+        """
+        child_rank = {int(joint_child[joint]): rank for rank, joint in enumerate(ordered_joints)}
+        body_world = self.model.body_world.numpy()
+        result = list(body_order)
+        run_start = 0
+        for index in range(1, len(result) + 1):
+            if index < len(result) and int(body_world[result[index]]) == int(body_world[result[run_start]]):
+                continue
+            slots = [slot for slot in range(run_start, index) if result[slot] in child_rank]
+            children = sorted((result[slot] for slot in slots), key=child_rank.__getitem__)
+            for slot, body in zip(slots, children, strict=True):
+                result[slot] = body
+            run_start = index
+        return result
+
+    def _free_root_joint_layout(
         self,
         joint_order: Sequence[int],
-        articulation_order: Sequence[int],
+        free_root_cuts: set[int],
+        joint_parent: np.ndarray,
+        joint_child: np.ndarray,
         free_root_joints: _FreeRootJoints,
-    ) -> tuple[list[int], list[int]]:
-        """Assign view articulation rows to joints in a view with FREE root joints.
+    ) -> tuple[list[int], list[int], list[int]]:
+        """Order view joints so each FREE root joint heads its own articulation.
 
-        A FREE joint joins the view row of its parent-model articulation when
-        the view keeps other joints of that articulation; otherwise it heads
-        a new row. Rows follow the first joint they contain, so articulation
-        joint ranges stay contiguous and grouped by world.
+        Within the contiguous view block of each parent-model articulation,
+        every joint belongs to the subtree of its nearest view root: a FREE
+        joint (listed as its hidden parent-model joint) or the block's
+        remaining roots. The block lists the remaining-root joints first,
+        then each FREE joint followed by its subtree, all in parent-model
+        order, so parents precede children and every view articulation is a
+        contiguous joint range. Blocks keep their parent-model order, which
+        keeps rows grouped by world.
 
         Returns:
-            The parent articulation of each view row (``-1`` for new rows) and
-            the parent-domain position key of each row.
+            The reordered parent joint ids, the first parent joint id of the
+            block holding each of them, and the parent articulation of each
+            view articulation row (``-1`` for rows a FREE joint heads).
         """
         joint_articulation = self.model.joint_articulation.numpy()
-        kept_articulations = {int(articulation) for articulation in articulation_order}
-        free_index = {local: index for index, local in enumerate(free_root_joints.joint_local)}
-        rows: list[int] = []
-        keys: list[int] = []
-        row_by_articulation: dict[int, int] = {}
-        joint_rows: list[int] = []
-        articulation_local = [-1] * free_root_joints.count
-        for local, joint in enumerate(joint_order):
-            index = free_index.get(local)
-            source_joint = free_root_joints.cut_joint[index] if index is not None else int(joint)
-            articulation = int(joint_articulation[source_joint])
-            if articulation < 0:
-                joint_rows.append(-1)
-                continue
-            if index is not None and articulation not in kept_articulations:
-                row = len(rows)
-                rows.append(-1)
-                keys.append(articulation)
-                free_root_joints.own_articulation_rows[row] = index
+        blocks: list[tuple[int, list[int]]] = []
+        for joint in joint_order:
+            articulation = int(joint_articulation[joint])
+            if articulation >= 0 and blocks and blocks[-1][0] == articulation:
+                blocks[-1][1].append(int(joint))
             else:
-                row = row_by_articulation.get(articulation)
-                if row is None:
-                    row = len(rows)
+                blocks.append((articulation, [int(joint)]))
+
+        ordered: list[int] = []
+        block_starts: list[int] = []
+        rows: list[int] = []
+        joint_rows: list[int] = []
+        for articulation, joints in blocks:
+            block_start = joints[0]
+            if articulation < 0:
+                ordered.extend(joints)
+                block_starts.extend([block_start] * len(joints))
+                joint_rows.extend([-1] * len(joints))
+                continue
+            # Subtree 0 holds the joints reachable from the block's remaining roots.
+            subtrees: list[list[int]] = [[]]
+            body_subtree: dict[int, int] = {}
+            for joint in joints:
+                if joint in free_root_cuts:
+                    subtree = len(subtrees)
+                    subtrees.append([joint])
+                else:
+                    subtree = body_subtree.get(int(joint_parent[joint]), 0)
+                    subtrees[subtree].append(joint)
+                body_subtree[int(joint_child[joint])] = subtree
+            for subtree, members in enumerate(subtrees):
+                if not members:
+                    continue
+                row = len(rows)
+                if subtree == 0:
                     rows.append(articulation)
-                    keys.append(articulation)
-                    row_by_articulation[articulation] = row
-            if index is not None:
-                articulation_local[index] = row
-            joint_rows.append(row)
-        free_root_joints.articulation_local = articulation_local
+                else:
+                    rows.append(-1)
+                    free_root_joints.own_articulation_rows[row] = -1
+                ordered.extend(members)
+                block_starts.extend([block_start] * len(members))
+                joint_rows.extend([row] * len(members))
         free_root_joints.joint_articulation_local = joint_rows
-        return rows, keys
+        # Rows a FREE joint heads start with that joint; record its index.
+        free_index = 0
+        for local, joint in enumerate(ordered):
+            if joint in free_root_cuts:
+                free_root_joints.own_articulation_rows[joint_rows[local]] = free_index
+                free_index += 1
+        return ordered, block_starts, rows
 
     def _compact_articulation_order(
         self,
@@ -2069,7 +2129,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
         joint_rows = list(free_root_joints.joint_local)
         set_rows("joint_child", joint_rows, list(free_root_joints.body_local))
-        set_rows("joint_articulation", joint_rows, list(free_root_joints.articulation_local))
+        # Reordered joints and split articulations take their view rows explicitly.
+        joint_articulation_local = free_root_joints.joint_articulation_local
+        set_rows("joint_articulation", list(range(len(joint_articulation_local))), list(joint_articulation_local))
         set_rows("joint_world", joint_rows, [int(body_world[body]) for body in bodies])
         set_rows("joint_label", joint_rows, [f"{body_label[body]}_free_joint" for body in bodies])
         # The builder initializes FREE joint coordinates from the child pose
@@ -2082,7 +2144,12 @@ class SolverCoupled(SolverBase, CouplingInterface):
         )
         own_bodies = [bodies[index] for index in own_indices]
         own_row_ids = [row for row, _ in own_rows]
-        set_rows("articulation_end", own_row_ids, [free_root_joints.joint_local[index] + 1 for index in own_indices])
+        articulation_end: dict[int, int] = {}
+        for local, row in enumerate(joint_articulation_local):
+            if row >= 0:
+                articulation_end[row] = local + 1
+        end_rows = sorted(articulation_end)
+        set_rows("articulation_end", end_rows, [articulation_end[row] for row in end_rows])
         set_rows("articulation_world", own_row_ids, [int(body_world[body]) for body in own_bodies])
         set_rows("articulation_label", own_row_ids, [f"{body_label[body]}_articulation" for body in own_bodies])
         free_root_joints.row_values = row_values

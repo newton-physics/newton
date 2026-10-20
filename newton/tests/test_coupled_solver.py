@@ -3002,6 +3002,135 @@ class TestSolverCoupledMuJoCoVBDMultiEnv(unittest.TestCase):
         self.assertLess(body_z[0, base], -0.01)
         np.testing.assert_allclose(body_z, np.full_like(body_z, body_z[0, base]), atol=1.0e-5)
 
+    def test_split_articulation_free_roots_head_separate_articulations(self):
+        """Keep one root per view articulation when a split leaves the original root in the view.
+
+        The chain A-B-C-D alternates entries: the ``outer`` entry owns A with
+        its FREE root and the C-D subtree, the ``middle`` entry owns B. Both
+        ball joints are hidden, so C's FREE joint heads a new articulation
+        holding the C-D revolute while A keeps its own row.
+        """
+        builder = newton.ModelBuilder()
+        inertia = wp.mat33(np.eye(3) * 0.01)
+        a, b, c, d = (
+            builder.add_link(
+                xform=wp.transform(wp.vec3(0.3 * i, 0.0, 0.0), wp.quat_identity()), mass=1.0, inertia=inertia
+            )
+            for i in range(4)
+        )
+        half = wp.transform(wp.vec3(0.15, 0.0, 0.0), wp.quat_identity())
+        half_back = wp.transform(wp.vec3(-0.15, 0.0, 0.0), wp.quat_identity())
+        root = builder.add_joint_free(a)
+        ab = builder.add_joint_ball(a, b, parent_xform=half, child_xform=half_back)
+        bc = builder.add_joint_ball(b, c, parent_xform=half, child_xform=half_back)
+        cd = builder.add_joint_revolute(c, d, axis=(0.0, 1.0, 0.0), parent_xform=half, child_xform=half_back)
+        builder.add_articulation([root, ab, bc, cd])
+        model = builder.finalize(device="cpu")
+
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(name="outer", solver=SolverFeatherstone, bodies=[a, c, d], joints=[root, cd]),
+                SolverCoupled.Entry(name="middle", solver=SolverFeatherstone, bodies=[b]),
+            ],
+        )
+
+        free, revolute = int(newton.JointType.FREE), int(newton.JointType.REVOLUTE)
+        outer = coupled.view("outer")
+        np.testing.assert_array_equal(outer.joint_type.numpy(), [free, free, revolute])
+        np.testing.assert_array_equal(outer.articulation_start.numpy(), [0, 1, 3])
+        np.testing.assert_array_equal(outer.joint_ancestor.numpy(), [-1, -1, 1])
+        self.assertEqual(outer.max_joints_per_articulation, 2)
+        self.assertEqual(outer.max_dofs_per_articulation, 7)
+        _assert_single_root_articulations(self, outer)
+        _assert_single_root_articulations(self, coupled.view("middle"))
+
+        body_q = _step_coupled(model, coupled)
+        self.assertLess(body_q[a, 2], -0.01)
+        np.testing.assert_allclose(body_q[:, 2], body_q[a, 2], atol=1.0e-5)
+        np.testing.assert_allclose(body_q[:, 0], [0.0, 0.3, 0.6, 0.9], atol=1.0e-5)
+
+    def test_sibling_cuts_get_separate_free_root_articulations(self):
+        """Give each owned subtree cut from one hidden parent its own FREE root articulation.
+
+        The ``arms`` entry owns two sibling subtrees of the hub body P. One
+        incoming joint is unowned and the other belongs to the ``hub``
+        entry; both leave a rootless subtree in the arms view.
+        """
+        builder = newton.ModelBuilder()
+        inertia = wp.mat33(np.eye(3) * 0.01)
+
+        def link(x, y):
+            return builder.add_link(
+                xform=wp.transform(wp.vec3(x, y, 0.0), wp.quat_identity()), mass=1.0, inertia=inertia
+            )
+
+        hub, arm_upper, arm_side, arm_lower = link(0.0, 0.0), link(0.3, 0.0), link(0.0, 0.3), link(0.6, 0.0)
+        half_x = wp.transform(wp.vec3(0.15, 0.0, 0.0), wp.quat_identity())
+        half_x_back = wp.transform(wp.vec3(-0.15, 0.0, 0.0), wp.quat_identity())
+        half_y = wp.transform(wp.vec3(0.0, 0.15, 0.0), wp.quat_identity())
+        half_y_back = wp.transform(wp.vec3(0.0, -0.15, 0.0), wp.quat_identity())
+        root = builder.add_joint_free(hub)
+        shoulder = builder.add_joint_revolute(
+            hub, arm_upper, axis=(0.0, 1.0, 0.0), parent_xform=half_x, child_xform=half_x_back
+        )
+        side = builder.add_joint_revolute(
+            hub, arm_side, axis=(1.0, 0.0, 0.0), parent_xform=half_y, child_xform=half_y_back
+        )
+        elbow = builder.add_joint_revolute(
+            arm_upper, arm_lower, axis=(0.0, 1.0, 0.0), parent_xform=half_x, child_xform=half_x_back
+        )
+        builder.add_articulation([root, shoulder, side, elbow])
+        model = builder.finalize(device="cpu")
+
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(name="hub", solver=SolverSemiImplicit, bodies=[hub], joints=[root, side]),
+                SolverCoupled.Entry(
+                    name="arms", solver=SolverFeatherstone, bodies=[arm_upper, arm_side, arm_lower], joints=[elbow]
+                ),
+            ],
+        )
+
+        free, revolute = int(newton.JointType.FREE), int(newton.JointType.REVOLUTE)
+        arms = coupled.view("arms")
+        np.testing.assert_array_equal(arms.joint_type.numpy(), [free, revolute, free])
+        np.testing.assert_array_equal(arms.articulation_start.numpy(), [0, 2, 3])
+        _assert_single_root_articulations(self, arms)
+        entry = coupled._entries["arms"]
+        np.testing.assert_array_equal(entry.body_local_to_global.numpy(), [arm_upper, arm_lower, arm_side])
+
+        body_q = _step_coupled(model, coupled)
+        self.assertLess(body_q[hub, 2], -0.01)
+        np.testing.assert_allclose(body_q[:, 2], body_q[hub, 2], atol=1.0e-5)
+        np.testing.assert_allclose(body_q[:, :2], [[0.0, 0.0], [0.3, 0.0], [0.0, 0.3], [0.6, 0.0]], atol=1.0e-5)
+
+
+def _assert_single_root_articulations(test, view):
+    """Check that every view articulation is a contiguous tree headed by its only root joint."""
+    starts = view.articulation_start.numpy()
+    ends = view.articulation_end.numpy()
+    parents = view.joint_parent.numpy()
+    children = view.joint_child.numpy()
+    articulation = view.joint_articulation.numpy()
+    np.testing.assert_array_equal(ends, starts[1:])
+    for row, (start, end) in enumerate(zip(starts[:-1], ends, strict=True)):
+        np.testing.assert_array_equal(articulation[start:end], row)
+        test.assertEqual(parents[start], -1)
+        test.assertTrue(all(parents[joint] in children[start:joint] for joint in range(start + 1, end)))
+    # Reduced-coordinate solvers expect articulated bodies in joint order.
+    np.testing.assert_array_equal(children, np.arange(view.joint_count))
+
+
+def _step_coupled(model, coupled, steps=10):
+    state_0, state_1 = model.state(), model.state()
+    control = model.control()
+    for _ in range(steps):
+        coupled.step(state_0, state_1, control, None, 1.0 / 120.0)
+        state_0, state_1 = state_1, state_0
+    return state_0.body_q.numpy()
+
 
 def _assert_proxy_reset_buffers(test, model, coupled, mapping, entity_world):
     """Check masked and full reset behavior for one two-world proxy mapping."""
