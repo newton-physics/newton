@@ -3520,7 +3520,9 @@ class ModelBuilder:
                 For example, (5.0, 5.0, 0.0) arranges copies in a 2D grid in the XY plane.
                 Defaults to (0.0, 0.0, 0.0).
             separate_worlds: Whether to assign each copy to a new world. If ``False``, add all
-                copies to the current world context (see :attr:`current_world`) instead.
+                copies to the current world context (see :attr:`current_world`) instead. Like
+                :meth:`add_builder`, this then also replaces the current world's gravity, or this
+                builder's gravity outside a world context, with the gravity of ``builder``.
             xforms: Optional sequence of transforms, one per copy.
                 When provided, its length must equal ``copy_count``.
             label_prefixes: Optional prefix prepended to all labels from the source builder,
@@ -3609,7 +3611,7 @@ class ModelBuilder:
             if xform is None:
                 return None
             xform = wp.transform(*xform)
-            # Identity behaves as None: skips the per-world transform loops and keeps copies
+            # Identity behaves as None: it is excluded from moved_copies, which keeps copies
             # bit-exact (identity transform_mul round-trips are not exact for free-root joint_q).
             return None if np.array_equal(np.asarray(xform), _IDENTITY_TRANSFORM) else xform
 
@@ -5445,6 +5447,9 @@ class ModelBuilder:
         Use :meth:`begin_world`, :meth:`end_world`, :meth:`add_world`, or
         :meth:`replicate` to manage world assignment. :attr:`current_world`
         is read-only and should not be set directly.
+
+        The gravity of ``builder`` replaces the gravity of the current world, or this
+        builder's gravity outside a world context.
 
         To add many copies of the same builder to the current world, call
         :meth:`replicate` with ``separate_worlds=False`` instead of calling this method in
