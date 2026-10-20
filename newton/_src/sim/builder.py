@@ -3618,7 +3618,7 @@ class ModelBuilder:
         xforms = [normalize_xform(xform) for xform in xforms]
         # Copies with a non-identity transform, as copy indices and (N, 7) float32 rows.
         moved_copies = np.asarray([i for i, xform in enumerate(xforms) if xform is not None], dtype=np.int64)
-        moved_xforms = np.asarray([xform for xform in xforms if xform is not None], dtype=np.float32).reshape(-1, 7)
+        moved_xforms = pack_transforms([xform for xform in xforms if xform is not None])
         # Moved copies whose rotation is not the identity; only these rotate velocities.
         rotated = ~np.all(moved_xforms[:, 3:] == _IDENTITY_ROTATION, axis=1)
         translations_only = not np.any(rotated)

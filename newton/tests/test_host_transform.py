@@ -1,6 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import platform
 import unittest
 
 import numpy as np
@@ -27,6 +28,18 @@ from newton._src.core.host_transform import (
     transform_vector,
     warp_array_from_values,
 )
+
+# The batched helpers mirror the operation order of Warp's native builtins, so they match
+# bit for bit where neither side fuses multiply-adds. That is verified on Linux x86-64;
+# elsewhere, compare within float32 round-off.
+BIT_EXACT = platform.system() == "Linux" and platform.machine() == "x86_64"
+
+
+def assert_matches_builtins(actual, expected, rtol: float = 1.0e-6, atol: float = 1.0e-5) -> None:
+    if BIT_EXACT:
+        np.testing.assert_array_equal(np.asarray(actual), np.asarray(expected))
+    else:
+        np.testing.assert_allclose(actual, expected, rtol=rtol, atol=atol)
 
 
 def random_transform_rows(rng: np.random.Generator, count: int) -> np.ndarray:
@@ -92,9 +105,6 @@ class TestHostTransform(unittest.TestCase):
     def test_batched_transforms_match_scalar_builtins(self):
         """Match Warp's scalar builtins on both sides of the native-call batch threshold."""
         rng = np.random.default_rng(7)
-        # Batched NumPy math matches the builtins bit for bit only without fused
-        # multiply-add contraction, so compare within float32 round-off.
-        tolerance = {"rtol": 1.0e-6, "atol": 1.0e-5}
         for count in (1, 16, 17, 64):
             with self.subTest(count=count):
                 a = random_transform_rows(rng, count)
@@ -106,18 +116,17 @@ class TestHostTransform(unittest.TestCase):
                 expected_rotated = [
                     transform_vector(wp.transform(*x), wp.vec3(*y[:3])) for x, y in zip(a, b, strict=True)
                 ]
-                np.testing.assert_allclose(transform_multiply_rows(a, b), expected_product, **tolerance)
-                np.testing.assert_allclose(transform_inverse_rows(a), expected_inverse, **tolerance)
-                np.testing.assert_allclose(quat_rotate_rows(a[:, 3:], b[:, :3]), expected_rotated, **tolerance)
+                assert_matches_builtins(transform_multiply_rows(a, b), expected_product)
+                assert_matches_builtins(transform_inverse_rows(a), expected_inverse)
+                assert_matches_builtins(quat_rotate_rows(a[:, 3:], b[:, :3]), expected_rotated)
 
         # Broadcasting composes every left transform with every right transform.
         a = random_transform_rows(rng, 5)
         b = random_transform_rows(rng, 7)
         product = transform_multiply_rows(a[:, None], b[None])
         self.assertEqual(product.shape, (5, 7, 7))
-        np.testing.assert_allclose(
-            product[3, 4], transform_multiply(wp.transform(*a[3]), wp.transform(*b[4])), **tolerance
-        )
+        expected = [[transform_multiply(wp.transform(*x), wp.transform(*y)) for y in b] for x in a]
+        assert_matches_builtins(product, expected)
 
     def test_pack_warp_values(self):
         """Pack homogeneous Warp value lists in one pass and fall back for other inputs."""

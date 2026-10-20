@@ -195,7 +195,8 @@ def store_transform_rows(destination: list | np.ndarray, targets: np.ndarray, ro
 
 # Batched float32 counterparts of Warp's quat_rotate, quat mul, transform_multiply, and
 # transform_inverse. Each mirrors the operation order of warp/native so the results match
-# the scalar builtins bit for bit on platforms without fused multiply-add contraction.
+# the scalar builtins bit for bit on platforms without fused multiply-add contraction
+# (tests check this exactly on Linux x86-64).
 _CYCLE_1 = np.asarray((1, 2, 0))
 _CYCLE_2 = np.asarray((2, 0, 1))
 _QUAT_CONJUGATE_SIGNS = np.asarray((-1.0, -1.0, -1.0, 1.0), dtype=np.float32)

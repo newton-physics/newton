@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import gc
+import platform
 import unittest
 import warnings
 from unittest import mock
@@ -265,16 +266,18 @@ class TestModelBuilderReplicate(unittest.TestCase):
         actual = self._make_destination()
         actual.replicate(source, len(xforms), xforms=xforms)
 
-        # Batched NumPy math matches Warp's scalar builtins bit for bit only without
-        # fused multiply-add contraction, so compare within float32 round-off.
+        # Batched NumPy math matches Warp's scalar builtins bit for bit where neither side
+        # fuses multiply-adds, which is verified on Linux x86-64; elsewhere compare within
+        # float32 round-off.
+        bit_exact = platform.system() == "Linux" and platform.machine() == "x86_64"
         for name in ("body_q", "body_qd", "joint_q", "joint_qd", "joint_X_p", "shape_transform"):
             with self.subTest(attribute=name):
-                np.testing.assert_allclose(
-                    np.asarray(getattr(actual, name), dtype=np.float32),
-                    np.asarray(getattr(expected, name), dtype=np.float32),
-                    rtol=1e-6,
-                    atol=1e-6,
-                )
+                actual_values = np.asarray(getattr(actual, name), dtype=np.float32)
+                expected_values = np.asarray(getattr(expected, name), dtype=np.float32)
+                if bit_exact:
+                    np.testing.assert_array_equal(actual_values, expected_values)
+                else:
+                    np.testing.assert_allclose(actual_values, expected_values, rtol=1e-6, atol=1e-6)
 
     def test_replicate_into_current_world_matches_add_builder_loop(self):
         """Match repeated add_builder calls when copies share the current world context."""
