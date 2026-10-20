@@ -1112,8 +1112,8 @@ class LOXSolverConfig:
         following the normal deprecation policy. It supports rigid bodies
         only; cable and deformable extensions are not supported.
 
-    Unlike the PADMM and DVI backends, LOX advances immovable (kinematic, proxy, and
-    massless) bodies with their velocity in ``state_in.body_qd``, and it keeps speculative
+    Unlike the PADMM and DVI backends, LOX advances kinematic and massless bodies with
+    their velocity in ``state_in.body_qd``, and it keeps speculative
     contacts regardless of :attr:`ConstrainedDynamicsConfig.cull_speculative_contacts`.
     """
 
