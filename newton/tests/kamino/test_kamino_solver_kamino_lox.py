@@ -663,6 +663,38 @@ class TestSolverKaminoLOX(_LOXTestCase):
 
 
 class TestSolverKaminoLOXJoints(_LOXTestCase):
+    def test_massless_link_needs_inertia_on_its_free_joint_dof(self):
+        """Reject a massless link whose revolute DOF has no armature, and step it once the DOF has armature."""
+        for armature in (0.0, 0.01):
+            with self.subTest(armature=armature):
+                builder = newton.ModelBuilder()
+                SolverKamino.register_custom_attributes(builder)
+                base = builder.add_link(
+                    mass=1.0, inertia=wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0), lock_inertia=True
+                )
+                link = builder.add_link()
+                hinge = builder.add_joint_revolute(parent=-1, child=base, axis=newton.Axis.Y)
+                joint = builder.add_joint_revolute(
+                    parent=base,
+                    child=link,
+                    axis=newton.Axis.Y,
+                    parent_xform=wp.transform((0.5, 0.0, 0.0), wp.quat_identity()),
+                    armature=armature,
+                )
+                builder.add_articulation([hinge, joint])
+                model = builder.finalize(device=self.default_device)
+                config = self.make_config()
+                if armature == 0.0:
+                    with self.assertRaisesRegex(ValueError, "joint DOFs without armature"):
+                        SolverKamino(model, config=config)
+                    continue
+                solver = SolverKamino(model, config=config)
+                state_previous, state_next = model.state(), model.state()
+                for _ in range(10):
+                    solver.step(state_previous, state_next, model.control(), contacts=None, dt=0.01)
+                    state_previous, state_next = state_next, state_previous
+                np.testing.assert_array_equal(solver.status.numpy()["failed"], [0])
+
     def test_joint_proximal_uses_frozen_frame_for_full_position_blocks(self):
         """Constrain offset anchors while a prescribed parent rotates substantially."""
         # The relaxation test covers a ball joint rotating by 0.5 rad with offset frames
