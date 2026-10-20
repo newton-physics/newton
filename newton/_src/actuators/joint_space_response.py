@@ -137,6 +137,9 @@ def _copy_inverse_kernel(art_dof_count: wp.array[wp.int32], inv_pad: wp.array3d[
 
 _tile_inverse_cache: dict[int, wp.Kernel] = {}
 
+_TILE_MIN_DOFS = 6
+"""Smallest articulation DOF count for the tile path; smaller ones are faster with the per-thread kernel."""
+
 _TILE_MAX_DOFS = 64
 """Largest padded articulation DOF count for the tile path; larger ones keep the per-thread kernel."""
 
@@ -270,7 +273,7 @@ class JointSpaceResponse:
         # Tile path: one thread block per articulation inverts its block.
         self._tile = None
         tile = ((max_dofs + 15) // 16) * 16
-        if wp.get_device(device).is_cuda and 0 < tile <= _TILE_MAX_DOFS:
+        if wp.get_device(device).is_cuda and _TILE_MIN_DOFS <= max_dofs and tile <= _TILE_MAX_DOFS:
             self._tile = tile
             self._eye = wp.array(np.eye(tile, dtype=np.float32), dtype=float, device=device)
             self._H_pad = wp.zeros((art_count, tile, tile), dtype=float, device=device)

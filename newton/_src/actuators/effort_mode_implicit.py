@@ -129,6 +129,9 @@ def _gather_slot_response_kernel(
 
 _coupled_kernel_cache: dict[tuple[Any, Any], wp.Kernel] = {}
 
+_BLOCK_SOLVE_MIN_ROWS = 6
+"""Smallest group size solved by one thread block; smaller groups are faster with one thread each."""
+
 _BLOCK_SOLVE_MAX_ROWS = 64
 """Largest padded group size solved by one thread block; larger groups use one thread each."""
 
@@ -818,11 +821,11 @@ class _EffortModeImplicit:
         self._slot_response = wp.zeros(self._num_actuators, dtype=float, device=device)
         self._num_groups = num_groups
 
-        # One thread block per group on CUDA when the group fits a tile, one
-        # thread per group otherwise.
+        # One thread block per group on CUDA when the group is large enough and
+        # fits a tile, one thread per group otherwise.
         self._block_kernel = None
         tile = max(32, ((max_ng + 15) // 16) * 16)
-        if wp.get_device(device).is_cuda and tile <= _BLOCK_SOLVE_MAX_ROWS:
+        if wp.get_device(device).is_cuda and _BLOCK_SOLVE_MIN_ROWS <= max_ng and tile <= _BLOCK_SOLVE_MAX_ROWS:
             self._block_tile = tile
             self._group_response = wp.zeros((num_groups, tile, tile), dtype=float, device=device)
             self._block_kernel = _build_block_solve_kernel(
