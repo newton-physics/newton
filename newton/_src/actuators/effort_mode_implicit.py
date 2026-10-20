@@ -440,13 +440,19 @@ def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Funct
         return clamp_chain(evaluate_force(q_i, qd_i, tq, tqd, ff, params, si), q_i, qd_i, clamp_params, si)
 
     @wp.func
-    def apply_response(A: Any, x: wp.float64) -> wp.float64:
-        """``(A x)_lane`` for the block's per-lane ``x``; the tile product runs in float32."""
-        return wp.float64(
-            wp.untile(
-                wp.tile_reshape(wp.tile_matmul(A, wp.tile_reshape(wp.tile(float(x)), shape=(tile, 1))), shape=(tile,))
-            )
-        )
+    def apply_response(A: Any, P: Any, lane: wp.int32, x: wp.float64) -> wp.float64:
+        """``(A x)_lane`` for the block's per-lane ``x``, in float32.
+
+        Each lane publishes its ``x`` to the shared vector ``P`` and sums its own
+        row of ``A``. A loop compiles much faster than ``tile_matmul``.
+        """
+        wp.tile_assign(P, wp.tile(float(x)), offset=(0,))
+        acc = float(0.0)
+        for j in range(tile):
+            acc += A[lane, j] * P[j]
+        # The extract syncs the block before the next call overwrites P.
+        acc += wp.tile_extract(wp.tile(float(0.0)), 0)
+        return wp.float64(acc)
 
     tile_aug = tile + 1
     lane_row = wp.types.vector(length=tile_aug, dtype=wp.float32)
@@ -543,6 +549,7 @@ def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Funct
 
         A = wp.tile_load(group_response[g], shape=(tile, tile), storage="shared")
         S = wp.tile_zeros(shape=(tile_aug, tile), dtype=float, storage="shared")
+        P = wp.tile_zeros(shape=(tile,), dtype=float, storage="shared")
 
         si = wp.int32(0)
         q0 = wp.float64(0.0)
@@ -563,7 +570,7 @@ def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Funct
                 p = hd * force_at(q0, qd0, tq, tqd, ff, params, clamp_params, si)
 
         for it in range(max_iters):
-            u = apply_response(A, p)
+            u = apply_response(A, P, lane, p)
             r = wp.float64(0.0)
             c_lane = wp.float64(0.0)
             if active:
@@ -589,7 +596,7 @@ def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Funct
             p_t = p
             for _ls in range(_LINE_SEARCH_STEPS):
                 p_t = p + alpha * step
-                u_t = apply_response(A, p_t)
+                u_t = apply_response(A, P, lane, p_t)
                 r_t = wp.float64(0.0)
                 if active:
                     qd_t = qd0 + u_t
@@ -607,7 +614,7 @@ def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Funct
             if dpn < upd_tol * upd_tol:
                 break
 
-        u = apply_response(A, p)
+        u = apply_response(A, P, lane, p)
         if active:
             qd_i = qd0 + u
             q_i = q0 + hd * qd_i
