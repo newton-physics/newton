@@ -41,7 +41,7 @@ def _expect_parallel_joint_warning(test):
         yield
 
     test.assertEqual(len(caught), 1)
-    test.assertEqual(caught[0].category, UserWarning)
+    test.assertEqual(caught[0].category, newton.exceptions.NewtonWarning)
     test.assertRegex(str(caught[0].message), _PARALLEL_JOINT_WARNING)
 
 
@@ -158,6 +158,7 @@ def _eval_fk_serial(model, state, mask=None, indices=None, body_flag_filter=newt
             model.body_com,
             model.body_flags,
             int(body_flag_filter),
+            None,
         ],
         outputs=[state.body_q, state.body_qd],
         device=model.device,
@@ -320,6 +321,48 @@ def test_body_flag_filter(test, device):
     _eval_fk_parallel(model, state_parallel, body_flag_filter=newton.BodyFlags.DYNAMIC)
     assert_np_equal(state_parallel.body_q.numpy(), state_reference.body_q.numpy(), tol=1.0e-6)
     assert_np_equal(state_parallel.body_qd.numpy(), state_reference.body_qd.numpy(), tol=1.0e-6)
+
+    # A branch edit must use the displayed parent state and preserve siblings,
+    # even when their stored coordinates disagree with those body transforms.
+    state = model.state()
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+    before_q, before_qd = state.body_q.numpy().copy(), state.body_qd.numpy().copy()
+    selected = np.zeros(model.joint_count, dtype=bool)
+    selected[1:3] = True
+    children = model.joint_child.numpy()
+    state.joint_q.fill_(0.83)
+    state.joint_qd.fill_(0.27)
+    mask = wp.array(selected, dtype=bool, device=device)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state, joint_mask=mask)
+    untouched = np.ones(model.body_count, dtype=bool)
+    untouched[children[selected]] = False
+    assert_np_equal(state.body_q.numpy()[untouched], before_q[untouched])
+    assert_np_equal(state.body_qd.numpy()[untouched], before_qd[untouched])
+    test.assertGreater(np.linalg.norm(state.body_q.numpy()[children[selected]] - before_q[children[selected]]), 0.01)
+    # Updating the branch one joint at a time gives the same recurrence.
+    expected = model.state()
+    expected.body_q.assign(before_q)
+    expected.body_qd.assign(before_qd)
+    for joint in (1, 2):
+        single = np.arange(model.joint_count) == joint
+        newton.eval_fk(
+            model, state.joint_q, state.joint_qd, expected, joint_mask=wp.array(single, dtype=bool, device=device)
+        )
+    assert_np_equal(state.body_q.numpy(), expected.body_q.numpy(), tol=1.0e-6)
+    assert_np_equal(state.body_qd.numpy(), expected.body_qd.numpy(), tol=1.0e-6)
+    # Articulation and body filters still intersect the per-joint write mask.
+    expected.body_q.assign(before_q)
+    expected.body_qd.assign(before_qd)
+    newton.eval_fk(
+        model, state.joint_q, state.joint_qd, expected, indices=wp.array([1], dtype=int, device=device), joint_mask=mask
+    )
+    assert_np_equal(expected.body_q.numpy(), before_q)
+    newton.eval_fk(
+        model, state.joint_q, state.joint_qd, expected, body_flag_filter=newton.BodyFlags.DYNAMIC, joint_mask=mask
+    )
+    assert_np_equal(expected.body_q.numpy()[children[1]], before_q[children[1]])
+    with test.assertRaisesRegex(ValueError, "joint_mask"):
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state, joint_mask=wp.zeros(1, dtype=bool, device=device))
 
 
 def test_cable_pose_preserved(test, device):

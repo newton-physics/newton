@@ -39,6 +39,7 @@ class ViewerGui:
     def __init__(self, viewer, window):
         self._viewer = viewer
         self.ui = UI(window)
+        self.ui.key_press_filter = self._filter_gui_key_press
 
         # UI callback registry. Backend viewers (GL/RTX) register their
         # ``_ui_populate_rendering_panel`` here, examples register their
@@ -55,10 +56,31 @@ class ViewerGui:
         self._camera_orbit_sensitivity = 0.1
         self._camera_dolly_scroll_sensitivity = 0.15
         self._camera_dolly_drag_sensitivity = 0.01
+        self._frame_key_down = False
+        self._follow_held = False
+        self._follow_latched = False
+        self._follow_center = None
+        window.push_handlers(on_deactivate=self._release_camera_keys)
 
         # Gizmo active-frame tracking (handles snap_to on release)
         self._gizmo_active = {}
+        self._gizmo_hovered = False
         self._frame_prepared = False
+        self.workspace = None
+        # Created on the first UI frame; non-GL viewers keep their existing UI.
+        self.workspace_enabled = type(viewer).__name__ == "ViewerGL"
+        self.console_capture = None
+        if self.workspace_enabled and self.is_available:
+            from .viewer_console import ConsoleCapture  # noqa: PLC0415
+
+            self.ui.io.config_flags |= self.ui.imgui.ConfigFlags_.docking_enable
+            self.ui.io.config_windows_move_from_title_bar_only = True
+            # Attach before constructing an example, so importer diagnostics survive loading.
+            self.console_capture = ConsoleCapture()
+            window.push_handlers(on_close=self.close_console)
+        self._workspace_example = None
+        self._frame_camera_pending = False
+        self._selection_press = None
 
         # FPS tracking
         self._fps_history: list[float] = []
@@ -105,6 +127,16 @@ class ViewerGui:
     def is_mouse_capturing(self) -> bool:
         if not self.is_available:
             return False
+        if (
+            getattr(self, "_loading_splash_active", False)
+            or (self.show_ui and getattr(self, "_gizmo_hovered", False))
+            or (self.show_ui and getattr(self._viewer, "gizmo_is_using", False))
+        ):
+            return True
+        workspace = getattr(self, "workspace", None)
+        documents = getattr(workspace, "documents", None)
+        if self.show_ui and documents is not None and documents.viewport_hovered:
+            return False
         return bool(self.ui.io.want_capture_mouse)
 
     def is_keyboard_capturing(self) -> bool:
@@ -116,7 +148,64 @@ class ViewerGui:
         """Release camera motion and gizmos when the displayed image freezes."""
         self._cam_vel.fill(0.0)
         self._gizmo_active.clear()
+        self._gizmo_hovered = False
+        self._selection_press = None
         self._viewer.gizmo_is_using = False
+        self._release_camera_keys()
+
+    def _release_camera_keys(self):
+        """Drop momentary navigation on focus loss without releasing a pinned follow."""
+        self._frame_key_down = False
+        self._follow_held = False
+        self._cam_vel.fill(0.0)
+
+    @property
+    def following_selection(self):
+        return getattr(self, "_follow_held", False) or getattr(self, "_follow_latched", False)
+
+    def stop_following_selection(self):
+        """A changed selection or scene must not inherit another object's follow mode."""
+        self._follow_held = self._follow_latched = False
+        self._follow_center = None
+
+    def _start_follow_selection(self):
+        bounds = self.workspace.selection_bounds(include_contacts=False)
+        self._follow_center = bounds.mean(axis=0) if bounds is not None else None
+        return self._follow_center is not None
+
+    def toggle_follow_selection(self):
+        if getattr(self, "_follow_latched", False):
+            self.stop_following_selection()
+        elif self.workspace is not None and self.workspace.can_follow_selection:
+            self.frame_camera_on_model(contacts=False)
+            self._follow_latched = self._start_follow_selection()
+
+    def update_camera_follow(self, is_key_down):
+        """Transport the orbit pivot with the displayed selection, without refitting it."""
+        if getattr(self, "_frame_key_down", False):
+            from pyglet.window import key
+
+            if not is_key_down(key.F):
+                self._frame_key_down = self._follow_held = False
+        if not self.following_selection or self._viewer.is_rendering_paused():
+            return
+        if self.workspace is None or not self.workspace.can_follow_selection:
+            self.stop_following_selection()
+            return
+        if not getattr(self, "_follow_latched", False) and self.should_ignore_keyboard_input():
+            self._follow_held = False
+            return
+        bounds = self.workspace.selection_bounds(include_contacts=False, sync_selection=not self.show_ui)
+        if bounds is not None and np.isfinite(bounds).all():
+            center = bounds.mean(axis=0)
+            if self._follow_center is not None:
+                # Preserve a panned view or a close-up contact on the body. Only
+                # target translation is inherited; orbit and zoom stay user-controlled.
+                camera = self._viewer.camera
+                camera.follow(np.asarray(camera.pivot) + center - self._follow_center)
+            self._follow_center = center
+            if hasattr(self._viewer, "_camera_dirty"):
+                self._viewer._camera_dirty = True
 
     def should_ignore_mouse_input(self, allow_active_pick_drag: bool = False) -> bool:
         if self._viewer.is_rendering_paused():
@@ -125,8 +214,39 @@ class ViewerGui:
             return False
         return self.is_mouse_capturing()
 
+    def _numeric_text_input_active(self) -> bool:
+        """Recognize native numeric editors without naming particular GUI fields."""
+        if not self.is_available or not self.show_ui or not self.ui.io.want_text_input:
+            return False
+        ui = self.ui.imgui
+        active = ui.internal.get_active_id()
+        if not active:
+            return False
+        if ui.internal.temp_input_is_active(active):
+            return True
+        state = ui.internal.get_input_text_state(active)
+        numeric = (
+            ui.InputTextFlags_.chars_decimal
+            | ui.InputTextFlags_.chars_scientific
+            | ui.InputTextFlags_.chars_hexadecimal
+        )
+        return state is not None and bool(state.flags & numeric)
+
     def should_ignore_keyboard_input(self) -> bool:
-        return self.is_keyboard_capturing()
+        if getattr(self, "_loading_splash_active", False):
+            return True
+        if not self.is_available or not self.show_ui:
+            return False
+        ui, io = self.ui.imgui, self.ui.io
+        if ui.is_popup_open("", ui.PopupFlags_.any_popup):
+            return True
+        return io.want_text_input and not self._numeric_text_input_active()
+
+    def _filter_gui_key_press(self, symbol, modifiers):
+        """Prevent Space from both toggling playback and activating a focused widget."""
+        from pyglet.window import key
+
+        return symbol == key.SPACE and not self.should_ignore_keyboard_input()
 
     def is_pick_active(self) -> bool:
         viewer = self._viewer
@@ -157,7 +277,7 @@ class ViewerGui:
 
     def update_camera_from_keys(self, dt: float, is_key_down):
         """Update camera position from WASD/QE keys. Uses same speed and damping as ViewerGL."""
-        if self.is_capturing() or self._viewer.is_rendering_paused():
+        if self.should_ignore_keyboard_input() or self._viewer.is_rendering_paused():
             return
         camera = getattr(self._viewer, "camera", None)
         if camera is None:
@@ -166,6 +286,10 @@ class ViewerGui:
         import pyglet
 
         key = pyglet.window.key
+        numeric_text = self._numeric_text_input_active()
+        navigation_keys = not (self.is_available and self.show_ui and self.ui.io.want_capture_keyboard)
+        if self.is_available and self.show_ui and (self.ui.io.key_ctrl or self.ui.io.key_super):
+            return
         forward = np.array(camera.get_front(), dtype=np.float32)
         right = np.array(camera.get_right(), dtype=np.float32)
         up = np.array(camera.get_up(), dtype=np.float32)
@@ -181,17 +305,17 @@ class ViewerGui:
             right /= ln
 
         desired = np.zeros(3, dtype=np.float32)
-        if is_key_down(key.W) or is_key_down(key.UP):
+        if is_key_down(key.W) or (navigation_keys and is_key_down(key.UP)):
             desired += forward
-        if is_key_down(key.S) or is_key_down(key.DOWN):
+        if is_key_down(key.S) or (navigation_keys and is_key_down(key.DOWN)):
             desired -= forward
-        if is_key_down(key.A) or is_key_down(key.LEFT):
+        if is_key_down(key.A) or (navigation_keys and is_key_down(key.LEFT)):
             desired -= right
-        if is_key_down(key.D) or is_key_down(key.RIGHT):
+        if is_key_down(key.D) or (navigation_keys and is_key_down(key.RIGHT)):
             desired += right
         if is_key_down(key.Q):
             desired -= up
-        if is_key_down(key.E):
+        if not numeric_text and is_key_down(key.E):
             desired += up
 
         dn = float(np.linalg.norm(desired))
@@ -203,15 +327,13 @@ class ViewerGui:
         tau = max(1.0e-4, float(self._cam_damp_tau))
         self._cam_vel += (desired - self._cam_vel) * min(1.0, dt / tau)
 
-        pos = camera.pos
-        camera.pos = type(pos)(
-            pos.x + self._cam_vel[0] * dt, pos.y + self._cam_vel[1] * dt, pos.z + self._cam_vel[2] * dt
-        )
+        camera._navigation_speed_reference = max(1.0e-6, self._viewer.camera_speed * 0.6)
+        camera.translate(self._cam_vel * dt)
         if hasattr(self._viewer, "_camera_dirty"):
             self._viewer._camera_dirty = True
 
-    def frame_camera_on_model(self):
-        """Frame the camera to show all visible objects in the scene."""
+    def frame_camera_on_model(self, *, selection=True, contacts=True):
+        """Frame the selection, or all visible objects when nothing is selected."""
         viewer = self._viewer
         if viewer.is_rendering_paused():
             return
@@ -223,25 +345,70 @@ class ViewerGui:
         if camera is None:
             return
 
+        workspace = getattr(self, "workspace", None)
+        if selection and workspace is not None:
+            points = workspace.collision.focus_points() if contacts else []
+            if points:
+                self._frame_contact(points)
+                return
+            bounds = workspace.selection_bounds(include_contacts=contacts)
+            if bounds is not None:
+                center = bounds.mean(axis=0)
+                half = (bounds[1] - bounds[0]) * 0.5
+                # Fit all corners to the actual viewport, retaining orientation.
+                corners = np.array([(x, y, z) for x in (-1, 1) for y in (-1, 1) for z in (-1, 1)]) * half
+                front, right, up = map(np.asarray, (camera.get_front(), camera.get_right(), camera.get_up()))
+                tangent = np.tan(np.radians(camera.fov) * 0.5)
+                aspect = camera.width / max(camera.height, 1)
+                distance = max(
+                    np.max(np.abs(corners @ right) * 1.15 / (tangent * aspect) - corners @ front),
+                    np.max(np.abs(corners @ up) * 1.15 / tangent - corners @ front),
+                    camera.near * 2 + np.max(-corners @ front),
+                    camera._min_pivot_distance * 1.01,
+                )
+                camera.pos = PyVec3(*(center - front * distance))
+                camera.set_pivot(center)
+                self._cam_vel[:] = 0.0
+                if hasattr(viewer, "_camera_dirty"):
+                    viewer._camera_dirty = True
+                return
+
+            tree = getattr(workspace, "tree", None)
+            if tree is not None and tree.resources.bvhs.handles(workspace.selected):
+                # Empty filters and unrecorded BVHs have no focus target. Keep
+                # the camera in place instead of unexpectedly framing the scene.
+                return
+
         min_bounds = np.array([float("inf")] * 3)
         max_bounds = np.array([float("-inf")] * 3)
         found_objects = False
 
         state = getattr(viewer, "_last_state", None)
         if state is not None:
-            if getattr(state, "body_q", None) is not None:
-                body_q = state.body_q.numpy()
-                if len(body_q) > 0:
-                    positions = body_q[:, :3]
+            offsets = viewer.world_offsets.numpy() if viewer.world_offsets is not None else None
+            for kind in ("body", "particle"):
+                q = getattr(state, f"{kind}_q", None)
+                if q is None or len(q) == 0:
+                    continue
+                positions = q.numpy()[:, :3].copy()
+                worlds = getattr(viewer.model, f"{kind}_world").numpy()
+                if offsets is not None:
+                    valid = worlds >= 0
+                    positions[valid] += offsets[worlds[valid]]
+                visible = getattr(viewer, "_visible_worlds", None)
+                if visible is not None:
+                    positions = positions[(worlds < 0) | np.isin(worlds, list(visible))]
+                if len(positions):
                     min_bounds = np.minimum(min_bounds, positions.min(axis=0))
                     max_bounds = np.maximum(max_bounds, positions.max(axis=0))
                     found_objects = True
-            if getattr(state, "particle_q", None) is not None:
-                pq = state.particle_q.numpy()
-                if len(pq) > 0:
-                    min_bounds = np.minimum(min_bounds, pq.min(axis=0))
-                    max_bounds = np.maximum(max_bounds, pq.max(axis=0))
-                    found_objects = True
+
+        if workspace is not None and workspace.tree is not None and len(workspace.tree.deformables.sources) > 1:
+            bounds = workspace.tree.deformables.external_bounds()
+            if np.isfinite(bounds).all() and (bounds[1] >= bounds[0]).all():
+                min_bounds = np.minimum(min_bounds, bounds[0])
+                max_bounds = np.maximum(max_bounds, bounds[1])
+                found_objects = True
 
         if not found_objects:
             min_bounds = np.array([-5.0, -5.0, -5.0])
@@ -255,7 +422,8 @@ class ViewerGui:
 
         fov_rad = np.radians(camera.fov)
         padding = 1.5
-        distance = max_extent / (2.0 * np.tan(fov_rad / 2.0)) * padding
+        half_fov = np.arctan(np.tan(fov_rad / 2.0) * min(1.0, camera.width / max(1, camera.height)))
+        distance = max_extent / (2.0 * np.tan(half_fov)) * padding
         front = camera.get_front()
         camera.pos = PyVec3(
             center[0] - front.x * distance,
@@ -263,6 +431,47 @@ class ViewerGui:
             center[2] - front.z * distance,
         )
         camera.set_pivot(center)
+        if hasattr(viewer, "_camera_dirty"):
+            viewer._camera_dirty = True
+
+    def _frame_contact(self, points):
+        """Frame contact witnesses tightly, keeping both beyond the near plane."""
+        viewer, camera = self._viewer, self._viewer.camera
+        points = np.asarray(points, dtype=float)
+        center = points.mean(axis=0)
+        front = np.asarray(camera.get_front())
+        if len(points) == 2:
+            delta = points[1] - points[0]
+            gap = np.linalg.norm(delta)
+            if gap > max(1.0e-7, camera.near * 0.01):
+                normal = delta / gap
+                alignment = float(np.dot(front, normal))
+                if abs(alignment) > 0.6:
+                    # Avoid looking straight through both witnesses. Retain the
+                    # viewing side and azimuth while exposing the separation.
+                    tangent = front - alignment * normal
+                    if np.linalg.norm(tangent) < 1.0e-6:
+                        tangent = np.asarray(camera.get_right())
+                        tangent -= np.dot(tangent, normal) * normal
+                    front = tangent / np.linalg.norm(tangent) * np.sqrt(1.0 - 0.35**2)
+                    front += normal * np.copysign(0.35, alignment)
+                    camera._set_orientation_from_direction(front)
+        front, right, up = map(np.asarray, (camera.get_front(), camera.get_right(), camera.get_up()))
+        offsets = points - center
+        depth = offsets @ front
+        tangent = np.tan(np.radians(camera.fov) * 0.5)
+        aspect = camera.width / max(camera.height, 1)
+        # Fill about a third of the viewport with a resolvable gap; touching
+        # witnesses use the near-plane clearance instead of fixed world padding.
+        distance = max(
+            np.max(np.abs(offsets @ right) / (tangent * aspect * 0.35) - depth),
+            np.max(np.abs(offsets @ up) / (tangent * 0.35) - depth),
+            camera.near * 2.0 - np.min(depth),
+            camera._min_pivot_distance * 1.01,
+        )
+        camera.pos = camera._as_vec3(center - front * distance)
+        camera.set_pivot(center)
+        self._cam_vel[:] = 0.0
         if hasattr(viewer, "_camera_dirty"):
             viewer._camera_dirty = True
 
@@ -289,6 +498,9 @@ class ViewerGui:
         if picking is None or camera is None or viewer._last_state is None:
             return False
         fb_x, fb_y = to_framebuffer_coords(x, y)
+        rect = getattr(getattr(viewer, "renderer", None), "_workspace_rect", None)
+        if rect is not None:
+            fb_x, fb_y = fb_x - rect[0], fb_y - rect[1]
         ray_start, ray_dir = camera.get_world_ray(fb_x, fb_y)
         picking.pick(viewer._last_state, ray_start, ray_dir)
         return True
@@ -302,6 +514,9 @@ class ViewerGui:
         if picking is None or camera is None:
             return False
         fb_x, fb_y = to_framebuffer_coords(x, y)
+        rect = getattr(getattr(viewer, "renderer", None), "_workspace_rect", None)
+        if rect is not None:
+            fb_x, fb_y = fb_x - rect[0], fb_y - rect[1]
         ray_start, ray_dir = camera.get_world_ray(fb_x, fb_y)
         picking.update(ray_start, ray_dir)
         return True
@@ -325,13 +540,21 @@ class ViewerGui:
         if hasattr(self._viewer, "_camera_dirty"):
             self._viewer._camera_dirty = True
 
-    def handle_mouse_press(self, x: float, y: float, button: int, to_framebuffer_coords) -> None:
+    def handle_mouse_press(self, x: float, y: float, button: int, to_framebuffer_coords, modifiers: int = 0) -> None:
         """Handle mouse button press: start picking on right-click."""
         if self.should_ignore_mouse_input():
             return
         import pyglet
 
         viewer = self._viewer
+        if button == pyglet.window.mouse.LEFT and getattr(self, "workspace", None) is not None:
+            self._selection_press = (
+                x,
+                y,
+                to_framebuffer_coords,
+                bool(modifiers & pyglet.window.key.MOD_ALT),
+                bool(modifiers & (pyglet.window.key.MOD_CTRL | pyglet.window.key.MOD_SHIFT)),
+            )
         if (
             button == pyglet.window.mouse.RIGHT
             and getattr(viewer, "picking_enabled", False)
@@ -343,6 +566,13 @@ class ViewerGui:
         """Handle mouse button release: end picking on right-click."""
         import pyglet
 
+        if button == pyglet.window.mouse.LEFT:
+            press = getattr(self, "_selection_press", None)
+            self._selection_press = None
+            if press is not None and not self.should_ignore_mouse_input():
+                px, py, convert, shape, toggle = press
+                if (x - px) ** 2 + (y - py) ** 2 <= 16:
+                    self.workspace.select_from_screen(x, y, convert, shape=shape, toggle=toggle)
         if button == pyglet.window.mouse.RIGHT and getattr(self._viewer, "picking", None) is not None:
             self.release_picking()
 
@@ -358,7 +588,12 @@ class ViewerGui:
             window = getattr(renderer, "window", None)
             if window is not None and hasattr(window, "get_size"):
                 _, h = window.get_size()
-                height = max(float(h), 1.0)
+                viewport = getattr(renderer, "_workspace_rect", None)
+                if viewport is not None:
+                    framebuffer_height = max(float(renderer._screen_height), 1.0)
+                    height = max(viewport[3] * h / framebuffer_height, 1.0)
+                else:
+                    height = max(float(h), 1.0)
         distance = max(camera.pivot_distance, camera.MIN_PIVOT_DISTANCE)
         return 2.0 * distance * np.tan(np.radians(camera.fov) * 0.5) / height
 
@@ -375,6 +610,11 @@ class ViewerGui:
         """Handle mouse drag: middle-click orbit/pan/dolly, left-click look, right-click pick."""
         import pyglet
 
+        press = getattr(self, "_selection_press", None)
+        if press is not None:
+            if buttons & pyglet.window.mouse.LEFT and (x - press[0]) ** 2 + (y - press[1]) ** 2 <= 16:
+                return
+            self._selection_press = None
         allow_active_pick_drag = (
             bool(buttons & pyglet.window.mouse.RIGHT)
             and getattr(self._viewer, "picking_enabled", False)
@@ -401,9 +641,14 @@ class ViewerGui:
             return
 
         if buttons & pyglet.window.mouse.LEFT:
-            self.rotate_camera_from_drag(dx, dy)
-            if camera is not None:
-                camera.sync_pivot_to_view()
+            if camera is not None and self.following_selection:
+                camera.orbit(-dx * self._camera_orbit_sensitivity, dy * self._camera_orbit_sensitivity)
+                if hasattr(viewer, "_camera_dirty"):
+                    viewer._camera_dirty = True
+            else:
+                self.rotate_camera_from_drag(dx, dy)
+                if camera is not None:
+                    camera.sync_pivot_to_view()
         if (
             buttons & pyglet.window.mouse.RIGHT
             and getattr(viewer, "picking_enabled", False)
@@ -411,17 +656,35 @@ class ViewerGui:
         ):
             self.update_picking_from_screen(x, y, to_framebuffer_coords)
 
-    def handle_key_press(self, symbol: int, close_fn=None) -> None:
+    def close_console(self):
+        """Release logging routes on window close, including close events outside run()."""
+        if self.console_capture is not None:
+            self.console_capture.close()
+
+    def handle_key_press(self, symbol: int, close_fn=None, modifiers: int = 0) -> None:
         """Handle common key bindings shared by all viewer backends.
 
         Args:
             symbol: Pyglet key symbol.
             close_fn: Callable that closes the viewer window, or None.
+            modifiers: Pyglet keyboard modifier flags.
         """
-        if self.is_keyboard_capturing():
-            return
         import pyglet
 
+        if symbol == pyglet.window.key.GRAVE and modifiers & pyglet.window.key.MOD_CTRL and self.workspace is not None:
+            self.workspace.console.toggle()
+            return
+        # Mouse-opened popups need not set WantCaptureKeyboard when keyboard
+        # navigation is disabled. Let ImGui dismiss them before handling viewer
+        # shortcuts, especially Escape (which otherwise closes the window).
+        if self.is_available and self.ui.imgui.is_popup_open("", self.ui.imgui.PopupFlags_.any_popup):
+            return
+        if self.should_ignore_keyboard_input():
+            return
+        # Numeric entry keeps its decimal point and Escape cancellation. Space
+        # and camera keys still work without first clicking the viewport.
+        if self._numeric_text_input_active() and symbol in (pyglet.window.key.PERIOD, pyglet.window.key.ESCAPE):
+            return
         if symbol == pyglet.window.key.SPACE:
             self._viewer._paused = not self._viewer._paused
         elif symbol == pyglet.window.key.PERIOD and getattr(self._viewer, "_paused", False):
@@ -429,9 +692,25 @@ class ViewerGui:
         elif symbol == pyglet.window.key.H:
             self.show_ui = not self.show_ui
         elif symbol == pyglet.window.key.F:
-            self.frame_camera_on_model()
+            if not getattr(self, "_frame_key_down", False):
+                self._frame_key_down = True
+                self.frame_camera_on_model()
+                # Follow the spatial owner even when F framed a contact on it.
+                # Contact row indices themselves are transient across steps.
+                self._follow_held = bool(
+                    self.workspace is not None
+                    and self.workspace.can_follow_selection
+                    and self._start_follow_selection()
+                )
         elif symbol == pyglet.window.key.ESCAPE and close_fn is not None:
+            self.close_console()
             close_fn()
+
+    def handle_key_release(self, symbol: int):
+        from pyglet.window import key
+
+        if symbol == key.F:
+            self._frame_key_down = self._follow_held = False
 
     def _update_fps(self):
         """Update FPS counter; called once per rendered frame."""
@@ -457,14 +736,34 @@ class ViewerGui:
             self._update_fps()
         if not self.is_available:
             return
+        if self.workspace is not None and self.workspace.console.poll_warnings():
+            self.show_ui = True
+        if not self.show_ui and self.workspace is not None:
+            self.workspace.collision.contacts_tab = False
+            self.workspace.collision.overlays()
         if not self.show_ui and not self._loading_splash_active:
             return
         self.ui.begin_frame()
-        if self.show_ui:
-            self._render_ui()
-        if self._loading_splash_active:
-            self._render_loading_splash()
-        self.ui.end_frame()
+        try:
+            if self.show_ui:
+                loading = self._loading_splash_active
+                if loading:
+                    # Block interaction without making panel backgrounds transparent;
+                    # the foreground overlay dims the whole composed GUI uniformly.
+                    self.ui.imgui.push_style_var(self.ui.imgui.StyleVar_.disabled_alpha, 1.0)
+                    self.ui.imgui.begin_disabled()
+                try:
+                    self._render_ui()
+                finally:
+                    if loading:
+                        self.ui.imgui.end_disabled()
+                        self.ui.imgui.pop_style_var()
+            if self._loading_splash_active:
+                self._render_loading_splash()
+            self.ui.end_frame()
+        except (Exception, SystemExit):
+            self.ui.abort_frame()
+            raise
         self._frame_prepared = True
 
     def render_prepared_frame(self):
@@ -501,6 +800,10 @@ class ViewerGui:
         """
         self._ui_callbacks["side"] = []
         self._ui_callbacks["free"] = []
+        self._workspace_example = None
+        self._frame_camera_pending = False
+        if self.workspace is not None:
+            self.workspace.detach_example()
 
     def show_loading_splash(self, text: str | None = None) -> None:
         """Display a centered Newton's-cradle loading splash.
@@ -518,9 +821,12 @@ class ViewerGui:
 
     def _render_gizmos(self):
         viewer = self._viewer
+        self._gizmo_hovered = False
         if not self.is_available:
             return
-        if viewer.is_rendering_paused():
+        if viewer.is_rendering_paused() or self._loading_splash_active:
+            return
+        if self.workspace_enabled and self.workspace is not None and not self.workspace.documents.viewport_visible:
             return
         if not hasattr(viewer, "_gizmo_log") or not viewer._gizmo_log:
             self._gizmo_active.clear()
@@ -535,7 +841,23 @@ class ViewerGui:
 
         # Setup ImGuizmo viewport
         giz.set_orthographic(False)
-        giz.set_rect(0.0, 0.0, float(io.display_size[0]), float(io.display_size[1]))
+        rect = (
+            self.workspace.rect
+            if self.workspace_enabled and self.workspace
+            else (0, 0, io.display_size[0], io.display_size[1])
+        )
+        giz.set_rect(*map(float, rect))
+        draw_list = None
+        if self.workspace_enabled and self.workspace is not None:
+            # ImGuizmo's default full-window layer lies behind docked documents.
+            # Use the viewport for both draw order and hover ownership.
+            imgui = self.ui.imgui
+            window = imgui.internal.find_window_by_name(self.workspace.documents.viewport_name)
+            giz.set_alternative_window(window)
+            draw_list = window.draw_list
+            giz.set_drawlist(draw_list)
+            x, y, width, height = rect
+            draw_list.push_clip_rect(imgui.ImVec2(x, y), imgui.ImVec2(x + width, y + height), True)
         giz.set_gizmo_size_clip_space(0.07)
         giz.set_axis_limit(0.0)
         giz.set_plane_limit(0.0)
@@ -614,19 +936,20 @@ class ViewerGui:
             M = transform_to_matrix(transform)
             M_ = m44_to_mat16(M)
 
-            op_modified = False
+            # The binding accepts named operations, not arbitrary bitmasks.
+            # Give each operation its own ID and retain activity across all of
+            # them so the last (idle) handle cannot cancel a translation drag.
+            modified = is_active = False
             for op in ops:
-                op_modified = safe_bool(giz.manipulate(view_, proj_, op, giz.MODE.world, M_, None, None)) or op_modified
-
-            any_gizmo_is_using = safe_bool(giz.is_using_any())
-            if hasattr(giz, "is_using"):
-                is_active = safe_bool(giz.is_using()) and any_gizmo_is_using
-            else:
-                is_active = op_modified or (was_active and any_gizmo_is_using)
+                giz.push_id(int(op))
+                modified |= safe_bool(giz.manipulate(view_, proj_, op, giz.MODE.world, M_, None, None))
+                self._gizmo_hovered |= safe_bool(giz.is_over())
+                is_active |= safe_bool(giz.is_using())
+                giz.pop_id()
 
             if was_active and not is_active and snap_to is not None:
                 transform_assign(transform, snap_to)
-            else:
+            elif modified:
                 M[:] = M_.values.reshape(4, 4, order="F")
                 transform_assign_matrix(transform, M)
 
@@ -641,6 +964,10 @@ class ViewerGui:
 
         if hasattr(viewer, "gizmo_is_using"):
             viewer.gizmo_is_using = giz.is_using_any()
+        if self._gizmo_hovered or getattr(viewer, "gizmo_is_using", False):
+            self._selection_press = None
+        if draw_list is not None:
+            draw_list.pop_clip_rect()
 
     def _render_loading_splash(self):
         """Render a stylized Newton's-cradle loading splash, optionally with a sub-label.
@@ -678,76 +1005,77 @@ class ViewerGui:
         cy = viewport.pos.y + viewport.size.y * 0.5
         pivot_y = cy - cradle_height * 0.5 + bar_thickness
 
-        imgui.set_next_window_pos(imgui.ImVec2(viewport.pos.x, viewport.pos.y))
-        imgui.set_next_window_size(imgui.ImVec2(viewport.size.x, viewport.size.y))
-        flags = (
-            imgui.WindowFlags_.no_decoration
-            | imgui.WindowFlags_.no_inputs
-            | imgui.WindowFlags_.no_saved_settings
-            | imgui.WindowFlags_.no_focus_on_appearing
-            | imgui.WindowFlags_.no_nav
-            | imgui.WindowFlags_.no_bring_to_front_on_focus
-            | imgui.WindowFlags_.no_move
-            | imgui.WindowFlags_.no_background
+        # Foreground covers docked/floating documents, popups and all panels.
+        draw_list = imgui.get_foreground_draw_list(viewport)
+
+        dim_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.0, 0.0, 0.0, 0.55))
+        ball_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.88, 0.88, 0.92, 1.0))
+        string_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.55, 0.55, 0.6, 1.0))
+        bar_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.45, 0.45, 0.5, 1.0))
+        text_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.9, 0.9, 0.9, 1.0))
+
+        # Dim the underlying scene.  Drawn manually rather than via
+        # ``set_next_window_bg_alpha`` so the dim color is independent
+        # of the active ImGui style.
+        draw_list.add_rect_filled(
+            imgui.ImVec2(viewport.pos.x, viewport.pos.y),
+            imgui.ImVec2(viewport.pos.x + viewport.size.x, viewport.pos.y + viewport.size.y),
+            dim_col,
         )
-        if imgui.begin("##loading_splash", None, flags)[0]:
-            draw_list = imgui.get_window_draw_list()
 
-            dim_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.0, 0.0, 0.0, 0.55))
-            ball_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.88, 0.88, 0.92, 1.0))
-            string_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.55, 0.55, 0.6, 1.0))
-            bar_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.45, 0.45, 0.5, 1.0))
-            text_col = imgui.color_convert_float4_to_u32(imgui.ImVec4(0.9, 0.9, 0.9, 1.0))
+        first_pivot_x = cx - (n_balls - 1) * ball_spacing * 0.5
+        bar_half = (n_balls - 1) * ball_spacing * 0.5 + ball_radius + bar_overhang
+        draw_list.add_rect_filled(
+            imgui.ImVec2(cx - bar_half, pivot_y - bar_thickness),
+            imgui.ImVec2(cx + bar_half, pivot_y),
+            bar_col,
+        )
 
-            # Dim the underlying scene.  Drawn manually rather than via
-            # ``set_next_window_bg_alpha`` so the dim color is independent
-            # of the active ImGui style.
-            draw_list.add_rect_filled(
-                imgui.ImVec2(viewport.pos.x, viewport.pos.y),
-                imgui.ImVec2(viewport.pos.x + viewport.size.x, viewport.pos.y + viewport.size.y),
-                dim_col,
+        swing_angle = math.radians(32.0)
+        for i in range(n_balls):
+            pivot_x = first_pivot_x + i * ball_spacing
+            if i == 0:
+                ball_x = pivot_x - math.sin(swing_angle) * string_length
+                ball_y = pivot_y + math.cos(swing_angle) * string_length
+            else:
+                ball_x = pivot_x
+                ball_y = pivot_y + string_length
+
+            draw_list.add_line(
+                imgui.ImVec2(pivot_x, pivot_y),
+                imgui.ImVec2(ball_x, ball_y),
+                string_col,
+                string_thickness,
+            )
+            draw_list.add_circle_filled(
+                imgui.ImVec2(ball_x, ball_y),
+                ball_radius,
+                ball_col,
             )
 
-            first_pivot_x = cx - (n_balls - 1) * ball_spacing * 0.5
-            bar_half = (n_balls - 1) * ball_spacing * 0.5 + ball_radius + bar_overhang
-            draw_list.add_rect_filled(
-                imgui.ImVec2(cx - bar_half, pivot_y - bar_thickness),
-                imgui.ImVec2(cx + bar_half, pivot_y),
-                bar_col,
-            )
-
-            swing_angle = math.radians(32.0)
-            for i in range(n_balls):
-                pivot_x = first_pivot_x + i * ball_spacing
-                if i == 0:
-                    ball_x = pivot_x - math.sin(swing_angle) * string_length
-                    ball_y = pivot_y + math.cos(swing_angle) * string_length
-                else:
-                    ball_x = pivot_x
-                    ball_y = pivot_y + string_length
-
-                draw_list.add_line(
-                    imgui.ImVec2(pivot_x, pivot_y),
-                    imgui.ImVec2(ball_x, ball_y),
-                    string_col,
-                    string_thickness,
-                )
-                draw_list.add_circle_filled(
-                    imgui.ImVec2(ball_x, ball_y),
-                    ball_radius,
-                    ball_col,
-                )
-
-            if text:
-                text_size = imgui.calc_text_size(text)
-                text_x = cx - text_size.x * 0.5
-                text_y = pivot_y + string_length + ball_radius + text_gap
-                draw_list.add_text(imgui.ImVec2(text_x, text_y), text_col, text)
-        imgui.end()
+        if text:
+            text_size = imgui.calc_text_size(text)
+            text_x = cx - text_size.x * 0.5
+            text_y = pivot_y + string_length + ball_radius + text_gap
+            draw_list.add_text(imgui.ImVec2(text_x, text_y), text_col, text)
 
     def _render_ui(self):
         """Render the complete ImGui interface."""
         if not self.is_available:
+            return
+
+        if self.workspace_enabled:
+            if self.workspace is None:
+                from .viewer_workspace import ViewerWorkspace  # noqa: PLC0415
+
+                self.workspace = ViewerWorkspace(self)
+            self.workspace.bind(self._workspace_example)
+            self.workspace.draw()
+            self._render_gizmos()
+            for callback in self._ui_callbacks["free"]:
+                if getattr(callback, "__name__", "") != "timeline_gui":
+                    name = getattr(callback, "__qualname__", type(callback).__name__)
+                    self.ui.draw_section(f"Example overlay {name}", lambda cb=callback: cb(self.ui.imgui))
             return
 
         self._render_left_panel()
@@ -757,7 +1085,8 @@ class ViewerGui:
         self._render_logged_images()
 
         for callback in self._ui_callbacks["free"]:
-            callback(self.ui.imgui)
+            name = getattr(callback, "__qualname__", type(callback).__name__)
+            self.ui.draw_section(f"Example overlay {name}", lambda cb=callback: cb(self.ui.imgui))
 
     def _render_left_panel(self):
         """Render left panel with model details and visualization controls."""
@@ -878,6 +1207,8 @@ class ViewerGui:
                                 "Arrow Thickness", renderer.arrow_scale, 0.25, 5.0
                             )
                     _changed, viewer.show_particles = imgui.checkbox("Show Particles", viewer.show_particles)
+                    if _changed:
+                        viewer._particle_visibility_user = viewer.show_particles
                     _changed, viewer.show_springs = imgui.checkbox("Show Springs", viewer.show_springs)
                     _changed, viewer.show_com = imgui.checkbox("Show Center of Mass", viewer.show_com)
                     if viewer.show_com and renderer is not None and hasattr(renderer, "com_scale"):
@@ -1108,8 +1439,6 @@ class ViewerGui:
             "##pattern", state["selected_articulation_pattern"]
         )
         imgui.pop_item_width()
-        if imgui.is_item_hovered():
-            imgui.set_tooltip("Pattern to match articulations (e.g., '*', 'robot*', 'cartpole')")
 
         imgui.spacing()
         imgui.text("Joint Filters (optional):")
@@ -1117,13 +1446,9 @@ class ViewerGui:
         imgui.text("Include:")
         imgui.same_line()
         _changed, state["include_joints"] = imgui.input_text("##inc_joints", state["include_joints"])
-        if imgui.is_item_hovered():
-            imgui.set_tooltip("Comma-separated joint names/patterns")
         imgui.text("Exclude:")
         imgui.same_line()
         _changed, state["exclude_joints"] = imgui.input_text("##exc_joints", state["exclude_joints"])
-        if imgui.is_item_hovered():
-            imgui.set_tooltip("Comma-separated joint names/patterns")
         imgui.pop_item_width()
 
         imgui.spacing()
@@ -1132,13 +1457,9 @@ class ViewerGui:
         imgui.text("Include:")
         imgui.same_line()
         _changed, state["include_links"] = imgui.input_text("##inc_links", state["include_links"])
-        if imgui.is_item_hovered():
-            imgui.set_tooltip("Comma-separated link names/patterns")
         imgui.text("Exclude:")
         imgui.same_line()
         _changed, state["exclude_links"] = imgui.input_text("##exc_links", state["exclude_links"])
-        if imgui.is_item_hovered():
-            imgui.set_tooltip("Comma-separated link names/patterns")
         imgui.pop_item_width()
 
         imgui.spacing()

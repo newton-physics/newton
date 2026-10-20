@@ -22,6 +22,8 @@ from typing import Any
 import numpy as np
 import warp as wp
 
+from ..exceptions import NewtonWarning
+
 _ACCEPTED_C = (1, 3, 4)
 _TILE_SPACING_PX: float = 2.0
 _INITIAL_TILE_PX: int = 192
@@ -466,38 +468,7 @@ class ImageLogger:
         expanded, stays_open = imgui.begin(entry.name, True)
         try:
             if expanded:
-                imgui.push_style_var(
-                    imgui.StyleVar_.item_spacing,
-                    imgui.ImVec2(spacing_px, spacing_px),
-                )
-                content_w = imgui.get_content_region_avail().x
-                content_h = imgui.get_content_region_avail().y
-                _, cols, cell_w, cell_h = compute_grid_layout(
-                    entry.n,
-                    entry.tile_aspect,
-                    content_w,
-                    content_h,
-                    spacing_x=spacing_px,
-                    spacing_y=spacing_px,
-                )
-                # UVs sample tile ``i`` from atlas slot
-                # ``(i // atlas_cols, i % atlas_cols)``. The display grid
-                # ``cols`` (above) is independent of ``atlas_cols``.
-                u_step = entry.w / float(entry.tex_w) if entry.tex_w > 0 else 0.0
-                v_step = entry.h / float(entry.tex_h) if entry.tex_h > 0 else 0.0
-                for i in range(entry.n):
-                    if i > 0 and (i % cols) != 0:
-                        imgui.same_line()
-                    a_row, a_col = divmod(i, entry.atlas_cols)
-                    uv0 = imgui.ImVec2(a_col * u_step, a_row * v_step)
-                    uv1 = imgui.ImVec2((a_col + 1) * u_step, (a_row + 1) * v_step)
-                    imgui.image(
-                        imgui.ImTextureRef(entry.tex_id),
-                        imgui.ImVec2(cell_w, cell_h),
-                        uv0=uv0,
-                        uv1=uv1,
-                    )
-                imgui.pop_style_var()
+                self.draw_content(ui, entry.name)
         finally:
             imgui.end()
 
@@ -505,6 +476,37 @@ class ImageLogger:
             # User clicked the window's close (X); de-select so the dropdown
             # reflects reality and the window can be re-opened via the dropdown.
             self._selected = None
+
+    def draw_content(self, ui, name: str) -> None:
+        """Draw an image atlas inside the current window without copying pixels."""
+        entry = self._images.get(name)
+        if entry is None or entry.n == 0 or entry.tex_id == 0:
+            return
+        imgui = ui.imgui
+        spacing = _TILE_SPACING_PX * ui.dpi_scale
+        available = imgui.get_content_region_avail()
+        if available.x <= 0 or available.y <= 0:
+            return
+        _, cols, cell_w, cell_h = compute_grid_layout(
+            entry.n, entry.tile_aspect, available.x, available.y, spacing_x=spacing, spacing_y=spacing
+        )
+        imgui.push_style_var(imgui.StyleVar_.item_spacing, imgui.ImVec2(spacing, spacing))
+        try:
+            # The display grid is independent of the GPU atlas layout.
+            u_step = entry.w / float(entry.tex_w)
+            v_step = entry.h / float(entry.tex_h)
+            for i in range(entry.n):
+                if i > 0 and i % cols != 0:
+                    imgui.same_line()
+                row, col = divmod(i, entry.atlas_cols)
+                imgui.image(
+                    imgui.ImTextureRef(entry.tex_id),
+                    imgui.ImVec2(cell_w, cell_h),
+                    uv0=imgui.ImVec2(col * u_step, row * v_step),
+                    uv1=imgui.ImVec2((col + 1) * u_step, (row + 1) * v_step),
+                )
+        finally:
+            imgui.pop_style_var()
 
     def draw_controls(self, imgui) -> None:
         """Render the sidebar dropdown selecting which image window is shown.
@@ -598,6 +600,7 @@ class ImageLogger:
         warnings.warn(
             f"log_image('{name}'): array is on {image.device} but viewer is on "
             f"{self._device}; falling back to CPU upload (D2H copy per frame).",
+            NewtonWarning,
             stacklevel=3,
         )
         self._warned_device_mismatch[name] = image.device
@@ -776,6 +779,7 @@ class ImageLogger:
             if not sys.is_finalizing():
                 warnings.warn(
                     f"log_image('{entry.name}'): GL cleanup failed: {exc!r}",
+                    NewtonWarning,
                     stacklevel=2,
                 )
         finally:

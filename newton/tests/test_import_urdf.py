@@ -2013,7 +2013,7 @@ class TestUrdfUriResolution(unittest.TestCase):
             builder = newton.ModelBuilder()
             with self.assertWarns(UserWarning) as cm:
                 builder.add_urdf(str(misleading / "urdf" / "robot.urdf"), up_axis="Z")
-            self.assertIn('could not resolve package "pkg"', str(cm.warning))
+            self.assertIn('Could not resolve package "pkg"', str(cm.warning))
             self.assertEqual(builder.shape_count, 0)
 
     @unittest.skipUnless(resolve_robotics_uri, "resolve-robotics-uri-py not installed")

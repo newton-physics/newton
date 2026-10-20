@@ -17,8 +17,8 @@ class FrameCache:
         self.height = 0
         self._fbo = 0
 
-    def store(self, texture: int, width: int, height: int) -> None:
-        """Copy a texture without changing its row orientation."""
+    def store(self, texture: int, width: int, height: int, *, source_x: int = 0, source_y: int = 0) -> None:
+        """Copy a texture region without changing its row orientation."""
         from pyglet import gl
 
         if not self.texture:
@@ -35,12 +35,12 @@ class FrameCache:
         gl.glReadBuffer(gl.GL_COLOR_ATTACHMENT0)
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.texture)
         if (width, height) != (self.width, self.height):
-            gl.glCopyTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA8, 0, 0, width, height, 0)
+            gl.glCopyTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA8, source_x, source_y, width, height, 0)
             gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
             gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
             self.width, self.height = width, height
         else:
-            gl.glCopyTexSubImage2D(gl.GL_TEXTURE_2D, 0, 0, 0, 0, 0, width, height)
+            gl.glCopyTexSubImage2D(gl.GL_TEXTURE_2D, 0, 0, 0, source_x, source_y, width, height)
         gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
         gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, previous.value)
 

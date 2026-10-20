@@ -107,7 +107,7 @@ _KAMINO_NON_FLOATING_ROOT_WARNING_RE = (
     r"disabling floating base resets for those worlds\..*\n?"
 )
 _ANYMAL_TEXTURE_WITHOUT_UVS_WARNING_RE = (
-    r"^.*newton[/\\]_src[/\\]utils[/\\]import_urdf\.py:\d+: UserWarning: Warning: mesh "
+    r"^.*newton[/\\]_src[/\\]utils[/\\]import_urdf\.py:\d+: NewtonWarning: Mesh "
     r"[^\n]*[/\\]base\.dae has a texture but no UVs; texture will be ignored\.\n"
     r"  parse_shapes\(link, visuals, density=0\.0, just_visual=True, visible=not hide_visuals\)\n?"
 )

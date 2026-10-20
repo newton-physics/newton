@@ -166,8 +166,6 @@ class PlotLogger:
         imgui = ui.imgui
         io = ui.io
         s = ui.dpi_scale
-        scalar_arrays = self._scalar_arrays
-        plot_history_size = self._plot_history_size
         window_width = 400 * s
         item_height = len(scalar_buffers) * 140 * s + len(array_buffers) * 260 * s
         window_height = min(io.display_size[1] - 20 * s, item_height + 60 * s)
@@ -178,23 +176,31 @@ class PlotLogger:
             imgui.Cond_.first_use_ever,
         )
         imgui.set_next_window_size(imgui.ImVec2(window_width, window_height), imgui.Cond_.first_use_ever)
-        n = plot_history_size
-        expanded = imgui.begin("Plots")
-        if expanded:
-            graph_size = imgui.ImVec2(-1, 100 * s)
-            for name, buf in scalar_buffers.items():
+        expanded, _ = imgui.begin("Plots")
+        try:
+            if expanded:
+                self.draw_content(ui)
+        finally:
+            imgui.end()
+
+    def draw_content(self, ui) -> None:
+        """Render plots in the current window using its available width."""
+        imgui, s = ui.imgui, ui.dpi_scale
+        scalar_arrays = self._scalar_arrays
+        n = self._plot_history_size
+        graph_size = imgui.ImVec2(-1, 100 * s)
+        for name, buf in self._scalar_buffers.items():
+            if imgui.collapsing_header(name, imgui.TreeNodeFlags_.default_open.value):
                 arr = scalar_arrays.get(name)
                 if arr is None:
                     arr = np.full(n, np.nan, dtype=np.float32)
                     arr[n - len(buf) :] = np.array(buf, dtype=np.float32)
                     scalar_arrays[name] = arr
                 overlay = f"{buf[-1]:.4g}" if buf else ""
-                if imgui.collapsing_header(name, imgui.TreeNodeFlags_.default_open.value):
-                    imgui.plot_lines(f"##{name}", arr, graph_size=graph_size, overlay_text=overlay)
-            for name, array in array_buffers.items():
-                if imgui.collapsing_header(name, imgui.TreeNodeFlags_.default_open.value):
-                    self._render_array_heatmap(imgui, name, array, window_width - 40.0 * s, dpi_scale=s)
-        imgui.end()
+                imgui.plot_lines(f"##{name}", arr, graph_size=graph_size, overlay_text=overlay)
+        for name, array in self._array_buffers.items():
+            if imgui.collapsing_header(name, imgui.TreeNodeFlags_.default_open.value):
+                self._render_array_heatmap(imgui, name, array, imgui.get_content_region_avail().x, dpi_scale=s)
 
     @staticmethod
     def _build_heatmap_color_lut() -> np.ndarray:
@@ -332,7 +338,7 @@ class PlotLogger:
         if array.size == 0:
             imgui.text(f"shape {rows}x{cols} (empty)")
             return
-        heatmap_width = max(120.0 * s, width)
+        heatmap_width = max(1.0, width)
         heatmap_height = float(np.clip(heatmap_width * rows / max(cols, 1), 80.0 * s, 220.0 * s))
         min_cell_px = max(1.0, self._heatmap_min_cell_pixels * s)
         target_cols = max(1, min(cols, int(heatmap_width / min_cell_px)))

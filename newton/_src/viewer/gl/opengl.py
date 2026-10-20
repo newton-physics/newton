@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import ctypes
+import logging
 import os
 import sys
 import warnings
@@ -11,6 +12,7 @@ import warp as wp
 
 from newton import Mesh
 
+from ...exceptions import NewtonWarning
 from ...utils.mesh import compute_vertex_normals
 from ...utils.texture import normalize_texture
 from ..utils import OPAQUE_OPACITY_THRESHOLD
@@ -25,6 +27,8 @@ from .shaders import (
     ShaderSky,
     ShadowShader,
 )
+
+logger = logging.getLogger(__name__)
 
 ENABLE_GL_CHECKS = False
 _CUDA_INTEROP_WARNINGS: set[str] = set()
@@ -71,8 +75,7 @@ def check_gl_error():
         import traceback  # noqa: PLC0415
 
         stack = traceback.format_stack()
-        print(f"OpenGL error: {error_name} ({error:#x})")
-        print(f"Called from: {''.join(stack[-2:-1])}")
+        logger.error("OpenGL error: %s (%#x)\nCalled from: %s", error_name, error, "".join(stack[-2:-1]))
 
 
 def _upload_texture_from_file(gl, texture_image: np.ndarray) -> int:
@@ -210,6 +213,7 @@ class MeshGL:
         self.normals = None  # scratch buffer used during normal recomputation
         self.texture_id = None
         self.opacity = 1.0
+        self._capsule_instancing = False
 
         # Set up vertex attributes in the packed format the shaders expect
         self.vertex_byte_size = 12 + 12 + 8
@@ -439,6 +443,7 @@ class MeshGL:
 
             gl.glBindVertexArray(self.vao)
             gl.glVertexAttrib1f(9, self.opacity)
+            gl.glVertexAttrib1f(10, 0.0)
             gl.glDrawElements(gl.GL_TRIANGLES, self.num_indices, gl.GL_UNSIGNED_INT, None)
             gl.glBindVertexArray(0)
 
@@ -555,7 +560,7 @@ class LinesGL:
             finally:
                 self.vertex_cuda_buffer.unmap()
         else:
-            host_vertices = self.vertices.numpy()
+            host_vertices = self.vertices[: 2 * self.num_lines].numpy()
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo)
             gl.glBufferData(gl.GL_ARRAY_BUFFER, host_vertices.nbytes, host_vertices.ctypes.data, gl.GL_DYNAMIC_DRAW)
 
@@ -591,7 +596,7 @@ class WireframeShapeGL:
         self.world_matrix = np.eye(4, dtype=np.float32)
         self._owns_gl = True
 
-        vertex_byte_size = 6 * 4
+        vertex_byte_size = vertex_data.shape[1] * 4
 
         self.vao = gl.GLuint()
         gl.glGenVertexArrays(1, self.vao)
@@ -608,6 +613,13 @@ class WireframeShapeGL:
         gl.glEnableVertexAttribArray(0)
         gl.glVertexAttribPointer(1, 3, gl.GL_FLOAT, gl.GL_FALSE, vertex_byte_size, ctypes.c_void_p(3 * 4))
         gl.glEnableVertexAttribArray(1)
+
+        if vertex_data.shape[1] == 12:
+            for attribute in (2, 3):
+                gl.glVertexAttribPointer(
+                    attribute, 3, gl.GL_FLOAT, False, vertex_byte_size, ctypes.c_void_p(attribute * 12)
+                )
+                gl.glEnableVertexAttribArray(attribute)
 
         gl.glBindVertexArray(0)
 
@@ -751,6 +763,8 @@ class MeshInstancerGL:
 
         self._has_transparency = False
         self._opacity_attribute_enabled = False
+        self._host_transforms = None
+        self._lod_draws = None
 
         self.allocate(num_instances)
         self.active_instances = num_instances
@@ -929,7 +943,7 @@ class MeshInstancerGL:
             )
 
         self.active_instances = active_count
-        # Upload the full buffer; only the first `active_instances` rows are rendered
+        # Upload only active rows, retaining the reusable device allocation.
         self._update_vbo(self.world_xforms, colors, materials, opacities)
 
     # helper to update instance transforms from points
@@ -967,13 +981,15 @@ class MeshInstancerGL:
         active_count = self.active_instances
 
         if self._instance_transform_cuda_buffer is not None:
+            self._host_transforms = None
             vbo_transforms = self._instance_transform_cuda_buffer.map(dtype=wp.mat44, shape=(self.num_instances,))
             try:
-                wp.copy(vbo_transforms, xforms)
+                wp.copy(vbo_transforms, xforms, count=active_count)
             finally:
                 self._instance_transform_cuda_buffer.unmap()
         else:
-            host_transforms = xforms.numpy()
+            host_transforms = xforms[:active_count].numpy()
+            self._host_transforms = host_transforms
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_transform_buffer)
             gl.glBufferData(gl.GL_ARRAY_BUFFER, host_transforms.nbytes, host_transforms.ctypes.data, gl.GL_DYNAMIC_DRAW)
 
@@ -1005,6 +1021,7 @@ class MeshInstancerGL:
         if count > self.num_instances:
             raise ValueError(f"Active instance count ({count}) exceeds allocated capacity ({self.num_instances}).")
         self.active_instances = count
+        self._host_transforms = host_transforms_np[:count]
         if count > 0:
             nbytes = count * self.transform_byte_size
             gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_transform_buffer)
@@ -1091,10 +1108,41 @@ class MeshInstancerGL:
             gl.glBindTexture(gl.GL_TEXTURE_2D, RendererGL.get_fallback_texture())
 
         gl.glBindVertexArray(self.vao)
-        gl.glDrawElementsInstanced(
-            gl.GL_TRIANGLES, self.mesh.num_indices, gl.GL_UNSIGNED_INT, None, self.active_instances
-        )
+        gl.glVertexAttrib1f(10, float(self.mesh._capsule_instancing))
+        if self._lod_draws is None:
+            gl.glDrawElementsInstanced(
+                gl.GL_TRIANGLES, self.mesh.num_indices, gl.GL_UNSIGNED_INT, None, self.active_instances
+            )
+        else:
+            original = self.mesh
+            for mesh, start, count in self._lod_draws:
+                self.mesh = mesh
+                self._bind_mesh_buffers()
+                gl.glBindVertexArray(self.vao)
+                self._instance_offset(start)
+                gl.glDrawElementsInstanced(gl.GL_TRIANGLES, mesh.num_indices, gl.GL_UNSIGNED_INT, None, count)
+            self.mesh = original
+            self._bind_mesh_buffers()
+            gl.glBindVertexArray(self.vao)
+            self._instance_offset(0)
         gl.glBindVertexArray(0)
+
+    def _instance_offset(self, start):
+        """Select contiguous instance rows without repacking or losing picking IDs."""
+        gl = RendererGL.gl
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_transform_buffer)
+        for i in range(4):
+            gl.glVertexAttribPointer(3 + i, 4, gl.GL_FLOAT, gl.GL_FALSE, 64, ctypes.c_void_p(start * 64 + i * 16))
+        for location, size, buffer in (
+            (7, 3, self.instance_color_buffer),
+            (8, 4, self.instance_material_buffer),
+            (9, 1, self.instance_opacity_buffer),
+        ):
+            if buffer is not None:
+                gl.glBindBuffer(gl.GL_ARRAY_BUFFER, buffer)
+                gl.glVertexAttribPointer(
+                    location, size, gl.GL_FLOAT, gl.GL_FALSE, size * 4, ctypes.c_void_p(start * size * 4)
+                )
 
 
 class RendererGL:
@@ -1132,6 +1180,10 @@ class RendererGL:
         self.wireframe_line_width = 1.5  # pixels
         self.line_width = 1.5  # pixels, for all log_lines batches
         self.arrow_scale = 1.0  # screen-space multiplier on arrow line width and arrowhead size
+        self.contact_arrow_scale = 1.0
+        self.contact_normal_max_pixels = 80.0
+        self.contact_force_max_pixels = 64.0
+        self.contact_disk_scale = 0.85
         self.arrow_length_scale = 1.0  # multiplier on contact-arrow world-space length
         self.joint_scale = 1.0  # multiplier on joint-axis line length
         self.com_scale = 1.0  # multiplier on COM sphere radius
@@ -1202,7 +1254,7 @@ class RendererGL:
             # remember sample count for later (e.g., resolving FBO)
             self.msaa_samples = 4
         except pyglet.window.NoSuchConfigException:
-            print("Warning: Could not get MSAA config, falling back to non-AA.")
+            logger.warning("Could not get MSAA config, falling back to non-AA.")
             self.window = pyglet.window.Window(
                 width=screen_width,
                 height=screen_height,
@@ -1272,6 +1324,9 @@ class RendererGL:
         self._frame_depth_texture = None
         self._frame_fbo = None
         self._frame_pbo = None
+        self._selection_outline = None
+        self._selection_surface_shader = None
+        self._selection_instances = ()
         self._oit_fbo = None
         self._oit_accum_texture = None
         self._oit_reveal_texture = None
@@ -1375,6 +1430,10 @@ class RendererGL:
                 # This is a non-fatal error that can be safely ignored
                 pass
 
+    def _get_scene_viewport(self):
+        """Return the visible scene rectangle in framebuffer pixels."""
+        return getattr(self, "_workspace_rect", None) or (0, 0, self._screen_width, self._screen_height)
+
     def render(self, camera, objects, lines=None, wireframe_shapes=None, arrows=None):
         gl = RendererGL.gl
         self._make_current()
@@ -1383,6 +1442,7 @@ class RendererGL:
         gl.glEnable(gl.GL_DEPTH_TEST)
         gl.glDepthMask(True)
         gl.glDepthRange(0.0, 1.0)
+        gl.glDisable(gl.GL_SCISSOR_TEST)
 
         self.camera = camera
 
@@ -1399,6 +1459,16 @@ class RendererGL:
         # Store matrices for other methods
         self._view_matrix = self.camera.get_view_matrix()
         self._projection_matrix = self.camera.get_projection_matrix()
+        # Preparing a level may lazily add cached prototypes to the object map.
+        for obj in tuple(objects.values()):
+            lod = getattr(getattr(obj, "mesh", None), "_display_lod", None)
+            if lod is not None and not obj.hidden:
+                lod.prepare(self, obj)
+        # Contact glyphs use the same analytic disks in every display mode.
+        # Keep them out of geometry and shadow passes.
+        contact_disks = {name: obj for name, obj in objects.items() if "/contacts/modes" in name}
+        if contact_disks:
+            objects = {name: obj for name, obj in objects.items() if name not in contact_disks}
         scene_has_transparency = self._scene_has_transparency(objects)
 
         # Lazy-load environment map after a valid GL context is active
@@ -1418,13 +1488,19 @@ class RendererGL:
             # Note: lines are skipped during shadow pass since they don't cast shadows
             self._render_shadow_map(objects, scene_has_transparency=scene_has_transparency)
 
-        # reset viewport
-        gl.glViewport(0, 0, self._screen_width, self._screen_height)
+        # Rasterize at the visible viewport's native resolution. The backing
+        # texture stays window-sized for UI capture, but panels incur no scene
+        # fragment shading or depth writes.
+        viewport = self._get_scene_viewport()
+        gl.glViewport(*viewport)
 
         has_msaa = getattr(self, "msaa_samples", 0) > 0 and self._frame_msaa_fbo is not None
 
         # select target framebuffer (MSAA or regular) for scene rendering
         target_fbo = self._frame_msaa_fbo if has_msaa else self._frame_fbo
+        if has_msaa:
+            gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, self._frame_fbo)
+            gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
 
         # ---------------------------------------
         # Set texture as render target for MSAA resolve
@@ -1435,24 +1511,24 @@ class RendererGL:
         gl.glClearColor(*self.sky_upper, 1)
         gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
         gl.glBindVertexArray(0)
+        gl.glScissor(*viewport)
+        gl.glEnable(gl.GL_SCISSOR_TEST)
 
-        msaa_resolved = self._render_scene(objects, scene_has_transparency=scene_has_transparency)
-
-        # Render lines after main scene but before MSAA resolve
-        if lines:
-            self._render_lines(lines)
-
-        if arrows:
-            self._render_arrows(arrows)
-
-        if wireframe_shapes:
-            self._render_wireframe_shapes(wireframe_shapes)
+        msaa_resolved = self._render_scene(
+            objects,
+            scene_has_transparency=scene_has_transparency,
+            lines=lines,
+            arrows=arrows,
+            wireframe_shapes=wireframe_shapes,
+            contact_disks=contact_disks,
+        )
 
         # ------------------------------------------------------------------
         # If MSAA is enabled, resolve the multi-sample buffer into texture FBO
         # ------------------------------------------------------------------
         if has_msaa and not msaa_resolved:
             self._resolve_msaa_frame()
+        gl.glDisable(gl.GL_SCISSOR_TEST)
 
         # ------------------------------------------------------------------
         # Draw resolved texture to the screen
@@ -1472,6 +1548,8 @@ class RendererGL:
                 gl.glDrawElements(gl.GL_TRIANGLES, len(self._frame_indices), gl.GL_UNSIGNED_INT, None)
                 gl.glBindVertexArray(0)
                 gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+
+        gl.glViewport(0, 0, self._screen_width, self._screen_height)
 
         if self.draw_fps:
             gl.glClear(gl.GL_DEPTH_BUFFER_BIT)
@@ -1502,6 +1580,7 @@ class RendererGL:
 
         screen_w = max(int(self._screen_width), 1)
         screen_h = max(int(self._screen_height), 1)
+        view_x, view_y, view_w, view_h = self._get_scene_viewport()
 
         assert self._frame_fbo is not None
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._frame_fbo)
@@ -1510,19 +1589,20 @@ class RendererGL:
         gl.glDisable(gl.GL_DEPTH_TEST)
         gl.glDepthMask(True)
         gl.glDisable(gl.GL_BLEND)
+        gl.glDisable(gl.GL_SCISSOR_TEST)
         gl.glViewport(0, 0, screen_w, screen_h)
         gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
         gl.glDepthMask(False)
 
         if texture_id is not None and texture_id != 0:
-            draw_x, draw_y = 0, 0
-            draw_w, draw_h = screen_w, screen_h
+            draw_x, draw_y = view_x, view_y
+            draw_w, draw_h = view_w, view_h
             if texture_width > 0 and texture_height > 0:
-                scale = min(screen_w / float(texture_width), screen_h / float(texture_height))
+                scale = min(view_w / float(texture_width), view_h / float(texture_height))
                 draw_w = max(1, int(round(texture_width * scale)))
                 draw_h = max(1, int(round(texture_height * scale)))
-                draw_x = max(0, (screen_w - draw_w) // 2)
-                draw_y = max(0, (screen_h - draw_h) // 2)
+                draw_x = view_x + max(0, (view_w - draw_w) // 2)
+                draw_y = view_y + max(0, (view_h - draw_h) // 2)
 
             gl.glViewport(draw_x, draw_y, draw_w, draw_h)
             gl.glActiveTexture(gl.GL_TEXTURE0)
@@ -1548,6 +1628,7 @@ class RendererGL:
                 gl.glDrawElements(gl.GL_TRIANGLES, len(self._frame_indices), gl.GL_UNSIGNED_INT, None)
                 gl.glBindVertexArray(0)
             gl.glBindTexture(gl.GL_TEXTURE_2D, 0)
+        gl.glViewport(0, 0, screen_w, screen_h)
 
         err = gl.glGetError()
         assert err == gl.GL_NO_ERROR, hex(err)
@@ -1586,6 +1667,25 @@ class RendererGL:
 
     def close(self):
         self._make_current()
+        if getattr(self, "_selection_outline", None) is not None:
+            self._selection_outline.destroy()
+            self._selection_outline = None
+        if getattr(self, "_selection_surface_shader", None) is not None:
+            self._selection_surface_shader.destroy()
+            self._selection_surface_shader = None
+        if getattr(self, "_joint_shader", None) is not None:
+            self._joint_shader.destroy()
+            self._joint_shader = None
+
+        if getattr(self, "_contact_label_shader", None) is not None:
+            self._contact_label_shader.destroy()
+            self._contact_label_shader = None
+        if getattr(self, "_surface_grid_shader", None) is not None:
+            self._surface_grid_shader.destroy()
+            self._surface_grid_shader = None
+        if getattr(self, "_physics_contact_shader", None) is not None:
+            self._physics_contact_shader.destroy()
+            self._physics_contact_shader = None
 
         if not self.headless:
             self.app.event_loop.dispatch_event("on_exit")
@@ -1855,7 +1955,7 @@ class RendererGL:
             )
 
             if gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER) != gl.GL_FRAMEBUFFER_COMPLETE:
-                print("Framebuffer is not complete!", flush=True)
+                logger.error("Framebuffer is not complete!")
                 gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
                 sys.exit(1)
 
@@ -1912,7 +2012,7 @@ class RendererGL:
             )
 
             if gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER) != gl.GL_FRAMEBUFFER_COMPLETE:
-                print("Warning: MSAA framebuffer incomplete, disabling MSAA.")
+                logger.warning("MSAA framebuffer incomplete, disabling MSAA.")
                 self.msaa_samples = 0
             gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
 
@@ -1942,6 +2042,7 @@ class RendererGL:
                 "ViewerGL: weighted order-independent transparency is unavailable on this GL context "
                 "(requires independent blending and a float OIT framebuffer). Falling back to unsorted "
                 "alpha blending, so overlapping transparent surfaces may blend in the wrong order.",
+                NewtonWarning,
                 stacklevel=2,
             )
         return self._oit_supported
@@ -2114,9 +2215,21 @@ class RendererGL:
         light_far = 1000.0
         camera_pos = np.array(self.camera.pos, dtype=np.float32)
         light_pos = self._sun_direction * extents
+        light_target = np.zeros(3, dtype=np.float32)
+        if getattr(self, "_physics_xray", False):
+            # Spend the existing map's texels on the inspected region. A fixed
+            # 20 m map cannot resolve contact shadows on centimeter-scale links.
+            # Keep the light's depth range independent of this lateral zoom so
+            # small extents never move the caster behind the light near plane.
+            light_target = np.asarray(self.camera.pivot, dtype=np.float32) - camera_pos
+            _, _, width, height = self._get_scene_viewport()
+            view_radius = self.camera.pivot_distance * np.tan(np.radians(self.camera.fov) * 0.5)
+            view_radius *= max(1.0, width / max(height, 1))
+            extents = min(extents, max(4.0 * view_radius, 1e-4))
+            light_pos += light_target
         light_proj = Mat4.orthogonal_projection(-extents, extents, -extents, extents, light_near, light_far)
 
-        light_view = Mat4.look_at(Vec3(*light_pos), Vec3(0.0, 0.0, 0.0), Vec3(*self.camera.get_up()))
+        light_view = Mat4.look_at(Vec3(*light_pos), Vec3(*light_target), Vec3(*self.camera.get_up()))
         self._light_space_matrix = np.array(light_proj @ light_view, dtype=np.float32)
 
         self._shadow_shader.update(self._light_space_matrix, camera_pos)
@@ -2127,27 +2240,42 @@ class RendererGL:
             shadow_objects = {
                 k: v
                 for k, v in objects.items()
-                if getattr(v, "cast_shadow", True) and not self._object_has_transparency(v)
+                if getattr(v, "cast_shadow", True) and not self._object_has_transparency(v, for_shadow=True)
             }
         else:
             shadow_objects = {k: v for k, v in objects.items() if getattr(v, "cast_shadow", True)}
-        with self._shadow_shader:
-            self._draw_objects(shadow_objects)
+        scene_draws = []
+        try:
+            for obj in shadow_objects.values():
+                lod = getattr(getattr(obj, "mesh", None), "_display_lod", None)
+                if lod is not None and not obj.hidden:
+                    scene_draws.append((obj, obj._lod_draws))
+                    obj._lod_draws = lod.shadow_draws(self, obj)
+            with self._shadow_shader:
+                self._draw_objects(shadow_objects)
+        finally:
+            for obj, draws in scene_draws:
+                obj._lod_draws = draws
 
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, 0)
 
         check_gl_error()
 
     def _update_shape_shader(self, shader):
+        x, y, width, height = self._get_scene_viewport()
         shader.update(
             view_matrix=self._view_matrix,
             projection_matrix=self._projection_matrix,
-            viewport_size=(self._screen_width, self._screen_height),
+            viewport_size=(width, height),
+            viewport_origin=(x, y),
             view_pos=self.camera.pos,
             fog_color=self.sky_lower,
             up_axis=self.camera.up_axis,
             sun_direction=self._sun_direction,
             enable_shadows=self.draw_shadows,
+            # Keep contact edges precise while letting light through the
+            # inspection view, including its opaque ground and support planes.
+            shadow_strength=0.45 if getattr(self, "_physics_xray", False) else 1.0,
             shadow_texture=self._shadow_texture,
             light_space_matrix=self._light_space_matrix,
             light_color=self._light_color,
@@ -2159,7 +2287,6 @@ class RendererGL:
             diffuse_scale=self.diffuse_scale,
             specular_scale=self.specular_scale,
             spotlight_enabled=self.spotlight_enabled,
-            shadow_extents=self.shadow_extents,
             exposure=self.exposure,
             oit_depth_reference=self.camera.pivot_distance,
         )
@@ -2168,6 +2295,11 @@ class RendererGL:
         self,
         objects,
         scene_has_transparency: bool = False,
+        *,
+        lines=None,
+        arrows=None,
+        wireframe_shapes=None,
+        contact_disks=None,
     ) -> bool:
         gl = RendererGL.gl
         msaa_resolved = False
@@ -2175,12 +2307,40 @@ class RendererGL:
         if self.draw_sky:
             self._draw_sky()
 
-        if self.draw_wireframe:
-            gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_LINE)
-
         self._update_shape_shader(self._shape_shader)
 
         opaque_objects, transparent_objects = self._split_transparent_objects(objects, scene_has_transparency)
+        self._surface_grid_objects = (
+            tuple(obj for obj in objects.values() if not obj.hidden and getattr(obj, "_surface_grid", 0))
+            if getattr(self, "_surface_grid_enabled", False)
+            else ()
+        )
+        shells, collisions = [], []
+        if getattr(self, "_physics_xray", False):
+            normal_transparent = []
+            for name, obj in transparent_objects:
+                role = getattr(obj, "_physics_role", None)
+                if role in ("visual", "deformable"):
+                    if not obj.hidden:
+                        shells.append((name, obj))
+                elif role == "collision":
+                    if not obj.hidden:
+                        collisions.append((name, obj))
+                else:
+                    normal_transparent.append((name, obj))
+            transparent_objects = normal_transparent
+
+        wires = []
+        if self.draw_wireframe:
+            # Keep ground/grid surfaces as a spatial reference in wire mode.
+            opaque_objects = opaque_objects.copy()
+            for name, obj in tuple(opaque_objects.items()):
+                if getattr(obj, "draw_edge", True):
+                    if not obj.hidden:
+                        wires.append((name, obj))
+                    del opaque_objects[name]
+            wires.extend((name, obj) for name, obj in transparent_objects if not obj.hidden)
+            transparent_objects = []
 
         with self._shape_shader:
             gl.glDisable(gl.GL_BLEND)
@@ -2188,32 +2348,27 @@ class RendererGL:
             gl.glVertexAttrib1f(9, 1.0)
             self._draw_objects(opaque_objects)
 
-        if transparent_objects:
-            oit_supported = self._ensure_transparency_resources()
-            assert self._shape_transparent_shader is not None
-            self._update_shape_shader(self._shape_transparent_shader)
-            self._shape_transparent_shader.set_oit_enabled(oit_supported)
-            with self._shape_transparent_shader:
-                if not oit_supported:
-                    # Blend straight into the active target so transparency still
-                    # benefits from MSAA and no early resolve is needed.
-                    self._render_blended_transparent_objects(transparent_objects)
-                else:
-                    if getattr(self, "msaa_samples", 0) > 0 and self._frame_msaa_fbo is not None:
-                        self._resolve_msaa_frame()
-                        msaa_resolved = True
-                    self._render_transparent_objects(transparent_objects)
+        if collisions:
+            self._render_physics_collisions(collisions, opaque=True)
 
         gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
 
         # Edge overlay: redraw the same geometry as lines with polygon offset
         # to avoid z-fighting (per @mmacklin review on #2300).
-        if self.draw_edges:
+        if self.draw_edges and not self.draw_wireframe:
             # Skip objects that opted out of the edge overlay (e.g. ground
             # planes) via the per-object draw_edge flag. Mirrors the cast_shadow
             # filter in _render_shadow_map and keeps the decision off the checker
             # material bit (see #2808 review).
-            edge_objects = {k: v for k, v in objects.items() if getattr(v, "draw_edge", True)}
+            edge_objects = {
+                k: v
+                for k, v in objects.items()
+                if getattr(v, "draw_edge", True)
+                and not (
+                    getattr(self, "_physics_xray", False)
+                    and getattr(v, "_physics_role", None) in ("visual", "collision", "deformable")
+                )
+            }
             self._edge_shader.update(
                 view_matrix=self._view_matrix,
                 projection_matrix=self._projection_matrix,
@@ -2228,6 +2383,83 @@ class RendererGL:
             gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
             gl.glDisable(gl.GL_POLYGON_OFFSET_LINE)
 
+        envelopes = {}
+        if wireframe_shapes and getattr(self, "_physics_xray", False):
+            envelopes = {
+                name: obj for name, obj in wireframe_shapes.items() if "/sdf_margin_wf/" in name and not obj.hidden
+            }
+            wireframe_shapes = {name: obj for name, obj in wireframe_shapes.items() if name not in envelopes}
+
+        # Diagnostics participate in scene depth. Composite transparent surfaces
+        # afterward so those in front attenuate glyphs, while surfaces behind
+        # them fail the same depth test as they do for ordinary geometry.
+        if lines:
+            self._render_lines(lines)
+        if arrows:
+            self._render_arrows(arrows)
+        if wireframe_shapes:
+            self._render_wireframe_shapes(wireframe_shapes)
+        if contact_disks:
+            if getattr(self, "_physics_contact_shader", None) is None:
+                from .physics_view import PhysicsContactShader  # noqa: PLC0415
+
+                self._physics_contact_shader = PhysicsContactShader(gl)
+            self._physics_contact_shader.render(self, contact_disks)
+        if getattr(self, "_contact_labels", ()):
+            if getattr(self, "_contact_label_shader", None) is None:
+                from .contact_labels import ContactLabels  # noqa: PLC0415
+
+                self._contact_label_shader = ContactLabels(gl)
+            self._contact_label_shader.render(self, self._contact_labels)
+        if getattr(self, "_joint_triangles", None) is not None:
+            if getattr(self, "_joint_shader", None) is None:
+                from .joint_glyphs import JointGlyphShader  # noqa: PLC0415
+
+                self._joint_shader = JointGlyphShader(gl)
+            self._joint_shader.render(self._joint_triangles[0], depth_equal=True)
+
+        has_msaa = getattr(self, "msaa_samples", 0) > 0 and self._frame_msaa_fbo is not None
+        if getattr(self, "_selection_instances", ()):
+            if has_msaa:
+                self._resolve_msaa_frame()
+                msaa_resolved = True
+            if self._selection_outline is None:
+                from .selection import SelectionOutline  # noqa: PLC0415
+
+                self._selection_outline = SelectionOutline(gl)
+            self._selection_outline.render(self, self._selection_instances)
+
+        joint_transparency = getattr(self, "_joint_triangles", None) is not None and len(self._joint_triangles[1])
+        selected_surfaces = any(index == -1 for _, index in getattr(self, "_selection_instances", ()))
+        if (
+            transparent_objects
+            or shells
+            or collisions
+            or wires
+            or joint_transparency
+            or selected_surfaces
+            or envelopes
+            or self._surface_grid_objects
+        ):
+            oit_supported = self._ensure_transparency_resources()
+            assert self._shape_transparent_shader is not None
+            self._update_shape_shader(self._shape_transparent_shader)
+            self._shape_transparent_shader.set_oit_enabled(oit_supported)
+            with self._shape_transparent_shader:
+                if not oit_supported:
+                    target = self._frame_msaa_fbo if has_msaa and not msaa_resolved else self._frame_fbo
+                    gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, target)
+                    self._render_blended_transparent_objects(
+                        transparent_objects, shells=shells, collisions=collisions, wires=wires, envelopes=envelopes
+                    )
+                else:
+                    if has_msaa and not msaa_resolved:
+                        self._resolve_msaa_frame()
+                        msaa_resolved = True
+                    self._render_transparent_objects(
+                        transparent_objects, shells=shells, collisions=collisions, wires=wires, envelopes=envelopes
+                    )
+
         check_gl_error()
         return msaa_resolved
 
@@ -2238,21 +2470,24 @@ class RendererGL:
         gl.glReadBuffer(gl.GL_COLOR_ATTACHMENT0)
         gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, self._frame_fbo)
         gl.glDrawBuffer(gl.GL_COLOR_ATTACHMENT0)
+        x, y, width, height = self._get_scene_viewport()
         gl.glBlitFramebuffer(
-            0,
-            0,
-            self._screen_width,
-            self._screen_height,
-            0,
-            0,
-            self._screen_width,
-            self._screen_height,
+            x,
+            y,
+            x + width,
+            y + height,
+            x,
+            y,
+            x + width,
+            y + height,
             gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT,
             gl.GL_NEAREST,
         )
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._frame_fbo)
 
-    def _render_blended_transparent_objects(self, transparent_objects):
+    def _render_blended_transparent_objects(
+        self, transparent_objects, *, shells=(), collisions=(), wires=(), envelopes=None
+    ):
         """Draw transparent objects with source-alpha blending into the active target.
 
         Used when weighted OIT is unavailable. Blending is unsorted, so
@@ -2265,13 +2500,32 @@ class RendererGL:
         gl.glBlendEquation(gl.GL_FUNC_ADD)
         gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
         gl.glDepthMask(False)
+        # Like other diagnostics, selection must be attenuated by transparent
+        # foreground surfaces even on the non-OIT fallback path.
+        self._render_selected_surfaces(oit=False)
+        self._shape_transparent_shader.use()
+        if self.draw_wireframe:
+            gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_LINE)
         for _name, obj in transparent_objects:
             if hasattr(obj, "render"):
                 obj.render()
+        if shells:
+            self._render_physics_shells(shells, oit=False)
+        if collisions:
+            self._render_physics_collisions(collisions, opaque=False, oit=False)
+            self._render_physics_shells(collisions, oit=False, collision=True)
+        if wires:
+            self._render_physics_shells(wires, oit=False, wire_only=True)
+        self._render_surface_grid(oit=False)
+        gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
+        if getattr(self, "_joint_triangles", None) is not None:
+            self._joint_shader.render(self._joint_triangles[1])
+        if envelopes:
+            self._render_wireframe_shapes(envelopes, transparent=True)
         gl.glDepthMask(True)
         gl.glDisable(gl.GL_BLEND)
 
-    def _render_transparent_objects(self, transparent_objects):
+    def _render_transparent_objects(self, transparent_objects, *, shells=(), collisions=(), wires=(), envelopes=None):
         gl = RendererGL.gl
         assert self._oit_resolve_shader is not None
 
@@ -2284,9 +2538,25 @@ class RendererGL:
         gl.glBlendFunci(0, gl.GL_ONE, gl.GL_ONE)
         gl.glBlendFunci(1, gl.GL_ZERO, gl.GL_ONE_MINUS_SRC_COLOR)
         gl.glDepthMask(False)
+        if self.draw_wireframe:
+            gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_LINE)
         for _name, obj in transparent_objects:
             if hasattr(obj, "render"):
                 obj.render()
+        if shells:
+            self._render_physics_shells(shells, oit=True)
+        if collisions:
+            self._render_physics_collisions(collisions, opaque=False, oit=True)
+            self._render_physics_shells(collisions, oit=True, collision=True)
+        if wires:
+            self._render_physics_shells(wires, oit=True, wire_only=True)
+        self._render_surface_grid(oit=True)
+        gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
+        if getattr(self, "_joint_triangles", None) is not None:
+            self._joint_shader.render(self._joint_triangles[1], oit=True, reference=self.camera.pivot_distance)
+        self._render_selected_surfaces(oit=True)
+        if envelopes:
+            self._render_wireframe_shapes(envelopes, oit=True, transparent=True)
         gl.glDepthMask(True)
         gl.glDisable(gl.GL_BLEND)
 
@@ -2314,11 +2584,47 @@ class RendererGL:
         gl.glDisable(gl.GL_BLEND)
         gl.glEnable(gl.GL_DEPTH_TEST)
 
+    def _render_selected_surfaces(self, *, oit):
+        meshes = [obj for obj, index in getattr(self, "_selection_instances", ()) if index == -1]
+        if not meshes:
+            return
+        if getattr(self, "_selection_surface_shader", None) is None:
+            from .selection import SelectionSurfaceShader  # noqa: PLC0415
+
+            self._selection_surface_shader = SelectionSurfaceShader(self.gl)
+        self._selection_surface_shader.render(self, meshes, oit=oit)
+
+    def _render_surface_grid(self, *, oit):
+        if not self._surface_grid_objects:
+            return
+        if getattr(self, "_surface_grid_shader", None) is None:
+            from .surface_grid import SurfaceGridShader  # noqa: PLC0415
+
+            self._surface_grid_shader = SurfaceGridShader(self.gl)
+        self._surface_grid_shader.render(self, self._surface_grid_objects, oit=oit)
+
+    def _render_physics_collisions(self, objects, *, opaque, oit=False, visual=False):
+        if getattr(self, "_physics_collision_shader", None) is None:
+            from .physics_view import PhysicsSurfaceShader  # noqa: PLC0415
+
+            self._physics_collision_shader = PhysicsSurfaceShader(self.gl)
+        self._physics_collision_shader.render(self, objects, opaque=opaque, oit=oit, visual=visual)
+
+    def _render_physics_shells(self, objects, *, oit, collision=False, wire_only=False):
+        if not collision and not wire_only:
+            self._render_physics_collisions(objects, opaque=False, oit=oit, visual=True)
+        if getattr(self, "_physics_shell_shader", None) is None:
+            from .physics_view import PhysicsShellShader  # noqa: PLC0415
+
+            self._physics_shell_shader = PhysicsShellShader(self.gl)
+        self._physics_shell_shader.render(self, objects, oit=oit, collision=collision, wire_only=wire_only)
+
     def _render_lines(self, lines):
         """Render all line objects using the geometry-shader wide-line pipeline."""
         gl = RendererGL.gl
-        inv_asp = float(self._screen_height) / float(max(self._screen_width, 1))
-        clip_width = max(0.0, self.line_width) * 2.0 / max(self._screen_height, 1)
+        _, _, width, height = self._get_scene_viewport()
+        inv_asp = float(height) / float(max(width, 1))
+        clip_width = max(0.0, self.line_width) * 2.0 / max(height, 1)
 
         gl.glEnable(gl.GL_DEPTH_TEST)
         gl.glDisable(gl.GL_CULL_FACE)
@@ -2335,7 +2641,31 @@ class RendererGL:
                 alpha=1.0,
             )
             self._wireframe_shader.set_world(identity)
-            for line_obj in lines.values():
+            selection = getattr(self, "_contact_selection", None)
+            for name, line_obj in lines.items():
+                witness = name.endswith("/contacts/witnesses")
+                selected = (
+                    selection[1] // selection[2]
+                    if witness and selection is not None and selection[0] == name.removesuffix("/witnesses") + "/modes"
+                    else -1
+                )
+                gl.glUniform1i(self._wireframe_shader.loc_selected_line, selected)
+                gl.glUniform1f(self._wireframe_shader.loc_alpha, 0.9 if witness else 1.0)
+                # Match the collision-shell fade distance without reading any
+                # per-contact data. Near witnesses stay clear; distant connectors
+                # recede while preserving scene depth and selection color.
+                fade_distance = 0.0
+                if witness and getattr(self, "_physics_xray", False):
+                    # Connectors are narrow diagnostics, so let them recede
+                    # sooner than the much broader surface shells.
+                    fade_distance = (
+                        0.25 * self._xray_inspection_radius * self._projection_matrix[5] * self._xray_proximity_range
+                    )
+                gl.glUniform1f(self._wireframe_shader.loc_fade_distance, fade_distance)
+                gl.glUniform1f(
+                    self._wireframe_shader.loc_line_width,
+                    max(clip_width, 4.0 / max(height, 1)) if witness else clip_width,
+                )
                 if hasattr(line_obj, "render"):
                     line_obj.render()
 
@@ -2345,10 +2675,11 @@ class RendererGL:
     def _render_arrows(self, arrows):
         """Render arrow batches (wide line + arrowhead triangle per segment)."""
         gl = RendererGL.gl
-        inv_asp = float(self._screen_height) / float(max(self._screen_width, 1))
+        _, _, width, height = self._get_scene_viewport()
+        inv_asp = float(height) / float(max(width, 1))
         scale = max(0.0, self.arrow_scale)
-        clip_width = (2.0 * scale) * 2.0 / max(self._screen_height, 1)
-        clip_arrow = (8.0 * scale) * 2.0 / max(self._screen_height, 1)
+        clip_width = (2.0 * scale) * 2.0 / max(height, 1)
+        clip_arrow = (8.0 * scale) * 2.0 / max(height, 1)
 
         gl.glEnable(gl.GL_DEPTH_TEST)
         gl.glDisable(gl.GL_CULL_FACE)
@@ -2366,34 +2697,57 @@ class RendererGL:
                 alpha=1.0,
             )
             self._arrow_shader.set_world(identity)
-            for arrow_obj in arrows.values():
+            for name, arrow_obj in arrows.items():
                 if hasattr(arrow_obj, "render"):
+                    normal = "/contacts/normals" in name
+                    force = "/contacts/forces" in name
+                    # Keep linear force scaling below the display cap; extreme
+                    # impulses must not draw lines across the whole viewport.
+                    limit = (
+                        self.contact_force_max_pixels if force else self.contact_normal_max_pixels if normal else 0.0
+                    )
+                    thickness = self.contact_arrow_scale if force or normal else 1.0
+                    gl.glUniform1f(self._arrow_shader.loc_line_width, clip_width * thickness)
+                    gl.glUniform1f(self._arrow_shader.loc_arrow_size, clip_arrow * thickness)
+                    gl.glUniform1f(self._arrow_shader.loc_max_length, limit * 2.0 / max(height, 1))
                     arrow_obj.render()
 
         gl.glDisable(gl.GL_BLEND)
         check_gl_error()
 
-    def _render_wireframe_shapes(self, wireframe_shapes):
+    def _render_wireframe_shapes(self, wireframe_shapes, *, oit=False, transparent=False):
         """Render wireframe shapes using the geometry-shader line expansion."""
         gl = RendererGL.gl
-        inv_asp = float(self._screen_height) / float(max(self._screen_width, 1))
-        clip_width = self.wireframe_line_width * 2.0 / max(self._screen_height, 1)
+        _, _, width, height = self._get_scene_viewport()
+        inv_asp = float(height) / float(max(width, 1))
+        clip_width = self.wireframe_line_width * 2.0 / max(height, 1)
 
         gl.glEnable(gl.GL_DEPTH_TEST)
         gl.glDisable(gl.GL_CULL_FACE)
         gl.glEnable(gl.GL_BLEND)
-        gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
+        if not oit:
+            gl.glBlendFunc(gl.GL_SRC_ALPHA, gl.GL_ONE_MINUS_SRC_ALPHA)
 
         with self._wireframe_shader:
             self._wireframe_shader.update_frame(
                 self._view_matrix, self._projection_matrix, inv_asp, line_width=clip_width
             )
-            for shape in wireframe_shapes.values():
+            gl.glUniform1i(self._wireframe_shader.loc_oit, oit)
+            gl.glUniform1f(self._wireframe_shader.loc_reference, 1.0 / max(self.camera.pivot_distance, 1e-6))
+            for name, shape in wireframe_shapes.items():
+                adaptive = getattr(self, "_physics_xray", False) and "/sdf_margin_wf/" in name
+                gl.glUniform1f(self._wireframe_shader.loc_adaptive, float(height) if adaptive else 0.0)
+                gl.glUniform1f(self._wireframe_shader.loc_alpha, 0.48 if adaptive else 0.7)
+                gl.glUniform1f(
+                    self._wireframe_shader.loc_line_width,
+                    min(clip_width, 2.0 / max(height, 1)) if adaptive else clip_width,
+                )
                 if not shape.hidden and shape.num_vertices > 0:
                     self._wireframe_shader.set_world(shape.world_matrix)
                     shape.render()
 
-        gl.glDisable(gl.GL_BLEND)
+        if not transparent:
+            gl.glDisable(gl.GL_BLEND)
         check_gl_error()
 
     def _draw_objects(self, objects):
@@ -2403,7 +2757,13 @@ class RendererGL:
 
         check_gl_error()
 
-    def _object_has_transparency(self, obj) -> bool:
+    def _object_has_transparency(self, obj, *, for_shadow=False) -> bool:
+        if getattr(self, "_physics_xray", False):
+            role = getattr(obj, "_physics_role", None)
+            # Proximity is a viewing aid; physical shadows must stay stable as
+            # the camera moves. Still respect genuinely hidden/alpha materials.
+            if role in ("visual", "collision", "deformable") and not for_shadow:
+                return True
         has_transparency = getattr(obj, "has_transparency", False)
         return bool(has_transparency() if callable(has_transparency) else has_transparency)
 

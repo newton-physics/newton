@@ -63,6 +63,12 @@ class Camera:
         self.yaw = self.DEFAULT_YAW
 
         self.pivot = self.pos + self.get_front() * self.DEFAULT_PIVOT_DISTANCE
+        self._navigation_filter = None
+
+    def _move_fraction(self, target, *, reference=0.0):
+        if self._navigation_filter is None or self._length(target - self.pos) < 1.0e-12:
+            return 1.0
+        return self._navigation_filter(self.pos, target, reference=reference)
 
     @staticmethod
     def get_default_position(up_axis: str | int) -> tuple[float, float, float]:
@@ -96,10 +102,15 @@ class Camera:
         return (float(yaw) + 180.0) % 360.0 - 180.0
 
     @property
+    def _min_pivot_distance(self) -> float:
+        # Small contact features need closer orbits than the scene-scale floor.
+        return min(self.MIN_PIVOT_DISTANCE, max(1.0e-6, self.near * 1.25))
+
+    @property
     def pivot_distance(self) -> float:
         """Distance from the camera position to the orbit pivot [m]."""
         distance = self._length(self.pivot - self.pos)
-        return max(distance, self.MIN_PIVOT_DISTANCE)
+        return max(distance, self._min_pivot_distance)
 
     def _set_orientation_from_direction(self, direction):
         """Set yaw and pitch from a normalized view direction."""
@@ -121,8 +132,8 @@ class Camera:
     def set_pivot(self, pivot):
         """Set the orbit pivot without changing the current view direction."""
         self.pivot = self._as_vec3(pivot)
-        if self._length(self.pivot - self.pos) <= self.MIN_PIVOT_DISTANCE:
-            self.sync_pivot_to_view(distance=self.MIN_PIVOT_DISTANCE)
+        if self._length(self.pivot - self.pos) <= self._min_pivot_distance:
+            self.sync_pivot_to_view(distance=self._min_pivot_distance)
 
     def sync_pivot_to_view(self, distance: float | None = None):
         """Place the orbit pivot along the current view direction.
@@ -132,7 +143,7 @@ class Camera:
         """
         if distance is None:
             distance = self.pivot_distance
-        distance = max(float(distance), self.MIN_PIVOT_DISTANCE)
+        distance = max(float(distance), self._min_pivot_distance)
         self.pivot = self.pos + self.get_front() * distance
 
     def look_at(self, target):
@@ -140,7 +151,7 @@ class Camera:
         target = self._as_vec3(target)
         to_target = target - self.pos
         distance = self._length(to_target)
-        if distance <= self.MIN_PIVOT_DISTANCE:
+        if distance <= self._min_pivot_distance:
             self.set_pivot(target)
             return
 
@@ -150,6 +161,7 @@ class Camera:
     def translate(self, delta):
         """Translate the camera and pivot by the same world-space offset [m]."""
         delta = self._as_vec3(delta)
+        delta *= self._move_fraction(self.pos + delta, reference=getattr(self, "_navigation_speed_reference", 2.4))
         self.pos += delta
         self.pivot += delta
 
@@ -163,7 +175,11 @@ class Camera:
         Args:
             target: World-space target position [m].
         """
-        self.translate(self._as_vec3(target) - self.pivot)
+        # Tracking transports the camera with its target; proximity damping is
+        # for user navigation and would otherwise introduce tracking lag.
+        delta = self._as_vec3(target) - self.pivot
+        self.pos += delta
+        self.pivot += delta
 
     def orbit(self, delta_yaw: float, delta_pitch: float):
         """Orbit the camera around the pivot.
@@ -190,15 +206,17 @@ class Camera:
         """
         distance = self.pivot_distance
         to_pivot = self.pivot - self.pos
-        if self._length(to_pivot) <= self.MIN_PIVOT_DISTANCE:
+        if self._length(to_pivot) <= self._min_pivot_distance:
             self.sync_pivot_to_view(distance=distance)
             to_pivot = self.pivot - self.pos
 
         direction_to_pivot = to_pivot.normalize()
         self._set_orientation_from_direction(direction_to_pivot)
 
-        new_distance = max(distance * float(np.exp(-amount)), self.MIN_PIVOT_DISTANCE)
-        self.pos = self.pivot - direction_to_pivot * new_distance
+        new_distance = max(distance * float(np.exp(-amount)), self._min_pivot_distance)
+        target = self.pivot - direction_to_pivot * new_distance
+        fraction = self._move_fraction(target, reference=distance * 0.5)
+        self.pos += (target - self.pos) * fraction
 
     def get_front(self):
         """Get the camera front direction vector (read-only)."""

@@ -5,8 +5,35 @@ import ctypes
 
 import numpy as np
 
-shadow_vertex_shader = """
+capsule_vertex_transform = """
+// Constant per draw. Capsule instances encode (radius, radius, radius + half-height)
+// in their transform scale; ordinary meshes retain the usual affine transform.
+layout (location = 10) in float aCapsule;
+
+vec3 mesh_position(vec3 position, mat4 transform)
+{
+    if (aCapsule > 0.5) {
+        float ratio = length(transform[0].xyz) / max(length(transform[2].xyz), 1e-20);
+        float end = sign(position.z);
+        position.z = ratio * (position.z - end) + (1.0 - ratio) * end;
+    }
+    return position;
+}
+
+vec3 mesh_normal(vec3 normal, mat4 transform)
+{
+    if (aCapsule > 0.5)
+        normal.z *= length(transform[2].xyz) / max(length(transform[0].xyz), 1e-20);
+    return normal;
+}
+"""
+
+shadow_vertex_shader = (
+    """
 #version 330 core
+"""
+    + capsule_vertex_transform
+    + """
 layout (location = 0) in vec3 aPos;
 
 // column vectors of the instance transform matrix
@@ -21,10 +48,11 @@ uniform vec3 render_origin;
 void main()
 {
     mat4 transform = mat4(aInstanceTransform0, aInstanceTransform1, aInstanceTransform2, aInstanceTransform3);
-    vec3 render_position = mat3(transform) * aPos + transform[3].xyz - render_origin;
+    vec3 render_position = mat3(transform) * mesh_position(aPos, transform) + transform[3].xyz - render_origin;
     gl_Position = light_space_matrix * vec4(render_position, 1.0);
 }
 """
+)
 
 shadow_fragment_shader = """
 #version 330 core
@@ -33,8 +61,12 @@ void main() { }
 """
 
 
-shape_vertex_shader = """
+shape_vertex_shader = (
+    """
 #version 330 core
+"""
+    + capsule_vertex_transform
+    + """
 layout (location = 0) in vec3 aPos;
 layout (location = 1) in vec3 aNormal;
 layout (location = 2) in vec2 aTexCoord;
@@ -74,7 +106,7 @@ void main()
     mat4 transform = mat4(aInstanceTransform0, aInstanceTransform1, aInstanceTransform2, aInstanceTransform3);
 
     // Subtract before rotating to avoid cancellation in a translated view matrix for large coordinates.
-    vec3 camera_relative_position = mat3(transform) * aPos + transform[3].xyz - view_pos;
+    vec3 camera_relative_position = mat3(transform) * mesh_position(aPos, transform) + transform[3].xyz - view_pos;
     vec3 view_position = mat3(view) * camera_relative_position;
     gl_Position = projection * vec4(view_position, 1.0);
     LocalPos = aPos;
@@ -87,7 +119,7 @@ void main()
     // negating here restores the outward-pointing normal in world space.
     mat3 normalMatrix = transpose(inverse(rotation));
     if (determinant(rotation) < 0.0) normalMatrix = -normalMatrix;
-    Normal = normalMatrix * aNormal;
+    Normal = normalMatrix * mesh_normal(aNormal, transform);
     TexCoord = aTexCoord;
     ObjectColor = aObjectColor;
     Material = aMaterial;
@@ -97,8 +129,45 @@ void main()
 #endif
 }
 """
+)
 
-shape_fragment_shader = """
+camera_relative_fragment = """
+uniform mat4 view;
+uniform mat4 projection;
+uniform mat4 inverse_projection;
+uniform vec2 viewport_size;
+uniform vec2 viewport_origin;
+
+vec3 ReconstructCameraRelativePosition()
+{
+    vec2 ndc_xy = (gl_FragCoord.xy - viewport_origin) / viewport_size * 2.0 - 1.0;
+    vec4 near_h = inverse_projection * vec4(ndc_xy, -1.0, 1.0);
+    vec3 near_view = near_h.xyz / near_h.w;
+
+    // gl_FragCoord.w retains reciprocal clip-space W even when interpolated
+    // clip-space depth loses precision across a triangle much larger than the
+    // view frustum. Recover the view-space point along this pixel's camera ray.
+    vec4 clip_w_row = vec4(projection[0][3], projection[1][3], projection[2][3], projection[3][3]);
+    float denominator = dot(clip_w_row.xyz, near_view);
+    if (abs(gl_FragCoord.w) < 1.0e-8 || abs(denominator) < 1.0e-8)
+    {
+        float ndc_z = gl_FragCoord.z * 2.0 - 1.0;
+        vec4 view_h = inverse_projection * vec4(ndc_xy, ndc_z, 1.0);
+        gl_FragDepth = gl_FragCoord.z;
+        return transpose(mat3(view)) * (view_h.xyz / view_h.w);
+    }
+
+    float amount = (1.0 / gl_FragCoord.w - clip_w_row.w) / denominator;
+    vec3 view_position = near_view * amount;
+    vec4 clip_position = projection * vec4(view_position, 1.0);
+    gl_FragDepth = clip_position.z / clip_position.w * 0.5 + 0.5;
+    return transpose(mat3(view)) * view_position;
+}
+"""
+
+
+shape_fragment_shader = (
+    """
 #version 330 core
 #ifdef ENABLE_TRANSPARENCY
 layout (location = 0) out vec4 FragColor;
@@ -124,10 +193,6 @@ uniform float oit_inv_depth_reference;
 uniform bool oit_enabled;
 #endif
 
-uniform mat4 view;
-uniform mat4 projection;
-uniform mat4 inverse_projection;
-uniform vec2 viewport_size;
 uniform vec3 view_pos;
 uniform vec3 light_color;
 uniform vec3 sky_color;
@@ -145,10 +210,10 @@ uniform mat4 light_space_matrix;
 
 uniform float shadow_radius;
 uniform bool enable_shadows;
+uniform float shadow_strength;
 uniform float diffuse_scale;
 uniform float specular_scale;
 uniform bool spotlight_enabled;
-uniform float shadow_extents;
 uniform float exposure;
 
 const float PI = 3.14159265359;
@@ -198,55 +263,32 @@ vec2 poissonDisk[16] = vec2[](
    vec2( 0.14383161, -0.14100790 )
 );
 
-vec3 ReconstructCameraRelativePosition()
-{
-    vec2 ndc_xy = gl_FragCoord.xy / viewport_size * 2.0 - 1.0;
-    vec4 near_h = inverse_projection * vec4(ndc_xy, -1.0, 1.0);
-    vec3 near_view = near_h.xyz / near_h.w;
-
-    // gl_FragCoord.w retains reciprocal clip-space W even when interpolated
-    // clip-space depth loses precision across a triangle much larger than the
-    // view frustum. Recover the view-space point along this pixel's camera ray.
-    vec4 clip_w_row = vec4(projection[0][3], projection[1][3], projection[2][3], projection[3][3]);
-    float denominator = dot(clip_w_row.xyz, near_view);
-    if (abs(gl_FragCoord.w) < 1.0e-8 || abs(denominator) < 1.0e-8)
-    {
-        float ndc_z = gl_FragCoord.z * 2.0 - 1.0;
-        vec4 view_h = inverse_projection * vec4(ndc_xy, ndc_z, 1.0);
-        gl_FragDepth = gl_FragCoord.z;
-        return transpose(mat3(view)) * (view_h.xyz / view_h.w);
-    }
-
-    float amount = (1.0 / gl_FragCoord.w - clip_w_row.w) / denominator;
-    vec3 view_position = near_view * amount;
-    vec4 clip_position = projection * vec4(view_position, 1.0);
-    gl_FragDepth = clip_position.z / clip_position.w * 0.5 + 0.5;
-    return transpose(mat3(view)) * view_position;
-}
+"""
+    + camera_relative_fragment
+    + """
 
 float ShadowCalculation(vec3 camera_to_fragment)
 {
-    vec3 normal = normalize(Normal);
-
-    if (!gl_FrontFacing)
-        normal = -normal;
-
-    vec3 lightDir = normalize(sun_direction);
-
-    // bias in normal dir - adjust for backfacing triangles
-    float worldTexel = (shadow_extents * 2.0) / float(4096); // world extent / shadow map resolution
-    float normalBias = 2.0 * worldTexel;   // tune ~1-3
-
-    // For backfacing triangles, we might need different bias handling
-    vec4 light_space_pos;
-    light_space_pos = light_space_matrix * vec4(camera_to_fragment + normal * normalBias, 1.0);
+    vec4 light_space_pos = light_space_matrix * vec4(camera_to_fragment, 1.0);
     vec3 projCoords = light_space_pos.xyz/light_space_pos.w;
 
     // map to [0,1]
     projCoords = projCoords * 0.5 + 0.5;
+
+    // Fit the receiver plane before divergent control flow. Each PCF tap needs
+    // the receiver depth at its own texel center, especially on sloping ramps.
+    // Differentiate before the orthographic depth translation to retain the
+    // tiny depth differences of small triangles across a large depth range.
+    vec3 dx = 0.5 * mat3(light_space_matrix) * dFdx(camera_to_fragment);
+    vec3 dy = 0.5 * mat3(light_space_matrix) * dFdy(camera_to_fragment);
+    float determinant = dx.x * dy.y - dx.y * dy.x;
+    vec2 depthGradient = vec2(0.0);
+    if (abs(determinant) > 1.0e-5 * length(dx.xy) * length(dy.xy))
+        depthGradient = vec2(dy.y * dx.z - dx.y * dy.z,
+                             dx.x * dy.z - dy.x * dx.z) / determinant;
+
     if (projCoords.z > 1.0)
         return 0.0;
-    float frag_depth = projCoords.z;
 
     // Fade shadow to zero near edges of the shadow map to avoid hard rectangle
     float fade = 1.0;
@@ -256,11 +298,9 @@ float ShadowCalculation(vec3 camera_to_fragment)
     fade *= smoothstep(0.0, margin, projCoords.y);
     fade *= smoothstep(0.0, margin, 1.0 - projCoords.y);
 
-    // Slope-scaled depth bias: more bias when surface is nearly parallel to light
-    // (where self-shadowing from float precision is worst), minimal when facing light.
-    float NdotL_bias = max(dot(normal, lightDir), 0.0);
-    float depthBias = mix(0.0003, 0.00002, NdotL_bias);
-    float biased_depth = frag_depth - depthBias;
+    // Leave only a small precision allowance. A large normalized-depth bias
+    // or normal offset detaches shadows by centimeters on small objects.
+    float depthBias = 2.0e-7;
 
     float shadow = 0.0;
     float radius = shadow_radius;
@@ -272,8 +312,11 @@ float ShadowCalculation(vec3 camera_to_fragment)
     for(int i = 0; i < 16; i++)
     {
         vec2 offset = rotationMatrix * poissonDisk[i];
-        float pcf_depth = texture(shadow_map, projCoords.xy + offset * radius * texelSize).r;
-        if(pcf_depth < biased_depth)
+        vec2 sampleUV = projCoords.xy + offset * radius * texelSize;
+        vec2 texelCenter = (floor(sampleUV / texelSize) + 0.5) * texelSize;
+        float receiverDepth = projCoords.z + dot(depthGradient, texelCenter - projCoords.xy);
+        float pcf_depth = texture(shadow_map, texelCenter).r;
+        if(pcf_depth < receiverDepth - depthBias)
             shadow += 1.0;
     }
     shadow /= 16.0;
@@ -410,7 +453,7 @@ void main()
     ambient = kD_ambient * ambient + ambient_spec * metallic;
 
     // shadows
-    float shadow = enable_shadows ? ShadowCalculation(camera_to_fragment) : 0.0;
+    float shadow = enable_shadows ? shadow_strength * ShadowCalculation(camera_to_fragment) : 0.0;
 
     float spotAttenuation = SpotlightAttenuation(camera_to_fragment);
     vec3 color = ambient + (1.0 - shadow) * spotAttenuation * Lo;
@@ -440,6 +483,7 @@ void main()
     color = pow(color, vec3(1.0 / 2.2));
 
 #ifdef ENABLE_TRANSPARENCY
+    if (Opacity <= 0.0) discard;
     float alpha = clamp(Opacity, 0.0, 1.0);
     if (oit_enabled)
     {
@@ -467,6 +511,7 @@ void main()
 #endif
 }
 """
+)
 
 
 sky_vertex_shader = """
@@ -561,11 +606,12 @@ uniform sampler2D accum_texture;
 uniform sampler2D reveal_texture;
 
 void main() {
-    float revealage = clamp(texture(reveal_texture, TexCoord).r, 0.0, 1.0);
+    ivec2 pixel = ivec2(gl_FragCoord.xy);
+    float revealage = clamp(texelFetch(reveal_texture, pixel, 0).r, 0.0, 1.0);
     if (revealage >= 1.0)
         discard;
 
-    vec4 accum = texture(accum_texture, TexCoord);
+    vec4 accum = texelFetch(accum_texture, pixel, 0);
     float alpha = 1.0 - revealage;
     vec3 transparent_color = accum.a > 1e-5 ? accum.rgb / accum.a : vec3(0.0);
 
@@ -625,11 +671,7 @@ class ShaderShape(ShaderGL):
         from pyglet.graphics.shader import Shader, ShaderProgram
 
         self._gl = gl
-        vertex_shader = shape_vertex_shader
-        fragment_shader = shape_fragment_shader
-        if enable_transparency:
-            vertex_shader = _with_shader_define(vertex_shader, "ENABLE_TRANSPARENCY")
-            fragment_shader = _with_shader_define(fragment_shader, "ENABLE_TRANSPARENCY")
+        vertex_shader, fragment_shader = self._shader_sources(enable_transparency)
         self.shader_program = ShaderProgram(Shader(vertex_shader, "vertex"), Shader(fragment_shader, "fragment"))
         self._cached_projection = None
         self._cached_inverse_projection = None
@@ -640,6 +682,7 @@ class ShaderShape(ShaderGL):
             self.loc_projection = self._get_uniform_location("projection")
             self.loc_inverse_projection = self._get_uniform_location("inverse_projection")
             self.loc_viewport_size = self._get_uniform_location("viewport_size")
+            self.loc_viewport_origin = self._get_uniform_location("viewport_origin")
             self.loc_view_pos = self._get_uniform_location("view_pos")
             self.loc_light_space_matrix = self._get_uniform_location("light_space_matrix")
             self.loc_shadow_map = self._get_uniform_location("shadow_map")
@@ -654,10 +697,10 @@ class ShaderShape(ShaderGL):
             self.loc_sky_color = self._get_uniform_location("sky_color")
             self.loc_shadow_radius = self._get_uniform_location("shadow_radius")
             self.loc_enable_shadows = self._get_uniform_location("enable_shadows")
+            self.loc_shadow_strength = self._get_uniform_location("shadow_strength")
             self.loc_diffuse_scale = self._get_uniform_location("diffuse_scale")
             self.loc_specular_scale = self._get_uniform_location("specular_scale")
             self.loc_spotlight_enabled = self._get_uniform_location("spotlight_enabled")
-            self.loc_shadow_extents = self._get_uniform_location("shadow_extents")
             self.loc_exposure = self._get_uniform_location("exposure")
             self.loc_oit_inv_depth_reference = None
             self.loc_oit_enabled = None
@@ -665,6 +708,14 @@ class ShaderShape(ShaderGL):
                 self.loc_oit_inv_depth_reference = self._get_uniform_location("oit_inv_depth_reference")
                 self.loc_oit_enabled = self._get_uniform_location("oit_enabled")
                 self._gl.glUniform1i(self.loc_oit_enabled, 1)
+
+    @staticmethod
+    def _shader_sources(enable_transparency):
+        vertex, fragment = shape_vertex_shader, shape_fragment_shader
+        if enable_transparency:
+            vertex = _with_shader_define(vertex, "ENABLE_TRANSPARENCY")
+            fragment = _with_shader_define(fragment, "ENABLE_TRANSPARENCY")
+        return vertex, fragment
 
     def set_oit_enabled(self, enabled: bool):
         """Select weighted-OIT accumulation or the alpha-blended fallback.
@@ -698,13 +749,17 @@ class ShaderShape(ShaderGL):
         diffuse_scale: float = 1.0,
         specular_scale: float = 1.0,
         spotlight_enabled: bool = True,
-        shadow_extents: float = 10.0,
         exposure: float = 1.6,
         oit_depth_reference: float = 1.0,
+        viewport_origin: tuple[int, int] = (0, 0),
+        *,
+        shadow_strength: float = 1.0,
     ):
         """Update all shader uniforms.
 
         Args:
+            shadow_strength: Fraction of shadow occlusion to apply, from zero
+                (no darkening) to one (full shadows).
             oit_depth_reference: Reference distance [m] to the transparent
                 content, used to normalize the weighted-OIT depth weight.
                 Ignored unless this shader was built with transparency enabled.
@@ -721,6 +776,7 @@ class ShaderShape(ShaderGL):
                 self.loc_inverse_projection, 1, self._gl.GL_FALSE, arr_pointer(self._cached_inverse_projection)
             )
             self._gl.glUniform2f(self.loc_viewport_size, *viewport_size)
+            self._gl.glUniform2f(self.loc_viewport_origin, *viewport_origin)
             self._gl.glUniform3f(self.loc_view_pos, *view_pos)
 
             # Lighting
@@ -730,10 +786,10 @@ class ShaderShape(ShaderGL):
             self._gl.glUniform3f(self.loc_sky_color, *sky_color)
             self._gl.glUniform1f(self.loc_shadow_radius, shadow_radius)
             self._gl.glUniform1i(self.loc_enable_shadows, int(enable_shadows))
+            self._gl.glUniform1f(self.loc_shadow_strength, shadow_strength)
             self._gl.glUniform1f(self.loc_diffuse_scale, diffuse_scale)
             self._gl.glUniform1f(self.loc_specular_scale, specular_scale)
             self._gl.glUniform1i(self.loc_spotlight_enabled, int(spotlight_enabled))
-            self._gl.glUniform1f(self.loc_shadow_extents, shadow_extents)
             self._gl.glUniform1f(self.loc_exposure, exposure)
             if self.loc_oit_inv_depth_reference is not None:
                 self._gl.glUniform1f(self.loc_oit_inv_depth_reference, 1.0 / max(float(oit_depth_reference), 1e-6))
@@ -884,18 +940,44 @@ wireframe_vertex_shader = """
 #version 330 core
 layout (location = 0) in vec3 aPos;
 layout (location = 1) in vec3 aColor;
+layout (location = 2) in vec3 normal0;
+layout (location = 3) in vec3 normal1;
 
 uniform mat4 view;
 uniform mat4 projection;
 uniform mat4 world;
 
 out vec3 vertexColor;
+out vec3 Facing;
 
 void main()
 {
     vec4 worldPos = world * vec4(aPos, 1.0);
     vertexColor = aColor;
-    gl_Position = projection * view * worldPos;
+    vec3 position = (view * worldPos).xyz;
+    mat3 rotation = mat3(view * world);
+    vec3 eye = normalize(-position);
+    Facing = vec3(dot(rotation * normal0, eye), dot(rotation * normal1, eye), dot(normal0, normal1));
+    gl_Position = projection * vec4(position, 1.0);
+}
+"""
+
+_line_near_clip_shader = """
+bool clip_line_near(inout vec4 start, inout vec4 end)
+{
+    // Clip before dividing by w or expanding a segment into screen-space quads.
+    // One endpoint behind the eye must not discard the visible part of a line.
+    float a = start.z + start.w;
+    float b = end.z + end.w;
+    if (a < 0.0 && b < 0.0) return false;
+    if (a < 0.0) {
+        start = mix(start, end, a / (a - b));
+        start.z = -start.w;
+    } else if (b < 0.0) {
+        end = mix(end, start, b / (b - a));
+        end.z = -end.w;
+    }
+    return start.w > 0.0 && end.w > 0.0;
 }
 """
 
@@ -905,18 +987,23 @@ layout (lines) in;
 layout (triangle_strip, max_vertices = 6) out;
 
 in vec3 vertexColor[2];
+in vec3 Facing[2];
 
 out vec3 lineColor;
+flat out float Detail;
+out float LineDepth;
 
 uniform float inv_asp_ratio;
 uniform float line_width;
+uniform float adaptive_height;
+uniform int selected_line;
 
 void main()
 {
     vec4 s = gl_in[0].gl_Position;
     vec4 e = gl_in[1].gl_Position;
 
-    if (s.w <= 0.0 || e.w <= 0.0) return;
+    if (!clip_line_near(s, e)) return;
 
     vec2 s_ndc = s.xy / s.w;
     vec2 e_ndc = e.xy / e.w;
@@ -928,29 +1015,41 @@ void main()
     float safe_asp = max(inv_asp_ratio, 1e-6);
     vec2 dir_ndc = e_ndc - s_ndc;
     vec2 dir_scr = vec2(dir_ndc.x / safe_asp, dir_ndc.y);
+    if (length(dir_scr) < 1e-10) return;
+    float detail = adaptive_height > 0.0 ? smoothstep(1.0, 14.0, length(dir_scr) * adaptive_height * 0.5) : 1.0;
+    if (adaptive_height > 0.0) {
+        vec3 facing = (Facing[0] + Facing[1]) * 0.5;
+        bool contour = facing.x * facing.y < 0.0;
+        float crease = 1.0 - smoothstep(0.85, 0.99, facing.z);
+        // Preserve the envelope outline, but keep tessellation from obscuring
+        // contacts. Rear-facing detail remains fainter than the front surface.
+        detail = contour ? 1.0 : detail * mix(0.025, 0.28, crease);
+        if (!contour && max(facing.x, facing.y) < 0.0) detail *= 0.35;
+    }
     vec2 right_scr = normalize(vec2(dir_scr.y, -dir_scr.x));
     vec2 right = vec2(right_scr.x * safe_asp, right_scr.y);
 
-    vec3 color = 0.5 * (vertexColor[0] + vertexColor[1]);
-    vec2 xy = 0.5 * line_width * right;
+    bool selected = gl_PrimitiveIDIn == selected_line;
+    vec3 color = selected ? vec3(1.0, 0.45, 0.08) : 0.5 * (vertexColor[0] + vertexColor[1]);
+    vec2 xy = 0.5 * line_width * (selected ? 1.8 : 1.0) * right;
 
-    gl_Position = vec4(s_ndc - xy, s_depth, 1); lineColor = color;
+    gl_Position = vec4(s_ndc - xy, s_depth, 1); lineColor = color; Detail = detail; LineDepth = s.w;
     EmitVertex();
-    gl_Position = vec4(e_ndc + xy, e_depth, 1); lineColor = color;
+    gl_Position = vec4(e_ndc + xy, e_depth, 1); lineColor = color; Detail = detail; LineDepth = e.w;
     EmitVertex();
-    gl_Position = vec4(s_ndc + xy, s_depth, 1); lineColor = color;
+    gl_Position = vec4(s_ndc + xy, s_depth, 1); lineColor = color; Detail = detail; LineDepth = s.w;
     EmitVertex();
     EndPrimitive();
 
-    gl_Position = vec4(s_ndc - xy, s_depth, 1); lineColor = color;
+    gl_Position = vec4(s_ndc - xy, s_depth, 1); lineColor = color; Detail = detail; LineDepth = s.w;
     EmitVertex();
-    gl_Position = vec4(e_ndc - xy, e_depth, 1); lineColor = color;
+    gl_Position = vec4(e_ndc - xy, e_depth, 1); lineColor = color; Detail = detail; LineDepth = e.w;
     EmitVertex();
-    gl_Position = vec4(e_ndc + xy, e_depth, 1); lineColor = color;
+    gl_Position = vec4(e_ndc + xy, e_depth, 1); lineColor = color; Detail = detail; LineDepth = e.w;
     EmitVertex();
     EndPrimitive();
 }
-"""
+""".replace("void main()", _line_near_clip_shader + "\nvoid main()")
 
 wireframe_fragment_shader = """
 #version 330 core
@@ -977,7 +1076,33 @@ class ShaderLine(ShaderGL):
         self.shader_program = ShaderProgram(
             Shader(wireframe_vertex_shader, "vertex"),
             Shader(wireframe_geometry_shader, "geometry"),
-            Shader(wireframe_fragment_shader, "fragment"),
+            Shader(
+                wireframe_fragment_shader.replace(
+                    "in vec3 lineColor;",
+                    "in vec3 lineColor;\nflat in float Detail;\nin float LineDepth;\nuniform bool oit;\nuniform float inv_reference;\nuniform float fade_distance;",
+                )
+                .replace(
+                    "out vec4 FragColor;",
+                    "layout(location=0) out vec4 FragColor;\nlayout(location=1) out vec4 Revealage;",
+                )
+                .replace(
+                    "FragColor = vec4(lineColor, alpha);",
+                    """float coverage = alpha * Detail;
+                    if (fade_distance > 0.0)
+                        coverage *= mix(1.0, 0.12, smoothstep(0.25, 2.0, LineDepth / fade_distance));
+                    if (coverage < 0.003) discard;
+                    if (oit) {
+                        float depth = LineDepth * inv_reference;
+                        float weight = coverage * clamp(10.0 / (1e-5 + pow(2.0 * depth, 2.0) + pow(0.6 * depth, 6.0)), 1e-2, 3e3);
+                        FragColor = vec4(lineColor * coverage, coverage) * weight;
+                        Revealage = vec4(coverage);
+                    } else {
+                        FragColor = vec4(lineColor, coverage);
+                        Revealage = vec4(coverage);
+                    }""",
+                ),
+                "fragment",
+            ),
         )
 
         with self:
@@ -986,7 +1111,12 @@ class ShaderLine(ShaderGL):
             self.loc_world = self._get_uniform_location("world")
             self.loc_inv_asp_ratio = self._get_uniform_location("inv_asp_ratio")
             self.loc_line_width = self._get_uniform_location("line_width")
+            self.loc_oit = self._get_uniform_location("oit")
+            self.loc_reference = self._get_uniform_location("inv_reference")
+            self.loc_adaptive = self._get_uniform_location("adaptive_height")
+            self.loc_selected_line = self._get_uniform_location("selected_line")
             self.loc_alpha = self._get_uniform_location("alpha")
+            self.loc_fade_distance = self._get_uniform_location("fade_distance")
 
     def update_frame(
         self,
@@ -1002,6 +1132,10 @@ class ShaderLine(ShaderGL):
         self._gl.glUniform1f(self.loc_inv_asp_ratio, float(inv_asp_ratio))
         self._gl.glUniform1f(self.loc_line_width, float(line_width))
         self._gl.glUniform1f(self.loc_alpha, float(alpha))
+        self._gl.glUniform1f(self.loc_adaptive, 0.0)
+        self._gl.glUniform1f(self.loc_fade_distance, 0.0)
+        self._gl.glUniform1i(self.loc_selected_line, -1)
+        self._gl.glUniform1i(self.loc_oit, False)
 
     def set_world(self, world: np.ndarray):
         """Set the per-shape world matrix uniform."""
@@ -1019,12 +1153,14 @@ out vec3 lineColor;
 uniform float inv_asp_ratio;
 uniform float line_width;
 uniform float arrow_size;
+uniform float max_length;
 
 void main()
 {
     vec4 s = gl_in[0].gl_Position;
     vec4 e = gl_in[1].gl_Position;
-    if (s.w <= 0.0 || e.w <= 0.0) return;
+    bool tip_clipped = e.z + e.w < 0.0;
+    if (!clip_line_near(s, e)) return;
 
     vec2 s_ndc = s.xy / s.w;
     vec2 e_ndc = e.xy / e.w;
@@ -1038,10 +1174,19 @@ void main()
     vec2 dir_scr = vec2(dir_ndc.x / safe_asp, dir_ndc.y);
     float len = length(dir_scr);
 
+    if (max_length > 0.0 && len > max_length) {
+        float fraction = max_length / len;
+        e_ndc = mix(s_ndc, e_ndc, fraction);
+        e_depth = mix(s_depth, e_depth, fraction);
+        dir_scr *= fraction;
+        len = max_length;
+    }
+
     vec3 color = 0.5 * (vertexColor[0] + vertexColor[1]);
 
     // Degenerate case: line points into/out of screen
     if (len < 1e-6) {
+        if (tip_clipped) return;
         float r = arrow_size * 0.4;
         vec2 up = vec2(0.0, r);
         vec2 rt = vec2(r * safe_asp, 0.0);
@@ -1059,8 +1204,10 @@ void main()
     vec2 right = vec2(right_scr.x * safe_asp, right_scr.y);
 
     // Shorten the line body so it ends at the arrowhead base
-    vec2 xy = 0.5 * line_width * right;
-    vec2 e_body = e_ndc - fwd * arrow_size;
+    // Short contact arrows must not grow a head longer than the vector itself.
+    float head_size = tip_clipped ? 0.0 : min(arrow_size, len * 0.6);
+    vec2 xy = 0.5 * (tip_clipped ? line_width : min(line_width, head_size * 0.6)) * right;
+    vec2 e_body = e_ndc - fwd * head_size;
 
     gl_Position = vec4(s_ndc  - xy, s_depth, 1); lineColor = color; EmitVertex();
     gl_Position = vec4(e_body + xy, e_depth, 1); lineColor = color; EmitVertex();
@@ -1072,17 +1219,19 @@ void main()
     gl_Position = vec4(e_body + xy, e_depth, 1); lineColor = color; EmitVertex();
     EndPrimitive();
 
+    // Clipping the shaft must not invent an arrowhead at the camera plane.
+    if (tip_clipped) return;
     // Triangle 3: arrowhead with tip exactly at the endpoint
     vec2 tip    = e_ndc;
-    vec2 base_l = e_body - right * arrow_size * 0.5;
-    vec2 base_r = e_body + right * arrow_size * 0.5;
+    vec2 base_l = e_body - right * head_size * 0.5;
+    vec2 base_r = e_body + right * head_size * 0.5;
 
     gl_Position = vec4(tip,    e_depth, 1); lineColor = color; EmitVertex();
     gl_Position = vec4(base_l, e_depth, 1); lineColor = color; EmitVertex();
     gl_Position = vec4(base_r, e_depth, 1); lineColor = color; EmitVertex();
     EndPrimitive();
 }
-"""
+""".replace("void main()", _line_near_clip_shader + "\nvoid main()")
 
 
 class ShaderArrow(ShaderGL):
@@ -1106,6 +1255,7 @@ class ShaderArrow(ShaderGL):
             self.loc_inv_asp_ratio = self._get_uniform_location("inv_asp_ratio")
             self.loc_line_width = self._get_uniform_location("line_width")
             self.loc_arrow_size = self._get_uniform_location("arrow_size")
+            self.loc_max_length = self._get_uniform_location("max_length")
             self.loc_alpha = self._get_uniform_location("alpha")
 
     def update_frame(
@@ -1123,6 +1273,7 @@ class ShaderArrow(ShaderGL):
         self._gl.glUniform1f(self.loc_inv_asp_ratio, float(inv_asp_ratio))
         self._gl.glUniform1f(self.loc_line_width, float(line_width))
         self._gl.glUniform1f(self.loc_arrow_size, float(arrow_size))
+        self._gl.glUniform1f(self.loc_max_length, 0.0)
         self._gl.glUniform1f(self.loc_alpha, float(alpha))
 
     def set_world(self, world: np.ndarray):

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import weakref
 from fnmatch import fnmatch
@@ -28,6 +29,8 @@ from ..solvers.observables import SolverObservables
 
 if TYPE_CHECKING:
     from ..actuators.actuator import Actuator
+
+logger = logging.getLogger(__name__)
 
 AttributeFrequency = Model.AttributeFrequency
 
@@ -771,7 +774,7 @@ class ArticulationView:
         allow_partial_layouts: If True, construct the view when only some selected
             data has a common layout. Access to data without a common layout raises
             :class:`AttributeError`.
-        verbose: If True, prints selection summary.
+        verbose: If True, logs selection summary.
     """
 
     def __init__(
@@ -1223,25 +1226,26 @@ class ArticulationView:
         )
 
         if verbose:
-            print(f"Articulation '{pattern}': {self.count}")
-            print(f"  Link count:     {self.link_count} ({'' if self.links_contiguous else 'non-'}contiguous)")
-            print(f"  Shape count:    {self.shape_count} ({'' if self.shapes_contiguous else 'non-'}contiguous)")
-            print(f"  Joint count:    {self.joint_count} ({'' if self.joints_contiguous else 'non-'}contiguous)")
-            print(
-                f"  DOF count:      {self.joint_dof_count} ({'' if self.joint_dofs_contiguous else 'non-'}contiguous)"
-            )
-            print(f"  Fixed base?     {self.is_fixed_base}")
-            print(f"  Floating base?  {self.is_floating_base}")
-            print("Link names:")
-            print(f"  {self.link_names}")
-            print("Joint names:")
-            print(f"  {self.joint_names}")
-            print("Joint DOF names:")
-            print(f"  {self.joint_dof_names}")
-            print("Shapes:")
+            lines = [
+                f"Articulation '{pattern}': {self.count}",
+                f"  Link count:     {self.link_count} ({'' if self.links_contiguous else 'non-'}contiguous)",
+                f"  Shape count:    {self.shape_count} ({'' if self.shapes_contiguous else 'non-'}contiguous)",
+                f"  Joint count:    {self.joint_count} ({'' if self.joints_contiguous else 'non-'}contiguous)",
+                f"  DOF count:      {self.joint_dof_count} ({'' if self.joint_dofs_contiguous else 'non-'}contiguous)",
+                f"  Fixed base?     {self.is_fixed_base}",
+                f"  Floating base?  {self.is_floating_base}",
+                "Link names:",
+                f"  {self.link_names}",
+                "Joint names:",
+                f"  {self.joint_names}",
+                "Joint DOF names:",
+                f"  {self.joint_dof_names}",
+                "Shapes:",
+            ]
             for link_idx in range(len(self.link_shapes or [])):
                 shape_names = [self.shape_names[shape_idx] for shape_idx in self.link_shapes[link_idx]]
-                print(f"  Link '{self.link_names[link_idx]}': {shape_names}")
+                lines.append(f"  Link '{self.link_names[link_idx]}': {shape_names}")
+            logger.info("%s", "\n".join(lines))
 
     @property
     def body_names(self):

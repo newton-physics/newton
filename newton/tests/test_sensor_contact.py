@@ -83,7 +83,7 @@ class TestSensorContact(unittest.TestCase):
             SensorContact(model, sensing_bodies="*", request_contact_attributes=True)
 
         self.assertEqual(len(caught), 1)
-        self.assertIs(caught[0].category, DeprecationWarning)
+        self.assertIs(caught[0].category, newton.exceptions.NewtonDeprecationWarning)
         self.assertRegex(
             str(caught[0].message), r"SensorContact.*request_contact_attributes=True.*1\.7.*SolverObservables"
         )

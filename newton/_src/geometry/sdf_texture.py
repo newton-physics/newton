@@ -3109,18 +3109,19 @@ def _count_isomesh_faces_texture_kernel(
     tri_range_table: wp.array[wp.int32],
     corner_offsets_table: wp.array[wp.vec3ub],
     isovalue: wp.float32,
+    cell_stride: int,
     face_count: wp.array[int],
 ):
     cell_idx, local_x, local_y, local_z = wp.tid()
     sdf = sdf_array[0]
     coarse = active_coarse_cells[cell_idx]
-    x_id = coarse[0] * subgrid_size + local_x
-    y_id = coarse[1] * subgrid_size + local_y
-    z_id = coarse[2] * subgrid_size + local_z
+    x_id = coarse[0] * subgrid_size + local_x * cell_stride
+    y_id = coarse[1] * subgrid_size + local_y * cell_stride
+    z_id = coarse[2] * subgrid_size + local_z * cell_stride
 
     cube_idx = wp.int32(0)
     for i in range(8):
-        co = wp.vec3i(corner_offsets_table[i])
+        co = wp.vec3i(corner_offsets_table[i]) * cell_stride
         v = texture_sample_sdf_at_voxel(sdf, x_id + co.x, y_id + co.y, z_id + co.z)
         if wp.isnan(v):
             return
@@ -3143,20 +3144,21 @@ def _generate_isomesh_texture_kernel(
     flat_edge_verts_table: wp.array[wp.vec2ub],
     corner_offsets_table: wp.array[wp.vec3ub],
     isovalue: wp.float32,
+    cell_stride: int,
     face_count: wp.array[int],
     vertices: wp.array[wp.vec3],
 ):
     cell_idx, local_x, local_y, local_z = wp.tid()
     sdf = sdf_array[0]
     coarse = active_coarse_cells[cell_idx]
-    x_id = coarse[0] * subgrid_size + local_x
-    y_id = coarse[1] * subgrid_size + local_y
-    z_id = coarse[2] * subgrid_size + local_z
+    x_id = coarse[0] * subgrid_size + local_x * cell_stride
+    y_id = coarse[1] * subgrid_size + local_y * cell_stride
+    z_id = coarse[2] * subgrid_size + local_z * cell_stride
 
     cube_idx = wp.int32(0)
     corner_vals = vec8f()
     for i in range(8):
-        co = wp.vec3i(corner_offsets_table[i])
+        co = wp.vec3i(corner_offsets_table[i]) * cell_stride
         v = texture_sample_sdf_at_voxel(sdf, x_id + co.x, y_id + co.y, z_id + co.z)
         if wp.isnan(v):
             return
@@ -3190,7 +3192,7 @@ def _generate_isomesh_texture_kernel(
             else:
                 t = wp.clamp((isovalue - val_0) / val_diff, MC_EDGE_CLAMP_MIN, MC_EDGE_CLAMP_MAX)
                 p = p_0 + t * (p_1 - p_0)
-            vol_idx = p + wp.vec3(float(x_id), float(y_id), float(z_id))
+            vol_idx = p * float(cell_stride) + wp.vec3(float(x_id), float(y_id), float(z_id))
             local_pos = sdf.sdf_box_lower + wp.cw_mul(vol_idx, sdf.voxel_size)
             vertices[3 * out_idx + 3 * fi + vi] = local_pos
 
@@ -3202,6 +3204,8 @@ def compute_isomesh_from_texture_sdf(
     coarse_dims: tuple[int, int, int],
     device=None,
     isovalue: float = 0.0,
+    *,
+    cell_stride: int = 1,
 ) -> Mesh | None:
     """Extract an isosurface mesh from a texture SDF via marching cubes.
 
@@ -3217,6 +3221,8 @@ def compute_isomesh_from_texture_sdf(
         device: Warp device.
         isovalue: Surface level to extract [m].  ``0.0`` gives the
             zero-isosurface; positive values extract an outward offset surface.
+        cell_stride: Sampling stride for display levels of detail. Must divide
+            the SDF subgrid size. The default preserves every fine cell.
 
     Returns:
         :class:`~newton.Mesh` with the isosurface, or ``None`` if empty.
@@ -3235,20 +3241,18 @@ def compute_isomesh_from_texture_sdf(
     subgrid_size = int(entry["subgrid_size"])
     if subgrid_size == 0:
         return None
+    if cell_stride < 1 or subgrid_size % cell_stride:
+        raise ValueError("cell_stride must be positive and divide the SDF subgrid size")
+    samples = subgrid_size // cell_stride
 
     cx, cy, cz = coarse_dims
 
     single = tex_data_array[sdf_idx : sdf_idx + 1]
 
     slots_np = subgrid_start_slots.numpy()
-    active_cells = []
-    for ix in range(cx):
-        for iy in range(cy):
-            for iz in range(cz):
-                if slots_np[ix, iy, iz] != SLOT_EMPTY:
-                    active_cells.append((ix, iy, iz))
+    active_cells = np.argwhere(slots_np[:cx, :cy, :cz] != SLOT_EMPTY).astype(np.int32)
 
-    if not active_cells:
+    if len(active_cells) == 0:
         return None
 
     active_coarse_cells = wp.array(active_cells, dtype=wp.vec3i, device=device)
@@ -3262,8 +3266,16 @@ def compute_isomesh_from_texture_sdf(
     face_count = wp.zeros((1,), dtype=int, device=device)
     wp.launch(
         _count_isomesh_faces_texture_kernel,
-        dim=(num_active, subgrid_size, subgrid_size, subgrid_size),
-        inputs=[single, active_coarse_cells, subgrid_size, tri_range_table, corner_offsets_table, float(isovalue)],
+        dim=(num_active, samples, samples, samples),
+        inputs=[
+            single,
+            active_coarse_cells,
+            subgrid_size,
+            tri_range_table,
+            corner_offsets_table,
+            float(isovalue),
+            cell_stride,
+        ],
         outputs=[face_count],
         device=device,
     )
@@ -3278,7 +3290,7 @@ def compute_isomesh_from_texture_sdf(
     face_count.zero_()
     wp.launch(
         _generate_isomesh_texture_kernel,
-        dim=(num_active, subgrid_size, subgrid_size, subgrid_size),
+        dim=(num_active, samples, samples, samples),
         inputs=[
             single,
             active_coarse_cells,
@@ -3287,6 +3299,7 @@ def compute_isomesh_from_texture_sdf(
             flat_edge_verts_table,
             corner_offsets_table,
             float(isovalue),
+            cell_stride,
         ],
         outputs=[face_count, verts],
         device=device,

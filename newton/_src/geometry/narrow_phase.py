@@ -1745,6 +1745,7 @@ def narrow_phase_find_mesh_triangle_overlaps_kernel(
             shape_data,
             shape_source,
             contact_threshold,
+            0.5 * (shape_collision_aabb_lower[non_mesh_shape] + shape_collision_aabb_upper[non_mesh_shape]),
             triangle_pairs,
             triangle_pairs_count,
         )

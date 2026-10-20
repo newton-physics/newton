@@ -3,13 +3,21 @@
 
 from __future__ import annotations
 
+import logging
 import os
+from time import perf_counter
+
+logger = logging.getLogger(__name__)
 
 
 class UI:
     def __init__(self, window):
+        self.key_press_filter = None
         self._file_dialog_result: str | None = None
         self._pending_file_dialog = None
+        self._frame_time = None
+        self._frame_recovery_state = None
+        self.section_errors = {}
         # DPI scale applied to ImGui style and fonts. Updated by ``_apply_dpi_scaling``
         # whenever the framebuffer-to-window ratio changes (e.g. moving the window
         # between displays with different DPI).
@@ -27,7 +35,7 @@ class UI:
             self.is_available = True
         except ImportError:
             self.is_available = False
-            print("Warning: imgui_bundle not found. Install with: pip install imgui-bundle")
+            logger.warning("imgui_bundle not found. Install with: pip install imgui-bundle")
             return
 
         self.window = window
@@ -47,6 +55,36 @@ class UI:
             raise
 
         self.io = self.imgui.get_io()
+        # Reuse a local UI font; no network, icon atlas, or extra dependency.
+        for font_path in (
+            "C:/Windows/Fonts/segoeui.ttf",
+            "/System/Library/Fonts/SFNS.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        ):
+            if os.path.isfile(font_path):
+                self.io.font_default = self.io.fonts.add_font_from_file_ttf(font_path, 14.0)
+                break
+        self.heading_font = None
+        for font_path in (
+            "C:/Windows/Fonts/seguisb.ttf",
+            "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+        ):
+            if os.path.isfile(font_path):
+                self.heading_font = self.io.fonts.add_font_from_file_ttf(font_path, 14.0)
+                break
+        self.number_font = None
+        for font_path in (
+            "C:/Windows/Fonts/consola.ttf",
+            "/System/Library/Fonts/Menlo.ttc",
+            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+        ):
+            if os.path.isfile(font_path):
+                self.number_font = self.io.fonts.add_font_from_file_ttf(font_path, 13.0)
+                break
+        # Menus, tabs and property editors should support Tab/arrow navigation
+        # and Escape dismissal just like their native desktop counterparts.
+        self.io.config_flags |= self.imgui.ConfigFlags_.nav_enable_keyboard
 
         # Fix inverted scroll direction in the pyglet imgui backend before
         # attaching callbacks so pyglet captures the corrected handler.
@@ -58,6 +96,23 @@ class UI:
             io.add_mouse_wheel_event(scroll_x, scroll_y)
 
         self.impl.on_mouse_scroll = on_mouse_scroll
+        backend_key_press = self.impl.on_key_press
+
+        def on_key_press(symbol, modifiers):
+            from pyglet import event
+            from pyglet.window import key
+
+            if self.key_press_filter is None or not self.key_press_filter(symbol, modifiers):
+                backend_key_press(symbol, modifiers)
+            # Pyglet's default Escape handler closes the window even when the
+            # viewer callback defers to an editor or popup. Stop propagation
+            # after forwarding the cancellation key to ImGui.
+            if symbol == key.ESCAPE and (
+                io.want_text_input or self.imgui.is_popup_open("", self.imgui.PopupFlags_.any_popup)
+            ):
+                return event.EVENT_HANDLED
+
+        self.impl.on_key_press = on_key_press
         self.impl._attach_callbacks(self.window)
 
         # Set up proper DPI scaling for high-DPI displays.
@@ -158,8 +213,79 @@ class UI:
         if not self.is_available:
             return
 
+        # Reset every size before scaling, including newer ImGui properties
+        # that the palette setup does not customize (e.g. separator text).
+        self.imgui.get_current_context().style = self.imgui.Style()
         self._setup_dark_style()
         style = self.imgui.get_style()
+        style.window_padding = (10, 6)
+        style.frame_padding = (6, 4)
+        style.item_spacing = (6, 4)
+        style.cell_padding = (4, 2)
+        style.window_border_size = 1
+        style.frame_rounding = 3
+        style.frame_border_size = 0
+        style.popup_rounding = 6
+        style.grab_rounding = 3
+        style.tab_rounding = 4
+        style.scrollbar_size = 9
+        style.scrollbar_rounding = 4
+        palette = {
+            "text": (0.88, 0.88, 0.88, 1),
+            "text_disabled": (0.58, 0.58, 0.58, 1),
+            "window_bg": (0.145, 0.145, 0.145, 1),
+            "child_bg": (0.145, 0.145, 0.145, 1),
+            "popup_bg": (0.18, 0.18, 0.18, 1),
+            "border": (0.34, 0.34, 0.34, 1),
+            "frame_bg": (0.29, 0.29, 0.29, 1),
+            "frame_bg_hovered": (0.34, 0.34, 0.34, 1),
+            "frame_bg_active": (0.37, 0.37, 0.37, 1),
+            "button": (0.24, 0.24, 0.24, 1),
+            "button_hovered": (0.30, 0.30, 0.30, 1),
+            "button_active": (0.36, 0.36, 0.36, 1),
+            "header": (0.29, 0.29, 0.29, 1),
+            "header_hovered": (0.32, 0.32, 0.32, 1),
+            "header_active": (0.37, 0.37, 0.37, 1),
+            "check_mark": (0.96, 0.61, 0.32, 1),
+            "checkbox_selected_bg": (0.32, 0.32, 0.32, 1),
+            "slider_grab": (0.70, 0.70, 0.70, 1),
+            "slider_grab_active": (0.96, 0.61, 0.32, 1),
+            "tab": (0.18, 0.18, 0.18, 1),
+            "tab_selected": (0.26, 0.26, 0.26, 1),
+            "tab_hovered": (0.30, 0.30, 0.30, 1),
+            "tab_selected_overline": (0.96, 0.61, 0.32, 1),
+            "tab_dimmed": (0.18, 0.18, 0.18, 1),
+            "tab_dimmed_selected": (0.26, 0.26, 0.26, 1),
+            "tab_dimmed_selected_overline": (0.50, 0.50, 0.50, 1),
+            "title_bg": (0.13, 0.13, 0.13, 1),
+            "title_bg_active": (0.19, 0.19, 0.19, 1),
+            "title_bg_collapsed": (0.13, 0.13, 0.13, 1),
+            "menu_bar_bg": (0.18, 0.18, 0.18, 1),
+            "scrollbar_bg": (0.12, 0.12, 0.12, 1),
+            "scrollbar_grab": (0.31, 0.31, 0.31, 1),
+            "scrollbar_grab_hovered": (0.43, 0.43, 0.43, 1),
+            "scrollbar_grab_active": (0.53, 0.53, 0.53, 1),
+            "separator": (0.32, 0.32, 0.32, 1),
+            "separator_hovered": (0.55, 0.55, 0.55, 1),
+            "separator_active": (0.96, 0.61, 0.32, 1),
+            "table_header_bg": (0.18, 0.18, 0.18, 1),
+            "table_border_strong": (0.25, 0.25, 0.25, 1),
+            "table_border_light": (0.20, 0.20, 0.20, 1),
+            "table_row_bg": (0, 0, 0, 0),
+            "table_row_bg_alt": (1, 1, 1, 0.015),
+            "text_selected_bg": (0.55, 0.55, 0.55, 0.45),
+            "resize_grip": (0.55, 0.55, 0.55, 0.20),
+            "resize_grip_hovered": (0.70, 0.70, 0.70, 0.60),
+            "resize_grip_active": (0.96, 0.61, 0.32, 0.90),
+            "nav_cursor": (0.96, 0.61, 0.32, 1),
+            "input_text_cursor": (0.96, 0.61, 0.32, 1),
+            "tree_lines": (0.35, 0.35, 0.35, 1),
+            "docking_empty_bg": (0.13, 0.13, 0.13, 1),
+            "docking_preview": (0.65, 0.65, 0.65, 0.45),
+            "plot_lines": (0.72, 0.72, 0.72, 1),
+        }
+        for name, color in palette.items():
+            style.set_color_(getattr(self.imgui.Col_, name), self.imgui.ImVec4(*color))
         if self.dpi_scale != 1.0:
             style.scale_all_sizes(self.dpi_scale)
         style.font_scale_dpi = self.dpi_scale
@@ -368,8 +494,60 @@ class UI:
             # Older integrations may not require this
             pass
 
+        # Some Pyglet integrations treat clock.tick() (an elapsed duration) as
+        # an absolute timestamp. Supply a monotonic frame delta so hover delays,
+        # key repeat and UI animations track real time at steady frame rates.
+        now = perf_counter()
+        self.io.delta_time = max(now - self._frame_time, 1e-6) if self._frame_time is not None else 1.0 / 60.0
+        self._frame_time = now
         self.imgui.new_frame()
+        self._frame_recovery_state = self.imgui.internal.ErrorRecoveryState()
+        self.imgui.internal.error_recovery_store_state(self._frame_recovery_state)
         self.giz.begin_frame()
+
+    def _recover_state(self, state):
+        """Unwind an interrupted UI callback without obscuring its exception."""
+        ui = self.imgui
+        io = ui.get_io()
+        options = (
+            "config_error_recovery_enable_assert",
+            "config_error_recovery_enable_debug_log",
+            "config_error_recovery_enable_tooltip",
+        )
+        saved = [getattr(io, option) for option in options]
+        try:
+            for option in options:
+                setattr(io, option, False)
+            ui.internal.error_recovery_try_to_recover_state(state)
+        finally:
+            for option, value in zip(options, saved, strict=True):
+                setattr(io, option, value)
+
+    def abort_frame(self):
+        """Release unfinished windows and stacks before the next viewer frame."""
+        if self._frame_recovery_state is not None:
+            self._recover_state(self._frame_recovery_state)
+            self.imgui.end_frame()
+            self._frame_recovery_state = None
+
+    def draw_section(self, name, callback):
+        """Isolate Python UI failures and restore ImGui stacks before continuing."""
+        ui = self.imgui
+        if name not in self.section_errors:
+            state = ui.internal.ErrorRecoveryState()
+            ui.internal.error_recovery_store_state(state)
+            try:
+                callback()
+            except (Exception, SystemExit) as error:
+                self.section_errors[name] = f"{type(error).__name__}: {error}"
+                logger.exception("Failed to draw %s", name)
+                # Report the original exception once. Stack recovery would
+                # otherwise assert on the unclosed widgets left by that error.
+                self._recover_state(state)
+        if name in self.section_errors:
+            ui.text_wrapped(f"{name} unavailable\n{self.section_errors[name]}")
+            if ui.button("Retry##section:" + name):
+                del self.section_errors[name]
 
     def end_frame(self):
         if not self.is_available:
@@ -378,6 +556,7 @@ class UI:
         self._poll_file_dialog()
         self.imgui.render()
         self.imgui.end_frame()
+        self._frame_recovery_state = None
 
     def render(self):
         if not self.is_available:
@@ -464,7 +643,7 @@ class UI:
                     if len(result) == 1:
                         self._file_dialog_result = result[0]
                     elif len(result) > 1:
-                        print("Warning: multiple files selected; expected a single file.")
+                        logger.warning("multiple files selected; expected a single file.")
                 else:
                     self._file_dialog_result = result
             self._pending_file_dialog = None
@@ -482,7 +661,7 @@ class UI:
 
             self._pending_file_dialog = pfd.save_file(title, os.getcwd())
         except ImportError:
-            print("Warning: portable_file_dialogs not available")
+            logger.warning("portable_file_dialogs not available")
 
     def open_load_file_dialog(self, title: str = "Open File") -> None:
         """Start an asynchronous native OS open-file dialog.
@@ -497,7 +676,7 @@ class UI:
 
             self._pending_file_dialog = pfd.open_file(title, os.getcwd())
         except ImportError:
-            print("Warning: portable_file_dialogs not available")
+            logger.warning("portable_file_dialogs not available")
 
     def shutdown(self):
         if not self.is_available:

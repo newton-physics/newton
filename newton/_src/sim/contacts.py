@@ -9,6 +9,7 @@ from typing import Literal
 import warp as wp
 from warp import DeviceLike as Devicelike
 
+from ..exceptions import NewtonDeprecationWarning
 from ..geometry.tri_mesh_collision import TriMeshCollisionInfo, build_tri_mesh_collision_info
 
 GENERATION_SENTINEL = -1
@@ -32,7 +33,7 @@ def _warn_rigid_contact_diff_deprecated(name: str) -> None:
     replacement = _RIGID_CONTACT_DIFF_REPLACEMENTS[name]
     warnings.warn(
         f"Contacts.{name} is deprecated in Newton 1.6 and will be removed in a future release; {replacement}.",
-        DeprecationWarning,
+        NewtonDeprecationWarning,
         stacklevel=3,
     )
 

@@ -39,6 +39,7 @@ import warp as wp
 
 from newton._src.core.types import MAXVAL, Devicelike
 
+from ..exceptions import NewtonDeprecationWarning
 from ..sim.builder import ShapeFlags
 from ..sim.model import Model
 from .collision_core import sat_box_intersection
@@ -537,7 +538,7 @@ class HydroelasticSDF:
             else:
                 warnings.warn(
                     "HydroelasticSDF.Config.margin_contact_area is deprecated; remove this setting.",
-                    DeprecationWarning,
+                    NewtonDeprecationWarning,
                     stacklevel=2,
                 )
             # NaN fails both bounds (NaN comparisons return False) and lands here too.

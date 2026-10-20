@@ -1102,7 +1102,7 @@ def apply_joint_forces(
             t_total += f * a_p
 
     else:
-        print("joint type not handled in apply_joint_forces")
+        print("joint type not handled in apply_joint_forces")  # noqa: T201
 
     # write forces
     child_wrench_at_com = wp.spatial_vector(f_total, t_total + wp.cross(r_c, f_total))

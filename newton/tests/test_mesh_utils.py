@@ -8,6 +8,7 @@ import unittest
 import numpy as np
 import warp as wp
 
+import newton
 from newton._src.utils.mesh import compute_vertex_normals
 from newton.tests.unittest_utils import get_test_devices
 
@@ -97,6 +98,42 @@ class TestComputeVertexNormals(unittest.TestCase):
                 with self.subTest(layout=layout, points=name):
                     with self.assertRaisesRegex(ValueError, "indices must be flat or \\(N, 3\\) for NumPy inputs"):
                         compute_vertex_normals(points, indices)
+
+
+class TestPrimitiveMeshes(unittest.TestCase):
+    def test_capsule_topology(self):
+        """Verify closed, outward capsule faces and shared cylinder equators."""
+        for axis in newton.Axis:
+            for segments in (3, 7, 32):
+                for height in (0.0, 0.1, 2.0):
+                    with self.subTest(axis=axis, segments=segments, half_height=height):
+                        mesh = newton.Mesh.create_capsule(
+                            0.4, height, up_axis=axis, segments=segments, compute_inertia=False
+                        )
+                        points, faces = mesh.vertices, mesh.indices.reshape(-1, 3)
+                        self.assertGreaterEqual(faces.min(), 0)
+                        self.assertLess(faces.max(), len(points))
+                        self.assertEqual(len(np.unique(points, axis=0)), len(points))
+                        triangles = points[faces]
+                        cross = np.cross(triangles[:, 1] - triangles[:, 0], triangles[:, 2] - triangles[:, 0])
+                        self.assertTrue(np.all(np.linalg.norm(cross, axis=1) > 1e-8))
+                        self.assertTrue(np.all(np.sum(cross * mesh.normals[faces].mean(axis=1), axis=1) > 0))
+                        edges = np.concatenate((faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]))
+                        unique, inverse, counts = np.unique(
+                            np.sort(edges, axis=1), axis=0, return_inverse=True, return_counts=True
+                        )
+                        np.testing.assert_array_equal(counts, 2)
+                        directions = np.where(edges[:, 0] < edges[:, 1], 1, -1)
+                        np.testing.assert_array_equal(np.bincount(inverse, weights=directions), 0)
+                        self.assertEqual(len(points) - len(unique) + len(faces), 2)
+                        # Every vertex lies on the analytic capsule; both equators
+                        # must be full-radius rings shared by the caps and body.
+                        radial = points.copy()
+                        radial[:, int(axis)] -= np.clip(radial[:, int(axis)], -height, height)
+                        np.testing.assert_allclose(np.linalg.norm(radial, axis=1), 0.4, atol=1e-6)
+                        for end in (-height, height):
+                            equator = points[np.isclose(points[:, int(axis)], end)]
+                            self.assertEqual(len(equator), segments)
 
 
 if __name__ == "__main__":

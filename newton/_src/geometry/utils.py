@@ -13,6 +13,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Vec3
+from ..exceptions import NewtonWarning
 from .inertia import compute_inertia_mesh
 from .types import (
     GeoType,
@@ -575,7 +576,9 @@ def remesh_ftetwild(
 
     if len(new_vertices) == 0 or len(new_faces) == 0:
         warnings.warn(
-            "Remeshing failed, the optimized mesh has no vertices or faces; return previous mesh.", stacklevel=2
+            "Remeshing failed, the optimized mesh has no vertices or faces; return previous mesh.",
+            NewtonWarning,
+            stacklevel=2,
         )
         return vertices, faces
 
@@ -787,7 +790,7 @@ def remesh_convex_hull(vertices: np.ndarray, maxhullvert: int = 0, eps: float = 
             f"remesh_convex_hull: input point cloud is {rank}; returning a "
             "zero-volume fallback mesh. Downstream inertia computations will "
             "produce zero mass / COM / inertia.",
-            UserWarning,
+            NewtonWarning,
             stacklevel=2,
         )
 

@@ -107,7 +107,7 @@ class TestRenderingPauseGL(unittest.TestCase):
         reference = viewer.get_frame().numpy().copy()
         np.testing.assert_array_equal(reference, before)
 
-        gui = mock.Mock()
+        gui = mock.Mock(workspace_enabled=False, workspace=None, _frame_camera_pending=False)
         gui.prepare_frame.side_effect = lambda: viewer.set_rendering_paused(True)
         viewer.gui = gui
         viewer.begin_frame(2.0)
@@ -244,6 +244,53 @@ class TestViewerGLGetFrame(unittest.TestCase):
                 self.assertEqual(cuda_frame.dtype, wp.uint8)
                 self.assertEqual(cuda_frame.device, cuda_device)
                 self.assertGreater(np.ptp(cuda_frame.numpy()), 0)
+
+            # Wide contact connectors must retain their visible portion when
+            # either witness crosses behind the eye. Compare against an
+            # explicitly clipped segment using the same native framebuffer.
+            viewer.clear_all_layers()
+            viewer.set_model(newton.ModelBuilder().finalize(device="cpu"))
+            viewer.show_ground_plane = False
+            viewer.renderer.draw_sky = False
+            viewer.camera.near = 0.1
+            viewer.set_camera(pos=wp.vec3(0, -2, 1), pitch=0.0, yaw=0.0)
+            viewer.camera.look_at((0, 0, 1))
+            eye = np.asarray(viewer.camera.pos)
+            forward, right = np.asarray(viewer.camera.get_front()), np.asarray(viewer.camera.get_right())
+            start = eye + 2 * forward - 0.3 * right
+            end = eye - 0.5 * forward + 0.2 * right
+            clipped = start + (end - start) * ((2 - 0.100001) / 2.5)
+
+            def draw_segment(a, b, *, arrows=False):
+                begins = wp.array([a], dtype=wp.vec3, device="cpu")
+                ends = wp.array([b], dtype=wp.vec3, device="cpu")
+                viewer.begin_frame(1.0)
+                if arrows:
+                    viewer.log_lines("/contacts/witnesses", None, None, None)
+                    viewer.log_arrows("/contacts/normals", begins, ends, (0, 1, 0))
+                else:
+                    viewer.log_lines("/contacts/witnesses", begins, ends, (1, 1, 0))
+                viewer.end_frame()
+                return viewer.get_frame().numpy().copy()
+
+            for xray in (False, True):
+                viewer.renderer._physics_xray = xray
+                viewer.renderer._xray_inspection_radius = 1.0
+                viewer.renderer._xray_proximity_range = 3.0
+                reference = draw_segment(start, clipped)
+                yellow = (reference[:, :, 0] > 100) & (reference[:, :, 1] > 100) & (reference[:, :, 2] < 80)
+                self.assertGreater(np.count_nonzero(yellow), 10)
+                for a, b in ((start, end), (end, start)):
+                    actual = draw_segment(a, b)
+                    np.testing.assert_allclose(actual, reference, atol=2)
+
+            for a, b in ((start, end), (end, start)):
+                actual = draw_segment(a, b, arrows=True)
+                green = (actual[:, :, 1] > 150) & (actual[:, :, 0] < 80) & (actual[:, :, 2] < 80)
+                self.assertGreater(np.count_nonzero(green), 5)
+            actual = draw_segment(eye - forward, end, arrows=True)
+            green = (actual[:, :, 1] > 150) & (actual[:, :, 0] < 80) & (actual[:, :, 2] < 80)
+            self.assertEqual(np.count_nonzero(green), 0)
         finally:
             viewer.close()
 

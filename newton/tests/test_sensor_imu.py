@@ -42,7 +42,7 @@ class TestSensorIMU(unittest.TestCase):
             SensorIMU(model, sites=[site], request_state_attributes=True)
 
         self.assertEqual(len(caught), 1)
-        self.assertIs(caught[0].category, DeprecationWarning)
+        self.assertIs(caught[0].category, newton.exceptions.NewtonDeprecationWarning)
         self.assertRegex(str(caught[0].message), r"SensorIMU.*request_state_attributes=True.*1\.7.*SolverObservables")
         self.assertEqual(caught[0].filename, __file__)
         self.assertEqual(caught[0].lineno, caller_line)

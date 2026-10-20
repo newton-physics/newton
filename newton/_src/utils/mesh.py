@@ -11,6 +11,7 @@ from urllib.parse import urlparse
 import numpy as np
 import warp as wp
 
+from ..exceptions import NewtonWarning
 from ..geometry.types import Mesh
 
 
@@ -447,6 +448,7 @@ class MeshAdjacency:
             warnings.warn(
                 "MeshAdjacency.to(): vertex adjacency not initialized; v_adj_* are None -- call "
                 "init_vertex_adjacency(particle_count) first if your kernels need them.",
+                NewtonWarning,
                 stacklevel=2,
             )
             return data
@@ -521,7 +523,7 @@ class MeshAdjacency:
                 edge_indices[edge_id, 1] = entry_opposite[entry_id]
                 edge_tri_indices[edge_id, 1] = tri_start + entry_tri[entry_id]
             else:
-                warnings.warn("Detected non-manifold edge", stacklevel=2)
+                warnings.warn("Detected non-manifold edge", NewtonWarning, stacklevel=2)
 
             fill_counts[edge_id] += 1
 
@@ -1567,7 +1569,7 @@ def create_mesh_capsule(
     compute_normals: bool = True,
     compute_uvs: bool = True,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None, np.ndarray | None]:
-    """Create capsule geometry data with optional normals and UVs."""
+    """Create a closed capsule with shared equator rings and single pole vertices."""
     positions = []
     normals = [] if compute_normals else None
     uvs = [] if compute_uvs else None
@@ -1575,47 +1577,53 @@ def create_mesh_capsule(
 
     if up_axis not in (0, 1, 2):
         raise ValueError("up_axis must be between 0 and 2")
+    if segments < 3:
+        raise ValueError("segments must be at least 3")
+    if radius <= 0.0 or half_height < 0.0:
+        raise ValueError("radius must be positive and half_height must be nonnegative")
 
     x_dir, y_dir, z_dir = ((1, 2, 0), (0, 1, 2), (2, 0, 1))[up_axis]
-    up_vector = np.zeros(3, dtype=np.float32)
-    up_vector[up_axis] = half_height
 
-    for i in range(segments + 1):
-        theta = i * np.pi / segments
-        sin_theta = np.sin(theta)
-        cos_theta = np.cos(theta)
+    def add_vertex(x, y, z, offset):
+        normal = np.array((x, y, z), dtype=np.float32)[[x_dir, y_dir, z_dir]]
+        pos = radius * normal
+        pos[up_axis] += offset
+        positions.append(pos.tolist())
+        if compute_normals:
+            normals.append(normal.tolist())
+        if compute_uvs:
+            # Preserve the existing seam-free projected UV convention.
+            uvs.append([y * 0.5 + 0.5, z * 0.5 + 0.5])
 
-        for j in range(segments + 1):
-            phi = j * 2 * np.pi / segments
-            sin_phi = np.sin(phi)
-            cos_phi = np.cos(phi)
-
-            z = cos_phi * sin_theta
-            y = cos_theta
-            x = sin_phi * sin_theta
-
-            xyz = np.array((x, y, z), dtype=np.float32)
-            normal = xyz[[x_dir, y_dir, z_dir]]
-            pos = normal * radius
-            if normal[up_axis] >= 0.0:
-                pos += up_vector
-            else:
-                pos -= up_vector
-
-            positions.append(pos.tolist())
-            if compute_normals:
-                normals.append(normal.tolist())
-            if compute_uvs:
-                u = cos_theta * 0.5 + 0.5
-                v = cos_phi * sin_theta * 0.5 + 0.5
-                uvs.append([u, v])
-
-    nv = len(positions)
-    for i in range(segments):
+    add_vertex(0.0, 1.0, 0.0, half_height)
+    cap_segments = max(1, segments // 2)
+    profile = []
+    for i in range(1, cap_segments):
+        theta = i * np.pi / (2 * cap_segments)
+        profile.append((np.sin(theta), np.cos(theta), half_height))
+    profile.append((1.0, 0.0, half_height))
+    if half_height > 0.0:
+        profile.append((1.0, 0.0, -half_height))
+    for i in range(1, cap_segments):
+        theta = i * np.pi / (2 * cap_segments)
+        profile.append((np.cos(theta), -np.sin(theta), -half_height))
+    for ring_radius, y, offset in profile:
         for j in range(segments):
-            first = (i * (segments + 1) + j) % nv
-            second = (first + segments + 1) % nv
-            indices.extend([first, second, (first + 1) % nv, second, (second + 1) % nv, (first + 1) % nv])
+            phi = j * 2 * np.pi / segments
+            add_vertex(ring_radius * np.sin(phi), y, ring_radius * np.cos(phi), offset)
+    bottom = len(positions)
+    add_vertex(0.0, -1.0, 0.0, -half_height)
+
+    for j in range(segments):
+        next_j = (j + 1) % segments
+        indices.extend((0, 1 + j, 1 + next_j))
+        for ring in range(len(profile) - 1):
+            upper = 1 + ring * segments
+            lower = upper + segments
+            indices.extend((upper + j, lower + j, upper + next_j))
+            indices.extend((lower + j, lower + next_j, upper + next_j))
+        last = 1 + (len(profile) - 1) * segments
+        indices.extend((last + j, bottom, last + next_j))
 
     return (
         np.asarray(positions, dtype=np.float32),
@@ -2238,22 +2246,22 @@ def validate_triangle_mesh(
     vertices = np.asarray(vertices, dtype=float)
     raw = np.asarray(indices, dtype=np.intp)
     if raw.size > 0 and raw.ndim == 1 and raw.size % 3 != 0:
-        warnings.warn("Triangle index array length is not a multiple of 3.", stacklevel=stacklevel)
+        warnings.warn("Triangle index array length is not a multiple of 3.", NewtonWarning, stacklevel=stacklevel)
         return
     try:
         indices = raw.reshape(-1, 3)
     except ValueError:
-        warnings.warn("Triangle index array must be flat or have shape (N, 3).", stacklevel=stacklevel)
+        warnings.warn("Triangle index array must be flat or have shape (N, 3).", NewtonWarning, stacklevel=stacklevel)
         return
     n_verts = len(vertices)
     n_faces = len(indices)
 
     if n_faces == 0:
-        warnings.warn("Cloth mesh has no triangles.", stacklevel=stacklevel)
+        warnings.warn("Cloth mesh has no triangles.", NewtonWarning, stacklevel=stacklevel)
         return
 
     if n_verts > 0 and (indices.min() < 0 or indices.max() >= n_verts):
-        warnings.warn(f"Triangle indices out of range for {n_verts} vertices.", stacklevel=stacklevel)
+        warnings.warn(f"Triangle indices out of range for {n_verts} vertices.", NewtonWarning, stacklevel=stacklevel)
         return
 
     v0 = vertices[indices[:, 0]]
@@ -2314,7 +2322,7 @@ def validate_triangle_mesh(
         + "\n".join(f"  - {issue}" for issue in issues)
         + "\nConsider remeshing the input geometry."
     )
-    warnings.warn(msg, stacklevel=stacklevel)
+    warnings.warn(msg, NewtonWarning, stacklevel=stacklevel)
 
 
 def validate_tet_mesh(
@@ -2356,22 +2364,22 @@ def validate_tet_mesh(
     vertices = np.asarray(vertices, dtype=float)
     raw = np.asarray(indices, dtype=np.intp)
     if raw.size > 0 and raw.ndim == 1 and raw.size % 4 != 0:
-        warnings.warn("Tet index array length is not a multiple of 4.", stacklevel=stacklevel)
+        warnings.warn("Tet index array length is not a multiple of 4.", NewtonWarning, stacklevel=stacklevel)
         return
     try:
         indices = raw.reshape(-1, 4)
     except ValueError:
-        warnings.warn("Tet index array must be flat or have shape (N, 4).", stacklevel=stacklevel)
+        warnings.warn("Tet index array must be flat or have shape (N, 4).", NewtonWarning, stacklevel=stacklevel)
         return
     n_tets = len(indices)
 
     if n_tets == 0:
-        warnings.warn("Soft mesh has no tetrahedra.", stacklevel=stacklevel)
+        warnings.warn("Soft mesh has no tetrahedra.", NewtonWarning, stacklevel=stacklevel)
         return
 
     n_verts = len(vertices)
     if n_verts > 0 and (indices.min() < 0 or indices.max() >= n_verts):
-        warnings.warn(f"Tet indices out of range for {n_verts} vertices.", stacklevel=stacklevel)
+        warnings.warn(f"Tet indices out of range for {n_verts} vertices.", NewtonWarning, stacklevel=stacklevel)
         return
 
     v0 = vertices[indices[:, 0]]
@@ -2431,4 +2439,4 @@ def validate_tet_mesh(
     if label is not None:
         prefix += f" [{label}]"
     msg = f"{prefix} ({len(vertices)} vertices, {n_tets} tetrahedra):\n" + "\n".join(f"  - {issue}" for issue in issues)
-    warnings.warn(msg, stacklevel=stacklevel)
+    warnings.warn(msg, NewtonWarning, stacklevel=stacklevel)

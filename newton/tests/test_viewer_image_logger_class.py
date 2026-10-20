@@ -361,6 +361,9 @@ class _FakeRenderer:
     def present(self):
         self.present_count += 1
 
+    def _get_scene_viewport(self):
+        return (0, 0, self._screen_width, self._screen_height)
+
 
 class _FakeFullscreenImageLogger:
     def __init__(self, texture):
@@ -389,7 +392,8 @@ class TestViewerGLFullscreenMainImage(unittest.TestCase):
         viewer._image_logger = _FakeFullscreenImageLogger(texture)
         viewer._last_time = 0.0
         viewer.wind = None
-        viewer.camera = object()
+        viewer.camera = types.SimpleNamespace()
+        viewer.show_ui = False
         viewer.objects = {"mesh": object()}
         viewer.lines = {}
         viewer.wireframe_shapes = {}
@@ -450,7 +454,9 @@ class TestViewerGLImageWindowSurvivesExampleSwitch(unittest.TestCase):
         renderer = mock.MagicMock()
         renderer.window.get_framebuffer_size.return_value = (640, 480)
         renderer.window.get_size.return_value = (640, 480)
-        fake_ui = types.SimpleNamespace(is_available=True, imgui=mock.MagicMock(), dpi_scale=1.0)
+        fake_ui = types.SimpleNamespace(
+            is_available=True, imgui=mock.MagicMock(), io=types.SimpleNamespace(config_flags=0), dpi_scale=1.0
+        )
         with (
             wp.ScopedDevice("cpu"),
             mock.patch.object(viewer_gl, "RendererGL", return_value=renderer),
@@ -461,13 +467,12 @@ class TestViewerGLImageWindowSurvivesExampleSwitch(unittest.TestCase):
         self.addCleanup(viewer.close)
 
         viewer.clear_model()
-        panels = ("_render_gizmos", "_render_left_panel", "_render_stats_overlay", "_render_scalar_plots")
-        with contextlib.ExitStack() as stack:
-            for panel in panels:
-                stack.enter_context(mock.patch.object(viewer.gui, panel))
+        viewer.gui.workspace = mock.Mock()
+        with mock.patch.object(viewer.gui, "_render_gizmos"):
             viewer.gui._render_ui()
 
-        viewer._image_logger.draw.assert_called_once()
+        viewer.gui.workspace.draw.assert_called_once()
+        viewer._image_logger.draw.assert_not_called()
 
 
 class TestViewerRTXLogImage(unittest.TestCase):

@@ -70,7 +70,7 @@ def _create_witness_kernel(distance_query=None):
     else:
         solve = create_solve_mpr(support_map_lean).core
 
-    @wp.kernel
+    @wp.kernel(enable_backward=False)
     def kernel(
         mesh_a: wp.uint64,
         mesh_b: wp.uint64,
@@ -264,12 +264,12 @@ def test_convex_contact_iteration_limit(test, device, *, distance_query=None):
             test.assertTrue(np.isfinite(depth))
             test.assertGreaterEqual(depth, 0.05254986867157328 - 1.0e-5)
             test.assertAlmostEqual(float(np.dot(witnesses[0] - witnesses[1], normal)), depth, delta=1.0e-6)
-            if distance_query is None:
-                # Certified distance witnesses also survive the writer's
-                # midpoint and normal/depth reconstruction.
-                center = 0.5 * (witnesses[0] + witnesses[1])
-                np.testing.assert_allclose(center + 0.5 * depth * normal, witnesses[0], atol=1.0e-6)
-                np.testing.assert_allclose(center - 0.5 * depth * normal, witnesses[1], atol=1.0e-6)
+            # Every fallback must survive the writer's midpoint and
+            # normal/depth reconstruction. Support-plane vertices alone
+            # satisfy the depth checks but need not share a contact location.
+            center = 0.5 * (witnesses[0] + witnesses[1])
+            np.testing.assert_allclose(center + 0.5 * depth * normal, witnesses[0], atol=1.0e-6)
+            np.testing.assert_allclose(center - 0.5 * depth * normal, witnesses[1], atol=1.0e-6)
 
 
 def test_convex_contact_failed_distance_query(test, device):
@@ -310,7 +310,7 @@ for function in (
     add_function_test(TestConvexContactWitness, function.__name__, function, devices=get_test_devices())
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def _resting_box_kernel(
     half_a: wp.vec3,
     half_b: wp.vec3,
