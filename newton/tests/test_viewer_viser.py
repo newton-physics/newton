@@ -256,6 +256,8 @@ class TestViewerViserInteraction(unittest.TestCase):
             self.wait_for(lambda: self.viewer.show_particles)
             self.update_gui(self.viewer._viewer_option_handles["show_contacts"], True)
             self.wait_for(lambda: self.viewer.show_contacts)
+            self.update_gui(self.viewer._viewer_option_handles["wireframe"], True)
+            self.wait_for(lambda: self.viewer._wireframe)
             self.viewer.picking_enabled = False
             self.assertFalse(self.viewer._picking_click_callbacks)
             del example
@@ -279,6 +281,7 @@ class TestViewerViserInteraction(unittest.TestCase):
                 def __init__(self, viewer: ViewerViser, args: object) -> None:
                     viewer.set_model(model)
                     viewer.show_contacts = False
+                    viewer._set_wireframe(False)
                     if self.fail:
                         raise SystemExit(2)
 
@@ -304,6 +307,10 @@ class TestViewerViserInteraction(unittest.TestCase):
                 self.assertIsInstance(example, SelectedExample)
                 self.assertIsNone(browser.load_error)
                 self.assertTrue(self.viewer.show_contacts)
+                self.assertTrue(self.viewer._wireframe)
+                example = None
+                self.assertIsNotNone(browser.reset(SelectedExample))
+                self.assertTrue(self.viewer._wireframe)
                 self.viewer.begin_frame(0.0)
                 self.viewer.end_frame()
                 self.assertFalse(self.viewer._example_gui_handles)

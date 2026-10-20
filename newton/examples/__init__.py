@@ -382,6 +382,8 @@ def _preserve_display_options(viewer: "ViewerBase", *, switching: bool = False) 
         name: getattr(camera, name) for name in ("fov", "near", "far") if not switching and hasattr(camera, name)
     }
     renderer = getattr(viewer, "renderer", None)
+    set_wireframe = getattr(viewer, "_set_wireframe", None)
+    wireframe = user_options.get("wireframe") if switching else getattr(viewer, "_wireframe", None)
     render_saved = {
         name: copy.deepcopy(user_options[name] if switching else getattr(renderer, name))
         for name in (
@@ -433,6 +435,8 @@ def _preserve_display_options(viewer: "ViewerBase", *, switching: bool = False) 
         renderer = getattr(viewer, "renderer", None)
         for name, value in render_saved.items():
             setattr(renderer, name, value)
+        if set_wireframe is not None and wireframe is not None:
+            set_wireframe(wireframe)
 
 
 class _ExampleBrowser:
