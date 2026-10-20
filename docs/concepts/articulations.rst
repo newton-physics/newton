@@ -450,7 +450,7 @@ Implementation details differ by coordinate formulation:
 - :class:`~newton.solvers.SolverKamino` with ``dynamics_solver="lox"`` advances the pose of
   kinematic bodies with their prescribed :attr:`newton.State.body_qd` over the step, while its
   PADMM and DVI backends keep the input :attr:`newton.State.body_q`. Under LOX, write a velocity
-  that reaches the target pose within the step, or write the target pose with a zero velocity.
+  that reaches the target pose within the step.
 
 In :class:`~newton.solvers.SolverMuJoCo`, kinematic DOFs are regularized with a
 large internal armature value; see :ref:`Kinematic Links and Fixed Roots <mujoco-kinematic-links-and-fixed-roots>` for details.

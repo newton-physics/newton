@@ -34,6 +34,7 @@ from .system_kernels import compute_structural_correction, is_rotational_structu
 
 __all__ = [
     "_accumulate_aligned_joint_wrenches",
+    "_carry_welded_bodies",
     "_compute_structural_effective_mass",
     "_count_box_rows",
     "_enable_bodies_in_weighted_blocks",
@@ -239,6 +240,29 @@ def _begins_body_run(body_a: wp.int32, body_b: wp.int32, index: wp.int32, count:
 ###
 # Kernels
 ###
+
+
+@wp.kernel
+def _carry_welded_bodies(
+    # Inputs:
+    welded_bodies: wp.array[wp.int32],
+    welded_anchors: wp.array[wp.int32],
+    welded_poses: wp.array[wp.transformf],
+    # Outputs:
+    body_q: wp.array[wp.transformf],
+    body_u: wp.array[wp.spatial_vectorf],
+):
+    """Move each welded body rigidly with its kinematic anchor, from their center-of-mass poses and twists."""
+    tid = wp.tid()
+    body = welded_bodies[tid]
+    anchor = welded_anchors[tid]
+    anchor_pose = body_q[anchor]
+    pose = wp.transform_multiply(anchor_pose, welded_poses[tid])
+    anchor_twist = body_u[anchor]
+    angular_velocity = wp.spatial_bottom(anchor_twist)
+    lever = wp.transform_get_translation(pose) - wp.transform_get_translation(anchor_pose)
+    body_q[body] = pose
+    body_u[body] = wp.spatial_vector(wp.spatial_top(anchor_twist) + wp.cross(angular_velocity, lever), angular_velocity)
 
 
 @wp.kernel

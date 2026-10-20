@@ -167,9 +167,10 @@ class SolverKamino(SolverBase, CouplingInterface):
     immovable body's pose from its velocity. To animate such a body along a
     trajectory, write the target pose into ``state_in.body_q`` (and optionally
     ``state_in.body_qd``) externally between steps. The LOX backend advances
-    kinematic and massless bodies with their velocity in ``state_in.body_qd``: write the
-    velocity that reaches the target pose within the step, or write the target
-    pose together with a zero velocity.
+    kinematic bodies, and massless bodies whose only joints are free joints to the
+    world, with their velocity in ``state_in.body_qd``: write the velocity that
+    reaches the target pose within the step. Bodies welded to a kinematic body move
+    rigidly with it.
 
     Example
     -------

@@ -1112,9 +1112,10 @@ class LOXSolverConfig:
         following the normal deprecation policy. It supports rigid bodies
         only; cable and deformable extensions are not supported.
 
-    Unlike the PADMM and DVI backends, LOX advances kinematic and massless bodies with
-    their velocity in ``state_in.body_qd``, and it keeps speculative
-    contacts regardless of :attr:`ConstrainedDynamicsConfig.cull_speculative_contacts`.
+    Unlike the PADMM and DVI backends, LOX advances kinematic bodies, and massless bodies
+    whose only joints are free joints to the world, with their velocity in ``state_in.body_qd``.
+    Bodies welded to a kinematic body move rigidly with it. LOX keeps speculative contacts
+    regardless of :attr:`ConstrainedDynamicsConfig.cull_speculative_contacts`.
     It solves its own primal problem, so ``sparse_dynamics`` and the linear solver and
     preconditioning settings of :class:`ConstrainedDynamicsConfig` only affect the dual
     problem of the optional solution metrics, and it always warm-starts from its containers.
@@ -1147,7 +1148,7 @@ class LOXSolverConfig:
 
     Disable this to retain those bodies in the dynamic solve and compute their
     fixed-joint support reactions. Bodies marked with :attr:`newton.BodyFlags.KINEMATIC`
-    remain prescribed.
+    remain prescribed, and the bodies welded to them move rigidly with them.
     """
 
     projection_iterations: int = 5

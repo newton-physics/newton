@@ -32,6 +32,7 @@ from ...kinematics.joints import compute_joints_data
 from ...kinematics.limits import LimitsKamino
 from .problem_kernels import (
     _accumulate_aligned_joint_wrenches,
+    _carry_welded_bodies,
     _compute_structural_effective_mass,
     _count_box_rows,
     _enable_bodies_in_weighted_blocks,
@@ -110,6 +111,55 @@ def _connected_component_labels(
         if np.array_equal(updated, labels):
             return labels
         labels = updated
+
+
+def _welded_body_poses(
+    welded: np.ndarray,
+    anchor_of_label: dict[int, int],
+    labels: np.ndarray,
+    weld_parent: np.ndarray,
+    weld_child: np.ndarray,
+    weld_parent_xform: np.ndarray,
+    weld_child_xform: np.ndarray,
+    body_com: np.ndarray,
+) -> tuple[np.ndarray, list[wp.transformf]]:
+    """Return the anchor of each welded body and its center-of-mass pose in the anchor's center-of-mass frame.
+
+    The welds of each island form a tree, which a traversal from its anchor composes.
+    """
+    neighbors: dict[int, list[tuple[int, wp.transformf]]] = {}
+    for parent, child, parent_xform, child_xform in zip(
+        weld_parent.tolist(), weld_child.tolist(), weld_parent_xform, weld_child_xform, strict=True
+    ):
+        # Origin pose of the child in the parent's origin frame, and its inverse
+        child_in_parent = wp.transform_multiply(
+            wp.transformf(*parent_xform), wp.transform_inverse(wp.transformf(*child_xform))
+        )
+        neighbors.setdefault(parent, []).append((child, child_in_parent))
+        neighbors.setdefault(child, []).append((parent, wp.transform_inverse(child_in_parent)))
+
+    origin_in_anchor: dict[int, wp.transformf] = {}
+    for anchor in anchor_of_label.values():
+        origin_in_anchor[anchor] = wp.transform_identity(dtype=wp.float32)
+        stack = [anchor]
+        while stack:
+            body = stack.pop()
+            for neighbor, neighbor_in_body in neighbors.get(body, ()):
+                if neighbor not in origin_in_anchor:
+                    origin_in_anchor[neighbor] = wp.transform_multiply(origin_in_anchor[body], neighbor_in_body)
+                    stack.append(neighbor)
+
+    anchors = np.array([anchor_of_label[int(labels[b])] for b in welded], dtype=np.int32)
+    poses = []
+    for body, anchor in zip(welded.tolist(), anchors.tolist(), strict=True):
+        anchor_com = wp.transformf(wp.vec3f(*body_com[anchor]), wp.quat_identity(dtype=wp.float32))
+        body_com_pose = wp.transformf(wp.vec3f(*body_com[body]), wp.quat_identity(dtype=wp.float32))
+        poses.append(
+            wp.transform_multiply(
+                wp.transform_inverse(anchor_com), wp.transform_multiply(origin_in_anchor[body], body_com_pose)
+            )
+        )
+    return anchors, poses
 
 
 def _body_row_incidence(
@@ -242,6 +292,18 @@ class LOXProblem:
         )
         self._allocate_effort_rows(dynamic_world, dynamic_dof)
         self._allocate_unilaterals(*self._allocate_joint_frictions())
+
+    def carry_welded_bodies(self) -> None:
+        """Move the bodies welded to kinematic bodies rigidly with them, in the Kamino body state."""
+        if self.welded_bodies is None:
+            return
+        wp.launch(
+            _carry_welded_bodies,
+            dim=self.welded_bodies.shape[0],
+            inputs=[self.welded_bodies, self.welded_anchors, self.welded_poses],
+            outputs=[self.kamino_data.bodies.q_i, self.kamino_data.bodies.u_i],
+            device=self.device,
+        )
 
     def validate_model_changed(self) -> None:
         """Validate LOX constraint topology derived from aliased model values."""
@@ -940,8 +1002,13 @@ class LOXProblem:
         """Return dynamic bodies using state flags and fixed-tree world islands.
 
         Kinematic bodies, massless bodies that only have free joints to the world, and the bodies
-        welded to either of them or to the world are prescribed.
+        welded to kinematic bodies are prescribed, as are the bodies welded to the world when
+        :attr:`eliminate_fixed_world_islands` is set. Each body welded to a kinematic body, but not
+        to the world, is recorded with its anchor so that it moves rigidly with it.
         """
+        self.welded_bodies = None
+        self.welded_anchors = None
+        self.welded_poses = None
         source_model = self.model._model
         body_count = self.model.size.sum_of_num_bodies
         if source_model is None:
@@ -963,9 +1030,8 @@ class LOXProblem:
         jointed = np.zeros(body_count, dtype=bool)
         for endpoints in (joint_parent[constraining], joint_child[constraining]):
             jointed[endpoints[endpoints >= 0]] = True
-        prescribed = ((body_flags & int(BodyFlags.KINEMATIC)) != 0) | (massless & ~jointed)
-        if not self.eliminate_fixed_world_islands:
-            return tuple(np.flatnonzero(~prescribed).tolist())
+        kinematic = (body_flags & int(BodyFlags.KINEMATIC)) != 0
+        prescribed = kinematic | (massless & ~jointed)
 
         articulation_start = source_model.articulation_start.numpy().astype(np.int32, copy=False)[:-1]
         articulation_end = source_model.articulation_end.numpy().astype(np.int32, copy=False)
@@ -977,9 +1043,32 @@ class LOXProblem:
         fixed_to_world = joint_child[fixed_joint & (joint_parent < 0)]
         fixed_pair = fixed_joint & (joint_parent >= 0)
         labels = _connected_component_labels(body_count, joint_parent[fixed_pair], joint_child[fixed_pair])
-        prescribed_bodies = np.concatenate((fixed_to_world, np.flatnonzero(prescribed).astype(np.int32)))
-        prescribed_labels = np.unique(labels[prescribed_bodies])
-        return tuple(np.flatnonzero(~np.isin(labels, prescribed_labels)).tolist())
+        welded_to_world = np.isin(labels, labels[fixed_to_world])
+
+        # Bodies welded to a kinematic body move rigidly with the first kinematic body of their island
+        anchor_of_label: dict[int, int] = {}
+        for body in np.flatnonzero(kinematic & ~welded_to_world).tolist():
+            anchor_of_label.setdefault(int(labels[body]), body)
+        welded = np.isin(labels, list(anchor_of_label)) & ~kinematic
+        if welded.any():
+            welded_bodies = np.flatnonzero(welded).astype(np.int32)
+            anchors, poses = _welded_body_poses(
+                welded_bodies,
+                anchor_of_label,
+                labels,
+                joint_parent[fixed_pair],
+                joint_child[fixed_pair],
+                source_model.joint_X_p.numpy()[fixed_pair],
+                source_model.joint_X_c.numpy()[fixed_pair],
+                source_model.body_com.numpy(),
+            )
+            self.welded_bodies = wp.array(welded_bodies, dtype=wp.int32, device=self.device)
+            self.welded_anchors = wp.array(anchors, dtype=wp.int32, device=self.device)
+            self.welded_poses = wp.array(poses, dtype=wp.transformf, device=self.device)
+            prescribed |= welded
+        if self.eliminate_fixed_world_islands:
+            prescribed |= welded_to_world
+        return tuple(np.flatnonzero(~prescribed).tolist())
 
     def _build_body_edges(self, dynamic_bodies: Sequence[int]) -> tuple[tuple[int, int], ...]:
         """Return fixed joint edges whose endpoints are both dynamic bodies."""

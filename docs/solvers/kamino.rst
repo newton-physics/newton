@@ -105,11 +105,18 @@ subsolver selection and iteration controls.
 LOX prescribed bodies and shared settings
 -----------------------------------------
 
-LOX advances bodies flagged :attr:`~newton.BodyFlags.KINEMATIC` and massless
-bodies with their velocity in ``state_in.body_qd``. To animate such a
-body, write the velocity that reaches its target pose within the step, or write
-the target pose together with a zero velocity. PADMM and DVI keep the pose of
-these bodies and only read their velocity.
+LOX advances bodies flagged :attr:`~newton.BodyFlags.KINEMATIC`, and massless
+bodies whose only joints are free joints to the world, with their velocity in
+``state_in.body_qd``. To animate such a body, write the velocity that reaches its
+target pose within the step. PADMM and DVI keep the pose of these bodies and only
+read their velocity.
+
+Bodies welded to a kinematic body by fixed joints of its articulation move
+rigidly with it, like the bodies of a MuJoCo tree without joints: LOX sets their
+pose and velocity from the kinematic body at the beginning and at the end of each
+step. Massless bodies on other joints stay dynamic and move with the bodies they
+are attached to. With ``config.lox.eliminate_fixed_world_islands`` enabled, LOX
+also keeps the bodies welded to the world at their pose.
 
 LOX keeps speculative contacts, whose shapes are still separated, and lets each
 close its gap within the step. It ignores

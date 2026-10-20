@@ -187,6 +187,11 @@ class LOXSolver:
         """Returns the constraint rows and the smooth body system."""
         return self._problem
 
+    @property
+    def has_welded_bodies(self) -> bool:
+        """Whether the model has bodies welded to kinematic bodies, which :meth:`carry_welded_bodies` moves."""
+        return self._problem.welded_bodies is not None
+
     ###
     # Public API
     ###
@@ -355,6 +360,14 @@ class LOXSolver:
         )
         if self._seed_topology is not None and flags & reseed_flags:
             self._estimate_joint_penalty_scale(float(self._config.joint_penalty_seed_time_step), warn_failures=False)
+
+    def carry_welded_bodies(self) -> None:
+        """Move the bodies welded to kinematic bodies rigidly with them, in the Kamino body state.
+
+        Like a fixed joint in a MuJoCo tree, each such body takes the pose of its kinematic anchor composed
+        with their fixed relative pose, and the anchor's twist carried to its center of mass.
+        """
+        self._problem.carry_welded_bodies()
 
     def validate_model_changed(self, flags: ModelFlags | int) -> None:
         """Validate the joint friction and effort limits of the Newton model when its joint DOF values change."""

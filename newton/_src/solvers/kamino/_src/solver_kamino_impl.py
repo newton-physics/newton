@@ -365,6 +365,9 @@ class SolverKaminoImpl(SolverBase):
         else:
             self._forward_dynamics = self._solve_dual_forward_dynamics
 
+        # LOX moves the bodies welded to kinematic bodies with them, when the model has any
+        self._carry_welded_bodies = self._config.dynamics_solver == "lox" and self._solver_fd.has_welded_bodies
+
         # Initialize all internal solver data
         with wp.ScopedDevice(self._model.device):
             self._reset()
@@ -792,6 +795,8 @@ class SolverKaminoImpl(SolverBase):
 
         # Copy the new input state and control to the internal solver data
         self._read_step_inputs(state_in=state_in, control_in=control)
+        if self._carry_welded_bodies:
+            self._solver_fd.carry_welded_bodies()
 
         # Execute state integration:
         #  - Optionally calls limit and contact detection to generate unilateral constraints
@@ -808,6 +813,8 @@ class SolverKaminoImpl(SolverBase):
             contacts=contacts,
             detector=detector,
         )
+        if self._carry_welded_bodies:
+            self._solver_fd.carry_welded_bodies()
 
         # Update the internal joint states from the
         # updated body states after time-integration

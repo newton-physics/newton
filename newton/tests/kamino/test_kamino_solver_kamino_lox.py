@@ -1022,6 +1022,60 @@ class TestSolverKaminoLOXJoints(_LOXTestCase):
                 np.testing.assert_allclose(body_q[1, :2], body_q[0, :2], rtol=0.0, atol=1.0e-5)
                 self.assertAlmostEqual(float(body_q[1, 2] - body_q[0, 2]), 0.1, places=5)
 
+    def test_bodies_welded_to_moving_kinematic_body_follow_it(self):
+        """Carry a massive and a massless welded body rigidly with a translating and rotating kinematic body."""
+        inertia = wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+        rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, -1.0)), 0.7)
+        for eliminate in (True, False):
+            with self.subTest(eliminate_fixed_world_islands=eliminate):
+                builder = newton.ModelBuilder()
+                SolverKamino.register_custom_attributes(builder)
+                base = builder.add_link(mass=1.0, inertia=inertia, lock_inertia=True, is_kinematic=True)
+                child = builder.add_link(mass=1.0, inertia=inertia, com=(0.1, 0.0, 0.2), lock_inertia=True)
+                grandchild = builder.add_link()
+                root = builder.add_joint_free(parent=-1, child=base)
+                child_weld = builder.add_joint_fixed(
+                    parent=base, child=child, parent_xform=wp.transform((0.5, 0.0, 0.0), rotation)
+                )
+                grandchild_weld = builder.add_joint_fixed(
+                    parent=child,
+                    child=grandchild,
+                    parent_xform=wp.transform((0.0, 0.3, 0.0), wp.quat_identity()),
+                    child_xform=wp.transform((0.0, 0.0, 0.1), rotation),
+                )
+                builder.add_articulation([root, child_weld, grandchild_weld])
+                builder.body_qd[base] = wp.spatial_vectorf(0.3, 0.0, 0.0, 0.0, 0.0, 1.0)
+                model = builder.finalize(device=self.default_device)
+                config = self.make_config()
+                config.use_collision_detector = False
+                config.lox.eliminate_fixed_world_islands = eliminate
+                solver = SolverKamino(model, config=config)
+                state_previous, state_next = model.state(), model.state()
+
+                for _ in range(50):
+                    solver.step(state_previous, state_next, model.control(), contacts=None, dt=0.01)
+                    state_previous, state_next = state_next, state_previous
+
+                np.testing.assert_array_equal(solver.status.numpy()["failed"], [0])
+                body_q = state_previous.body_q.numpy()
+                body_qd = state_previous.body_qd.numpy()
+                body_com = model.body_com.numpy()
+                joint_x_p = model.joint_X_p.numpy()
+                joint_x_c = model.joint_X_c.numpy()
+                expected_pose = wp.transform(*body_q[base])
+                for joint, body in ((child_weld, child), (grandchild_weld, grandchild)):
+                    expected_pose = wp.transform_multiply(
+                        expected_pose,
+                        wp.transform_multiply(
+                            wp.transform(*joint_x_p[joint]), wp.transform_inverse(wp.transform(*joint_x_c[joint]))
+                        ),
+                    )
+                    np.testing.assert_allclose(body_q[body], np.array(expected_pose), rtol=0.0, atol=1.0e-5)
+                    lever = np.array(wp.transform_point(expected_pose, wp.vec3(*body_com[body]))) - body_q[base, :3]
+                    transported = body_qd[base, :3] + np.cross(body_qd[base, 3:], lever)
+                    np.testing.assert_allclose(body_qd[body, :3], transported, rtol=0.0, atol=1.0e-5)
+                    np.testing.assert_allclose(body_qd[body, 3:], body_qd[base, 3:], rtol=0.0, atol=1.0e-6)
+
     def test_prescribed_contact_does_not_reject_dynamic_world(self):
         """Ignore contacts whose two incident bodies are prescribed."""
         model, _driven = _build_driven_link_with_grounded_fixed_base(device=self.default_device)
