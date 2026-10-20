@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import warp as wp
 
-from ......sim import ModelFlags
+from ......sim import BodyFlags, JointType, Model, ModelFlags
 from ....config import LOXSolverConfig
 from ...core.joints import JointCorrectionMode
 from ...core.state import StateKamino
@@ -219,6 +219,16 @@ class LOXSolver:
         """
         if model.size.sum_of_num_bodies == 0:
             raise ValueError("LOX requires at least one rigid body.")
+        source_model = model._model
+        if source_model is not None:
+            singular_bodies = LOXSolver._find_unsupported_singular_inertia_bodies(source_model)
+            if singular_bodies:
+                raise ValueError(
+                    "LOX cannot simulate bodies with singular inertial properties on joint DOFs without armature:\n"
+                    + "\n".join(f"  - {desc}" for desc in singular_bodies)
+                    + "\nWeld these bodies with fixed joints, give these joint DOFs armature,"
+                    " or give the bodies a non-zero mass and inertia."
+                )
         self._config = config
         self._constraints = constraints
         self._model = model
@@ -251,6 +261,78 @@ class LOXSolver:
         self._seed_topology = (
             build_seed_topology(self._problem.system, structural_rows) if structural_rows.count > 0 else None
         )
+
+    @staticmethod
+    def _find_unsupported_singular_inertia_bodies(model: Model) -> list[str]:
+        """Finds bodies whose singular inertial properties leave a joint DOF of the LOX system without inertia.
+
+        LOX simulates bodies with singular inverse mass or inertia, such as helper links welded to
+        movable bodies, as long as their joints transmit the motion that they cannot resist. It
+        prescribes kinematic bodies and the bodies welded to them or to the world. Any other such
+        body is unsupported when one of its joints has a free DOF without armature: no inertia then
+        acts on that DOF, and the smooth system of LOX is singular.
+
+        Args:
+            model: The Newton model to validate.
+
+        Returns:
+            A human-readable description of each offending body, empty if the model is supported.
+        """
+        if model.body_count == 0 or model.joint_count == 0:
+            return []
+
+        inv_mass = model.body_inv_mass.numpy()
+        inv_inertia = model.body_inv_inertia.numpy()
+        singular_inertia = np.linalg.matrix_rank(inv_inertia) < 3
+        singular = [b for b in range(model.body_count) if inv_mass[b] == 0.0 or singular_inertia[b]]
+        if not singular:
+            return []
+
+        joint_type = model.joint_type.numpy()
+        joint_parent = model.joint_parent.numpy()
+        joint_child = model.joint_child.numpy()
+        joint_qd_start = model.joint_qd_start.numpy()
+        joint_armature = model.joint_armature.numpy()
+
+        # `-1` denotes the world. Kinematic bodies and the bodies welded to them or to the world are prescribed.
+        welded_neighbors: dict[int, list[int]] = {}
+        unarmed_joints: dict[int, list[int]] = {}
+        for j in range(model.joint_count):
+            joint = int(joint_type[j])
+            parent, child = int(joint_parent[j]), int(joint_child[j])
+            if joint == JointType.FIXED:
+                welded_neighbors.setdefault(parent, []).append(child)
+                welded_neighbors.setdefault(child, []).append(parent)
+            elif not (joint == JointType.FREE and parent == -1):
+                if np.any(joint_armature[joint_qd_start[j] : joint_qd_start[j + 1]] <= 0.0):
+                    for endpoint in (parent, child):
+                        if endpoint >= 0:
+                            unarmed_joints.setdefault(endpoint, []).append(j)
+
+        body_flags = model.body_flags.numpy()
+        prescribed = {-1, *np.flatnonzero(body_flags & int(BodyFlags.KINEMATIC)).tolist()}
+        stack = list(prescribed)
+        while stack:
+            for neighbor in welded_neighbors.get(stack.pop(), ()):
+                if neighbor not in prescribed:
+                    prescribed.add(neighbor)
+                    stack.append(neighbor)
+
+        descriptions = []
+        for b in singular:
+            if b in prescribed or b not in unarmed_joints:
+                continue
+            reasons = []
+            if inv_mass[b] == 0.0:
+                reasons.append("zero inverse mass")
+            if singular_inertia[b]:
+                reasons.append("singular inverse inertia")
+            label = model.body_label[b] if model.body_label else f"body {b}"
+            joints = ", ".join(
+                f"'{model.joint_label[j]}'" if model.joint_label else f"joint {j}" for j in unarmed_joints[b]
+            )
+            descriptions.append(f"'{label}' (index {b}): {' and '.join(reasons)}, on {joints}")
+        return descriptions
 
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
         """Seed the joint penalty again when the masses, the armature or the joint gains change.
