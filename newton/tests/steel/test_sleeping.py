@@ -57,13 +57,18 @@ def test_disabled_allocates_no_state(test, device):
     """Keep sleep state absent on the default solver path."""
     _model, _pipeline, solver, _states, _control = _scene(device, enabled=False)
     test.assertIsNone(solver._sleeping)
+    test.assertIsNone(solver.body_awake)
 
 
 def test_separated_boxes_sleep_and_force_wakes_one(test, device):
-    """Sleep independent boxes and wake only the forced island."""
+    """Sleep independent boxes, wake only the forced island, and publish both through ``body_awake``."""
     _model, pipeline, solver, states, control = _scene(device)
+    body_awake = solver.body_awake
+    test.assertEqual((body_awake.dtype, body_awake.shape), (wp.int32, (2,)))
+    with test.assertRaises(AttributeError):
+        solver.body_awake = body_awake
     _advance_boxes(pipeline, solver, states, control, 120)
-    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(body_awake.numpy(), [0, 0])
     test.assertNotEqual(*solver._sleeping.body_island.numpy())
     before = states[0].body_q.numpy().copy()
     _advance_boxes(pipeline, solver, states, control, 10)
@@ -72,7 +77,7 @@ def test_separated_boxes_sleep_and_force_wakes_one(test, device):
     force[0, 0] = 100.0
     states[0].body_f.assign(force)
     _advance_boxes(pipeline, solver, states, control, 1, clear=False)
-    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [1, 0])
+    np.testing.assert_array_equal(body_awake.numpy(), [1, 0])
     test.assertGreater(states[0].body_qd.numpy()[0, 0], 0.0)
 
 
@@ -174,13 +179,13 @@ def test_cuda_graph_sleep_and_wake(test, device):
             states.reverse()
     for _ in range(100):
         wp.capture_launch(capture.graph)
-    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(solver.body_awake.numpy(), [0, 0])
     forces = np.zeros((2, 6), dtype=np.float32)
     forces[0, 0] = 100.0
     states[0].body_f.assign(forces)
     states[1].body_f.assign(forces)
     wp.capture_launch(capture.graph)
-    np.testing.assert_array_equal(solver._sleeping.body_awake.numpy(), [1, 0])
+    np.testing.assert_array_equal(solver.body_awake.numpy(), [1, 0])
 
 
 def _parent_wrench_scene(device):

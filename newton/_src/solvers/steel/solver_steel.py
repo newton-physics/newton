@@ -2542,6 +2542,16 @@ class SolverSteel(SolverBase):
         return self._velocity_limits_fused
 
     @property
+    def body_awake(self) -> wp.array[wp.int32] | None:
+        """Per-body flags of ``enable_sleeping``, ``1`` awake and ``0`` asleep, shape [body_count]; ``None`` without it.
+
+        The solver writes this device array in place as islands sleep and wake, also during CUDA
+        graph replay, so the same array stays valid for the solver's lifetime; treat it as
+        read-only. Bodies of articulations with no responding degrees of freedom always read ``1``.
+        """
+        return None if self._sleeping is None else self._sleeping.body_awake
+
+    @property
     def _contact_torsion_shape_radius(self) -> wp.array | None:
         """The model's per-shape torsion radius [m], or ``None`` when it is not registered."""
         return self._namespaced_attribute("min_torsional_patch_radius")
