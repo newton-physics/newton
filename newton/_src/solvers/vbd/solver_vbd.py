@@ -961,6 +961,7 @@ class SolverVBD(TendonStateMixin, SolverBase, CouplingInterface):
                 accumulate_body_body_contacts_per_body.module,
                 compute_rigid_contact_forces.module,
                 update_duals_body_body_contacts.module,
+                update_duals_joint.module,
             )
             for module in rigid_modules:
                 self._set_module_options(options, module=module)
