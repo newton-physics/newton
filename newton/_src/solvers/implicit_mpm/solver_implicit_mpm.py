@@ -65,7 +65,6 @@ from .implicit_mpm_solver_kernels import (
     gimp_domain_corners,
     gimp_half_size,
     gimp_store_point_stress,
-    init_particle_strains,
     integrate_active_fraction,
     integrate_collider_fraction,
     integrate_collider_fraction_apic,
@@ -96,7 +95,7 @@ from .implicit_mpm_solver_kernels import (
     mat66,
     node_color,
     record_volume_rebuild_status,
-    reset_binned_particle_values,
+    reset_particle_values,
     reset_mpm_collider_history,
     reset_mpm_grid_warmstart,
     reset_mpm_particle_history,
@@ -3972,23 +3971,22 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     particle_Jp_prev = state_in.mpm.particle_Jp
 
                 # In place, the copy for skipped particles is a no-op, so no clone is needed for stress
-                wp.launch(
-                    init_particle_strains,
-                    dim=model.particle_count,
-                    inputs=[
-                        scratch.particle_cells,
-                        mpm_model.material_particle_flags,
-                        mpm_model.particle_density,
-                        elastic_strain_prev,
-                        particle_Jp_prev,
-                        state_in.mpm.particle_stress,
-                    ],
-                    outputs=[
-                        state_out.mpm.particle_elastic_strain,
-                        state_out.mpm.particle_Jp,
-                        state_out.mpm.particle_stress,
-                    ],
-                )
+                for previous, values in (
+                    (particle_Jp_prev, state_out.mpm.particle_Jp),
+                    (state_in.mpm.particle_stress, state_out.mpm.particle_stress),
+                    (elastic_strain_prev, state_out.mpm.particle_elastic_strain),
+                ):
+                    wp.launch(
+                        reset_particle_values,
+                        dim=model.particle_count,
+                        inputs=[
+                            scratch.particle_cells,
+                            mpm_model.material_particle_flags,
+                            mpm_model.particle_density,
+                            previous,
+                            values,
+                        ],
+                    )
 
                 fem.interpolate(
                     update_particle_strains,
@@ -4021,9 +4019,15 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 (state_in.mpm.particle_qd_grad, state_out.mpm.particle_qd_grad),
             ):
                 wp.launch(
-                    reset_binned_particle_values,
+                    reset_particle_values,
                     dim=model.particle_count,
-                    inputs=[scratch.particle_cells, previous, values],
+                    inputs=[
+                        scratch.particle_cells,
+                        mpm_model.material_particle_flags,
+                        mpm_model.particle_density,
+                        previous,
+                        values,
+                    ],
                 )
             state_out.particle_q.assign(state_in.particle_q)
 

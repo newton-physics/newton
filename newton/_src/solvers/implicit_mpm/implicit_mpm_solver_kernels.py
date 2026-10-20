@@ -418,36 +418,6 @@ def particle_is_binned(i: int, particle_cells: wp.array2d[int]):
     return False
 
 
-@wp.kernel
-def init_particle_strains(
-    particle_cells: wp.array2d[int],
-    particle_flags: wp.array[wp.int32],
-    particle_density: wp.array[float],
-    elastic_strain_prev: wp.array[wp.mat33],
-    particle_Jp_prev: wp.array[float],
-    particle_stress_prev: wp.array[wp.mat33],
-    elastic_strain: wp.array[wp.mat33],
-    particle_Jp: wp.array[float],
-    particle_stress: wp.array[wp.mat33],
-):
-    """Zero the strains ``update_particle_strains`` accumulates into, and carry over the others.
-
-    Particles it skips (inactive or massless) and particles without a cell, e.g. outside
-    the active cells of a rebuildable sparse grid or outside a fixed grid, have no
-    quadrature point to accumulate from, so they are copied here.
-    """
-    i = wp.tid()
-
-    if particle_receives_strain_update(i, particle_flags, particle_density) and particle_is_binned(i, particle_cells):
-        elastic_strain[i] = wp.mat33(0.0)
-        particle_Jp[i] = 0.0
-        particle_stress[i] = wp.mat33(0.0)
-    else:
-        elastic_strain[i] = elastic_strain_prev[i]
-        particle_Jp[i] = particle_Jp_prev[i]
-        particle_stress[i] = particle_stress_prev[i]
-
-
 @fem.integrand
 def update_particle_strains(
     s: fem.Sample,
@@ -467,7 +437,7 @@ def update_particle_strains(
     particle_Jp: wp.array[float],
     particle_stress: wp.array[wp.mat33],
 ):
-    # Skipped particles keep the values copied by `init_particle_strains`
+    # Skipped particles keep the values copied by `reset_particle_values`
     if not particle_receives_strain_update(s.qp_index, particle_flags, particle_density):
         return
 
@@ -1593,22 +1563,29 @@ def gather_point_dof_values(
 
 
 @wp.kernel
-def reset_binned_particle_values(
+def reset_particle_values(
     particle_cells: wp.array2d[int],
+    particle_flags: wp.array[wp.int32],
+    particle_density: wp.array[float],
     previous_values: wp.array[Any],
     values: wp.array[Any],
 ):
-    """Zero binned particles before accumulating their update; unbinned particles keep their values."""
+    """Zero the particle values that quadrature points accumulate into, and carry over the others.
+
+    Particles that are inactive, massless or without a cell (e.g. outside the active cells
+    of a rebuildable sparse grid or outside a fixed grid) have no quadrature point to
+    accumulate from, so they keep their previous values.
+    """
     p = wp.tid()
-    if particle_is_binned(p, particle_cells):
+    if particle_receives_strain_update(p, particle_flags, particle_density) and particle_is_binned(p, particle_cells):
         values[p] = values.dtype(0.0)
     else:
         values[p] = previous_values[p]
 
 
-wp.overload(reset_binned_particle_values, {"previous_values": wp.array[float], "values": wp.array[float]})
-wp.overload(reset_binned_particle_values, {"previous_values": wp.array[wp.vec3], "values": wp.array[wp.vec3]})
-wp.overload(reset_binned_particle_values, {"previous_values": wp.array[wp.mat33], "values": wp.array[wp.mat33]})
+wp.overload(reset_particle_values, {"previous_values": wp.array[float], "values": wp.array[float]})
+wp.overload(reset_particle_values, {"previous_values": wp.array[wp.vec3], "values": wp.array[wp.vec3]})
+wp.overload(reset_particle_values, {"previous_values": wp.array[wp.mat33], "values": wp.array[wp.mat33]})
 
 
 wp.overload(scatter_point_dof_values, {"dof_values": wp.array[wp.vec3], "particle_values": wp.array[wp.vec3]})
