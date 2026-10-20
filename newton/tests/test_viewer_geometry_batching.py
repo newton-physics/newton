@@ -140,7 +140,21 @@ class TestViewerGeometryBatching(unittest.TestCase):
         body_indices = wp.array((0, 0, 0), dtype=int, device="cpu")
         instances = ViewerBase.BodyInstances(source, bodies, body_indices)
         viewer = ViewerNull()
-        viewer.set_model(model, body_instances=(instances,))
+        with patch.object(wp, "copy", wraps=wp.copy) as uploads:
+            viewer.set_model(model, body_instances=(instances,))
+        # Packed storage receives host data directly, not temporary owned Warp buffers.
+        for call in uploads.call_args_list:
+            dest, src = call.args[:2]
+            for packed in (
+                viewer._shape_xforms,
+                viewer._shape_parents,
+                viewer._shape_worlds,
+                viewer._shape_scales,
+                viewer.model_shape_color,
+                viewer.model_shape_opacity,
+            ):
+                if dest.device == packed.device and packed.ptr <= dest.ptr < packed.ptr + packed.capacity:
+                    self.assertIsNone(src.deleter, "Instance uploads must not stage a second owned buffer.")
         viewer.set_world_offsets((0.0, 0.0, 0.0))
         viewer.log_state(model.state())
         self.assertEqual(len(viewer._shape_scales), 5)  # Three active instances, plus two global shapes.

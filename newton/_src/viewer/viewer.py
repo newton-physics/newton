@@ -2881,29 +2881,31 @@ class ViewerBase(ABC):
         offsets = np.cumsum(np.array([0, *[len(b.scales) for b in batches]], dtype=np.int32)).tolist()
         total_instances = int(offsets[-1])
 
-        # Allocate single contiguous color buffer and copy initial per-batch colors
-        self.model_shape_color = wp.zeros(total_instances, dtype=wp.vec3, device=self.device)
-        self.model_shape_opacity = wp.zeros(total_instances, dtype=wp.float32, device=self.device)
+        # Upload directly into shared storage; batches borrow its slices.
+        self.model_shape_color = wp.empty(total_instances, dtype=wp.vec3, device=self.device)
+        self.model_shape_opacity = wp.empty(total_instances, dtype=wp.float32, device=self.device)
         self._shape_xforms = wp.empty(total_instances, dtype=wp.transform, device=self.device)
         self._shape_parents = wp.empty(total_instances, dtype=int, device=self.device)
         self._shape_worlds = wp.empty(total_instances, dtype=int, device=self.device)
         self._shape_scales = wp.empty(total_instances, dtype=wp.vec3, device=self.device)
 
-        for b_idx, batch in enumerate(batches):
-            color_array = self.model_shape_color[offsets[b_idx] : offsets[b_idx + 1]]
-            opacity_array = self.model_shape_opacity[offsets[b_idx] : offsets[b_idx + 1]]
-            color_array.assign(wp.array(batch.colors, dtype=wp.vec3, device=self.device))
-            opacity_array.assign(wp.array(batch.opacities, dtype=wp.float32, device=self.device))
-            batch.finalize(shape_colors=color_array, shape_opacities=opacity_array)
-            span = slice(offsets[b_idx], offsets[b_idx + 1])
+        for batch, start, end in zip(batches, offsets[:-1], offsets[1:], strict=True):
+            span = slice(start, end)
+            self.model_shape_color[span].assign(batch.colors)
+            self.model_shape_opacity[span].assign(batch.opacities)
             self._shape_xforms[span].assign(batch.xforms)
             self._shape_parents[span].assign(batch.parents)
             self._shape_worlds[span].assign(batch.worlds)
             self._shape_scales[span].assign(batch.scales)
+            batch.colors = self.model_shape_color[span]
+            batch.opacities = self.model_shape_opacity[span]
             batch.xforms = self._shape_xforms[span]
             batch.parents = self._shape_parents[span]
             batch.worlds = self._shape_worlds[span]
             batch.scales = self._shape_scales[span]
+            batch.materials = wp.array(batch.materials, dtype=wp.vec4, device=self.device)
+            batch.geometry_scales = wp.array(batch.geometry_scales, dtype=wp.vec3, device=self.device)
+            batch.world_xforms = wp.zeros_like(batch.xforms)
 
         slot_to_shape = (
             np.concatenate([batch.model_shapes for batch in batches]) if batches else np.empty(0, dtype=np.int32)

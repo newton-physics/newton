@@ -772,10 +772,9 @@ class ViewerGL(ViewerBase):
             return False
 
         opacities = np.clip(self.model.shape_opacity.numpy(), 0.0, 1.0)
-        current_mask = np.zeros_like(self._shape_transparent_mask, dtype=bool)
         rendered_shapes = self._slot_to_shape[self._slot_to_shape >= 0]
-        current_mask[rendered_shapes] = opacities[rendered_shapes] < OPAQUE_OPACITY_THRESHOLD
-        return bool(np.any(current_mask != self._shape_transparent_mask))
+        current_mask = opacities[rendered_shapes] < OPAQUE_OPACITY_THRESHOLD
+        return bool(np.any(current_mask != self._shape_transparent_mask[rendered_shapes]))
 
     @override
     def set_visible_worlds(self, worlds: Sequence[int] | None) -> None:

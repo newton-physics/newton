@@ -247,9 +247,11 @@ class TestViewerGLGetFrame(unittest.TestCase):
         builder = newton.ModelBuilder()
         bodies = []
         for x in (-0.6, 0.0, 0.6):
+            builder.begin_world()
             body = builder.add_body(xform=wp.transform((x, 0.0, 0.0), wp.quat_identity()))
             builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
             bodies.append(body)
+            builder.end_world()
         model = builder.finalize(device=viewer.device)
         catalog = newton.ModelBuilder()
         box_body = catalog.add_body()
@@ -259,6 +261,7 @@ class TestViewerGLGetFrame(unittest.TestCase):
         sources = catalog.finalize(device=viewer.device)
         indices = wp.array([box_body, box_body, capsule_body], dtype=wp.int32, device=viewer.device)
         viewer.set_model(model, body_instances=[ViewerGL.BodyInstances(sources, bodies, indices)])
+        viewer.set_world_offsets((0.0, 0.0, 0.0))
         viewer.set_camera(pos=wp.vec3(2.0, -3.0, 2.0), pitch=-25.0, yaw=120.0)
         state = model.state()
 
@@ -316,6 +319,33 @@ class TestViewerGLGetFrame(unittest.TestCase):
         self.assertFalse(opaque_names & {batch.name for batch in viewer._shape_instances.values()})
         self.assertTrue(all(name not in viewer.objects for name in opaque_names))
         self.assertEqual(sum(len(batch.xforms) for batch in viewer._shape_instances.values()), len(bodies))
+
+        # Hidden transparent shapes must not look like render-pass changes.
+        viewer.set_visible_worlds([0, 1])
+        visible_batches = viewer._shape_instances
+        for frame in (2.0, 3.0):
+            viewer.begin_frame(frame)
+            viewer.log_state(state)
+            viewer.end_frame()
+            self.assertIs(viewer._shape_instances, visible_batches)
+        self.assertEqual(sum(len(batch.xforms) for batch in visible_batches.values()), 2)
+
+        for frame, opacity, passes in ((4.0, 1.0, [False, True]), (5.0, 0.25, [True])):
+            model.shape_opacity[0:1].fill_(opacity)
+            viewer.begin_frame(frame)
+            viewer.log_state(state)
+            viewer.end_frame()
+            self.assertEqual(sorted(batch.transparent for batch in viewer._shape_instances.values()), passes)
+            np.testing.assert_allclose(
+                viewer.model_shape_opacity.numpy(), model.shape_opacity.numpy()[viewer._slot_to_shape]
+            )
+            self.assertFalse(viewer._shape_opacity_groups_changed())
+        viewer.set_visible_worlds([])
+        viewer.begin_frame(6.0)
+        viewer.log_state(state)
+        viewer.end_frame()
+        self.assertFalse(viewer._shape_instances)
+        self.assertFalse(viewer._shape_opacity_groups_changed())
 
     def test_large_quad_is_stable_under_parallel_camera_translation(self):
         """Keep a large uniform quad stable while translating the camera parallel to it."""
