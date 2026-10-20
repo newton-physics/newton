@@ -542,7 +542,7 @@ def test_shared_anchors_warn_with_patch_friction(test, device):
     """Explain that patch anchors keep their friction points when shared anchors are requested."""
     model = _free_body_model(device)
     for flag in ("contact_shared_anchor", "contact_friction_shared_anchor"):
-        with test.subTest(flag=flag), test.assertWarnsRegex(UserWarning, "friction_anchor_beta=0"):
+        with test.subTest(flag=flag), test.assertWarnsRegex(newton.exceptions.NewtonWarning, "friction_anchor_beta=0"):
             SolverSteel(model, **{flag: True})
         solver = SolverSteel(model, friction_anchor_beta=0.0, **{flag: True})
         test.assertTrue(getattr(solver, flag))
@@ -3713,6 +3713,9 @@ class TestSteelPairedResponse(unittest.TestCase):
                 solver = SolverSteel(model, articulation_constraint_max=96, free_body_constraint_max=32)
                 self.assertEqual(solver._paired_response_primary_size, expected)
         model = _build_mixed_response_model("cuda:0", dof_count=23)
+        self.assertTrue(
+            SolverSteel(model, articulation_constraint_max=96, free_body_constraint_max=32)._paired_factor_coordinates
+        )
         # The tiled response is chunked only when the row capacity exceeds one chunk.
         self.assertIsNone(SolverSteel(model, articulation_constraint_max=16)._paired_response_primary_size)
         for options in ({"enable_bilateral_preelimination": True},):
@@ -3724,6 +3727,7 @@ class TestSteelPairedResponse(unittest.TestCase):
             {"contact_regularization": 0.01},
             {"row_schedule": "phased"},
             {"drive_mode": "rows"},
+            {"enable_joint_friction": True},
         ):
             with self.subTest(**options):
                 solver = SolverSteel(model, articulation_constraint_max=96, free_body_constraint_max=32, **options)

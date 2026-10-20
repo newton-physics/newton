@@ -84,6 +84,7 @@ class TestModelAttributeSpecs(unittest.TestCase):
                 )
 
     def test_core_attribute_specs_cover_entity_indexed_storage(self):
+        """Require metadata for entity-indexed storage, excluding lazy implementation details."""
         model = newton.Model(device="cpu")
 
         prefixes = tuple(
@@ -116,7 +117,11 @@ class TestModelAttributeSpecs(unittest.TestCase):
             if name.startswith(prefixes + private_prefixes) and is_indexed_container:
                 indexed_attributes.add(name)
 
-        missing = sorted(indexed_attributes.difference(model.attribute_specs))
+        excluded_attributes = {
+            "_shape_contact_pairs",  # Covered by the public shape_contact_pairs specification.
+            "_shape_contact_pair_counts",  # Summary cache, not entity-indexed storage.
+        }
+        missing = sorted(indexed_attributes.difference(model.attribute_specs, excluded_attributes))
         self.assertEqual(
             missing,
             [],
@@ -220,6 +225,12 @@ class TestModelBuilderBvhConstructor(unittest.TestCase):
 
 
 class TestModelMesh(unittest.TestCase):
+    def setUp(self):
+        """Keep backend stubs isolated from persistent mesh caches."""
+        cache_setting = mock.patch.object(newton.config, "cache_dir_meshes", None)
+        cache_setting.start()
+        self.addCleanup(cache_setting.stop)
+
     class _FakeDecompositionMesh:
         """Store mesh data passed to a fake decomposition backend."""
 
@@ -2403,11 +2414,11 @@ class TestModelJoints(unittest.TestCase):
         assert_np_equal(state.body_q.numpy()[child], np.array(child_body_xform), tol=1.0e-5)
 
     def test_joint_target_q_qd_shape_with_free_and_ball_joints(self):
-        """``joint_target_q`` follows ``joint_q`` (coord) under
-        ``use_coord_layout_targets``; ``joint_target_qd`` always follows
-        ``joint_qd`` (DOF). Free and ball joints are where the two layouts
-        diverge. Multi-articulation builder also exercises the per-env start
-        arrays."""
+        """Match position targets to coordinates and velocity targets to DOFs.
+
+        Free and ball joints distinguish the coordinate and DOF counts;
+        multiple articulations also exercise the per-articulation start arrays.
+        """
         builder = ModelBuilder()
         # env 0: free + revolute (7 coords / 6 DOFs from free)
         b0 = builder.add_link(mass=1.0)
@@ -2442,112 +2453,12 @@ class TestModelJoints(unittest.TestCase):
         # env 1 ball joint: w-component at offset 3 (3 quat-xyz)
         self.assertAlmostEqual(float(target_q[int(q_starts[2]) + 3]), 1.0)
 
-    def test_legacy_target_layout_warning_uses_finalize_call_site(self):
-        """Verify the legacy target-layout warning and its call-site attribution."""
-        previous_flag = newton.use_coord_layout_targets
-        newton.use_coord_layout_targets = False
-        try:
-            unaffected_builder = ModelBuilder()
-            child = unaffected_builder.add_link(mass=1.0)
-            joint = unaffected_builder.add_joint_revolute(parent=-1, child=child, axis=newton.Axis.Z)
-            unaffected_builder.add_articulation([joint])
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always", DeprecationWarning)
-                unaffected_builder.finalize()
-            layout_warnings = [
-                warning
-                for warning in caught
-                if issubclass(warning.category, DeprecationWarning)
-                and "legacy DOF-shaped joint_target_q layout" in str(warning.message)
-            ]
-            self.assertEqual(layout_warnings, [])
-
-            affected_builder = ModelBuilder()
-            child = affected_builder.add_link(mass=1.0)
-            joint = affected_builder.add_joint_free(child=child)
-            affected_builder.add_articulation([joint])
-            with warnings.catch_warnings(record=True) as caught:
-                warnings.simplefilter("always", DeprecationWarning)
-                warning_line = inspect.currentframe().f_lineno + 1
-                affected_builder.finalize()
-
-            layout_warnings = [
-                warning
-                for warning in caught
-                if issubclass(warning.category, DeprecationWarning)
-                and "legacy DOF-shaped joint_target_q layout" in str(warning.message)
-            ]
-            self.assertEqual(len(layout_warnings), 1)
-            self.assertEqual(layout_warnings[0].filename, __file__)
-            self.assertEqual(layout_warnings[0].lineno, warning_line)
-        finally:
-            newton.use_coord_layout_targets = previous_flag
-
-    def test_legacy_target_layout_shapes_and_values(self):
-        """Verify legacy DOF target layout behavior."""
-        lin_targets = (1.5, -2.5, 3.5)
-        ang_targets = (0.1, 0.2, -0.3)
-
-        def _axes(targets):
-            return [
-                ModelBuilder.JointDofConfig(axis=axis, target_pos=target)
-                for axis, target in zip((newton.Axis.X, newton.Axis.Y, newton.Axis.Z), targets, strict=True)
-            ]
-
-        previous_flag = newton.use_coord_layout_targets
-        newton.use_coord_layout_targets = False
-        try:
-            builder = ModelBuilder()
-            b_free = builder.add_link(mass=1.0)
-            j_free = builder.add_joint(
-                newton.JointType.FREE,
-                parent=-1,
-                child=b_free,
-                linear_axes=_axes(lin_targets),
-                angular_axes=_axes(ang_targets),
-            )
-            b_ball = builder.add_link(mass=1.0)
-            j_ball = builder.add_joint(
-                newton.JointType.BALL,
-                parent=b_free,
-                child=b_ball,
-                angular_axes=_axes(ang_targets),
-            )
-            b_rev = builder.add_link(mass=1.0)
-            j_rev = builder.add_joint_revolute(parent=b_ball, child=b_rev, axis=newton.Axis.Z, target_pos=0.7)
-            builder.add_articulation([j_free, j_ball, j_rev])
-            with self.assertWarnsRegex(DeprecationWarning, "legacy DOF-shaped joint_target_q layout"):
-                model = builder.finalize()
-        finally:
-            newton.use_coord_layout_targets = previous_flag
-
-        self.assertEqual(model.joint_coord_count, 7 + 4 + 1)
-        self.assertEqual(model.joint_dof_count, 6 + 3 + 1)
-        self.assertEqual(model.joint_target_q.shape[0], model.joint_dof_count)
-        self.assertEqual(model.joint_target_qd.shape[0], model.joint_dof_count)
-
-        control = model.control()
-        self.assertEqual(control.joint_target_q.shape[0], model.joint_dof_count)
-        self.assertEqual(control.joint_target_qd.shape[0], model.joint_dof_count)
-
-        np.testing.assert_array_equal(model.joint_target_q_start.numpy(), model.joint_qd_start.numpy())
-
-        # The quat-w padding slot is dropped: angular targets stay raw per-axis angles.
-        target_q = model.joint_target_q.numpy()
-        qd_starts = model.joint_qd_start.numpy()
-        f = int(qd_starts[j_free])
-        np.testing.assert_allclose(target_q[f : f + 3], lin_targets, rtol=0, atol=1e-6)
-        np.testing.assert_allclose(target_q[f + 3 : f + 6], ang_targets, rtol=0, atol=1e-6)
-        b = int(qd_starts[j_ball])
-        np.testing.assert_allclose(target_q[b : b + 3], ang_targets, rtol=0, atol=1e-6)
-        self.assertAlmostEqual(float(target_q[int(qd_starts[j_rev])]), 0.7, places=6)
-
     def test_ball_free_per_axis_target_pos_preserved(self):
         """``JointDofConfig.target_pos`` on BALL/FREE angular axes must flow
         into the ``joint_target_q`` coord slice: the 3 angular scalars are
         interpreted as extrinsic ZYX Euler angles and converted to a unit
-        quaternion via :meth:`ModelBuilder._quat_from_euler_zyx`, matching
-        kamino's DOF→coord conversion. FREE linear targets fill the position
+        quaternion via :meth:`ModelBuilder._quat_from_axis_targets`.
+        FREE linear targets fill the position
         slice verbatim."""
         ang_targets = (0.1, 0.2, -0.3)
 

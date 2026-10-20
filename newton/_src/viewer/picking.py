@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 
 import numpy as np
@@ -12,6 +13,8 @@ import newton
 
 from ..geometry import raycast
 from .kernels import PickingState, apply_picking_force_kernel, compute_pick_state_kernel, update_pick_target_kernel
+
+logger = logging.getLogger(__name__)
 
 
 class Picking:
@@ -318,6 +321,5 @@ class Picking:
 
         if self._debug:
             if dist < 1.0e10:
-                print("#" * 80)
-                print(f"Hit geom {index} of body {body_index} at distance {dist}")
-                print("#" * 80)
+                banner = "#" * 80
+                logger.info("%s\nHit geom %s of body %s at distance %s\n%s", banner, index, body_index, dist, banner)

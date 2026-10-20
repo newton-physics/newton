@@ -464,6 +464,8 @@ def _make_merge_preconditioner_kernel(block_type: BlockDType):
         block_shape = (1, 1)
     elif len(block_shape) == 1:
         block_shape = (1, block_shape[0])
+    # Generic overloads with deferred statics rehash after their first build; a concrete dtype keeps the hash stable.
+    block_warp_type = block_type.warp_type
 
     @wp.kernel(module="unique", module_options={"enable_backward": False, "default_grid_stride": False})
     def merge_preconditioner_kernel(
@@ -474,7 +476,7 @@ def _make_merge_preconditioner_kernel(block_type: BlockDType):
         row_start: wp.array[wp.int32],
         preconditioner: wp.array[wp.float32],
         # Outputs:
-        nzb_values: wp.array[Any],  # wp.array[block_type.warp_type]
+        nzb_values: wp.array[block_warp_type],
     ):
         mat_id, block_idx = wp.tid()
 
@@ -487,7 +489,8 @@ def _make_merge_preconditioner_kernel(block_type: BlockDType):
 
         global_block_idx = nzb_start[mat_id] + block_idx
         block_coord = nzb_coords[global_block_idx]
-        block = nzb_values[global_block_idx]
+        # Referenced in the body so Warp can resolve the deferred annotation.
+        block = block_warp_type(nzb_values[global_block_idx])
 
         if wp.static(n_block_rows == 1):
             vec_coord = block_coord[0] + row_start[mat_id]

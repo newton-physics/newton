@@ -732,11 +732,17 @@ Multi-world support
 
 Constructing :class:`~newton.solvers.SolverMuJoCo` with
 ``separate_worlds=True`` (the default for GPU mode with multiple
-worlds) builds a MuJoCo model from the **first world** only and
-replicates it across all worlds via ``mujoco_warp``. This requires
-all Newton worlds to be structurally identical (same bodies, joints,
-and shapes); :class:`~newton.solvers.SolverMuJoCo` validates this at
-construction and raises ``ValueError`` on a mismatch.
+worlds) builds a shared MuJoCo topology across worlds via ``mujoco_warp``.
+Bodies, joints, equality constraints, mimic relationships, primitive geoms,
+and sites must have matching layouts. With ``use_mujoco_cpu=False``, mesh
+assets, scales, and convex-hull counts may differ across worlds. Collision
+flags may also differ when Newton supplies contacts. Native MuJoCo contacts
+require matching collision flags, groups, and exclusions for corresponding geom
+slots. With native contacts,
+per-world mesh scales are compiled into the MuJoCo assets, so changing their
+:attr:`~newton.Model.shape_scale` after construction raises ``ValueError``;
+recreate the solver to resize them. The solver validates
+compatibility at construction and raises ``ValueError`` on a mismatch.
 
 Bodies, joints, equality constraints, and mimic relationships cannot have
 a negative world index — assigning any of them to the global world
@@ -841,6 +847,36 @@ See MuJoCo's `solver documentation
 <https://mujoco.readthedocs.io/en/stable/XMLreference.html#option>`_ for
 what each parameter does and when to tune it.
 
+
+Imported option flags
+---------------------
+
+MJCF ``<option><flag>`` settings are stored as boolean ``ONCE`` custom
+attributes, ``model.mujoco.flag_<name>``, with ``True`` meaning enabled.
+The same attributes can be authored on a USD PhysicsScene through
+``MjcSceneAPI`` names ``mjc:flag:<name>``. Supported names are
+``constraint``, ``equality``, ``frictionloss``, ``limit``, ``contact``,
+``spring``, ``damper``, ``clampctrl``, ``warmstart``,
+``actuation``, ``refsafe``, ``sensor``, ``eulerdamp``, ``nativeccd``,
+``island``, ``multiccd``, ``energy``, and ``invdiscrete``.
+
+``enable_multiccd``, ``disable_contacts``, and ``disable_sensors`` default
+to ``None``: explicit constructor arguments take precedence over model
+custom attributes, then Newton defaults. By default, ``multiccd``,
+``energy``, and ``invdiscrete`` are disabled; the other listed features
+are enabled. ``sleep`` uses the existing ``model.mujoco.enable_sleeping``
+attribute described below and requires ``island`` to remain enabled.
+Unknown flags and the Warp-unsupported
+``override``, ``fwdinv``, ``diagexact``, ``midphase``, and ``autoreset``
+flags are warned about and ignored during MJCF import. ``filterparent``
+is also warned about and ignored because imported parent-child collision
+filters are not controlled by this flag.
+
+``gravity="disable"`` sets Newton's builder gravity to zero, affecting
+all solvers and content already added to the shared builder. Inside
+``begin_world()`` / ``end_world()``, only that world's gravity is changed;
+outside a world, the global/default gravity is changed. A later import
+with ``gravity="enable"`` does not restore the previous gravity vector.
 
 Sleeping
 --------

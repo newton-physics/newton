@@ -7,6 +7,7 @@ import warnings
 
 import warp as wp
 
+from ..exceptions import NewtonDeprecationWarning
 from ..math import quat_decompose, transform_twist, velocity_at_point
 from .enums import BodyFlags, JointType
 from .model import Model
@@ -671,6 +672,8 @@ def eval_fk(
             state.body_qd,
         ],
         device=model.device,
+        # Small blocks spread independent articulations across more SMs.
+        block_dim=16 if model.max_joints_per_articulation <= 4 else 8,
     )
 
 
@@ -1754,7 +1757,7 @@ def eval_mass_matrix(
     if not include_armature:
         warnings.warn(
             _INCLUDE_ARMATURE_DEPRECATION_MSG.format(name="eval_mass_matrix()"),
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
     return _eval_mass_matrix(
