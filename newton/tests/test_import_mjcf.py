@@ -5607,6 +5607,46 @@ class TestImportMjcfActuatorsFrames(unittest.TestCase):
 
         self.assertEqual(model.mujoco.equality_constraint_count, 2)
 
+    def test_tendon_equality_matches_native_mujoco(self):
+        """Import tendon equalities and compile them like native MuJoCo."""
+        missing = '<tendon name="missing" tendon1="t0" tendon2="unknown"/>'
+        mjcf = f"""
+<mujoco model="tendon_equality">
+    <worldbody>
+        <body name="b0"><joint name="j0" type="slide"/><geom type="sphere" size="0.1" mass="1"/></body>
+        <body name="b1"><joint name="j1" type="slide"/><geom type="sphere" size="0.1" mass="1"/></body>
+        <body name="b2"><joint name="j2" type="slide"/><geom type="sphere" size="0.1" mass="1"/></body>
+    </worldbody>
+    <equality>
+        <tendon name="couple" tendon1="t0" tendon2="t1" polycoef="0.1 2 0 0 0" solref="0.03 0.8"/>
+        <tendon name="hold" tendon1="t1" polycoef="0.2 0 0 0 0" active="false"/>
+        {missing}
+    </equality>
+    <tendon>
+        <fixed name="t0"><joint joint="j0" coef="1"/><joint joint="j1" coef="1"/></fixed>
+        <fixed name="t1"><joint joint="j2" coef="1"/></fixed>
+    </tendon>
+</mujoco>
+"""
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf)
+        model = builder.finalize()
+
+        np.testing.assert_array_equal(
+            model.mujoco.equality_constraint_type.numpy(), [int(SolverMuJoCo.EqType.TENDON)] * 2
+        )
+        np.testing.assert_array_equal(model.mujoco.equality_constraint_tendon1.numpy(), [0, 1])
+        np.testing.assert_array_equal(model.mujoco.equality_constraint_tendon2.numpy(), [1, -1])
+
+        native = SolverMuJoCo.import_mujoco()[0].MjModel.from_xml_string(mjcf.replace(missing, ""))
+        solver = SolverMuJoCo(model, use_mujoco_cpu=True, disable_contacts=True)
+        for attr in ("eq_type", "eq_obj1id", "eq_obj2id", "eq_active0", "eq_data", "eq_solref"):
+            np.testing.assert_allclose(getattr(solver.mj_model, attr), getattr(native, attr), atol=1e-6, err_msg=attr)
+
+        builder = newton.ModelBuilder()
+        builder.add_mjcf(mjcf, skip_equality_constraints=True)
+        self.assertEqual(builder.finalize().mujoco.equality_constraint_count, 0)
+
     def test_actuatorfrcrange_parsing(self):
         """Test that actuatorfrcrange is parsed from MJCF joint attributes and applied to joint effort limits."""
         mjcf_content = """<?xml version="1.0" encoding="utf-8"?>

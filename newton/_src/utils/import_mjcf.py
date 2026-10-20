@@ -58,6 +58,28 @@ logger = logging.getLogger(__name__)
 # of a cube measuring 0.1 mm on each side.
 _MIN_EXPLICIT_MASS_REFERENCE_MASS = 1.0e-12
 
+_ACTUATOR_SHORTCUT_DEFAULTS = {
+    "position": {"mujoco:actuator_biastype": 1},  # affine
+    "velocity": {"mujoco:actuator_biastype": 1},  # affine
+    "muscle": {
+        "mujoco:actuator_dyntype": 4,  # muscle
+        "mujoco:actuator_gaintype": 2,  # muscle
+        "mujoco:actuator_biastype": 2,  # muscle
+    },
+    "intvelocity": {"mujoco:actuator_biastype": 1, "mujoco:actuator_dyntype": 1},
+    "damper": {
+        "mujoco:actuator_gaintype": 1,  # affine
+        "mujoco:actuator_biastype": 0,  # none
+        "mujoco:actuator_ctrllimited": 1,  # true
+    },
+}
+
+
+def _parse_actuator_parameters(value: str) -> vec10:
+    # Actuator parameters use zero-padding, unlike parse_vec's shorthand rules.
+    values = [float(component) for component in value.split()[:10]]
+    return vec10(*values, *([0.0] * (10 - len(values))))
+
 
 def _parse_mesh_ref_pose(mesh_attrib: dict[str, str], label: str) -> tuple[np.ndarray, np.ndarray]:
     """Parse and validate an MJCF mesh reference pose."""
@@ -2508,13 +2530,18 @@ def parse_mjcf(
             infer_inertia_from_geoms=infer_body_inertia_from_geoms,
         )
 
-    def parse_equality_constraints(equality):
-        def parse_common_attributes(attribs):
-            return {
-                "name": attribs.get("name"),
-                "active": attribs.get("active", "true").lower() == "true",
-            }
+    def parse_common_attributes(attribs):
+        return {
+            "name": attribs.get("name"),
+            "active": attribs.get("active", "true").lower() == "true",
+        }
 
+    def equality_label(common: dict[str, Any]) -> str | None:
+        if articulation_label and common["name"]:
+            return f"{articulation_label}/{common['name']}"
+        return common["name"]
+
+    def parse_equality_constraints(equality):
         def get_site_body_and_anchor(site_name: str) -> tuple[int, wp.vec3] | None:
             """Look up a site by name and return its body index and position (anchor).
 
@@ -2535,11 +2562,6 @@ def parse_mjcf(
             site_xform = builder.shape_transform[site_idx]
             anchor = wp.vec3(site_xform[0], site_xform[1], site_xform[2])
             return (body_idx, anchor)
-
-        def equality_label(common: dict[str, Any]) -> str | None:
-            if articulation_label and common["name"]:
-                return f"{articulation_label}/{common['name']}"
-            return common["name"]
 
         def add_converted_loop_joint(
             eq_type: EqType,
@@ -2807,7 +2829,31 @@ def parse_mjcf(
                         custom_attributes=custom_attrs,
                     )
 
+        # Tendon equalities are parsed after tendons by parse_tendon_equality_constraints().
         # TODO: add support for equality constraint type "flex" once Newton supports it
+
+    def parse_tendon_equality_constraints(equality):
+        for tendon in equality.findall("tendon"):
+            attribs = resolve_element_attrib(tendon, "equality")
+            common = parse_common_attributes(attribs)
+            tendon_indices = []
+            for key in ("tendon1", "tendon2"):
+                tendon_name = attribs.get(key)
+                tendon_indices.append(tendon_name_to_idx.get(sanitize_name(tendon_name)) if tendon_name else -1)
+            if None in tendon_indices or tendon_indices[0] < 0:
+                if verbose:
+                    logger.warning("Tendon equality '%s' references unknown tendons, skipping", common["name"])
+                continue
+            _add_equality_constraint(
+                builder,
+                constraint_type=EqType.TENDON,
+                tendon1=tendon_indices[0],
+                tendon2=tendon_indices[1],
+                polycoef=mjc_parse_polycoef(attribs.get("polycoef", "0 1 0 0 0")),
+                label=equality_label(common),
+                enabled=common["active"],
+                custom_attributes=parse_custom_attributes(attribs, builder_custom_attr_eq, parsing_mode="mjcf"),
+            )
 
     # -----------------
     # start articulation
@@ -3258,23 +3304,28 @@ def parse_mjcf(
             if verbose:
                 logger.info("Parsed spatial tendon: %s (%s wrap elements)", tendon_name, len(wrap_entries))
 
-    # -----------------
-    # parse actuators
+    def inherit_actuator_range(attrib: dict[str, str], joint_name: str | None, dof: int, prefix: str) -> bool:
+        inheritrange = parse_float(attrib, "inheritrange", 0.0)
+        if not (inheritrange > 0 and joint_name and dof >= 0):
+            return False
+
+        # Newton limits are relative to ref; actuator ranges use absolute qpos.
+        dof_ref = 0.0
+        ref_attr = builder.custom_attributes.get("mujoco:dof_ref")
+        if ref_attr is not None and isinstance(ref_attr.values, dict):
+            dof_ref = float(ref_attr.values.get(dof, ref_attr.default))
+        lower = builder.joint_limit_lower[dof] + dof_ref
+        upper = builder.joint_limit_upper[dof] + dof_ref
+        if lower < upper:
+            mean = (upper + lower) / 2.0
+            radius = (upper - lower) / 2.0 * inheritrange
+            attrib[f"{prefix}range"] = f"{mean - radius} {mean + radius}"
+            attrib[f"{prefix}limited"] = "true"
+            return True
+        return False
 
     def parse_actuators(actuator_section):
-        """Parse actuators from MJCF preserving order.
-
-        All actuators are added as custom attributes with mujoco:actuator frequency,
-        preserving their order from the MJCF file. This ensures control.mujoco.ctrl
-        has the same ordering as native MuJoCo.
-
-        For position/velocity actuators: also set mode/target_ke/target_kd on per-DOF arrays
-        for compatibility with Newton's joint target interface.
-
-        Args:
-            actuator_section: The <actuator> XML element
-        """
-        # Process ALL actuators in MJCF order
+        """Preserve XML actuator order so direct-control indices remain stable."""
         for actuator_elem in actuator_section:
             actuator_type = actuator_elem.tag  # position, velocity, motor, general
 
@@ -3419,7 +3470,9 @@ def parse_mjcf(
 
             act_name = merged_attrib.get("name", f"{actuator_type}_{target_name_for_log}")
 
-            # Extract gains based on actuator type
+            ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
+            if actuator_type in {"position", "velocity"} and trntype == 0 and total_dofs != 0 and not ctrl_direct:
+                ctrl_source_val = SolverMuJoCo.CtrlSource.JOINT_TARGET
             ctrlrange_is_derived = False
             if actuator_type == "position":
                 kp = parse_float(merged_attrib, "kp", 1.0)  # MuJoCo default kp=1
@@ -3439,30 +3492,7 @@ def parse_mjcf(
                 elif dampratio > 0.0:
                     # Store unresolved dampratio in biasprm[2] (USD convention).
                     biasprm = vec10(0.0, -kp, dampratio, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-                # Resolve inheritrange: copy target joint's range to ctrlrange.
-                # Uses only the first DOF (qd_start) since inheritrange is only
-                # meaningful for single-DOF joints (hinge, slide).
-                inheritrange = parse_float(merged_attrib, "inheritrange", 0.0)
-                if inheritrange > 0 and joint_name and qd_start >= 0:
-                    # inheritrange copies absolute MuJoCo qpos, but Newton stores joint limits as qpos - ref.
-                    # Add ref back so the derived ctrlrange matches native MuJoCo.
-                    dof_ref_value = 0.0
-                    ref_attr = builder.custom_attributes.get("mujoco:dof_ref")
-                    if ref_attr is not None and isinstance(ref_attr.values, dict):
-                        dof_ref_value = float(ref_attr.values.get(qd_start, ref_attr.default))
-                    lower = builder.joint_limit_lower[qd_start] + dof_ref_value
-                    upper = builder.joint_limit_upper[qd_start] + dof_ref_value
-                    if lower < upper:
-                        mean = (upper + lower) / 2.0
-                        radius = (upper - lower) / 2.0 * inheritrange
-                        merged_attrib["ctrlrange"] = f"{mean - radius} {mean + radius}"
-                        merged_attrib["ctrllimited"] = "true"
-                        ctrlrange_is_derived = True
-                # Non-joint actuators (body, tendon, etc.) must use CTRL_DIRECT
-                if trntype != 0 or total_dofs == 0 or ctrl_direct:
-                    ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
-                else:
-                    ctrl_source_val = SolverMuJoCo.CtrlSource.JOINT_TARGET
+                ctrlrange_is_derived = inherit_actuator_range(merged_attrib, joint_name, qd_start, "ctrl")
                 if ctrl_source_val == SolverMuJoCo.CtrlSource.JOINT_TARGET:
                     for i in range(total_dofs):
                         dof_idx = qd_start + i
@@ -3482,11 +3512,6 @@ def parse_mjcf(
                 kv = parse_float(merged_attrib, "kv", 1.0)  # MuJoCo default kv=1
                 gainprm = vec10(kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, 0.0, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-                # Non-joint actuators (body, tendon, etc.) must use CTRL_DIRECT
-                if trntype != 0 or total_dofs == 0 or ctrl_direct:
-                    ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
-                else:
-                    ctrl_source_val = SolverMuJoCo.CtrlSource.JOINT_TARGET
                 if ctrl_source_val == SolverMuJoCo.CtrlSource.JOINT_TARGET:
                     for i in range(total_dofs):
                         dof_idx = qd_start + i
@@ -3503,28 +3528,11 @@ def parse_mjcf(
                 dampratio = parse_float(merged_attrib, "dampratio", 0.0)
                 gainprm = vec10(kp, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, -kp, -kv if kv > 0.0 else dampratio, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-                ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
-                actrange_is_derived = False
-                inheritrange = parse_float(merged_attrib, "inheritrange", 0.0)
-                if inheritrange > 0 and joint_name and qd_start >= 0:
-                    # Joint limits are stored relative to ref; activation bounds use absolute qpos.
-                    dof_ref_value = 0.0
-                    ref_attr = builder.custom_attributes.get("mujoco:dof_ref")
-                    if ref_attr is not None and isinstance(ref_attr.values, dict):
-                        dof_ref_value = float(ref_attr.values.get(qd_start, ref_attr.default))
-                    lower = builder.joint_limit_lower[qd_start] + dof_ref_value
-                    upper = builder.joint_limit_upper[qd_start] + dof_ref_value
-                    if lower < upper:
-                        mean = (upper + lower) / 2.0
-                        radius = (upper - lower) / 2.0 * inheritrange
-                        merged_attrib["actrange"] = f"{mean - radius} {mean + radius}"
-                        merged_attrib["actlimited"] = "true"
-                        actrange_is_derived = True
+                actrange_is_derived = inherit_actuator_range(merged_attrib, joint_name, qd_start, "act")
 
             elif actuator_type == "motor":
                 gainprm = vec10(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-                ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
 
             elif actuator_type == "muscle":
                 timeconst = parse_vec(merged_attrib, "timeconst", [0.01, 0.04])
@@ -3545,26 +3553,15 @@ def parse_mjcf(
                 ]
                 gainprm = vec10(*muscle_params, 0.0)
                 biasprm = vec10(*muscle_params, 0.0)
-                ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
 
             elif actuator_type == "damper":
                 kv = parse_float(merged_attrib, "kv", 1.0)
                 gainprm = vec10(0.0, 0.0, -kv, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
                 biasprm = vec10(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-                ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
 
             elif actuator_type == "general":
-                gainprm_str = merged_attrib.get("gainprm", "1 0 0 0 0 0 0 0 0 0")
-                biasprm_str = merged_attrib.get("biasprm", "0 0 0 0 0 0 0 0 0 0")
-                gainprm_vals = [float(x) for x in gainprm_str.split()[:10]]
-                biasprm_vals = [float(x) for x in biasprm_str.split()[:10]]
-                while len(gainprm_vals) < 10:
-                    gainprm_vals.append(0.0)
-                while len(biasprm_vals) < 10:
-                    biasprm_vals.append(0.0)
-                gainprm = vec10(*gainprm_vals)
-                biasprm = vec10(*biasprm_vals)
-                ctrl_source_val = SolverMuJoCo.CtrlSource.CTRL_DIRECT
+                gainprm = _parse_actuator_parameters(merged_attrib.get("gainprm", "1"))
+                biasprm = _parse_actuator_parameters(merged_attrib.get("biasprm", "0"))
             else:
                 if verbose:
                     logger.warning("Unknown actuator type '%s', skipping", actuator_type)
@@ -3598,29 +3595,8 @@ def parse_mjcf(
             if crank_length is not None:
                 parsed_attrs["mujoco:actuator_cranklength"] = crank_length
 
-            # Set implicit type defaults per actuator shortcut type.
-            # MuJoCo shortcut elements (position, velocity, etc.) implicitly set
-            # biastype/gaintype/dyntype without writing them to the XML. We mirror
-            # these defaults here so the CTRL_DIRECT path recreates faithful actuators.
-            # Only override when the XML didn't explicitly specify the attribute.
-            shortcut_type_defaults = {
-                "position": {"mujoco:actuator_biastype": 1},  # affine
-                "velocity": {"mujoco:actuator_biastype": 1},  # affine
-                "muscle": {
-                    "mujoco:actuator_dyntype": 4,  # muscle
-                    "mujoco:actuator_gaintype": 2,  # muscle
-                    "mujoco:actuator_biastype": 2,  # muscle
-                },
-                "intvelocity": {"mujoco:actuator_biastype": 1, "mujoco:actuator_dyntype": 1},
-                "damper": {
-                    "mujoco:actuator_gaintype": 1,  # affine
-                    "mujoco:actuator_biastype": 0,  # none
-                    "mujoco:actuator_ctrllimited": 1,  # true
-                },
-            }
-            for key, value in shortcut_type_defaults.get(actuator_type, {}).items():
-                if key not in parsed_attrs:
-                    parsed_attrs[key] = value
+            for key, value in _ACTUATOR_SHORTCUT_DEFAULTS.get(actuator_type, {}).items():
+                parsed_attrs.setdefault(key, value)
 
             # Intrinsic actuator kind, known directly from the MJCF shortcut tag.
             if actuator_type == "position":
@@ -3683,6 +3659,9 @@ def parse_mjcf(
         tendon_sections = root.findall(".//tendon")
         for tendon_section in tendon_sections:
             parse_tendons(tendon_section)
+        if not skip_equality_constraints:
+            for equality in root.findall("equality"):
+                parse_tendon_equality_constraints(equality)
 
     for actuator_section in root.findall("actuator"):
         parse_actuators(actuator_section)
