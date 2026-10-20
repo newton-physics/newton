@@ -1658,8 +1658,11 @@ class SolverSteel(SolverBase):
                 eager notifications raise :class:`ValueError`, and steps flag the owning world for
                 :meth:`check_constraint_capacity`. Requires ``solve_mode="matrix_free"`` and is not
                 supported with ``contact_compliance`` or ``enable_bilateral_preelimination``;
-                those combinations raise :class:`NotImplementedError`. When ``False``,
-                :attr:`~newton.Model.joint_friction` is ignored.
+                those combinations raise :class:`NotImplementedError`. Enabling it disables the
+                articulation-local, paired factor-coordinate and sparse-diagonal solves and sparse mass
+                factors at construction, even when every coefficient is zero, so enable it only for
+                models that need friction. When ``False``, :attr:`~newton.Model.joint_friction` is
+                ignored.
 
                 .. experimental::
 
@@ -4042,7 +4045,7 @@ class SolverSteel(SolverBase):
         The selection is automatic and structural. It applies in the matrix-free CUDA solve with
         ``use_parallel_streams``, joint limits enabled, augmented drives, the immediate response,
         the interleaved schedule, ``friction_mode="fixed_normal"``, no free rigid bodies, mimic or
-        loop-closing joints, joint velocity limits, warm start, velocity-only iterations,
+        loop-closing joints, joint velocity limits, joint friction, warm start, velocity-only iterations,
         pre-elimination, contact regularization or torsion, when every world holds
         exactly two responding articulations: one whose mass matrix is diagonal and which has
         position limits, and one dense articulation of at most ``_CONTACT_JACOBIAN_MAX_DOF``
@@ -4166,8 +4169,8 @@ class SolverSteel(SolverBase):
 
         The selection is automatic and structural. On CUDA, in the interleaved matrix-free
         solve with the immediate response, augmented drives, current friction and without
-        joint velocity limits, velocity-only iterations, warm start, pre-elimination, contact
-        torsion or sparse mass factors, and only in models with free rigid bodies, a world with
+        joint velocity limits, joint friction, velocity-only iterations, warm start, pre-elimination,
+        contact torsion or sparse mass factors, and only in models with free rigid bodies, a world with
         exactly one articulation (other than free bodies) of at most 16 DOFs and an untiled
         response is a candidate for the single-articulation solve; with exactly one free body
         next to it, for the pair solve, and the residual pair solve when the articulation's
@@ -10961,7 +10964,7 @@ def _get_joint_friction_warp_kernel(size: int, device_arch: str, warps_per_block
             const float friction = *reinterpret_cast<const float*>(
                 reinterpret_cast<const char*>(joint_friction.data) + dof * joint_friction.strides[0]);
             bound = friction * dt;
-            // Non-finite or negative coefficients build no row; notifications flag them.
+            // Non-finite or negative coefficients build no row; the per-step check flags them.
             active = bound > 0.0f && isfinite(friction);
         }}
 
