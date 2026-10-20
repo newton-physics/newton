@@ -7,6 +7,7 @@ from typing import Any
 
 import numpy as np
 
+from ..utils.color import ColorSpace
 from ..utils.texture import load_texture, normalize_texture
 
 OPAQUE_OPACITY_THRESHOLD = 0.999
@@ -54,3 +55,21 @@ def promote_to_clamped_float_array(
             f"{value_name} arrays must contain one value or exactly {num_items} values, got {len(values_np)}."
         )
     return np.clip(values_np, min_value, max_value)
+
+
+def gaussian_display_colors(sh_coeffs: np.ndarray, color_space: ColorSpace) -> np.ndarray:
+    """Convert the DC term of Gaussian SH coefficients to display-encoded RGB in [0, 1].
+
+    Args:
+        sh_coeffs: SH coefficients with at least three columns per Gaussian.
+        color_space: Color space of the SH radiance. Linear radiance is
+            encoded to sRGB for display.
+
+    Returns:
+        Float32 array of shape ``(N, 3)``.
+    """
+    sh_c0 = 0.28209479177387814
+    rgb = np.clip(sh_c0 * np.asarray(sh_coeffs)[:, :3] + 0.5, 0.0, None)
+    if color_space == ColorSpace.LINEAR:
+        rgb = np.where(rgb <= 0.0031308, rgb * 12.92, 1.055 * np.power(rgb, 1.0 / 2.4) - 0.055)
+    return np.clip(rgb, 0.0, 1.0).astype(np.float32)

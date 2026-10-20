@@ -1,0 +1,1 @@
+Clamp negative Gaussian radiance and decode sRGB Gaussian radiance before blending in `SensorCamera`. Gaussians default to sRGB radiance (including untagged USD assets and PLY files); radiance tagged with a linear USD color space such as `lin_rec709_scene` stays linear, and the GL and Viser viewers honor `Gaussian.sh_color_space`.

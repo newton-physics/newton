@@ -3207,6 +3207,30 @@ class TestImportSampleAssetsBasic(unittest.TestCase):
         self.assertNotIn(gaussian.GetPath().pathString, result_no_visuals["path_shape_map"])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_gaussian_sh_color_space_follows_usd_schema(self):
+        """Treat untagged and non-linear SH radiance as sRGB; keep scene-linear radiance linear."""
+        from pxr import Sdf, Usd
+
+        from newton._src.usd.utils import get_gaussian  # noqa: PLC0415
+
+        stage = Usd.Stage.CreateInMemory()
+        for name, token, expected in (
+            ("Untagged", None, newton.utils.ColorSpace.SRGB),
+            ("Display", "srgb_rec709_scene", newton.utils.ColorSpace.SRGB),
+            ("Linear", "lin_rec709_scene", newton.utils.ColorSpace.LINEAR),
+            ("LinearAP1", "lin_ap1_scene", newton.utils.ColorSpace.LINEAR),
+            ("Raw", "raw", newton.utils.ColorSpace.LINEAR),
+        ):
+            prim = stage.DefinePrim(f"/World/{name}", "ParticleField3DGaussianSplat")
+            prim.CreateAttribute("positions", Sdf.ValueTypeNames.Point3fArray).Set([(0.0, 0.0, 0.0)])
+            prim.CreateAttribute("radiance:sphericalHarmonicsCoefficients", Sdf.ValueTypeNames.Float3Array).Set(
+                [(0.0, 0.0, 0.0)]
+            )
+            if token is not None:
+                Usd.ColorSpaceAPI.Apply(prim).CreateColorSpaceNameAttr().Set(token)
+            self.assertEqual(get_gaussian(prim).sh_color_space, expected)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_disabled_static_collider_has_no_collision_flags(self):
         """Disable shape and particle collisions regardless of visual loading."""
         from pxr import Usd, UsdGeom, UsdPhysics

@@ -11,6 +11,7 @@ from ...geometry import Gaussian
 from ...geometry.bvh import compute_ellipsoid_bounds
 from ...geometry.raycast import map_ray_to_local
 from ...math import safe_div
+from ...utils.color import ColorSpace, srgb_to_linear_wp
 from .types import GaussianRenderMode, RenderConfig
 
 if TYPE_CHECKING:
@@ -197,6 +198,10 @@ def create_shade_function(config: RenderConfig, state: RenderContext.RenderState
                     gaussian_data.sh_coeffs[hit_index][1],
                     gaussian_data.sh_coeffs[hit_index][2],
                 ) + wp.vec3f(0.5)
+                if gaussian_data.sh_color_space == ColorSpace.SRGB:
+                    color = srgb_to_linear_wp(color)
+                else:
+                    color = wp.max(color, wp.vec3f(0.0))
 
                 opacity = hit_alphas[hit]
                 result_color += color * opacity * ray_transmittance

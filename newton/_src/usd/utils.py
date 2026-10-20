@@ -17,7 +17,7 @@ from ..core.types import Axis, AxisType
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..geometry import Gaussian
 from ..sim.model import Model
-from ..utils.color import color_linear_to_srgb
+from ..utils.color import ColorSpace, color_linear_to_srgb
 from ..utils.import_usd_deformable_utils import (
     _AOUSD_DEFAULT_POISSONS_RATIO,
     _AOUSD_DEFAULT_YOUNGS_MODULUS,
@@ -2434,7 +2434,10 @@ def resolve_material_properties_for_prim(prim: Usd.Prim) -> dict[str, Any]:
 def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
     """Load Gaussian splat data from a USD prim.
 
-    Reads positions from attributes: `positions`, `orientations`, `scales`, `opacities` and `radiance:sphericalHarmonicsCoefficients`.
+    Reads positions from attributes: `positions`, `orientations`, `scales`, `opacities` and
+    `radiance:sphericalHarmonicsCoefficients`. SH radiance is linear only when its
+    (possibly inherited) color-space name is a linear one such as `lin_rec709_scene`;
+    untagged radiance is treated as sRGB.
 
     Args:
         prim: A USD prim containing Gaussian splat data.
@@ -2444,16 +2447,16 @@ def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
         A new :class:`Gaussian` instance.
     """
 
-    def _get_float_array_attr(name):
-        attr = prim.GetAttribute(name)
-        if attr and attr.HasValue():
-            return np.array(attr.Get(), dtype=np.float32)
-
-        attr = prim.GetAttribute(f"{name}h")
-        if attr and attr.HasValue():
-            return np.array(attr.Get(), dtype=np.float32)
-
+    def _get_valued_attr(name):
+        for candidate in (name, f"{name}h"):
+            attr = prim.GetAttribute(candidate)
+            if attr and attr.HasValue():
+                return attr
         return None
+
+    def _get_float_array_attr(name):
+        attr = _get_valued_attr(name)
+        return None if attr is None else np.array(attr.Get(), dtype=np.float32)
 
     positions = _get_float_array_attr("positions")
     if positions is None:
@@ -2470,6 +2473,12 @@ def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
         else:
             raise ValueError(f"Unsupported gaussian sorting mode: {usd_sorting_mode}")
 
+    # Untagged radiance is display-referred (sRGB); only explicitly linear color spaces are LINEAR.
+    sh_attr = _get_valued_attr("radiance:sphericalHarmonicsCoefficients")
+    sh_color_space = (
+        ColorSpace.LINEAR if _texture_source_is_linear(_get_attribute_color_space(sh_attr)) else ColorSpace.SRGB
+    )
+
     return Gaussian(
         positions=positions,
         rotations=_get_float_array_attr("orientations"),
@@ -2477,6 +2486,7 @@ def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
         opacities=_get_float_array_attr("opacities"),
         sh_coeffs=_get_float_array_attr("radiance:sphericalHarmonicsCoefficients"),
         sh_degree=get_attribute(prim, "radiance:sphericalHarmonicsDegree"),
+        sh_color_space=sh_color_space,
         min_response=min_response,
         sorting_mode=sorting_mode,
     )

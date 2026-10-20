@@ -14,6 +14,7 @@ import warp as wp
 
 from ..core.types import Axis, Devicelike, Vec2, Vec3, override
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
+from ..utils.color import ColorSpace
 from ..utils.deprecation import deprecate_nonkeyword_arguments
 from ..utils.texture import compute_texture_hash
 
@@ -2562,6 +2563,7 @@ class Gaussian:
         scales: wp.array[wp.vec3f]
         opacities: wp.array[wp.float32]
         sh_coeffs: wp.array2d[wp.float32]
+        sh_color_space: wp.int32
         bvh_id: wp.uint64
         min_response: wp.float32
         sorting_mode: wp.int32
@@ -2582,6 +2584,7 @@ class Gaussian:
         sh_degree: int | None = None,
         min_response: float = 0.1,
         sorting_mode: SortingMode = SortingMode.RAY_HIT_DISTANCE,
+        sh_color_space: ColorSpace = ColorSpace.SRGB,
     ):
         """Construct a Gaussian splat asset from arrays.
 
@@ -2601,6 +2604,9 @@ class Gaussian:
             sorting_mode: Sorting strategy for depth-ordering Gaussian
                 intersections along each ray before alpha compositing
                 (default: :attr:`SortingMode.RAY_HIT_DISTANCE`).
+            sh_color_space: Color space of evaluated SH radiance. Defaults to
+                sRGB (display-encoded); pass :attr:`ColorSpace.LINEAR` for
+                scene-linear radiance.
         """
 
         self._positions = np.ascontiguousarray(np.asarray(positions, dtype=np.float32).reshape(-1, 3))
@@ -2636,6 +2642,7 @@ class Gaussian:
         self._min_response = float(min_response)
 
         self._sorting_mode = sorting_mode
+        self._sh_color_space = ColorSpace(sh_color_space)
 
         self._cached_hash = None
         self._positions.setflags(write=False)
@@ -2691,6 +2698,11 @@ class Gaussian:
     def sh_degree(self) -> int:
         """Spherical harmonics degree (0-3), int"""
         return self._sh_degree
+
+    @property
+    def sh_color_space(self) -> ColorSpace:
+        """Color space of evaluated spherical-harmonics radiance."""
+        return self._sh_color_space
 
     @property
     def min_response(self) -> float:
@@ -2773,6 +2785,7 @@ class Gaussian:
             warp_data.scales = wp.array(self._scales, dtype=wp.vec3f)
             warp_data.opacities = wp.array(self._opacities, dtype=wp.float32)
             warp_data.sh_coeffs = wp.array(self._sh_coeffs, dtype=wp.float32)
+            warp_data.sh_color_space = int(self._sh_color_space)
             warp_data.min_response = self.min_response
             warp_data.sorting_mode = self.sorting_mode
             warp_data.num_points = warp_data.transforms.shape[0]
@@ -2827,7 +2840,8 @@ class Gaussian:
         Reads positions (``x/y/z``), rotations (``rot_0..3``), scales
         (``scale_0..2``, stored as log-scale), opacities (logit-space),
         and SH coefficients (``f_dc_*``, ``f_rest_*``). Converts log-scale
-        and logit-opacity to linear values. Requires Open3D 0.20 or newer.
+        and logit-opacity to linear values. SH radiance is treated as sRGB.
+        Requires Open3D 0.20 or newer.
 
         Args:
             filename: Path to a ``.ply`` file in standard 3DGS format.
@@ -2891,6 +2905,8 @@ class Gaussian:
         """Load Gaussian splat data from a USD prim.
 
         Reads positions from attributes: `positions`, `orientations`, `scales`, `opacities` and `radiance:sphericalHarmonicsCoefficients`.
+        SH radiance is treated as sRGB unless its USD color space is linear (for example
+        ``lin_rec709_scene``), in which case :attr:`sh_color_space` is :attr:`ColorSpace.LINEAR`.
 
         Args:
             prim: A USD prim containing Gaussian splat data.
@@ -2976,6 +2992,7 @@ class Gaussian:
                     self._sh_coeffs.data.tobytes(),
                     float(self._min_response),
                     int(self._sorting_mode),
+                    int(self._sh_color_space),
                 )
             )
         return self._cached_hash
@@ -2992,4 +3009,5 @@ class Gaussian:
             and np.array_equal(self._sh_coeffs, other._sh_coeffs)
             and self._min_response == other._min_response
             and self._sorting_mode == other._sorting_mode
+            and self._sh_color_space == other._sh_color_space
         )

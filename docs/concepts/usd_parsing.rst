@@ -519,6 +519,11 @@ Texture inputs are handled similarly at the color-texture boundary. Newton reads
 the file attribute, and converts linear/raw color textures to display/sRGB when
 they are loaded. Display/sRGB textures stay display-encoded.
 
+Gaussian splat spherical-harmonics radiance is resolved from the same
+color-space metadata but with the opposite default: untagged radiance is treated
+as display/sRGB, and only a linear color space (for example
+``lin_rec709_scene``) is imported as :attr:`newton.utils.ColorSpace.LINEAR`.
+
 Mass and Inertia Precedence
 ---------------------------
 

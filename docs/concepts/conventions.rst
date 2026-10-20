@@ -441,6 +441,12 @@ with :func:`newton.utils.color_srgb_to_linear` and
 Base-color textures stored on Newton models follow the same convention and are
 kept display/sRGB-encoded.
 
+Gaussian splat radiance follows the same default: :class:`newton.Gaussian`
+treats the evaluated spherical-harmonics radiance as display/sRGB-encoded and
+the renderer decodes it to linear light before blending. Pass
+``sh_color_space=newton.utils.ColorSpace.LINEAR`` for scene-linear radiance,
+which is blended as is.
+
 Packed color and albedo outputs from :class:`newton.sensors.SensorCamera`
 use display/sRGB encoding by default. Set
 ``SensorCamera.RenderConfig(output_color_space=newton.utils.ColorSpace.LINEAR)``
