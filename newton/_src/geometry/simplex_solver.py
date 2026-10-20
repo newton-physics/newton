@@ -436,7 +436,7 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
                 duplicate_epsilon = EPSILON
 
             search_dir = -v
-            # Track last search direction for robust normal fallback
+            # Seeds the near-contact check when the simplex reaches the origin.
             last_search_dir = search_dir
 
             # Get support point in search direction

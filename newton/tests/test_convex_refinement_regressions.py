@@ -21,16 +21,37 @@ from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
 def _contacts(
-    test, device, half, vertices, indices, pose, scale, *, swap=False, split=False, margin=0.0, triangle=False
+    test,
+    device,
+    half,
+    vertices,
+    indices,
+    pose,
+    scale,
+    *,
+    swap=False,
+    split=False,
+    margin=0.0,
+    triangle=False,
+    hull_box=False,
 ):
-    """Return physical witnesses and box-to-mesh normals through the public pipeline."""
+    """Return physical witnesses and box-to-mesh normals through the public pipeline.
+
+    With ``hull_box``, the static box is an eight-corner convex hull instead of a box primitive.
+    """
     builder = newton.ModelBuilder()
     body = builder.add_body(xform=pose, mass=1.0, inertia=wp.mat33(np.eye(3)))
     cfg = builder.ShapeConfig(margin=margin, gap=1.0e-3, density=0.0)
     mesh = newton.Mesh(vertices, np.asarray(indices, dtype=np.int32).ravel(), compute_inertia=False)
     box_index = -1
     for box in (False, True) if swap else (True, False):
-        if box:
+        if box and hull_box:
+            from scipy.spatial import ConvexHull
+
+            corners = np.array(list(product(*((-h, h) for h in half))), dtype=np.float32)
+            hull = newton.Mesh(corners, ConvexHull(corners).simplices.ravel().astype(np.int32), compute_inertia=False)
+            box_index = builder.add_shape_convex_hull(-1, mesh=hull, cfg=cfg)
+        elif box:
             box_index = builder.add_shape_box(-1, hx=half[0], hy=half[1], hz=half[2], cfg=cfg)
         elif triangle:
             builder.add_shape_mesh(body, mesh=mesh, scale=scale, cfg=cfg)
@@ -268,112 +289,36 @@ def test_refinement_triangle_above_wide_ground(test, device):
     manifold then measured depth along that normal to a far ground corner and
     reported contacts metres deep, launching objects resting on the ground.
     """
-    # Mesh triangles captured from SimReady assets resting on a benchmark ground [m].
+    # Mesh triangles captured from assets resting on a wide ground, relative to its top face [m].
     cases = {
         "toaster": (
-            np.array(
-                [
-                    [-0.116287656, 0.057376586, 0.000993134],
-                    [-0.116287656, 0.058698855, 0.000993129],
-                    [-0.115889244, 0.058659613, 0.000993134],
-                ]
-            ),
-            500.0,
-            10.0,
+            [
+                [-0.116287656, 0.057376586, 0.000993134],
+                [-0.116287656, 0.058698855, 0.000993129],
+                [-0.115889244, 0.058659613, 0.000993134],
+            ],
+            np.array([500.0, 500.0, 5.0]),
         ),
         "hammer": (
-            np.array(
-                [
-                    [-1.2480534e-02, 2.1553008e-01, 1.3521127e-04],
-                    [-6.1373673e-03, 2.0449370e-01, 1.2469478e-04],
-                    [-1.2529907e-02, 2.0449370e-01, 1.2479909e-04],
-                ]
-            ),
-            50.0,
-            2.0,
+            [
+                [-1.2480534e-02, 2.1553008e-01, 1.3521127e-04],
+                [-6.1373673e-03, 2.0449370e-01, 1.2469478e-04],
+                [-1.2529907e-02, 2.0449370e-01, 1.2479909e-04],
+            ],
+            np.array([50.0, 50.0, 1.0]),
         ),
     }
-    hull_faces = [
-        0,
-        1,
-        2,
-        0,
-        2,
-        3,
-        4,
-        6,
-        5,
-        4,
-        7,
-        6,
-        0,
-        4,
-        5,
-        0,
-        5,
-        1,
-        1,
-        5,
-        6,
-        1,
-        6,
-        2,
-        2,
-        6,
-        7,
-        2,
-        7,
-        3,
-        3,
-        7,
-        4,
-        3,
-        4,
-        0,
-    ]
-    for (name, (triangle, half, thickness)), hull, swap in product(cases.items(), (False, True), (False, True)):
-        with test.subTest(triangle=name, hull=hull, swap=swap):
-            builder = newton.ModelBuilder()
-            cfg = builder.ShapeConfig(gap=1.0e-2, density=0.0)
-            body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-            ground_index = -1
-            for ground in (False, True) if swap else (True, False):
-                if not ground:
-                    mesh = newton.Mesh(
-                        triangle.astype(np.float32), np.array([0, 1, 2], dtype=np.int32), compute_inertia=False
-                    )
-                    builder.add_shape_mesh(body, mesh=mesh, cfg=cfg)
-                elif hull:
-                    corners = [
-                        [x, y, z]
-                        for z in (0.0, -thickness)
-                        for x, y in ((-half, -half), (half, -half), (half, half), (-half, half))
-                    ]
-                    mesh = newton.Mesh(
-                        np.array(corners, dtype=np.float32), np.array(hull_faces, dtype=np.int32), compute_inertia=False
-                    )
-                    ground_index = builder.add_shape_convex_hull(-1, mesh=mesh, cfg=cfg)
-                else:
-                    xform = wp.transform(wp.vec3(0.0, 0.0, -0.5 * thickness), wp.quat_identity())
-                    ground_index = builder.add_shape_box(-1, xform=xform, hx=half, hy=half, hz=0.5 * thickness, cfg=cfg)
-            model = builder.finalize(device)
-            pipeline = newton.CollisionPipeline(model, broad_phase="explicit")
-            contacts = pipeline.contacts()
-            pipeline.collide(model.state(), contacts)
-            count = int(contacts.rigid_contact_count.numpy()[0])
-            test.assertGreater(count, 0)
-            ground_first = contacts.rigid_contact_shape0.numpy()[:count] == ground_index
-            normals = contacts.rigid_contact_normal.numpy()[:count]
-            points0 = contacts.rigid_contact_point0.numpy()[:count]
-            points1 = contacts.rigid_contact_point1.numpy()[:count]
-            # The body sits at the origin, so its local points are world points.
-            up = np.where(ground_first[:, None], normals, -normals)
-            gaps = np.where(
-                ground_first, np.sum((points1 - points0) * up, axis=1), np.sum((points0 - points1) * up, axis=1)
+    for (name, (points, half)), hull_box, swap in product(cases.items(), (False, True), (False, True)):
+        with test.subTest(triangle=name, hull_box=hull_box, swap=swap):
+            vertices = np.array(points, dtype=np.float32)
+            pose = wp.transform(wp.vec3(0.0, 0.0, half[2]), wp.quat_identity())
+            pa, pb, normals = _contacts(
+                test, device, half, vertices, [0, 1, 2], pose, np.ones(3), swap=swap, triangle=True, hull_box=hull_box
             )
-            np.testing.assert_allclose(up, np.tile([0.0, 0.0, 1.0], (count, 1)), atol=1.0e-4)
-            test.assertGreaterEqual(float(np.min(gaps)), float(np.min(triangle[:, 2])) - 1.0e-5)
-            test.assertLessEqual(float(np.max(gaps)), float(np.max(triangle[:, 2])) + 1.0e-5)
+            np.testing.assert_allclose(normals, np.tile([0.0, 0.0, 1.0], (len(normals), 1)), atol=1.0e-4)
+            gaps = np.sum((pb - pa) * normals, axis=1)
+            test.assertGreaterEqual(float(np.min(gaps)), float(np.min(vertices[:, 2])) - 1.0e-5)
+            test.assertLessEqual(float(np.max(gaps)), float(np.max(vertices[:, 2])) + 1.0e-5)
 
 
 def test_refinement_resting_box_stack(test, device):
