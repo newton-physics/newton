@@ -50,7 +50,6 @@ from .kernels import (
     PROPAGATION_COLOR_TAIL,
     PROPAGATION_UNIT_META,
     PROPAGATION_UNIT_RING,
-    ROW_SLOT_COUNT_PASS,
     ROW_SLOTS_ATOMIC,
     ROW_SLOTS_COUNT,
     ROW_SLOTS_WRITE,
@@ -11210,11 +11209,11 @@ def _get_joint_limit_warp_kernel(size: int, device_arch: str, warps_per_block: i
                 // One warp owns the articulation; see assign_world_row_slots.
                 first_slot = element_row_cursor.data[articulation];
                 element_row_cursor.data[articulation] = first_slot + active_count;
-                if (row_slot_mode == {int(ROW_SLOTS_COUNT)}) first_slot = {int(ROW_SLOT_COUNT_PASS)};
             }}
         }}
         first_slot = __shfl_sync(MASK, first_slot, 0);
-        if (active != 0) {{
+        // A COUNT pass only advances the cursor.
+        if (active != 0 && row_slot_mode != {int(ROW_SLOTS_COUNT)}) {{
             const unsigned lower_lanes = lane == 0 ? 0u : ((1u << lane) - 1u);
             const int slot = first_slot + __popc(active_mask & lower_lanes);
             if (slot < max_constraints) {{
@@ -11347,11 +11346,11 @@ def _get_joint_friction_warp_kernel(size: int, device_arch: str, warps_per_block
                 // One warp owns the articulation; see assign_world_row_slots.
                 first_slot = element_row_cursor.data[articulation];
                 element_row_cursor.data[articulation] = first_slot + active_count;
-                if (row_slot_mode == {int(ROW_SLOTS_COUNT)}) first_slot = {int(ROW_SLOT_COUNT_PASS)};
             }}
         }}
         first_slot = __shfl_sync(MASK, first_slot, 0);
-        if (active != 0) {{
+        // A COUNT pass only advances the cursor.
+        if (active != 0 && row_slot_mode != {int(ROW_SLOTS_COUNT)}) {{
             const unsigned lower_lanes = lane == 0 ? 0u : ((1u << lane) - 1u);
             const int slot = first_slot + __popc(active_mask & lower_lanes);
             if (slot < max_constraints) {{

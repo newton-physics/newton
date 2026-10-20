@@ -64,7 +64,7 @@ CONTACT_GENERATION_NONE = wp.constant(GENERATION_SENTINEL)
 ROW_SLOTS_ATOMIC = wp.constant(0)
 ROW_SLOTS_COUNT = wp.constant(1)
 ROW_SLOTS_WRITE = wp.constant(2)
-# Slot returned by a COUNT pass: past every row capacity, so callers skip their row writes.
+# Slot returned by a COUNT pass, past every row capacity; callers test the mode before using a slot.
 ROW_SLOT_COUNT_PASS = wp.constant(1 << 30)
 # Contact row families, in ``contact_path`` order: dense, matrix-free, propagation.
 CONTACT_ROW_FAMILIES = wp.constant(3)
@@ -3378,12 +3378,12 @@ def allocate_joint_velocity_limit_slots(
             upper_idx = lower_idx + 1
 
             lower_slot = reserve_world_rows(row_slot_mode, world_slot_counter, world, 1, element_row_cursor, art)
-            if lower_slot < max_constraints:
+            if row_slot_mode != ROW_SLOTS_COUNT and lower_slot < max_constraints:
                 velocity_limit_slot[lower_idx] = lower_slot
                 velocity_limit_sign[lower_idx] = 1.0
 
             upper_slot = reserve_world_rows(row_slot_mode, world_slot_counter, world, 1, element_row_cursor, art)
-            if upper_slot < max_constraints:
+            if row_slot_mode != ROW_SLOTS_COUNT and upper_slot < max_constraints:
                 velocity_limit_slot[upper_idx] = upper_slot
                 velocity_limit_sign[upper_idx] = -1.0
 
@@ -3502,7 +3502,7 @@ def allocate_physx_drive_slots(
             if joint_target_ke[dof] <= 0.0 and joint_target_kd[dof] <= 0.0:
                 continue
             slot = reserve_world_rows(row_slot_mode, world_slot_counter, world, 1, element_row_cursor, art)
-            if slot < max_constraints:
+            if row_slot_mode != ROW_SLOTS_COUNT and slot < max_constraints:
                 drive_slot[dof] = slot
 
 
@@ -5849,12 +5849,12 @@ def allocate_rigid_velocity_limit_slots(
         upper_idx = lower_idx + 1
 
         lower_slot = reserve_world_rows(row_slot_mode, mf_slot_counter, world, 1, element_row_cursor, candidate)
-        if lower_slot < mf_max_constraints:
+        if row_slot_mode != ROW_SLOTS_COUNT and lower_slot < mf_max_constraints:
             rigid_velocity_limit_slot[lower_idx] = lower_slot
             rigid_velocity_limit_sign[lower_idx] = 1.0
 
         upper_slot = reserve_world_rows(row_slot_mode, mf_slot_counter, world, 1, element_row_cursor, candidate)
-        if upper_slot < mf_max_constraints:
+        if row_slot_mode != ROW_SLOTS_COUNT and upper_slot < mf_max_constraints:
             rigid_velocity_limit_slot[upper_idx] = upper_slot
             rigid_velocity_limit_sign[upper_idx] = -1.0
 
@@ -6875,7 +6875,7 @@ def build_joint_limit_rows(
             if not active:
                 continue
             slot = reserve_world_rows(row_slot_mode, world_slot_counter, world, 1, element_row_cursor, art)
-            if slot >= max_constraints:
+            if row_slot_mode == ROW_SLOTS_COUNT or slot >= max_constraints:
                 continue
             J_group[group_idx, slot, local_dof] = sign
             world_row_type[world, slot] = PGS_CONSTRAINT_TYPE_JOINT_LIMIT

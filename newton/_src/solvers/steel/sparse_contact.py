@@ -10,7 +10,6 @@ import warp as wp
 from .friction import contact_tangent_basis
 from .kernels import (
     PGS_CONSTRAINT_TYPE_JOINT_LIMIT,
-    ROW_SLOT_COUNT_PASS,
     ROW_SLOTS_ATOMIC,
     ROW_SLOTS_COUNT,
     WARP_DETERMINISM_OFF,
@@ -486,7 +485,6 @@ def _get_sparse_contact_response_kernel(
                 // One warp owns the articulation; see assign_world_row_slots.
                 first_slot = element_row_cursor.data[art];
                 element_row_cursor.data[art] = first_slot + active_count;
-                if (row_slot_mode == $ROW_SLOTS_COUNT) first_slot = $ROW_SLOT_COUNT_PASS;
             }
         }
         first_slot = __shfl_sync(MASK, first_slot, 0);
@@ -499,11 +497,11 @@ def _get_sparse_contact_response_kernel(
         } else {
             first_slot = element_row_cursor.data[art];
             element_row_cursor.data[art] = first_slot + active;
-            if (row_slot_mode == $ROW_SLOTS_COUNT) first_slot = $ROW_SLOT_COUNT_PASS;
         }
 #endif
         // Visit the ballot in lane order, matching the existing lower/upper DOF order.
-        unsigned pending = active_mask;
+        // A COUNT pass only advances the cursor.
+        unsigned pending = row_slot_mode == $ROW_SLOTS_COUNT ? 0u : active_mask;
         int rank = 0;
         while (pending != 0) {
             const int row = first_slot + rank;
@@ -559,7 +557,6 @@ def _get_sparse_contact_response_kernel(
 """.replace("$LIMIT_TYPE", str(PGS_CONSTRAINT_TYPE_JOINT_LIMIT))
     .replace("$ROW_SLOTS_ATOMIC", str(ROW_SLOTS_ATOMIC))
     .replace("$ROW_SLOTS_COUNT", str(ROW_SLOTS_COUNT))
-    .replace("$ROW_SLOT_COUNT_PASS", str(ROW_SLOT_COUNT_PASS))
 )
 def _build_sparse_joint_limit_rows(
     tid: int,
