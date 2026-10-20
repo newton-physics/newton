@@ -82,8 +82,7 @@ class Picking:
 
         self._pick_effective_mass = self._compute_effective_mass(model)
 
-        # Operational-space inertia at the pick point in the picked body's frame, set on every pick
-        # and refreshed every frame while held.
+        # Operational-space inertia at the pick point in the picked body's frame, set on every pick.
         self._pick_os_inertia = wp.zeros(1, dtype=wp.mat33, device=model.device if model else "cpu")
 
     def _apply_picking_force(self, state: newton.State) -> None:
@@ -135,7 +134,7 @@ class Picking:
         leave cables too weak to lift. A body outside an articulation falls back to :math:`m I`.
 
         Stored in the body frame and rotated with the body, so it stays aligned as the picked
-        link turns between refreshes by :meth:`_refresh_os_inertia`.
+        link turns about its upstream joints.
 
         Args:
             state: The simulation state supplying the current pose.
@@ -178,9 +177,8 @@ class Picking:
 
             mask = wp.array(np.arange(model.articulation_count) == art, dtype=bool, device=model.device)
             jacobian = newton.eval_jacobian(model, state, mask=mask)
-            # Slice on device so only the picked articulation is copied to the host.
-            h = newton.eval_mass_matrix(model, state, J=jacobian, mask=mask)[art].numpy()[:ndof, :ndof]
-            jac = jacobian[art].numpy()[:, :ndof]
+            h = newton.eval_mass_matrix(model, state, J=jacobian, mask=mask).numpy()[art][:ndof, :ndof]
+            jac = jacobian.numpy()[art][:, :ndof]
 
             # Newton stores twists as (linear, angular); shift the linear rows from the COM to
             # the pick point via v_p = v_com + omega x r.
@@ -195,17 +193,6 @@ class Picking:
                 pass
 
         store(lam)
-
-    def _refresh_os_inertia(self, state: newton.State) -> None:
-        """Recompute the held pick's operational-space inertia, which changes as upstream joints move."""
-        if not self.picking_active or state is None or state.body_q is None:
-            return
-        body = int(self.pick_body.numpy()[0])
-        if body < 0:
-            return
-        point_local = wp.vec3(*self.pick_state.numpy()[0]["picked_point_local"])
-        X_wb = wp.transform(*state.body_q.numpy()[body])
-        self._update_os_inertia(state, body, wp.transform_point(X_wb, point_local))
 
     @staticmethod
     def _compute_effective_mass(model: newton.Model) -> wp.array[float]:

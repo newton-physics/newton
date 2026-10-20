@@ -1679,8 +1679,6 @@ void main() {
         self._last_state = state
         if self.model is None:
             return
-        if self.picking is not None:
-            self.picking._refresh_os_inertia(state)
 
         if self._phase == self._PHASE_BUILD:
             # Build phase: delegate fully to base so USD prims are set up normally.

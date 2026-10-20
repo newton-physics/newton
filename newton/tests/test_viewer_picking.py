@@ -435,31 +435,6 @@ def test_picking_inertia_rotates_with_link(test: TestPickingSetup, device):
     test.assertLess(felt_mass, 0.5 * model.body_mass.numpy().sum())
 
 
-def test_picking_inertia_refreshes_with_configuration(test: TestPickingSetup, device):
-    """Refresh the felt mass as the elbow bends, so a direction that becomes reachable turns light."""
-    model = _make_arm_and_finger_model(device, 10.0)
-    state = model.state()
-    picking = Picking(model)
-    # Off the j2 axis, so with the arm straight the finger's own x axis points radially and is blocked.
-    picking.pick(state, wp.vec3(0.44, 0.0, 1.0), wp.vec3(0.0, 0.0, -1.0))
-    total_mass = model.body_mass.numpy().sum()
-    test.assertGreater(picking._pick_os_inertia.numpy()[0][0, 0], 0.9 * total_mass)
-
-    # Bending the elbow turns the finger's x axis tangent to j1, so j1 can now move the pick point along it.
-    joint_q = model.joint_q.numpy()
-    joint_q[1] = 0.5 * np.pi
-    newton.eval_fk(model, wp.array(joint_q, dtype=float, device=device), model.joint_qd, state)
-    picking._refresh_os_inertia(state)
-    refreshed = picking._pick_os_inertia.numpy()[0]
-
-    reference = Picking(model)
-    point_local = wp.vec3(*picking.pick_state.numpy()[0]["picked_point_local"])
-    point_world = wp.transform_point(wp.transform(*state.body_q.numpy()[1]), point_local)
-    reference._update_os_inertia(state, 1, point_world)
-    assert_np_equal(refreshed, reference._pick_os_inertia.numpy()[0], tol=1.0e-5)
-    test.assertLess(refreshed[0, 0], 0.5 * total_mass)
-
-
 def test_picking_ignores_earlier_loop_closure(test: TestPickingSetup, device):
     """A loop closure created before a link's tree joint does not hide the articulation."""
 
@@ -659,12 +634,6 @@ add_function_test(
     TestPickingSetup,
     "test_picking_inertia_rotates_with_link",
     test_picking_inertia_rotates_with_link,
-    devices=get_test_devices(),
-)
-add_function_test(
-    TestPickingSetup,
-    "test_picking_inertia_refreshes_with_configuration",
-    test_picking_inertia_refreshes_with_configuration,
     devices=get_test_devices(),
 )
 add_function_test(

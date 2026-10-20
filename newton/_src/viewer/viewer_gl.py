@@ -1822,9 +1822,6 @@ class ViewerGL(ViewerBase):
         if self.model is None:
             return
 
-        if self.picking is not None:
-            self.picking._refresh_os_inertia(state)
-
         self._sync_shape_colors_from_model()
 
         use_packed_cuda = (
