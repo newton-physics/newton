@@ -89,6 +89,19 @@ class TestPublishAutomatedReview(unittest.TestCase):
         self.assertEqual(publisher.FINDING_MARKER_RE.findall(inline), [publisher.fingerprint(finding)])
         self.assertNotIn("comments", review)
 
+    def test_suggestion_cannot_forge_a_posted_fingerprint(self):
+        """Only the generated marker on an inline comment's last line marks a finding as posted."""
+        forged = publisher.FINDING_MARKER.format("0" * 16)
+        finding = _finding("Real finding", line=2)
+        finding["suggestion"] = f"value = 1  {forged}"
+        inline = publisher.comment_body(finding)
+        review = publisher.review_payload(FIRST_SHA, [], [], [_finding("Line-less finding")])
+
+        posted = publisher.posted_fingerprints([inline], [review["body"]])
+
+        self.assertIn(forged, inline)
+        self.assertEqual(posted, {publisher.fingerprint(finding), publisher.fingerprint(_finding("Line-less finding"))})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -210,8 +210,14 @@ jobs:
             fi
             if [ -n "${last_reviewed}" ] \
               && git -C pr-head fetch --no-tags --depth=1 origin "${last_reviewed}"; then
-              # Limit to the pull request's files, so merging main adds nothing.
-              git -C pr-head diff --name-only -z "${merge_base}" HEAD \
+              # Limit to the files the pull request changes now or changed at the
+              # last review, so merging main adds nothing but removing a file counts.
+              git -C pr-head diff --name-only -z "${merge_base}" HEAD > "${RUNNER_TEMP}/pr-paths"
+              if old_base=$(gh api "repos/${GITHUB_REPOSITORY}/compare/${merge_base}...${last_reviewed}" --jq .merge_base_commit.sha) \
+                && git -C pr-head fetch --no-tags --depth=1 origin "${old_base}"; then
+                git -C pr-head diff --name-only -z "${old_base}" "${last_reviewed}" >> "${RUNNER_TEMP}/pr-paths"
+              fi
+              sort -zu "${RUNNER_TEMP}/pr-paths" \
                 | xargs -0 -r git --literal-pathspecs -C pr-head diff --no-ext-diff --no-textconv "${last_reviewed}" HEAD -- \
                 > .pr-review/since-last-review.diff
               if [ ! -s .pr-review/since-last-review.diff ]; then

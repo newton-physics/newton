@@ -103,6 +103,21 @@ def clip(text: object, limit: int = MAX_BODY_CHARS) -> str:
     return text if len(text) <= limit else text[: limit - 20].rstrip() + "\n\n*(truncated)*"
 
 
+def posted_fingerprints(inline_bodies: list[str], review_bodies: list[str]) -> set[str]:
+    """Collect the fingerprints of findings this workflow already posted.
+
+    An inline comment carries its marker on its last line, after any suggestion block, which is reviewer code that
+    cannot be escaped, so only that line counts. Review bodies list findings with neutralized reviewer text.
+    """
+    posted = set()
+    for body in inline_bodies:
+        lines = body.rstrip().splitlines()
+        posted.update(FINDING_MARKER_RE.findall(lines[-1] if lines else ""))
+    for body in review_bodies:
+        posted.update(FINDING_MARKER_RE.findall(body))
+    return posted
+
+
 def neutralize(text: str) -> str:
     """Break HTML comments and the incomplete warning in reviewer text, so it cannot forge what the workflow parses.
 
@@ -310,15 +325,16 @@ def main() -> int:
         findings = blocking
         details.append("Follow-up reviews report only blocking (P0/P1) issues.")
 
-    posted: set[str] = set()
+    bodies = {}
     for endpoint in ("comments", "reviews"):
         result = gh_api(
             "--paginate",
             f"repos/{repo}/pulls/{pr}/{endpoint}",
             "--jq",
-            f'.[] | select(.user.login == "{BOT_LOGIN}") | .body',
+            f'.[] | select(.user.login == "{BOT_LOGIN}") | {{body}}',
         )
-        posted.update(FINDING_MARKER_RE.findall(result.stdout))
+        bodies[endpoint] = [json.loads(line)["body"] or "" for line in result.stdout.splitlines() if line.strip()]
+    posted = posted_fingerprints(bodies["comments"], bodies["reviews"])
     valid_lines = commentable_lines(Path(".pr-review/pr.diff").read_text(encoding="utf-8", errors="replace"))
     inline, inline_findings, elsewhere, skipped = plan_comments(findings, valid_lines, posted)
 
