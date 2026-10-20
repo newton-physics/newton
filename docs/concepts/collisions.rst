@@ -1603,6 +1603,51 @@ Soft contacts are generated automatically when particles are present. They use a
     particles = contacts.soft_contact_particle.numpy()[:n_soft]
     shapes = contacts.soft_contact_shape.numpy()[:n_soft]
 
+With full-surface deformable-rigid mesh contacts enabled, detection retains
+the returned feature pairs, including endpoint contacts. :class:`~solvers.SolverVBD`
+selects force contributions inside each consuming kernel using its current particle
+and body positions, including during CUDA graph replay. Selection can change
+without another collision detection; it does not change the contact count,
+row order, or detected geometry. Coupling copies ownership and mesh provenance;
+the consuming solver evaluates eligibility. If the source contact buffer
+has overflowed, VBD accepts all stored rows, including through coupling.
+Rigid-soft division-plane constraints consume the detected rows independently
+of force selection.
+
+Reverse rigid-vertex/soft-triangle contacts test the soft target's neighbors
+and retain one eligible owner for a shared soft edge or vertex. They remain
+separate force contributions from soft-vertex/rigid-triangle queries.
+Preserving returned rows does not guarantee complete contact topology:
+mesh detection may use SDF-selected rigid edges, and edge penetration-recovery
+records are not ordinary edge-edge quadrature samples.
+
+.. _full-surface-mesh-contact-costs:
+
+Full-surface mesh contact costs
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Full-surface contact catches rigid features that can pass between deformable
+vertices, which is useful for coarse cloth. On finely tessellated or complex
+rigid meshes, however, retaining nearby feature pairs can produce many more
+records than particle-only contacts or SDF minimization. This increases contact
+storage and can substantially increase both collision detection and VBD solve
+time. Larger contact bands also admit more pairs. Profile the intended scene;
+the cost depends on mesh resolution, geometry, and contact density.
+
+:class:`CollisionPipeline` automatically estimates mesh contact storage. Set
+``soft_contact_max`` to choose the total soft-contact capacity explicitly.
+The estimate is not an upper bound: dense patches can still overflow. The mesh
+overflow warning prints the current ``soft_contact_max`` and the required count
+for that collision pass. Increase ``soft_contact_max`` to at least that count,
+and verify that contacts fit throughout the simulation before relying on the
+results; later frames may require more storage.
+
+This setting controls reserved storage, not the contact band or the number of
+feature pairs queried. Lowering capacity can save memory but produces incomplete
+contacts if it is too small; it is not a way to reduce query work while preserving
+the same contacts. The edge and vertex queries and the processing of their
+records remain a runtime cost even when the buffer is sized appropriately.
+
 .. _collision-frequency-in-the-simulation-loop:
 
 Collision frequency in the simulation loop
@@ -1788,6 +1833,8 @@ and is consumed by the solver :meth:`~solvers.SolverBase.step` method for contac
    soft-contact rows (row ``rigid_contact_max + i`` for soft contact ``i``) for
    rigid-soft particle, edge, and face records. With an external rigid solver, VBD's
    rigid rows are zero; consume that solver's forces from its own observables.
+   Soft rows retain their detection indices; mesh rows rejected at the exported
+   configuration report zero force.
    See :ref:`vbd_contact_forces` for the sign and torque convention.
 
 Example usage:
