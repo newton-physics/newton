@@ -3530,7 +3530,13 @@ class ModelBuilder:
         gc_was_enabled = gc.isenabled()
         gc.disable()
         try:
-            if world_count <= 0:
+            if world_count < 0:
+                return
+            if xforms is not None and len(xforms) != world_count:
+                raise ValueError(f"xforms must contain {world_count} entries, got {len(xforms)}")
+            if label_prefixes is not None and len(label_prefixes) != world_count:
+                raise ValueError(f"label_prefixes must contain {world_count} entries, got {len(label_prefixes)}")
+            if world_count == 0:
                 return
             if separate_worlds and self.current_world != -1:
                 raise RuntimeError(
@@ -3543,12 +3549,8 @@ class ModelBuilder:
                 else:
                     offsets = compute_world_offsets(world_count, spacing, self.up_axis)
                     xforms = [wp.transform(offset, wp.quat_identity()) for offset in offsets]
-            elif len(xforms) != world_count:
-                raise ValueError(f"xforms must contain {world_count} entries, got {len(xforms)}")
             if label_prefixes is None:
                 label_prefixes = [None] * world_count
-            elif len(label_prefixes) != world_count:
-                raise ValueError(f"label_prefixes must contain {world_count} entries, got {len(label_prefixes)}")
 
             if separate_worlds:
                 worlds = list(range(self.world_count, self.world_count + world_count))

@@ -356,6 +356,21 @@ class TestModelBuilderReplicate(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "xforms must contain 2 entries, got 1"):
             ModelBuilder().replicate(self._make_source(), 2, xforms=[wp.transform_identity()])
 
+    def test_replicate_zero_copies_validates_per_copy_inputs(self):
+        """Reject per-copy inputs with entries when replicating zero copies, and add nothing otherwise."""
+        source = self._make_source()
+        with self.assertRaisesRegex(ValueError, "xforms must contain 0 entries, got 1"):
+            ModelBuilder().replicate(source, 0, xforms=[wp.transform_identity()])
+        with self.assertRaisesRegex(ValueError, "label_prefixes must contain 0 entries, got 1"):
+            ModelBuilder().replicate(source, 0, label_prefixes=["a"])
+
+        builder = ModelBuilder()
+        builder.begin_world()
+        builder.replicate(source, 0, xforms=[], label_prefixes=[])
+        builder.end_world()
+        self.assertEqual(builder.world_count, 1)
+        self.assertEqual(builder.body_count, 0)
+
     def test_replicate_does_not_call_add_world(self):
         source = self._make_source()
         builder = self._make_destination()
