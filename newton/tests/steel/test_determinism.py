@@ -36,7 +36,7 @@ JOINT_DOF_DIMS = ((3, 3), (0, 3), (0, 3))
 CRBA_ARTICULATIONS = 256
 CRBA_LAUNCHES = 8
 
-# Drive, joint-limit and velocity-limit rows of two floating ants per world, plus free boxes.
+# Joint-limit and velocity-limit rows of two floating ants per world, plus free boxes; drive rows need drive gains.
 MATRIX_FREE_OPTIONS = {
     "drive_mode": "rows",
     "enable_joint_limits": True,
@@ -59,8 +59,13 @@ SPLIT_OPTIONS = {
 # Device-prepared contact torsion rows follow the contact rows of their world.
 TORSION_OPTIONS = {**MATRIX_FREE_OPTIONS, "contact_torsion_device": True, "articulation_constraint_max": 512}
 
-# Joint-friction rows alongside the contact, drive, joint-limit and velocity-limit rows.
-FRICTION_OPTIONS = {**MATRIX_FREE_OPTIONS, "enable_joint_friction": True}
+# Joint-friction rows alongside contact, drive, joint-limit and velocity-limit rows; unfused limits keep their rows.
+FRICTION_OPTIONS = {
+    **MATRIX_FREE_OPTIONS,
+    "enable_joint_friction": True,
+    "fuse_joint_velocity_limits": False,
+    "articulation_constraint_max": 512,
+}
 
 # Warm-started impulses are matched through contact matching and carried across steps.
 WARMSTART_OPTIONS = {**MATRIX_FREE_OPTIONS, "contact_warmstart": True, "velocity_iterations": 2}
@@ -170,7 +175,8 @@ def test_full_reset_matches_fresh_solver(test, device):
 def _build_contact_scene(device, worlds=4, boxes=6, ants=2, torsion_radius=0.0, joint_friction=0.0):
     """Floating ants dropped onto each other and onto a pile of free boxes in every world.
 
-    A positive ``joint_friction`` adds a floating prismatic, ball and D6 chain and sets it on every non-free DOF.
+    A positive ``joint_friction`` adds a floating prismatic, ball and D6 chain and sets it, with a position
+    drive, on every non-free DOF.
     """
     env = newton.ModelBuilder()
     SolverSteel.register_custom_attributes(env)
@@ -203,10 +209,12 @@ def _build_contact_scene(device, worlds=4, boxes=6, ants=2, torsion_radius=0.0, 
     if torsion_radius > 0.0:
         model.steel.min_torsional_patch_radius.fill_(torsion_radius)
     if joint_friction > 0.0:
-        friction = np.zeros(model.joint_dof_count, dtype=np.float32)
-        joint_dofs = np.repeat(model.joint_type.numpy(), np.diff(model.joint_qd_start.numpy()))
-        friction[joint_dofs != newton.JointType.FREE] = joint_friction
-        model.joint_friction.assign(friction)
+        jointed = np.repeat(model.joint_type.numpy(), np.diff(model.joint_qd_start.numpy())) != newton.JointType.FREE
+        model.joint_friction.assign(np.where(jointed, joint_friction, 0.0).astype(np.float32))
+        # Position drives on the same DOFs add drive rows.
+        model.joint_target_mode.assign(np.where(jointed, int(newton.JointTargetMode.POSITION), 0).astype(np.int32))
+        model.joint_target_ke.assign(np.where(jointed, 20.0, 0.0).astype(np.float32))
+        model.joint_target_kd.assign(np.where(jointed, 0.5, 0.0).astype(np.float32))
     return model
 
 
