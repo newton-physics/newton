@@ -284,10 +284,10 @@ def test_refinement_triangle_box_depth(test, device):
 def test_refinement_triangle_above_wide_ground(test, device):
     """Report the true gap for a small triangle hovering above a wide ground.
 
-    The witness points sum support coordinates hundreds of metres long, so a
-    normal rebuilt from them tilted by a few degrees for a millimetre gap. The
+    The witness points sum support coordinates hundreds of meters long, so a
+    normal rebuilt from them tilted by a few degrees for a millimeter gap. The
     manifold then measured depth along that normal to a far ground corner and
-    reported contacts metres deep, launching objects resting on the ground.
+    reported contacts meters deep, launching objects resting on the ground.
     """
     # Mesh triangles captured from assets resting on a wide ground, relative to its top face [m].
     cases = {

@@ -549,7 +549,7 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
         # Take the normal from the projected closest point. Rebuilding it from the
         # witnesses sums large support coordinates, and that tangential roundoff
         # tilts the normal of a small gap toward a distant hull corner (e.g. a
-        # millimetre gap above a 1000 m ground box).
+        # millimeter gap above a 1000 m ground box).
         normal = wp.normalize(-v)
         return True, point_a, point_b, normal, wp.dot(point_b - point_a, normal)
 
