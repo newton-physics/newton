@@ -22,6 +22,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.actuators import effort_mode_implicit
 from newton._src.actuators.utils import load_metadata
 from newton._src.utils.import_usd import parse_usd
 from newton.actuators import (
@@ -408,6 +409,28 @@ def _build_two_link(
     if worlds == 1:
         return template.finalize(device=device)
     builder = newton.ModelBuilder(gravity=_IN_PLANE_GRAVITY if gravity else _NO_GRAVITY)
+    builder.replicate(template, worlds, spacing=(0.0, 0.0, 0.0))
+    return builder.finalize(device=device)
+
+
+def _build_chain(device: wp.Device, links: int = 8, worlds: int = 2) -> newton.Model:
+    """Revolute chain with alternating axes, large enough for the CUDA tile inverse and block solve."""
+    template = newton.ModelBuilder(gravity=_NO_GRAVITY)
+    parent = -1
+    joints = []
+    for i in range(links):
+        body = template.add_link(com=wp.vec3(0.0, 0.0, -0.05), inertia=_POINT_MASS_INERTIA, mass=0.2 + 0.05 * i)
+        joints.append(
+            template.add_joint_revolute(
+                parent=parent,
+                child=body,
+                axis=(newton.Axis.X, newton.Axis.Y, newton.Axis.Z)[i % 3],
+                parent_xform=wp.transform(wp.vec3(0.0, 0.0, -0.1 if parent >= 0 else 0.0), wp.quat_identity()),
+            )
+        )
+        parent = body
+    template.add_articulation(joints)
+    builder = newton.ModelBuilder(gravity=_NO_GRAVITY)
     builder.replicate(template, worlds, spacing=(0.0, 0.0, 0.0))
     return builder.finalize(device=device)
 
@@ -3687,6 +3710,52 @@ class TestActuatorImplicit(unittest.TestCase):
     to the implicit solve.
     """
 
+    def test_block_solve_matches_per_thread_solve(self):
+        """The CUDA block solve gives the per-thread solve's efforts on a clamped 8-DOF chain."""
+        device = wp.get_device()
+        if not device.is_cuda:
+            self.skipTest("the block solve runs on CUDA only")
+        h = 0.004
+        model = _build_chain(device)
+        n = model.joint_dof_count
+        rng = np.random.default_rng(0)
+        state = model.state()
+        state.joint_q.assign(rng.uniform(-0.4, 0.4, n).astype(np.float32))
+        state.joint_qd.assign(rng.uniform(-2.0, 2.0, n).astype(np.float32))
+        control = model.control()
+        control.joint_target_q.assign(rng.uniform(-0.5, 0.5, n).astype(np.float32))
+
+        def run() -> tuple[np.ndarray, bool]:
+            response = JointSpaceResponse(model)
+            actuator = Actuator(
+                indices=wp.array(_arm_dofs(model), dtype=wp.uint32, device=device),
+                drive=DrivePD(
+                    kp=wp.full(n, 500.0, dtype=float, device=device),
+                    kd=wp.full(n, 10.0, dtype=float, device=device),
+                ),
+                clamping=[
+                    ClampingDCMotor(
+                        saturation_effort=wp.full(n, 40.0, dtype=float, device=device),
+                        velocity_limit=wp.full(n, 3.0, dtype=float, device=device),
+                        max_motor_effort=wp.full(n, 30.0, dtype=float, device=device),
+                    )
+                ],
+                control_target_pos_attr="joint_target_q",
+                control_target_vel_attr="joint_target_qd",
+            )
+            actuator.set_effort_mode_implicit(response)
+            control.joint_f.zero_()
+            _refresh_and_step(actuator, response, state, control, h)
+            return control.joint_f.numpy().copy(), actuator._effort_mode._block_kernel is not None
+
+        block, used_block = run()
+        with patch.object(effort_mode_implicit, "_BLOCK_SOLVE_MAX_ROWS", 0):
+            per_thread, used_block_after_patch = run()
+        self.assertTrue(used_block)
+        self.assertFalse(used_block_after_patch)
+        self.assertGreater(np.max(np.abs(per_thread)), 1.0)
+        np.testing.assert_allclose(block, per_thread, rtol=1e-3, atol=1e-3)
+
     def test_unsupported_drive_raises(self):
         """A drive without evaluate_force is rejected at construction."""
         device = wp.get_device()
@@ -3970,10 +4039,10 @@ class TestActuatorImplicit(unittest.TestCase):
             p += 0.02 * (h * f - p)
         np.testing.assert_allclose(converged, p / h, rtol=2e-3, atol=1e-3)
 
-        # One step lands on the wrong branch; three are enough and further ones change nothing.
+        # One step lands on the wrong branch; two are enough and further ones change nothing.
         single, _ = run(1)
         self.assertGreater(np.max(np.abs(single - converged)), 0.5 * np.max(np.abs(converged)))
-        np.testing.assert_allclose(run(3)[0], converged, rtol=1e-6, atol=1e-6)
+        np.testing.assert_allclose(run(2)[0], converged, rtol=1e-6, atol=1e-6)
 
     def test_dc_motor_solve_converges_where_full_newton_steps_oscillate(self):
         """The line search lets the solve converge where full Newton steps jump between the DC-motor limits."""
@@ -4124,6 +4193,33 @@ class TestJointSpaceResponse(unittest.TestCase):
 
         expected = 1.0 / np.finfo(np.float32).eps
         self.assertAlmostEqual(float(response.inverse_blocks.numpy()[0, 0, 0]), expected)
+
+    def test_tile_inverse_matches_dense_inverse(self):
+        """The CUDA tile inverse matches a dense inverse, and a singular block falls back to the floored kernel."""
+        device = wp.get_device()
+        if not device.is_cuda:
+            self.skipTest("the tile inverse runs on CUDA only")
+        model = _build_chain(device)
+        n = model.joint_dof_count // model.world_count
+        state = model.state()
+        state.joint_q.assign(np.random.default_rng(1).uniform(-0.6, 0.6, model.joint_dof_count).astype(np.float32))
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        response = JointSpaceResponse(model)
+        self.assertIsNotNone(response._tile)
+
+        response.refresh(state)
+
+        H = newton.eval_mass_matrix(model, state).numpy()
+        blocks = response.inverse_blocks.numpy()
+        for art in range(model.articulation_count):
+            expected = np.linalg.inv(H[art, :n, :n].astype(np.float64))
+            np.testing.assert_allclose(blocks[art, :n, :n], expected, rtol=1e-3, atol=1e-3 * np.abs(expected).max())
+
+        # A zero block makes the tile Cholesky fail; the repair redoes it with floored pivots.
+        response._H.zero_()
+        response._invert_blocks()
+        expected = np.eye(n) / np.finfo(np.float32).eps
+        np.testing.assert_allclose(response.inverse_blocks.numpy()[0, :n, :n], expected, rtol=1e-5)
 
     def test_inverse_blocks_match_dense_inverse(self):
         """refresh() fills the full per-articulation inverse mass block.

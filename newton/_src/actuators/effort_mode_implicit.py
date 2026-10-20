@@ -398,7 +398,8 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
                 rbuf[g, i] = s / jbuf[g, i, i]
             # Backtrack until the residual drops. A clamp makes the residual
             # piecewise smooth, and a full step can jump between opposite limits
-            # without ever converging; a shorter step lands in between.
+            # without ever converging; a shorter step lands in between. The first
+            # full step is always taken, so a step that converges is not shortened.
             alpha = wp.float64(1.0)
             accepted = int(0)
             for _ls in range(_LINE_SEARCH_STEPS):
@@ -425,7 +426,7 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
                     )
                     ri = vbuf[g, i] - hd * f_i
                     rn_t += ri * ri
-                if rn_t <= (wp.float64(1.0) - wp.float64(_SUFFICIENT_DECREASE) * alpha) * rn:
+                if it == 0 or rn_t <= (wp.float64(1.0) - wp.float64(_SUFFICIENT_DECREASE) * alpha) * rn:
                     accepted = 1
                     break
                 alpha = alpha * wp.float64(0.5)
@@ -672,7 +673,7 @@ def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Funct
                     qd_t = qd0 + u_t
                     r_t = p_t - hd * force_at(q0 + hd * qd_t, qd_t, tq, tqd, ff, params, clamp_params, si)
                 rn_t = wp.tile_extract(wp.tile_sum(wp.tile(r_t * r_t)), 0)
-                if rn_t <= (wp.float64(1.0) - wp.float64(_SUFFICIENT_DECREASE) * alpha) * rn:
+                if it == 0 or rn_t <= (wp.float64(1.0) - wp.float64(_SUFFICIENT_DECREASE) * alpha) * rn:
                     accepted = 1
                     break
                 alpha = alpha * wp.float64(0.5)
