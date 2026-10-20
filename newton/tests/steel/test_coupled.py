@@ -12,7 +12,6 @@ import newton
 from newton.solvers import SolverMuJoCo, SolverSteel, SolverVBD
 from newton.solvers.experimental.coupled import (
     CouplingInterface,
-    ModelView,
     SolverCoupled,
     SolverCoupledADMM,
     SolverCoupledProxy,
@@ -504,7 +503,7 @@ def test_offset_contact_turns_hinge(test, device):
 
 
 def _build_box_rod(device, *, box_z=0.15, box_xy=(0.0, 0.0), box_joint_qd=None, rod=True):
-    """Build a free Steel box above two VBD cables lying on the ground; returns model, box and rod ids."""
+    """Build a free Steel box above two VBD cables lying on the ground; returns model, box and rod bodies."""
     builder = newton.ModelBuilder()
     SolverVBD.register_custom_attributes(builder)
     builder.add_ground_plane()
@@ -513,7 +512,7 @@ def _build_box_rod(device, *, box_z=0.15, box_xy=(0.0, 0.0), box_joint_qd=None, 
     builder.add_shape_box(box, hx=0.05, hy=0.08, hz=0.05, cfg=newton.ModelBuilder.ShapeConfig(density=2.0 / 0.0016))
     if box_joint_qd is not None:
         builder.joint_qd[0:6] = list(box_joint_qd)
-    rod_bodies, rod_joints = [], []
+    rod_bodies = []
     # Two parallel cables support the box stably.
     for y in (-0.04, 0.04) if rod else ():
         cable = newton.Rod.create_straight(
@@ -524,7 +523,7 @@ def _build_box_rod(device, *, box_z=0.15, box_xy=(0.0, 0.0), box_joint_qd=None, 
             twist_total=0.0,
             radius=0.012,
         )
-        bodies, joints = builder.add_rod(
+        bodies, _ = builder.add_rod(
             rod=cable,
             body_frame_origin="start",
             cfg=newton.ModelBuilder.ShapeConfig(density=1400.0, ke=5.0e4, kd=1.0e1, mu=0.9, margin=0.001, gap=0.002),
@@ -534,29 +533,24 @@ def _build_box_rod(device, *, box_z=0.15, box_xy=(0.0, 0.0), box_joint_qd=None, 
             bend_damping=1.6e-3,
         )
         rod_bodies += list(bodies)
-        rod_joints += list(joints)
     builder.color()
-    return builder.finalize(device=device), box, rod_bodies, rod_joints
+    return builder.finalize(device=device), box, rod_bodies
 
 
-def _admm(model, box, rod_bodies, rod_joints, rigid_factory=_steel, *, iterations=3, gamma=0.001):
+def _admm(model, box, rod_bodies, rigid_factory=_steel, *, iterations=3, gamma=0.001):
     model.rigid_contact_max = max(model.rigid_contact_max or 0, 4096)
+    box_joints = np.flatnonzero(model.joint_child.numpy() == box).tolist()
     return SolverCoupledADMM(
         model=model,
         entries=[
-            SolverCoupled.Entry(
-                name="rigid",
-                solver=rigid_factory,
-                bodies=[box],
-                joints=[j for j in range(model.joint_count) if j not in rod_joints],
-            ),
+            SolverCoupled.Entry(name="rigid", solver=rigid_factory, bodies=[box], joints=box_joints),
             SolverCoupled.Entry(
                 name="vbd",
                 solver=lambda v: SolverVBD(
                     model=v, iterations=8, rigid_compliant_alm=True, rigid_contact_history=False
                 ),
                 bodies=rod_bodies,
-                joints=rod_joints,
+                joints=[j for j in range(model.joint_count) if j not in box_joints],
             ),
         ],
         coupling=SolverCoupledADMM.Config(
@@ -572,11 +566,11 @@ def _admm(model, box, rod_bodies, rod_joints, rigid_factory=_steel, *, iteration
 def test_admm_no_contact_matches_standalone(test, device):
     """Match standalone Steel under ADMM restarts for a box that never touches the cable."""
     kwargs = {"box_z": 0.08, "box_xy": (3.0, 0.0), "box_joint_qd": (1.0, 0.3, -0.5, 0.0, 0.0, 3.0)}
-    reference_model, _, _, _ = _build_box_rod(device, rod=False, **kwargs)
+    reference_model, _, _ = _build_box_rod(device, rod=False, **kwargs)
     reference_q = _Rollout(reference_model, _steel(reference_model)).run(120)
     for iterations in (1, 3):
-        model, box, rod_bodies, rod_joints = _build_box_rod(device, **kwargs)
-        rollout = _Rollout(model, _admm(model, box, rod_bodies, rod_joints, iterations=iterations, gamma=0.0))
+        model, box, rod_bodies = _build_box_rod(device, **kwargs)
+        rollout = _Rollout(model, _admm(model, box, rod_bodies, iterations=iterations, gamma=0.0))
         coupled_q = rollout.run(120)
         np.testing.assert_allclose(
             coupled_q[:, box], reference_q[:, 0], atol=1.0e-5, err_msg=f"iterations={iterations}"
@@ -712,179 +706,78 @@ def test_unsupported_roles_raise(test, device):
         _Rollout(model, solver).step()
 
 
-def _build_prismatic_links(device, enabled: tuple[bool, ...]):
-    """Build one 1 kg prismatic link per entry of ``enabled``, each in its own world."""
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    for joint_enabled in enabled:
-        builder.begin_world()
-        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        builder.add_articulation([builder.add_joint_prismatic(-1, body, axis=newton.Axis.X, enabled=joint_enabled)])
-        builder.end_world()
-    return builder.finalize(device=device)
-
-
-def _push_joints(model, solver):
-    """Step once with a 1 N force on every joint DOF and return the joint coordinates and velocities."""
-    state_in, state_out = model.state(), model.state()
-    control = model.control()
-    control.joint_f.fill_(1.0)
-    solver.step(state_in, state_out, control, None, 0.01)
-    return state_out.joint_q.numpy(), state_out.joint_qd.numpy()
-
-
-def _steel_entry(name, joint, configure_view=None):
-    return SolverCoupled.Entry(
-        name=name,
-        solver=lambda view: SolverSteel(view, solve_mode="split"),
-        bodies=[joint],
-        joints=[joint],
-        configure_view=configure_view,
+def _build_split_arm(device, *, base: bool, world_count: int = 2):
+    """Build a FREE base, a ball shoulder and a turning revolute elbow per world, or the arm alone on a FREE root."""
+    template = newton.ModelBuilder()
+    inertia = wp.mat33(np.eye(3) * 0.01)
+    half = wp.transform(wp.vec3(0.15, 0.0, 0.0), wp.quat_identity())
+    half_back = wp.transform(wp.vec3(-0.15, 0.0, 0.0), wp.quat_identity())
+    joints = []
+    if base:
+        base_body = template.add_link(mass=1.0, inertia=inertia)
+        joints.append(template.add_joint_free(base_body))
+    upper, lower = (
+        template.add_link(xform=wp.transform(wp.vec3(x, 0.0, 0.0), wp.quat_identity()), mass=1.0, inertia=inertia)
+        for x in (0.3, 0.6)
     )
-
-
-def test_caller_disabled_joints_raise_through_views(test, device):
-    """Reject a caller-disabled joint in a model, a view, or a coupled entry view."""
-    enabled = _build_prismatic_links(device, (True,))
-    q, qd = _push_joints(enabled, SolverSteel(enabled, solve_mode="split"))
-    np.testing.assert_allclose(q, [1.0e-4], rtol=1.0e-5)
-    np.testing.assert_allclose(qd, [1.0e-2], rtol=1.0e-5)
-
-    with test.assertRaisesRegex(NotImplementedError, "disabled joints"):
-        SolverSteel(_build_prismatic_links(device, (False,)), solve_mode="split")
-    with test.assertRaisesRegex(NotImplementedError, "disabled joints"):
-        SolverSteel(ModelView(_build_prismatic_links(device, (False,)), "standalone"), solve_mode="split")
-    view = ModelView(_build_prismatic_links(device, (True,)), "view_disabled")
-    view.disable_joints(wp.array([0], dtype=int, device=device))
-    with test.assertRaisesRegex(NotImplementedError, "disabled joints"):
-        SolverSteel(view, solve_mode="split")
-    with test.assertRaisesRegex(NotImplementedError, "disabled joints"):
-        SolverCoupled(model=_build_prismatic_links(device, (False,)), entries=[_steel_entry("owned", 0)])
-    with test.assertRaisesRegex(NotImplementedError, "disabled joints"):
-        SolverCoupled(
-            model=_build_prismatic_links(device, (True,)),
-            entries=[_steel_entry("owned", 0, lambda v: v.disable_joints(wp.array([0], dtype=int, device=device)))],
-        )
-
-
-def test_coupled_views_accept_joints_other_entries_own(test, device):
-    """Accept the joint another entry owns and simulate the entry's own joint as enabled."""
-    # One link per world leaves each entry's view on the full layout, so both disabled joints are visible.
-    model = _build_prismatic_links(device, (True, True))
-    solver = SolverCoupled(model=model, entries=[_steel_entry("first", 0), _steel_entry("second", 1)])
-    for name, foreign in (("first", 1), ("second", 0)):
-        view = solver.view(name)
-        test.assertEqual(view.coupling_disabled_joints.numpy().tolist(), [foreign])
-        test.assertFalse(bool(view.joint_enabled.numpy()[foreign]))
-    q, qd = _push_joints(model, solver)
-    np.testing.assert_allclose(q, [1.0e-4, 1.0e-4], rtol=1.0e-5)
-    np.testing.assert_allclose(qd, [1.0e-2, 1.0e-2], rtol=1.0e-5)
-    for name in ("first", "second"):
-        # The step does not report the other entry's joint as a disabled tree joint.
-        solver.solver(name).check_constraint_capacity()
-
-    # A caller-disabled joint still raises when another entry owns a different disabled joint.
-    with test.assertRaisesRegex(NotImplementedError, "disabled joints"):
-        SolverCoupled(
-            model=_build_prismatic_links(device, (False, True)),
-            entries=[_steel_entry("first", 0), _steel_entry("second", 1)],
-        )
-
-
-def test_coupled_view_rejects_unowned_disabled_joint(test, device):
-    """Reject a caller-disabled joint that no entry owns, even when the entry owns its child body."""
-    entry = SolverCoupled.Entry(
-        name="steel", solver=lambda view: SolverSteel(view, solve_mode="split"), bodies=[0, 1], joints=[0]
-    )
-    with test.assertRaisesRegex(NotImplementedError, "disabled joints"):
-        SolverCoupled(model=_build_prismatic_links(device, (True, False)), entries=[entry])
-
-
-def _build_admm_cross_chain(device, *, cross_joint: str = "ball", cross_joint_enabled: bool = True):
-    """Build a prismatic parent with a ``cross_joint`` child in world 0 and a lone prismatic link in world 1."""
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    builder.begin_world()
-    parent = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.01))
-    child = builder.add_link(
-        xform=wp.transform(wp.vec3(0.3, 0.0, 0.0), wp.quat_identity()),
-        mass=1.0,
-        inertia=wp.mat33(np.eye(3) * 0.01),
-    )
-    slide = builder.add_joint_prismatic(-1, parent, axis=newton.Axis.X)
-    if cross_joint == "ball":
-        joint = builder.add_joint_ball(
-            parent,
-            child,
-            child_xform=wp.transform(wp.vec3(-0.3, 0.0, 0.0), wp.quat_identity()),
-            enabled=cross_joint_enabled,
-        )
-    elif cross_joint == "free":
-        joint = builder.add_joint_free(child, parent=parent)
+    if base:
+        joints.append(template.add_joint_ball(base_body, upper, parent_xform=half, child_xform=half_back))
     else:
-        joint = builder.add_joint_distance(parent, child, min_distance=0.0, max_distance=0.305)
-    builder.add_articulation([slide, joint])
-    builder.end_world()
-    builder.begin_world()
-    builder.add_articulation(
-        [
-            builder.add_joint_prismatic(
-                -1, builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.01)), axis=newton.Axis.X
-            )
-        ]
-    )
-    builder.end_world()
-    return builder.finalize(device=device)
+        joints.append(template.add_joint_free(upper))
+    elbow = template.add_joint_revolute(upper, lower, axis=(0.0, 1.0, 0.0), parent_xform=half, child_xform=half_back)
+    joints.append(elbow)
+    template.add_articulation(joints)
+    template.joint_qd[template.joint_qd_start[elbow]] = 2.0
+    builder = newton.ModelBuilder()
+    builder.replicate(template, world_count=world_count)
+    return builder.finalize(device=device), template.body_count, template.joint_count
 
 
-def _admm_cross_chain_solver(model):
+def _run_split_arm(model, solver):
+    state_0, state_1 = model.state(), model.state()
+    newton.eval_fk(model, state_0.joint_q, state_0.joint_qd, state_0)
+    for _ in range(60):
+        solver.step(state_0, state_1, model.control(), None, 1.0 / 240.0)
+        state_0, state_1 = state_1, state_0
+    return state_0.body_q.numpy()
+
+
+def test_split_articulation_gets_free_root(test, device):
+    """Step a split arm subtree on its view's FREE root like the same arm built on a FREE root."""
+
     def steel(view):
         return SolverSteel(view, solve_mode="split")
 
-    # The world-1 link makes both entries heterogeneous, so their views keep the full layout and the cross joint.
-    return SolverCoupledADMM(
+    world_count = 2
+    model, bodies_per_world, joints_per_world = _build_split_arm(device, base=True, world_count=world_count)
+
+    def expand(ids, stride):
+        return [world * stride + i for world in range(world_count) for i in ids]
+
+    # Neither entry owns the shoulder, so the arm view roots the upper link at a FREE joint.
+    solver = SolverCoupled(
         model=model,
         entries=[
-            SolverCoupled.Entry(name="parent", solver=steel, bodies=[0], joints=[0]),
-            SolverCoupled.Entry(name="child", solver=steel, bodies=[1, 2], joints=[2]),
+            SolverCoupled.Entry(
+                name="base", solver=steel, bodies=expand([0], bodies_per_world), joints=expand([0], joints_per_world)
+            ),
+            SolverCoupled.Entry(
+                name="arm", solver=steel, bodies=expand([1, 2], bodies_per_world), joints=expand([2], joints_per_world)
+            ),
         ],
-        coupling=SolverCoupledADMM.Config(
-            iterations=12,
-            rho=40.0,
-            baumgarte=0.5,
-            joint_stiffness=500.0,
-            joint_angular_stiffness=50.0,
-            joint_proximal_bodies=False,
-        ),
     )
+    view = solver.view("arm")
+    free, revolute = int(newton.JointType.FREE), int(newton.JointType.REVOLUTE)
+    np.testing.assert_array_equal(view.joint_type.numpy(), [free, revolute] * world_count)
+    test.assertTrue(bool(np.all(view.joint_enabled.numpy())))
+    np.testing.assert_array_equal(view.articulation_start.numpy(), [0, 2, 4])
 
-
-def test_admm_views_accept_cross_solver_joints(test, device):
-    """Accept the unowned cross-solver joint that ADMM enforces, only while it is enabled."""
-    model = _build_admm_cross_chain(device)
-    solver = _admm_cross_chain_solver(model)
-    for name, marked in (("parent", [1, 2]), ("child", [0, 1])):
-        test.assertEqual(solver.view(name).coupling_disabled_joints.numpy().tolist(), marked)
-
-    state_in, state_out = model.state(), model.state()
-    control = model.control()
-    control.joint_f.assign(np.array([1.0] + [0.0] * (model.joint_dof_count - 1), dtype=np.float32))
-    for _ in range(60):
-        solver.step(state_in, state_out, control, None, 1.0 / 120.0)
-        state_in, state_out = state_out, state_in
-    body_x = state_in.body_q.numpy()[:, 0]
-    # The ball attachment drags the 1 kg child along, halving the parent's 1 N acceleration.
-    test.assertAlmostEqual(float(body_x[0]), 0.0625, delta=0.005)
-    test.assertAlmostEqual(float(body_x[1] - body_x[0]), 0.3, delta=1.0e-3)
-
-    with test.assertRaisesRegex(NotImplementedError, "disabled joints"):
-        _admm_cross_chain_solver(_build_admm_cross_chain(device, cross_joint_enabled=False))
-
-
-def test_admm_views_reject_unattached_cross_solver_joints(test, device):
-    """Reject FREE and DISTANCE cross-solver joints, which get no ADMM attachment."""
-    for cross_joint in ("free", "distance"):
-        with test.subTest(cross_joint=cross_joint):
-            with test.assertRaisesRegex(NotImplementedError, "disabled joints"):
-                _admm_cross_chain_solver(_build_admm_cross_chain(device, cross_joint=cross_joint))
+    body_q = _run_split_arm(model, solver).reshape(world_count, bodies_per_world, 7)
+    reference_model, _, _ = _build_split_arm(device, base=False, world_count=world_count)
+    reference_q = _run_split_arm(reference_model, steel(reference_model)).reshape(world_count, 2, 7)
+    np.testing.assert_allclose(body_q[:, 1:], reference_q, atol=1.0e-5)
+    # The elbow turned, so the arm did not fall as a rigid body.
+    test.assertGreater(abs(float(reference_q[0, 1, 2] - reference_q[0, 0, 2])), 0.05)
 
 
 class TestCoupledSolverSteel(unittest.TestCase):
@@ -911,18 +804,12 @@ for _name, _func in (
     add_function_test(TestCoupledSolverSteel, _name, _func, devices=get_cuda_test_devices())
 
 
-class TestCoupledSteelDisabledJoints(unittest.TestCase):
-    pass
-
-
-for _func in (
-    test_caller_disabled_joints_raise_through_views,
-    test_coupled_views_accept_joints_other_entries_own,
-    test_coupled_view_rejects_unowned_disabled_joint,
-    test_admm_views_accept_cross_solver_joints,
-    test_admm_views_reject_unattached_cross_solver_joints,
-):
-    add_function_test(TestCoupledSteelDisabledJoints, _func.__name__, _func, devices=get_test_devices())
+add_function_test(
+    TestCoupledSolverSteel,
+    "test_split_articulation_gets_free_root",
+    test_split_articulation_gets_free_root,
+    devices=get_test_devices(),
+)
 
 
 if __name__ == "__main__":

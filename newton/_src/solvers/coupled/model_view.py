@@ -83,7 +83,6 @@ class ModelView:
         object.__setattr__(self, "_name", name)
         object.__setattr__(self, "_overrides", {})
         object.__setattr__(self, "_cache", {})
-        object.__setattr__(self, "_coupling_disabled_joints", wp.zeros(0, dtype=int, device=parent.device))
 
     # ------------------------------------------------------------------
     # Attribute delegation
@@ -174,26 +173,6 @@ class ModelView:
     def joint_target_q_start(self) -> wp.array | None:
         """View-local start indices for :attr:`~newton.Model.joint_target_q`."""
         return self.joint_q_start
-
-    @property
-    def coupling_disabled_joints(self) -> wp.array[int]:
-        """View-local joints disabled here because another entry or the coupling algorithm simulates them.
-
-        A sub-solver may accept these disabled joints while rejecting any other disabled joint.
-        """
-        return object.__getattribute__(self, "_coupling_disabled_joints")
-
-    def mark_coupling_disabled_joints(self, joint_indices: wp.array[int]) -> None:
-        """Record which disabled joints of this view another entry or the coupling algorithm simulates.
-
-        Replaces the previously recorded indices. The joints are not disabled by this call; see
-        :meth:`disable_joints`. Call it before constructing the sub-solver for this view: a solver may
-        read the indices once, at construction.
-
-        Args:
-            joint_indices: 1-D int array of view-local joint indices.
-        """
-        object.__setattr__(self, "_coupling_disabled_joints", joint_indices)
 
     @property
     def overrides(self) -> dict[str, object]:

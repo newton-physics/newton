@@ -768,7 +768,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
         any_body_owner = any(owner >= 0 for owner in self._body_owner)
         any_particle_owner = any(owner >= 0 for owner in self._particle_owner)
         any_joint_owner = any(owner >= 0 for owner in self._joint_owner)
-        coupling_managed_joints = self._coupling_managed_joint_indices()
 
         for idx, cfg in enumerate(self._entry_configs):
             self._solver_order.append(cfg.name)
@@ -884,14 +883,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     wp.array([global_id for _, global_id in owned_pairs], dtype=int, device=device),
                 )
 
-            # Only joints another entry or the coupling algorithm simulates; solvers may reject other disabled joints.
-            view.mark_coupling_disabled_joints(
-                self._global_indices_to_local_array(
-                    [i for i in joint_dynamics_disabled if self._joint_owner[i] >= 0 or i in coupling_managed_joints],
-                    index_lists,
-                    model.AttributeFrequency.JOINT,
-                )
-            )
             solver = cfg.solver(view)
             _require_supports_coupling(solver)
             self._entries[cfg.name] = SolverEntry(
@@ -1000,10 +991,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
     def _entry_proxy_joint_keep_indices(self, name: str) -> set[int]:
         """Return joint indices that should remain enabled as proxies in one view."""
         del name
-        return set()
-
-    def _coupling_managed_joint_indices(self) -> set[int]:
-        """Return unowned joints the coupling algorithm itself enforces between entries."""
         return set()
 
     def _customize_compact_view(self, view: ModelView) -> None:

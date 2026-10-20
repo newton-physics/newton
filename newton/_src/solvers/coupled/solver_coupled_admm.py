@@ -953,10 +953,6 @@ class SolverCoupledADMM(SolverCoupled):
     def _entry_proxy_joint_keep_indices(self, name: str) -> set[int]:
         return set(self._admm_joint_proxy_joint_keep.get(name, ()))
 
-    def _coupling_managed_joint_indices(self) -> set[int]:
-        """Return the cross-solver joints that ADMM attachments enforce."""
-        return {joint for joint, _, _ in self._admm_attached_joints()}
-
     def _after_entries_constructed(self) -> None:
         self._refresh_admm_joint_proxy_view_maps()
         self._cache_admm_joint_proxy_effective_masses()
@@ -2540,33 +2536,6 @@ class SolverCoupledADMM(SolverCoupled):
             )
         return child_entry, parent_entry
 
-    def _admm_attached_joints(self) -> list[tuple[int, str, str]]:
-        """Return ``(joint, child_entry, parent_entry)`` for each cross-solver joint ADMM turns into attachments."""
-        if self.model.joint_count == 0:
-            return []
-        joint_type = self.model.joint_type.numpy()
-        joint_parent = self.model.joint_parent.numpy()
-        joint_child = self.model.joint_child.numpy()
-        joint_enabled = self.model.joint_enabled.numpy()
-        attached = []
-        for joint in range(self.model.joint_count):
-            if not bool(joint_enabled[joint]):
-                continue
-            owner_pair = self._cross_solver_joint_entries(joint, int(joint_parent[joint]), int(joint_child[joint]))
-            if owner_pair is None:
-                continue
-            jtype = int(joint_type[joint])
-            if jtype in (int(JointType.FREE), int(JointType.DISTANCE)):
-                continue
-            if jtype not in (int(JointType.BALL), int(JointType.REVOLUTE), int(JointType.FIXED)):
-                name = JointType(jtype).name if jtype in [int(t) for t in JointType] else str(jtype)
-                raise NotImplementedError(
-                    f"ADMM cross-solver model joint {joint} has unsupported type {name}; "
-                    "only BALL, REVOLUTE, and FIXED joints are currently mapped to ADMM attachments"
-                )
-            attached.append((joint, *owner_pair))
-        return attached
-
     def _build_admm_joint_groups(self, coupling: SolverCoupledADMM.Config) -> None:
         """Build quadratic ADMM attachments from cross-solver model joints."""
         if (
@@ -2582,6 +2551,7 @@ class SolverCoupledADMM(SolverCoupled):
         joint_type = self.model.joint_type.numpy()
         joint_parent = self.model.joint_parent.numpy()
         joint_child = self.model.joint_child.numpy()
+        joint_enabled = self.model.joint_enabled.numpy()
         joint_X_p = self.model.joint_X_p.numpy()
         joint_X_c = self.model.joint_X_c.numpy()
         joint_qd_start = self.model.joint_qd_start.numpy()
@@ -2600,9 +2570,16 @@ class SolverCoupledADMM(SolverCoupled):
             tuple[str, str], list[tuple[int, wp.transform, int, tuple[float, float, float]]]
         ] = {}
 
-        for joint, child_entry, parent_entry in self._admm_attached_joints():
+        for joint in range(self.model.joint_count):
+            if not bool(joint_enabled[joint]):
+                continue
             parent = int(joint_parent[joint])
             child = int(joint_child[joint])
+            owner_pair = self._cross_solver_joint_entries(joint, parent, child)
+            if owner_pair is None:
+                continue
+
+            child_entry, parent_entry = owner_pair
             jtype = int(joint_type[joint])
             if jtype == int(JointType.BALL):
                 point_items.setdefault((child_entry, parent_entry), []).append(
@@ -2692,6 +2669,14 @@ class SolverCoupledADMM(SolverCoupled):
                         float(coupling.joint_angular_stiffness),
                         float(coupling.joint_angular_damping),
                     )
+                )
+            elif jtype in (int(JointType.FREE), int(JointType.DISTANCE)):
+                continue
+            else:
+                name = JointType(jtype).name if jtype in [int(t) for t in JointType] else str(jtype)
+                raise NotImplementedError(
+                    f"ADMM cross-solver model joint {joint} has unsupported type {name}; "
+                    "only BALL, REVOLUTE, and FIXED joints are currently mapped to ADMM attachments"
                 )
 
         device = self.model.device

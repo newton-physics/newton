@@ -309,9 +309,6 @@ def _validate_supported_model(model: Model) -> None:
             if model.joint_articulation is not None:
                 # A disabled loop-closing joint is a released closure.
                 disabled &= model.joint_articulation.numpy() >= 0
-            if isinstance(model, ModelView):
-                # Another coupled entry or the coupling algorithm simulates these joints.
-                disabled[model.coupling_disabled_joints.numpy()] = False
             if np.any(disabled):
                 raise NotImplementedError(
                     "SolverSteel does not support disabled joints in an articulation tree (Model.joint_enabled)."
@@ -2496,13 +2493,6 @@ class SolverSteel(SolverBase, CouplingInterface):
         them."""
         # Tree joints disabled after construction, which the solver does not simulate.
         self._disabled_tree_joint = wp.zeros(int(model.world_count) + 1, dtype=wp.bool, device=model.device)
-        # Articulation of each joint the step checks for disabling; -1 skips a joint.
-        self._checked_joint_articulation = model.joint_articulation
-        if isinstance(model, ModelView) and model.coupling_disabled_joints.shape[0]:
-            # Another coupled entry or the coupling algorithm simulates these joints.
-            joint_articulation = model.joint_articulation.numpy().copy()
-            joint_articulation[model.coupling_disabled_joints.numpy()] = -1
-            self._checked_joint_articulation = wp.array(joint_articulation, dtype=int, device=model.device)
         self._cross_world_contacts = wp.zeros(self._world_count + 1, dtype=wp.int32, device=model.device)
         if self._model_plan is not None and model.articulation_count:
             self._has_responding_global = bool(
@@ -6261,7 +6251,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         wp.launch(
             _flag_disabled_tree_joints,
             dim=model.joint_count,
-            inputs=[model.joint_enabled, self._checked_joint_articulation, model.joint_world, int(model.world_count)],
+            inputs=[model.joint_enabled, model.joint_articulation, model.joint_world, int(model.world_count)],
             outputs=[self._disabled_tree_joint],
             device=model.device,
         )
