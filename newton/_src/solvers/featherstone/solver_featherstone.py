@@ -322,6 +322,11 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
         ):
             self._update_kinematic_state()
             self._mass_matrix_dirty = True
+        if flags & ModelFlags.BODY_INERTIAL_PROPERTIES and self.model.body_count:
+            # Re-derive the buffers baked from body_mass/body_inertia/body_com so runtime mass
+            # randomization reaches the mass matrix and the COM velocity transforms.
+            self._update_body_inertial_buffers()
+            self._mass_matrix_dirty = True
 
     def _compute_articulation_indices(self, model):
         # calculate total size and offsets of Jacobian and mass matrices for entire system
@@ -402,23 +407,28 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
             self.body_I_m = wp.empty(
                 (model.body_count,), dtype=wp.spatial_matrix, device=model.device, requires_grad=model.requires_grad
             )
-            wp.launch(
-                compute_spatial_inertia,
-                model.body_count,
-                inputs=[model.body_inertia, model.body_mass],
-                outputs=[self.body_I_m],
-                device=model.device,
-            )
             self.body_X_com = wp.empty(
                 (model.body_count,), dtype=wp.transform, device=model.device, requires_grad=model.requires_grad
             )
-            wp.launch(
-                compute_com_transforms,
-                model.body_count,
-                inputs=[model.body_com],
-                outputs=[self.body_X_com],
-                device=model.device,
-            )
+            self._update_body_inertial_buffers()
+
+    def _update_body_inertial_buffers(self):
+        # derive the spatial inertia and COM transform buffers from body_mass/body_inertia/body_com in place
+        model = self.model
+        wp.launch(
+            compute_spatial_inertia,
+            model.body_count,
+            inputs=[model.body_inertia, model.body_mass],
+            outputs=[self.body_I_m],
+            device=model.device,
+        )
+        wp.launch(
+            compute_com_transforms,
+            model.body_count,
+            inputs=[model.body_com],
+            outputs=[self.body_X_com],
+            device=model.device,
+        )
 
     def _allocate_state_aux_vars(self, model, target, requires_grad):
         # allocate auxiliary variables that vary with state
