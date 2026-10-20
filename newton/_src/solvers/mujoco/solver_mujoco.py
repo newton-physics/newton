@@ -65,7 +65,7 @@ from .enums import _ActuatorBiasType, _ActuatorDynamicsType, _ActuatorGainType
 from .equality import MJC_OBJ_BODY, MjcEqualityTargetKind, _register_equality_constraint_attributes
 from .geometry import build_shape_layout, compile_layout_collision_masks
 from .kernels import (
-    _snapshot_nacon_count,
+    _sync_nacon_count,
     apply_mjc_body_f_kernel,
     apply_mjc_control_kernel,
     apply_mjc_free_joint_f_to_body_f_kernel,
@@ -5466,7 +5466,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._last_rigid_contact_max = contacts.rigid_contact_max
 
         # Zero nacon before the kernel — the full path uses atomic_add to count
-        # contacts; on the fast path _snapshot_nacon_count restores the count.
+        # contacts; on the fast path _sync_nacon_count restores the count.
         self.mjw_data.nacon.zero_()
 
         bodies_per_world = self.model.body_count // self.model.world_count
@@ -5541,16 +5541,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             device=model.device,
         )
 
-        # On the full path, snapshot the final nacon count and generation; on
-        # the fast path, restore nacon from that snapshot.  Runs as a separate
-        # dim=1 kernel AFTER the main kernel completes so that:
+        # Runs as a separate dim=1 kernel AFTER the main kernel completes so that:
         #  - nacon has its final value from the full path's atomic_add, and
         #    the main kernel never writes nacon directly (deterministic mode
         #    rejects mixing direct writes with atomic updates)
         #  - last_contact_generation is only updated after ALL threads in the
         #    main kernel have read it (avoids a cross-block race)
         wp.launch(
-            _snapshot_nacon_count,
+            _sync_nacon_count,
             dim=1,
             inputs=[
                 self.mjw_data.nacon,

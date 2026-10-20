@@ -726,7 +726,7 @@ def convert_newton_contacts_to_mjwarp_kernel(
         # and is invariant across substeps.  The fast path is only correct
         # when collide() has not been called since the last full pass.
 
-        # _snapshot_nacon_count restores nacon_out from the full pass.
+        # _sync_nacon_count restores nacon_out from the full pass.
         if tid == 0:
             ncollision_out[0] = 0
 
@@ -777,12 +777,13 @@ def convert_newton_contacts_to_mjwarp_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def _snapshot_nacon_count(
+def _sync_nacon_count(
     nacon: wp.array[wp.int32],
     last_nacon_count: wp.array[wp.int32],
     contact_generation: wp.array[wp.int32],
     last_contact_generation: wp.array[wp.int32],
 ):
+    """Snapshot nacon after a full conversion pass, or restore it after a fast pass."""
     gen = contact_generation[0]
     if gen == last_contact_generation[0]:
         nacon[0] = last_nacon_count[0]
