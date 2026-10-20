@@ -542,7 +542,7 @@ def test_shared_anchors_warn_with_patch_friction(test, device):
     """Explain that patch anchors keep their friction points when shared anchors are requested."""
     model = _free_body_model(device)
     for flag in ("contact_shared_anchor", "contact_friction_shared_anchor"):
-        with test.subTest(flag=flag), test.assertWarnsRegex(UserWarning, "friction_anchor_beta=0"):
+        with test.subTest(flag=flag), test.assertWarnsRegex(newton.exceptions.NewtonWarning, "friction_anchor_beta=0"):
             SolverSteel(model, **{flag: True})
         solver = SolverSteel(model, friction_anchor_beta=0.0, **{flag: True})
         test.assertTrue(getattr(solver, flag))

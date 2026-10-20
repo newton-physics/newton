@@ -1220,7 +1220,7 @@ def test_rows_remain_allocated(test, device):
 def test_prescribed_parent_closure_warns_and_falls_back(test, device):
     """Disable elimination for the whole solver when a closure has a kinematic or world parent."""
     b, _, _, _ = _build_carried_load()
-    with test.assertWarnsRegex(UserWarning, "kinematic or world parent.*whole solver"):
+    with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "kinematic or world parent.*whole solver"):
         solver = SolverSteel(b.finalize(device=device), solve_mode="matrix_free", enable_bilateral_preelimination=True)
     test.assertFalse(solver._preelim_active)
     test.assertEqual(solver._connect_count, 3)
@@ -1236,7 +1236,7 @@ def test_prescribed_parent_closure_warns_and_falls_back(test, device):
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*another joint already connects these bodies")
         b.add_joint_ball(-1, load, parent_xform=wp.transform(wp.vec3(1.0, 0.0, 0.5), wp.quat_identity()))
-    with test.assertWarnsRegex(UserWarning, "whole solver"):
+    with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "whole solver"):
         mixed = SolverSteel(b.finalize(device=device), solve_mode="matrix_free", enable_bilateral_preelimination=True)
     test.assertFalse(mixed._preelim_active)
     test.assertEqual(mixed._preelim_count, 0)
@@ -1340,7 +1340,7 @@ def test_propagation_keeps_iterative_mimic_rows(test, device):
     model = builder.finalize(device=device)
     for response in ("propagation", "propagation_fused", "propagation_colored"):
         with test.subTest(response=response):
-            with test.assertWarnsRegex(UserWarning, "propagation"):
+            with test.assertWarnsRegex(newton.exceptions.NewtonWarning, "propagation"):
                 solver = SolverSteel(model, articulated_contact_response=response, enable_bilateral_preelimination=True)
             test.assertFalse(solver._preelim_active)
             test.assertGreater(solver._mimic_count, 0)
@@ -1771,7 +1771,7 @@ def _construct(test, model, *, solve_mode, expect_warning):
     messages = [f"{w.category.__name__}: {w.message}" for w in caught]
     test.assertEqual(len(caught), int(expect_warning), messages)
     if expect_warning:
-        test.assertIs(caught[0].category, UserWarning)
+        test.assertIs(caught[0].category, newton.exceptions.NewtonWarning)
         test.assertRegex(str(caught[0].message), _SPRING_WARNING)
     return solver
 
