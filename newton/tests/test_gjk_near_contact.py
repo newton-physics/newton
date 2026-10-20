@@ -288,10 +288,8 @@ def test_rotated_box_above_large_face(test, device):
     np.testing.assert_array_equal(actual[:, 0], 1.0)
     np.testing.assert_allclose(actual[:, 1], actual[:, 2], atol=2e-7, rtol=0.0)
     np.testing.assert_allclose(np.linalg.norm(actual[:, 3:6], axis=1), 1.0, atol=1e-6)
-    np.testing.assert_allclose(actual[:900, 3:6], np.tile([0.0, 0.0, 1.0], (900, 1)), atol=1e-5)
-    # The 0.1 mm boundary can round outside the near-contact branch and
-    # keeps the witness-difference normal.
-    np.testing.assert_allclose(actual[900:, 3:6], np.tile([0.0, 0.0, 1.0], (100, 1)), atol=2e-3)
+    # Gaps up to the 0.1 mm boundary take the face normal from the projected closest point.
+    np.testing.assert_allclose(actual[:, 3:6], np.tile([0.0, 0.0, 1.0], (1000, 1)), atol=1e-5)
 
 
 def test_box_beside_large_edge(test, device):
