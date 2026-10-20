@@ -407,7 +407,9 @@ def _build_coupled_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Fun
                 rn_t = wp.float64(0.0)
                 for i in range(ng):
                     si = group_slot[g, i]
-                    qd_i = predict_qd(velocities, vel_indices, inverse_blocks, group_local, vbuf, art, g, i, ng, si)
+                    qd_i = predict_qd(
+                        velocities, vel_indices, inverse_blocks, group_local, vbuf, art, g, i, ng, si, bias_velocity
+                    )
                     q_i = wp.float64(positions[pos_indices[si]]) + hd * qd_i
                     f_i = force_at(
                         q_i,
@@ -600,6 +602,7 @@ def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Funct
         derivative_floor: float,
         warm_zero: int,
         clamp_params: wp.array2d[float],
+        bias_velocity: wp.array[wp.float64],
         computed_efforts: wp.array[float],
         applied_efforts: wp.array[float],
     ):
@@ -632,6 +635,9 @@ def _build_block_solve_kernel(evaluate_force: wp.Function, clamp_chain: wp.Funct
                 ff = wp.float64(feedforward[target_vel_indices[si]])
             if warm_zero == 0:
                 p = hd * force_at(q0, qd0, tq, tqd, ff, params, clamp_params, si)
+            # Predictions start from qd - h (A b)_i; the warm start uses the step-start velocity.
+            if bias_velocity:
+                qd0 += bias_velocity[si]
 
         for it in range(max_iters):
             u = apply_response(A, P, lane, p)
@@ -1052,6 +1058,7 @@ class _EffortModeImplicit:
                     float(opts.derivative_floor),
                     1 if opts.warm_start is ImplicitOptions.WarmStart.ZERO else 0,
                     self._clamp_params,
+                    bias_velocity,
                 ],
                 outputs=[computed_forces, applied_forces],
                 block_dim=tile,
