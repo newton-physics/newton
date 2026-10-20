@@ -33,11 +33,9 @@ class TestRenderingPauseGui(unittest.TestCase):
         gui.ui = None
         gui._cam_vel = np.ones(3)
         gui._gizmo_active = {"body": True}
-        gui._gizmo_hovered = True
         gui.on_rendering_paused()
         np.testing.assert_array_equal(gui._cam_vel, np.zeros(3))
         self.assertEqual(gui._gizmo_active, {})
-        self.assertFalse(gui._gizmo_hovered)
         self.assertFalse(viewer.gizmo_is_using)
         self.assertTrue(gui.should_ignore_mouse_input(allow_active_pick_drag=True))
         gui.update_camera_from_keys(0.1, lambda _: True)
