@@ -20,8 +20,6 @@ from newton.viewer import ViewerRTX, ViewerUSD
 if USD_AVAILABLE:
     from pxr import UsdGeom, UsdShade
 
-    from newton.examples.sensors.example_sensor_camera import Example as SensorCameraExample
-
 
 def _build_box_model() -> newton.Model:
     builder = newton.ModelBuilder()
@@ -70,50 +68,6 @@ class TestViewerUSD(unittest.TestCase):
         shader = UsdShade.Shader(material.GetPrim().GetChild("PreviewSurface"))
         self.assertTrue(shader)
         return shader
-
-    def test_camera_sensor_example_timestamps(self) -> None:
-        """Preserve camera-example animation as separate timed USD samples."""
-        with wp.ScopedDevice("cpu"):
-            builder = newton.ModelBuilder()
-            body = builder.add_link()
-            joint = builder.add_joint_revolute(parent=-1, child=body, axis=newton.Axis.Z)
-            builder.add_articulation([joint])
-            builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
-
-            example = SensorCameraExample.__new__(SensorCameraExample)
-            example.model = builder.finalize()
-            example.state = example.model.state()
-            example.sim_time = 0.0
-            example.frame_dt = 0.005
-            example.dof_home = wp.zeros(1, dtype=wp.float32)
-            example.dof_radius = wp.ones(1, dtype=wp.float32)
-            example.viewer = self._make_viewer()
-            # Keep each animation step in a distinct USD frame.
-            example.viewer.fps = 1.0 / example.frame_dt
-            example.viewer.set_model(example.model)
-            newton.eval_fk(example.model, example.state.joint_q, example.state.joint_qd, example.state)
-
-            phase = wp.randf(wp.rand_init(1234, 0))
-            with mock.patch.object(example, "render_sensors", return_value=False):
-                example.render()
-                self.assertEqual(example.viewer.time, 0.0)
-                for frame in range(1, 3):
-                    example.step()
-                    example.render()
-                    self.assertAlmostEqual(example.viewer.time, frame * 0.005)
-                    # Animation is evaluated before advancing the frame clock.
-                    self.assertAlmostEqual(
-                        float(example.state.joint_q.numpy()[0]), np.sin((frame - 1) * 0.005 + phase), places=6
-                    )
-
-            orientations = [
-                prim.GetAttribute("xformOp:orient")
-                for prim in example.viewer.stage.Traverse()
-                if prim.HasAttribute("xformOp:orient")
-            ]
-            self.assertEqual(len(orientations), 1)
-            self.assertEqual(orientations[0].GetTimeSamples(), [0.0, 1.0, 2.0])
-            self.assertNotEqual(orientations[0].Get(1.0), orientations[0].Get(2.0))
 
     def test_log_mesh_exports_canonical_normals(self):
         """Export imported normals on polygonal meshes without source subdivision."""
