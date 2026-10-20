@@ -521,8 +521,10 @@ they are loaded. Display/sRGB textures stay display-encoded.
 
 Gaussian splat spherical-harmonics radiance is resolved from the same
 color-space metadata but with the opposite default: untagged radiance is treated
-as display/sRGB, and only a linear color space (for example
-``lin_rec709_scene``) is imported as :attr:`newton.utils.ColorSpace.LINEAR`.
+as display/sRGB, and ``lin_rec709_scene`` (or a primaries-agnostic linear name
+such as ``raw``) is imported as :attr:`newton.utils.ColorSpace.LINEAR`. Newton
+does not convert color primaries, so Gaussian radiance in a linear color space
+with other primaries, such as ``lin_ap1_scene``, raises a :class:`ValueError`.
 
 Mass and Inertia Precedence
 ---------------------------

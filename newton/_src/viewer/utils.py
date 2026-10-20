@@ -7,8 +7,9 @@ from typing import Any
 
 import numpy as np
 
+from ..geometry.types import SH_C0
 from ..utils.color import ColorSpace
-from ..utils.texture import load_texture, normalize_texture
+from ..utils.texture import _linear_to_srgb, load_texture, normalize_texture
 
 OPAQUE_OPACITY_THRESHOLD = 0.999
 
@@ -68,8 +69,7 @@ def gaussian_display_colors(sh_coeffs: np.ndarray, color_space: ColorSpace) -> n
     Returns:
         Float32 array of shape ``(N, 3)``.
     """
-    sh_c0 = 0.28209479177387814
-    rgb = np.clip(sh_c0 * np.asarray(sh_coeffs)[:, :3] + 0.5, 0.0, None)
+    rgb = np.clip(SH_C0 * np.asarray(sh_coeffs)[:, :3] + 0.5, 0.0, None)
     if color_space == ColorSpace.LINEAR:
-        rgb = np.where(rgb <= 0.0031308, rgb * 12.92, 1.055 * np.power(rgb, 1.0 / 2.4) - 0.055)
+        rgb = _linear_to_srgb(rgb)
     return np.clip(rgb, 0.0, 1.0).astype(np.float32)

@@ -2436,8 +2436,9 @@ def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
 
     Reads positions from attributes: `positions`, `orientations`, `scales`, `opacities` and
     `radiance:sphericalHarmonicsCoefficients`. SH radiance is linear only when its
-    (possibly inherited) color-space name is a linear one such as `lin_rec709_scene`;
-    untagged radiance is treated as sRGB.
+    (possibly inherited) color-space name is `lin_rec709_scene` or a primaries-agnostic
+    linear name such as `raw`; untagged radiance is treated as sRGB. Linear color spaces
+    with other primaries (for example `lin_ap1_scene`) are not converted and are rejected.
 
     Args:
         prim: A USD prim containing Gaussian splat data.
@@ -2445,6 +2446,9 @@ def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
 
     Returns:
         A new :class:`Gaussian` instance.
+
+    Raises:
+        ValueError: If the SH radiance uses a linear color space whose primaries are not Rec.709.
     """
 
     def _get_valued_attr(name):
@@ -2475,9 +2479,17 @@ def get_gaussian(prim: Usd.Prim, min_response: float = 0.1) -> Gaussian:
 
     # Untagged radiance is display-referred (sRGB); only explicitly linear color spaces are LINEAR.
     sh_attr = _get_valued_attr("radiance:sphericalHarmonicsCoefficients")
-    sh_color_space = (
-        ColorSpace.LINEAR if _texture_source_is_linear(_get_attribute_color_space(sh_attr)) else ColorSpace.SRGB
-    )
+    sh_color_space_name = _get_attribute_color_space(sh_attr)
+    sh_color_space = ColorSpace.SRGB
+    if _texture_source_is_linear(sh_color_space_name):
+        # No primaries conversion is available, so only Rec.709 (or primaries-agnostic) linear is supported.
+        token = sh_color_space_name.strip().lower()
+        if token.startswith("lin_") and token != "lin_rec709_scene":
+            raise ValueError(
+                f"Unsupported Gaussian SH color space '{sh_color_space_name}': "
+                "only 'lin_rec709_scene' is supported among linear color spaces with defined primaries"
+            )
+        sh_color_space = ColorSpace.LINEAR
 
     return Gaussian(
         positions=positions,

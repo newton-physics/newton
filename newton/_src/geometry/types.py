@@ -2521,6 +2521,10 @@ class Heightfield:
         return self._cached_hash
 
 
+SH_C0 = 0.28209479177387814
+"""Zeroth-order real spherical-harmonics basis constant, :math:`1 / (2\\sqrt{\\pi})`."""
+
+
 class Gaussian:
     """Represents a Gaussian splat asset for rendering and rigid body attachment.
 
@@ -2584,6 +2588,7 @@ class Gaussian:
         sh_degree: int | None = None,
         min_response: float = 0.1,
         sorting_mode: SortingMode = SortingMode.RAY_HIT_DISTANCE,
+        *,
         sh_color_space: ColorSpace = ColorSpace.SRGB,
     ):
         """Construct a Gaussian splat asset from arrays.
@@ -2605,8 +2610,10 @@ class Gaussian:
                 intersections along each ray before alpha compositing
                 (default: :attr:`SortingMode.RAY_HIT_DISTANCE`).
             sh_color_space: Color space of evaluated SH radiance. Defaults to
-                sRGB (display-encoded); pass :attr:`ColorSpace.LINEAR` for
-                scene-linear radiance.
+                sRGB (display-encoded); pass :attr:`~newton.utils.ColorSpace.LINEAR`
+                for scene-linear radiance. Only :class:`~newton.sensors.SensorCamera`
+                honors this; the deprecated :class:`~newton.sensors.SensorTiledCamera`
+                ignores it.
         """
 
         self._positions = np.ascontiguousarray(np.asarray(positions, dtype=np.float32).reshape(-1, 3))
@@ -2834,18 +2841,23 @@ class Gaussian:
     # ---- Factory methods -----------------------------------------------------
 
     @staticmethod
-    def create_from_ply(filename: str, min_response: float = 0.1) -> "Gaussian":
+    def create_from_ply(
+        filename: str, min_response: float = 0.1, *, sh_color_space: ColorSpace = ColorSpace.SRGB
+    ) -> "Gaussian":
         """Load Gaussian splat data from a ``.ply`` file (standard 3DGS format).
 
         Reads positions (``x/y/z``), rotations (``rot_0..3``), scales
         (``scale_0..2``, stored as log-scale), opacities (logit-space),
         and SH coefficients (``f_dc_*``, ``f_rest_*``). Converts log-scale
-        and logit-opacity to linear values. SH radiance is treated as sRGB.
-        Requires Open3D 0.20 or newer.
+        and logit-opacity to linear values. SH radiance is treated as sRGB
+        unless ``sh_color_space`` says otherwise. Requires Open3D 0.20 or newer.
 
         Args:
             filename: Path to a ``.ply`` file in standard 3DGS format.
             min_response: Min response (default = 0.1).
+            sh_color_space: Color space of the SH radiance (default:
+                :attr:`~newton.utils.ColorSpace.SRGB`, as 3DGS assets are
+                display-referred).
 
         Returns:
             A new :class:`Gaussian` instance.
@@ -2898,6 +2910,7 @@ class Gaussian:
             opacities=opacities,
             sh_coeffs=sh_coeffs,
             min_response=min_response,
+            sh_color_space=sh_color_space,
         )
 
     @staticmethod
@@ -2906,7 +2919,7 @@ class Gaussian:
 
         Reads positions from attributes: `positions`, `orientations`, `scales`, `opacities` and `radiance:sphericalHarmonicsCoefficients`.
         SH radiance is treated as sRGB unless its USD color space is linear (for example
-        ``lin_rec709_scene``), in which case :attr:`sh_color_space` is :attr:`ColorSpace.LINEAR`.
+        ``lin_rec709_scene``), in which case :attr:`sh_color_space` is :attr:`~newton.utils.ColorSpace.LINEAR`.
 
         Args:
             prim: A USD prim containing Gaussian splat data.

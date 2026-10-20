@@ -3218,7 +3218,6 @@ class TestImportSampleAssetsBasic(unittest.TestCase):
             ("Untagged", None, newton.utils.ColorSpace.SRGB),
             ("Display", "srgb_rec709_scene", newton.utils.ColorSpace.SRGB),
             ("Linear", "lin_rec709_scene", newton.utils.ColorSpace.LINEAR),
-            ("LinearAP1", "lin_ap1_scene", newton.utils.ColorSpace.LINEAR),
             ("Raw", "raw", newton.utils.ColorSpace.LINEAR),
         ):
             prim = stage.DefinePrim(f"/World/{name}", "ParticleField3DGaussianSplat")
@@ -3229,6 +3228,25 @@ class TestImportSampleAssetsBasic(unittest.TestCase):
             if token is not None:
                 Usd.ColorSpaceAPI.Apply(prim).CreateColorSpaceNameAttr().Set(token)
             self.assertEqual(get_gaussian(prim).sh_color_space, expected)
+
+        # A color space authored on a parent prim is inherited by the splat prim.
+        parent = stage.DefinePrim("/Scene", "Xform")
+        Usd.ColorSpaceAPI.Apply(parent).CreateColorSpaceNameAttr().Set("lin_rec709_scene")
+        prim = stage.DefinePrim("/Scene/Inherited", "ParticleField3DGaussianSplat")
+        prim.CreateAttribute("positions", Sdf.ValueTypeNames.Point3fArray).Set([(0.0, 0.0, 0.0)])
+        prim.CreateAttribute("radiance:sphericalHarmonicsCoefficients", Sdf.ValueTypeNames.Float3Array).Set(
+            [(0.0, 0.0, 0.0)]
+        )
+        self.assertEqual(get_gaussian(prim).sh_color_space, newton.utils.ColorSpace.LINEAR)
+
+        prim = stage.DefinePrim("/World/AP1", "ParticleField3DGaussianSplat")
+        prim.CreateAttribute("positions", Sdf.ValueTypeNames.Point3fArray).Set([(0.0, 0.0, 0.0)])
+        prim.CreateAttribute("radiance:sphericalHarmonicsCoefficients", Sdf.ValueTypeNames.Float3Array).Set(
+            [(0.0, 0.0, 0.0)]
+        )
+        Usd.ColorSpaceAPI.Apply(prim).CreateColorSpaceNameAttr().Set("lin_ap1_scene")
+        with self.assertRaisesRegex(ValueError, "lin_ap1_scene"):
+            get_gaussian(prim)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_disabled_static_collider_has_no_collision_flags(self):
