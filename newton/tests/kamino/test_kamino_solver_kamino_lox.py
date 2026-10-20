@@ -1038,12 +1038,13 @@ class TestSolverKaminoLOX(unittest.TestCase):
     def test_joint_penalty_seed_supports_massless_bodies(self):
         """Seed the joint penalty of a drive whose link carries a massless fixed child, then track its target."""
         model = _build_massless_fixed_child_drive_model(device=self.default_device)
+        time_step = 1.0 / 600.0
         config = self.make_config()
         config.use_collision_detector = False
+        config.lox.joint_penalty_seed_time_step = time_step
         solver = SolverKamino(model, config=config)
-        time_step = 1.0 / 600.0
 
-        seed = solver.lox_joint_penalty_seed_update(time_step).numpy()
+        seed = solver._solver_kamino.solver_fd._data.joint_penalty_scale.numpy()
 
         self.assertTrue(np.all(np.isfinite(seed)))
         self.assertTrue(np.all(seed > 0.0))

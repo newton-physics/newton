@@ -958,29 +958,6 @@ class SolverKamino(SolverBase, CouplingInterface):
         """
         return self._solver_kamino.solver_status
 
-    def lox_joint_penalty_seed_update(self, dt: float) -> wp.array[wp.float32]:
-        """Estimate and apply a timestep-aware LOX joint penalty scale.
-
-        The solver already seeds the scale at construction with
-        :attr:`LOXSolverConfig.joint_penalty_seed_time_step`. Call this once to refine the seed with the
-        simulation time step, before capturing or stepping the simulation. The operation
-        synchronizes with the host.
-
-        Args:
-            dt: Simulation time step [s].
-
-        Returns:
-            The applied dimensionless structural ALM penalty scale for each
-            body, shared by the bodies of a joint-connected component, shape
-            ``(body_count,)``.
-
-        Raises:
-            ValueError: If this solver does not use the LOX dynamics backend.
-        """
-        if self._config.dynamics_solver != "lox":
-            raise ValueError("LOX joint penalty scale seeding requires the LOX dynamics backend.")
-        return self._solver_kamino.solver_fd.joint_penalty_scale_seed(dt)
-
     @override
     def reset(
         self,

@@ -1251,8 +1251,8 @@ class LOXSolverConfig:
 
     The time step enters the smooth system only through the implicit drive inertia
     ``dt * k_d + dt^2 * k_p``, so the seed grows with it. The default sits below the time steps of
-    typical simulations, which errs toward a softer penalty. :meth:`SolverKamino.lox_joint_penalty_seed_update`
-    refines the seed with the simulation time step.
+    typical simulations, which errs toward a softer penalty. Set it to the simulation time step to seed
+    the penalty for that step.
     """
 
     projected_twist_fraction: float = 0.0
