@@ -14,6 +14,7 @@ import time
 import unittest
 import warnings
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import numpy as np
@@ -253,7 +254,8 @@ class TestViewerViserInteraction(unittest.TestCase):
             self.assertTrue(self.viewer._picking_click_callbacks)
             self.update_gui(self.viewer._viewer_option_handles["show_particles"], True)
             self.wait_for(lambda: self.viewer.show_particles)
-            self.viewer.show_contacts = True
+            self.update_gui(self.viewer._viewer_option_handles["show_contacts"], True)
+            self.wait_for(lambda: self.viewer.show_contacts)
             self.viewer.picking_enabled = False
             self.assertFalse(self.viewer._picking_click_callbacks)
             del example
@@ -264,7 +266,47 @@ class TestViewerViserInteraction(unittest.TestCase):
             self.assertTrue(self.viewer._picking_click_callbacks)
             self.assertTrue(self.viewer.show_contacts)
             self.assertTrue(self.viewer.show_particles)
-            self.assertTrue(self.viewer._particle_visibility_user)
+            self.assertIn("show_particles", self.viewer._display_options_user)
+
+            # A failed native browser selection must show the error and retry
+            # that selection, rather than resetting the previously loaded class.
+            model = example.model
+            del example
+
+            class SelectedExample:
+                fail = True
+
+                def __init__(self, viewer: ViewerViser, args: object) -> None:
+                    viewer.set_model(model)
+                    viewer.show_contacts = False
+                    if self.fail:
+                        raise SystemExit(2)
+
+            browser.switch_target = "test.selected"
+            with mock.patch(
+                "newton.examples.importlib.import_module", return_value=SimpleNamespace(Example=SelectedExample)
+            ):
+                with self.assertLogs("newton", level="ERROR"):
+                    example, _ = browser.switch(example_class)
+                self.assertIsNone(example)
+                self.viewer.begin_frame(0.0)
+                self.viewer.end_frame()
+                error_widgets = list(self.viewer._example_gui_handles.values())
+                self.assertTrue(any("SystemExit: 2" in getattr(handle, "content", "") for _, handle in error_widgets))
+                retry = next(handle for _, handle in error_widgets if getattr(handle, "label", "").startswith("Retry"))
+                self.update_gui(retry, True)
+                self.wait_for(lambda: bool(self.viewer._example_gui_pending))
+                self.viewer.begin_frame(0.0)
+                self.viewer.end_frame()
+                self.assertEqual(browser.switch_target, "test.selected")
+                SelectedExample.fail = False
+                example, _ = browser.switch(example_class)
+                self.assertIsInstance(example, SelectedExample)
+                self.assertIsNone(browser.load_error)
+                self.assertTrue(self.viewer.show_contacts)
+                self.viewer.begin_frame(0.0)
+                self.viewer.end_frame()
+                self.assertFalse(self.viewer._example_gui_handles)
 
     def test_gizmo_roundtrip_and_disconnect(self):
         """Mutate a caller-owned transform through real drag messages and release on disconnect."""

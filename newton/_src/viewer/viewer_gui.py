@@ -841,19 +841,37 @@ class ViewerGui:
                     imgui.separator()
                     renderer = getattr(viewer, "renderer", None)
                     _changed, viewer.show_joints = imgui.checkbox("Show Joints", viewer.show_joints)
+                    if _changed:
+                        viewer._display_options_user["show_joints"] = viewer.show_joints
                     if viewer.show_joints and renderer is not None and hasattr(renderer, "joint_scale"):
-                        _, renderer.joint_scale = imgui.slider_float("Joint Scale", renderer.joint_scale, 0.25, 5.0)
+                        _changed, renderer.joint_scale = imgui.slider_float(
+                            "Joint Scale", renderer.joint_scale, 0.25, 5.0
+                        )
+                        if _changed:
+                            viewer._display_options_user["joint_scale"] = renderer.joint_scale
                     _changed, viewer.show_contacts = imgui.checkbox("Show Contacts", viewer.show_contacts)
+                    if _changed:
+                        viewer._display_options_user["show_contacts"] = viewer.show_contacts
                     if viewer.show_contacts and renderer is not None:
                         imgui.indent()
-                        _, viewer.show_contact_normals = imgui.checkbox("Normal", bool(viewer.show_contact_normals))
-                        _, viewer.show_contact_disks = imgui.checkbox("Contact Mode", bool(viewer.show_contact_disks))
-                        _, viewer.show_contact_forces = imgui.checkbox("Force", bool(viewer.show_contact_forces))
+                        _changed, viewer.show_contact_normals = imgui.checkbox(
+                            "Normal", bool(viewer.show_contact_normals)
+                        )
+                        if _changed:
+                            viewer._display_options_user["show_contact_normals"] = viewer.show_contact_normals
+                        _changed, viewer.show_contact_disks = imgui.checkbox(
+                            "Contact Mode", bool(viewer.show_contact_disks)
+                        )
+                        if _changed:
+                            viewer._display_options_user["show_contact_disks"] = viewer.show_contact_disks
+                        _changed, viewer.show_contact_forces = imgui.checkbox("Force", bool(viewer.show_contact_forces))
+                        if _changed:
+                            viewer._display_options_user["show_contact_forces"] = viewer.show_contact_forces
                         imgui.unindent()
 
                         log_flag = imgui.SliderFlags_.logarithmic.value
                         base = float(viewer._contact_viz_scale_default) or 1.0
-                        _, viewer.contact_viz_scale = imgui.slider_float(
+                        _changed, viewer.contact_viz_scale = imgui.slider_float(
                             "Contact Relative Scale",
                             float(viewer.contact_viz_scale),
                             base * 0.01,
@@ -861,9 +879,11 @@ class ViewerGui:
                             "%.4g",
                             log_flag,
                         )
+                        if _changed:
+                            viewer._display_options_user["contact_viz_scale"] = viewer.contact_viz_scale
                         if viewer.show_contact_forces:
                             base = float(viewer._contact_force_scale_default) or 0.5
-                            _, viewer.contact_force_scale = imgui.slider_float(
+                            _changed, viewer.contact_force_scale = imgui.slider_float(
                                 "Force Relative Scale",
                                 float(viewer.contact_force_scale),
                                 base * 0.01,
@@ -871,38 +891,64 @@ class ViewerGui:
                                 "%.4g",
                                 log_flag,
                             )
+                            if _changed:
+                                viewer._display_options_user["contact_force_scale"] = (
+                                    viewer.contact_force_scale / viewer._contact_force_scale_default
+                                )
                         if hasattr(renderer, "arrow_scale") and (
                             viewer.show_contact_normals or viewer.show_contact_forces
                         ):
-                            _, renderer.arrow_scale = imgui.slider_float(
+                            _changed, renderer.arrow_scale = imgui.slider_float(
                                 "Arrow Thickness", renderer.arrow_scale, 0.25, 5.0
                             )
+                            if _changed:
+                                viewer._display_options_user["arrow_scale"] = renderer.arrow_scale
                     _changed, viewer.show_particles = imgui.checkbox("Show Particles", viewer.show_particles)
                     if _changed:
-                        viewer._particle_visibility_user = viewer.show_particles
+                        viewer._display_options_user["show_particles"] = viewer.show_particles
                     _changed, viewer.show_springs = imgui.checkbox("Show Springs", viewer.show_springs)
+                    if _changed:
+                        viewer._display_options_user["show_springs"] = viewer.show_springs
                     _changed, viewer.show_com = imgui.checkbox("Show Center of Mass", viewer.show_com)
+                    if _changed:
+                        viewer._display_options_user["show_com"] = viewer.show_com
                     if viewer.show_com and renderer is not None and hasattr(renderer, "com_scale"):
-                        _, renderer.com_scale = imgui.slider_float("COM Scale", renderer.com_scale, 0.25, 5.0)
+                        _changed, renderer.com_scale = imgui.slider_float("COM Scale", renderer.com_scale, 0.25, 5.0)
+                        if _changed:
+                            viewer._display_options_user["com_scale"] = renderer.com_scale
                     _changed, viewer.show_triangles = imgui.checkbox("Show Cloth", viewer.show_triangles)
+                    if _changed:
+                        viewer._display_options_user["show_triangles"] = viewer.show_triangles
                     _changed, viewer.show_collision = imgui.checkbox("Show Collision", viewer.show_collision)
+                    if _changed:
+                        viewer._display_options_user["show_collision"] = viewer.show_collision
                     if renderer is not None and hasattr(renderer, "draw_edges"):
                         _changed, renderer.draw_edges = imgui.checkbox("Show Edges", renderer.draw_edges)
+                        if _changed:
+                            viewer._display_options_user["draw_edges"] = renderer.draw_edges
                     sdf_margin_mode = getattr(viewer, "sdf_margin_mode", None)
                     SDFMarginMode = getattr(type(viewer), "SDFMarginMode", None)
                     if sdf_margin_mode is not None and SDFMarginMode is not None:
                         _sdf_margin_labels = ["Off", "Margin", "Margin + Gap"]
-                        _, new_sdf_idx = imgui.combo("Gap + Margin", int(sdf_margin_mode), _sdf_margin_labels)
+                        _changed, new_sdf_idx = imgui.combo("Gap + Margin", int(sdf_margin_mode), _sdf_margin_labels)
                         viewer.sdf_margin_mode = SDFMarginMode(new_sdf_idx)
+                        if _changed:
+                            viewer._display_options_user["sdf_margin_mode"] = viewer.sdf_margin_mode
                         if viewer.sdf_margin_mode != SDFMarginMode.OFF and renderer is not None:
                             _, renderer.wireframe_line_width = imgui.slider_float(
                                 "Wireframe Width (px)", renderer.wireframe_line_width, 0.5, 5.0
                             )
                     _changed, viewer.show_visual = imgui.checkbox("Show Visual", viewer.show_visual)
+                    if _changed:
+                        viewer._display_options_user["show_visual"] = viewer.show_visual
                     _changed, viewer.show_ground = imgui.checkbox("Show Ground", viewer.show_ground)
+                    if _changed:
+                        viewer._display_options_user["show_ground"] = viewer.show_ground
                     _changed, viewer.show_inertia_boxes = imgui.checkbox(
                         "Show Inertia Boxes", viewer.show_inertia_boxes
                     )
+                    if _changed:
+                        viewer._display_options_user["show_inertia_boxes"] = viewer.show_inertia_boxes
 
             imgui.set_next_item_open(True, imgui.Cond_.appearing)
             if imgui.collapsing_header("Example Options"):
@@ -913,6 +959,8 @@ class ViewerGui:
             if imgui.collapsing_header("Rendering Options"):
                 imgui.separator()
                 _changed, viewer.vsync = imgui.checkbox("VSync", viewer.vsync)
+                if _changed:
+                    viewer._display_options_user["vsync"] = viewer.vsync
                 # Viewer-specific rendering options (e.g. GL sky/shadows/wireframe)
                 for callback in self._ui_callbacks.get("rendering", []):
                     callback(self.ui.imgui)

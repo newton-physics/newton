@@ -14,7 +14,7 @@ import warnings
 from collections import defaultdict
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import warp as wp
@@ -349,7 +349,8 @@ def _coupled_view_state(example, name: str):
 
 @contextmanager
 def _preserve_display_options(viewer: "ViewerBase", *, switching: bool = False) -> Iterator[None]:
-    """Keep display choices while rebuilding layers, using each new model's force calibration."""
+    """Restore reset state, or explicit display choices when entering a new example."""
+    user_options = getattr(viewer, "_display_options_user", {})
     option_names = {
         "visible",
         "sdf_margin_mode",
@@ -371,13 +372,18 @@ def _preserve_display_options(viewer: "ViewerBase", *, switching: bool = False) 
     active_id = getattr(getattr(viewer, "layer", None), "layer_id", None)
     defaults = {name: value for name, value in saved.get(active_id, {}).items() if name != "visible"}
     globals_saved = {
-        name: getattr(viewer, name) for name in ("show_ui", "vsync", "_paused", "camera_speed") if hasattr(viewer, name)
+        name: user_options.get(name, getattr(viewer, name)) if switching else getattr(viewer, name)
+        for name in ("show_ui", "vsync", "_paused", "camera_speed")
+        if hasattr(viewer, name) and (not switching or name != "vsync" or name in user_options)
     }
     camera = getattr(viewer, "camera", None)
-    camera_saved = {name: getattr(camera, name) for name in ("fov", "near", "far") if hasattr(camera, name)}
+    # Projection and framing belong to the new scene; reset keeps the current view.
+    camera_saved = {
+        name: getattr(camera, name) for name in ("fov", "near", "far") if not switching and hasattr(camera, name)
+    }
     renderer = getattr(viewer, "renderer", None)
     render_saved = {
-        name: copy.deepcopy(getattr(renderer, name))
+        name: copy.deepcopy(user_options[name] if switching else getattr(renderer, name))
         for name in (
             "draw_sky",
             "draw_shadows",
@@ -390,23 +396,27 @@ def _preserve_display_options(viewer: "ViewerBase", *, switching: bool = False) 
             "joint_scale",
             "com_scale",
         )
-        if hasattr(renderer, name)
+        if hasattr(renderer, name) and (not switching or name in user_options)
     }
     try:
         yield
     finally:
         for layer_id, layer in getattr(viewer, "layers", {}).items():
-            options = dict(saved.get(layer_id, defaults))
-            # Example defaults can hide mesh vertices but must not hide a new
-            # scene's loose particles. Only carry an explicit GUI choice.
             if switching:
-                choice = getattr(viewer, "_particle_visibility_user", None)
-                options.pop("show_particles", None)
-                if choice is not None:
-                    options["show_particles"] = choice
-            options["contact_force_scale"] = layer._contact_force_scale_default * force_gains.get(
-                layer_id, force_gains.get(active_id, 1.0)
-            )
+                options = {
+                    name: value
+                    for name, value in user_options.items()
+                    if (name.startswith("show_") or name in option_names) and hasattr(layer, name)
+                }
+                if "contact_force_scale" in user_options:
+                    options["contact_force_scale"] = (
+                        layer._contact_force_scale_default * user_options["contact_force_scale"]
+                    )
+            else:
+                options = dict(saved.get(layer_id, defaults))
+                options["contact_force_scale"] = layer._contact_force_scale_default * force_gains.get(
+                    layer_id, force_gains.get(active_id, 1.0)
+                )
             for name, value in options.items():
                 setattr(layer, name, value)
                 if layer is viewer.layer and name != "visible":
@@ -420,6 +430,7 @@ def _preserve_display_options(viewer: "ViewerBase", *, switching: bool = False) 
         for name, value in camera_saved.items():
             if hasattr(camera, name):
                 setattr(camera, name, value)
+        renderer = getattr(viewer, "renderer", None)
         for name, value in render_saved.items():
             setattr(renderer, name, value)
 
@@ -455,20 +466,15 @@ class _ExampleBrowser:
             )
             if hasattr(viewer, "set_reset_callback"):
                 viewer.set_reset_callback(lambda: setattr(self, "_reset_requested", True))
+            if hasattr(viewer, "register_ui_callback"):
+                viewer.register_ui_callback(self._error_ui, position="panel")
             return
 
         if not hasattr(viewer, "register_ui_callback"):
             return
 
         def _browser_ui(imgui):
-            if self.load_error is not None:
-                imgui.text_wrapped(self.load_error)
-                if imgui.button("Retry##example_load"):
-                    if self.failed_target is not None:
-                        self.switch_target = self.failed_target
-                    else:
-                        self._reset_requested = True
-                imgui.separator()
+            self._error_ui(imgui)
             imgui.set_next_item_open(False, imgui.Cond_.appearing)
             if imgui.collapsing_header("Examples"):
                 for category in sorted(self._tree.keys()):
@@ -483,6 +489,19 @@ class _ExampleBrowser:
         viewer.register_ui_callback(_browser_ui, position="panel")
         if hasattr(viewer, "set_reset_callback"):
             viewer.set_reset_callback(lambda: setattr(self, "_reset_requested", True))
+
+    def _error_ui(self, ui: Any) -> None:
+        """Show failures and retry through ImGui or the native Viser UI adapter."""
+        if self.load_error is None:
+            return
+        text = getattr(ui, "text_wrapped", ui.text)
+        text(self.load_error)
+        if ui.button("Retry##example_load"):
+            if self.failed_target is not None:
+                self.switch_target = self.failed_target
+            else:
+                self._reset_requested = True
+        ui.separator()
 
     def _register_ui(self, example):
         """Re-register the example's GUI callback (panel callbacks survive clear_model)."""
@@ -664,7 +683,6 @@ def run(example, args):
         and not getattr(viewer, "_headless", False)
         and getattr(args, "benchmark", False) is False
         and not getattr(viewer, "benchmark", False)
-        and getattr(args, "viewer", None) not in ("null", "usd", "rerun")
         and (hasattr(viewer, "register_ui_callback") or hasattr(viewer, "_configure_example_browser"))
     )
     browser = _ExampleBrowser(viewer, args) if interactive else None

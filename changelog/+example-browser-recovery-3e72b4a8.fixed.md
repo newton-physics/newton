@@ -1,1 +1,1 @@
-Keep the interactive example browser usable after loading or runtime failures, release partial scenes before retrying, and preserve visualization choices across resets and example switches.
+Keep the interactive example browser usable after loading or runtime failures, offer retry controls in GL, RTX, and Viser, and release partial scenes before retrying. Preserve display settings on reset and explicit built-in visualization choices when switching examples, while allowing new scenes to choose their rendering and camera defaults.
