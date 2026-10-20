@@ -958,16 +958,6 @@ class SolverKamino(SolverBase, CouplingInterface):
         """
         return self._solver_kamino.solver_status
 
-    @property
-    def metrics(self) -> Any | None:
-        """Solution metrics evaluator, or ``None`` when metrics are disabled.
-
-        Enable metrics with :attr:`Config.compute_solution_metrics` and access
-        the per-world metric arrays through ``solver.metrics.data`` after each
-        call to :meth:`step`.
-        """
-        return self._solver_kamino.metrics
-
     def lox_joint_penalty_seed_update(self, dt: float) -> wp.array[wp.float32]:
         """Estimate and apply a timestep-aware LOX joint penalty scale.
 

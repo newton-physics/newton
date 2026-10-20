@@ -292,7 +292,7 @@ class TestSolverKaminoLOXContacts(unittest.TestCase):
                     self.assertTrue((status[name] >= 0.0).all(), name)
                 self.assertLess(float(status["r_c"][0]), 1.0e-8)
                 if enabled:
-                    metrics = solver.metrics.data
+                    metrics = solver._solver_kamino.metrics.data
                     self.assertLess(float(metrics.r_eom.numpy()[0]), 1.0e-3)
                     for name in dual_residuals:
                         np.testing.assert_array_equal(getattr(metrics, name).numpy(), 0.0, err_msg=name)
@@ -309,7 +309,7 @@ class TestSolverKaminoLOXContacts(unittest.TestCase):
                 getattr(model, name).assign(values)
             solver = self._solver(model, compute_solution_metrics=True, contact_spatial_friction=True)
             self._step(model, solver)
-            metrics = solver.metrics.data
+            metrics = solver._solver_kamino.metrics.data
             for name in world_residuals + dual_residuals:
                 self.assertTrue(np.isfinite(getattr(metrics, name).numpy()).all(), name)
             for name in dual_residuals:
@@ -320,7 +320,7 @@ class TestSolverKaminoLOXContacts(unittest.TestCase):
             model = self._sphere(gravity=0.0, velocity=(0.0, 0.0, -2.0, 0.0, 0.0, 0.0), restitution=0.5)
             solver = self._solver(model, compute_solution_metrics=True, contact_restitution=True)
             self._step(model, solver)
-            metrics = solver.metrics.data
+            metrics = solver._solver_kamino.metrics.data
             for name in world_residuals + dual_residuals:
                 self.assertTrue(np.isfinite(getattr(metrics, name).numpy()).all(), name)
 
