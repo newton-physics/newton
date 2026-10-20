@@ -536,6 +536,12 @@ array; slot layout depends on the constraint type.
    * - :attr:`~newton.solvers.SolverMuJoCo.EqType.JOINT`
      - ``mjEQ_JOINT``
      - Polynomial coefficients forwarded in ``data[0:5]``.
+   * - :attr:`~newton.solvers.SolverMuJoCo.EqType.TENDON`
+     - ``mjEQ_TENDON``
+     - Couples two ``mujoco:tendon`` lengths (``equality_constraint_tendon1``
+       and ``equality_constraint_tendon2``). Polynomial coefficients forwarded
+       in ``data[0:5]``. MJCF and programmatic authoring only; USD import is not
+       supported yet.
    * - Mimic
      - ``mjEQ_JOINT``
      - Added via :meth:`~newton.ModelBuilder.set_joint_mimic`. Maps the
@@ -547,7 +553,8 @@ array; slot layout depends on the constraint type.
 Newton's core API does not expose equality constraints as a dedicated
 builder call. Construct them with the
 :doc:`newton.solvers.mujoco </api/newton_solvers_mujoco>` helpers
-``add_equality_connect``, ``add_equality_weld``, and ``add_equality_joint``,
+``add_equality_connect``, ``add_equality_weld``, ``add_equality_joint``, and
+``add_equality_tendon``,
 then read or update finalized fields via
 ``model.mujoco.equality_constraint_*``:
 
@@ -806,11 +813,17 @@ Multi-world support
 
 Constructing :class:`~newton.solvers.SolverMuJoCo` with
 ``separate_worlds=True`` (the default for GPU mode with multiple
-worlds) builds a MuJoCo model from the **first world** only and
-replicates it across all worlds via ``mujoco_warp``. This requires
-all Newton worlds to be structurally identical (same bodies, joints,
-and shapes); :class:`~newton.solvers.SolverMuJoCo` validates this at
-construction and raises ``ValueError`` on a mismatch.
+worlds) builds a shared MuJoCo topology across worlds via ``mujoco_warp``.
+Bodies, joints, equality constraints, mimic relationships, primitive geoms,
+and sites must have matching layouts. With ``use_mujoco_cpu=False``, mesh
+assets, scales, and convex-hull counts may differ across worlds. Collision
+flags may also differ when Newton supplies contacts. Native MuJoCo contacts
+require matching collision flags, groups, and exclusions for corresponding geom
+slots. With native contacts,
+per-world mesh scales are compiled into the MuJoCo assets, so changing their
+:attr:`~newton.Model.shape_scale` after construction raises ``ValueError``;
+recreate the solver to resize them. The solver validates
+compatibility at construction and raises ``ValueError`` on a mismatch.
 
 Bodies, joints, equality constraints, and mimic relationships cannot have
 a negative world index — assigning any of them to the global world

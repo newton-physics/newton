@@ -1549,29 +1549,83 @@ class TestSolverCoupledBasic(unittest.TestCase):
             count = int(coupled._entry_contact_buffers[name].soft_contact_count.numpy()[0])
             self.assertEqual(count, 0, f"entry {name} owns only part of the record and must drop it")
 
-    def test_full_surface_contacts_degrade_per_entry(self):
-        """Keep only particle contacts for an unsupported entry."""
+    def test_full_surface_contacts_rejected_by_particle_only_entries(self):
+        """Reject unsupported full-surface input consistently with standalone solvers."""
         model, body, joint, particles = self._build_box_and_triangle()
         contacts = self._seeded_full_surface_contacts(model, particles, particle=particles[0])
+        for solver_type in (SolverXPBD, SolverSemiImplicit):
+            with self.subTest(solver=solver_type.__name__):
+                coupled = SolverCoupled(
+                    model=model,
+                    entries=[
+                        SolverCoupled.Entry(
+                            name="particle_only",
+                            solver=solver_type,
+                            bodies=[body],
+                            joints=[joint],
+                            particles=particles,
+                        ),
+                    ],
+                )
+                with self.assertRaisesRegex(NotImplementedError, "does not support full-surface"):
+                    coupled.step(model.state(), model.state(), None, contacts, dt=1.0 / 60.0)
+
+    def test_full_surface_mesh_contacts_survive_the_entry_filter(self):
+        """Filter mesh contacts appended past the candidate replay range."""
+        builder = newton.ModelBuilder()
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        joint = builder.add_joint_free(child=body)
+        builder.add_articulation([joint])
+        builder.add_shape_mesh(body=body, mesh=newton.Mesh.create_box(0.5, 0.5, 0.1))
+        builder.add_cloth_grid(
+            pos=wp.vec3(-0.3, -0.3, 0.105),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=4,
+            dim_y=4,
+            cell_x=0.15,
+            cell_y=0.15,
+            mass=0.1,
+            particle_radius=0.01,
+        )
+        model = builder.finalize(device="cpu")
+        pipeline = newton.CollisionPipeline(
+            model, broad_phase="nxn", soft_contact_gap=0.02, enable_rigid_soft_full_surface_contact=True
+        )
+        state = model.state()
+        contacts = pipeline.contacts()
+        pipeline.collide(state, contacts)
+        count = int(contacts.soft_contact_count.numpy()[0])
+        self.assertGreater(count, contacts.soft_contact_tids.shape[0], "mesh contacts must exceed the replay range")
+
         coupled = SolverCoupled(
             model=model,
             entries=[
                 SolverCoupled.Entry(
-                    name="particle_only",
-                    solver=_ControlRecordingSolver,
+                    name="A",
+                    solver=_FullSurfaceControlRecordingSolver,
                     bodies=[body],
                     joints=[joint],
-                    particles=particles,
-                ),
+                    particles=list(range(model.particle_count)),
+                )
             ],
         )
+        coupled.step(state, model.state(), None, contacts, dt=1.0 / 60.0)
 
-        coupled.step(model.state(), model.state(), None, contacts, dt=1.0 / 60.0)
-
-        particle_only = coupled._entry_contact_buffers["particle_only"]
-        self.assertEqual(int(particle_only.soft_contact_count.numpy()[0]), 1)
-        self.assertEqual(int(particle_only.soft_contact_particle.numpy()[0]), particles[0])
-        self.assertFalse(particle_only._enable_rigid_soft_full_surface_contact)
+        # Full-surface entries retain raw rows and their provenance for current-position filtering.
+        self.assertEqual(int(contacts.soft_contact_count.numpy()[0]), count)
+        filtered = coupled._entry_contact_buffers["A"]
+        self.assertEqual(int(filtered.soft_contact_count.numpy()[0]), count)
+        mapping = coupled._entry_soft_contact_src_to_dst["A"].numpy()[:count]
+        self.assertTrue(np.all(mapping >= 0))
+        np.testing.assert_array_equal(
+            filtered.soft_contact_indices.numpy()[mapping], contacts.soft_contact_indices.numpy()[:count]
+        )
+        np.testing.assert_array_equal(
+            filtered._soft_contact_mesh_features.numpy()[mapping], contacts._soft_contact_mesh_features.numpy()[:count]
+        )
+        self.assertIs(filtered._soft_contact_mesh_data, contacts._soft_contact_mesh_data)
+        np.testing.assert_array_equal(filtered.soft_contact_tids.numpy()[:count], -1)
 
     def test_entry_control_arrays_are_mapped_to_local_dofs(self):
         """Entry solvers should receive control arrays in their local DOF namespace."""
@@ -2679,7 +2733,8 @@ def _harvest_wrench_on_one_proxy_body(buffer_size, particle_count, depth=0.01, r
 class TestSolverVBDCouplingHooks(unittest.TestCase):
     """VBD-specific coupling hook behavior."""
 
-    def test_proxy_wrench_harvest_respects_body_particle_contact_buffer_cap(self):
+    def test_proxy_wrench_harvest_preserves_reactions_after_buffer_overflow(self):
+        """Preserve the complete reaction when the per-body candidate list overflows."""
         particle_count = 12
         cap = 4
 
@@ -2694,10 +2749,7 @@ class TestSolverVBDCouplingHooks(unittest.TestCase):
         self.assertEqual(capped["soft_contact_count"], particle_count)
         self.assertGreater(capped["overflow_max"], cap, "the small buffer must actually overflow")
 
-        # The solve applied only the `cap` records its per-body list kept, so the reaction fed back
-        # to the source is that same fraction of the whole stream -- not all of it.
-        expected = force_full * (cap / particle_count)
-        np.testing.assert_allclose(capped["wrench"][:3], expected, rtol=1.0e-5, atol=1.0e-6)
+        np.testing.assert_allclose(capped["wrench"], full["wrench"], rtol=1.0e-5, atol=1.0e-6)
 
     def test_external_rigid_solver_harvests_particle_soft_contacts(self):
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
@@ -4089,11 +4141,11 @@ def _coupled_soft_contact_filter_preserves_unified_fields(test, device):
             wp.array([7], dtype=wp.int32, device=device),  # src_tids
             wp.array([wp.vec3i(0, -1, -1)], dtype=wp.vec3i, device=device),  # src_indices
             wp.array([wp.vec3(1.0, 0.0, 0.0)], dtype=wp.vec3, device=device),  # src_barycentric
+            None,  # mesh feature records
             wp.array([int(ShapeFlags.COLLIDE_PARTICLES)], dtype=wp.int32, device=device),  # shape_flags
             wp.array([int(ParticleFlags.ACTIVE)], dtype=wp.int32, device=device),  # particle_flags
             int(ShapeFlags.COLLIDE_PARTICLES),
             int(ParticleFlags.ACTIVE),
-            0,  # keep_full_surface_contacts
             wp.zeros(1, dtype=wp.int32, device=device),  # dst_count
             wp.full(1, -1, dtype=wp.int32, device=device),  # dst_particle
             wp.full(1, -1, dtype=wp.int32, device=device),  # dst_shape
@@ -4103,6 +4155,7 @@ def _coupled_soft_contact_filter_preserves_unified_fields(test, device):
             wp.full(1, -1, dtype=wp.int32, device=device),  # dst_tids
             dst_indices,
             dst_barycentric,
+            None,  # mesh feature records
             wp.full(1, -1, dtype=wp.int32, device=device),  # src_to_dst
         ],
         device=device,

@@ -60,6 +60,8 @@ Example::
 
 .. autofunction:: add_equality_joint
 
+.. autofunction:: add_equality_tendon
+
 .. autofunction:: add_equality_weld
 
 .. autofunction:: add_tendon_fixed
