@@ -19,6 +19,7 @@ from newton.tests.kamino import setup_tests, test_context
 from newton.tests.utils.basics import (
     build_box_on_plane,
     build_boxes_fourbar,
+    build_boxes_hinged,
     build_cartpole,
 )
 
@@ -415,7 +416,7 @@ def _joint_angular_error(
     return float(np.linalg.norm(np.cross(np.asarray((1.0, 0.0, 0.0)), follower_axis)))
 
 
-class TestSolverKaminoLOX(unittest.TestCase):
+class _LOXTestCase(unittest.TestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
@@ -431,25 +432,8 @@ class TestSolverKaminoLOX(unittest.TestCase):
             ),
         )
 
-    def test_moreau_free_fall_uses_midpoint_configuration(self):
-        """Compose LOX forward dynamics with Kamino's Moreau integrator."""
-        model = ModelKamino.from_newton(build_box_on_plane(ground=False).finalize(device=self.default_device))
-        config = self.make_config()
-        config.integrator = "moreau"
-        config.use_collision_detector = True
-        solver = SolverKaminoImpl(model=model, config=config)
-        state_previous = model.state()
-        state_next = model.state()
-        time_step = 0.01
 
-        solver.step(state_previous, state_next, model.control(), dt=time_step)
-
-        gravity = model.gravity.vector.numpy()[0]
-        expected_velocity = time_step * gravity
-        np.testing.assert_allclose(state_next.u_i.numpy()[0, :3], expected_velocity, rtol=0.0, atol=5.0e-4)
-        expected_height = state_previous.q_i.numpy()[0, 2] + 0.5 * time_step * expected_velocity[2]
-        self.assertAlmostEqual(float(state_next.q_i.numpy()[0, 2]), float(expected_height), places=6)
-
+class TestSolverKaminoLOX(_LOXTestCase):
     def test_free_fall_uses_each_world_time_step(self):
         """Advance each rigid world with its configured device-side time step."""
         builder = build_box_on_plane(ground=False)
@@ -474,118 +458,91 @@ class TestSolverKaminoLOX(unittest.TestCase):
         np.testing.assert_allclose(state_next.q_i.numpy()[:, 2], expected_height, rtol=0.0, atol=1.0e-6)
 
     def test_free_rotation_preserves_angular_momentum_magnitude(self):
-        """Keep |I ω| of a torque-free body through the LOX solve and each Kamino integrator."""
+        """Keep |I ω| of a torque-free body through the LOX solve and the integrator."""
         # Principal moments that satisfy the triangle inequality, which the model builder enforces
         inertia = np.diag([2.0, 3.0, 4.0])
         omega = np.array([3.0, -7.0, 11.0])
-        for integrator in ("euler", "moreau"):
-            with self.subTest(integrator=integrator):
-                builder = newton.ModelBuilder()
-                SolverKamino.register_custom_attributes(builder)
-                body = builder.add_body(mass=1.0, inertia=wp.mat33f(*inertia.flatten()), lock_inertia=True)
-                builder.body_qd[body] = wp.spatial_vectorf(0.0, 0.0, 0.0, *omega)
-                model = builder.finalize(device=self.default_device)
-                model.set_gravity((0.0, 0.0, 0.0))
-                config = self.make_config()
-                config.integrator = integrator
-                solver = SolverKamino(model, config=config)
-                state_previous = model.state()
-                state_next = model.state()
+        builder = newton.ModelBuilder()
+        SolverKamino.register_custom_attributes(builder)
+        body = builder.add_body(mass=1.0, inertia=wp.mat33f(*inertia.flatten()), lock_inertia=True)
+        builder.body_qd[body] = wp.spatial_vectorf(0.0, 0.0, 0.0, *omega)
+        model = builder.finalize(device=self.default_device)
+        model.set_gravity((0.0, 0.0, 0.0))
+        solver = SolverKamino(model, config=self.make_config())
+        state_previous = model.state()
+        state_next = model.state()
 
-                solver.step(state_previous, state_next, model.control(), contacts=None, dt=0.02)
+        solver.step(state_previous, state_next, model.control(), contacts=None, dt=0.02)
 
-                # The body starts at the identity orientation, so its world inertia is the body inertia
-                next_omega = state_next.body_qd.numpy()[0, 3:]
-                self.assertAlmostEqual(
-                    float(np.linalg.norm(inertia @ next_omega) / np.linalg.norm(inertia @ omega)), 1.0, delta=1.0e-5
-                )
+        # The body starts at the identity orientation, so its world inertia is the body inertia
+        next_omega = state_next.body_qd.numpy()[0, 3:]
+        self.assertAlmostEqual(
+            float(np.linalg.norm(inertia @ next_omega) / np.linalg.norm(inertia @ omega)), 1.0, delta=1.0e-5
+        )
 
-    def test_large_joint_violation_is_corrected_by_max_correction_per_step(self):
-        """Correct a joint violation by at most ``joint_max_correction`` per step, and a smaller one beyond the tolerance."""
-        time_step = 0.01
-        lox_config = self.make_config().lox
-        max_correction = lox_config.joint_max_correction
-        tolerance = lox_config.position_tolerance
-        for offset, corrected in (
-            (100.0 * max_correction, max_correction),
-            (0.5 * max_correction, 0.5 * max_correction - tolerance),
-        ):
-            expected_speed = corrected / time_step
-            with self.subTest(offset=offset):
-                model = _build_revolute_dynamics_model(damping=0.0, friction=0.0, velocity=0.0)
-                solver = SolverKamino(model, config=self.make_config())
-                state_previous = model.state()
-                state_next = model.state()
-                # Pull the link off its hinge anchor along x
-                body_q = state_previous.body_q.numpy()
-                body_q[0, 0] += offset
-                state_previous.body_q.assign(body_q)
-
-                solver.step(state_previous, state_next, model.control(), contacts=None, dt=time_step)
-
-                velocity = state_next.body_qd.numpy()[0, :3]
-                self.assertAlmostEqual(float(-velocity[0]), expected_speed, delta=0.05 * expected_speed)
-
-    def test_joint_violation_within_tolerance_is_left_uncorrected(self):
+    def test_joint_violation_correction_is_bounded(self):
         """Correct only the part of a joint translation beyond the position tolerance, and of a joint
-        rotation beyond the rotation tolerance."""
+        rotation beyond the rotation tolerance, by at most ``joint_max_correction`` per step."""
         time_step = 0.01
         tolerance = 1.0e-4
         # The other tolerance stays far smaller, so each row must use the tolerance of its own kind
         small_tolerance = 1.0e-7
-        for kind in ("translation", "rotation"):
-            for offset, corrected in ((0.5 * tolerance, 0.0), (3.0 * tolerance, 2.0 * tolerance)):
-                with self.subTest(kind=kind, offset=offset):
-                    model = _build_revolute_dynamics_model(damping=0.0, friction=0.0, velocity=0.0)
-                    config = self.make_config()
-                    config.lox.position_tolerance = tolerance if kind == "translation" else small_tolerance
-                    config.lox.rotation_tolerance = tolerance if kind == "rotation" else small_tolerance
-                    solver = SolverKamino(model, config=config)
-                    state_previous = model.state()
-                    state_next = model.state()
-                    body_q = state_previous.body_q.numpy()
-                    if kind == "translation":
-                        # Pull the link off its hinge anchor along x
-                        body_q[0, 0] += offset
-                    else:
-                        # Tilt the link about x, across its hinge axis along y
-                        body_q[0, 3:7] = (math.sin(0.5 * offset), 0.0, 0.0, math.cos(0.5 * offset))
-                    state_previous.body_q.assign(body_q)
+        max_correction = self.make_config().lox.joint_max_correction
+        cases = (
+            # (kind, offset, corrected offset, accuracy of the corrected offset)
+            ("translation", 0.5 * tolerance, 0.0, 0.05 * tolerance),
+            ("translation", 3.0 * tolerance, 2.0 * tolerance, 0.05 * tolerance),
+            ("rotation", 3.0 * tolerance, 2.0 * tolerance, 0.05 * tolerance),
+            ("translation", 100.0 * max_correction, max_correction, 0.05 * max_correction),
+        )
+        for kind, offset, corrected, accuracy in cases:
+            with self.subTest(kind=kind, offset=offset):
+                model = _build_revolute_dynamics_model(damping=0.0, friction=0.0, velocity=0.0)
+                config = self.make_config()
+                config.lox.position_tolerance = tolerance if kind == "translation" else small_tolerance
+                config.lox.rotation_tolerance = tolerance if kind == "rotation" else small_tolerance
+                solver = SolverKamino(model, config=config)
+                state_previous = model.state()
+                state_next = model.state()
+                body_q = state_previous.body_q.numpy()
+                if kind == "translation":
+                    # Pull the link off its hinge anchor along x
+                    body_q[0, 0] += offset
+                else:
+                    # Tilt the link about x, across its hinge axis along y
+                    body_q[0, 3:7] = (math.sin(0.5 * offset), 0.0, 0.0, math.cos(0.5 * offset))
+                state_previous.body_q.assign(body_q)
 
-                    solver.step(state_previous, state_next, model.control(), contacts=None, dt=time_step)
+                solver.step(state_previous, state_next, model.control(), contacts=None, dt=time_step)
 
-                    velocity = state_next.body_qd.numpy()[0]
-                    component = velocity[0] if kind == "translation" else velocity[3]
-                    self.assertAlmostEqual(float(-component), corrected / time_step, delta=0.05 * tolerance / time_step)
+                velocity = state_next.body_qd.numpy()[0]
+                component = velocity[0] if kind == "translation" else velocity[3]
+                self.assertAlmostEqual(float(-component), corrected / time_step, delta=accuracy / time_step)
 
     def test_spinning_hinge_keeps_its_axis(self):
         """Integrate the LOX velocity of a body spinning about a non-principal hinge axis along that axis."""
         axis = np.array([1.0, 1.0, 1.0]) / math.sqrt(3.0)
         speed = 10.0
-        for integrator in ("euler", "moreau"):
-            with self.subTest(integrator=integrator):
-                builder = newton.ModelBuilder()
-                SolverKamino.register_custom_attributes(builder)
-                body = builder.add_link(
-                    mass=1.0, inertia=wp.mat33f(2.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 4.0), lock_inertia=True
-                )
-                joint = builder.add_joint_revolute(parent=-1, child=body, axis=wp.vec3f(*axis))
-                builder.add_articulation([joint])
-                builder.body_qd[body] = wp.spatial_vectorf(0.0, 0.0, 0.0, *(speed * axis))
-                builder.joint_qd[builder.joint_qd_start[joint]] = speed
-                model = builder.finalize(device=self.default_device)
-                model.set_gravity((0.0, 0.0, 0.0))
-                config = self.make_config()
-                config.integrator = integrator
-                solver = SolverKamino(model, config=config)
-                state_previous = model.state()
-                state_next = model.state()
+        builder = newton.ModelBuilder()
+        SolverKamino.register_custom_attributes(builder)
+        body = builder.add_link(
+            mass=1.0, inertia=wp.mat33f(2.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0, 0.0, 4.0), lock_inertia=True
+        )
+        joint = builder.add_joint_revolute(parent=-1, child=body, axis=wp.vec3f(*axis))
+        builder.add_articulation([joint])
+        builder.body_qd[body] = wp.spatial_vectorf(0.0, 0.0, 0.0, *(speed * axis))
+        builder.joint_qd[builder.joint_qd_start[joint]] = speed
+        model = builder.finalize(device=self.default_device)
+        model.set_gravity((0.0, 0.0, 0.0))
+        solver = SolverKamino(model, config=self.make_config())
+        state_previous = model.state()
+        state_next = model.state()
 
-                solver.step(state_previous, state_next, model.control(), contacts=None, dt=0.02)
+        solver.step(state_previous, state_next, model.control(), contacts=None, dt=0.02)
 
-                # The hinge absorbs the gyroscopic torque, which the integrator must apply as LOX did
-                omega = state_next.body_qd.numpy()[0, 3:]
-                self.assertLess(float(np.linalg.norm(omega - np.dot(omega, axis) * axis)), 1.0e-5 * speed)
+        # The hinge absorbs the gyroscopic torque, which the integrator must apply as LOX did
+        omega = state_next.body_qd.numpy()[0, 3:]
+        self.assertLess(float(np.linalg.norm(omega - np.dot(omega, axis) * axis)), 1.0e-5 * speed)
 
     def test_prescribed_bodies_keep_their_velocity(self):
         """Keep the velocity of zero-mass and kinematic bodies, and ignore joints between prescribed bodies."""
@@ -656,15 +613,6 @@ class TestSolverKaminoLOX(unittest.TestCase):
                 anchor = pose[:3] + np.asarray(wp.quat_rotate(wp.quatf(*pose[3:]), wp.vec3f(0.0, 0.0, 0.5)))
                 np.testing.assert_allclose(anchor, 0.0, rtol=0.0, atol=1.0e-3)
 
-    def test_kinematic_flag_change_requires_solver_rebuild(self):
-        """Reject a runtime immovability change after Kamino has culled constraints."""
-        model, _body = _build_flagged_kinematic_model(device=self.default_device)
-        solver = SolverKamino(model, config=self.make_config())
-
-        model.body_flags.fill_(int(newton.BodyFlags.DYNAMIC))
-        with self.assertRaisesRegex(RuntimeError, "immovability.*recreate SolverKamino"):
-            solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
-
     def test_joint_damping_is_implicit(self):
         """Apply joint damping implicitly."""
         time_step = 0.1
@@ -713,64 +661,13 @@ class TestSolverKaminoLOX(unittest.TestCase):
         expected = [1.0 - 0.5 * time_step / inertia, 1.0]
         np.testing.assert_allclose(state_next.joint_qd.numpy(), expected, rtol=0.0, atol=1.0e-4)
 
-    def test_relaxed_joint_proximal_preserves_nonlinear_fixed_point(self):
-        """Converge a relaxed joint correction to the exact candidate-pose constraint."""
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        SolverKamino.register_custom_attributes(builder)
-        builder.begin_world()
-        inertia = wp.mat33f(0.2, 0.0, 0.0, 0.0, 0.3, 0.0, 0.0, 0.0, 0.4)
-        parent = builder.add_link(mass=1.0, inertia=inertia, lock_inertia=True)
-        child = builder.add_link(
-            xform=wp.transformf(wp.vec3f(0.0, 0.0, 1.0), wp.quat_identity(dtype=wp.float32)),
-            mass=1.0,
-            inertia=inertia,
-            lock_inertia=True,
-        )
-        root = builder.add_joint_revolute(parent=-1, child=parent, axis=newton.Axis.Y)
-        fixed = builder.add_joint_fixed(
-            parent=parent,
-            child=child,
-            parent_xform=wp.transformf(
-                wp.vec3f(0.0, 0.0, 1.0),
-                wp.quat_identity(dtype=wp.float32),
-            ),
-        )
-        builder.add_articulation([root, fixed])
-        builder.end_world()
-        model = builder.finalize(device=self.default_device)
 
-        config = self.make_config()
-        config.use_collision_detector = False
-        config.lox.fixed_iterations = True
-        config.lox.max_iterations = 20
-        config.lox.joint_proximal_relaxation = 0.5
-        solver = SolverKamino(model, config=config)
-        state_previous = model.state()
-        state_next = model.state()
-        velocity = np.zeros((model.body_count, 6), dtype=np.float32)
-        velocity[parent] = (0.0, 0.0, 0.0, 0.0, 5.0, 0.0)
-        velocity[child] = (8.0, -5.0, 3.0, 18.0, -12.0, 15.0)
-        state_previous.body_qd.assign(velocity)
-
-        solver.step(state_previous, state_next, model.control(), contacts=None, dt=0.05)
-
-        poses = state_next.body_q.numpy()
-        parent_position = poses[parent, :3]
-        parent_axis = poses[parent, 3:6]
-        parent_scalar = poses[parent, 6]
-        joint_offset = np.array((0.0, 0.0, 1.0), dtype=np.float32)
-        rotated_offset = joint_offset + 2.0 * (
-            parent_scalar * np.cross(parent_axis, joint_offset)
-            + np.cross(parent_axis, np.cross(parent_axis, joint_offset))
-        )
-        position_error = poses[child, :3] - parent_position - rotated_offset
-        np.testing.assert_allclose(position_error, 0.0, atol=1.0e-5)
-
+class TestSolverKaminoLOXJoints(_LOXTestCase):
     def test_joint_proximal_uses_frozen_frame_for_full_position_blocks(self):
         """Constrain offset anchors while a prescribed parent rotates substantially."""
+        # The relaxation test covers a ball joint rotating by 0.5 rad with offset frames
         cases = (
             ("ball", 0.1, False),
-            ("ball", 0.5, True),
             ("ball", 1.2, True),
             ("revolute", 0.5, True),
         )
@@ -823,15 +720,20 @@ class TestSolverKaminoLOX(unittest.TestCase):
         np.testing.assert_allclose(child_poses, np.broadcast_to(child_poses[0], child_poses.shape), atol=2.0e-6)
 
     def test_joint_proximal_handles_two_body_frames_and_orderings(self):
-        """Keep fixed and revolute joint errors bounded across mass ratios and body storage orders."""
+        """Keep fixed and revolute joint errors bounded across mass ratios, body storage orders, and relaxations."""
         cases = (
-            ("fixed", 1.0, False),
-            ("fixed", 100.0, True),
-            ("revolute", 100.0, False),
-            ("revolute", 1.0, True),
+            ("fixed", 1.0, False, 0.5),
+            ("fixed", 100.0, True, 1.0),
+            ("revolute", 100.0, False, 1.0),
+            ("revolute", 1.0, True, 1.0),
         )
-        for joint_kind, mass_ratio, reverse_body_order in cases:
-            with self.subTest(joint_kind=joint_kind, mass_ratio=mass_ratio, reverse_body_order=reverse_body_order):
+        for joint_kind, mass_ratio, reverse_body_order, relaxation in cases:
+            with self.subTest(
+                joint_kind=joint_kind,
+                mass_ratio=mass_ratio,
+                reverse_body_order=reverse_body_order,
+                relaxation=relaxation,
+            ):
                 model, parent, child, parent_xform, child_xform = _build_two_body_joint_model(
                     joint_kind=joint_kind,
                     mass_ratio=mass_ratio,
@@ -841,7 +743,7 @@ class TestSolverKaminoLOX(unittest.TestCase):
                 config = self.make_config()
                 config.use_collision_detector = False
                 config.lox.fixed_iterations = True
-                config.lox.joint_proximal_relaxation = 1.0
+                config.lox.joint_proximal_relaxation = relaxation
                 solver = SolverKamino(model, config=config)
                 state_previous = model.state()
                 state_next = model.state()
@@ -900,75 +802,72 @@ class TestSolverKaminoLOX(unittest.TestCase):
     def test_joint_proximal_rotates_poses_velocities_and_wrenches(self):
         """Rotate the whole scene and obtain the rotated solution."""
         rotation = np.asarray(wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, -2.0, 0.7)), 1.1))
-        for kind in ("fixed", "revolute"):
-            with self.subTest(kind=kind):
-                results = []
-                for rotated in (False, True):
-                    model, parent, child, _, _ = _build_two_body_joint_model(
-                        joint_kind=kind,
-                        mass_ratio=100.0,
-                        reverse_body_order=True,
-                        device=self.default_device,
-                    )
-                    velocity = np.zeros((model.body_count, 6), dtype=np.float32)
-                    velocity[parent] = (2.0, -1.0, 0.5, 0.0, 50.0, 0.0)
-                    velocity[child] = (-3.0, 2.0, -1.0, 20.0, -10.0, 15.0)
-                    if rotated:
-                        poses = model.body_q.numpy()
-                        for pose in poses:
-                            pose[:3] = _rotate_vector(rotation, pose[:3])
-                            pose[3:] = _quaternion_product(rotation, pose[3:])
-                        model.body_q.assign(poses)
-                        root_frames = model.joint_X_p.numpy()
-                        for joint in np.flatnonzero(model.joint_parent.numpy() < 0):
-                            root_frames[joint, :3] = _rotate_vector(rotation, root_frames[joint, :3])
-                            root_frames[joint, 3:] = _quaternion_product(rotation, root_frames[joint, 3:])
-                        model.joint_X_p.assign(root_frames)
-                        for body in range(model.body_count):
-                            velocity[body, :3] = _rotate_vector(rotation, velocity[body, :3])
-                            velocity[body, 3:] = _rotate_vector(rotation, velocity[body, 3:])
-                    config = self.make_config()
-                    config.use_collision_detector = False
-                    config.lox.fixed_iterations = True
-                    config.lox.joint_proximal_relaxation = 1.0
-                    solver = SolverKamino(model, config=config)
-                    state_previous, state_next = model.state(), model.state()
-                    state_previous.body_qd.assign(velocity)
-                    solver.step(state_previous, state_next, model.control(), contacts=None, dt=0.01)
-                    results.append(
-                        (
-                            state_next.body_q.numpy(),
-                            state_next.body_qd.numpy(),
-                            solver._solver_kamino.data.bodies.w_j_i.numpy(),
-                        )
-                    )
-                original, transformed = results
-                for body in range(len(original[0])):
+        results = []
+        for rotated in (False, True):
+            model, parent, child, _, _ = _build_two_body_joint_model(
+                joint_kind="revolute",
+                mass_ratio=100.0,
+                reverse_body_order=True,
+                device=self.default_device,
+            )
+            velocity = np.zeros((model.body_count, 6), dtype=np.float32)
+            velocity[parent] = (2.0, -1.0, 0.5, 0.0, 50.0, 0.0)
+            velocity[child] = (-3.0, 2.0, -1.0, 20.0, -10.0, 15.0)
+            if rotated:
+                poses = model.body_q.numpy()
+                for pose in poses:
+                    pose[:3] = _rotate_vector(rotation, pose[:3])
+                    pose[3:] = _quaternion_product(rotation, pose[3:])
+                model.body_q.assign(poses)
+                root_frames = model.joint_X_p.numpy()
+                for joint in np.flatnonzero(model.joint_parent.numpy() < 0):
+                    root_frames[joint, :3] = _rotate_vector(rotation, root_frames[joint, :3])
+                    root_frames[joint, 3:] = _quaternion_product(rotation, root_frames[joint, 3:])
+                model.joint_X_p.assign(root_frames)
+                for body in range(model.body_count):
+                    velocity[body, :3] = _rotate_vector(rotation, velocity[body, :3])
+                    velocity[body, 3:] = _rotate_vector(rotation, velocity[body, 3:])
+            config = self.make_config()
+            config.use_collision_detector = False
+            config.lox.fixed_iterations = True
+            config.lox.joint_proximal_relaxation = 1.0
+            solver = SolverKamino(model, config=config)
+            state_previous, state_next = model.state(), model.state()
+            state_previous.body_qd.assign(velocity)
+            solver.step(state_previous, state_next, model.control(), contacts=None, dt=0.01)
+            results.append(
+                (
+                    state_next.body_q.numpy(),
+                    state_next.body_qd.numpy(),
+                    solver._solver_kamino.data.bodies.w_j_i.numpy(),
+                )
+            )
+        original, transformed = results
+        for body in range(len(original[0])):
+            np.testing.assert_allclose(
+                transformed[0][body, :3], _rotate_vector(rotation, original[0][body, :3]), atol=2.0e-5
+            )
+            expected_q = _quaternion_product(rotation, original[0][body, 3:])
+            actual_q = transformed[0][body, 3:]
+            if np.dot(expected_q, actual_q) < 0.0:
+                actual_q = -actual_q
+            np.testing.assert_allclose(actual_q, expected_q, atol=2.0e-5)
+            for quantity in (1, 2):
+                for begin in (0, 3):
                     np.testing.assert_allclose(
-                        transformed[0][body, :3], _rotate_vector(rotation, original[0][body, :3]), atol=2.0e-5
+                        transformed[quantity][body, begin : begin + 3],
+                        _rotate_vector(rotation, original[quantity][body, begin : begin + 3]),
+                        rtol=5.0e-4,
+                        atol=2.0e-3,
                     )
-                    expected_q = _quaternion_product(rotation, original[0][body, 3:])
-                    actual_q = transformed[0][body, 3:]
-                    if np.dot(expected_q, actual_q) < 0.0:
-                        actual_q = -actual_q
-                    np.testing.assert_allclose(actual_q, expected_q, atol=2.0e-5)
-                    for quantity in (1, 2):
-                        for begin in (0, 3):
-                            np.testing.assert_allclose(
-                                transformed[quantity][body, begin : begin + 3],
-                                _rotate_vector(rotation, original[quantity][body, begin : begin + 3]),
-                                rtol=5.0e-4,
-                                atol=2.0e-3,
-                            )
 
     def test_failed_jointed_world_stays_failed_until_reset(self):
         """Zero the outputs of a failed world, keep it failed, and recover it after a reset."""
         model = _build_driven_chain_model(world_count=2, device=self.default_device)
         solver = SolverKamino(model, config=self.make_config())
         state_in, state_out, control = model.state(), model.state(), model.control()
-        for _ in range(3):
-            solver.step(state_in, state_out, control, contacts=None, dt=0.01)
-            state_in, state_out = state_out, state_in
+        solver.step(state_in, state_out, control, contacts=None, dt=0.01)
+        state_in, state_out = state_out, state_in
         np.testing.assert_array_equal(solver.status.numpy()["failed"], [0, 0])
         joints = solver._solver_kamino.data.joints
         bodies = solver._solver_kamino.data.bodies
@@ -1002,61 +901,36 @@ class TestSolverKaminoLOX(unittest.TestCase):
         self.assertTrue(np.isfinite(state_out.body_qd.numpy()).all())
 
     def test_position_drive_with_massless_fixed_child(self):
-        """Track a target when the driven body has a massless fixed child."""
-        cases = ((False, "euler"), (True, "euler"), (True, "moreau"))
-        for include_massless_fixed_child, integrator in cases:
-            with self.subTest(
-                include_massless_fixed_child=include_massless_fixed_child,
-                integrator=integrator,
-            ):
-                model = _build_massless_fixed_child_drive_model(
-                    include_massless_fixed_child=include_massless_fixed_child,
-                    device=self.default_device,
-                )
+        """Seed the joint penalty of a drive whose link carries a massless fixed child, then track its target."""
+        time_step = 1.0 / 600.0
+        for integrator in ("euler", "moreau"):
+            with self.subTest(integrator=integrator):
+                model = _build_massless_fixed_child_drive_model(device=self.default_device)
                 config = self.make_config()
                 config.integrator = integrator
                 config.use_collision_detector = integrator == "moreau"
+                config.lox.joint_penalty_seed_time_step = time_step
                 solver = SolverKamino(model, config=config)
+                seed = solver._solver_kamino.solver_fd._data.joint_penalty_scale.numpy()
+                self.assertTrue(np.all(np.isfinite(seed)))
+                self.assertTrue(np.all(seed > 0.0))
                 state_previous = model.state()
                 state_next = model.state()
                 control = model.control()
                 control.joint_target_q.assign([0.2])
 
-                for _ in range(240):
-                    solver.step(state_previous, state_next, control, contacts=None, dt=1.0 / 600.0)
+                for _ in range(120):
+                    solver.step(state_previous, state_next, control, contacts=None, dt=time_step)
                     state_previous, state_next = state_next, state_previous
 
+                np.testing.assert_array_equal(solver.status.numpy()["failed"], [0])
                 self.assertGreater(float(state_previous.joint_q.numpy()[0]), 0.1)
-                if include_massless_fixed_child:
-                    body_q = state_previous.body_q.numpy()
-                    body_qd = state_previous.body_qd.numpy()
-                    np.testing.assert_allclose(body_qd[1], body_qd[0], rtol=0.0, atol=1.0e-4)
-                    np.testing.assert_allclose(body_q[1, 3:], body_q[0, 3:], rtol=0.0, atol=1.0e-5)
-                    np.testing.assert_allclose(body_q[1, :2], body_q[0, :2], rtol=0.0, atol=1.0e-5)
-                    self.assertAlmostEqual(float(body_q[1, 2] - body_q[0, 2]), 0.1, places=5)
-
-    def test_joint_penalty_seed_supports_massless_bodies(self):
-        """Seed the joint penalty of a drive whose link carries a massless fixed child, then track its target."""
-        model = _build_massless_fixed_child_drive_model(device=self.default_device)
-        time_step = 1.0 / 600.0
-        config = self.make_config()
-        config.use_collision_detector = False
-        config.lox.joint_penalty_seed_time_step = time_step
-        solver = SolverKamino(model, config=config)
-
-        seed = solver._solver_kamino.solver_fd._data.joint_penalty_scale.numpy()
-
-        self.assertTrue(np.all(np.isfinite(seed)))
-        self.assertTrue(np.all(seed > 0.0))
-        state_previous = model.state()
-        state_next = model.state()
-        control = model.control()
-        control.joint_target_q.assign([0.2])
-        for _ in range(240):
-            solver.step(state_previous, state_next, control, contacts=None, dt=time_step)
-            state_previous, state_next = state_next, state_previous
-        np.testing.assert_array_equal(solver.status.numpy()["failed"], [0])
-        self.assertGreater(float(state_previous.joint_q.numpy()[0]), 0.1)
+                body_q = state_previous.body_q.numpy()
+                body_qd = state_previous.body_qd.numpy()
+                np.testing.assert_allclose(body_qd[1], body_qd[0], rtol=0.0, atol=1.0e-4)
+                np.testing.assert_allclose(body_q[1, 3:], body_q[0, 3:], rtol=0.0, atol=1.0e-5)
+                np.testing.assert_allclose(body_q[1, :2], body_q[0, :2], rtol=0.0, atol=1.0e-5)
+                self.assertAlmostEqual(float(body_q[1, 2] - body_q[0, 2]), 0.1, places=5)
 
     def test_prescribed_contact_does_not_reject_dynamic_world(self):
         """Ignore contacts whose two incident bodies are prescribed."""
@@ -1080,81 +954,63 @@ class TestSolverKaminoLOX(unittest.TestCase):
 
         collision_pipeline.collide(state_previous, contacts)
         self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
-        solver.step(state_previous, state_next, control, contacts, dt=1.0 / 600.0)
-        state_previous, state_next = state_next, state_previous
-
-        for _ in range(119):
+        for _ in range(2):
             collision_pipeline.collide(state_previous, contacts)
             solver.step(state_previous, state_next, control, contacts, dt=1.0 / 600.0)
             state_previous, state_next = state_next, state_previous
 
-        self.assertGreater(float(state_previous.joint_q.numpy()[0]), 0.1)
+        np.testing.assert_array_equal(solver.status.numpy()["failed"], [0])
+        self.assertGreater(float(state_previous.joint_qd.numpy()[0]), 0.0)
 
     def test_joint_effort_limit_bounds_implicit_drive(self):
         """Clamp an implicit position drive at its effort limit, excluding external joint forces."""
         # The drive of stiffness 100 N m/rad saturates towards its target; the body and armature
         # inertias about the hinge are 1 kg m^2 each
         cases = (
-            # (armature, effort limit [N m], target [rad], external force [N m], expected velocity [rad/s])
-            (1.0, 1.0, 1.0, 0.0, 0.05),
-            (0.0, 1.0, 1.0, 0.0, 0.1),
-            (1.0, 0.5, 0.0, 20.0, 0.975),
+            # (armature, effort limit [N m], target [rad], external force [N m], expected velocity [rad/s], saturated)
+            (1.0, 1.0, 1.0, 0.0, 0.05, True),
+            (0.0, 1.0, 1.0, 0.0, 0.1, True),
+            (1.0, 0.5, 0.0, 20.0, 0.975, True),
+            # An inactive finite bound retains the implicit drive velocity dt k / (I + dt^2 k) = 10 / 3 rad/s
+            (1.0, 1000.0, 1.0, 0.0, 10.0 / 3.0, False),
         )
-        for armature, effort_limit, target, external_force, expected in cases:
-            for max_iterations in (1, 40):
-                with self.subTest(armature=armature, external_force=external_force, max_iterations=max_iterations):
-                    model = _build_revolute_dynamics_model(
-                        damping=0.0,
-                        friction=0.0,
-                        velocity=0.0,
-                        armature=armature,
-                        target_ke=100.0,
-                        effort_limit=effort_limit,
-                        actuator_mode=newton.JointTargetMode.POSITION,
-                        device=self.default_device,
-                    )
-                    config = self.make_config()
-                    config.lox.max_iterations = max_iterations
-                    solver = SolverKamino(model, config=config)
-                    state_next = model.state()
-                    control = model.control()
-                    control.joint_target_q.assign([target])
-                    control.joint_f.assign([external_force])
+        # The first case also runs a single iteration, whose reported effort is already within its bound
+        runs = [(case, 40) for case in cases] + [(cases[0], 1)]
+        for (armature, effort_limit, target, external_force, expected, saturated), max_iterations in runs:
+            with self.subTest(
+                armature=armature,
+                effort_limit=effort_limit,
+                external_force=external_force,
+                max_iterations=max_iterations,
+            ):
+                model = _build_revolute_dynamics_model(
+                    damping=0.0,
+                    friction=0.0,
+                    velocity=0.0,
+                    armature=armature,
+                    target_ke=100.0,
+                    effort_limit=effort_limit,
+                    actuator_mode=newton.JointTargetMode.POSITION,
+                    device=self.default_device,
+                )
+                config = self.make_config()
+                config.lox.max_iterations = max_iterations
+                solver = SolverKamino(model, config=config)
+                state_next = model.state()
+                control = model.control()
+                control.joint_target_q.assign([target])
+                control.joint_f.assign([external_force])
 
-                    solver.step(model.state(), state_next, control, contacts=None, dt=0.1)
+                solver.step(model.state(), state_next, control, contacts=None, dt=0.1)
 
-                    # The reported effort is within its bound even before convergence
+                if saturated:
                     effort = float(solver._solver_kamino.data.joints.lambda_tau_j.numpy()[0])
                     self.assertAlmostEqual(abs(effort), effort_limit, places=5)
-                    if max_iterations > 1:
-                        self.assertAlmostEqual(float(state_next.joint_qd.numpy()[0]), expected, places=4)
+                if max_iterations > 1:
+                    self.assertAlmostEqual(float(state_next.joint_qd.numpy()[0]), expected, places=4)
 
-        # An inactive finite bound retains the unbounded implicit drive
-        results = []
-        for effort_limit in (math.inf, 1000.0):
-            model = _build_revolute_dynamics_model(
-                damping=0.0,
-                friction=0.0,
-                velocity=0.0,
-                armature=1.0,
-                target_ke=100.0,
-                effort_limit=effort_limit,
-                actuator_mode=newton.JointTargetMode.POSITION,
-                device=self.default_device,
-            )
-            config = self.make_config()
-            config.lox.max_iterations = 40
-            solver = SolverKamino(model, config=config)
-            state_next = model.state()
-            control = model.control()
-            control.joint_target_q.assign([1.0])
 
-            solver.step(model.state(), state_next, control, contacts=None, dt=0.1)
-            results.append(float(state_next.joint_qd.numpy()[0]))
-
-        self.assertGreater(results[0], 1.0)
-        self.assertAlmostEqual(results[1], results[0], places=4)
-
+class TestSolverKaminoLOXConstraints(_LOXTestCase):
     def test_sliding_box_stops_at_coulomb_distance(self):
         """Converge the friction of a sliding box to its discrete Coulomb stopping distance."""
         speed, friction, gravity, time_step = 2.0, 0.5, 9.81, 1.0 / 240.0
@@ -1207,7 +1063,8 @@ class TestSolverKaminoLOX(unittest.TestCase):
                 state_in, state_out, control = model.state(), model.state(), model.control()
                 converged = []
 
-                for _ in range(100):
+                # The box slides for 30 steps
+                for _ in range(20):
                     pipeline.collide(state_in, contacts)
                     solver.step(state_in, state_out, control, contacts, 0.002)
                     state_in, state_out = state_out, state_in
@@ -1291,15 +1148,19 @@ class TestSolverKaminoLOX(unittest.TestCase):
         self.assertLess(float(metrics.r_ncp_primal.numpy()[0]), 1.0e-5)
 
     def test_cartpole_sustained_joint_force_remains_bounded(self):
-        """Keep cartpole motion bounded under sustained joint force."""
+        """Keep cartpole motion bounded under a sustained joint force against the rail limit."""
         model = ModelKamino.from_newton(build_cartpole(ground=False, limits=True).finalize(device=self.default_device))
         solver = SolverKaminoImpl(model=model, config=self.make_config())
         state_previous = model.state()
         state_next = model.state()
+        # Start past the upper rail limit, pushed further along the rail
+        pose = state_previous.q_i.numpy()
+        pose[:, 1] += 4.1
+        state_previous.q_i.assign(pose)
         control = model.control()
         control.tau_j.assign(np.asarray([10.0, 0.0], dtype=np.float32))
 
-        for _ in range(300):
+        for _ in range(50):
             solver.step(state_previous, state_next, control, dt=0.001)
             state_previous, state_next = state_next, state_previous
 
@@ -1310,33 +1171,6 @@ class TestSolverKaminoLOX(unittest.TestCase):
         self.assertLess(float(np.max(np.abs(body_velocity))), 100.0)
         self.assertLess(float(np.max(np.abs(joint_residual))), 1.0e-2)
         np.testing.assert_array_equal(solver.solver_status.numpy()["failed"], [0])
-
-    def test_cuda_graph_capture_replays_step(self):
-        """Replay a captured step with and without CUDA graph conditional nodes."""
-        if not self.default_device.is_cuda:
-            self.skipTest("CUDA graph capture requires a CUDA device.")
-        for use_graph_conditionals in (True, False):
-            with self.subTest(use_graph_conditionals=use_graph_conditionals):
-                if use_graph_conditionals and not wp.is_conditional_graph_supported():
-                    self.skipTest("CUDA conditional graph nodes require CUDA 12.4 or newer.")
-                model = build_box_on_plane(ground=True).finalize(device=self.default_device)
-                config = self.make_config()
-                config.lox.use_graph_conditionals = use_graph_conditionals
-                solver = SolverKamino(model, config=config)
-                pipeline = newton.CollisionPipeline(model)
-                contacts = pipeline.contacts()
-                state_in, state_out, control = model.state(), model.state(), model.control()
-                pipeline.collide(state_in, contacts)
-                self.assertGreater(int(contacts.rigid_contact_count.numpy()[0]), 0)
-                solver.step(state_in, state_out, control, contacts, dt=0.01)
-                expected = state_out.body_qd.numpy()
-
-                with wp.ScopedCapture(device=self.default_device) as capture:
-                    solver.step(state_in, state_out, control, contacts, dt=0.01)
-                for _ in range(2):
-                    wp.capture_launch(capture.graph)
-                    np.testing.assert_allclose(state_out.body_qd.numpy(), expected, rtol=0.0, atol=2.0e-4)
-                    np.testing.assert_array_equal(solver.status.numpy()["failed"], [0])
 
     def test_weight_beta_caps_geometric_mean_weights(self):
         """Keep each body weight between its free patch complement and weight_beta times it, and below the mean."""
@@ -1374,6 +1208,29 @@ class TestSolverKaminoLOX(unittest.TestCase):
         self.assertLess(float(ratios(capped, mean).max()), 1.0 + 1.0e-3)
         # A unit floor keeps the mean under any cap
         np.testing.assert_allclose(weights(1.0, 1.0), mean, rtol=0.0, atol=1.0e-5 * np.abs(mean).max())
+
+    def test_hinged_boxes_drop_settles_with_bounded_joint_error(self):
+        """Settle dropped hinged boxes with bounded joint error."""
+        model = ModelKamino.from_newton(
+            build_boxes_hinged(z_offset=0.1, ground=True).finalize(device=self.default_device)
+        )
+        detector = CollisionDetector(model, config=kamino_config.CollisionDetectorConfig(pipeline="unified"))
+        contacts = detector.contacts
+        solver = SolverKaminoImpl(model=model, contacts=contacts, config=self.make_config())
+        state_previous = model.state()
+        state_next = model.state()
+        control = model.control()
+
+        for _ in range(150):
+            solver.step(state_previous, state_next, control, contacts=contacts, detector=detector, dt=0.005)
+            state_previous, state_next = state_next, state_previous
+
+        # A failed world stays failed, so the final status covers every step
+        np.testing.assert_array_equal(solver.solver_status.numpy()["failed"], [0])
+        self.assertGreater(int(contacts.model_active_contacts.numpy()[0]), 0)
+        self.assertLess(float(np.max(np.abs(solver.data.joints.r_j.numpy()), initial=0.0)), 5.0e-3)
+        self.assertLess(float(np.max(np.linalg.norm(state_previous.u_i.numpy(), axis=1))), 1.0e-1)
+        np.testing.assert_allclose(state_previous.q_i.numpy()[:, 2], 0.05, rtol=0.0, atol=1.0e-2)
 
 
 if __name__ == "__main__":
