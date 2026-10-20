@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import platform
 import unittest
 
 import numpy as np
@@ -28,15 +27,11 @@ from newton._src.core.host_transform import (
     transform_vector,
     warp_array_from_values,
 )
-
-# The batched helpers mirror the operation order of Warp's native builtins, so they match
-# bit for bit where neither side fuses multiply-adds. That is verified on Linux x86-64;
-# elsewhere, compare within float32 round-off.
-BIT_EXACT = platform.system() == "Linux" and platform.machine() == "x86_64"
+from newton.tests.unittest_utils import HOST_TRANSFORMS_BIT_EXACT
 
 
 def assert_matches_builtins(actual, expected, rtol: float = 1.0e-6, atol: float = 1.0e-5) -> None:
-    if BIT_EXACT:
+    if HOST_TRANSFORMS_BIT_EXACT:
         np.testing.assert_array_equal(np.asarray(actual), np.asarray(expected))
     else:
         np.testing.assert_allclose(actual, expected, rtol=rtol, atol=atol)

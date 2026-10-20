@@ -2,7 +2,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import gc
-import platform
 import unittest
 import warnings
 from unittest import mock
@@ -14,7 +13,7 @@ from newton import Mesh, Model, ModelBuilder, Rod
 from newton._src.sim.builder import _ARRAY_BACKED_ATTRIBUTE_DTYPES, _materialize_array_backed_list
 from newton.actuators import DrivePD
 from newton.exceptions import NewtonDeprecationWarning
-from newton.tests.unittest_utils import add_function_test, get_test_devices
+from newton.tests.unittest_utils import HOST_TRANSFORMS_BIT_EXACT, add_function_test, get_test_devices
 from newton.utils import compute_world_offsets
 
 
@@ -266,15 +265,11 @@ class TestModelBuilderReplicate(unittest.TestCase):
         actual = self._make_destination()
         actual.replicate(source, len(xforms), xforms=xforms)
 
-        # Batched NumPy math matches Warp's scalar builtins bit for bit where neither side
-        # fuses multiply-adds, which is verified on Linux x86-64; elsewhere compare within
-        # float32 round-off.
-        bit_exact = platform.system() == "Linux" and platform.machine() == "x86_64"
         for name in ("body_q", "body_qd", "joint_q", "joint_qd", "joint_X_p", "shape_transform"):
             with self.subTest(attribute=name):
                 actual_values = np.asarray(getattr(actual, name), dtype=np.float32)
                 expected_values = np.asarray(getattr(expected, name), dtype=np.float32)
-                if bit_exact:
+                if HOST_TRANSFORMS_BIT_EXACT:
                     np.testing.assert_array_equal(actual_values, expected_values)
                 else:
                     np.testing.assert_allclose(actual_values, expected_values, rtol=1e-6, atol=1e-6)

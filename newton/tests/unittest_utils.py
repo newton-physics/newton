@@ -9,6 +9,7 @@ import importlib.util
 import io
 import linecache
 import os
+import platform
 import re
 import shlex
 import sys
@@ -24,6 +25,12 @@ import warp as wp
 
 pxr = importlib.util.find_spec("pxr")
 USD_AVAILABLE = pxr is not None
+
+# The batched transform helpers in newton._src.core.host_transform mirror the operation
+# order of Warp's native builtins, so they match bit for bit where neither side fuses
+# multiply-adds. That is verified on Linux x86-64; elsewhere, tests compare within
+# float32 round-off.
+HOST_TRANSFORMS_BIT_EXACT = platform.system() == "Linux" and platform.machine() == "x86_64"
 
 # default test mode (see get_test_devices())
 #   "basic" - only run on CPU and first GPU device

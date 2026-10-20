@@ -399,6 +399,7 @@ class FastInitializeModelStackedBoxes:
     params = (["add_builder", "replicate"],)
     param_names = ["method"]
     grid = (16, 8, 16)
+    peakmem_grid = (40, 20, 40)
 
     rounds = 1
     repeat = 3
@@ -437,6 +438,13 @@ class FastInitializeModelStackedBoxes:
 
     def time_initialize_model(self, method):
         self._build(method, *self.grid).finalize(device="cpu")
+
+    def peakmem_initialize_model(self, method):
+        # Not part of the PR gate, so it uses a larger pile; at the timing grid the
+        # builder's memory would be lost in the process baseline.
+        gc.collect()
+        model = self._build(method, *self.peakmem_grid).finalize(device="cpu")
+        del model
 
 
 if __name__ == "__main__":
