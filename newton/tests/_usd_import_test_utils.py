@@ -14,11 +14,12 @@ def _expect_jointless_articulation_warning(test):
 
     ``UsdPhysics``'s native physics parser in OpenUSD < 26.0 (e.g. the
     ``usd-exchange`` build resolved on ``aarch64``) reports an articulation root
-    that has no joints as an invalid ``ArticulationDesc``, which
+    that has no enabled joints as an invalid ``ArticulationDesc``, which
     :func:`~newton.utils.parse_usd` surfaces as a ``UserWarning``; usd-core
     >= 26.0 treats it as valid. The fixtures wrapped here intentionally import
     single-body (jointless) articulations -- a shape Newton parses identically
-    either way. On the USD versions that emit it, assert exactly that warning
+    either way, as are articulations whose only joint is disabled. On the USD
+    versions that emit it, assert exactly that warning
     while leaving every other warning subject to the ambient policy, so an
     unexpected ``newton.*`` warning here still fails under ``--strict-warnings``.
     """
