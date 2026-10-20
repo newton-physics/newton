@@ -462,6 +462,12 @@ array; slot layout depends on the constraint type.
    * - :attr:`~newton.solvers.SolverMuJoCo.EqType.JOINT`
      - ``mjEQ_JOINT``
      - Polynomial coefficients forwarded in ``data[0:5]``.
+   * - :attr:`~newton.solvers.SolverMuJoCo.EqType.TENDON`
+     - ``mjEQ_TENDON``
+     - Couples two ``mujoco:tendon`` lengths (``equality_constraint_tendon1``
+       and ``equality_constraint_tendon2``). Polynomial coefficients forwarded
+       in ``data[0:5]``. MJCF and programmatic authoring only; USD import is not
+       supported yet.
    * - Mimic
      - ``mjEQ_JOINT``
      - Added via :meth:`~newton.ModelBuilder.set_joint_mimic`. Maps the
@@ -473,7 +479,8 @@ array; slot layout depends on the constraint type.
 Newton's core API does not expose equality constraints as a dedicated
 builder call. Construct them with the
 :doc:`newton.solvers.mujoco </api/newton_solvers_mujoco>` helpers
-``add_equality_connect``, ``add_equality_weld``, and ``add_equality_joint``,
+``add_equality_connect``, ``add_equality_weld``, ``add_equality_joint``, and
+``add_equality_tendon``,
 then read or update finalized fields via
 ``model.mujoco.equality_constraint_*``:
 

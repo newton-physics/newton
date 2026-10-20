@@ -1,0 +1,1 @@
+Compact experimental coupled-solver entry views when worlds select different bodies, joints, or shapes; previously such entries fell back to the full model layout and saw the other entries' rows as disabled. Code that relied on the full layout for such entries should read the view's own counts and world-start arrays, or use the entry's local-to-global maps.
