@@ -4959,6 +4959,104 @@ class ModelBuilder:
             legacy_margin_gap=legacy_margin_gap,
         )
 
+    def add_mjcf_native(
+        self,
+        source: str,
+        *,
+        xform: Transform | None = None,
+        floating: bool | None = None,
+        base_joint: dict | None = None,
+        parent_body: int = -1,
+        armature_scale: float = 1.0,
+        scale: float = 1.0,
+        hide_visuals: bool = False,
+        parse_visuals_as_colliders: bool = False,
+        parse_meshes: bool = True,
+        parse_sites: bool = True,
+        parse_visuals: bool = True,
+        parse_mujoco_options: bool = True,
+        up_axis: AxisType = Axis.Z,
+        ignore_names: Sequence[str] = (),
+        ignore_classes: Sequence[str] = (),
+        visual_classes: Sequence[str] = ("visual",),
+        collider_classes: Sequence[str] = ("collision",),
+        no_class_as_colliders: bool = True,
+        force_show_colliders: bool = False,
+        enable_self_collisions: bool = True,
+        ignore_inertial_definitions: bool = False,
+        collapse_fixed_joints: bool = False,
+        collapse_massless_fixed_root: bool = False,
+        verbose: bool = False,
+        skip_equality_constraints: bool = False,
+        convert_mjc_equality_constraints: bool = True,
+        convert_3d_hinge_to_ball_joints: bool = False,
+        mesh_maxhullvert: int | None = None,
+        ctrl_direct: bool = False,
+        path_resolver: Callable[[str | None, str], str] | None = None,
+        override_root_xform: bool = False,
+        legacy_margin_gap: bool = False,
+    ) -> None:
+        """Import MJCF through MuJoCo's native parser and compiler.
+
+        .. experimental::
+
+        Accepts the same arguments as :meth:`add_mjcf`. Requires the optional
+        MuJoCo dependency (``uv sync --extra sim``). See :ref:`native-mjcf-import`
+        for supported features and differences. Native objects exist only during
+        import; the builder owns the resulting data.
+
+        Joint damping and armature and shape gap fall back to builder defaults.
+        MJCF element and default-class values, including explicit zeros, take
+        precedence. Builder gaps remain in meters when ``scale`` is applied.
+
+        With ``ctrl_direct=False``, representable position/velocity servos use
+        joint targets. Ball servos drive all three Newton angular axes, replacing
+        the authored gear transmission. Other actuators retain direct MuJoCo controls,
+        including servos whose damping depends on the assembled inertia.
+
+        A missing source file raises :class:`FileNotFoundError`. Missing includes
+        detected by MuJoCo raise :class:`ValueError`, preserving its diagnostic.
+        Errors from custom path resolution propagate unchanged.
+        """
+        from ..solvers.mujoco.import_mjcf_native import parse_mjcf  # noqa: PLC0415
+
+        parse_mjcf(
+            self,
+            source,
+            xform=xform,
+            floating=floating,
+            base_joint=base_joint,
+            parent_body=parent_body,
+            armature_scale=armature_scale,
+            scale=scale,
+            hide_visuals=hide_visuals,
+            parse_visuals_as_colliders=parse_visuals_as_colliders,
+            parse_meshes=parse_meshes,
+            parse_sites=parse_sites,
+            parse_visuals=parse_visuals,
+            parse_mujoco_options=parse_mujoco_options,
+            up_axis=up_axis,
+            ignore_names=ignore_names,
+            ignore_classes=ignore_classes,
+            visual_classes=visual_classes,
+            collider_classes=collider_classes,
+            no_class_as_colliders=no_class_as_colliders,
+            force_show_colliders=force_show_colliders,
+            enable_self_collisions=enable_self_collisions,
+            ignore_inertial_definitions=ignore_inertial_definitions,
+            collapse_fixed_joints=collapse_fixed_joints,
+            collapse_massless_fixed_root=collapse_massless_fixed_root,
+            verbose=verbose,
+            skip_equality_constraints=skip_equality_constraints,
+            convert_mjc_equality_constraints=convert_mjc_equality_constraints,
+            convert_3d_hinge_to_ball_joints=convert_3d_hinge_to_ball_joints,
+            mesh_maxhullvert=mesh_maxhullvert,
+            ctrl_direct=ctrl_direct,
+            path_resolver=path_resolver,
+            override_root_xform=override_root_xform,
+            legacy_margin_gap=legacy_margin_gap,
+        )
+
     # endregion
 
     # region World management methods
@@ -7534,17 +7632,17 @@ class ModelBuilder:
                 if last_dynamic_body > -1:
                     source_m = body_data[last_dynamic_body]["mass"]
                     source_com = body_data[last_dynamic_body]["com"]
-                    # add inertia to last_dynamic_body
                     m = body_data[child_body]["mass"]
                     com = wp.transform_point(incoming_xform, body_data[child_body]["com"])
                     inertia = body_data[child_body]["inertia"]
-                    body_data[last_dynamic_body]["inertia"] += transform_inertia(
-                        m, inertia, incoming_xform.p, incoming_xform.q
-                    )
-                    body_data[last_dynamic_body]["mass"] += m
                     total_mass = m + source_m
+                    merged_com = (m * com + source_m * source_com) / total_mass if total_mass > 0.0 else source_com
+                    # Both tensors must be expressed about the merged COM.
+                    body_data[last_dynamic_body]["inertia"] = transform_inertia(
+                        source_m, body_data[last_dynamic_body]["inertia"], source_com - merged_com, wp.quat_identity()
+                    ) + transform_inertia(m, inertia, com - merged_com, incoming_xform.q)
+                    body_data[last_dynamic_body]["mass"] = total_mass
                     if total_mass > 0.0:
-                        merged_com = (m * com + source_m * source_com) / total_mass
                         qd = body_data[last_dynamic_body]["qd"]
                         angular_velocity = wp.spatial_bottom(qd)
                         # Preserve the velocity field when shifting the COM reference.

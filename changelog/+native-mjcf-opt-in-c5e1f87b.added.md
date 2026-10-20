@@ -1,0 +1,1 @@
+Add experimental `ModelBuilder.add_mjcf_native()` to import MJCF through MuJoCo's native parser and compiler, preserving supported parameters through Newton composition and resolving inertia-dependent parameters when constructing `SolverMuJoCo`. The existing `add_mjcf()` entry point remains available with its current parsing behavior and dependencies.

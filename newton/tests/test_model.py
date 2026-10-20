@@ -2804,6 +2804,26 @@ class TestModelJoints(unittest.TestCase):
         self.assertEqual(builder.custom_attributes["test:ref_body"].values, [0, -1])
         self.assertEqual(builder.custom_attributes["test:ref_joint"].values, [0, -1])
 
+    def test_collapse_fixed_joints_preserves_com_inertia(self):
+        """Preserve inertia about the merged COM with offset and rotated inertial frames."""
+        builder = ModelBuilder()
+        root = builder.add_link(mass=1.0, com=wp.vec3(0, 0, 0.5), inertia=wp.mat33(np.diag([0.1, 0.2, 0.3])))
+        child = builder.add_link(mass=3.0, com=wp.vec3(1, 0, 0), inertia=wp.mat33(np.diag([0.4, 0.6, 0.8])))
+        root_joint = builder.add_joint_free(root)
+        fixed_joint = builder.add_joint_fixed(
+            root, child, parent_xform=wp.transform((0, 0, 2), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), wp.pi / 2))
+        )
+        builder.add_articulation([root_joint, fixed_joint])
+        builder.collapse_fixed_joints()
+        self.assertEqual(builder.body_count, 1)
+        self.assertAlmostEqual(builder.body_mass[0], 4.0)
+        np.testing.assert_allclose(builder.body_com[0], [0, 0.75, 1.625], atol=1e-6)
+        expected = np.array([[3.1375, 0, 0], [0, 2.2875, -1.125], [0, -1.125, 1.85]])
+        np.testing.assert_allclose(np.asarray(builder.body_inertia[0]).reshape(3, 3), expected, atol=1e-6)
+        np.testing.assert_allclose(
+            np.asarray(builder.body_inv_inertia[0]).reshape(3, 3), np.linalg.inv(expected), atol=1e-6
+        )
+
     def test_collapse_fixed_joints_with_locked_inertia(self):
         builder = ModelBuilder()
         b0 = builder.add_link(mass=1.0, lock_inertia=True)

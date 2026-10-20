@@ -9,7 +9,7 @@ from typing import Any
 
 import warp as wp
 
-from ...core.types import vec5
+from ...core.types import MAXVAL, vec5
 from ...sim import BodyFlags, JointTargetMode, JointType
 from ...sim.contacts import contact_surface_point, contact_surface_separation
 from .constants import (
@@ -1231,6 +1231,7 @@ def update_connect_constraint_rel_body_poses_at_qref_kernel(
 def update_connect_constraint_anchors_kernel(
     mjc_eq_to_newton_eq: wp.array2d[wp.int32],
     eq_constraint_type: wp.array[wp.int32],
+    eq_objtype: wp.array[int],
     eq_constraint_anchor: wp.array[wp.vec3],
     connect_anchor2_q: wp.array[wp.quat],
     connect_anchor2_t: wp.array[wp.vec3],
@@ -1272,7 +1273,7 @@ def update_connect_constraint_anchors_kernel(
     if newton_eq < 0:
         return
 
-    if eq_constraint_type[newton_eq] != EqType.CONNECT:
+    if eq_constraint_type[newton_eq] != EqType.CONNECT or eq_objtype[mjc_eq] == 6:  # mjOBJ_SITE
         return
 
     anchor = eq_constraint_anchor[newton_eq]
@@ -2152,6 +2153,7 @@ def update_actuator_properties_kernel(
     newton_actuator_dynprm: wp.array[vec10],
     newton_actuator_ctrlrange: wp.array[wp.vec2],
     newton_actuator_forcerange: wp.array[wp.vec2],
+    newton_actuator_has_forcerange: wp.array[wp.int32],
     newton_actuator_actrange: wp.array[wp.vec2],
     newton_actuator_gear: wp.array[wp.spatial_vector],
     newton_actuator_cranklength: wp.array[float],
@@ -2168,8 +2170,7 @@ def update_actuator_properties_kernel(
 ):
     """Update MuJoCo actuator properties from Newton custom attributes.
 
-    JOINT_TARGET actuators take gains from joint target arrays, but their control ranges still come from the
-    corresponding MuJoCo actuator custom attributes.
+    JOINT_TARGET gains come from joint target arrays; authored ranges come from actuator attributes.
 
     Args:
         mjc_actuator_ctrl_source: 0=JOINT_TARGET, 1=CTRL_DIRECT
@@ -2179,6 +2180,7 @@ def update_actuator_properties_kernel(
         newton_actuator_dynprm: Newton's model.mujoco.actuator_dynprm
         newton_actuator_ctrlrange: Newton's model.mujoco.actuator_ctrlrange
         newton_actuator_forcerange: Newton's model.mujoco.actuator_forcerange
+        newton_actuator_has_forcerange: Whether an authored range overrides the joint-target fallback limit.
         newton_actuator_actrange: Newton's model.mujoco.actuator_actrange
         newton_actuator_gear: Newton's model.mujoco.actuator_gear
         newton_actuator_cranklength: Newton's model.mujoco.actuator_cranklength
@@ -2193,6 +2195,10 @@ def update_actuator_properties_kernel(
 
     world_newton_idx = world * actuators_per_world + newton_actuator_idx
     actuator_ctrlrange[world, actuator] = newton_actuator_ctrlrange[world_newton_idx]
+    if source == CTRL_SOURCE_CTRL_DIRECT or (
+        newton_actuator_has_forcerange and newton_actuator_has_forcerange[world_newton_idx]
+    ):
+        actuator_forcerange[world, actuator] = newton_actuator_forcerange[world_newton_idx]
 
     if source != CTRL_SOURCE_CTRL_DIRECT:
         return
@@ -2200,7 +2206,6 @@ def update_actuator_properties_kernel(
     actuator_gain[world, actuator] = newton_actuator_gainprm[world_newton_idx]
     actuator_bias[world, actuator] = newton_actuator_biasprm[world_newton_idx]
     actuator_dynprm[world, actuator] = newton_actuator_dynprm[world_newton_idx]
-    actuator_forcerange[world, actuator] = newton_actuator_forcerange[world_newton_idx]
     actuator_actrange[world, actuator] = newton_actuator_actrange[world_newton_idx]
     actuator_gear[world, actuator] = newton_actuator_gear[world_newton_idx]
     actuator_cranklength[world, actuator] = newton_actuator_cranklength[world_newton_idx]
@@ -2278,6 +2283,9 @@ def update_jnt_properties_kernel(
     jnt_type: wp.array[int],
     jnt_qposadr: wp.array[int],
     qpos0: wp.array2d[float],
+    native_joint_type: wp.array[int],
+    native_joint_range: wp.array[wp.vec2],
+    native_joint_actfrcrange: wp.array[wp.vec2],
     # outputs
     jnt_solimp: wp.array2d[vec5],
     jnt_stiffness: wp.array2d[float],
@@ -2319,6 +2327,13 @@ def update_jnt_properties_kernel(
     # update joint actuator force range (effort limit)
     effort_limit = joint_effort_limit[newton_dof]
     jnt_actfrcrange[world, mjc_jnt] = wp.vec2(-effort_limit, effort_limit)
+
+    if native_joint_type and native_joint_type[newton_dof] == jnt_type[mjc_jnt]:
+        if jnt_type[mjc_jnt] < 2 or (
+            joint_limit_lower[newton_dof] <= -MAXVAL and joint_limit_upper[newton_dof] >= MAXVAL
+        ):
+            jnt_range[world, mjc_jnt] = native_joint_range[newton_dof]
+        jnt_actfrcrange[world, mjc_jnt] = native_joint_actfrcrange[newton_dof]
 
 
 @wp.kernel
@@ -2969,6 +2984,7 @@ def update_eq_data_and_active_kernel(
     mjc_eq_to_newton_eq: wp.array2d[wp.int32],
     # Newton equality constraint data
     eq_constraint_type: wp.array[wp.int32],
+    eq_objtype: wp.array[int],
     eq_constraint_anchor: wp.array[wp.vec3],
     eq_constraint_relpose: wp.array[wp.transform],
     eq_constraint_polycoef: wp.array2d[wp.float32],
@@ -2999,14 +3015,17 @@ def update_eq_data_and_active_kernel(
     # Read existing data to preserve fields we don't update
     data = eq_data_out[world, mjc_eq]
 
-    if constraint_type == EqType.CONNECT:
+    if eq_objtype[mjc_eq] == 6:  # mjOBJ_SITE
+        if constraint_type == EqType.WELD:
+            data[10] = eq_constraint_torquescale[newton_eq]
+    elif constraint_type == EqType.CONNECT:
         # CONNECT: data[0:3] = anchor
         anchor = eq_constraint_anchor[newton_eq]
         data[0] = anchor[0]
         data[1] = anchor[1]
         data[2] = anchor[2]
 
-    elif constraint_type == EqType.JOINT:
+    elif constraint_type == EqType.JOINT or constraint_type == EqType.TENDON:
         # JOINT: data[0:5] = polycoef
         for i in range(5):
             data[i] = eq_constraint_polycoef[newton_eq, i]
