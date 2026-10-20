@@ -483,7 +483,7 @@ def _get_sparse_contact_response_kernel(
             if (row_slot_mode == $ROW_SLOTS_ATOMIC) {
                 first_slot = atomicAdd(&slot_counter.data[world], active_count);
             } else {
-                // One warp owns the articulation; see scan_world_row_requests.
+                // One warp owns the articulation; see assign_world_row_slots.
                 first_slot = element_row_cursor.data[art];
                 element_row_cursor.data[art] = first_slot + active_count;
                 if (row_slot_mode == $ROW_SLOTS_COUNT) first_slot = $ROW_SLOT_COUNT_PASS;

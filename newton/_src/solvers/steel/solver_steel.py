@@ -34,6 +34,7 @@ from .friction import FRICTION_PAIR_CUDA
 from .friction_patches import _FrictionPatchState, finish_patch_impulses, link_patch_rows, seed_patch_impulses
 from .kernels import (
     CONTACT_GENERATION_NONE,
+    CONTACT_ROW_FAMILIES,
     PGS_CONSTRAINT_TYPE_CONTACT,
     PGS_CONSTRAINT_TYPE_FRICTION,
     PGS_CONSTRAINT_TYPE_JOINT_LIMIT,
@@ -63,6 +64,8 @@ from .kernels import (
     accumulate_propagation_warmstart_body_impulses,
     accumulate_row_watermarks,
     accumulate_sparse_diagonal_response_diag,
+    advance_world_contact_counters,
+    advance_world_row_counters,
     allocate_connect_slots,
     allocate_joint_velocity_limit_slots,
     allocate_mimic_slots,
@@ -79,6 +82,7 @@ from .kernels import (
     apply_world_contact_restitution,
     apply_world_impulses_to_velocity,
     assign_world_contact_slots,
+    assign_world_row_slots,
     build_joint_limit_rows,
     build_mass_update_mask,
     build_mf_body_map,
@@ -125,11 +129,11 @@ from .kernels import (
     eval_rigid_tau_and_augmented_drives,
     factor_diagonal_mass,
     factor_propagation_tree_for_size,
-    fill_contact_world_sort_keys,
+    fill_contact_family_sort_keys,
     finalize_mf_constraint_counts,
     finalize_world_constraint_counts,
     finalize_world_diag_cfm,
-    find_contact_world_segments,
+    find_contact_family_segments,
     flatten_propagation_joint_S,
     flush_propagation_free_body_qd_to_vout,
     gather_contact_warmstart,
@@ -138,6 +142,7 @@ from .kernels import (
     gather_JY_to_world,
     gather_propagation_unit_meta,
     gather_tau_to_groups,
+    gather_world_row_requests,
     hinv_jt_diagonal,
     hinv_jt_par_row,
     hinv_jt_par_row_contact_fallback,
@@ -174,7 +179,6 @@ from .kernels import (
     rotate_mf_rows_to_free_root_anchor,
     rotate_propagation_rows_to_free_root_anchor,
     scale_array_inplace,
-    scan_world_row_requests,
     scatter_augmented_drive_dof_K,
     scatter_qdd_from_groups,
     snapshot_contact_warmstart,
@@ -2003,7 +2007,7 @@ class SolverSteel(SolverBase):
                 :ref:`Deterministic Contacts`). A world that overflows a row capacity keeps the rows of its
                 earliest contacts and drops the rest, so unchanged inputs drop the same contacts every step;
                 overflowed steps remain flagged in :attr:`constraint_overflow`. The mode adds a per-step
-                sort of the contacts by world and 16 bytes of storage per contact slot.
+                sort of the contacts by world and row family and 24 bytes of storage per contact slot.
                 Requires ``articulated_contact_response="immediate"``; ``GPU_TO_GPU`` is not supported. Passing
                 an unsupported mode raises :class:`ValueError`. An inherited unsupported mode emits a
                 :class:`~newton.exceptions.NewtonWarning` and falls back to the strongest supported one:
@@ -8180,6 +8184,7 @@ class SolverSteel(SolverBase):
             return (
                 wp.array(start, dtype=wp.int32, device=device),
                 wp.array(elements.astype(np.int32), dtype=wp.int32, device=device),
+                wp.array(element_world[elements].astype(np.int32), dtype=wp.int32, device=device),
             )
 
         art_world = self._art_to_world.numpy()
@@ -8196,72 +8201,113 @@ class SolverSteel(SolverBase):
             )
             cursor_size = max(cursor_size, self._free_rigid_body_count)
         self._row_cursor = wp.zeros(cursor_size, dtype=wp.int32, device=device)
+        # One family's row counts in world-element order, then a zero, and their exclusive scan.
+        self._row_requests = wp.zeros(cursor_size + 1, dtype=wp.int32, device=device)
+        self._row_offsets = wp.zeros(cursor_size + 1, dtype=wp.int32, device=device)
         for size in self._size_groups:
-            self._world_groups_by_size[size] = world_index(art_world[self._group_to_art[size].numpy()])
+            self._world_groups_by_size[size] = world_index(art_world[self._group_to_art[size].numpy()])[:2]
 
         sort_capacity = 2 * self._max_contacts_alloc
         self._contact_sort_keys = wp.zeros(sort_capacity, dtype=wp.int32, device=device)
         self._contact_sort_values = wp.zeros(sort_capacity, dtype=wp.int32, device=device)
-        self._world_contact_segments = wp.zeros((2, self._world_count), dtype=wp.int32, device=device)
-        self._contact_sort_end_bit = max(int(self._world_count).bit_length(), 1)
+        self._contact_segment_count = int(CONTACT_ROW_FAMILIES) * self._world_count
+        self._contact_segments = wp.zeros((2, self._contact_segment_count), dtype=wp.int32, device=device)
+        self._contact_sort_end_bit = max(self._contact_segment_count.bit_length(), 1)
+        # Row counts of the sorted contacts, then a zero, and their exclusive scan.
+        self._sorted_contact_slots_needed = wp.zeros(self._max_contacts_alloc + 1, dtype=wp.int32, device=device)
+        self._sorted_contact_slot_offsets = wp.zeros(self._max_contacts_alloc + 1, dtype=wp.int32, device=device)
 
     def _reserve_rows(self, world_index, world_slot_counter: wp.array, launch) -> None:
         """Run one row family's reservation launches; ``launch(mode)`` issues them with a row-slot mode."""
         if not self._ordered_rows:
             launch(ROW_SLOTS_ATOMIC)
             return
+        device = self.model.device
+        world_element_start, world_elements, element_world = world_index
+        element_count = world_elements.shape[0]
+        requests = self._row_requests[: element_count + 1]
+        offsets = self._row_offsets[: element_count + 1]
         self._row_cursor.zero_()
         launch(ROW_SLOTS_COUNT)
         wp.launch(
-            scan_world_row_requests,
+            gather_world_row_requests,
+            dim=element_count + 1,
+            inputs=[world_elements, self._row_cursor],
+            outputs=[requests],
+            device=device,
+        )
+        wp.utils.array_scan(requests, offsets, inclusive=False)
+        wp.launch(
+            assign_world_row_slots,
+            dim=element_count,
+            inputs=[world_element_start, world_elements, element_world, offsets, world_slot_counter],
+            outputs=[self._row_cursor],
+            device=device,
+        )
+        wp.launch(
+            advance_world_row_counters,
             dim=self._world_count,
-            inputs=[world_index[0], world_index[1]],
-            outputs=[world_slot_counter, self._row_cursor],
-            device=self.model.device,
+            inputs=[world_element_start, offsets],
+            outputs=[world_slot_counter],
+            device=device,
         )
         launch(ROW_SLOTS_WRITE)
 
     def _assign_contact_slots_by_world(
         self, contacts: Contacts, mf_slot_counter: wp.array, mf_first_rejected_slot: wp.array
     ) -> None:
-        """Sort the classified contacts by world and reserve their rows in contact order."""
+        """Sort the classified contacts by world and row family and reserve their rows in contact order."""
         device = self.model.device
         count = contacts.rigid_contact_max
+        segment_count = self._contact_segment_count
+        slots_needed = self._sorted_contact_slots_needed[: count + 1]
+        slot_offsets = self._sorted_contact_slot_offsets[: count + 1]
+        segment_start, segment_end = self._contact_segments[0], self._contact_segments[1]
         wp.launch(
-            fill_contact_world_sort_keys,
+            fill_contact_family_sort_keys,
             dim=count,
-            inputs=[contacts.rigid_contact_count, self._contact_path, self._contact_world, self._world_count],
+            inputs=[contacts.rigid_contact_count, self._contact_path, self._contact_world, segment_count],
             outputs=[self._contact_sort_keys, self._contact_sort_values],
             device=device,
         )
         wp.utils.radix_sort_pairs(
             self._contact_sort_keys, self._contact_sort_values, count, end_bit=self._contact_sort_end_bit
         )
-        self._world_contact_segments.zero_()
+        self._contact_segments.zero_()
         wp.launch(
-            find_contact_world_segments,
-            dim=count,
-            inputs=[self._contact_sort_keys, count, self._world_count],
-            outputs=[self._world_contact_segments[0], self._world_contact_segments[1]],
-            device=device,
-        )
-        wp.launch(
-            assign_world_contact_slots,
-            dim=self._world_count,
+            find_contact_family_segments,
+            dim=count + 1,
             inputs=[
-                self._world_contact_segments[0],
-                self._world_contact_segments[1],
+                self._contact_sort_keys,
                 self._contact_sort_values,
                 self._contact_slots_needed,
+                count,
+                segment_count,
+            ],
+            outputs=[segment_start, segment_end, slots_needed],
+            device=device,
+        )
+        wp.utils.array_scan(slots_needed, slot_offsets, inclusive=False)
+        wp.launch(
+            assign_world_contact_slots,
+            dim=count,
+            inputs=[
+                self._contact_sort_keys,
+                self._contact_sort_values,
+                segment_start,
+                segment_end,
+                slot_offsets,
+                self._contact_slots_needed,
+                segment_count,
                 self._articulation_constraint_max,
                 self._free_body_constraint_max,
                 self._propagation_max_constraints,
-            ],
-            outputs=[
-                self._contact_path,
                 self._slot_counter,
                 mf_slot_counter,
                 self._propagation_slot_counter,
+            ],
+            outputs=[
+                self._contact_path,
                 self._contact_slot,
                 self._dense_contact_world_flag,
                 self._row_dropped_dense,
@@ -8271,6 +8317,13 @@ class SolverSteel(SolverBase):
                 mf_first_rejected_slot,
                 self._propagation_first_rejected_slot,
             ],
+            device=device,
+        )
+        wp.launch(
+            advance_world_contact_counters,
+            dim=segment_count,
+            inputs=[segment_start, segment_end, slot_offsets],
+            outputs=[self._slot_counter, mf_slot_counter, self._propagation_slot_counter],
             device=device,
         )
 
@@ -10934,7 +10987,7 @@ def _get_joint_limit_warp_kernel(size: int, device_arch: str, warps_per_block: i
             if (row_slot_mode == {int(ROW_SLOTS_ATOMIC)}) {{
                 first_slot = atomicAdd(&world_slot_counter.data[world], active_count);
             }} else {{
-                // One warp owns the articulation; see scan_world_row_requests.
+                // One warp owns the articulation; see assign_world_row_slots.
                 first_slot = element_row_cursor.data[articulation];
                 element_row_cursor.data[articulation] = first_slot + active_count;
                 if (row_slot_mode == {int(ROW_SLOTS_COUNT)}) first_slot = {int(ROW_SLOT_COUNT_PASS)};

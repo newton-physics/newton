@@ -55,13 +55,15 @@ _CONTACT_END_GAP_SLOP = wp.constant(1.0e-6)
 CONTACT_GENERATION_NONE = wp.constant(GENERATION_SENTINEL)
 
 # Row-slot reservation modes of the joint-row families. ATOMIC reserves from the per-world counter, so a
-# family's rows land in thread-scheduling order. COUNT and WRITE run a family twice around
-# :func:`scan_world_row_requests`, so each element's rows land in world-element order.
+# family's rows land in thread-scheduling order. COUNT and WRITE run a family twice around a scan of the
+# counted rows (:func:`assign_world_row_slots`), so each element's rows land in world-element order.
 ROW_SLOTS_ATOMIC = wp.constant(0)
 ROW_SLOTS_COUNT = wp.constant(1)
 ROW_SLOTS_WRITE = wp.constant(2)
 # Slot returned by a COUNT pass: past every row capacity, so callers skip their row writes.
 ROW_SLOT_COUNT_PASS = wp.constant(1 << 30)
+# Contact row families, in ``contact_path`` order: dense, matrix-free, propagation.
+CONTACT_ROW_FAMILIES = wp.constant(3)
 
 
 @wp.func
@@ -85,80 +87,112 @@ def reserve_world_rows(
 
 
 @wp.kernel
-def scan_world_row_requests(
-    world_element_start: wp.array[int],
+def gather_world_row_requests(
     world_elements: wp.array[int],
-    # in/out
-    world_slot_counter: wp.array[int],
     element_row_cursor: wp.array[int],
+    # outputs
+    row_requests: wp.array[int],
 ):
-    """Turn per-element row counts into first slots, in world-element order, and advance the world counters.
-
-    Runs between the COUNT and WRITE passes of one row family.
-    """
-    world = wp.tid()
-    slot = world_slot_counter[world]
-    for i in range(world_element_start[world], world_element_start[world + 1]):
-        element = world_elements[i]
-        count = element_row_cursor[element]
-        element_row_cursor[element] = slot
-        slot += count
-    world_slot_counter[world] = slot
+    """List the row counts of a COUNT pass in world-element order, followed by a zero."""
+    i = wp.tid()
+    count = int(0)
+    if i < world_elements.shape[0]:
+        count = element_row_cursor[world_elements[i]]
+    row_requests[i] = count
 
 
 @wp.kernel
-def fill_contact_world_sort_keys(
+def assign_world_row_slots(
+    world_element_start: wp.array[int],
+    world_elements: wp.array[int],
+    element_world: wp.array[int],
+    row_offsets: wp.array[int],
+    world_slot_counter: wp.array[int],
+    # outputs
+    element_row_cursor: wp.array[int],
+):
+    """Give each element the first slot of its rows: its world's counter plus the earlier requests of that world."""
+    i = wp.tid()
+    world = element_world[i]
+    element_row_cursor[world_elements[i]] = (
+        world_slot_counter[world] + row_offsets[i] - row_offsets[world_element_start[world]]
+    )
+
+
+@wp.kernel
+def advance_world_row_counters(
+    world_element_start: wp.array[int],
+    row_offsets: wp.array[int],
+    # in/out
+    world_slot_counter: wp.array[int],
+):
+    """Advance each world's counter past the rows its elements requested."""
+    world = wp.tid()
+    world_slot_counter[world] += row_offsets[world_element_start[world + 1]] - row_offsets[world_element_start[world]]
+
+
+@wp.kernel
+def fill_contact_family_sort_keys(
     contact_count: wp.array[int],
     contact_path: wp.array[int],
     contact_world: wp.array[int],
-    world_count: int,
+    segment_count: int,
     # outputs
     keys: wp.array[int],
     values: wp.array[int],
 ):
-    """Key every contact by its solve world; contacts without rows sort last."""
+    """Key every contact by its solve world and row family; contacts without rows sort last."""
     c = wp.tid()
-    key = world_count
+    key = segment_count
     if c < contact_count[0] and contact_path[c] >= 0:
-        key = contact_world[c]
+        key = contact_world[c] * CONTACT_ROW_FAMILIES + contact_path[c]
     keys[c] = key
     values[c] = c
 
 
 @wp.kernel
-def find_contact_world_segments(
+def find_contact_family_segments(
     keys: wp.array[int],
+    sorted_contacts: wp.array[int],
+    contact_slots_needed: wp.array[int],
     count: int,
-    world_count: int,
+    segment_count: int,
     # outputs
-    world_contact_start: wp.array[int],
-    world_contact_end: wp.array[int],
+    segment_start: wp.array[int],
+    segment_end: wp.array[int],
+    sorted_slots_needed: wp.array[int],
 ):
-    """Record each world's segment of the world-sorted contacts; untouched worlds keep an empty segment."""
+    """Record each world and row family's segment of the sorted contacts and list their row counts, then a zero."""
     i = wp.tid()
-    key = keys[i]
-    if key >= world_count:
-        return
-    if i == 0 or keys[i - 1] != key:
-        world_contact_start[key] = i
-    if i == count - 1 or keys[i + 1] != key:
-        world_contact_end[key] = i + 1
+    needed = int(0)
+    if i < count:
+        key = keys[i]
+        if key < segment_count:
+            needed = contact_slots_needed[sorted_contacts[i]]
+            if i == 0 or keys[i - 1] != key:
+                segment_start[key] = i
+            if i == count - 1 or keys[i + 1] != key:
+                segment_end[key] = i + 1
+    sorted_slots_needed[i] = needed
 
 
 @wp.kernel
 def assign_world_contact_slots(
-    world_contact_start: wp.array[int],
-    world_contact_end: wp.array[int],
+    keys: wp.array[int],
     sorted_contacts: wp.array[int],
+    segment_start: wp.array[int],
+    segment_end: wp.array[int],
+    slot_offsets: wp.array[int],
     contact_slots_needed: wp.array[int],
+    segment_count: int,
     max_constraints: int,
     mf_max_constraints: int,
     propagation_max_constraints: int,
-    # in/out
-    contact_path: wp.array[int],
     world_slot_counter: wp.array[int],
     mf_slot_counter: wp.array[int],
     propagation_slot_counter: wp.array[int],
+    # in/out
+    contact_path: wp.array[int],
     # outputs
     contact_slot: wp.array[int],
     dense_contact_world_flag: wp.array[int],
@@ -169,71 +203,77 @@ def assign_world_contact_slots(
     mf_first_rejected_slot: wp.array[int],
     propagation_first_rejected_slot: wp.array[int],
 ):
-    """Give a world's routed contacts their row slots in contact-index order.
+    """Give a world's routed contacts their row slots in contact-index order, one thread per sorted contact.
 
     Follows the reservation rules of :func:`allocate_world_contact_slots`: a contact that does not fit is
     dropped and every later contact of its row family in that world is dropped with it.
     """
-    world = wp.tid()
-    start = world_contact_start[world]
-    end = world_contact_end[world]
-    if start >= end:
+    i = wp.tid()
+    key = keys[i]
+    if key >= segment_count:
         return
-    dense_slot = world_slot_counter[world]
-    mf_slot = mf_slot_counter[world]
-    propagation_slot = propagation_slot_counter[world]
-    dense_dropped = int(0)
-    mf_dropped = int(0)
-    propagation_dropped = int(0)
-    dense_rejected = dense_first_rejected_slot[world]
-    mf_rejected = mf_first_rejected_slot[world]
-    propagation_rejected = propagation_first_rejected_slot[world]
-    has_dense = int(0)
-    for i in range(start, end):
-        c = sorted_contacts[i]
-        path = contact_path[c]
-        needed = contact_slots_needed[c]
-        slot = int(0)
-        if path == 1:
-            slot = mf_slot
-            mf_slot += needed
-            if slot + needed > mf_max_constraints:
-                mf_rejected = wp.min(mf_rejected, slot)
-                mf_dropped += needed
-                slot = -1
-        elif path == 2:
-            slot = propagation_slot
-            propagation_slot += needed
-            if slot + needed > propagation_max_constraints:
-                propagation_rejected = wp.min(propagation_rejected, slot)
-                propagation_dropped += needed
-                slot = -1
-        else:
-            slot = dense_slot
-            dense_slot += needed
-            if slot + needed > max_constraints:
-                dense_rejected = wp.min(dense_rejected, slot)
-                dense_dropped += needed
-                slot = -1
-            else:
-                has_dense = 1
+    world = key // CONTACT_ROW_FAMILIES
+    family = key - world * CONTACT_ROW_FAMILIES
+    start = segment_start[key]
+    c = sorted_contacts[i]
+    needed = contact_slots_needed[c]
+    offset = slot_offsets[i] - slot_offsets[start]
+    slot = int(0)
+    capacity = int(0)
+    if family == 1:
+        slot = mf_slot_counter[world] + offset
+        capacity = mf_max_constraints
+    elif family == 2:
+        slot = propagation_slot_counter[world] + offset
+        capacity = propagation_max_constraints
+    else:
+        slot = world_slot_counter[world] + offset
+        capacity = max_constraints
+    if slot + needed <= capacity:
         contact_slot[c] = slot
-        if slot < 0:
-            contact_path[c] = -1
-    world_slot_counter[world] = dense_slot
-    mf_slot_counter[world] = mf_slot
-    propagation_slot_counter[world] = propagation_slot
-    dense_first_rejected_slot[world] = dense_rejected
-    mf_first_rejected_slot[world] = mf_rejected
-    propagation_first_rejected_slot[world] = propagation_rejected
-    if dense_dropped > 0:
-        dense_dropped_contact_rows[world] += dense_dropped
-    if mf_dropped > 0:
-        mf_dropped_contact_rows[world] += mf_dropped
-    if propagation_dropped > 0:
-        propagation_dropped_contact_rows[world] += propagation_dropped
-    if has_dense != 0:
-        dense_contact_world_flag[world] = 1
+        if family == 0 and i == start:
+            dense_contact_world_flag[world] = 1
+        return
+    contact_slot[c] = -1
+    contact_path[c] = -1
+    # Slots grow along the segment, so only its first dropped contact sees a slot within capacity.
+    if i != start and slot > capacity:
+        return
+    dropped = slot_offsets[segment_end[key]] - slot_offsets[i]
+    if family == 1:
+        mf_first_rejected_slot[world] = wp.min(mf_first_rejected_slot[world], slot)
+        mf_dropped_contact_rows[world] += dropped
+    elif family == 2:
+        propagation_first_rejected_slot[world] = wp.min(propagation_first_rejected_slot[world], slot)
+        propagation_dropped_contact_rows[world] += dropped
+    else:
+        dense_first_rejected_slot[world] = wp.min(dense_first_rejected_slot[world], slot)
+        dense_dropped_contact_rows[world] += dropped
+
+
+@wp.kernel
+def advance_world_contact_counters(
+    segment_start: wp.array[int],
+    segment_end: wp.array[int],
+    slot_offsets: wp.array[int],
+    # in/out
+    world_slot_counter: wp.array[int],
+    mf_slot_counter: wp.array[int],
+    propagation_slot_counter: wp.array[int],
+):
+    """Advance each world's row-family counter past every row its contacts requested, dropped ones included."""
+    key = wp.tid()
+    requested = slot_offsets[segment_end[key]] - slot_offsets[segment_start[key]]
+    if requested == 0:
+        return
+    world = key // CONTACT_ROW_FAMILIES
+    family = key - world * CONTACT_ROW_FAMILIES
+    if family == 1:
+        mf_slot_counter[world] += requested
+    elif family == 2:
+        propagation_slot_counter[world] += requested
+    else:
+        world_slot_counter[world] += requested
 
 
 # Keep launch-geometry-specific dynamics kernels out of the large general
