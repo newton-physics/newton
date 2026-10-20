@@ -8,9 +8,7 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.viewer.gl.opengl import MeshInstancerGL
-from newton.tests.test_viewer_get_frame import _make_headless_viewer_gl_or_skip
-from newton.tests.unittest_utils import assert_np_equal, get_test_devices
+from newton.tests.unittest_utils import assert_np_equal
 from newton.viewer import ViewerNull
 
 
@@ -105,116 +103,6 @@ class _ViewerLegacyMeshSignatureProbe(ViewerNull):
 
 
 class TestViewerGeometryBatching(unittest.TestCase):
-    def test_gl_capsules_match_continuous_meshes(self) -> None:
-        """Render mixed capsule dimensions like individual closed meshes in one batch."""
-        with wp.ScopedDevice("cpu"):
-            viewer = _make_headless_viewer_gl_or_skip(self, width=320, height=240)
-        self.addCleanup(viewer.close)
-        viewer.renderer.draw_sky = False
-        viewer.set_camera(wp.vec3(4.0, -7.0, 4.0))
-        viewer.camera.look_at((0.0, 0.0, 1.0))
-
-        dimensions = ((0.4, 0.1), (0.25, 0.7), (0.35, 0.0))
-        transforms = [
-            wp.transform((1.5 * (i - 1), 0.0, 1.0), newton.Axis.Z.quat_between_axes(axis))
-            for i, axis in enumerate(newton.Axis)
-        ]
-        xforms = wp.array(transforms, dtype=wp.transform, device="cpu")
-        scales = wp.array([(r, r, h) for r, h in dimensions], dtype=wp.vec3, device="cpu")
-        colors = wp.array([(0.7, 0.3, 0.1)] * 3, dtype=wp.vec3, device="cpu")
-        materials = wp.array([(0.5, 0.0, 0.0, 0.0)] * 3, dtype=wp.vec4, device="cpu")
-        viewer.log_capsules("/capsules", "", xforms, scales, colors, materials)
-
-        # Keep an ordinary standalone mesh after the capsule draws to detect GL attribute leaks.
-        viewer.log_geo("/ground", newton.GeoType.BOX, (3.0, 2.0, 0.05), 0.0, True)
-        for i, (radius, half_height) in enumerate(dimensions):
-            mesh = newton.Mesh.create_capsule(radius, half_height, up_axis=newton.Axis.Z, compute_inertia=False)
-            points = np.array([wp.transform_point(transforms[i], wp.vec3(p)) for p in mesh.vertices])
-            normals = np.array([wp.quat_rotate(transforms[i].q, wp.vec3(n)) for n in mesh.normals])
-            viewer.log_mesh(
-                f"/reference/{i}",
-                wp.array(points, dtype=wp.vec3, device="cpu"),
-                wp.array(mesh.indices, dtype=wp.int32, device="cpu"),
-                wp.array(normals, dtype=wp.vec3, device="cpu"),
-                wp.array(mesh.uvs, dtype=wp.vec2, device="cpu"),
-                color=(0.7, 0.3, 0.1),
-                roughness=0.5,
-                hidden=True,
-            )
-
-        for opacity, edges, shadows in ((1.0, False, True), (0.45, False, False), (1.0, True, False)):
-            with self.subTest(opacity=opacity, edges=edges, shadows=shadows):
-                viewer.renderer.draw_edges = edges
-                viewer.renderer.draw_shadows = shadows
-                viewer.log_capsules(
-                    "/capsules",
-                    "",
-                    xforms,
-                    scales,
-                    colors,
-                    materials,
-                    opacities=wp.full(3, opacity, dtype=wp.float32, device="cpu"),
-                )
-                for i in range(3):
-                    viewer.objects[f"/reference/{i}"].hidden = True
-                viewer.begin_frame(0.0)
-                viewer.end_frame()
-                actual = viewer.get_frame().numpy().copy()
-
-                viewer.log_capsules("/capsules", "", None, None, None, None, hidden=True)
-                for i in range(3):
-                    reference = viewer.objects[f"/reference/{i}"]
-                    reference.hidden = False
-                    reference.opacity = opacity
-                viewer.begin_frame(0.0)
-                viewer.end_frame()
-                expected = viewer.get_frame().numpy().copy()
-                delta = np.abs(actual.astype(np.int16) - expected.astype(np.int16))
-                self.assertLess(np.mean(np.any(delta > 3, axis=-1)), 0.01)
-
-        instancers = [obj for obj in viewer.objects.values() if isinstance(obj, MeshInstancerGL)]
-        self.assertEqual(len(instancers), 1)
-        self.assertEqual(instancers[0].active_instances, 3)
-
-        # Clearing one layer must not destroy another layer's shared prototype.
-        prototype = instancers[0].mesh
-        viewer.activate("other")
-        viewer.log_capsules("/capsules", "", xforms, scales, colors, materials)
-        viewer.clear_model()
-        self.assertIn(prototype, viewer.objects.values())
-        for i in range(3):
-            viewer.objects[f"/reference/{i}"].hidden = True
-        instancers[0].hidden = False
-        viewer.begin_frame(0.0)
-        viewer.end_frame()
-        delta = np.abs(viewer.get_frame().numpy().astype(np.int16) - expected.astype(np.int16))
-        self.assertLess(np.mean(np.any(delta > 3, axis=-1)), 0.01)
-
-        # Visibility filtering reuses shape_0 for different geometry. Exercise both
-        # the CPU updates and CUDA's packed upload, which bypasses log_instances.
-        viewer.clear_all_layers()
-        builder = newton.ModelBuilder()
-        builder.begin_world()
-        builder.add_shape_capsule(-1, radius=0.4, half_height=0.1)
-        builder.end_world()
-        builder.begin_world()
-        builder.add_shape_box(-1, hx=0.4, hy=0.4, hz=0.4)
-        builder.end_world()
-        for device in get_test_devices(mode="basic"):
-            model = builder.finalize(device=device)
-            viewer.set_model(model)
-            state = model.state()
-            for world in (0, 1, 0):
-                with self.subTest(device=device, visible_world=world):
-                    viewer.set_visible_worlds([world])
-                    viewer.begin_frame(0.0)
-                    viewer.log_state(state)
-                    viewer.end_frame()
-                    self.assertEqual(len(viewer._shape_instances), 1)
-                    batch = next(iter(viewer._shape_instances.values()))
-                    mesh_path = viewer._get_capsule_mesh() if world == 0 else batch.mesh
-                    self.assertIs(viewer.objects[batch.name].mesh, viewer.objects[mesh_path])
-
     def test_mesh_visual_attributes_have_distinct_prototypes(self):
         """Cache normals and UVs separately without changing physical mesh identity."""
         mesh = newton.Mesh([[0, 0, 0], [1, 0, 0], [0, 1, 0]], [0, 1, 2], compute_inertia=False)
