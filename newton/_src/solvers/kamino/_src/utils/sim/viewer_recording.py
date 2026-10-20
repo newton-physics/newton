@@ -44,6 +44,7 @@ import glob
 import os
 import threading
 from collections.abc import Callable
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MethodType
@@ -54,6 +55,13 @@ from newton._src.solvers.kamino._src.utils import logger as msg
 from newton.viewer import ViewerBase
 
 __all__ = ["add_recording_args", "enable_recording", "enable_recording_from_args"]
+
+# Bounded async PNG save. ``_SAVE_WORKERS`` caps concurrent encoder threads;
+# ``_SAVE_MAX_PENDING`` caps in-flight + queued saves (and therefore the
+# backlog of buffered pixel data). When saturated, ``_capture_frame`` blocks on
+# the semaphore, applying backpressure to the viewer render loop.
+_SAVE_WORKERS = 4
+_SAVE_MAX_PENDING = 16
 
 
 def _positive_int(value: str) -> int:
@@ -96,7 +104,9 @@ class _VideoRecording:
     recording_stopped: bool = False
     capture_pending: bool = False
     created_video_folder: bool = False
-    save_threads: list[threading.Thread] = field(default_factory=list)
+    save_executor: ThreadPoolExecutor | None = None
+    save_pending: threading.Semaphore | None = None
+    save_futures: list[Future] = field(default_factory=list)
 
     ###
     # Original viewer function refs
@@ -153,6 +163,8 @@ def enable_recording(
     viewer._recording = _VideoRecording(
         default_video_folder=default_video_folder,
         num_skipped_frames=num_skipped_frames,
+        save_executor=ThreadPoolExecutor(max_workers=_SAVE_WORKERS, thread_name_prefix="kamino-recording-save"),
+        save_pending=threading.Semaphore(_SAVE_MAX_PENDING),
     )
 
     # Recording is inactive until start_clip() is called; this keeps the
@@ -236,9 +248,7 @@ def _finish_clip(self):
     recording.recording_stopped = True
     msg.notif(f"Clip captured: {captured} frames")
 
-    for t in recording.save_threads:
-        t.join()
-    recording.save_threads.clear()
+    _flush_save_futures(recording)
 
     out_path = recording.clip_output_path
     if self.generate_video(
@@ -268,9 +278,7 @@ def _reset_recording(self, video_folder: str | None = None) -> None:
     """
     recording = self._recording
 
-    for t in recording.save_threads:
-        t.join()
-    recording.save_threads.clear()
+    _flush_save_futures(recording)
 
     if video_folder is not None and video_folder != recording.default_video_folder:
         recording.default_video_folder = video_folder
@@ -330,18 +338,23 @@ def _start_clip(
 
 
 def _close_with_record(self):
-    """Flush an active clip before closing the viewer.
+    """Flush an active clip, shut down the save pool, then close the viewer.
 
     Ensures open-ended clips (started with ``max_frames=None``) finish and
     write their video file as post-processing when the viewer window closes.
     Finite clips that reached their frame budget are already inactive, so
     the extra ``finish_clip`` call is a no-op. ``original_close`` is called
-    even if ``finish_clip`` raises, so the viewer window is always torn down.
+    unconditionally so the viewer window is always torn down even if
+    ``finish_clip`` or the executor shutdown raises.
     """
     recording: _VideoRecording = self._recording
     try:
-        if recording.recording_active:
-            self.finish_clip()
+        try:
+            if recording.recording_active:
+                self.finish_clip()
+        finally:
+            if recording.save_executor is not None:
+                recording.save_executor.shutdown()
     finally:
         recording.original_close()
 
@@ -369,16 +382,41 @@ def _capture_frame(viewer, recording: _VideoRecording) -> bool:
             recording.default_video_folder, f"{recording.img_idx - recording.num_skipped_frames:05d}.png"
         )
 
-        # Encode and write on a background thread so the viewer render loop is
-        # not blocked by disk I/O. Pending saves are joined before the video
-        # file is encoded (see ``_finish_clip`` / ``_generate_video``).
-        t = threading.Thread(target=image.save, args=(filename,), daemon=False)
-        t.start()
-        recording.save_threads.append(t)
-        recording.save_threads = [s for s in recording.save_threads if s.is_alive()]
+        # Submit to the bounded save pool. The acquire caps in-flight work
+        # (including queued tasks still holding image references), so the render
+        # loop blocks here if encoders can't keep up instead of growing an
+        # unbounded backlog. Pending futures are drained before the video file
+        # is encoded (see ``_flush_save_futures``).
+        recording.save_pending.acquire()
+        recording.save_futures.append(
+            recording.save_executor.submit(_save_image, recording.save_pending, image, filename)
+        )
+        # Drop completed futures to free image refs and surface any late save errors.
+        still_pending = []
+        for fut in recording.save_futures:
+            if fut.done():
+                fut.result()
+            else:
+                still_pending.append(fut)
+        recording.save_futures = still_pending
 
     recording.img_idx += 1
     return True
+
+
+def _save_image(sem: threading.Semaphore, image, filename: str) -> None:
+    """Encode and write ``image`` to ``filename``, releasing ``sem`` on completion."""
+    try:
+        image.save(filename)
+    finally:
+        sem.release()
+
+
+def _flush_save_futures(recording: _VideoRecording) -> None:
+    """Wait for all pending PNG saves and surface any encoder exceptions."""
+    for fut in recording.save_futures:
+        fut.result()
+    recording.save_futures.clear()
 
 
 def _generate_video(
@@ -410,9 +448,7 @@ def _generate_video(
         msg.warning("No frames recorded, cannot generate video")
         return False
 
-    for t in recording.save_threads:
-        t.join()
-    recording.save_threads.clear()
+    _flush_save_futures(recording)
 
     # Enumerate exactly the PNGs this clip wrote (for robustness to stale frames in the folder).
     num_captured = recording.img_idx - recording.num_skipped_frames
