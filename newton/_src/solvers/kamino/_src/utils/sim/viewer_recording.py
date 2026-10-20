@@ -39,11 +39,13 @@ when the render loop runs faster than the simulation.
 
 from __future__ import annotations
 
+import argparse
 import glob
 import os
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from types import MethodType
 
 import warp as wp
@@ -51,7 +53,7 @@ import warp as wp
 from newton._src.solvers.kamino._src.utils import logger as msg
 from newton.viewer import ViewerBase
 
-__all__ = ["enable_recording"]
+__all__ = ["add_recording_args", "enable_recording", "enable_recording_from_args"]
 
 
 @dataclass
@@ -324,12 +326,15 @@ def _close_with_record(self):
     Ensures open-ended clips (started with ``max_frames=None``) finish and
     write their video file as post-processing when the viewer window closes.
     Finite clips that reached their frame budget are already inactive, so
-    the extra ``finish_clip`` call is a no-op.
+    the extra ``finish_clip`` call is a no-op. ``original_close`` is called
+    even if ``finish_clip`` raises, so the viewer window is always torn down.
     """
     recording: _VideoRecording = self._recording
-    if recording.recording_active:
-        self.finish_clip()
-    recording.original_close()
+    try:
+        if recording.recording_active:
+            self.finish_clip()
+    finally:
+        recording.original_close()
 
 
 def _capture_frame(viewer, recording: _VideoRecording) -> bool:
@@ -451,3 +456,127 @@ def _generate_video(
     except Exception as e:
         msg.warning(f"Failed to generate video: {e}")
         return False
+
+
+def add_recording_args(
+    parser: argparse.ArgumentParser,
+    *,
+    example_name: str,
+    default_video_num_frames: int | None = None,
+    record_video_help: str | None = None,
+    video_path_help: str | None = None,
+    video_num_frames_help: str | None = None,
+) -> None:
+    """Add the common video-recording CLI args to ``parser``.
+
+    Registers ``--record-video`` / ``--video-path`` / ``--keep-frames`` /
+    ``--video-num-frames`` with consistent defaults. Pair with
+    :func:`enable_recording_from_args` to wire the recording machinery in a
+    single call at example-startup time.
+
+    Args:
+        parser: Target argparse parser.
+        example_name: Short example identifier used in the default ``--video-path``
+            help text (``<examples_output>/<example_name>/<example_name>.mp4``).
+        default_video_num_frames: Default for ``--video-num-frames``.
+        record_video_help, video_path_help, video_num_frames_help: Per-example
+            overrides for the help text of the respective arguments. Leave
+            unset to use the generic default wording.
+    """
+    parser.add_argument(
+        "--record-video",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            record_video_help
+            if record_video_help is not None
+            else (
+                "Record a video of the viewer. By default, records until the viewer is closed; "
+                "use --video-num-frames to cap the recording length."
+            )
+        ),
+    )
+    parser.add_argument(
+        "--video-path",
+        type=str,
+        default=None,
+        help=(
+            video_path_help
+            if video_path_help is not None
+            else f"Output path for the video file. Defaults to <examples_output>/{example_name}/{example_name}.mp4."
+        ),
+    )
+    parser.add_argument(
+        "--keep-frames",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="If set, keep the per-frame PNGs captured during recording after the video file is generated.",
+    )
+    parser.add_argument(
+        "--video-num-frames",
+        type=int,
+        default=default_video_num_frames,
+        help=(
+            video_num_frames_help
+            if video_num_frames_help is not None
+            else (
+                "Stop recording and write the video after this many frames. "
+                "If omitted, recording stops when the viewer closes (manually in windowed "
+                "mode, or after --num-frames in headless mode)."
+            )
+        ),
+    )
+
+
+def enable_recording_from_args(
+    viewer,
+    args: argparse.Namespace,
+    *,
+    name: str,
+    output_root: str | Path,
+    fps: int,
+    filename: str | None = None,
+    start_clip: bool = True,
+) -> bool:
+    """Wire ``viewer`` for video recording from CLI args added by :func:`add_recording_args`.
+
+    No-op when ``--record-video`` is unset. Otherwise resolves the output video
+    path (``--video-path`` or ``<output_root>/<name>/<filename>.mp4``), creates its
+    parent folder, and calls :func:`enable_recording` (optionally starting a
+    clip immediately with the per-arg settings).
+
+    Args:
+        viewer: Target viewer, as returned by ``newton.examples.init``.
+        args: Parsed ``argparse.Namespace`` carrying ``record_video``,
+            ``video_path``, ``video_num_frames``, and ``keep_frames``.
+        name: Short example identifier used as the per-example subfolder.
+        output_root: Root directory holding per-example subfolders.
+        fps: Video framerate (should match the viewer FPS).
+        filename: Optional stem for the output video file (``.mp4`` is appended).
+            Defaults to ``name``; override to disambiguate multiple runs of the
+            same example (e.g. per-solver suffix).
+        start_clip: If True (default), start a clip immediately; otherwise just
+            wire the machinery (used by GUI-driven flows that start clips on
+            demand).
+
+    Returns:
+        Whether recording was successfully enabled.
+    """
+    if not getattr(args, "record_video", False):
+        return False
+    user_video_path = getattr(args, "video_path", None)
+    if user_video_path is not None:
+        video_path = Path(user_video_path)
+    else:
+        video_path = Path(output_root) / name / f"{filename or name}.mp4"
+    video_path.parent.mkdir(parents=True, exist_ok=True)
+    return enable_recording(
+        viewer=viewer,
+        record_video=True,
+        default_video_folder=str(video_path.parent / f"{video_path.stem}_frames"),
+        start_clip=start_clip,
+        output_path=str(video_path),
+        max_frames=getattr(args, "video_num_frames", None),
+        fps=fps,
+        keep_frames=getattr(args, "keep_frames", False),
+    )

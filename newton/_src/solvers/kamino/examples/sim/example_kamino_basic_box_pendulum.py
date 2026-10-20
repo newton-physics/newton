@@ -11,13 +11,15 @@
 ###########################################################################
 
 import argparse
-from pathlib import Path
 
 import warp as wp
 
 import newton
 import newton.examples
-from newton._src.solvers.kamino._src.utils.sim.viewer_recording import enable_recording
+from newton._src.solvers.kamino._src.utils.sim.viewer_recording import (
+    add_recording_args,
+    enable_recording_from_args,
+)
 from newton._src.solvers.kamino.examples import get_examples_output_path
 from newton.tests import get_kamino_basics_asset
 from newton.tests.utils import basics
@@ -36,24 +38,9 @@ class Example:
         self.device = wp.get_device()
         self.actuated = args.actuated if args else False
 
-        self.record_video = False
-        if getattr(args, "record_video", False):
-            user_video_path = getattr(args, "video_path", None)
-            if user_video_path is not None:
-                video_path = Path(user_video_path)
-            else:
-                video_path = Path(get_examples_output_path()) / "box_pendulum" / "box_pendulum.mp4"
-            video_path.parent.mkdir(parents=True, exist_ok=True)
-            self.record_video = enable_recording(
-                viewer=self.viewer,
-                record_video=True,
-                default_video_folder=str(video_path.parent / f"{video_path.stem}_frames"),
-                start_clip=True,
-                output_path=str(video_path),
-                max_frames=getattr(args, "video_num_frames", None),
-                fps=self.fps,
-                keep_frames=getattr(args, "keep_frames", False),
-            )
+        self.record_video = enable_recording_from_args(
+            self.viewer, args, name="box_pendulum", output_root=get_examples_output_path(), fps=self.fps
+        )
 
         # Create a single-robot model builder and register the Kamino-specific custom attributes
         robot_builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -209,30 +196,7 @@ class Example:
             default=False,
             help="Actuate the pendulum with a fixed velocity target.",
         )
-        parser.add_argument(
-            "--record-video",
-            action=argparse.BooleanOptionalAction,
-            default=False,
-            help="Record a video of the viewer. By default, records until the viewer is closed; use --video-num-frames to cap the recording length.",
-        )
-        parser.add_argument(
-            "--video-path",
-            type=str,
-            default=None,
-            help="Output path for the video file. Defaults to <examples_output>/box_pendulum/box_pendulum.mp4",
-        )
-        parser.add_argument(
-            "--keep-frames",
-            action=argparse.BooleanOptionalAction,
-            default=False,
-            help="If set, keep the per-frame PNGs captured during recording after the video file is generated.",
-        )
-        parser.add_argument(
-            "--video-num-frames",
-            type=int,
-            default=None,
-            help="Stop recording and write the video after this many frames. If None (default), recording stops when the viewer closes (manually in windowed mode, or after --num-frames in headless mode).",
-        )
+        add_recording_args(parser, example_name="box_pendulum")
         return parser
 
 
@@ -241,5 +205,3 @@ if __name__ == "__main__":
     viewer, args = newton.examples.init(parser)
     example = Example(viewer, args)
     newton.examples.run(example, args)
-    if hasattr(viewer, "finish_clip"):
-        viewer.finish_clip()
