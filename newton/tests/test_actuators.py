@@ -3983,7 +3983,7 @@ class TestActuatorImplicit(unittest.TestCase):
         exact and the iteration count never matters. It starts to matter when
         the solution lies on a different branch of the envelope than the initial
         guess. Starting from zero impulse on a coupled two-link chain does that:
-        one step lands far away, three steps converge, and the result agrees with
+        one step lands far away, two steps converge, and the result agrees with
         a damped Picard iteration -- a genuinely different algorithm -- so both
         ``max_iters`` and the convergence tolerances stay covered.
         """

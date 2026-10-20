@@ -1171,6 +1171,45 @@ def jcalc_motion_subspace(
         write_free_distance_motion_subspace(X_pa_world, x_child_com_world, qd_start, joint_S_s)
 
 
+@wp.func
+def eval_joint_motion_subspace(
+    j: int,
+    joint_type: wp.array[int],
+    joint_parent: wp.array[int],
+    joint_child: wp.array[int],
+    joint_q_start: wp.array[int],
+    joint_qd_start: wp.array[int],
+    joint_X_p: wp.array[wp.transform],
+    joint_axis: wp.array[wp.vec3],
+    joint_q: wp.array[float],
+    joint_dof_dim: wp.array2d[int],
+    body_q: wp.array[wp.transform],
+    body_com: wp.array[wp.vec3],
+    joint_S_s: wp.array[wp.spatial_vector],
+):
+    """Write the world-frame motion subspace of joint *j* into ``joint_S_s``."""
+    parent = joint_parent[j]
+
+    # parent anchor frame in world space
+    X_wpj = joint_X_p[j]
+    if parent >= 0:
+        X_wpj = body_q[parent] * X_wpj
+
+    jcalc_motion_subspace(
+        joint_type[j],
+        joint_axis,
+        joint_q,
+        joint_dof_dim[j, 0],
+        joint_dof_dim[j, 1],
+        X_wpj,
+        body_q[joint_child[j]],
+        body_com[joint_child[j]],
+        joint_q_start[j],
+        joint_qd_start[j],
+        joint_S_s,
+    )
+
+
 @wp.kernel
 def eval_articulation_jacobian(
     articulation_start: wp.array[int],
@@ -1215,34 +1254,19 @@ def eval_articulation_jacobian(
 
     # First pass: compute body transforms and motion subspaces
     for i in range(joint_count):
-        j = joint_start + i
-        parent = joint_parent[j]
-        type = joint_type[j]
-
-        X_pj = joint_X_p[j]
-
-        # parent anchor frame in world space
-        X_wpj = X_pj
-        if parent >= 0:
-            X_wp = body_q[parent]
-            X_wpj = X_wp * X_pj
-
-        q_start = joint_q_start[j]
-        qd_start = joint_qd_start[j]
-        lin_axis_count = joint_dof_dim[j, 0]
-        ang_axis_count = joint_dof_dim[j, 1]
-
-        jcalc_motion_subspace(
-            type,
+        eval_joint_motion_subspace(
+            joint_start + i,
+            joint_type,
+            joint_parent,
+            joint_child,
+            joint_q_start,
+            joint_qd_start,
+            joint_X_p,
             joint_axis,
             joint_q,
-            lin_axis_count,
-            ang_axis_count,
-            X_wpj,
-            body_q[joint_child[j]],
-            body_com[joint_child[j]],
-            q_start,
-            qd_start,
+            joint_dof_dim,
+            body_q,
+            body_com,
             joint_S_s,
         )
 
@@ -1512,33 +1536,19 @@ def eval_articulation_motion_subspace(
         if not articulation_mask[art_idx]:
             return
 
-    parent = joint_parent[j]
-    type = joint_type[j]
-
-    X_pj = joint_X_p[j]
-
-    # parent anchor frame in world space
-    X_wpj = X_pj
-    if parent >= 0:
-        X_wp = body_q[parent]
-        X_wpj = X_wp * X_pj
-
-    q_start = joint_q_start[j]
-    qd_start = joint_qd_start[j]
-    lin_axis_count = joint_dof_dim[j, 0]
-    ang_axis_count = joint_dof_dim[j, 1]
-
-    jcalc_motion_subspace(
-        type,
+    eval_joint_motion_subspace(
+        j,
+        joint_type,
+        joint_parent,
+        joint_child,
+        joint_q_start,
+        joint_qd_start,
+        joint_X_p,
         joint_axis,
         joint_q,
-        lin_axis_count,
-        ang_axis_count,
-        X_wpj,
-        body_q[joint_child[j]],
-        body_com[joint_child[j]],
-        q_start,
-        qd_start,
+        joint_dof_dim,
+        body_q,
+        body_com,
         joint_S_s,
     )
 
