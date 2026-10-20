@@ -1091,8 +1091,12 @@ def make_convert_contacts_newton_to_kamino(
         wid_1 = shape_world[sid_1]
 
         if wp.static(skip_fully_prescribed):
-            dynamic_0 = bid_0 >= 0 and body_inv_mass[bid_0] > 0.0
-            dynamic_1 = bid_1 >= 0 and body_inv_mass[bid_1] > 0.0
+            dynamic_0 = bid_0 >= 0 and not is_immovable_for_kamino(
+                body_inv_mass[bid_0], body_inv_inertia[bid_0], body_flags[bid_0]
+            )
+            dynamic_1 = bid_1 >= 0 and not is_immovable_for_kamino(
+                body_inv_mass[bid_1], body_inv_inertia[bid_1], body_flags[bid_1]
+            )
             if not dynamic_0 and not dynamic_1:
                 return
 
