@@ -1,4 +1,4 @@
-Fast(?!SensorTiledCamera)\w*\.time_
+Fast(?!Sensor(?:Tiled)?Camera)\w*\.time_
 FastSensorTiledCamera\.time_render_(color_depth|depth_only)(\(|$)
 FastSensorTiledCameraPixel\.time_render_color_depth(\(|$)
 Fast(?!NewtonOverhead)\w*\.track_simulate(\(|$)

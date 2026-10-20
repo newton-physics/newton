@@ -33,7 +33,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
         with:
-          version: "0.11.26"
+          version: "0.12.23"
 
       - name: Update warp-lang in lock file
         run: uv lock -P warp-lang --prerelease allow
@@ -56,7 +56,7 @@ jobs:
     needs: [check-warp-update]
     if: ${{ !cancelled() && github.repository == 'newton-physics/newton' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 180  # Budget for sequential dispatch+poll of all sub-workflows (typical total ~90 min)
+    timeout-minutes: 300  # Budget for sequential dispatch+poll of all sub-workflows
     permissions:
       actions: write
       contents: read
@@ -83,14 +83,14 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
         with:
-          version: "0.11.26"
+          version: "0.12.23"
 
       - name: Set up Python
         run: uv python install
 
       - name: Dispatch and wait for GPU tests
         id: gpu-tests
-        run: uv run --no-project scripts/ci/dispatch_workflow_and_wait.py aws_gpu_tests.yml -f "inputs[instance-type]=g7e.12xlarge" -f "inputs[trigger-category]=scheduled-nightly"
+        run: uv run --no-project scripts/ci/dispatch_workflow_and_wait.py aws_gpu_tests.yml -f "inputs[instance-type]=g7e.12xlarge" -f "inputs[fallback-instance-type]=g6e.12xlarge" -f "inputs[trigger-category]=scheduled-nightly"
 
       - name: Dispatch and wait for Minimum Deps tests
         id: minimum-deps-tests
@@ -100,6 +100,32 @@ jobs:
         id: warp-nightly-tests
         if: needs.check-warp-update.result == 'success' && needs.check-warp-update.outputs.warp-updated == 'true'
         run: uv run --no-project scripts/ci/dispatch_workflow_and_wait.py warp_nightly_tests.yml -f "inputs[trigger-category]=scheduled-nightly"
+
+      # One fill per GPU architecture that PR benchmarks may land on. Fill
+      # failures are not reported: the cache stays a day older and the next
+      # night retries.
+      - name: Dispatch and wait for g7e benchmark kernel cache fill
+        run: uv run --no-project scripts/ci/dispatch_workflow_and_wait.py aws_gpu_benchmarks.yml -f "inputs[instance-type]=g7e.2xlarge" -f "inputs[trigger-category]=scheduled-nightly"
+
+      - name: Dispatch and wait for g6e benchmark kernel cache fill
+        run: uv run --no-project scripts/ci/dispatch_workflow_and_wait.py aws_gpu_benchmarks.yml -f "inputs[instance-type]=g6e.2xlarge" -f "inputs[trigger-category]=scheduled-nightly"
+
+      # Keep dispatches independent, then propagate test failures to the run.
+      - name: Report nightly test status
+        if: ${{ !cancelled() }}
+        env:
+          GPU_TESTS: ${{ steps.gpu-tests.outputs.conclusion }}
+          MINIMUM_DEPS_TESTS: ${{ steps.minimum-deps-tests.outputs.conclusion }}
+          WARP_NIGHTLY_TESTS: ${{ steps.warp-nightly-tests.outputs.conclusion }}
+        run: |
+          failed=0
+          for conclusion in "$GPU_TESTS" "$MINIMUM_DEPS_TESTS" "$WARP_NIGHTLY_TESTS"; do
+            if [[ -n "$conclusion" && "$conclusion" != success ]]; then
+              echo "::error::Nightly test suite did not pass: $conclusion"
+              failed=1
+            fi
+          done
+          exit "$failed"
 
   notify-on-failure:
     name: Notify on failure
@@ -148,7 +174,7 @@ jobs:
             ];
 
             // Fetch recent run history to show pass/fail trend in the issue table
-            // (default branch only, excludes cancelled runs)
+            // (default branch only, includes cancelled runs)
             async function getHistory(workflowFile) {
               try {
                 const { data } = await github.rest.actions.listWorkflowRuns({
@@ -160,10 +186,12 @@ jobs:
                   status: 'completed',
                   exclude_pull_requests: true
                 });
-                const runs = data.workflow_runs
-                  .filter(r => r.conclusion !== 'cancelled')
-                  .slice(0, 5);
-                return runs.map(r => r.conclusion === 'success' ? '✅' : '❌').join('');
+                const runs = data.workflow_runs.slice(0, 5);
+                return runs.map(r => {
+                  if (r.conclusion === 'success') return '✅';
+                  if (r.conclusion === 'cancelled') return '⏹️';
+                  return '❌';
+                }).join('');
               } catch (error) {
                 core.warning(`Failed to fetch history for ${workflowFile}: ${error.message}`);
                 return '';
@@ -180,7 +208,13 @@ jobs:
               } else if (suite.conclusion === 'success') {
                 rows.push(`| ${suite.name} | ${recentCol} | ✅ Passed | [View logs](${suite.url}) |`);
               } else {
-                rows.push(`| ${suite.name} | ${recentCol} | ❌ Failed | [View logs](${suite.url}) |`);
+                const reasons = {
+                  timed_out: ' (timed out)',
+                  dispatch_error: ' (dispatch error)'
+                };
+                const reason = reasons[suite.conclusion] || (suite.conclusion === 'failure' ? '' : ` (${suite.conclusion})`);
+                const status = suite.conclusion === 'cancelled' ? '⏹️ Cancelled' : `❌ Failed${reason}`;
+                rows.push(`| ${suite.name} | ${recentCol} | ${status} | [View logs](${suite.url}) |`);
                 failed.push(suite.name);
               }
             }
@@ -189,9 +223,11 @@ jobs:
             const orchestratorUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const failedList = failed.join(', ');
             const table = [
-              '| Test Suite | Recent | Status | Logs |',
+              '| Test Suite | Recent (newest → oldest) | Status | Logs |',
               '|---|---|---|---|',
-              ...rows
+              ...rows,
+              '',
+              'History: ✅ Passed, ❌ Failed, ⏹️ Cancelled.'
             ].join('\n');
 
             // Search for an existing open nightly failure issue to update

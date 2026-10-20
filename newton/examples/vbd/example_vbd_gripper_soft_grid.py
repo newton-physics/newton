@@ -20,6 +20,8 @@
 
 from __future__ import annotations
 
+import argparse
+
 import numpy as np
 import warp as wp
 
@@ -111,14 +113,13 @@ PARAMS = {
     "camera_pitch": -10.0,
     "camera_yaw": 128.0,
     "draw_wireframe": False,
-    "initial_paused": False,
 }
 
 
 class Example:
     def __init__(self, viewer, args):
         self.viewer = viewer
-        self.params = PARAMS
+        self.params = {**PARAMS, "finger_mesh": getattr(args, "finger_mesh", PARAMS["finger_mesh"])}
         self.sim_time = 0.0
         self.fps = self.params["fps"]
         self.frame_dt = 1.0 / self.fps
@@ -145,7 +146,6 @@ class Example:
         self.solver = newton.solvers.SolverVBD(
             self.model,
             iterations=self.params["solver_iterations"],
-            rigid_compliant_alm=True,
             integrate_with_external_rigid_solver=False,
             rigid_body_contact_buffer_size=self.params["rigid_body_contact_buffer_size"],
         )
@@ -170,8 +170,6 @@ class Example:
         self.viewer.set_model(self.model)
         if hasattr(self.viewer, "renderer"):
             self.viewer.renderer.draw_wireframe = self.params["draw_wireframe"]
-        if hasattr(self.viewer, "_paused"):
-            self.viewer._paused = self.params["initial_paused"]
         self.viewer.set_camera(
             wp.vec3(*self.params["camera_pos"]),
             self.params["camera_pitch"],
@@ -357,6 +355,12 @@ class Example:
     def create_parser():
         parser = newton.examples.create_parser()
         parser.set_defaults(num_frames=PARAMS["num_frames"])
+        parser.add_argument(
+            "--finger-mesh",
+            action=argparse.BooleanOptionalAction,
+            default=PARAMS["finger_mesh"],
+            help="Use triangulated cube finger pads instead of analytic boxes.",
+        )
         return parser
 
 

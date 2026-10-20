@@ -9,12 +9,15 @@ from ..core.types import Vec3
 class Camera:
     """Camera class that encapsulates all camera settings and logic."""
 
+    DEFAULT_FOV = 45.0
+    DEFAULT_PITCH = 0.0
+    DEFAULT_YAW = -180.0
     DEFAULT_PIVOT_DISTANCE = 5.0
     MIN_PIVOT_DISTANCE = 0.05
 
     def __init__(
         self,
-        fov: float = 45.0,
+        fov: float = DEFAULT_FOV,
         near: float = 0.01,
         far: float = 1000.0,
         width: int = 1280,
@@ -50,21 +53,27 @@ class Camera:
 
         # Set appropriate defaults based on up_axis
         if pos is None:
-            if self.up_axis == 0:  # X up
-                pos = (2.0, 0.0, 10.0)  # 2 units up in X, 10 units back in Z
-            elif self.up_axis == 2:  # Z up
-                pos = (10.0, 0.0, 2.0)  # 2 units up in Z, 10 units back in Y
-            else:  # Y up (default)
-                pos = (0.0, 2.0, 10.0)  # 2 units up in Y, 10 units back in Z
+            pos = self.get_default_position(self.up_axis)
 
         # Camera position
         self.pos = PyVec3(*pos)
 
         # Camera orientation - this is what users can modify
-        self.pitch = 0.0
-        self.yaw = -180.0
+        self.pitch = self.DEFAULT_PITCH
+        self.yaw = self.DEFAULT_YAW
 
         self.pivot = self.pos + self.get_front() * self.DEFAULT_PIVOT_DISTANCE
+
+    @staticmethod
+    def get_default_position(up_axis: str | int) -> tuple[float, float, float]:
+        """Return the default camera position for a world-up axis."""
+        if isinstance(up_axis, str):
+            up_axis = "XYZ".index(up_axis.upper())
+        if up_axis == 0:  # X up
+            return (2.0, 0.0, 10.0)
+        if up_axis == 2:  # Z up
+            return (10.0, 0.0, 2.0)
+        return (0.0, 2.0, 10.0)  # Y up
 
     @staticmethod
     def _as_vec3(value):
