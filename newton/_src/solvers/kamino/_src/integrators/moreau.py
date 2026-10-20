@@ -15,7 +15,11 @@ import warp as wp
 from .....core.types import override
 from ..core.control import ControlKamino
 from ..core.data import DataKamino
-from ..core.math import compute_body_pose_update_with_logmap, compute_body_twist_update_with_eom
+from ..core.math import (
+    compute_body_pose_update_with_logmap,
+    compute_body_twist_update_with_eom,
+    has_singular_inertia,
+)
 from ..core.model import ModelKamino
 from ..core.state import StateKamino
 from ..geometry.contacts import ContactsKamino
@@ -69,8 +73,9 @@ def moreau_jean_semi_implicit_with_logmap(
         integrate_singular_bodies=integrate_singular_bodies,
     )
 
-    # Apply damping to angular velocity
-    omega_i_n *= 1.0 - alpha * dt
+    # Apply damping to angular velocity, except to the prescribed twist of singular bodies
+    if not (integrate_singular_bodies and has_singular_inertia(inv_m_i, inv_I_i)):
+        omega_i_n *= 1.0 - alpha * dt
 
     # Integrate the body pose using the updated twist
     p_i_n = compute_body_pose_update_with_logmap(
