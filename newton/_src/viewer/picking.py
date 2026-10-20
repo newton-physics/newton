@@ -43,9 +43,10 @@ class Picking:
             pick_damping: Damping of the picking spring, in acceleration per unit
                 velocity of the pick point [1/s]. The default is close to critical
                 damping, :math:`2\sqrt{k}`, for the default stiffness.
-            pick_max_acceleration: Maximum picking acceleration in multiples of g [9.81 m/s^2].
-                Clamps both linear and equivalent rotational acceleration to prevent
-                runaway divergence on light or low-inertia objects.
+            pick_max_acceleration: Picking limit in multiples of g [9.81 m/s^2]. Caps the force at
+                this acceleration times the mass of the picked articulation, so a light link can
+                still move its chain, and the torque at the equivalent rotational acceleration of
+                the picked body alone, to prevent runaway divergence on low-inertia links.
             world_offsets: Optional warp array of world offsets (dtype=wp.vec3) for multi-world picking support.
 
         Raises:
@@ -128,10 +129,10 @@ class Picking:
         articulation velocities to the velocity of that point and ``H`` is the joint-space mass
         matrix. This is the inertia actually felt at the grab point, so picking a light distal
         link is not weaker than picking the base. Eigenvalues are capped at the articulation
-        total, which bounds directions the joints block and regularizes singular poses. Where the
-        articulation Jacobian is unavailable, as for :attr:`~newton.JointType.ROD` joints, the
-        articulation total stands in, since the whole chain is a closer estimate of what resists
-        than the single link. A body outside an articulation falls back to :math:`m I`.
+        total, which bounds directions the joints block and regularizes singular poses.
+        Articulations with :attr:`~newton.JointType.ROD` joints use the articulation total instead:
+        each rod joint has six DOFs, so the Jacobian would resolve only one segment's mass and
+        leave cables too weak to lift. A body outside an articulation falls back to :math:`m I`.
 
         Stored in the body frame and rotated with the body, so it stays aligned as the picked
         link turns between refreshes by :meth:`_refresh_os_inertia`.
@@ -167,7 +168,6 @@ class Picking:
             first = int(model.articulation_start.numpy()[art])
             end = int(model.articulation_end.numpy()[art])
 
-            # Rod joints do not expose a compatible generalized-coordinate Jacobian.
             if np.any(model.joint_type.numpy()[first:end] == int(newton.JointType.ROD)):
                 store(np.eye(3) * upper)
                 return
