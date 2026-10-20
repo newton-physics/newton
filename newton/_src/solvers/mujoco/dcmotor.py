@@ -40,7 +40,7 @@ _CONSTRUCTION_PARAMETERS = (
 def parse_input(value: str | int) -> int:
     """Parse a supported single-input control signature or reject unsupported inputs."""
     signature = int(value) if isinstance(value, int | np.integer) else _INPUT_CODES.get(value)
-    if signature not in _INPUT_CODES.values():
+    if isinstance(value, bool) or signature not in _INPUT_CODES.values():
         raise NotImplementedError(
             "SolverMuJoCo supports one DC-motor control input per actuator row: "
             "'voltage', 'pos', or 'vel'. MuJoCo 'ff', 'none', and combined input "

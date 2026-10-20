@@ -474,7 +474,7 @@ the corresponding ``mjc:damping`` scalar and ``mjc:dampingPoly`` pair. These
 passive properties are set at solver construction, must be uniform across
 replicated worlds, and are not refreshed by ``notify_model_changed(ACTUATOR_PROPERTIES)``.
 The solver rejects mismatched passive properties or control signatures across worlds,
-including on compiled ``GENERAL`` rows.
+including on compiled ``GENERAL`` rows. Worlds must also have matching actuator row counts.
 Warp's folded damping uses the construction-time transmission gear.
 DC-motor trajectory parity with native MuJoCo is tested with ``integrator="euler"``;
 MuJoCo-Warp's approximate implicit DC-motor derivatives can produce different

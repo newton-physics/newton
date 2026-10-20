@@ -85,6 +85,7 @@ class TestMuJoCoActuatorAuthoring(unittest.TestCase):
 
         for kwargs, error in (
             ({"input": "pos vel"}, NotImplementedError),
+            ({"input": True}, NotImplementedError),
             ({"input": "position"}, NotImplementedError),
             ({"input": "velocity"}, NotImplementedError),
             ({"input": "anything.pos"}, NotImplementedError),
