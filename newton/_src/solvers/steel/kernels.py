@@ -64,7 +64,7 @@ CONTACT_GENERATION_NONE = wp.constant(GENERATION_SENTINEL)
 ROW_SLOTS_ATOMIC = wp.constant(0)
 ROW_SLOTS_COUNT = wp.constant(1)
 ROW_SLOTS_WRITE = wp.constant(2)
-# Slot returned by a COUNT pass, past every row capacity; callers test the mode before using a slot.
+# Slot returned by a COUNT pass; callers test the mode before using a slot.
 ROW_SLOT_COUNT_PASS = wp.constant(1 << 30)
 # Contact row families, in ``contact_path`` order: dense, matrix-free, propagation.
 CONTACT_ROW_FAMILIES = wp.constant(3)
