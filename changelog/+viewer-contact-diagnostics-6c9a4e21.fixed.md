@@ -1,1 +1,1 @@
-Distinguish unavailable contact forces from measured zero forces in viewer contact modes, keep zero force unloaded at a zero threshold, include both contact offsets in slip detection, apply layer transforms to contact disks and force arrows, and keep default force-arrow scaling invariant under replication of identical worlds.
+Correct viewer contact-mode disks to show unavailable forces in amber, keep measured zero forces open at a zero threshold, and include both contact offsets when detecting slip.

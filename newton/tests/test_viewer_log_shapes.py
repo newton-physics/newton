@@ -176,17 +176,21 @@ class TestLogContacts(unittest.TestCase):
             assert_np_equal(viewer._contact_disk_colors.numpy(), unloaded_colors)
 
     def test_force_scale_is_invariant_to_world_replication(self) -> None:
-        """Keep default force calibration unchanged when identical worlds are replicated."""
+        """Keep force calibration invariant with local, shared global, or only global bodies."""
         world = newton.ModelBuilder()
         world.add_body(mass=2.0, inertia=wp.mat33(np.eye(3)))
         viewer = ViewerNull(num_frames=1)
-        scales = []
-        for world_count in (1, 8):
-            builder = newton.ModelBuilder()
-            builder.replicate(world, world_count)
-            viewer.set_model(builder.finalize(device="cpu"))
-            scales.append(viewer.contact_force_scale)
-        self.assertAlmostEqual(scales[0], scales[1])
+        for global_mass, world_counts in ((0.0, (1, 8)), (3.0, (0, 1, 8))):
+            for world_count in world_counts:
+                with self.subTest(global_mass=global_mass, world_count=world_count):
+                    builder = newton.ModelBuilder()
+                    if global_mass:
+                        builder.add_body(mass=global_mass, inertia=wp.mat33(np.eye(3)))
+                    if world_count:
+                        builder.replicate(world, world_count)
+                    viewer.set_model(builder.finalize(device="cpu"))
+                    expected_mass = global_mass + (2.0 if world_count else 0.0)
+                    self.assertAlmostEqual(viewer.contact_force_scale, 5.0 / (expected_mass * 9.81))
 
         viewer.contact_force_scale = 0.123
         viewer._auto_compute_contact_scales()
@@ -216,7 +220,9 @@ def test_contact_transforms_and_point_velocity(test: unittest.TestCase, device: 
     contacts.rigid_contact_point1.zero_()
     contacts.rigid_contact_offset1.assign([(0.0, 1.0, 0.0), (0.0, 0.0, 0.0), (0.0, 0.0, 0.0)])
     contacts.rigid_contact_normal.assign([wp.vec3(0.0, 0.0, 1.0)] * 3)
-    contacts.force = wp.array([wp.spatial_vector(0, 0, 1, 0, 0, 0)] * 3, dtype=wp.spatial_vector, device=device)
+    solver = newton.solvers.SolverXPBD(model)
+    observables = solver.observables(contacts=contacts, kinds={solver.ObservableKind.CONTACT_F})
+    observables.contact_f.assign([wp.spatial_vector(0, 0, 1, 0, 0, 0)] * 3)
 
     viewer = ViewerNull(num_frames=1)
     viewer.set_model(model)
@@ -225,7 +231,7 @@ def test_contact_transforms_and_point_velocity(test: unittest.TestCase, device: 
     viewer.world_offsets.assign([world_offset])
     layer_xform = wp.transform(wp.vec3(1.0, 2.0, 3.0), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.6))
     viewer.set_layer_transform(viewer.layer.layer_id, layer_xform)
-    viewer.log_contacts(contacts, state)
+    viewer.log_contacts(contacts, state, observables=observables)
     expected_positions = np.array(
         [
             wp.transform_point(layer_xform, wp.vec3(points[0] + offsets[0]) + world_offset),
@@ -254,18 +260,18 @@ def test_contact_transforms_and_point_velocity(test: unittest.TestCase, device: 
 
     sticking_color = viewer._contact_disk_colors.numpy()[0].copy()
     state.body_qd.assign([wp.spatial_vector(0, 0, 0, 0, 0, 1)])
-    viewer.log_contacts(contacts, state)
+    viewer.log_contacts(contacts, state, observables=observables)
     with test.subTest(velocity="offset"):
         assert_np_equal(viewer._contact_disk_colors.numpy()[0], np.array([0.2, 0.2, 0.9]), tol=1.0e-6)
         test.assertFalse(np.allclose(sticking_color, viewer._contact_disk_colors.numpy()[0]))
     contacts.rigid_contact_offset1.zero_()
-    viewer.log_contacts(contacts, state)
+    viewer.log_contacts(contacts, state, observables=observables)
     assert_np_equal(viewer._contact_disk_colors.numpy()[0], sticking_color)
 
     # Reused buffers must not retain visible glyphs for inactive or hidden slots.
     test.assertFalse(viewer._contact_disk_scales.numpy()[2:].any())
-    viewer._visible_worlds_mask = wp.array([0], dtype=int, device=device)
-    viewer.log_contacts(contacts, state)
+    viewer.set_visible_worlds([])
+    viewer.log_contacts(contacts, state, observables=observables)
     test.assertFalse(viewer._contact_disk_scales.numpy().any())
     test.assertTrue(np.isnan(viewer._contact_force_starts.numpy()).all())
 
