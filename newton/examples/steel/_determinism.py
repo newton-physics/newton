@@ -11,57 +11,40 @@ import warp as wp
 import newton
 from newton.solvers import SolverSteel
 
-# Bodies whose copies differ by this much [m] or more are drawn fully in DIVERGED_COLOR.
-DIVERGENCE_COLOR_MAX = 1.0e-2
-# Divergence below this [m] keeps BODY_COLOR; the ramp is logarithmic in between.
-DIVERGENCE_COLOR_MIN = 1.0e-6
-BODY_COLOR = (0.78, 0.78, 0.8)
-DIVERGED_COLOR = (0.93, 0.2, 0.15)
+# Each mode draws its two copies at one place, magenta and green and half transparent:
+# coincident copies blend to one gray body, diverging copies split into two colored ghosts.
+COPY_COLORS = ((0.9, 0.2, 0.8), (0.2, 0.8, 0.3))
+COPY_OPACITY = 0.5
 
 
 @wp.kernel(enable_backward=False)
-def compare_copies(
+def show_copies(
     body_q_a: wp.array[wp.transform],
     body_q_b: wp.array[wp.transform],
+    side_offset: wp.vec3,
     display_body_offset: int,
+    divergence_offset: int,
     display_body_q: wp.array[wp.transform],
     body_divergence: wp.array[wp.float32],
 ):
-    """Show copy A of one mode and record how far each of its bodies is from copy B."""
+    """Place both copies of one mode at its side of the view and record how far apart each body is."""
     body_id = wp.tid()
-    display_body_q[display_body_offset + body_id] = body_q_a[body_id]
-    delta = wp.transform_get_translation(body_q_a[body_id]) - wp.transform_get_translation(body_q_b[body_id])
-    body_divergence[display_body_offset + body_id] = wp.length(delta)
-
-
-@wp.kernel(enable_backward=False)
-def color_by_divergence(
-    shape_body: wp.array[wp.int32],
-    body_divergence: wp.array[wp.float32],
-    default_color: wp.array[wp.vec3],
-    body_color: wp.vec3,
-    diverged_color: wp.vec3,
-    log_min: float,
-    log_max: float,
-    shape_color: wp.array[wp.vec3],
-):
-    """Blend each body's shapes from ``body_color`` toward ``diverged_color`` with the log of its divergence."""
-    shape_id = wp.tid()
-    body_id = shape_body[shape_id]
-    if body_id < 0:
-        shape_color[shape_id] = default_color[shape_id]
-        return
-    weight = float(0.0)
-    divergence = body_divergence[body_id]
-    if divergence > 0.0:
-        weight = wp.clamp((wp.log10(divergence) - log_min) / (log_max - log_min), 0.0, 1.0)
-    shape_color[shape_id] = wp.lerp(body_color, diverged_color, weight)
+    body_count = body_q_a.shape[0]
+    q_a = body_q_a[body_id]
+    q_b = body_q_b[body_id]
+    p_a = wp.transform_get_translation(q_a)
+    p_b = wp.transform_get_translation(q_b)
+    display_body_q[display_body_offset + body_id] = wp.transform(p_a + side_offset, wp.transform_get_rotation(q_a))
+    display_body_q[display_body_offset + body_count + body_id] = wp.transform(
+        p_b + side_offset, wp.transform_get_rotation(q_b)
+    )
+    body_divergence[divergence_offset + body_id] = wp.length(p_a - p_b)
 
 
 class DeterminismExample:
-    """Step one scene in two default and two deterministic Steel copies and show how the copies drift apart.
+    """Step one scene in two default and two deterministic Steel copies and overlay the copies of each mode.
 
-    The default copies are drawn on the left and the deterministic copies on the right; subclasses
+    The default pair is drawn on the left and the deterministic pair on the right; subclasses
     provide the scene and may override :meth:`apply_control`.
     """
 
@@ -70,7 +53,7 @@ class DeterminismExample:
         viewer,
         scene: newton.ModelBuilder,
         solver_options: dict,
-        copy_spacing: tuple[float, float, float],
+        side_offset: tuple[float, float, float],
         camera: dict,
     ):
         self.viewer = viewer
@@ -92,19 +75,23 @@ class DeterminismExample:
         # Every copy reads the same control so the copies only differ by how they were simulated.
         self.control = self.copies["default"][0].model.control()
 
+        # The default pair sits at -side_offset and the deterministic pair at +side_offset.
+        self.side_offsets = [wp.vec3(*side_offset) * sign for sign in (-1.0, 1.0)]
         display = newton.ModelBuilder()
-        display.replicate(scene, 2)
+        for offset in self.side_offsets:
+            for color in COPY_COLORS:
+                first_shape = display.shape_count
+                display.add_builder(scene, xform=wp.transform(offset, wp.quat_identity()))
+                for shape in range(first_shape, display.shape_count):
+                    display.shape_color[shape] = color
+                    display.shape_opacity[shape] = COPY_OPACITY
         display.add_ground_plane()
         self.model = display.finalize()
         self.state_0 = self.model.state()
-        self.body_divergence = wp.zeros(self.model.body_count, dtype=wp.float32)
-        self.default_shape_color = wp.clone(self.model.shape_color)
-        self.body_color = wp.vec3(*BODY_COLOR)
-        self.diverged_color = wp.vec3(*DIVERGED_COLOR)
+        self.body_divergence = wp.zeros(2 * self.scene_body_count, dtype=wp.float32)
         self.max_divergence = {"default": 0.0, "deterministic": 0.0}
 
         self.viewer.set_model(self.model)
-        self.viewer.set_world_offsets(copy_spacing)
         self.viewer.set_camera(**camera)
 
         self.capture()
@@ -134,30 +121,22 @@ class DeterminismExample:
         self.sim_time += self.frame_dt
         for mode_id, (copy_a, copy_b) in enumerate(self.copies.values()):
             wp.launch(
-                compare_copies,
+                show_copies,
                 dim=self.scene_body_count,
-                inputs=[copy_a.state_0.body_q, copy_b.state_0.body_q, mode_id * self.scene_body_count],
+                inputs=[
+                    copy_a.state_0.body_q,
+                    copy_b.state_0.body_q,
+                    self.side_offsets[mode_id],
+                    2 * mode_id * self.scene_body_count,
+                    mode_id * self.scene_body_count,
+                ],
                 outputs=[self.state_0.body_q, self.body_divergence],
             )
         divergence = self.body_divergence.numpy().reshape(2, self.scene_body_count).max(axis=1)
         self.max_divergence = dict(zip(self.copies, (float(d) for d in divergence), strict=True))
 
     def render(self):
-        """Draw copy A of each mode, colored by how far its bodies are from copy B."""
-        wp.launch(
-            color_by_divergence,
-            dim=self.model.shape_count,
-            inputs=[
-                self.model.shape_body,
-                self.body_divergence,
-                self.default_shape_color,
-                self.body_color,
-                self.diverged_color,
-                float(np.log10(DIVERGENCE_COLOR_MIN)),
-                float(np.log10(DIVERGENCE_COLOR_MAX)),
-            ],
-            outputs=[self.model.shape_color],
-        )
+        """Draw both copies of each mode overlaid, the default pair left and the deterministic pair right."""
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
         self.viewer.log_scalar("Default copies, max divergence [mm]", 1.0e3 * self.max_divergence["default"])
@@ -165,6 +144,13 @@ class DeterminismExample:
             "Deterministic copies, max divergence [mm]", 1.0e3 * self.max_divergence["deterministic"]
         )
         self.viewer.end_frame()
+
+    def gui(self, ui):
+        """Show the largest body distance between the two copies of each mode."""
+        ui.text("Left: default, right: deterministic")
+        ui.text("Copies in magenta and green, gray where they coincide")
+        for mode, divergence in self.max_divergence.items():
+            ui.text(f"{mode.capitalize()} max distance: {1.0e3 * divergence:.3f} mm")
 
     def test_final(self):
         """Verify every copy is finite, no copy dropped constraint rows and the deterministic copies are bitwise equal."""

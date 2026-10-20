@@ -9,10 +9,11 @@
 # initial state and with the same joint targets: two copies with Steel's
 # default settings (left) and two with
 # deterministic=wp.DeterministicMode.RUN_TO_RUN and
-# CollisionPipeline(deterministic=True) (right). Each side draws its first
-# copy, with bodies turning red as they drift away from the second copy.
-# The default copies push the boxes to different places; the deterministic
-# copies stay bitwise identical.
+# CollisionPipeline(deterministic=True) (right). Each side overlays its two
+# copies at one place, one magenta and one green, both half transparent.
+# The default copies push the boxes to different places and come apart
+# into two ghosts; the deterministic copies stay bitwise identical and
+# blend into one gray scene.
 #
 # Command: python -m newton.examples steel_determinism_arms
 #
@@ -99,8 +100,8 @@ class Example(DeterminismExample):
                 "articulation_constraint_max": 384,
                 "free_body_constraint_max": 128,
             },
-            copy_spacing=(0.0, 2.0, 0.0),
-            camera={"pos": wp.vec3(2.6, 0.0, 1.3), "pitch": -24.0, "yaw": 180.0},
+            side_offset=(0.0, 1.0, 0.0),
+            camera={"pos": wp.vec3(2.7, 0.0, 1.3), "pitch": -20.0, "yaw": 180.0},
         )
 
     def apply_control(self, step_index):

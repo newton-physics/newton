@@ -8,10 +8,11 @@
 # scene four times in one process from the same initial state: two copies
 # with Steel's default settings (left) and two with
 # deterministic=wp.DeterministicMode.RUN_TO_RUN and
-# CollisionPipeline(deterministic=True) (right). Each side draws its first
-# copy, with bodies turning red as they drift away from the second copy.
-# The default copies split within a few steps; the deterministic copies
-# stay bitwise identical.
+# CollisionPipeline(deterministic=True) (right). Each side overlays its two
+# copies at one place, one magenta and one green, both half transparent.
+# The default copies split into two ghosts within a few steps; the
+# deterministic copies stay bitwise identical and blend into one gray
+# scene.
 #
 # Command: python -m newton.examples steel_determinism_pile
 #
@@ -66,8 +67,8 @@ class Example(DeterminismExample):
                 "articulation_constraint_max": 384,
                 "free_body_constraint_max": 128,
             },
-            copy_spacing=(3.5, 0.0, 0.0),
-            camera={"pos": wp.vec3(0.0, -4.6, 2.2), "pitch": -24.0, "yaw": 90.0},
+            side_offset=(1.9, 0.0, 0.0),
+            camera={"pos": wp.vec3(0.2, -5.6, 2.2), "pitch": -18.0, "yaw": 90.0},
         )
 
 
