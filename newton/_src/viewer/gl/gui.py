@@ -3,7 +3,10 @@
 
 from __future__ import annotations
 
+import logging
 import os
+
+logger = logging.getLogger(__name__)
 
 
 class UI:
@@ -27,7 +30,7 @@ class UI:
             self.is_available = True
         except ImportError:
             self.is_available = False
-            print("Warning: imgui_bundle not found. Install with: pip install imgui-bundle")
+            logger.warning("imgui_bundle not found. Install with: pip install imgui-bundle")
             return
 
         self.window = window
@@ -464,7 +467,7 @@ class UI:
                     if len(result) == 1:
                         self._file_dialog_result = result[0]
                     elif len(result) > 1:
-                        print("Warning: multiple files selected; expected a single file.")
+                        logger.warning("multiple files selected; expected a single file.")
                 else:
                     self._file_dialog_result = result
             self._pending_file_dialog = None
@@ -482,7 +485,7 @@ class UI:
 
             self._pending_file_dialog = pfd.save_file(title, os.getcwd())
         except ImportError:
-            print("Warning: portable_file_dialogs not available")
+            logger.warning("portable_file_dialogs not available")
 
     def open_load_file_dialog(self, title: str = "Open File") -> None:
         """Start an asynchronous native OS open-file dialog.
@@ -497,7 +500,7 @@ class UI:
 
             self._pending_file_dialog = pfd.open_file(title, os.getcwd())
         except ImportError:
-            print("Warning: portable_file_dialogs not available")
+            logger.warning("portable_file_dialogs not available")
 
     def shutdown(self):
         if not self.is_available:

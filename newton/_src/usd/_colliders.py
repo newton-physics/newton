@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 import warnings
@@ -16,12 +17,14 @@ import warp as wp
 
 from ..core import quat_between_axes
 from ..core.types import Axis
+from ..exceptions import NewtonWarning
 from ..geometry import ShapeFlags
 from ..sim.builder import ModelBuilder
 from . import utils as usd
 from ._collision_filters import _collect_filtered_pairs
 from ._mass_properties import _is_enabled_collider
 from ._resolution_policy import (
+    _resolve_physics_material,
     _resolve_shape_contact,
     _resolve_shape_hydroelastic,
     _resolve_shape_offsets,
@@ -37,6 +40,8 @@ if TYPE_CHECKING:
     from ._resolution_policy import _PhysicsMaterial
     from ._visuals import _UsdVisuals
     from .schema_resolver import SchemaResolverManager
+
+logger = logging.getLogger(__name__)
 
 
 def _parse_colliders(
@@ -75,6 +80,33 @@ def _parse_colliders(
     """Add colliders in descriptor order using the importer's shared maps and helpers."""
     from pxr import UsdPhysics
 
+    def _get_physics_material(material_path: str) -> _PhysicsMaterial:
+        """Resolve and cache bound materials outside the selected import range."""
+        if material_path in material_specs:
+            return material_specs[material_path]
+
+        # Native collider descriptors retain binding targets outside root_path,
+        # but that range's material descriptors do not include those targets.
+        external = usd.load_physics_from_range(stage, [material_path])
+        paths, descriptors = external.get(UsdPhysics.ObjectType.RigidBodyMaterial, ((), ()))
+        for path, descriptor in zip(paths, descriptors, strict=False):
+            if str(path) != material_path or warn_invalid_desc(path, descriptor):
+                continue
+            material = _resolve_physics_material(
+                stage.GetPrimAtPath(path),
+                descriptor,
+                R,
+                builder.default_shape_cfg,
+                default_shape_density=default_shape_density,
+                verbose=verbose,
+            )
+            material_specs[material_path] = material
+            return material
+
+        raise ValueError(
+            f"Collider references physics material '{material_path}', but that target could not be parsed."
+        )
+
     # mapping from physics:approximation attribute (lower case) to remeshing method
     approximation_to_remeshing_method = {
         "convexdecomposition": "coacd",
@@ -83,8 +115,8 @@ def _parse_colliders(
         "boundingcube": "bounding_box",
         "meshsimplification": "quadratic",
     }
-    # mapping from remeshing method to a list of shape indices
-    remeshing_queue = {}
+    # Group colliders with the same approximation settings.
+    remeshing_queue: dict[tuple[str, tuple[tuple[str, Any], ...]], list[int]] = {}
     # Approximated colliders whose prim is viewport geometry, and which therefore keep
     # their authored topology as a visual shape. See the approximation pass below.
     approximated_viewport_shapes: set[int] = set()
@@ -114,7 +146,7 @@ def _parse_colliders(
                 shape_already_added = path in path_shape_map
                 body_path = str(shape_spec.rigidBody)
                 if verbose:
-                    print(f"collision shape {prim.GetPath()} ({prim.GetTypeName()}), body = {body_path}")
+                    logger.info("collision shape %s (%s), body = %s", prim.GetPath(), prim.GetTypeName(), body_path)
                 body_id = path_body_map.get(body_path, -1)
                 scale = usd.get_scale(prim, local=False, xform_cache=xform_cache)
                 collision_group = builder.default_shape_cfg.collision_group
@@ -123,14 +155,23 @@ def _parse_colliders(
                 has_shape_material = len(shape_spec.materials) >= 1
                 if has_shape_material:
                     if len(shape_spec.materials) > 1 and verbose:
-                        print(f"Warning: More than one material found on shape at '{path}'.\nUsing only the first one.")
-                    material = material_specs[str(shape_spec.materials[0])]
+                        logger.warning(
+                            "More than one material found on shape at '%s'.\nUsing only the first one.", path
+                        )
+                    material = _get_physics_material(str(shape_spec.materials[0]))
                     if verbose:
-                        print(
-                            f"\tMaterial of '{path}':\tfriction: {material.dynamicFriction},\ttorsional friction: {material.torsionalFriction},\trolling friction: {material.rollingFriction},\trestitution: {material.restitution},\tdensity: {material.density}"
+                        logger.info(
+                            "\tMaterial of '%s':\tfriction: %s,\ttorsional friction: %s,\trolling friction: "
+                            "%s,\trestitution: %s,\tdensity: %s",
+                            path,
+                            material.dynamicFriction,
+                            material.torsionalFriction,
+                            material.rollingFriction,
+                            material.restitution,
+                            material.density,
                         )
                 elif verbose:
-                    print(f"No material found for shape at '{path}'.")
+                    logger.info("No material found for shape at '%s'.", path)
 
                 # Non-MassAPI body mass accumulation in ModelBuilder uses shape cfg density.
                 # Use per-shape physics material density when present; otherwise use default density.
@@ -217,7 +258,7 @@ def _parse_colliders(
                         thickness=inertia_margin,
                     )
                     if verbose:
-                        print(f"Shape at {path} already added; skipping duplicate geometry.")
+                        logger.info("Shape at %s already added; skipping duplicate geometry.", path)
                     continue
 
                 shape_params = {
@@ -261,7 +302,7 @@ def _parse_colliders(
                     )
                 elif key == UsdPhysics.ObjectType.SphereShape:
                     if not _is_uniform_scale(scale):
-                        print(f"Warning: Non-uniform scaling of spheres is not supported, at {path}.")
+                        logger.warning("Non-uniform scaling of spheres is not supported, at %s.", path)
                     radius = shape_spec.radius
                     shape_id = builder.add_shape_sphere(
                         **shape_params,
@@ -363,19 +404,27 @@ def _parse_colliders(
                                 warnings.warn(
                                     f"{prim.GetPath()}: physics:approximation={approximation!r} is "
                                     f"ignored on a shape with NewtonSDFCollisionAPI applied.",
+                                    NewtonWarning,
                                     stacklevel=3,
                                 )
                             else:
                                 remeshing_method = approximation_to_remeshing_method.get(approximation.lower(), None)
                                 if remeshing_method is None:
                                     if verbose:
-                                        print(
-                                            f"Warning: Unknown physics:approximation attribute '{approximation}' on shape at '{path}'."
+                                        logger.warning(
+                                            "Unknown physics:approximation attribute '%s' on shape at '%s'.",
+                                            approximation,
+                                            path,
                                         )
                                 else:
-                                    if remeshing_method not in remeshing_queue:
-                                        remeshing_queue[remeshing_method] = []
-                                    remeshing_queue[remeshing_method].append(shape_id)
+                                    remeshing_kwargs = ()
+                                    if remeshing_method == "coacd" and usd.has_applied_api_schema(
+                                        prim, "PhysxConvexDecompositionCollisionAPI"
+                                    ):
+                                        remeshing_kwargs = _physx_convex_decomposition_kwargs(prim, R)
+                                    remeshing_queue.setdefault((remeshing_method, remeshing_kwargs), []).append(
+                                        shape_id
+                                    )
                                     if splits_off_visual_copy:
                                         approximated_viewport_shapes.add(shape_id)
 
@@ -428,15 +477,28 @@ def _parse_colliders(
     # collider display policy that governs pure colliders does not apply to a prim
     # that is also render geometry. ``approximate_meshes`` copies shapes carrying
     # VISIBLE, so mark these before handing them over.
-    for remeshing_method, shape_ids in remeshing_queue.items():
+    for (remeshing_method, remeshing_kwargs), shape_ids in remeshing_queue.items():
         drawn = [s for s in shape_ids if s in approximated_viewport_shapes] if load_visual_shapes else []
         for shape_id in drawn:
             builder.shape_flags[shape_id] |= int(ShapeFlags.VISIBLE)
         if drawn:
-            builder.approximate_meshes(method=remeshing_method, shape_indices=drawn, keep_visual_shapes=True)
+            builder.approximate_meshes(
+                method=remeshing_method, shape_indices=drawn, keep_visual_shapes=True, **dict(remeshing_kwargs)
+            )
         # Colliders that are not render geometry keep no visual: there is nothing
         # authored to preserve. If one is on screen it is because the collider
         # display policy put it there, and what it should show is the collider.
         rest = [s for s in shape_ids if s not in set(drawn)]
         if rest:
-            builder.approximate_meshes(method=remeshing_method, shape_indices=rest, keep_visual_shapes=False)
+            builder.approximate_meshes(
+                method=remeshing_method, shape_indices=rest, keep_visual_shapes=False, **dict(remeshing_kwargs)
+            )
+
+
+def _physx_convex_decomposition_kwargs(prim: Usd.Prim, resolver: SchemaResolverManager) -> tuple[tuple[str, Any], ...]:
+    """Apply the PhysX hull-count limit independently to each mesh component."""
+    max_hulls = resolver.get_value(prim, prim_type=PrimType.SHAPE, key="convex_decomposition_max_hulls")
+    if max_hulls is None:
+        return ()
+    # CoACD enforces the hull-count limit only when merging is enabled.
+    return (("max_convex_hull", max_hulls), ("merge", True))

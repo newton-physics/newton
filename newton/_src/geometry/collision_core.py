@@ -963,6 +963,45 @@ def transform_normal_with_scale(
 
 
 @wp.func
+def convex_mesh_interior_point(mesh_id: wp.uint64, scale: wp.vec3) -> wp.vec3:
+    """Return the scaled vertex mean, which always lies inside the convex hull."""
+    hull = wp.mesh_get(mesh_id)
+    num_verts = hull.points.shape[0]
+    center = wp.vec3(0.0, 0.0, 0.0)
+    for i in range(num_verts):
+        center += hull.points[i]
+    return wp.cw_mul(center, scale) / float(wp.max(num_verts, 1))
+
+
+@wp.func
+def _query_aabb_to_bvh(
+    lower: wp.vec3,
+    upper: wp.vec3,
+    X_mesh_shape: wp.transform,
+    mesh_data: wp.vec4,
+    contact_threshold: float,
+    center: wp.vec3,
+) -> tuple[wp.vec3, wp.vec3, wp.vec3]:
+    """Convert scaled mesh-local query bounds to the unscaled mesh-BVH frame.
+
+    Pads the bounds by the world-space contact threshold and maps the shape's
+    interior point ``center`` into the same frame for back-face culling. Both
+    midphase bound builders use this so their query boxes stay identical.
+    """
+    mesh_scale = wp.vec3(mesh_data[0], mesh_data[1], mesh_data[2])
+    lower_bvh, upper_bvh, inv_scale = aabb_to_unscaled(lower, upper, mesh_scale)
+    margin_vec = wp.vec3(
+        contact_threshold / wp.max(wp.abs(mesh_scale[0]), 1.0e-12),
+        contact_threshold / wp.max(wp.abs(mesh_scale[1]), 1.0e-12),
+        contact_threshold / wp.max(wp.abs(mesh_scale[2]), 1.0e-12),
+    )
+    # Cull against an interior point. A hull's origin and AABB center can
+    # both lie outside it, which discards triangles touching the hull.
+    center_in_bvh = wp.cw_mul(wp.transform_point(X_mesh_shape, center), inv_scale)
+    return lower_bvh - margin_vec, upper_bvh + margin_vec, center_in_bvh
+
+
+@wp.func
 def _compute_mesh_vs_convex_query_aabb(
     mesh_shape: int,
     non_mesh_shape: int,
@@ -972,6 +1011,7 @@ def _compute_mesh_vs_convex_query_aabb(
     shape_data: wp.array[wp.vec4],
     shape_source_ptr: wp.array[wp.uint64],
     contact_threshold: float,
+    non_mesh_center: wp.vec3,
 ) -> tuple[wp.vec3, wp.vec3, wp.vec3]:
     """Compute unscaled mesh-BVH bounds for a convex shape."""
     X_mesh_sw = wp.transform_inverse(X_mesh_ws)
@@ -997,17 +1037,9 @@ def _compute_mesh_vs_convex_query_aabb(
         generic_shape_data, orientation_in_mesh, pos_in_mesh, data_provider
     )
 
-    # Convert the bounds and world-space threshold to the unscaled BVH frame.
-    mesh_scale_vec4 = shape_data[mesh_shape]
-    mesh_scale = wp.vec3(mesh_scale_vec4[0], mesh_scale_vec4[1], mesh_scale_vec4[2])
-    aabb_lower_bvh, aabb_upper_bvh, inv_scale = aabb_to_unscaled(aabb_lower, aabb_upper, mesh_scale)
-    margin_vec = wp.vec3(
-        contact_threshold / wp.max(wp.abs(mesh_scale[0]), 1.0e-12),
-        contact_threshold / wp.max(wp.abs(mesh_scale[1]), 1.0e-12),
-        contact_threshold / wp.max(wp.abs(mesh_scale[2]), 1.0e-12),
+    return _query_aabb_to_bvh(
+        aabb_lower, aabb_upper, X_mesh_shape, shape_data[mesh_shape], contact_threshold, non_mesh_center
     )
-    center_in_bvh = wp.cw_mul(pos_in_mesh, inv_scale)
-    return aabb_lower_bvh - margin_vec, aabb_upper_bvh + margin_vec, center_in_bvh
 
 
 @wp.func
@@ -1031,6 +1063,46 @@ def _mesh_triangle_is_front_facing_local(
 
 
 @wp.func
+def _compute_mesh_vs_hull_query_aabb_tiled(
+    mesh_shape: int,
+    hull_shape: int,
+    X_mesh_ws: wp.transform,
+    X_ws: wp.transform,
+    shape_data: wp.array[wp.vec4],
+    shape_source_ptr: wp.array[wp.uint64],
+    contact_threshold: float,
+    hull_center: wp.vec3,
+    lane: int,
+) -> tuple[wp.vec3, wp.vec3, wp.vec3]:
+    """Compute :func:`_compute_mesh_vs_convex_query_aabb` bounds for a hull with all block threads.
+
+    Every thread of the block must call this for the same pair. Min and max
+    reductions are order independent, so the bounds match the serial scan.
+    """
+    X_mesh_shape = wp.transform_multiply(wp.transform_inverse(X_mesh_ws), X_ws)
+    pos_in_mesh = wp.transform_get_translation(X_mesh_shape)
+    rot_mat_t = wp.transpose(wp.quat_to_matrix(wp.transform_get_rotation(X_mesh_shape)))
+    data_vec4 = shape_data[hull_shape]
+    scale = wp.vec3(data_vec4[0], data_vec4[1], data_vec4[2])
+    # Pre-scale axes: dot(local_axis, scale*v) == dot(scale*local_axis, v)
+    scaled_x = wp.cw_mul(wp.vec3(rot_mat_t[0, 0], rot_mat_t[1, 0], rot_mat_t[2, 0]), scale)
+    scaled_y = wp.cw_mul(wp.vec3(rot_mat_t[0, 1], rot_mat_t[1, 1], rot_mat_t[2, 1]), scale)
+    scaled_z = wp.cw_mul(wp.vec3(rot_mat_t[0, 2], rot_mat_t[1, 2], rot_mat_t[2, 2]), scale)
+    mesh = wp.mesh_get(shape_source_ptr[hull_shape])
+    lower = wp.vec3(1.0e10)
+    upper = wp.vec3(-1.0e10)
+    for i in range(lane, mesh.points.shape[0], wp.block_dim()):
+        p = mesh.points[i]
+        projection = wp.vec3(wp.dot(p, scaled_x), wp.dot(p, scaled_y), wp.dot(p, scaled_z))
+        lower = wp.min(lower, projection)
+        upper = wp.max(upper, projection)
+    lower = wp.tile_reduce(wp.min, wp.tile(lower, preserve_type=True))[0] + pos_in_mesh
+    upper = wp.tile_reduce(wp.max, wp.tile(upper, preserve_type=True))[0] + pos_in_mesh
+
+    return _query_aabb_to_bvh(lower, upper, X_mesh_shape, shape_data[mesh_shape], contact_threshold, hull_center)
+
+
+@wp.func
 def mesh_vs_convex_midphase(
     idx_in_thread_block: int,
     mesh_shape: int,
@@ -1042,6 +1114,7 @@ def mesh_vs_convex_midphase(
     shape_data: wp.array[wp.vec4],
     shape_source_ptr: wp.array[wp.uint64],
     contact_threshold: float,
+    non_mesh_center: wp.vec3,
     triangle_pairs: wp.array[wp.vec3i],
     triangle_pairs_count: wp.array[int],
 ):
@@ -1063,13 +1136,27 @@ def mesh_vs_convex_midphase(
         shape_data: Array of shape data (vec4: scale.xyz, margin.w)
         shape_source_ptr: Array of mesh/SDF source pointers
         contact_threshold: Contact candidate distance [m], including margin and gap
+        non_mesh_center: Interior point of the convex shape in its scaled local frame [m]
         triangle_pairs: Output array for triangle pairs (mesh_shape, non_mesh_shape, tri_index)
         triangle_pairs_count: Counter for triangle pairs
     """
     aabb_lower = wp.vec3(0.0)
     aabb_upper = wp.vec3(0.0)
     center_in_bvh = wp.vec3(0.0)
-    if wp.static(ENABLE_TILE_BVH_QUERY):
+    if wp.static(ENABLE_TILE_BVH_QUERY) and shape_type[non_mesh_shape] == GeoType.CONVEX_MESH:
+        # A hull's bounds scan every vertex; split that scan across the block.
+        aabb_lower, aabb_upper, center_in_bvh = _compute_mesh_vs_hull_query_aabb_tiled(
+            mesh_shape,
+            non_mesh_shape,
+            X_mesh_ws,
+            X_ws,
+            shape_data,
+            shape_source_ptr,
+            contact_threshold,
+            non_mesh_center,
+            idx_in_thread_block,
+        )
+    elif wp.static(ENABLE_TILE_BVH_QUERY):
         # All lanes query the same pair, so compute the bounds once per block.
         if idx_in_thread_block == 0:
             aabb_lower, aabb_upper, center_in_bvh = _compute_mesh_vs_convex_query_aabb(
@@ -1081,6 +1168,7 @@ def mesh_vs_convex_midphase(
                 shape_data,
                 shape_source_ptr,
                 contact_threshold,
+                non_mesh_center,
             )
         bounds = wp.mat33(
             aabb_lower[0],
@@ -1109,6 +1197,7 @@ def mesh_vs_convex_midphase(
             shape_data,
             shape_source_ptr,
             contact_threshold,
+            non_mesh_center,
         )
 
     if wp.static(ENABLE_TILE_BVH_QUERY):

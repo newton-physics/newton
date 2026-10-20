@@ -31,7 +31,8 @@ from newton._src.solvers.kamino._src.solvers.warmstart import (
     warmstart_contacts_by_matched_geom_pair_key_and_position_with_net_force_backup,
 )
 from newton._src.solvers.kamino._src.utils import logger as msg
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import expect_contact_capacity_warning, setup_tests, test_context
+from newton.tests.unittest_utils import MODULE_LOAD_OUTPUT_RE, NewtonTestCase
 
 _NEWTON_CONTACT_CAPACITY = 64
 
@@ -713,7 +714,7 @@ class TestGeometryContacts(unittest.TestCase):
         self.assertEqual(len(contacts.remap), maxnc)
 
 
-class TestGeometryContactConversions(unittest.TestCase):
+class TestGeometryContactConversions(NewtonTestCase):
     """Tests for Newton <-> Kamino contact conversion functions.
 
     Three reference scenes are used here:
@@ -743,6 +744,7 @@ class TestGeometryContactConversions(unittest.TestCase):
             setup_tests(clear_cache=False)
         self.default_device = wp.get_device(test_context.device)
         self.verbose = test_context.verbose
+        self.allowOutputRegex(MODULE_LOAD_OUTPUT_RE, stream="stdout")
 
         if self.verbose:
             msg.info("\n")
@@ -778,7 +780,8 @@ class TestGeometryContactConversions(unittest.TestCase):
         """
         builder = builder_fn()
         if with_force:
-            builder.request_contact_attributes("force")
+            with self.assertWarns(DeprecationWarning):
+                builder.request_contact_attributes("force")
         model = builder.finalize(self.default_device)
 
         state = model.state()
@@ -1245,13 +1248,15 @@ class TestGeometryContactConversions(unittest.TestCase):
         box_blueprint = build_two_box_stack_scene()  # two boxes, no ground
 
         scene = ModelBuilder()
-        scene.request_contact_attributes("force")
+        with self.assertWarns(DeprecationWarning):
+            scene.request_contact_attributes("force")
         scene.add_ground_plane()
         scene.add_world(nunchaku_blueprint, xform=wp.transform(p=wp.vec3(0.0, 0.0, 0.0)))
         scene.add_world(nunchaku_blueprint, xform=wp.transform(p=wp.vec3(5.0, 0.0, 0.0)))
         # Single-box blueprint: just take a fresh nunchaku-less box scene with one body.
         single_box = ModelBuilder()
-        single_box.request_contact_attributes("force")
+        with self.assertWarns(DeprecationWarning):
+            single_box.request_contact_attributes("force")
         b = single_box.add_link()
         no_gap = ModelBuilder.ShapeConfig(gap=0.0)
         single_box.add_shape_box(b, hx=0.25, hy=0.25, hz=0.25, cfg=no_gap)
@@ -1483,6 +1488,7 @@ class TestGeometryContactConversions(unittest.TestCase):
         - Missing ``remap`` array on the existing-contacts path raises a
           clear ``ValueError`` when ``convert_forces=True``.
         """
+        expect_contact_capacity_warning(self)
         # 1) No-collision scene -> 0 Kamino contacts.
         model_nc, state_nc, contacts_nc = self._setup_newton_scene(
             builder_fn=lambda: build_nunchaku_scene(ground=False),
@@ -1516,7 +1522,8 @@ class TestGeometryContactConversions(unittest.TestCase):
         )
         self.assertEqual(int(kamino_small._data._contact_overflow_warning_emitted.numpy()[0]), 1)
 
-        convert_contacts_newton_to_kamino(model_nc, state_nc, contacts_nc, kamino_small)
+        with self.assertLogs(level="WARNING"):
+            convert_contacts_newton_to_kamino(model_nc, state_nc, contacts_nc, kamino_small)
         self.assertEqual(int(kamino_small._data._contact_overflow_warning_emitted.numpy()[0]), 0)
 
         with self.assertLogs(level="WARNING"):
@@ -1559,6 +1566,7 @@ class TestGeometryContactConversions(unittest.TestCase):
         Test the following regression:
         Scanning with the lower Kamino contact capacity would miss contacts.
         """
+        expect_contact_capacity_warning(self)
         scene = ModelBuilder()
         scene.add_ground_plane()
         scene.add_world(build_nunchaku_scene(ground=False))
@@ -1684,7 +1692,8 @@ class TestGeometryContactConversions(unittest.TestCase):
 
         # Box hovering within the detection gap -> every contact is speculative.
         scene = build_box_on_plane_scene(half_extent + 0.05, margin=0.0, gap=0.1, half_extent=half_extent)
-        scene.request_contact_attributes("force")
+        with self.assertWarns(DeprecationWarning):
+            scene.request_contact_attributes("force")
         model = scene.finalize(self.default_device)
         state = model.state()
         collision_pipeline = newton.CollisionPipeline(model, rigid_contact_max=_NEWTON_CONTACT_CAPACITY)

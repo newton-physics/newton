@@ -149,7 +149,8 @@ class Example:
     def _plot(self):
         """Save diagnostics plots to a PNG file."""
         try:
-            import matplotlib.pyplot as plt  # noqa: PLC0415
+            from matplotlib.backends.backend_agg import FigureCanvasAgg  # noqa: PLC0415
+            from matplotlib.figure import Figure  # noqa: PLC0415
         except ImportError:
             self._print_summary()
             return
@@ -157,7 +158,10 @@ class Example:
         n = len(self.log_iterations)
         time = np.arange(n, dtype=np.float32) * self.frame_dt
 
-        _fig, axs = plt.subplots(3, 1, figsize=(10, 8), sharex=True)
+        # File-only output must not initialize a GUI or change the user's backend.
+        fig = Figure(figsize=(10, 8))
+        FigureCanvasAgg(fig)
+        axs = fig.subplots(3, 1, sharex=True)
 
         axs[0].step(time, self.log_iterations, color="blue")
         axs[0].set_ylabel("Solver Iterations")
@@ -177,10 +181,9 @@ class Example:
         axs[2].set_xlabel("Time [s]")
         axs[2].grid(True)
 
-        plt.tight_layout()
-        plt.savefig("solver_convergence.png", dpi=150)
+        fig.tight_layout()
+        fig.savefig("solver_convergence.png", dpi=150)
         print("Diagnostics plot saved to solver_convergence.png")
-        plt.close()
 
     def _print_summary(self):
         """Print a text summary of diagnostics data."""

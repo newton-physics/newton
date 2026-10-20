@@ -58,6 +58,10 @@ on:
         required: true
       CODECOV_TOKEN:
         required: true
+    outputs:
+      warp-cache-key-prefix:
+        description: 'Key prefix of the Warp kernel cache for the GPU architecture the tests ran on'
+        value: ${{ jobs.gpu-unit-tests.outputs.warp-cache-key-prefix }}
   workflow_dispatch:
     inputs:
       instance-type:
@@ -141,9 +145,15 @@ jobs:
     runs-on: ${{ needs.start-runner.outputs.label }} # run the job on the newly created runner
     permissions:
       contents: read
+    outputs:
+      warp-cache-key-prefix: ${{ steps.gpu-arch.outputs.warp-cache-key-prefix }}
     env:
       HOME: /actions-runner
       PYTHONFAULTHANDLER: "1" # Dump tracebacks on fatal signals (SIGSEGV, SIGABRT, etc.)
+      OVRTX_SHADER_CACHE: /actions-runner/.cache/ovrtx-nv-shadercache
+      # Enable crash uploads for CI investigations.
+      OMNI_CRASH_REPORTER_DEV_INTERNAL: "1"
+      OMNI_CRASHREPORTER_URL: "https://services.nvidia.com/submit"
     steps:
       - name: Checkout repository
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8  # v6.0.1
@@ -154,7 +164,7 @@ jobs:
       - name: Install uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78  # v7.6.0
         with:
-          version: "0.11.26"
+          version: "0.12.23"
 
       - name: Set up Python
         run: uv python install
@@ -163,27 +173,74 @@ jobs:
         id: gpu-arch
         run: |
           nvidia-smi --query-gpu=name,compute_cap --format=csv | tee -a "$GITHUB_STEP_SUMMARY"
-          echo "sm=sm$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -n1 | tr -d '.')" >> "$GITHUB_OUTPUT"
+          sm="sm$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -n1 | tr -d '.')"
+          echo "sm=$sm" >> "$GITHUB_OUTPUT"
+          echo "warp-cache-key-prefix=warp-kernels-gpu-$sm-" >> "$GITHUB_OUTPUT"
+          echo "driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n1)" >> "$GITHUB_OUTPUT"
 
       # Warp kernel binaries are architecture-specific, so each GPU type keeps its own cache.
+      # Post-submit (push) runs start cold to catch stale-cache issues without
+      # slowing the merge queue.
       - name: Restore Warp kernel cache
-        if: github.event_name != 'merge_group'
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
+        id: restore-warp-cache
+        if: github.event_name != 'push'
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
         with:
           path: /actions-runner/.cache/warp
-          key: warp-kernels-gpu-${{ steps.gpu-arch.outputs.sm }}-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
+          key: ${{ steps.gpu-arch.outputs.warp-cache-key-prefix }}${{ hashFiles('uv.lock', 'newton/**/*.py') }}
           restore-keys: |
-            warp-kernels-gpu-${{ steps.gpu-arch.outputs.sm }}-
+            ${{ steps.gpu-arch.outputs.warp-cache-key-prefix }}
 
       - name: Check disk space
         run: df -h
+
+      # The first OVRTX renderer otherwise spends minutes compiling Vulkan shaders
+      # in the driver. OVRTX keeps that driver cache inside its installed package.
+      - name: Link OVRTX shader cache
+        id: ovrtx-shader-cache
+        run: |
+          ovrtx_info=$(uv run --extra dev --extra torch-cu13 --extra rtx python -c \
+            "import importlib.metadata as m, os, ovrtx; print(os.path.dirname(ovrtx.__file__), m.version('ovrtx'))")
+          ovrtx_dir=${ovrtx_info% *}
+          test -d "$ovrtx_dir/bin/cache"
+          mkdir -p "$OVRTX_SHADER_CACHE"
+          rm -rf "$ovrtx_dir/bin/cache/nv_shadercache"
+          ln -s "$OVRTX_SHADER_CACHE" "$ovrtx_dir/bin/cache/nv_shadercache"
+          echo "key=ovrtx-nv-shadercache-${{ steps.gpu-arch.outputs.sm }}-${{ steps.gpu-arch.outputs.driver }}-${ovrtx_info##* }" >> "$GITHUB_OUTPUT"
+
+      # Compiled shaders are specific to the GPU and driver. Unlike the Warp cache,
+      # post-submit runs restore it too: the driver validates its own entries.
+      - name: Restore OVRTX shader cache
+        id: restore-ovrtx-shader-cache
+        uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
+        with:
+          path: ${{ env.OVRTX_SHADER_CACHE }}
+          key: ${{ steps.ovrtx-shader-cache.outputs.key }}
+          restore-keys: |
+            ovrtx-nv-shadercache-${{ steps.gpu-arch.outputs.sm }}-${{ steps.gpu-arch.outputs.driver }}-
 
       - name: Run Tests
         env:
           PYTHONFAULTHANDLER: "1"
           # sys.monitoring coverage core: avoids settrace overhead in unmeasured code
           COVERAGE_CORE: "sysmon"
-        run: uv run --extra dev --extra torch-cu13 -m newton.tests --strict-warnings --no-cache-clear --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
+        run: uv run --extra dev --extra torch-cu13 --extra rtx -m newton.tests --strict-warnings --parallel-timeout 4500 --no-cache-clear --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
+
+      - name: Save OVRTX shader cache
+        if: github.event_name != 'merge_group' && steps.restore-ovrtx-shader-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
+        with:
+          path: ${{ env.OVRTX_SHADER_CACHE }}
+          key: ${{ steps.ovrtx-shader-cache.outputs.key }}
+
+      # Merge queue caches are scoped to throwaway gh-readonly-queue refs.
+      # Cache keys are immutable, so cold runs only save when the key is new.
+      - name: Save Warp kernel cache
+        if: github.event_name != 'merge_group' && steps.restore-warp-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
+        with:
+          path: /actions-runner/.cache/warp
+          key: ${{ steps.gpu-arch.outputs.warp-cache-key-prefix }}${{ hashFiles('uv.lock', 'newton/**/*.py') }}
 
       - name: Check disk space (post-test)
         if: always()

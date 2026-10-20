@@ -228,16 +228,42 @@ The first release deliberately supports a narrow, predictable set of inputs:
   elements but ignores, with a warning, values on orphan points. It can redistribute the preserved
   mass relative to Newton's former direct point interpretation, which untyped arrays retain during
   the deprecation window with a warning.
-* Simulation points, topology, and normals are read at the USD default time. Newton builds the
-  deformable at that pose. Missing cloth bend arrays use
+* Simulation points, topology, normals, and rest arrays are read at the USD default time.
+  Missing cloth bend arrays use
   ``physics:restBendAnglesDefault = "flat"``; ``"restShape"`` retains the imported dihedral.
   If the token is unauthored and the imported cloth is non-planar, Newton warns that the proposal's
   flat fallback changes the previous rest state and points to ``"restShape"`` as the preservation
   choice. Explicit ``"flat"`` authoring and planar cloth do not emit this migration warning.
-  A cable's ``restShapePoints`` may affect material-gain discretization but never establishes an
-  initial strain state.
-* Point attachments only where the authored constraint can be represented without moving any
-  geometry: hard cable-to-xform attachments, and hard, coincident cable-to-cable junctions.
+* Cable ``physics:restShapePoints`` and ``physics:restNormals`` set a rest shape separate from
+  the initial pose. This works for individual curves, periodic curves, cables rooted in an
+  articulation, and welded cable graphs. Rest lengths set capsule sizes, mass volume weights,
+  and the lengths used to convert material stiffness and damping to joint gains.
+  Initial points set segment centers, and initial normals set segment orientations.
+
+  When a segment is longer in the initial pose than in the rest shape, its capsule still
+  uses the rest length. This can leave gaps between capsules and affect contact, as with
+  native :ref:`rod joints <Rod joints>`.
+
+  Missing rest points use the initial points. Missing rest normals use the initial normal
+  values, interpreted against the rest tangents. Normals are read from ``primvars:normals``
+  first, including indexed values, then from ``normals``. Both initial and rest normals use
+  the prim's linear transform as material directions.
+
+  With both rest fields absent, the cable uses its initial geometry as its rest shape,
+  without a rest-shape warning. Welded cables now honor authored initial normals even
+  without rest fields; earlier versions ignored those normals.
+
+  Invalid rest arrays warn and use these fallbacks. A wrong array size or shape rejects that
+  field for the whole prim. Non-finite points or zero-length rest segments reject only that
+  curve's rest points. Invalid rest normals fall back independently, so valid rest lengths
+  still apply. If any segment's normal cannot define a rest frame, Newton rejects that
+  normal source for the curve's rest frames, including when initial normals are the fallback.
+  If neither source works, Newton transports the initial frames to the rest tangents.
+  For the initial pose, invalid normals get a generated frame per segment;
+  valid initial normals on other segments still apply.
+* Hard cable-to-xform point attachments, and hard cable-to-cable junctions whose initial
+  points coincide. See cable attachment positions below for cases where initial and rest
+  segment lengths differ.
 * ``PhysicsElementCollisionFilter`` prims filter collisions between the paired element groups
   of their two sources (imported cables, rigid bodies, or collider prims; a count of ``0`` or
   an empty counts array selects all elements). Cloth and volume element sources warn and are
@@ -266,17 +292,19 @@ Limitations
 
 Known gaps of the experimental importer, tracked as follow-ups:
 
-* **Rest state** -- authored rest geometry is not imported as the deformable's simulated rest
-  configuration (`issue #3383 <https://github.com/newton-physics/newton/issues/3383>`_).
+* **Cloth and volume rest state** -- authored rest geometry is not imported as their simulated
+  rest configuration (`issue #3383 <https://github.com/newton-physics/newton/issues/3383>`_).
   Cloth and volume rest point/topology arrays and explicit cloth bend arrays are ignored with a
   warning. The supported cloth bend default uses the simulation geometry at the default time:
-  ``flat`` sets zero rest dihedrals and ``restShape`` uses its imported dihedrals. For a cable,
-  including one in a welded graph, valid ``restShapePoints`` supplies only the segment lengths
-  used to discretize structural stiffness and damping into per-joint gains; invalid values warn
-  and fall back to default-time ``points`` lengths. ``restNormals`` is not applied. The rod itself
-  is still built relaxed at the default-time ``points`` pose, and mass distribution also uses
-  that geometry. A body saved in a deformed pose therefore resumes relaxed at that pose instead
-  of springing back.
+  ``flat`` sets zero rest dihedrals and ``restShape`` uses its imported dihedrals.
+* **Cable attachment positions** -- attachments use native rod material endpoints and
+  rest-length segment coordinates. When initial and rest segment lengths differ, these
+  positions can differ from the proposal's positions on the initial curve. Import preserves
+  the initial poses in ``Model.body_q`` and a newly created state. An attachment can start
+  with separated anchors that the solver must bring together.
+  Import does not call :func:`~newton.eval_fk`. If the application calls it, FK enforces
+  the articulation's root attachment and can translate a cable rooted at an endpoint.
+  Attachments outside articulations remain for the solver to enforce.
 * **Springy attachments** -- attachments with a finite stiffness are not simulated. They are
   preserved in ``path_attachment_attrs`` with their authored stiffness and damping (silently
   hardening them would change the authored physics); only hard attachments (unauthored or
@@ -305,6 +333,9 @@ Known gaps of the experimental importer, tracked as follow-ups:
   it is not simulated, but its collision geometry persists as static colliders (TetMesh
   and BasisCurves simulation geometry has no static representation and stays out).
 * **Cable frames** -- if per-point normals are missing, segment orientation is synthesized.
+  Newton projects normals perpendicular to each segment and aligns the frame with its
+  tangent. It imports rest bend and twist but cannot preserve an independently tilted
+  material frame for shear. Multi-turn twist is not represented.
 * **Thin cable inertia** -- at the default 1 mm cable diameter, the smallest principal moment
   of short segments at typical densities may fall below
   :class:`~newton.ModelBuilder`'s inertia-validation floor, causing their inertia to be corrected
@@ -320,13 +351,13 @@ simulation geometry win. Next comes the ``PhysicsDeformableBodyAPI`` ``mass`` to
 density, family-material density, and base ``UsdPhysicsMaterialAPI`` density. If none is authored,
 proposal-marked deformables use the final 1000 kg/m³ fallback rather than
 ``ModelBuilder.default_shape_cfg.density`` or ``ModelBuilder.default_tet_density``; only a bare
-TetMesh keeps ``ModelBuilder.default_tet_density`` for compatibility. Element volumes combine
-default-time segment lengths, triangle areas, or tet volumes with geometry thickness, then element
-masses are lowered to Newton's particles or rigid cable segments. The proposal evaluates these
-volumes on the rest shape; Newton uses the simulation geometry until full rest-state import is
-implemented (see the limitation above and `issue #3383
-<https://github.com/newton-physics/newton/issues/3383>`_), so a saved deformed default pose shifts
-mass with it.
+TetMesh keeps ``ModelBuilder.default_tet_density`` for compatibility. Cable element volumes use
+resolved rest lengths and physical thickness: ``V = L_rest * pi * diameter**2 / 4``.
+Density-derived masses and total-mass weights use these rest volumes, as the proposal requires.
+Explicit segment masses still apply directly. Newton retains its capsule inertia approximation,
+scaled to each resolved segment mass. Cloth and volume masses still use default-time triangle
+areas and tet volumes until their rest-shape import is implemented (see `issue #3383
+<https://github.com/newton-physics/newton/issues/3383>`_).
 
 Every imported deformable can be looked up by its prim path in the mapping
 :meth:`~newton.ModelBuilder.add_usd` returns when called with ``return_deformable_results=True``:
@@ -381,6 +412,12 @@ Attachments at interior points and additional attachments remain separate constr
 the articulation. A welded rod graph gets one free-rooted articulation per connected component;
 each of its curves keeps its own body range but shares that articulation. The imported model is
 ready for :meth:`~newton.ModelBuilder.finalize` with no extra steps.
+
+A cable-owned articulation resolves self-collision from the curve prim (see the articulation
+remapping below), falling back to the ``enable_self_collisions`` argument. The attribute is read
+directly from the curve; no articulation API schema needs to be applied to it. In a welded graph,
+any member curve authoring self-collision off disables it for the whole graph. A cable joined to
+a rigid body's articulation follows that articulation's setting.
 
 .. code-block:: python
 
@@ -525,9 +562,20 @@ The table below shows PhysX attribute remapping examples:
      - ``self_collision_enabled`` (per articulation)
      - Direct mapping
 
+For mesh colliders with ``physics:approximation = "convexDecomposition"`` and
+``PhysxConvexDecompositionCollisionAPI`` applied, enabling
+:class:`newton.usd.SchemaResolverPhysx` imports
+``physxConvexDecompositionCollision:maxConvexHulls`` (default 32) as CoACD's
+hull-count limit with merging enabled, independently for each connected component.
+``physxConvexDecompositionCollision:hullVertexLimit`` (default 64) sets the mesh's
+hull vertex limit, taking precedence over ``physxConvexHullCollision:hullVertexLimit``
+for these prims. Newton's existing hull reduction applies that vertex limit to each
+output hull. Disconnected components remain separate; the result need not match
+PhysX cooking.
+
 **Newton articulation remapping:**
 
-On articulation root prims (with ``PhysicsArticulationRootAPI`` or ``NewtonArticulationRootAPI``), the following is resolved:
+On articulation root prims (with ``PhysicsArticulationRootAPI`` or ``NewtonArticulationRootAPI``) and cable ``BasisCurves`` prims, the following is resolved:
 
 .. list-table:: Newton Articulation Remapping
    :header-rows: 1
@@ -751,6 +799,34 @@ The collected attributes are returned in the result dictionary and can be access
            if "physxJoint:armature" in attrs:
                armature_value = attrs["physxJoint:armature"]
                print(f"PhysX joint {prim_path} has armature: {armature_value}")
+
+.. _usd-mujoco-tendons:
+
+MuJoCo Tendons
+--------------
+
+Register :class:`~newton.solvers.SolverMuJoCo` custom attributes before importing
+USD assets containing ``MjcTendon`` prims:
+
+.. code-block:: python
+
+   import newton
+   from newton.solvers import SolverMuJoCo
+
+   builder = newton.ModelBuilder()
+   SolverMuJoCo.register_custom_attributes(builder)
+   builder.add_usd("robot.usda")
+
+Both fixed and spatial tendons are supported. An unauthored ``mjc:type`` defaults
+to ``"spatial"``. Spatial paths use ``mjc:path`` and optional ``mjc:path:indices``
+to reference sites and wrapping spheres or cylinders, including repeated targets.
+``mjc:path:segments`` and ``mjc:path:divisors`` define pulley branches;
+``mjc:sideSites`` and ``mjc:sideSites:indices`` select side sites for wrapping
+geometry. Segment and side-site arrays follow the indexed path order.
+
+Referenced shapes must be included by the import options. Paths with invalid
+indices or unresolved targets emit a warning and contribute no wrap entries.
+MuJoCo export also warns when it skips a tendon with no usable path.
 
 Custom Attributes from USD
 --------------------------
