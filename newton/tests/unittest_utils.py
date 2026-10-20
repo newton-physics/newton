@@ -314,6 +314,9 @@ class CheckOutput:
     def __enter__(self):
         # wp.force_load()
 
+        # Flush device printf output still pending from earlier tests so the
+        # capture holds only this test's output.
+        wp.synchronize()
         self.capture = StdOutCapture()
         self.capture.begin()
 

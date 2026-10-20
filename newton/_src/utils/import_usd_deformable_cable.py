@@ -26,6 +26,7 @@ from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..sim.rod import _CIRCULAR_SECTION_TRANSVERSE_SHEAR_CORRECTION, Rod
 from ..usd import utils as usd
 from ..usd._resolution_policy import _resolve_shape_contact
+from ..usd.schema_resolver import PrimType
 
 if TYPE_CHECKING:
     from pxr import Usd
@@ -68,6 +69,14 @@ def _resolve_cable_contact(ctx: _DeformableImportContext, prim: Usd.Prim) -> dic
     material_path = str(material_prim.GetPath()) if material_prim is not None else ""
     material = ctx.material_specs.get(material_path, ctx.material_specs[""])
     return _resolve_shape_contact(prim, ctx.resolver, material, ctx.builder.default_shape_cfg, verbose=ctx.verbose)
+
+
+def _authored_cable_self_collision(ctx: _DeformableImportContext, prim: Usd.Prim) -> bool | None:
+    """Return the cable's authored self-collision flag, or ``None`` to use the import default."""
+    value, resolver = ctx.resolver.get_value_with_resolver(
+        prim, prim_type=PrimType.ARTICULATION, key="self_collision_enabled", verbose=ctx.verbose
+    )
+    return None if resolver is None else bool(value)
 
 
 # Attributes introduced after the family-prefix rename; density is shared and intentionally omitted.
@@ -1060,6 +1069,18 @@ def _deformable_prepare_cable_topology(
             label=cid,
             wrap_in_articulation=True,
         )
+        # Any member disabling self-collision disables it for the shared articulation.
+        authored_self_collisions = {
+            value for p in comp_paths if (value := _authored_cable_self_collision(ctx, curve_recs[p].prim)) is not None
+        }
+        if len(authored_self_collisions) > 1:
+            logger.warning(
+                "cable graph '%s': welded curves author differing self-collision settings; "
+                "self-collision is disabled for the whole graph.",
+                cid,
+            )
+        if authored_self_collisions:
+            ctx.articulation_has_self_collision[builder.articulation_count - 1] = all(authored_self_collisions)
         edge_radii = [curve_recs[key].segment_radii[segment] for key, segment in edge_owner]
         body_radii = dict(zip(body_ids, edge_radii, strict=True))
         for body, edge_radius in zip(body_ids, edge_radii, strict=True):
@@ -1306,6 +1327,7 @@ def _deformable_import_cable(
             has_shape_collision=collision_enabled,
             has_particle_collision=collision_enabled,
         )
+        self_collision = _authored_cable_self_collision(ctx, prim)
 
         cable_joint_start = builder.joint_count
         cable_bodies: list[int] = []
@@ -1426,6 +1448,9 @@ def _deformable_import_cable(
                     ),
                 )
                 path_attachment_map[articulation_root.attachment_path] = articulation_root_joints
+            # A cable rooted on a rigid articulation keeps that articulation's flag instead.
+            if self_collision is not None and (articulation_root is None or articulation_root.parent_body == -1):
+                ctx.articulation_has_self_collision[builder.articulation_count - 1] = self_collision
             for body, segment_radius in zip(bodies, curve_radii, strict=True):
                 _set_cable_body_radius(builder, body, segment_radius)
             _apply_local_rod_material_gains(
