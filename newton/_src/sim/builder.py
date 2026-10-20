@@ -3937,9 +3937,12 @@ class ModelBuilder:
         self.joint_coord_count += world_count * counts["joint_coord"]
         self.joint_constraint_count += world_count * counts["joint_constraint"]
 
+        custom_attributes = self._prepare_builder_custom_attributes(builder)
         for world_index, world in enumerate(worlds.tolist()):
             entity_offsets = {kind: int(starts(kind)[world_index]) for kind in counts}
-            self._merge_builder_custom_attributes(builder, entity_offsets, world, label_prefixes[world_index])
+            self._merge_builder_custom_attributes(
+                builder, entity_offsets, world, label_prefixes[world_index], custom_attributes
+            )
             self._merge_builder_actuators(
                 builder,
                 int(joint_dof_starts[world_index]),
@@ -5159,17 +5162,43 @@ class ModelBuilder:
 
     # endregion
 
+    def _prepare_builder_custom_attributes(self, builder: ModelBuilder) -> dict[str, ModelBuilder.CustomAttribute]:
+        # Resolve source rows before deciding which attributes need per-copy work.
+        builder._resolve_custom_frequency_articulation_owners()
+        attributes = {}
+        for full_key, attr in builder.custom_attributes.items():
+            # Empty declarations are shared by all copies. Reference defaults on
+            # frequencies with rows still need per-copy remapping.
+            if not attr.values:
+                can_skip_remapping = attr.references is None
+                if not can_skip_remapping:
+                    has_empty_custom_frequency = (
+                        isinstance(attr.frequency, str) and builder._custom_frequency_counts.get(attr.frequency, 0) == 0
+                    )
+                    can_skip_remapping = (
+                        has_empty_custom_frequency and attr.reference_value_transformer is None
+                    ) or attr.references in (Model.AttributeFrequency.WORLD, "world")
+                if can_skip_remapping:
+                    if full_key not in self.custom_attributes:
+                        mapped_values = [] if isinstance(attr.frequency, str) else {}
+                        merged = replace(attr, values=mapped_values)
+                        self.custom_attributes[full_key] = merged
+                        self._custom_schema_epoch += 1
+                        self._index_custom_world_reference_attribute(merged)
+                    continue
+            attributes[full_key] = attr
+        return attributes
+
     def _merge_builder_custom_attributes(
         self,
         builder: ModelBuilder,
         entity_offsets: dict[str, int],
         world: int,
         label_prefix: str | None,
+        attributes: dict[str, ModelBuilder.CustomAttribute],
     ) -> None:
-        # Resolve source rows before ordinary reference remapping copies them.
-        # Resolve existing destination rows too, since its topology may have
+        # Resolve existing destination rows, since its topology may have
         # changed since the rows were first added.
-        builder._resolve_custom_frequency_articulation_owners()
         self._resolve_custom_frequency_articulation_owners()
         custom_frequency_offsets = dict(self._custom_frequency_counts)
 
@@ -5211,29 +5240,8 @@ class ModelBuilder:
             )
 
         source_counts = None
-        for full_key, attr in builder.custom_attributes.items():
+        for full_key, attr in attributes.items():
             reference = attr.references
-            # Empty source frequencies need declarations but no reference remapping.
-            # Frequencies with rows must still materialize and remap reference defaults.
-            if not attr.values:
-                can_skip_remapping = attr.references is None
-                if not can_skip_remapping:
-                    has_empty_custom_frequency = (
-                        isinstance(attr.frequency, str) and builder._custom_frequency_counts.get(attr.frequency, 0) == 0
-                    )
-                    can_skip_remapping = (
-                        has_empty_custom_frequency and attr.reference_value_transformer is None
-                    ) or reference in (Model.AttributeFrequency.WORLD, "world")
-                if can_skip_remapping:
-                    if full_key not in self.custom_attributes:
-                        freq_key = attr.frequency
-                        mapped_values = [] if isinstance(freq_key, str) else {}
-                        merged = replace(attr, values=mapped_values)
-                        self.custom_attributes[full_key] = merged
-                        self._custom_schema_epoch += 1
-                        self._index_custom_world_reference_attribute(merged)
-                    continue
-
             if isinstance(reference, str):
                 reference = Model._normalize_attribute_reference(reference)
 
