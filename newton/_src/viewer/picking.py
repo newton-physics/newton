@@ -133,8 +133,7 @@ class Picking:
         than the single link. A body outside an articulation falls back to :math:`m I`.
 
         Stored in the body frame and rotated with the body, so it stays aligned as the picked
-        link turns about its upstream joints. Joint coordinates are recovered from the body poses,
-        since maximal-coordinate solvers do not update :attr:`State.joint_q`.
+        link turns about its upstream joints.
 
         Args:
             state: The simulation state supplying the current pose.
@@ -177,15 +176,9 @@ class Picking:
             ndof = int(qd_start[end]) - int(qd_start[first])
 
             mask = wp.array(np.arange(model.articulation_count) == art, dtype=bool, device=model.device)
-            ik_state = newton.State()
-            ik_state.body_q = state.body_q
-            ik_state.body_qd = state.body_qd
-            ik_state.joint_q = wp.clone(model.joint_q)
-            ik_state.joint_qd = wp.clone(model.joint_qd)
-            newton.eval_ik(model, ik_state, ik_state.joint_q, ik_state.joint_qd, mask=mask)
-            jacobian = newton.eval_jacobian(model, ik_state, mask=mask)
-            h = newton.eval_mass_matrix(model, ik_state, J=jacobian, mask=mask)[art].numpy()[:ndof, :ndof]
-            jac = jacobian[art].numpy()[:, :ndof]
+            jacobian = newton.eval_jacobian(model, state, mask=mask)
+            h = newton.eval_mass_matrix(model, state, J=jacobian, mask=mask).numpy()[art][:ndof, :ndof]
+            jac = jacobian.numpy()[art][:, :ndof]
 
             # Newton stores twists as (linear, angular); shift the linear rows from the COM to
             # the pick point via v_p = v_com + omega x r.
