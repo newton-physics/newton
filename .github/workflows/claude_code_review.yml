@@ -18,15 +18,16 @@ name: Claude Auto Review
 #
 # Reviews are throttled: a pull request is reviewed only after it has had no
 # new commits for the wait timer of the automated-review environment
-# (Settings > Environments; 30 minutes when this was written). The throttle job
-# waits without a runner, and a newer push cancels it. A review that has started is never
-# cancelled; a newer commit waits for it, and only the latest commit is
-# reviewed.
+# (Settings > Environments; 30 minutes when this was written). The throttle
+# job waits without a runner, and a newer push cancels it. A review that has
+# started is never cancelled; a newer commit waits for it, and only the latest
+# commit is reviewed.
 #
 # The first review of a pull request is a full review. Later reviews are
 # follow-ups that report only blocking (P0/P1) issues in the changes since the
-# last review. The publish step drops anything below P1, so the bot falls
-# silent once a pull request is in shape.
+# last review, or in the full diff after an incomplete review. The publish
+# step drops anything below P1, so the bot falls silent once a pull request is
+# in shape.
 on:
   pull_request_target:
     branches: [main]

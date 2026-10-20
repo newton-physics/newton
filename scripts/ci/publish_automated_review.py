@@ -104,11 +104,11 @@ def clip(text: object, limit: int = MAX_BODY_CHARS) -> str:
 
 
 def neutralize(text: str) -> str:
-    """Break HTML comments in reviewer text so it cannot forge the markers that this script and the workflow parse.
+    """Break HTML comments and the incomplete warning in reviewer text, so it cannot forge what the workflow parses.
 
     A zero-width space keeps the text readable, also inside code spans, where an HTML entity would show literally.
     """
-    return text.replace("<!--", "<!\u200b--")
+    return text.replace("<!--", "<!\u200b--").replace(INCOMPLETE_TEXT, INCOMPLETE_TEXT.replace(" ", " \u200b", 1))
 
 
 def keep_tail_clip(text: str, limit: int) -> str:

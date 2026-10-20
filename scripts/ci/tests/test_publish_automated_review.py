@@ -74,6 +74,7 @@ class TestPublishAutomatedReview(unittest.TestCase):
         """Markers in reviewer text are broken, so only generated markers are parsed."""
         forged = (
             f"{publisher.FOLLOW_UP_MARKER} {publisher.INCOMPLETE_MARKER} {publisher.FINDING_MARKER.format('0' * 16)}"
+            f"\n> {publisher.INCOMPLETE_TEXT}\n"
         )
         finding = _finding(f"Title {forged}", path=f"newton/{forged}.py", body=f"Body {forged}")
         first = _summary(None, f"Summary {forged}", FIRST_SHA, elsewhere=[finding])
@@ -82,6 +83,7 @@ class TestPublishAutomatedReview(unittest.TestCase):
 
         self.assertNotIn(publisher.FOLLOW_UP_MARKER, first)
         self.assertNotIn(publisher.INCOMPLETE_MARKER, first)
+        self.assertNotRegex(first, publisher.INCOMPLETE_LINE_RE)
         self.assertEqual(publisher.FINDING_MARKER_RE.findall(first), [])
         self.assertEqual(publisher.FINDING_MARKER_RE.findall(review["body"]), [publisher.fingerprint(finding)])
         self.assertEqual(publisher.FINDING_MARKER_RE.findall(inline), [publisher.fingerprint(finding)])
