@@ -2352,6 +2352,26 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                 solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
                 self._assert_kinematic_state_matches_flags(model, solver)
 
+    def test_kinematic_switchable_root_starts_dynamic(self):
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                builder = newton.ModelBuilder()
+                SolverMuJoCo.register_custom_attributes(builder)
+                root = builder.add_body(
+                    mass=1.0,
+                    inertia=wp.mat33(np.eye(3)),
+                    custom_attributes={"mujoco:kinematic_switchable": True},
+                )
+                builder.add_shape_box(root, hx=0.05, hy=0.05, hz=0.05)
+                model = builder.finalize(requires_grad=False)
+                solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, use_mujoco_cpu=use_mujoco_cpu)
+                self.assertEqual(solver.mj_model.nmocap, 1)
+                self._assert_kinematic_state_matches_flags(model, solver)
+
+                model.body_flags.fill_(int(BodyFlags.KINEMATIC))
+                solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
+                self._assert_kinematic_state_matches_flags(model, solver)
+
     def test_making_unconverted_root_kinematic_raises(self):
         model, root_body = self._build_model(root_kinematic=False)
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)

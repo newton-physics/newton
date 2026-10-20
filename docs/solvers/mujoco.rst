@@ -1081,9 +1081,9 @@ Caveats
   their authored mass and are held by a stiff weld to a mocap target.
   Contacts on a kinematic body use its real mass for their softness,
   so a light kinematic body carrying a heavy load penetrates more than
-  an infinite-mass collider would. Only roots that are kinematic when
-  the solver is created can be toggled at runtime. See
-  `Kinematic links and fixed roots`_.
+  an infinite-mass collider would. Only roots that are kinematic or
+  marked ``mujoco:kinematic_switchable`` when the solver is created can
+  be toggled at runtime. See `Kinematic links and fixed roots`_.
 
 **Collision filtering has a 32-bit capacity.**
   The solver creates MuJoCo masks that reproduce Newton's allowed collision
@@ -1126,9 +1126,11 @@ by joint type:
   rest. The weld is active exactly while the body is kinematic, so
   :attr:`~newton.Model.body_flags` can switch these roots between
   kinematic and dynamic after
-  ``notify_model_changed(ModelFlags.BODY_PROPERTIES)``. Roots that
-  were not kinematic in any world at solver construction have no
-  target; making them kinematic raises :class:`ValueError`.
+  ``notify_model_changed(ModelFlags.BODY_PROPERTIES)``. To start a
+  root dynamic but switch it to kinematic later, set its
+  ``mujoco:kinematic_switchable`` body attribute before creating the
+  solver. Other roots get no target, and making them kinematic raises
+  :class:`ValueError`.
 - **Roots attached to world with a fixed joint** become MuJoCo mocap
   bodies (whether kinematic or not). MuJoCo has no joint coordinates
   for a fixed root, so Newton drives the pose through

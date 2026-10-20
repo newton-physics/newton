@@ -1759,6 +1759,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         )
         builder.add_custom_attribute(
             ModelBuilder.CustomAttribute(
+                name="kinematic_switchable",
+                frequency=AttributeFrequency.BODY,
+                assignment=AttributeAssignment.MODEL,
+                dtype=wp.bool,
+                default=False,
+                namespace="mujoco",
+            )
+        )
+        builder.add_custom_attribute(
+            ModelBuilder.CustomAttribute(
                 name="dof_passive_stiffness",
                 frequency=AttributeFrequency.JOINT_DOF,
                 assignment=AttributeAssignment.MODEL,
@@ -6906,6 +6916,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         joint_actgravcomp = get_custom_attribute("jnt_actgravcomp")
         body_gravcomp = get_custom_attribute("gravcomp")
         body_sleep_policy = get_custom_attribute("sleep_policy")
+        body_kinematic_switchable = get_custom_attribute("kinematic_switchable")
         joint_springref = get_custom_attribute("dof_springref")
         joint_ref = get_custom_attribute("dof_ref")
 
@@ -7803,13 +7814,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         kinematic_target_roots = []
         # MJWarp worlds share one topology, so a root kinematic in any world needs a target.
         template_bodies = model.body_count // model.world_count
-        body_kinematic_any_world = (
-            (
-                body_flags[: template_bodies * model.world_count].reshape(model.world_count, -1)
-                & int(BodyFlags.KINEMATIC)
-            )
-            != 0
-        ).any(axis=0)
+        needs_target = (body_flags & int(BodyFlags.KINEMATIC)) != 0
+        if body_kinematic_switchable is not None:
+            needs_target |= body_kinematic_switchable.astype(bool)
+        body_needs_target = (
+            needs_target[: template_bodies * model.world_count].reshape(model.world_count, -1).any(axis=0)
+        )
         for j in joints_with_bodies:
             parent = int(joint_parent[j])
             j_type = int(joint_type[j])
@@ -7824,7 +7834,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             body, parent, child, child_is_kinematic, j_type, child_xform = add_body_from_joint(
                 int(j), mocap=is_fixed_root
             )
-            if parent == -1 and not is_fixed_root and body_kinematic_any_world[child % template_bodies]:
+            if parent == -1 and not is_fixed_root and body_needs_target[child % template_bodies]:
                 kinematic_target_roots.append((int(j), body, child_is_kinematic))
             joint_pos = child_xform.p
             joint_rot = child_xform.q
@@ -8611,7 +8621,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self.mjc_actuator_to_newton_actuator_idx = None
 
         # MuJoCo has no prescribed DOFs; its idiom is a weld to a mocap target.
-        # Only roots kinematic at conversion get one; their flag can then toggle.
+        # Only roots kinematic or marked switchable at conversion get one.
         kinematic_target_names = []
         kinematic_target_eq_ids = []
         for _, root_body, is_kinematic in kinematic_target_roots:
@@ -9465,7 +9475,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 kinematic[targeted] = False
             if np.any(kinematic & self._movable_root_bodies):
                 raise ValueError(
-                    "SolverMuJoCo can only make bodies kinematic that were kinematic when the solver was created."
+                    "SolverMuJoCo can only make a root body kinematic if it was kinematic or had "
+                    "mujoco:kinematic_switchable set when the solver was created."
                 )
         if self.kinematic_target_eq is None:
             return
