@@ -18,7 +18,8 @@ support a hook should override that method and raise
 Endpoint arrays use structure-of-arrays indexing. ``endpoint_kind`` contains
 ``CouplingInterface.EndpointKind`` values, ``endpoint_index`` contains local body
 or particle ids in the solver's model view, and ``endpoint_local_pos`` stores
-the body-frame point for body endpoints [m] or zero for particles.
+the body-frame offset of the point from the body COM for body endpoints [m]
+or zero for particles.
 
 Proxy maps are dense local-to-global arrays. ``body_local_to_proxy_global`` and
 ``particle_local_to_proxy_global`` are indexed by local ids in the destination
@@ -39,6 +40,9 @@ Supported hook signatures are:
 
 
     def coupling_notify_input_state_update(state, flags, *, iteration_restart=False, dt=0.0) -> None: ...
+
+
+    def coupling_notify_iteration_restarts(enabled) -> None: ...
 
 
     def coupling_supports_inertial_property_refresh() -> bool: ...
@@ -141,7 +145,7 @@ class CouplingInterface:
         Args:
             endpoint_kind: Endpoint kinds.
             endpoint_index: Endpoint-local body or particle ids.
-            endpoint_local_pos: Body-frame endpoint positions [m].
+            endpoint_local_pos: Body-frame endpoint offsets from the body COM [m].
             out: Output effective masses [kg].
         """
         del endpoint_local_pos
@@ -194,7 +198,7 @@ class CouplingInterface:
         Args:
             endpoint_kind: Endpoint kinds.
             endpoint_index: Endpoint-local body or particle ids.
-            endpoint_local_pos: Body-frame endpoint positions [m].
+            endpoint_local_pos: Body-frame endpoint offsets from the body COM [m].
             out_mass: Output effective masses [kg].
             out_inertia: Optional output body inertia tensors [kg m^2]. Body
                 effective inertia must not be smaller than modeled inertia
@@ -244,6 +248,18 @@ class CouplingInterface:
         state arrays and public force-input buffers.
         """
         del state, flags, iteration_restart, dt
+
+    def coupling_notify_iteration_restarts(self, enabled: bool) -> None:
+        """Declare whether the coupler may restart a step's solve.
+
+        Called once after construction. With ``enabled`` false, ``iteration_restart`` is only passed with
+        ``dt=0`` during a reset, so a solver can skip saving the state a restart restores.
+
+        Args:
+            enabled: Whether ``coupling_notify_input_state_update`` may receive ``iteration_restart=True``
+                between steps.
+        """
+        del enabled
 
     def coupling_supports_inertial_property_refresh(self) -> bool:
         """Return whether inertial property refresh is safe during graph capture.

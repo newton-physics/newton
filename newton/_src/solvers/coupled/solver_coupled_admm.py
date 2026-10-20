@@ -953,6 +953,9 @@ class SolverCoupledADMM(SolverCoupled):
     def _entry_proxy_joint_keep_indices(self, name: str) -> set[int]:
         return set(self._admm_joint_proxy_joint_keep.get(name, ()))
 
+    def _iteration_restarts_possible(self) -> bool:
+        return int(self._coupling.iterations) > 1
+
     def _after_entries_constructed(self) -> None:
         self._refresh_admm_joint_proxy_view_maps()
         self._cache_admm_joint_proxy_effective_masses()

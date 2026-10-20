@@ -16,6 +16,7 @@ from newton.solvers.experimental.coupled import (
     SolverCoupledADMM,
     SolverCoupledProxy,
 )
+from newton.tests.steel._fixtures import set_torsion_radius
 from newton.tests.unittest_utils import add_function_test, get_cuda_test_devices, get_test_devices
 
 DT = 1.0 / 480.0
@@ -168,6 +169,8 @@ def test_iteration_restart_preserves_patch_history(test, device):
     for iterations in (1, 3):
         model, _ = _build_box_cloth(device, **kwargs)
         coupled = _Rollout(model, _coupled(model, None, iterations=iterations))
+        # Only a coupler that can restart a step makes Steel save the history.
+        test.assertEqual(coupled.solver._entries["rigid"].solver._coupling_iteration_restarts, iterations > 1)
         coupled_q = coupled.run(120)
         np.testing.assert_allclose(coupled_q, reference_q, atol=1.0e-5, err_msg=f"iterations={iterations}")
         feedback = coupled.solver._proxy_mappings[0].coupling_forces.numpy()
@@ -424,14 +427,19 @@ def test_articulated_graph_capture_matches_eager(test, device):
 
 
 def test_unsupported_options_raise(test, device):
-    """Reject options that are not validated in coupled use."""
-    for kwargs in (
-        {"contact_warmstart": True},
-        {"enable_sleeping": True},
+    """Reject options that are not validated in coupled use when the coupled solver is constructed."""
+    for name, kwargs, torsion_radius in (
+        ("contact_warmstart", {"contact_warmstart": True}, 0.0),
+        ("enable_sleeping", {"enable_sleeping": True}, 0.0),
+        ("contact_compliance", {"contact_compliance": True, "friction_anchor_beta": 0.0}, 0.0),
+        ("contact torsion", {}, 0.01),
     ):
-        model, boxes = _build_box_cloth(device)
-        with test.assertRaises(NotImplementedError):
-            _Rollout(model, _coupled(model, boxes, lambda v, kwargs=kwargs: _steel(v, **kwargs))).step()
+        model, box, rod_bodies = _build_box_rod(device)
+        if torsion_radius:
+            set_torsion_radius(model, torsion_radius)
+        # ADMM treats a NotImplementedError from its effective-mass query as an unsupported hook.
+        with test.assertRaisesRegex(NotImplementedError, name):
+            _admm(model, box, rod_bodies, lambda v, kwargs=kwargs: _steel(v, **kwargs))
 
 
 def test_articulated_effective_mass(test, device):
@@ -471,6 +479,49 @@ def test_articulated_effective_mass(test, device):
         test.assertAlmostEqual(float(out_mass.numpy()[row]), 3.0 * joint_inertia / lever**2, delta=1.0e-3)
     scale = (np.trace(np.linalg.inv(model.body_inertia.numpy()[link])) / 3.0) / (1.0 / (3.0 * joint_inertia))
     np.testing.assert_allclose(out_inertia.numpy()[0], model.body_inertia.numpy()[link] * scale, rtol=1.0e-4)
+
+
+def test_effective_mass_offset_com(test, device):
+    """Measure endpoints from an offset COM, match MuJoCo at the COM, and treat an immobile point as free."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    mass, com, armature = 2.0, 0.3, 0.01
+    link = builder.add_link()
+    builder.add_shape_box(
+        link,
+        xform=wp.transform((com, 0.0, 0.0), wp.quat_identity()),
+        hx=0.1,
+        hy=0.05,
+        hz=0.05,
+        cfg=newton.ModelBuilder.ShapeConfig(density=mass / (8 * 0.1 * 0.05**2)),
+    )
+    joint = builder.add_joint_revolute(
+        parent=-1,
+        child=link,
+        axis=wp.vec3(0.0, 1.0, 0.0),
+        parent_xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()),
+        armature=armature,
+    )
+    builder.add_articulation([joint])
+    model = builder.finalize(device=device)
+    np.testing.assert_allclose(model.body_com.numpy()[link], [com, 0.0, 0.0], atol=1.0e-6)
+    # Offsets from the COM: the COM, two levers off the axis, the hinge axis and a point just off it.
+    offsets = [(0.0, 0.0, 0.0), (0.2, 0.0, 0.0), (0.0, 0.0, 0.2), (-com, 0.0, 0.0), (-com + 1.0e-6, 0.0, 0.0)]
+    kind = wp.array([int(CouplingInterface.EndpointKind.BODY)] * len(offsets), dtype=int, device=device)
+    index = wp.array([link] * len(offsets), dtype=int, device=device)
+    local_pos = wp.array(offsets, dtype=wp.vec3, device=device)
+    out = wp.zeros(len(offsets), dtype=float, device=device)
+    _steel(model).coupling_eval_effective_mass(kind, index, local_pos, out)
+    steel = out.numpy()
+
+    joint_inertia = float(model.body_inertia.numpy()[link][1, 1]) + mass * com**2 + armature
+    # Only rotation about y is mobile, so the axis-mean inverse weight is |y x d|^2 / (3 H).
+    for row, lever_sq in enumerate(((com) ** 2, (com + 0.2) ** 2, com**2 + 0.2**2)):
+        test.assertAlmostEqual(float(steel[row]), 3.0 * joint_inertia / lever_sq, delta=1.0e-3)
+    np.testing.assert_allclose(steel[3:], mass, rtol=1.0e-5)
+
+    mujoco = wp.zeros(1, dtype=float, device=device)
+    SolverMuJoCo(model).coupling_eval_effective_mass(kind[:1], index[:1], local_pos[:1], mujoco)
+    test.assertAlmostEqual(float(mujoco.numpy()[0]), float(steel[0]), delta=1.0e-3 * float(steel[0]))
 
 
 def test_offset_contact_turns_hinge(test, device):
@@ -810,6 +861,7 @@ for _name, _func in (
     ("test_articulated_graph_capture_matches_eager", test_articulated_graph_capture_matches_eager),
     ("test_unsupported_options_raise", test_unsupported_options_raise),
     ("test_articulated_effective_mass", test_articulated_effective_mass),
+    ("test_effective_mass_offset_com", test_effective_mass_offset_com),
     ("test_offset_contact_turns_hinge", test_offset_contact_turns_hinge),
     ("test_reset_preserves_unselected_patch_history", test_reset_preserves_unselected_patch_history),
     ("test_effective_mass_ignores_loop_closures", test_effective_mass_ignores_loop_closures),

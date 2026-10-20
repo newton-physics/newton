@@ -212,6 +212,8 @@ _ROW_SLOT_UNBOUNDED = 2**31 - 1
 _CONTACT_BUILD_THREAD_CAP = 65536
 _CONTACT_JACOBIAN_WORKER_CAP = 4096
 _CONTACT_JACOBIAN_MAX_DOF = 10
+# Coupling endpoints whose articulated inverse mass is below this fraction of the free one are immobile.
+_IMMOBILE_POINT_INV_MASS_RATIO = 1.0e-6
 _JOINT_LIMIT_WARPS_PER_BLOCK = 4
 # Joint types whose DOFs can carry dry joint friction rows.
 _JOINT_FRICTION_TYPES = (int(JointType.PRISMATIC), int(JointType.REVOLUTE), int(JointType.BALL), int(JointType.D6))
@@ -2336,6 +2338,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._force_mass_update = False
         self._coupling_patch_history_snapshot_pending = False
         self._coupling_patch_history_restore_pending = False
+        self._coupling_iteration_restarts = True
         self._mass_update_requested = wp.zeros(model.articulation_count, dtype=wp.int32, device=model.device)
         self._last_step_dt = None
 
@@ -2544,6 +2547,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         )
         # Worlds whose step read invalid joint friction; allocated after the step's buffers to keep their layout.
         self._joint_friction_invalid = wp.zeros(int(model.world_count) + 1, dtype=wp.bool, device=model.device)
+        if isinstance(model, ModelView):
+            self._require_coupling_support()
 
     def _refresh_shape_materials(self) -> None:
         """Copy the model's current friction and restitution coefficients into the solver's fixed buffers."""
@@ -2945,12 +2950,19 @@ class SolverSteel(SolverBase, CouplingInterface):
     ) -> None:
         """Schedule a save or rewind of the carried friction-patch history for the next step.
 
-        After a kinematic write the next step saves the history; after an iteration restart it restores
-        the saved copy, so repeated solves of one coupled step start from the same history.
+        When the coupler may restart a step, the next step after a kinematic write saves the history and
+        the next step after an iteration restart restores the saved copy, so repeated solves of one
+        coupled step start from the same history.
+
+        Args:
+            state: Entry input state written by the coupler.
+            flags: :class:`~newton.StateFlags` of the arrays the coupler wrote.
+            iteration_restart: Whether the coupler is repeating the solve of the current step.
+            dt: Step duration [s], or ``0`` for a reset distribution.
         """
         del state, dt
         self._require_coupling_support()
-        if not self._friction_anchors_enabled:
+        if not self._friction_anchors_enabled or not self._coupling_iteration_restarts:
             return
         kinematic = int(flags) & int(StateFlags.BODY_Q | StateFlags.BODY_QD | StateFlags.JOINT_Q | StateFlags.JOINT_QD)
         # step() runs both, so a graph captured from the coupled step records them; a reset cancels both.
@@ -2958,6 +2970,15 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._coupling_patch_history_restore_pending = True
         elif kinematic:
             self._coupling_patch_history_snapshot_pending = True
+
+    @override
+    def coupling_notify_iteration_restarts(self, enabled: bool) -> None:
+        """Save the friction-patch history for coupled steps only when a restart can follow.
+
+        Args:
+            enabled: Whether the coupler may restart a step's solve.
+        """
+        self._coupling_iteration_restarts = bool(enabled)
 
     @override
     def coupling_eval_effective_mass(
@@ -2970,6 +2991,12 @@ class SolverSteel(SolverBase, CouplingInterface):
         """Evaluate articulated effective masses for coupling endpoints.
 
         See :meth:`coupling_eval_effective_mass_block`. Evaluated on the host; call outside graph capture.
+
+        Args:
+            endpoint_kind: Endpoint kinds.
+            endpoint_index: Endpoint-local body or particle ids.
+            endpoint_local_pos: Body-frame endpoint offsets from the body COM [m].
+            out: Output effective masses [kg].
         """
         super().coupling_eval_effective_mass(endpoint_kind, endpoint_index, endpoint_local_pos, out)
         weights = self._coupling_articulated_inverse_weights(endpoint_kind, endpoint_index, endpoint_local_pos)
@@ -2991,11 +3018,18 @@ class SolverSteel(SolverBase, CouplingInterface):
         """Evaluate articulated effective mass and inertia for coupling endpoints.
 
         A body endpoint's mass is the inverse of the axis mean of ``J_p H^-1 J_p^T``: ``J_p`` is the point
-        Jacobian at ``endpoint_local_pos``, measured from the body COM in the body frame, and ``H`` the
-        tree-only joint-space mass matrix with armature at ``model.joint_q``; loop-closing joints, drives,
-        limits and contacts are excluded. The inertia scales the body inertia by the ratio of free to
-        articulated mean angular compliance, and is never smaller than the body inertia. Bodies without
-        mobile joint DOFs keep the generic estimate. Evaluated on the host; call outside graph capture.
+        Jacobian at ``endpoint_local_pos`` and ``H`` the tree-only joint-space mass matrix with armature at
+        ``model.joint_q``; loop-closing joints, drives, limits and contacts are excluded. The inertia scales
+        the body inertia by the ratio of free to articulated mean angular compliance, and is never smaller
+        than the body inertia. Bodies without mobile joint DOFs, and points that the joints cannot
+        translate, keep the generic estimate. Evaluated on the host; call outside graph capture.
+
+        Args:
+            endpoint_kind: Endpoint kinds.
+            endpoint_index: Endpoint-local body or particle ids.
+            endpoint_local_pos: Body-frame endpoint offsets from the body COM [m].
+            out_mass: Output effective masses [kg].
+            out_inertia: Optional output body inertia tensors [kg m^2].
         """
         if out_inertia is None or out_inertia.shape[0] == 0:
             self.coupling_eval_effective_mass(endpoint_kind, endpoint_index, endpoint_local_pos, out_mass)
@@ -3132,7 +3166,9 @@ class SolverSteel(SolverBase, CouplingInterface):
             px, py, pz = rotation[body[row]] @ local_pos[row]
             point = linear - np.array([[0.0, -pz, py], [pz, 0.0, -px], [-py, px, 0.0]]) @ angular
             inv_mass = np.trace(point @ h_inv @ point.T) / 3.0
-            if inv_mass > 0.0:
+            # Float32 Jacobian residue at an immobile point counts as immobile.
+            free_inv_mass = 1.0 / body_mass[body[row]] if body_mass[body[row]] > 0.0 else 0.0
+            if inv_mass > _IMMOBILE_POINT_INV_MASS_RATIO * free_inv_mass:
                 weights.append((row, inv_mass, np.trace(angular @ h_inv @ angular.T) / 3.0))
         if not weights:
             return None

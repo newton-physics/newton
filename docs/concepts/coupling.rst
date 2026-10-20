@@ -115,6 +115,9 @@ The protocol currently covers these concepts:
   argument uses :class:`newton.StateFlags`. VBD uses this to realign private
   previous-pose state after proxy synchronization or ADMM iteration restarts.
   MPM uses it to keep collider caches consistent.
+- ``coupling_notify_iteration_restarts()`` tells a solver once after
+  construction whether the coupler may restart a step's solve, so a solver that
+  saves state for a restart can skip the save when none can follow.
 - ``coupling_eval_gravity_acceleration()`` lets a solver report the body and
   particle acceleration that it applies internally for gravity-like forces.
   Proxy and ADMM couplers pass these acceleration arrays explicitly to rewind
@@ -385,13 +388,14 @@ proxy source or an ADMM entry. It consumes coupling forces through
 ``state.body_f`` and reports articulated effective mass as the inverse of the
 axis mean of the endpoint mobility ``J H^-1 J^T``, where ``H`` is the tree-only
 joint-space mass matrix with armature at ``model.joint_q``. The effective mass is
-evaluated on the host, so query it outside graph capture. After a coupler
-state write, Steel's next step saves the friction-patch history; after an
-iteration restart, it restores the saved copy instead, so repeated solves of one
-step start from the same history. Both run inside the step, so a graph captured
-from the coupled step records them; a reset cancels both. Owning particles,
-acting as a proxy destination, sleeping, contact warm starting, contact
-compliance and contact torsion raise :class:`NotImplementedError`. Coupled use
+evaluated on the host, so query it outside graph capture. When the coupler runs
+more than one iteration, Steel's next step after a coupler state write saves the
+friction-patch history; after an iteration restart, it restores the saved copy
+instead, so repeated solves of one step start from the same history. Both run
+inside the step, so a graph captured from the coupled step records them; a reset
+cancels both. Owning particles, acting as a proxy destination, sleeping, contact
+warm starting, contact compliance and contact torsion raise
+:class:`NotImplementedError` when the coupled solver is constructed. Coupled use
 is validated with ``solve_mode="matrix_free"`` and the ``"immediate"``
 articulated contact response. Set ``model.rigid_contact_max`` to the capacity of
 the coupled contact buffer before constructing the coupled solver, because Steel

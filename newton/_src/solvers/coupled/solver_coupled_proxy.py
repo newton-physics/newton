@@ -773,6 +773,9 @@ class SolverCoupledProxy(SolverCoupled):
                 proxy_keep.update(int(i) for i in mapping.proxy_joint_ids_global.numpy())
         return proxy_keep
 
+    def _iteration_restarts_possible(self) -> bool:
+        return int(self._coupling.iterations) > 1
+
     def _after_entries_constructed(self) -> None:
         self._refresh_proxy_view_maps()
         self._validate_in_place_proxy_entries()

@@ -920,6 +920,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
         self._after_entries_constructed()
 
+        restarts = self._iteration_restarts_possible()
+        for entry in self._entries.values():
+            entry.solver.coupling_notify_iteration_restarts(restarts)
+
         for entry in self._entries.values():
             entry.state_0 = entry.view.state()
             entry.state_1 = entry.state_0 if entry.in_place else entry.view.state()
@@ -2527,6 +2531,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
     def _after_entries_constructed(self) -> None:
         """Hook called after sub-solvers are constructed and before state allocation."""
+
+    def _iteration_restarts_possible(self) -> bool:
+        """Return whether :meth:`step` may re-solve an entry within one step."""
+        return False
 
     def _after_entry_states_created(self) -> None:
         """Hook called after per-entry states and scratch buffers are allocated."""
