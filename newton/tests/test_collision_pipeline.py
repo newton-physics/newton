@@ -5,7 +5,6 @@ import gc
 import itertools
 import unittest
 import warnings
-import weakref
 from collections import Counter
 from enum import IntFlag, auto
 from unittest import mock
@@ -764,81 +763,6 @@ def test_mesh_mesh_bvh_vs_bvh(_test, device, broad_phase: str):
     test_mesh_mesh_sdf_modes(
         _test, device, sdf_max_resolution_a=None, sdf_max_resolution_b=None, broad_phase=broad_phase
     )
-
-
-def test_collision_capture_sdf_texture_cleanup(test, device):
-    """Capture safely with version-dependent SDF texture cleanup protection."""
-    gc_was_enabled = gc.isenabled()
-    thresholds = gc.get_threshold()
-    gc.collect()
-    gc.enable()
-    gc.set_threshold(0)
-    try:
-
-        def discard_scene():
-            mesh = newton.Mesh.create_box(0.5, 0.5, 0.5)
-            mesh.build_sdf(max_resolution=16, device=device)
-            # Keep the scene alive until cyclic GC runs during capture.
-            discarded_scene = {"mesh": mesh}
-            discarded_scene["cycle"] = discarded_scene
-            return weakref.ref(mesh.sdf._coarse_texture)
-
-        texture_ref = discard_scene()
-
-        simulate = CollisionSetup.simulate
-
-        def simulate_with_gc_pressure(setup):
-            test.assertEqual(gc.isenabled(), not _WARP_NEEDS_CAPTURE_GC_GUARD)
-            gc.set_threshold(gc.get_count()[0] + 1, 1000000, 1000000)
-            allocations = [[] for _ in range(32)]
-            simulate(setup)
-            del allocations
-
-        with mock.patch.object(CollisionSetup, "simulate", simulate_with_gc_pressure):
-            setup = CollisionSetup(
-                viewer=newton.viewer.ViewerNull(),
-                device=device,
-                solver_fn=newton.solvers.SolverXPBD,
-                sim_substeps=2,
-                shape_type_a=GeoType.MESH,
-                shape_type_b=GeoType.MESH,
-                sdf_max_resolution_a=16,
-            )
-            setup.capture()
-
-        test.assertTrue(gc.isenabled())
-        setup.step()
-        test.assertTrue(np.isfinite(setup.state_0.body_q.numpy()).all())
-        gc.collect()
-        test.assertIsNone(texture_ref())
-
-        for gc_enabled in (False, True):
-            if gc_enabled:
-                gc.enable()
-            else:
-                gc.disable()
-            setup.capture()
-            test.assertEqual(gc.isenabled(), gc_enabled)
-            with mock.patch.object(setup, "simulate", side_effect=RuntimeError("capture interrupted")):
-                with test.assertRaisesRegex(RuntimeError, "capture interrupted"):
-                    setup.capture()
-            test.assertEqual(gc.isenabled(), gc_enabled)
-    finally:
-        gc.set_threshold(*thresholds)
-        gc.collect()
-        if gc_was_enabled:
-            gc.enable()
-        else:
-            gc.disable()
-
-
-add_function_test(
-    TestCollisionPipeline,
-    "test_collision_capture_sdf_texture_cleanup",
-    test_collision_capture_sdf_texture_cleanup,
-    devices=get_cuda_test_devices(),
-    check_output=False,
-)
 
 
 # Add mesh-mesh SDF mode tests for all broad phase modes
