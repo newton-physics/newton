@@ -225,6 +225,18 @@ def _build_prescribed_only_model(*, device: wp.DeviceLike = None) -> tuple[newto
     return builder.finalize(device=device), body
 
 
+def _build_lone_massless_model(*, device: wp.DeviceLike = None) -> tuple[newton.Model, int]:
+    """Build a massless body whose only joint is a free joint to the world."""
+    builder = newton.ModelBuilder()
+    SolverKamino.register_custom_attributes(builder)
+    builder.begin_world()
+    body = builder.add_link()
+    joint = builder.add_joint_free(parent=-1, child=body)
+    builder.add_articulation([joint])
+    builder.end_world()
+    return builder.finalize(device=device), body
+
+
 def _build_flagged_kinematic_model(*, device: wp.DeviceLike = None) -> tuple[newton.Model, int]:
     """Build a massive free body whose motion is prescribed by its body flag."""
     builder = newton.ModelBuilder()
@@ -568,6 +580,7 @@ class TestSolverKaminoLOX(_LOXTestCase):
             "zero_mass_anchor": (anchor_model, anchor),
             "prescribed_only_world": _build_prescribed_only_model(device=self.default_device),
             "kinematic_flag": _build_flagged_kinematic_model(device=self.default_device),
+            "lone_massless_free_body": _build_lone_massless_model(device=self.default_device),
             "kinematic_joint_friction": (friction_model, 0),
             "kinematic_joint_effort": (effort_model, 0),
         }

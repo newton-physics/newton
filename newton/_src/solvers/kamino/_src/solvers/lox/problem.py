@@ -940,7 +940,11 @@ class LOXProblem:
     ###
 
     def _classify_dynamic_bodies(self) -> tuple[int, ...]:
-        """Return dynamic bodies using state flags and fixed-tree world islands."""
+        """Return dynamic bodies using state flags and fixed-tree world islands.
+
+        Kinematic bodies, massless bodies that only have free joints to the world, and the bodies
+        welded to either of them or to the world are prescribed.
+        """
         source_model = self.model._model
         body_count = self.model.size.sum_of_num_bodies
         if source_model is None:
@@ -950,12 +954,22 @@ class LOXProblem:
         body_flags = source_model.body_flags.numpy().astype(np.int32, copy=False)
         if len(body_flags) != body_count:
             raise ValueError("Newton body flags must contain one entry per packed Kamino body.")
-        if not self.eliminate_fixed_world_islands:
-            return tuple(np.flatnonzero((body_flags & int(BodyFlags.KINEMATIC)) == 0).tolist())
-
         joint_type = source_model.joint_type.numpy().astype(np.int32, copy=False)
         joint_parent = source_model.joint_parent.numpy().astype(np.int32, copy=False)
         joint_child = source_model.joint_child.numpy().astype(np.int32, copy=False)
+
+        # Massless bodies without constraining joints keep their velocity, like kinematic bodies
+        massless = (source_model.body_inv_mass.numpy() == 0.0) & np.all(
+            source_model.body_inv_inertia.numpy().reshape(body_count, 9) == 0.0, axis=1
+        )
+        constraining = ~((joint_type == int(JointType.FREE)) & (joint_parent < 0))
+        jointed = np.zeros(body_count, dtype=bool)
+        for endpoints in (joint_parent[constraining], joint_child[constraining]):
+            jointed[endpoints[endpoints >= 0]] = True
+        prescribed = ((body_flags & int(BodyFlags.KINEMATIC)) != 0) | (massless & ~jointed)
+        if not self.eliminate_fixed_world_islands:
+            return tuple(np.flatnonzero(~prescribed).tolist())
+
         articulation_start = source_model.articulation_start.numpy().astype(np.int32, copy=False)[:-1]
         articulation_end = source_model.articulation_end.numpy().astype(np.int32, copy=False)
         tree_delta = np.zeros(joint_type.size + 1, dtype=np.int32)
@@ -966,9 +980,7 @@ class LOXProblem:
         fixed_to_world = joint_child[fixed_joint & (joint_parent < 0)]
         fixed_pair = fixed_joint & (joint_parent >= 0)
         labels = _connected_component_labels(body_count, joint_parent[fixed_pair], joint_child[fixed_pair])
-        prescribed_bodies = np.concatenate(
-            (fixed_to_world, np.flatnonzero(body_flags & int(BodyFlags.KINEMATIC)).astype(np.int32))
-        )
+        prescribed_bodies = np.concatenate((fixed_to_world, np.flatnonzero(prescribed).astype(np.int32)))
         prescribed_labels = np.unique(labels[prescribed_bodies])
         return tuple(np.flatnonzero(~np.isin(labels, prescribed_labels)).tolist())
 
