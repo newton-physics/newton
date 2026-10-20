@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import unittest
+import warnings
 from unittest import mock
 
 import numpy as np
@@ -24,6 +25,7 @@ from newton._src.solvers.steel.kernels import (
     crba_fill_par_dof,
 )
 from newton.solvers import SolverSteel
+from newton.tests.steel._fixtures import _build_four_bar
 from newton.tests.unittest_utils import StdOutCapture, add_function_test, get_cuda_test_devices, get_test_devices
 
 RUN_TO_RUN = wp.DeterministicMode.RUN_TO_RUN
@@ -502,6 +504,26 @@ def test_deterministic_joint_rows_follow_articulation_order(test, device):
         )
 
 
+def test_deterministic_bilateral_rows_follow_element_order(test, device):
+    """Give a world's mimic rows, then its loop-closure rows, their slots in element order."""
+    mimic_count = 512
+    builder = _build_four_bar()
+    # Many rows on one follower need the deprecated API; joint-owned mimics allow one per joint.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        for _ in range(mimic_count):
+            builder.add_constraint_mimic(joint0=1, joint1=0, coef0=0.0, coef1=1.0)
+    model = builder.finalize(device=device)
+    solver = SolverSteel(model, deterministic=RUN_TO_RUN, articulation_constraint_max=mimic_count + 64)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    solver.step(state, model.state(), model.control(), None, 0.005)
+
+    mimic_slot = solver._mimic_slot.numpy()
+    np.testing.assert_array_equal(mimic_slot, mimic_slot[0] + np.arange(mimic_count))
+    np.testing.assert_array_equal(solver._connect_slot.numpy(), [mimic_slot[0] + mimic_count])
+
+
 @contextlib.contextmanager
 def _warp_lowering_off():
     saved = wp.config.deterministic
@@ -623,6 +645,7 @@ for _fn in (
     test_warm_started_full_reset_matches_fresh_solver,
     test_deterministic_launches_replay_identically,
     test_deterministic_joint_rows_follow_articulation_order,
+    test_deterministic_bilateral_rows_follow_element_order,
     test_inherited_global_mode_keeps_steel_ordering,
 ):
     add_function_test(TestSteelDeterminism, _fn.__name__, _fn, devices=cuda_devices)
