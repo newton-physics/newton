@@ -1442,7 +1442,7 @@ def allocate_soft_mesh_contact_buffers(contacts: Contacts) -> None:
     capacity = contacts.soft_contact_max
     device = contacts.device
     contacts._soft_contact_mesh_features = wp.full(capacity, wp.vec3i(-1, -1, -1), dtype=wp.vec3i, device=device)
-    contacts._soft_contact_mesh_params = wp.empty(capacity, dtype=float, device=device)
+    contacts._soft_contact_mesh_params = wp.zeros(capacity, dtype=float, device=device)
     # First mesh record, used only by detection-time geometry evaluation.
     contacts._soft_contact_mesh_state = wp.zeros(1, dtype=wp.int32, device=device)
 
