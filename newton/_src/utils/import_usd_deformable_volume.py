@@ -69,6 +69,7 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
     if not (root_prim and root_prim.IsValid()):
         return
     radius_fallback_override_paths: list[str] = []
+    fallback_radius = 0.5 * _AOUSD_DEFAULT_THICKNESS / ctx.linear_unit
     for prim in ctx.prims.tetmeshes:
         path = str(prim.GetPath())
         if _is_ignored_path(path, ignore_paths):
@@ -232,7 +233,6 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             # thickness) instead of the builder-wide default, which can be as large as an
             # object-sized soft body itself. The legacy bare-TetMesh path is unchanged
             # and still follows builder.default_particle_radius.
-            fallback_radius = 0.5 * _AOUSD_DEFAULT_THICKNESS / ctx.linear_unit
             if builder.default_particle_radius != _BUILDER_STOCK_PARTICLE_RADIUS:
                 radius_fallback_override_paths.append(path)
             add_soft_mesh_kwargs["particle_radius"] = fallback_radius
@@ -286,9 +286,8 @@ def _deformable_import_volume(ctx: _DeformableImportContext) -> None:
             )
 
     # One summary per import call, not one warning per prim, and pointed at the caller's
-    # add_usd() frame (stacklevel=4) so it identifies user code (CODING_GUIDELINES).
+    # add_usd() frame (stacklevel=4) so it identifies user code.
     if radius_fallback_override_paths:
-        fallback_radius = 0.5 * _AOUSD_DEFAULT_THICKNESS / ctx.linear_unit
         shown = ", ".join(radius_fallback_override_paths[:5])
         if len(radius_fallback_override_paths) > 5:
             shown += f", and {len(radius_fallback_override_paths) - 5} more"
