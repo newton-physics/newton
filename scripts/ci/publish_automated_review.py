@@ -30,7 +30,7 @@ of these markers.
 
 Environment: ``REVIEW_OUTPUT``, ``GITHUB_REPOSITORY``, ``PR_NUMBER``,
 ``HEAD_SHA``, ``RUNNER_TEMP``, ``REVIEW_MODEL_NAME``, ``REVIEW_EFFORT``,
-``EXECUTION_FILE`` and ``REVIEW_MODE`` (optional), and the default ``GITHUB_SERVER_URL``,
+``EXECUTION_FILE``, ``REVIEW_MODE``, and ``FULL_DIFF`` (optional), and the default ``GITHUB_SERVER_URL``,
 ``GITHUB_RUN_ID``, and ``GITHUB_RUN_ATTEMPT``. The diff is read from
 ``.pr-review/pr.diff``.
 """
@@ -48,6 +48,7 @@ from pathlib import Path
 SUMMARY_MARKER = "<!-- newton-automated-review -->"
 FOLLOW_UP_MARKER = "<!-- newton-automated-review-follow-up -->"
 INCOMPLETE_MARKER = "<!-- newton-automated-review-incomplete -->"
+INCOMPLETE_TEXT = "This review did not cover the whole change."
 FINDING_MARKER = "<!-- newton-automated-review-finding:{} -->"
 FINDING_MARKER_RE = re.compile(r"<!-- newton-automated-review-finding:([0-9a-f]{16}) -->")
 BOT_LOGIN = "github-actions[bot]"
@@ -100,8 +101,11 @@ def clip(text: object, limit: int = MAX_BODY_CHARS) -> str:
 
 
 def neutralize(text: str) -> str:
-    """Escape HTML comments in reviewer text so it cannot forge the markers that this script and the workflow parse."""
-    return text.replace("<!--", "&lt;!--")
+    """Break HTML comments in reviewer text so it cannot forge the markers that this script and the workflow parse.
+
+    A zero-width space keeps the text readable, also inside code spans, where an HTML entity would show literally.
+    """
+    return text.replace("<!--", "<!\u200b--")
 
 
 def keep_tail_clip(text: str, limit: int) -> str:
@@ -221,7 +225,7 @@ def finding_lines(findings: list[dict], with_marker: bool = False) -> list[str]:
     lines = []
     for finding in findings:
         path, line = finding.get("path"), finding.get("line")
-        location = f"`{path}:{line}`" if path and line else f"`{path}`" if path else "General"
+        location = neutralize(f"`{path}:{line}`" if path and line else f"`{path}`" if path else "General")
         marker = f" {FINDING_MARKER.format(fingerprint(finding))}" if with_marker else ""
         title, body = neutralize(clip(finding.get("title"), 300)), neutralize(clip(finding.get("body"), 800))
         lines.append(f"- {severity_label(finding)} {location}: **{title}** {body}{marker}")
@@ -247,10 +251,12 @@ def summary_body(
     head_sha: str,
     details: list[str],
     previous: str | None = None,
+    covered_rest: bool = False,
 ) -> str:
     """Format the summary comment: the assessment, a count of inline comments, and findings without a line.
 
     With ``previous``, the body of the existing summary comment, keep its first review and replace its follow-up section.
+    With ``covered_rest``, a complete follow-up checked the full diff, so clear the first review's incomplete state.
     """
     summary = re.sub(r"\A(\s*#{1,6}[^\n]*\n)+", "", str(output.get("summary", "")).strip() + "\n").strip()
     summary = neutralize(clip(summary, 3000))
@@ -259,6 +265,11 @@ def summary_body(
     else:
         # Reviewer text is neutralized, so the first marker is the generated section boundary.
         first_review = keep_tail_clip(previous.split(FOLLOW_UP_MARKER, 1)[0].strip(), MAX_FIRST_REVIEW_CHARS)
+        if covered_rest:
+            first_review = first_review.replace(
+                f"{INCOMPLETE_TEXT} {INCOMPLETE_MARKER}",
+                f"{INCOMPLETE_TEXT} A later follow-up checked the full diff for blocking issues.",
+            )
         lines = [first_review, "", FOLLOW_UP_MARKER, "#### Latest follow-up review", "", summary]
     if inline_findings:
         lines += ["", count_line(inline_findings)]
@@ -268,7 +279,7 @@ def summary_body(
         lines += [
             "",
             "> [!WARNING]",
-            f"> This review did not cover the whole change. {INCOMPLETE_MARKER}",
+            f"> {INCOMPLETE_TEXT} {INCOMPLETE_MARKER}",
         ]
     lines += ["", f"<sub>Reviewed commit {head_sha}. {' '.join(details)}</sub>"]
     return "\n".join(lines) + "\n"
@@ -337,9 +348,10 @@ def main() -> int:
     )
     comments = [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
     previous = comments[-1]["body"] if comments and follow_up else None
+    covered_rest = os.environ.get("FULL_DIFF") == "true" and output.get("complete", True) is True
     summary_path = Path(os.environ["RUNNER_TEMP"]) / "review-summary.md"
     summary_path.write_text(
-        summary_body(output, inline_findings, elsewhere, head_sha, details, previous), encoding="utf-8"
+        summary_body(output, inline_findings, elsewhere, head_sha, details, previous, covered_rest), encoding="utf-8"
     )
     if comments:
         result = gh_api(
