@@ -20,7 +20,10 @@ from newton._src.solvers.steel.kernels import (
     PGS_CONSTRAINT_TYPE_JOINT_TARGET,
     PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT,
     ROW_SLOTS_ATOMIC,
+    ROW_SLOTS_COUNT,
+    ROW_SLOTS_WRITE,
     allocate_joint_velocity_limit_slots,
+    allocate_physx_drive_slots,
     allocate_rigid_velocity_limit_slots,
     build_joint_limit_rows,
     prescale_joint_velocity_limits,
@@ -1117,6 +1120,46 @@ def test_pgs_drive_impulse_is_clamped_to_the_effort_limit(test, device):
     test.assertGreater(float(np.max(np.abs(drive_force))), 0.99 * effort_limit)
 
 
+def test_count_pass_assigns_no_drive_slot_above_the_sentinel(test, device):
+    """Leave a drive slot unassigned on the COUNT pass even when the row capacity exceeds the pass's sentinel."""
+    max_constraints = (1 << 30) + 1
+
+    def ints(values):
+        return wp.array(values, dtype=wp.int32, device=device)
+
+    # (drive_slot, world_slot_counter, element_row_cursor) after one driven prismatic DOF.
+    expected = {
+        int(ROW_SLOTS_ATOMIC): ([0], [1], [0]),
+        int(ROW_SLOTS_COUNT): ([-1], [0], [1]),
+        int(ROW_SLOTS_WRITE): ([0], [0], [1]),
+    }
+    for mode, result in expected.items():
+        drive_slot, world_slot_counter, element_row_cursor = ints([-7]), ints([0]), ints([0])
+        wp.launch(
+            allocate_physx_drive_slots,
+            dim=1,
+            inputs=[
+                ints([0, 1]),
+                ints([0]),
+                ints([1]),
+                ints([int(JointType.PRISMATIC)]),
+                ints([0]),
+                wp.array([[1, 0]], dtype=wp.int32, device=device),
+                wp.array([1.0], dtype=wp.float32, device=device),
+                wp.array([0.0], dtype=wp.float32, device=device),
+                ints([0]),
+                max_constraints,
+            ],
+            outputs=[drive_slot, world_slot_counter, mode, element_row_cursor],
+            device=device,
+        )
+        with test.subTest(mode=mode):
+            test.assertEqual(
+                (drive_slot.numpy().tolist(), world_slot_counter.numpy().tolist(), element_row_cursor.numpy().tolist()),
+                result,
+            )
+
+
 def test_saturated_pgs_drive_differs_from_the_augmented_drive(test, device):
     """Differ from the implicit drive when the effort limit saturates, at any iteration count.
 
@@ -1357,6 +1400,12 @@ for _name, _func in (
     ("test_streamed_drive_metadata_matches_resident", test_streamed_drive_metadata_matches_resident),
 ):
     add_function_test(TestSteelPGSDrives, _name, _func, devices=devices)
+add_function_test(
+    TestSteelPGSDrives,
+    "test_count_pass_assigns_no_drive_slot_above_the_sentinel",
+    test_count_pass_assigns_no_drive_slot_above_the_sentinel,
+    devices=split_devices,
+)
 
 
 _HAS_DRIVE_ROWS = "drive_mode" in inspect.signature(SolverSteel.__init__).parameters
