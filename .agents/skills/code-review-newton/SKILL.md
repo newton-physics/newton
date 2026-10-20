@@ -24,7 +24,9 @@ axes, and enforce the latter during Standards review.
    complexity, allocations, synchronization, transfers, and whether benchmarks
    exercise the changed path. Answer the Honest contract, Siblings, Tests, and
    Cost questions in `REVIEW_GUIDELINES.rst`. Run a minimal adversarial probe
-   when feasible.
+   when feasible. Apply the guides' schema and importer checks to authorable
+   features, including behavioral equivalence and explicit acceptance of
+   deferrals.
 4. Freeze candidate findings before reading existing reviews. Record the
    location, triggering input or condition, mechanism, observable impact,
    evidence, and confidence for each candidate.
