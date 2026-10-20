@@ -1,0 +1,1 @@
+Correct full-surface mesh force selection by testing reverse rigid-vertex contacts against the soft target, retaining reverse endpoint contributions, and choosing one eligible owner for shared soft features. Recover soft-edge crossings on shared rigid triangle boundaries without duplicate recovery contacts.

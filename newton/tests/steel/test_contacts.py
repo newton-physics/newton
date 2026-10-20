@@ -3715,6 +3715,9 @@ class TestSteelPairedResponse(unittest.TestCase):
                 solver = SolverSteel(model, articulation_constraint_max=96, free_body_constraint_max=32)
                 self.assertEqual(solver._paired_response_primary_size, expected)
         model = _build_mixed_response_model("cuda:0", dof_count=23)
+        self.assertTrue(
+            SolverSteel(model, articulation_constraint_max=96, free_body_constraint_max=32)._paired_factor_coordinates
+        )
         # The tiled response is chunked only when the row capacity exceeds one chunk.
         self.assertIsNone(SolverSteel(model, articulation_constraint_max=16)._paired_response_primary_size)
         for options in ({"enable_bilateral_preelimination": True},):
@@ -3726,6 +3729,7 @@ class TestSteelPairedResponse(unittest.TestCase):
             {"contact_regularization": 0.01},
             {"row_schedule": "phased"},
             {"drive_mode": "rows"},
+            {"enable_joint_friction": True},
         ):
             with self.subTest(**options):
                 solver = SolverSteel(model, articulation_constraint_max=96, free_body_constraint_max=32, **options)
