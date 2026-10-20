@@ -7095,7 +7095,7 @@ wheels = [
 
 [[package]]
 name = "warp-lang"
-version = "1.18.0"
+version = "1.19.0.dev20261020"
 source = { registry = "https://pypi.nvidia.com/" }
 dependencies = [
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
@@ -7103,10 +7103,10 @@ dependencies = [
     { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-6-newton-torch-cu12' and extra == 'extra-6-newton-torch-cu13')" },
 ]
 wheels = [
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.18.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:3d0a12f411555c08015f84060187a0466800d2c837eb8800977b9604be438c21" },
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.18.0-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:090962bfae7dd22ade0d8e0258f41635e0e58980f15bcc9e7a7d312819dfe440" },
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.18.0-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:d76ab8c7d4f4897405fa0a744d38812fc44cfc8162c40e658dc9ca7790b6a645" },
-    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.18.0-py3-none-win_amd64.whl", hash = "sha256:1769e55746739f2e244a2b412123003c462ec3d977dfb5f420f924a8553d30aa" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.19.0.dev20261020-py3-none-macosx_11_0_arm64.whl", hash = "sha256:73537f79b40ca313cc65af7b7129c5d7f51d08aee2056138f00f927ab52eb2cd" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.19.0.dev20261020-py3-none-manylinux_2_28_x86_64.whl", hash = "sha256:b9d79b73071b6296a5ec907964deb337fbb03232194780733a730e5ca680616d" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.19.0.dev20261020-py3-none-manylinux_2_34_aarch64.whl", hash = "sha256:38c18698a8e36c15bcacdb30db6d1ba710cbd522a99711a02231bae47d7ff078" },
+    { url = "https://pypi.nvidia.com/warp-lang/warp_lang-1.19.0.dev20261020-py3-none-win_amd64.whl", hash = "sha256:fe2fcf9f934bcf5d84334c39c536410c25dcf5dfab5978709def728630c2122a" },
 ]
 
 [[package]]

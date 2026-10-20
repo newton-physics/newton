@@ -2526,9 +2526,9 @@ def mesh_triangle_contacts_to_reducer_kernel(
 
         data_provider = AcceleratedSupportMapDataProvider()
         data_provider.shape_support_data = shape_support_data
+        data_provider.support_neighbors = support_neighbors
         data_provider.support_lut = support_lut
         data_provider.support_vertex_offsets = support_vertex_offsets
-        data_provider.support_neighbors = support_neighbors
         wp.static(
             create_compute_gjk_mpr_contacts(
                 write_contact_to_reducer,

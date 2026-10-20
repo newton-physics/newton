@@ -26,6 +26,8 @@ import warp as wp
 pxr = importlib.util.find_spec("pxr")
 USD_AVAILABLE = pxr is not None
 
+MODULE_LOAD_OUTPUT_RE = r"^Module .* load on device '[^']*' took [\d.]+ ms\s*\((?:compiled|cached)\)\n?"
+
 # The batched transform helpers in newton._src.core.host_transform mirror the operation
 # order of Warp's native builtins, so they match bit for bit where neither side fuses
 # multiply-adds. That is verified on Linux x86-64; elsewhere, tests compare within
@@ -321,6 +323,9 @@ class CheckOutput:
     def __enter__(self):
         # wp.force_load()
 
+        # Flush device printf output still pending from earlier tests so the
+        # capture holds only this test's output.
+        wp.synchronize()
         self.capture = StdOutCapture()
         self.capture.begin()
 
