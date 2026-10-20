@@ -22,7 +22,6 @@ from newton import BodyFlags, JointType, Mesh, ModelFlags
 from newton._src.core.types import vec5
 from newton._src.solvers.mujoco.constants import (
     DEFAULT_LIMIT_SOLREF,
-    KINEMATIC_ARMATURE,
     MJ_MINVAL,
     SOLREF_MODE_FORCE_SPACE,
     SOLREF_MODE_MJCF_DEFAULT,
@@ -1223,6 +1222,10 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
                 model.mujoco.tendon_armature.assign(
                     np.repeat(tendon_armature, model.mujoco.tendon_armature.shape[0] // world_count)
                 )
+                # Both roots must be kinematic in some world to receive a mocap-target weld.
+                kinematic = int(BodyFlags.KINEMATIC)
+                dynamic = int(BodyFlags.DYNAMIC)
+                model.body_flags.assign(np.array([kinematic, dynamic, dynamic, kinematic], dtype=np.int32))
                 solver = SolverMuJoCo(
                     model,
                     use_mujoco_cpu=False,
@@ -1255,8 +1258,6 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
                 with wp.ScopedCapture(device=device) as capture:
                     solver.notify_model_changed(ModelFlags.ALL)
 
-                kinematic = int(BodyFlags.KINEMATIC)
-                dynamic = int(BodyFlags.DYNAMIC)
                 friction = np.array([3.25, 5.5], dtype=np.float32)
                 damping = np.array([4.5, 6.75], dtype=np.float32)
                 mu = np.array([0.75, 0.25], dtype=np.float32)
@@ -1279,9 +1280,11 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
                 model.mujoco.actuator_gainprm.assign(gainprm)
                 wp.capture_launch(capture.graph)
 
-                dof_armature = solver.mjw_model.dof_armature.numpy()
-                np.testing.assert_allclose(dof_armature[0], KINEMATIC_ARMATURE)
-                np.testing.assert_allclose(dof_armature[1], 0.25)
+                kinematic_eq = solver.kinematic_target_eq.numpy()
+                np.testing.assert_allclose(solver.mjw_model.dof_armature.numpy(), 0.25)
+                np.testing.assert_array_equal(
+                    solver.mjw_data.eq_active.numpy()[:, kinematic_eq], [[True, True], [False, False]]
+                )
                 np.testing.assert_allclose(solver.mjw_model.stat.meaninertia.numpy(), physical_meaninertia, rtol=1.0e-5)
                 dof_frictionloss = solver.mjw_model.dof_frictionloss.numpy()
                 np.testing.assert_allclose(dof_frictionloss, np.broadcast_to(friction[:, None], dof_frictionloss.shape))
@@ -1289,7 +1292,7 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
                 np.testing.assert_allclose(dof_damping, np.broadcast_to(damping[:, None], dof_damping.shape))
                 geom_friction = solver.mjw_model.geom_friction.numpy()[..., 0]
                 np.testing.assert_allclose(geom_friction, np.broadcast_to(mu[:, None], geom_friction.shape))
-                eq_active = solver.mjw_data.eq_active.numpy()
+                eq_active = np.delete(solver.mjw_data.eq_active.numpy(), kinematic_eq, axis=1)
                 np.testing.assert_array_equal(eq_active, np.broadcast_to(eq_enabled[:, None], eq_active.shape))
                 mjw_tendon_stiffness = solver.mjw_model.tendon_stiffness.numpy()
                 np.testing.assert_allclose(
@@ -1300,9 +1303,10 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
 
                 model.body_flags.assign(per_world([dynamic, kinematic], model.body_count).astype(np.int32))
                 wp.capture_launch(capture.graph)
-                dof_armature = solver.mjw_model.dof_armature.numpy()
-                np.testing.assert_allclose(dof_armature[0], 0.25)
-                np.testing.assert_allclose(dof_armature[1], KINEMATIC_ARMATURE)
+                np.testing.assert_allclose(solver.mjw_model.dof_armature.numpy(), 0.25)
+                np.testing.assert_array_equal(
+                    solver.mjw_data.eq_active.numpy()[:, kinematic_eq], [[False, False], [True, True]]
+                )
                 np.testing.assert_allclose(solver.mjw_model.stat.meaninertia.numpy(), physical_meaninertia, rtol=1.0e-5)
 
 
@@ -2233,44 +2237,24 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
             return float(solver.mj_model.stat.meaninertia)
         return float(solver.mjw_model.stat.meaninertia.numpy()[0])
 
-    def _assert_armature_matches_flags(self, model: newton.Model, solver: SolverMuJoCo):
-        dof_to_body = self._compute_dof_to_body(model)
-        body_flags = model.body_flags.numpy()
-        joint_armature = model.joint_armature.numpy()
-
+    def _assert_kinematic_state_matches_flags(self, model: newton.Model, solver: SolverMuJoCo):
+        """Kinematic roots keep authored armature and enable their mocap-target weld."""
         mjc_dof_to_newton_dof = solver.mjc_dof_to_newton_dof.numpy()
-        dof_armature = solver.mjw_model.dof_armature.numpy()
-
-        checked_count = 0
-        for world_idx in range(mjc_dof_to_newton_dof.shape[0]):
-            for mjc_dof in range(mjc_dof_to_newton_dof.shape[1]):
-                newton_dof = int(mjc_dof_to_newton_dof[world_idx, mjc_dof])
-                if newton_dof < 0:
-                    continue
-
-                body_idx = int(dof_to_body[newton_dof])
-                is_kinematic = body_idx >= 0 and (int(body_flags[body_idx]) & int(BodyFlags.KINEMATIC)) != 0
-                expected_armature = float(KINEMATIC_ARMATURE if is_kinematic else joint_armature[newton_dof])
-                actual_armature = float(dof_armature[world_idx, mjc_dof])
-
-                self.assertAlmostEqual(
-                    actual_armature,
-                    expected_armature,
-                    places=6,
-                    msg=(
-                        f"world={world_idx}, mjc_dof={mjc_dof}, newton_dof={newton_dof}, "
-                        f"body={body_idx}, is_kinematic={is_kinematic}"
-                    ),
-                )
-                checked_count += 1
-
-        self.assertGreater(
-            checked_count,
-            0,
-            "No mapped DOFs were validated; armature checks may be passing vacuously.",
+        mapped = mjc_dof_to_newton_dof >= 0
+        np.testing.assert_allclose(
+            solver.mjw_model.dof_armature.numpy()[mapped],
+            model.joint_armature.numpy()[mjc_dof_to_newton_dof[mapped]],
         )
 
-    def test_floating_kinematic_body_from_add_body_applies_high_armature(self):
+        self.assertIsNotNone(solver.kinematic_target_jnt)
+        target_body = model.joint_child.numpy()[solver.kinematic_target_jnt.numpy()]
+        expected = (model.body_flags.numpy()[target_body] & int(BodyFlags.KINEMATIC)) != 0
+        eq_active = solver.mjw_data.eq_active.numpy()[:, solver.kinematic_target_eq.numpy()]
+        np.testing.assert_array_equal(eq_active, expected)
+        if solver.use_mujoco_cpu:
+            np.testing.assert_array_equal(solver.mj_data.eq_active[solver.kinematic_target_eq.numpy()], expected[0])
+
+    def test_floating_kinematic_body_exports_mocap_weld(self):
         builder = newton.ModelBuilder()
         shape_cfg = newton.ModelBuilder.ShapeConfig(density=1000.0)
         body = builder.add_body(
@@ -2287,18 +2271,26 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
         model.joint_armature.assign(initial_armature)
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
-        self._assert_armature_matches_flags(model, solver)
+        self.assertEqual(solver.mj_model.nmocap, 1)
+        self._assert_kinematic_state_matches_flags(model, solver)
 
-    def test_kinematic_body_applies_high_armature_on_conversion(self):
+    def test_kinematic_root_exports_mocap_weld(self):
         model, _ = self._build_model(root_kinematic=True)
         initial_armature = np.linspace(0.1, 0.1 * model.joint_dof_count, model.joint_dof_count, dtype=np.float32)
         model.joint_armature.assign(initial_armature)
 
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
 
-        self._assert_armature_matches_flags(model, solver)
+        self._assert_kinematic_state_matches_flags(model, solver)
 
-    def test_kinematic_armature_does_not_affect_initial_meaninertia(self):
+    def test_dynamic_model_exports_no_kinematic_targets(self):
+        model, _ = self._build_model(root_kinematic=False)
+        solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+        self.assertEqual(solver.mj_model.nmocap, 0)
+        self.assertEqual(solver.mj_model.neq, 0)
+        self.assertIsNone(solver.kinematic_target_eq)
+
+    def test_kinematic_root_does_not_affect_meaninertia(self):
         for use_mujoco_cpu in (False, True):
             with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
                 dynamic_model, _ = self._build_model(root_kinematic=False)
@@ -2331,261 +2323,80 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                     places=5,
                 )
 
-    def test_kinematic_meaninertia_tracks_inertial_updates(self):
+    def test_body_properties_runtime_toggle(self):
         for use_mujoco_cpu in (False, True):
             with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
-                model, root_body = self._build_model(root_kinematic=False)
-                solver = SolverMuJoCo(
-                    model,
-                    iterations=1,
-                    disable_contacts=True,
-                    use_mujoco_cpu=use_mujoco_cpu,
+                model, root_body = self._build_model(root_kinematic=True)
+                initial_armature = np.linspace(
+                    0.2, 0.2 * model.joint_dof_count, model.joint_dof_count, dtype=np.float32
                 )
-                initial_meaninertia = self._get_meaninertia(solver)
+                model.joint_armature.assign(initial_armature)
+
+                solver = SolverMuJoCo(model, iterations=1, disable_contacts=True, use_mujoco_cpu=use_mujoco_cpu)
+                self._assert_kinematic_state_matches_flags(model, solver)
+                meaninertia = self._get_meaninertia(solver)
 
                 body_flags = model.body_flags.numpy()
-                body_flags[root_body] = int(BodyFlags.KINEMATIC)
-                model.body_flags.assign(body_flags)
-                solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
-                self.assertAlmostEqual(self._get_meaninertia(solver), initial_meaninertia, places=5)
-
-                body_mass = model.body_mass.numpy()
-                body_mass[root_body] *= 2.0
-                model.body_mass.assign(body_mass)
-                solver.notify_model_changed(ModelFlags.BODY_INERTIAL_PROPERTIES)
-                mass_meaninertia = self._get_meaninertia(solver)
-                self.assertNotAlmostEqual(mass_meaninertia, initial_meaninertia, places=5)
-
-                joint_armature = model.joint_armature.numpy()
-                joint_armature += 0.5
-                model.joint_armature.assign(joint_armature)
-                solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
-                updated_meaninertia = self._get_meaninertia(solver)
-                self.assertNotAlmostEqual(updated_meaninertia, mass_meaninertia, places=5)
-
                 body_flags[root_body] = int(BodyFlags.DYNAMIC)
                 model.body_flags.assign(body_flags)
                 solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
-                self.assertAlmostEqual(self._get_meaninertia(solver), updated_meaninertia, places=5)
+                self._assert_kinematic_state_matches_flags(model, solver)
+                self.assertAlmostEqual(self._get_meaninertia(solver), meaninertia, places=5)
 
-    def test_meaninertia_update_preserves_dampratio_resolution(self):
-        mjcf = """
-        <mujoco>
-            <worldbody>
-                <body name="base">
-                    <joint name="j1" type="hinge" axis="0 0 1"/>
-                    <geom type="capsule" size="0.05" fromto="0 0 0 0.5 0 0" mass="1"/>
-                </body>
-            </worldbody>
-            <actuator>
-                <position joint="j1" kp="100" dampratio="1"/>
-            </actuator>
-        </mujoco>
-        """
+                model.joint_armature.assign(initial_armature + 3.0)
+                solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
+                self._assert_kinematic_state_matches_flags(model, solver)
 
-        def build_solver(use_mujoco_cpu: bool) -> SolverMuJoCo:
-            builder = newton.ModelBuilder()
-            builder.add_mjcf(mjcf, ctrl_direct=True)
-            model = builder.finalize()
-            model.body_flags.fill_(int(BodyFlags.KINEMATIC))
-            return SolverMuJoCo(model, disable_contacts=True, use_mujoco_cpu=use_mujoco_cpu)
+                body_flags[root_body] = int(BodyFlags.KINEMATIC)
+                model.body_flags.assign(body_flags)
+                solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
+                self._assert_kinematic_state_matches_flags(model, solver)
 
-        for use_mujoco_cpu in (False, True):
-            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
-                solver = build_solver(use_mujoco_cpu)
-                reference = build_solver(use_mujoco_cpu)
-
-                if use_mujoco_cpu:
-                    solver.mj_model.actuator_biasprm[0, 2] = 0.5
-                    reference.mj_model.actuator_biasprm[0, 2] = 0.5
-                    solver._set_const_0_with_physical_meaninertia()
-                    reference._mujoco.mj_setConst(reference.mj_model, reference.mj_data)
-                    actual = solver.mj_model.actuator_biasprm[0, 2]
-                    expected = reference.mj_model.actuator_biasprm[0, 2]
-                else:
-                    for current_solver in (solver, reference):
-                        biasprm = current_solver.mjw_model.actuator_biasprm.numpy()
-                        biasprm[0, 0, 2] = 0.5
-                        current_solver.mjw_model.actuator_biasprm.assign(biasprm)
-                    solver._set_const_0_with_physical_meaninertia()
-                    reference._mujoco_warp.set_const_0(reference.mjw_model, reference.mjw_data)
-                    actual = solver.mjw_model.actuator_biasprm.numpy()[0, 0, 2]
-                    expected = reference.mjw_model.actuator_biasprm.numpy()[0, 0, 2]
-
-                self.assertAlmostEqual(float(actual), float(expected), places=5)
-
-    def test_body_properties_runtime_update_and_dof_updates(self):
+    def test_making_unconverted_root_kinematic_raises(self):
         model, root_body = self._build_model(root_kinematic=False)
-        initial_armature = np.linspace(0.2, 0.2 * model.joint_dof_count, model.joint_dof_count, dtype=np.float32)
-        model.joint_armature.assign(initial_armature)
-
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
-        self._assert_armature_matches_flags(model, solver)
-
         body_flags = model.body_flags.numpy()
         body_flags[root_body] = int(BodyFlags.KINEMATIC)
         model.body_flags.assign(body_flags)
-        solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
-        self._assert_armature_matches_flags(model, solver)
+        with self.assertRaises(ValueError):
+            solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
 
-        updated_armature = initial_armature + 3.0
-        model.joint_armature.assign(updated_armature)
-        solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
-        self._assert_armature_matches_flags(model, solver)
-
-        body_flags[root_body] = int(BodyFlags.DYNAMIC)
-        model.body_flags.assign(body_flags)
-        solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
-        self._assert_armature_matches_flags(model, solver)
-
-    def test_fixed_root_attached_to_world_uses_mocap_and_tracks_pose(self):
-        for root_joint_kind, is_kinematic in itertools.product(("fixed", "locked_d6"), (False, True)):
-            with self.subTest(root_joint_kind=root_joint_kind, is_kinematic=is_kinematic):
+    def test_kinematic_root_tracks_prescribed_motion_and_holds_payload(self):
+        """A shaken kinematic platform follows its prescribed pose and carries a box without slip."""
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
                 builder = newton.ModelBuilder()
-                root = builder.add_link(
-                    mass=1.0,
-                    com=wp.vec3(0.0, 0.0, 0.0),
-                    inertia=wp.mat33(np.eye(3)),
-                    is_kinematic=is_kinematic,
-                    label="fixed_root",
-                )
-                if root_joint_kind == "fixed":
-                    root_joint = builder.add_joint_fixed(parent=-1, child=root)
-                else:
-                    # zero-DOF D6, as imported from a generic USD PhysicsJoint
-                    root_joint = builder.add_joint_d6(parent=-1, child=root)
-                builder.add_articulation([root_joint])
+                cfg = newton.ModelBuilder.ShapeConfig(density=1000.0, mu=1.0)
+                platform = builder.add_body(xform=wp.transform((0.0, 0.0, 0.45), wp.quat_identity()), is_kinematic=True)
+                builder.add_shape_box(platform, hx=1.0, hy=1.0, hz=0.05, cfg=cfg)
+                box = builder.add_body(xform=wp.transform((0.0, 0.0, 0.6), wp.quat_identity()))
+                builder.add_shape_box(box, hx=0.1, hy=0.1, hz=0.1, cfg=cfg)
+                model = builder.finalize()
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, njmax=100, nconmax=20)
 
-                model = builder.finalize(requires_grad=False)
-                solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
+                state_0, state_1, control = model.state(), model.state(), model.control()
+                dt = 0.002
+                omega = 2.0 * np.pi
+                amplitude_v = 0.3 * 9.81 / omega
+                qd_start = int(model.joint_qd_start.numpy()[0])
+                x = 0.0
+                for i in range(250):
+                    v = amplitude_v * np.sin(omega * i * dt)
+                    q = state_0.joint_q.numpy()
+                    qd = state_0.joint_qd.numpy()
+                    q[0] = x
+                    qd[qd_start] = v
+                    state_0.joint_q.assign(q)
+                    state_0.joint_qd.assign(qd)
+                    solver.step(state_0, state_1, control, None, dt)
+                    x += v * dt
+                    state_0, state_1 = state_1, state_0
 
-                body_kind = "kinematic" if is_kinematic else "dynamic"
-
-                # Fixed-root links should be exported as MuJoCo mocap bodies.
-                self.assertEqual(solver.mj_model.nmocap, 1)
-                body_mocapid = solver.mjw_model.body_mocapid.numpy()
-
-                mjc_body_to_newton = solver.mjc_body_to_newton.numpy()
-                matching_bodies = np.where(mjc_body_to_newton[0] == root)[0]
-                self.assertEqual(len(matching_bodies), 1, "Expected a unique MuJoCo body for the fixed root")
-                mjc_root_body = int(matching_bodies[0])
-                mocap_idx = int(body_mocapid[mjc_root_body])
-                self.assertGreaterEqual(mocap_idx, 0, f"Fixed-root {body_kind} body should be exported as mocap")
-
-                jnt_bodyid = solver.mjw_model.jnt_bodyid.numpy()
-                joints_on_root = np.where(jnt_bodyid == mjc_root_body)[0]
-                self.assertEqual(
-                    len(joints_on_root), 0, f"Fixed-root {body_kind} body should not create a MuJoCo joint"
-                )
-
-                initial_mocap_pos = np.array(solver.mjw_data.mocap_pos.numpy()[0, mocap_idx], copy=True)
-                initial_mocap_quat = np.array(solver.mjw_data.mocap_quat.numpy()[0, mocap_idx], copy=True)
-
-                new_position = wp.vec3(0.2, -0.1, 0.3)
-                new_rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.35)
-                model.joint_X_p.assign([wp.transform(new_position, new_rotation)])
-
-                solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES)
-
-                updated_mocap_pos = solver.mjw_data.mocap_pos.numpy()[0, mocap_idx]
-                updated_mocap_quat = solver.mjw_data.mocap_quat.numpy()[0, mocap_idx]
-
-                self.assertFalse(np.allclose(updated_mocap_pos, initial_mocap_pos, atol=1e-6))
-                self.assertFalse(np.allclose(updated_mocap_quat, initial_mocap_quat, atol=1e-6))
-
-                np.testing.assert_allclose(
-                    updated_mocap_pos,
-                    [new_position.x, new_position.y, new_position.z],
-                    atol=1e-6,
-                    err_msg=f"mocap_pos should track the fixed-root {body_kind} transform",
-                )
-
-                expected_quat = np.array([new_rotation.w, new_rotation.x, new_rotation.y, new_rotation.z])
-                if np.dot(updated_mocap_quat, expected_quat) < 0.0:
-                    expected_quat = -expected_quat
-                np.testing.assert_allclose(
-                    updated_mocap_quat,
-                    expected_quat,
-                    atol=1e-6,
-                    err_msg=f"mocap_quat should track the fixed-root {body_kind} transform",
-                )
-
-                solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
-                updated_body_pos = solver.mjw_data.xpos.numpy()[0, mjc_root_body]
-                updated_body_quat = solver.mjw_data.xquat.numpy()[0, mjc_root_body]
-
-                np.testing.assert_allclose(
-                    updated_body_pos,
-                    [new_position.x, new_position.y, new_position.z],
-                    atol=1e-6,
-                    err_msg=f"xpos should track the fixed-root {body_kind} transform",
-                )
-                if np.dot(updated_body_quat, expected_quat) < 0.0:
-                    expected_quat = -expected_quat
-                np.testing.assert_allclose(
-                    updated_body_quat,
-                    expected_quat,
-                    atol=1e-6,
-                    err_msg=f"xquat should track the fixed-root {body_kind} transform",
-                )
-
-    def test_world_attached_root_multi_world_placement(self):
-        """Replicated world-attached roots must sit at each world's own root transform."""
-        world_count = 3
-        for root_joint_kind in ("fixed", "locked_d6"):
-            with self.subTest(root_joint_kind=root_joint_kind):
-                template = newton.ModelBuilder()
-                root = template.add_link(
-                    mass=1.0,
-                    com=wp.vec3(0.0, 0.0, 0.0),
-                    inertia=wp.mat33(np.eye(3)),
-                    label="root",
-                )
-                root_xform = wp.transform(wp.vec3(0.0, 0.0, 1.0), wp.quat_identity())
-                if root_joint_kind == "fixed":
-                    root_joint = template.add_joint_fixed(parent=-1, child=root, parent_xform=root_xform)
-                else:
-                    # zero-DOF D6, as imported from a generic USD PhysicsJoint
-                    root_joint = template.add_joint_d6(parent=-1, child=root, parent_xform=root_xform)
-                link = template.add_link(
-                    mass=1.0,
-                    com=wp.vec3(0.0, 0.0, 0.0),
-                    inertia=wp.mat33(np.eye(3)),
-                    label="link",
-                )
-                hinge = template.add_joint_revolute(root, link, axis=wp.vec3(0.0, 1.0, 0.0))
-                template.add_articulation([root_joint, hinge])
-
-                builder = newton.ModelBuilder()
-                builder.replicate(template, world_count, spacing=(2.0, 0.0, 0.0))
-                model = builder.finalize(requires_grad=False)
-                solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
-
-                self.assertEqual(solver.mj_model.nmocap, 1, "World-attached root should be exported as mocap")
-
-                # Refresh derived poses from the per-world root placement.
-                solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
-
-                joint_parent = model.joint_parent.numpy()
-                joint_world = model.joint_world.numpy()
-                joint_child = model.joint_child.numpy()
-                joint_X_p = model.joint_X_p.numpy()
-                mjc_body_to_newton = solver.mjc_body_to_newton.numpy()
-                xpos = solver.mjw_data.xpos.numpy()
-
-                root_joints = np.where(joint_parent == -1)[0]
-                self.assertEqual(len(root_joints), world_count)
-                for j in root_joints:
-                    world = int(joint_world[j])
-                    newton_root = int(joint_child[j])
-                    matching = np.where(mjc_body_to_newton[world] == newton_root)[0]
-                    self.assertEqual(len(matching), 1, "Expected a unique MuJoCo body for the root")
-                    np.testing.assert_allclose(
-                        xpos[world, matching[0]],
-                        joint_X_p[j][:3],
-                        atol=1e-6,
-                        err_msg=f"world {world} root must sit at its own joint_X_p, not the template world's",
-                    )
+                body_q = state_0.body_q.numpy()
+                self.assertAlmostEqual(float(body_q[platform, 0]), x, delta=1.0e-4)
+                self.assertAlmostEqual(float(body_q[platform, 2]), 0.45, delta=1.0e-4)
+                slip = body_q[box, :2] - body_q[platform, :2]
+                self.assertLess(float(np.linalg.norm(slip)), 2.0e-3)
 
 
 class TestMuJoCoSolverCollisionMasks(unittest.TestCase):

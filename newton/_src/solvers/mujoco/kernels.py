@@ -11,6 +11,7 @@ import warp as wp
 
 from ...core.types import vec5
 from ...sim import BodyFlags, JointTargetMode, JointType
+from ...sim.articulation import com_twist_to_origin_twist, eval_joint_child_state, eval_joint_motion
 from ...sim.contacts import contact_surface_point, contact_surface_separation
 from .constants import (
     DEFAULT_LIMIT_SOLREF_DAMPRATIO,
@@ -2239,31 +2240,90 @@ def update_dof_force_properties_kernel(
 
 
 @wp.kernel
-def update_body_properties_kernel(
+def update_dof_armature_kernel(
     mjc_dof_to_newton_dof: wp.array2d[wp.int32],
-    newton_dof_to_body: wp.array[wp.int32],
-    body_flags: wp.array[wp.int32],
     joint_armature: wp.array[float],
-    kinematic_armature: float,
-    apply_kinematic_armature: bool,
     # outputs
     dof_armature: wp.array2d[float],
 ):
-    """Update MuJoCo dof_armature from Newton body flags.
-
-    Kinematic DOFs use ``kinematic_armature`` when requested; all other DOFs
-    use Newton ``joint_armature``.
-    """
+    """Update MuJoCo dof_armature from Newton joint_armature."""
     world, mjc_dof = wp.tid()
     newton_dof = mjc_dof_to_newton_dof[world, mjc_dof]
     if newton_dof < 0:
         return
+    dof_armature[world, mjc_dof] = joint_armature[newton_dof]
 
-    newton_body = newton_dof_to_body[newton_dof]
-    if apply_kinematic_armature and newton_body >= 0 and (body_flags[newton_body] & BodyFlags.KINEMATIC) != 0:
-        dof_armature[world, mjc_dof] = kinematic_armature
-    else:
-        dof_armature[world, mjc_dof] = joint_armature[newton_dof]
+
+@wp.kernel
+def update_kinematic_targets_kernel(
+    target_jnt: wp.array2d[wp.int32],
+    target_mocap: wp.array[wp.int32],
+    joint_type: wp.array[wp.int32],
+    joint_q_start: wp.array[wp.int32],
+    joint_qd_start: wp.array[wp.int32],
+    joint_dof_dim: wp.array2d[wp.int32],
+    joint_child: wp.array[wp.int32],
+    joint_X_p: wp.array[wp.transform],
+    joint_X_c: wp.array[wp.transform],
+    joint_axis: wp.array[wp.vec3],
+    joint_q: wp.array[float],
+    joint_qd: wp.array[float],
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
+    lookahead: float,
+    # outputs
+    mocap_pos: wp.array2d[wp.vec3],
+    mocap_quat: wp.array2d[wp.quat],
+):
+    """Place each kinematic root's mocap target at its prescribed pose, advanced by ``lookahead``.
+
+    MuJoCo mocap bodies have zero velocity, so the weld damping drags the
+    kinematic body toward rest; leading the target by ``b / k`` of the weld
+    cancels that drag for the prescribed velocity.
+    """
+    world, target = wp.tid()
+    j = target_jnt[world, target]
+    if j < 0:
+        return
+    child = joint_child[j]
+    X_j, v_j = eval_joint_motion(
+        joint_type[j],
+        joint_q_start[j],
+        joint_qd_start[j],
+        joint_dof_dim[j, 0],
+        joint_dof_dim[j, 1],
+        joint_q,
+        joint_qd,
+        joint_axis,
+    )
+    X_wc, v_com = eval_joint_child_state(
+        joint_type[j], -1, child, wp.transform_identity(), joint_X_p[j], joint_X_c[j], X_j, v_j, body_qd, body_com
+    )
+    v_origin = com_twist_to_origin_twist(v_com, X_wc, body_com[child])
+    w = wp.spatial_bottom(v_origin)
+    p = wp.transform_get_translation(X_wc) + wp.spatial_top(v_origin) * lookahead
+    q = wp.transform_get_rotation(X_wc)
+    q = wp.normalize(q + wp.quat(w * (0.5 * lookahead), 0.0) * q)
+    mocap = target_mocap[target]
+    mocap_pos[world, mocap] = p
+    mocap_quat[world, mocap] = quat_xyzw_to_wxyz(q)
+
+
+@wp.kernel
+def update_kinematic_weld_active_kernel(
+    target_jnt: wp.array2d[wp.int32],
+    target_eq: wp.array[wp.int32],
+    joint_child: wp.array[wp.int32],
+    body_flags: wp.array[wp.int32],
+    # outputs
+    eq_active: wp.array2d[wp.bool],
+):
+    """Activate each kinematic-target weld exactly when its root body is kinematic."""
+    world, target = wp.tid()
+    j = target_jnt[world, target]
+    if j < 0:
+        return
+    eq_active[world, target_eq[target]] = (body_flags[joint_child[j]] & BodyFlags.KINEMATIC) != 0
 
 
 @wp.kernel
@@ -2774,27 +2834,6 @@ def update_jnt_solref_from_invweight0_kernel(
     direct_stiffness = wp.max(ke * factor, MJ_MINVAL)
     direct_damping = wp.max(kd * factor, MJ_MINVAL)
     jnt_solref[world, mjc_jnt] = convert_solref(direct_stiffness, direct_damping, 1.0, 1.0)
-
-
-@wp.kernel
-def compute_physical_meaninertia_kernel(
-    nv: int,
-    M_rownnz: wp.array[wp.int32],
-    M_rowadr: wp.array[wp.int32],
-    M: wp.array2d[float],
-    meaninertia: wp.array[float],
-):
-    """Remove kinematic locking armature from MuJoCo's mean-inertia statistic."""
-    world = wp.tid()
-    if nv == 0:
-        meaninertia[world % meaninertia.shape[0]] = 1.0
-        return
-
-    total = float(0.0)
-    for mjc_dof in range(nv):
-        total += M[world, M_rowadr[mjc_dof] + M_rownnz[mjc_dof] - 1]
-
-    meaninertia[world % meaninertia.shape[0]] = total / float(nv)
 
 
 @wp.kernel(enable_backward=False)

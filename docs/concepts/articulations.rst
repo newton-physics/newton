@@ -441,15 +441,16 @@ Implementation details differ by coordinate formulation:
   :class:`~newton.solvers.SolverSemiImplicit`, :class:`~newton.solvers.SolverVBD`)
   use prescribed body transforms/twists.
 - Contact handling of kinematic bodies is not identical across the solvers. :class:`~newton.solvers.SolverXPBD`,
-  :class:`~newton.solvers.SolverVBD`, :class:`~newton.solvers.SolverMuJoCo`, and
+  :class:`~newton.solvers.SolverVBD`, and
   :class:`~newton.solvers.SolverFeatherstone` treat kinematic bodies like
   infinite-mass colliders for contact response, while
   :class:`~newton.solvers.SolverSemiImplicit` currently preserves prescribed state but
   does not zero inverse mass/inertia inside its contact solver. Contacts against
   kinematic bodies can therefore be softer under SemiImplicit.
 
-In :class:`~newton.solvers.SolverMuJoCo`, kinematic DOFs are regularized with a
-large internal armature value; see :ref:`Kinematic Links and Fixed Roots <mujoco-kinematic-links-and-fixed-roots>` for details.
+In :class:`~newton.solvers.SolverMuJoCo`, kinematic roots are welded to mocap targets and keep their
+real mass, so their contacts are softer than an infinite-mass collider's; see
+:ref:`Kinematic Links and Fixed Roots <mujoco-kinematic-links-and-fixed-roots>` for details.
 
 .. _Joint types:
 

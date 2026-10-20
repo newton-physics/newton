@@ -1076,12 +1076,14 @@ Caveats
   Newton's :attr:`~newton.Model.joint_velocity_limit` has no MuJoCo equivalent and is
   ignored.
 
-**Kinematic-root armature override.**
-  DOFs of kinematic articulation roots have their
-  :attr:`~newton.Model.joint_armature` replaced with a very large
-  internal value (``1e10``) so MuJoCo treats them as effectively
-  prescribed. The user-supplied armature on those DOFs is silently
-  discarded. See `Kinematic links and fixed roots`_.
+**Kinematic roots are welded, not infinitely massive.**
+  MuJoCo has no prescribed degrees of freedom, so kinematic roots keep
+  their authored mass and are held by a stiff weld to a mocap target.
+  Contacts on a kinematic body use its real mass for their softness,
+  so a light kinematic body carrying a heavy load penetrates more than
+  an infinite-mass collider would. Only roots that are kinematic when
+  the solver is created can be toggled at runtime. See
+  `Kinematic links and fixed roots`_.
 
 **Collision filtering has a 32-bit capacity.**
   The solver creates MuJoCo masks that reproduce Newton's allowed collision
@@ -1116,9 +1118,17 @@ During Newton-to-MuJoCo conversion (at
 by joint type:
 
 - **Kinematic roots with non-fixed joints** become ordinary MuJoCo
-  joints with the same Newton joint type and DOFs. A very large
-  internal armature is assigned to those DOFs so MuJoCo treats them
-  as prescribed, effectively infinite-mass coordinates.
+  joints with the same Newton joint type, DOFs, mass, and armature.
+  Following MuJoCo's idiom for scripted bodies, each such root also
+  gets a mocap target body and a weld equality to it. Every step the
+  target is moved to the prescribed pose, led by the weld's
+  damping-to-stiffness ratio so the weld does not drag the body toward
+  rest. The weld is active exactly while the body is kinematic, so
+  :attr:`~newton.Model.body_flags` can switch these roots between
+  kinematic and dynamic after
+  ``notify_model_changed(ModelFlags.BODY_PROPERTIES)``. Roots that
+  were not kinematic in any world at solver construction have no
+  target; making them kinematic raises :class:`ValueError`.
 - **Roots attached to world with a fixed joint** become MuJoCo mocap
   bodies (whether kinematic or not). MuJoCo has no joint coordinates
   for a fixed root, so Newton drives the pose through
