@@ -177,6 +177,62 @@ def test_iteration_restart_preserves_patch_history(test, device):
         test.assertEqual(float(np.abs(feedback).max()), 0.0, f"iterations={iterations}")
 
 
+def test_restarts_keep_mass_matrix_cadence(test, device):
+    """Refresh a lagged mass matrix on the coupled-step cadence, however often the coupler repeats a step."""
+
+    def build(cloth):
+        builder = newton.ModelBuilder()
+        parent = -1
+        joints = []
+        for index in range(2):
+            link = builder.add_link()
+            builder.add_shape_box(link, hx=0.2, hy=0.05, hz=0.05, cfg=newton.ModelBuilder.ShapeConfig(density=500.0))
+            joints.append(
+                builder.add_joint_revolute(
+                    parent,
+                    link,
+                    axis=wp.vec3(0.0, 1.0, 0.0),
+                    parent_xform=wp.transform(
+                        (0.0 if index == 0 else 0.2, 0.0, 2.0 if index == 0 else 0.0), wp.quat_identity()
+                    ),
+                    child_xform=wp.transform((-0.2, 0.0, 0.0), wp.quat_identity()),
+                )
+            )
+            parent = link
+        builder.add_articulation(joints)
+        if cloth:
+            builder.add_cloth_grid(
+                pos=wp.vec3(3.0, -0.25, 0.5),
+                rot=wp.quat_identity(),
+                vel=wp.vec3(0.0),
+                dim_x=4,
+                dim_y=4,
+                cell_x=0.125,
+                cell_y=0.125,
+                mass=0.1,
+                tri_ke=1.0e3,
+                tri_ka=1.0e3,
+                tri_kd=1.0,
+                particle_radius=0.01,
+            )
+            builder.color()
+        return builder.finalize(device=device)
+
+    def steel(view):
+        return _steel(view, update_mass_matrix_interval=5)
+
+    reference_model = build(cloth=False)
+    reference_q = _Rollout(reference_model, steel(reference_model)).run(120)
+    eager_model = build(cloth=False)
+    eager_q = _Rollout(eager_model, _steel(eager_model)).run(120)
+    # The lagged matrix changes the swing, so the cadence is observable.
+    test.assertGreater(float(np.abs(reference_q - eager_q).max()), 1.0e-4)
+    for iterations in (1, 3):
+        model = build(cloth=True)
+        coupled_q = _Rollout(model, _coupled(model, None, steel, iterations=iterations)).run(120)
+        np.testing.assert_allclose(coupled_q, reference_q, atol=1.0e-6, err_msg=f"iterations={iterations}")
+
+
 def test_contact_feedback_is_consumed_exactly(test, device):
     """Apply exactly the previous VBD harvest, force and torque, as each step's box impulse in gravity-free contact."""
     # Off-center impact so the harvested wrench carries torque.
@@ -524,6 +580,93 @@ def test_effective_mass_offset_com(test, device):
     test.assertAlmostEqual(float(mujoco.numpy()[0]), float(steel[0]), delta=1.0e-3 * float(steel[0]))
 
 
+def _build_welded_hinge(device, *, kinematic_root=False, armature=0.0, cloth=False):
+    """Build a hinged cube with a second cube welded 1 m along x; returns the model and the welded cube."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    cfg = newton.ModelBuilder.ShapeConfig(density=1000.0)
+    root = builder.add_link(is_kinematic=kinematic_root)
+    builder.add_shape_box(root, hx=0.05, hy=0.05, hz=0.05, cfg=cfg)
+    hinge = builder.add_joint_revolute(
+        -1,
+        root,
+        axis=wp.vec3(0.0, 1.0, 0.0),
+        parent_xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()),
+        armature=armature,
+    )
+    tip = builder.add_link()
+    builder.add_shape_box(tip, hx=0.05, hy=0.05, hz=0.05, cfg=cfg)
+    weld = builder.add_joint_fixed(root, tip, parent_xform=wp.transform((1.0, 0.0, 0.0), wp.quat_identity()))
+    builder.add_articulation([hinge, weld])
+    if cloth:
+        builder.add_cloth_grid(
+            pos=wp.vec3(3.0, -0.25, 0.5),
+            rot=wp.quat_identity(),
+            vel=wp.vec3(0.0),
+            dim_x=4,
+            dim_y=4,
+            cell_x=0.125,
+            cell_y=0.125,
+            mass=0.1,
+            tri_ke=1.0e3,
+            tri_ka=1.0e3,
+            tri_kd=1.0,
+            particle_radius=0.01,
+        )
+        builder.color()
+    return builder.finalize(device=device), tip
+
+
+def test_effective_mass_follows_solve_armature(test, device):
+    """Weight kinematic DOFs as the solve does, and refresh the couplers' masses after an armature change."""
+    body = int(CouplingInterface.EndpointKind.BODY)
+    masses = {}
+    for kinematic_root in (False, True):
+        model, tip = _build_welded_hinge(device, kinematic_root=kinematic_root, armature=0.01)
+        out = wp.zeros(1, dtype=float, device=device)
+        _steel(model).coupling_eval_effective_mass(
+            wp.array([body], dtype=int, device=device),
+            wp.array([tip], dtype=int, device=device),
+            wp.zeros(1, dtype=wp.vec3, device=device),
+            out,
+        )
+        masses[kinematic_root] = float(out.numpy()[0])
+    # The 1 kg tip turns about an axis 1 m away: 3 H with H = 1 + I_yy + 0.01 kg m^2.
+    test.assertAlmostEqual(masses[False], 3.04, delta=1.0e-3)
+    # A kinematic hinge takes the solve's 1e10 armature, so the tip is effectively immovable.
+    test.assertGreater(masses[True], 1.0e10)
+
+    for name in ("proxy", "admm"):
+        model, tip = _build_welded_hinge(device, cloth=True)
+        rigid = SolverCoupled.Entry(name="rigid", solver=_steel, bodies=list(range(model.body_count)), joints=[0, 1])
+        cloth = SolverCoupled.Entry(
+            name="cloth", solver=lambda v: SolverVBD(model=v, iterations=2), particles=list(range(model.particle_count))
+        )
+        if name == "proxy":
+            coupled = SolverCoupledProxy(
+                model=model,
+                entries=[rigid, cloth],
+                coupling=SolverCoupledProxy.Config(
+                    proxies=[SolverCoupledProxy.Proxy(source="rigid", destination="cloth", bodies=[tip])]
+                ),
+            )
+            proxy = coupled._proxy_mappings[0].proxy_ids_local.numpy()[0]
+
+            def mass(coupled=coupled, proxy=proxy):
+                return float(coupled.view("cloth").body_mass.numpy()[proxy])
+        else:
+            coupled = SolverCoupledADMM(model=model, entries=[rigid, cloth], coupling=SolverCoupledADMM.Config())
+
+            def mass(coupled=coupled, tip=tip):
+                return float(coupled._admm_buffers["rigid"].body_effective_mass.numpy()[tip])
+
+        test.assertAlmostEqual(mass(), 3.01, delta=1.0e-3, msg=name)
+        armature = model.joint_armature.numpy()
+        armature[0] = 100.0
+        model.joint_armature.assign(armature)
+        coupled.notify_model_changed(newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES)
+        test.assertAlmostEqual(mass(), 303.01, delta=1.0e-2, msg=name)
+
+
 def test_offset_contact_turns_hinge(test, device):
     """Turn the Steel hinge with a soft block landing off its axis, more so with a longer lever."""
     rotation = {}
@@ -853,6 +996,7 @@ class TestCoupledSolverSteel(unittest.TestCase):
 for _name, _func in (
     ("test_iteration_restart_preserves_patch_history", test_iteration_restart_preserves_patch_history),
     ("test_in_place_restart_refreshes_kinematics", test_in_place_restart_refreshes_kinematics),
+    ("test_restarts_keep_mass_matrix_cadence", test_restarts_keep_mass_matrix_cadence),
     ("test_contact_feedback_is_consumed_exactly", test_contact_feedback_is_consumed_exactly),
     ("test_box_lands_on_cloth_like_mujoco", test_box_lands_on_cloth_like_mujoco),
     ("test_worlds_are_isolated", test_worlds_are_isolated),
@@ -862,6 +1006,7 @@ for _name, _func in (
     ("test_unsupported_options_raise", test_unsupported_options_raise),
     ("test_articulated_effective_mass", test_articulated_effective_mass),
     ("test_effective_mass_offset_com", test_effective_mass_offset_com),
+    ("test_effective_mass_follows_solve_armature", test_effective_mass_follows_solve_armature),
     ("test_offset_contact_turns_hinge", test_offset_contact_turns_hinge),
     ("test_reset_preserves_unselected_patch_history", test_reset_preserves_unselected_patch_history),
     ("test_effective_mass_ignores_loop_closures", test_effective_mass_ignores_loop_closures),

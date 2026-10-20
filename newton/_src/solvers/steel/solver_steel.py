@@ -212,8 +212,8 @@ _ROW_SLOT_UNBOUNDED = 2**31 - 1
 _CONTACT_BUILD_THREAD_CAP = 65536
 _CONTACT_JACOBIAN_WORKER_CAP = 4096
 _CONTACT_JACOBIAN_MAX_DOF = 10
-# Coupling endpoints whose articulated inverse mass is below this fraction of the free one are immobile.
-_IMMOBILE_POINT_INV_MASS_RATIO = 1.0e-6
+# Coupling endpoints whose point Jacobian is below this fraction of the link Jacobian's scale are immobile.
+_IMMOBILE_POINT_JACOBIAN_RATIO = 1.0e-5
 _JOINT_LIMIT_WARPS_PER_BLOCK = 4
 # Joint types whose DOFs can carry dry joint friction rows.
 _JOINT_FRICTION_TYPES = (int(JointType.PRISMATIC), int(JointType.REVOLUTE), int(JointType.BALL), int(JointType.D6))
@@ -2339,6 +2339,10 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._coupling_patch_history_snapshot_pending = False
         self._coupling_patch_history_restore_pending = False
         self._coupling_iteration_restarts = True
+        # Step count at the start of the coupled step, restored before a repeated solve of it.
+        self._coupling_step_start = 0
+        self._coupling_step_start_pending = False
+        self._coupling_step_rewind_pending = False
         self._mass_update_requested = wp.zeros(model.articulation_count, dtype=wp.int32, device=model.device)
         self._last_step_dt = None
 
@@ -2904,6 +2908,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         # A reset distribution is not a repeated solve: unselected worlds keep their live history.
         self._coupling_patch_history_snapshot_pending = False
         self._coupling_patch_history_restore_pending = False
+        self._coupling_step_start_pending = False
+        self._coupling_step_rewind_pending = False
         if self._contact_compliance:
             _contact_compliance.clear(self)
         if self._device_torsion is not None:
@@ -2952,7 +2958,8 @@ class SolverSteel(SolverBase, CouplingInterface):
 
         When the coupler may restart a step, the next step after a kinematic write saves the history and
         the next step after an iteration restart restores the saved copy, so repeated solves of one
-        coupled step start from the same history.
+        coupled step start from the same history. A repeated solve also restores the step count, so
+        ``update_mass_matrix_interval`` counts coupled steps.
 
         Args:
             state: Entry input state written by the coupler.
@@ -2962,9 +2969,13 @@ class SolverSteel(SolverBase, CouplingInterface):
         """
         del state, dt
         self._require_coupling_support()
+        kinematic = int(flags) & int(StateFlags.BODY_Q | StateFlags.BODY_QD | StateFlags.JOINT_Q | StateFlags.JOINT_QD)
+        if iteration_restart:
+            self._coupling_step_rewind_pending = True
+        elif kinematic:
+            self._coupling_step_start_pending = True
         if not self._friction_anchors_enabled or not self._coupling_iteration_restarts:
             return
-        kinematic = int(flags) & int(StateFlags.BODY_Q | StateFlags.BODY_QD | StateFlags.JOINT_Q | StateFlags.JOINT_QD)
         # step() runs both, so a graph captured from the coupled step records them; a reset cancels both.
         if iteration_restart:
             self._coupling_patch_history_restore_pending = True
@@ -3019,10 +3030,11 @@ class SolverSteel(SolverBase, CouplingInterface):
 
         A body endpoint's mass is the inverse of the axis mean of ``J_p H^-1 J_p^T``: ``J_p`` is the point
         Jacobian at ``endpoint_local_pos`` and ``H`` the tree-only joint-space mass matrix with armature at
-        ``model.joint_q``; loop-closing joints, drives, limits and contacts are excluded. The inertia scales
-        the body inertia by the ratio of free to articulated mean angular compliance, and is never smaller
-        than the body inertia. Bodies without mobile joint DOFs, and points that the joints cannot
-        translate, keep the generic estimate. Evaluated on the host; call outside graph capture.
+        ``model.joint_q``, where kinematic DOFs take the large armature of the solve; loop-closing joints,
+        drives, limits and contacts are excluded. The inertia scales the body inertia by the ratio of free
+        to articulated mean angular compliance, and is never smaller than the body inertia. Bodies without
+        mobile joint DOFs, and points that the joints cannot translate, keep the generic estimate.
+        Evaluated on the host; call outside graph capture.
 
         Args:
             endpoint_kind: Endpoint kinds.
@@ -3125,7 +3137,8 @@ class SolverSteel(SolverBase, CouplingInterface):
         jacobian = eval_jacobian(model, state).numpy()
         joint_articulation = model.joint_articulation.numpy()
         joint_qd_start = model.joint_qd_start.numpy()
-        armature = model.joint_armature.numpy()
+        # The solve's armature: kinematic DOFs carry a large one.
+        armature = self._joint_armature_device.numpy()
         x, y, z, w = state.body_q.numpy()[:, 3:7].astype(np.float64).T
         rotation = np.stack(
             [
@@ -3163,12 +3176,13 @@ class SolverSteel(SolverBase, CouplingInterface):
             h_inv = inverse_mass_matrix[art]
             link = 6 * (joint - first_joint)
             linear, angular = jacobian[art, link : link + 3, :dof_count], jacobian[art, link + 3 : link + 6, :dof_count]
-            px, py, pz = rotation[body[row]] @ local_pos[row]
+            lever = rotation[body[row]] @ local_pos[row]
+            px, py, pz = lever
             point = linear - np.array([[0.0, -pz, py], [pz, 0.0, -px], [-py, px, 0.0]]) @ angular
-            inv_mass = np.trace(point @ h_inv @ point.T) / 3.0
-            # Float32 Jacobian residue at an immobile point counts as immobile.
-            free_inv_mass = 1.0 / body_mass[body[row]] if body_mass[body[row]] > 0.0 else 0.0
-            if inv_mass > _IMMOBILE_POINT_INV_MASS_RATIO * free_inv_mass:
+            # A point Jacobian of float32 residue size means the joints cannot translate the point.
+            scale = np.linalg.norm(linear) + np.linalg.norm(angular) * np.linalg.norm(lever)
+            if np.linalg.norm(point) > _IMMOBILE_POINT_JACOBIAN_RATIO * scale:
+                inv_mass = np.trace(point @ h_inv @ point.T) / 3.0
                 weights.append((row, inv_mass, np.trace(angular @ h_inv @ angular.T) / 3.0))
         if not weights:
             return None
@@ -6261,6 +6275,12 @@ class SolverSteel(SolverBase, CouplingInterface):
         body_parent_f: wp.array | None,
     ) -> State:
         """Run the stages of :meth:`step` after its input checks."""
+        if self._coupling_step_rewind_pending:
+            self._step = self._coupling_step_start
+        elif self._coupling_step_start_pending:
+            self._coupling_step_start = self._step
+        self._coupling_step_rewind_pending = False
+        self._coupling_step_start_pending = False
         if self._coupling_patch_history_restore_pending:
             self._friction_patches.restore_history()
         elif self._coupling_patch_history_snapshot_pending:

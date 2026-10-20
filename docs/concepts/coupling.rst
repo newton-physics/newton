@@ -387,8 +387,13 @@ raw body mass.
 proxy source or an ADMM entry. It consumes coupling forces through
 ``state.body_f`` and reports articulated effective mass as the inverse of the
 axis mean of the endpoint mobility ``J H^-1 J^T``, where ``H`` is the tree-only
-joint-space mass matrix with armature at ``model.joint_q``. The effective mass is
-evaluated on the host, so query it outside graph capture. When the coupler runs
+joint-space mass matrix with armature at ``model.joint_q``; kinematic DOFs take
+the large armature that Steel's solve gives them. The endpoint is a body-frame
+offset from the body COM. The effective mass is evaluated on the host, so query
+it outside graph capture. Proxy and ADMM couplers evaluate it again after body
+inertial and joint armature notifications. A repeated solve of a coupled step
+also restores Steel's step count, so ``update_mass_matrix_interval`` counts
+coupled steps. When the coupler runs
 more than one iteration, Steel's next step after a coupler state write saves the
 friction-patch history; after an iteration restart, it restores the saved copy
 instead, so repeated solves of one step start from the same history. Both run
