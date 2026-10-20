@@ -410,7 +410,7 @@ def test_deterministic_overflow_keeps_earliest_contacts(test, device):
 
 
 def test_overflow_warning_names_deterministic_mode(test, device):
-    """Print the same row-overflow warning in both modes, plus the drop rule in deterministic mode, which holds."""
+    """Print one row-overflow warning line; in deterministic mode it ends with the drop rule, which holds."""
     model = _build_contact_scene(device, worlds=2, boxes=12, ants=0)
     pipeline = newton.CollisionPipeline(model, deterministic=True)
     contacts = pipeline.contacts()
@@ -418,11 +418,11 @@ def test_overflow_warning_names_deterministic_mode(test, device):
     newton.eval_fk(model, model.joint_q, model.joint_qd, state)
     pipeline.collide(state, contacts)
     warning = r"Warning: Steel matrix-free constraint-row overflow in world \d+: requested \d+ rows, "
-    warning += r"limit 24; dropped \d+ contact/friction rows\. Increase free_body_constraint_max\.\n"
+    warning += r"limit 24; dropped \d+ contact/friction rows\. Increase free_body_constraint_max\."
     note = (
-        "Steel deterministic mode: each world keeps the rows of its earliest contacts in contact-buffer order. "
+        " Deterministic mode: each world keeps the rows of its earliest contacts in contact-buffer order. "
         "While its contacts and joint rows are unchanged it drops the same contacts every step; otherwise it drops "
-        "the tail of the new contact order.\n"
+        "the tail of the new contact order."
     )
     # Warp CPU printf capture is unreliable on Windows; the overflow status and routing are still checked there.
     check_output = not (wp.get_device(device).is_cpu and sys.platform == "win32")
@@ -441,7 +441,8 @@ def test_overflow_warning_names_deterministic_mode(test, device):
             finally:
                 output = capture.end() if check_output else ""
             if check_output:
-                test.assertEqual(len(re.findall(warning, output)), 1, output)
+                line = warning + (re.escape(note) if deterministic == RUN_TO_RUN else "") + r"\n"
+                test.assertEqual(len(re.findall(line, output)), 1, output)
                 test.assertEqual(output.count(note), int(deterministic == RUN_TO_RUN), output)
             test.assertTrue(solver.constraint_overflow.numpy()[: model.world_count].all())
             if deterministic == RUN_TO_RUN:

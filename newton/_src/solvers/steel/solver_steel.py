@@ -48,6 +48,7 @@ from .kernels import (
     PROPAGATION_COLOR_TAIL,
     PROPAGATION_UNIT_META,
     PROPAGATION_UNIT_RING,
+    ROW_SLOT_COUNT_PASS,
     ROW_SLOTS_ATOMIC,
     ROW_SLOTS_COUNT,
     ROW_SLOTS_WRITE,
@@ -547,15 +548,6 @@ def _flag_disabled_tree_joints(
     disabled_tree_joint[world] = True
 
 
-@wp.func
-def _print_deterministic_overflow_note():
-    wp.printf(
-        "Steel deterministic mode: each world keeps the rows of its earliest contacts in contact-buffer order. "
-        "While its contacts and joint rows are unchanged it drops the same contacts every step; otherwise it drops "
-        "the tail of the new contact order.\n"
-    )
-
-
 @wp.kernel
 def _warn_constraint_row_overflow(
     dense_raw_counts: wp.array[wp.int32],
@@ -588,31 +580,53 @@ def _warn_constraint_row_overflow(
     dense_dropped = dense_dropped_contact_rows[world]
     dense_requested = dense_raw_counts[world]
     if dense_requested > dense_capacity and wp.atomic_exch(warning_emitted, 0, 1) == 0:
-        wp.printf(
-            "Warning: Steel dense constraint-row overflow in world %d: requested %d rows, limit %d; "
-            "dropped %d contact, friction, mimic or connect rows. Increase articulation_constraint_max.\n",
-            world,
-            dense_requested,
-            dense_capacity,
-            dense_dropped,
-        )
         if deterministic != 0:
-            _print_deterministic_overflow_note()
+            wp.printf(
+                "Warning: Steel dense constraint-row overflow in world %d: requested %d rows, limit %d; "
+                "dropped %d contact, friction, mimic or connect rows. Increase articulation_constraint_max. "
+                "Deterministic mode: each world keeps the rows of its earliest contacts in contact-buffer order. "
+                "While its contacts and joint rows are unchanged it drops the same contacts every step; "
+                "otherwise it drops the tail of the new contact order.\n",
+                world,
+                dense_requested,
+                dense_capacity,
+                dense_dropped,
+            )
+        else:
+            wp.printf(
+                "Warning: Steel dense constraint-row overflow in world %d: requested %d rows, limit %d; "
+                "dropped %d contact, friction, mimic or connect rows. Increase articulation_constraint_max.\n",
+                world,
+                dense_requested,
+                dense_capacity,
+                dense_dropped,
+            )
 
     if mf_active != 0:
         mf_dropped = mf_dropped_contact_rows[world]
         mf_requested = mf_raw_counts[world]
         if mf_requested > mf_capacity and wp.atomic_exch(warning_emitted, 1, 1) == 0:
-            wp.printf(
-                "Warning: Steel matrix-free constraint-row overflow in world %d: requested %d rows, "
-                "limit %d; dropped %d contact/friction rows. Increase free_body_constraint_max.\n",
-                world,
-                mf_requested,
-                mf_capacity,
-                mf_dropped,
-            )
             if deterministic != 0:
-                _print_deterministic_overflow_note()
+                wp.printf(
+                    "Warning: Steel matrix-free constraint-row overflow in world %d: requested %d rows, "
+                    "limit %d; dropped %d contact/friction rows. Increase free_body_constraint_max. "
+                    "Deterministic mode: each world keeps the rows of its earliest contacts in contact-buffer order. "
+                    "While its contacts and joint rows are unchanged it drops the same contacts every step; "
+                    "otherwise it drops the tail of the new contact order.\n",
+                    world,
+                    mf_requested,
+                    mf_capacity,
+                    mf_dropped,
+                )
+            else:
+                wp.printf(
+                    "Warning: Steel matrix-free constraint-row overflow in world %d: requested %d rows, "
+                    "limit %d; dropped %d contact/friction rows. Increase free_body_constraint_max.\n",
+                    world,
+                    mf_requested,
+                    mf_capacity,
+                    mf_dropped,
+                )
 
     if propagation_active != 0:
         propagation_dropped = propagation_dropped_contact_rows[world]
@@ -627,8 +641,6 @@ def _warn_constraint_row_overflow(
                 propagation_capacity,
                 propagation_dropped,
             )
-            if deterministic != 0:
-                _print_deterministic_overflow_note()
 
 
 @wp.kernel
@@ -10901,13 +10913,13 @@ def _get_joint_limit_warp_kernel(size: int, device_arch: str, warps_per_block: i
         const int active_count = __popc(active_mask);
         int first_slot = 0;
         if (lane == 0 && active_count != 0) {{
-            if (row_slot_mode == 0) {{
+            if (row_slot_mode == {int(ROW_SLOTS_ATOMIC)}) {{
                 first_slot = atomicAdd(&world_slot_counter.data[world], active_count);
             }} else {{
                 // One warp owns the articulation; see scan_world_row_requests.
                 first_slot = element_row_cursor.data[articulation];
                 element_row_cursor.data[articulation] = first_slot + active_count;
-                if (row_slot_mode == 1) first_slot = 1 << 30;
+                if (row_slot_mode == {int(ROW_SLOTS_COUNT)}) first_slot = {int(ROW_SLOT_COUNT_PASS)};
             }}
         }}
         first_slot = __shfl_sync(MASK, first_slot, 0);

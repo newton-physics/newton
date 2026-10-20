@@ -14,11 +14,9 @@ from ...sim.articulation import (
 from ...sim.contacts import GENERATION_SENTINEL
 from ..featherstone.kernels import jcalc_motion
 from .friction import contact_tangent_basis, friction_pair_candidate
-from .friction_patches import FrictionPatches, warmstart_dt_scale
+from .friction_patches import WARP_DETERMINISM_OFF, FrictionPatches, warmstart_dt_scale
 
 # SolverSteel rejects models with ``requires_grad``, so no kernel needs an adjoint.
-# Steel orders its own order-dependent atomics; Warp's deterministic lowering would overflow on its loops.
-WARP_DETERMINISM_OFF = {"deterministic": wp.DeterministicMode.NOT_GUARANTEED}
 wp.set_module_options({"enable_backward": False, **WARP_DETERMINISM_OFF})
 
 

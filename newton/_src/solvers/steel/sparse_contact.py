@@ -8,7 +8,13 @@ from functools import cache
 import warp as wp
 
 from .friction import contact_tangent_basis
-from .kernels import PGS_CONSTRAINT_TYPE_JOINT_LIMIT, WARP_DETERMINISM_OFF
+from .kernels import (
+    PGS_CONSTRAINT_TYPE_JOINT_LIMIT,
+    ROW_SLOT_COUNT_PASS,
+    ROW_SLOTS_ATOMIC,
+    ROW_SLOTS_COUNT,
+    WARP_DETERMINISM_OFF,
+)
 
 wp.set_module_options(WARP_DETERMINISM_OFF)
 
@@ -474,26 +480,26 @@ def _get_sparse_contact_response_kernel(
         const int active_count = __popc(active_mask);
         int first_slot = 0;
         if (lane == 0 && active_count != 0) {
-            if (row_slot_mode == 0) {
+            if (row_slot_mode == $ROW_SLOTS_ATOMIC) {
                 first_slot = atomicAdd(&slot_counter.data[world], active_count);
             } else {
                 // One warp owns the articulation; see scan_world_row_requests.
                 first_slot = element_row_cursor.data[art];
                 element_row_cursor.data[art] = first_slot + active_count;
-                if (row_slot_mode == 1) first_slot = 1 << 30;
+                if (row_slot_mode == $ROW_SLOTS_COUNT) first_slot = $ROW_SLOT_COUNT_PASS;
             }
         }
         first_slot = __shfl_sync(MASK, first_slot, 0);
 #else
         const unsigned active_mask = active != 0 ? 1u : 0u;
         int first_slot = 0;
-        if (row_slot_mode == 0) {
+        if (row_slot_mode == $ROW_SLOTS_ATOMIC) {
             first_slot = slot_counter.data[world];
             slot_counter.data[world] += active;
         } else {
             first_slot = element_row_cursor.data[art];
             element_row_cursor.data[art] = first_slot + active;
-            if (row_slot_mode == 1) first_slot = 1 << 30;
+            if (row_slot_mode == $ROW_SLOTS_COUNT) first_slot = $ROW_SLOT_COUNT_PASS;
         }
 #endif
         // Visit the ballot in lane order, matching the existing lower/upper DOF order.
@@ -551,6 +557,9 @@ def _get_sparse_contact_response_kernel(
         }
     }
 """.replace("$LIMIT_TYPE", str(PGS_CONSTRAINT_TYPE_JOINT_LIMIT))
+    .replace("$ROW_SLOTS_ATOMIC", str(ROW_SLOTS_ATOMIC))
+    .replace("$ROW_SLOTS_COUNT", str(ROW_SLOTS_COUNT))
+    .replace("$ROW_SLOT_COUNT_PASS", str(ROW_SLOT_COUNT_PASS))
 )
 def _build_sparse_joint_limit_rows(
     tid: int,
