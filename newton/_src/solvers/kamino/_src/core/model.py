@@ -754,7 +754,12 @@ class ModelKamino:
         return control
 
     @staticmethod
-    def from_newton(model: Model | ModelView, *, include_shape_contact_pairs: bool = True) -> ModelKamino:
+    def from_newton(
+        model: Model | ModelView,
+        *,
+        include_shape_contact_pairs: bool = True,
+        cull_massless_body_joints: bool = True,
+    ) -> ModelKamino:
         """
         Finalizes the :class:`ModelKamino` from an existing instance of :class:`newton.Model`.
 
@@ -762,6 +767,9 @@ class ModelKamino:
             model: The source :class:`newton.Model` instance to be converted.
             include_shape_contact_pairs: Include explicit collision-pair identities.
                 Required for primitive or explicit collision detection. Defaults to `True`.
+            cull_massless_body_joints: Whether to cull the joints between the world, massless
+                bodies, and KINEMATIC or PROXY bodies. Set it to ``False`` for dynamics solvers
+                that simulate massless bodies. Defaults to `True`.
 
         Returns:
             Kamino model converted from the input Newton model.
@@ -838,6 +846,7 @@ class ModelKamino:
                 model_size,
                 model_info,
                 model_bodies,
+                cull_massless_body_joints=cull_massless_body_joints,
             )
 
             # Geometries

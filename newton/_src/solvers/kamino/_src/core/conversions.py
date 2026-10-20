@@ -12,6 +12,7 @@ import numpy as np
 import warp as wp
 
 from .....geometry import ShapeFlags
+from .....sim import BodyFlags
 from .....sim.model import Model
 from .....sim.shape_contact_pairs import _shape_contact_pair_override, _shape_contact_pair_topology
 from ....coupled.model_view import ModelView
@@ -1578,6 +1579,7 @@ def convert_joints(
     model_size: SizeKamino,
     model_info: ModelKaminoInfo,
     model_bodies: RigidBodiesModel,
+    cull_massless_body_joints: bool = True,
 ) -> JointsModel:
     """
     Converts the joints from a Newton model into Kamino's format. The function will
@@ -1589,6 +1591,10 @@ def convert_joints(
         model: Newton model.
         model_size: Model size object, to be filled in by the function.
         model_info: Model info object, to be filled in by the function.
+        cull_massless_body_joints: Whether to cull the joints between the world, massless
+            bodies, and KINEMATIC or PROXY bodies. Set it to ``False`` for dynamics solvers
+            that simulate massless bodies, so only the joints between the world and KINEMATIC
+            or PROXY bodies are culled.
 
     Returns:
         Fully converted joints model in Kamino's format.
@@ -1623,6 +1629,12 @@ def convert_joints(
     # effort-limit constraints. The indexing pass then needs those counts to
     # prefix-sum the world-local offsets; they cannot be inferred from joint
     # type alone because they depend on per-DoF actuation and parameters.
+    # Joints between two immovable bodies are culled; massless bodies stay movable when requested
+    joint_culling_immovable = model_bodies.is_immovable
+    if not cull_massless_body_joints:
+        driven = (model.body_flags.numpy() & (int(BodyFlags.KINEMATIC) | int(BodyFlags.PROXY))) != 0
+        joint_culling_immovable = wp.array(driven.astype(np.int32), dtype=wp.int32, device=model.device)
+
     wp.launch(
         kernel=joint_conversion_kernel,
         dim=model.joint_count,
@@ -1646,7 +1658,7 @@ def convert_joints(
             model.joint_friction,
             model.joint_limit_lower,
             model.joint_limit_upper,
-            model_bodies.is_immovable,
+            joint_culling_immovable,
             # Outputs:
             joint_jid,
             joint_dof_type,

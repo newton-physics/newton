@@ -1050,6 +1050,11 @@ class TestSolverKaminoLOXJoints(_LOXTestCase):
                 config.use_collision_detector = False
                 config.lox.eliminate_fixed_world_islands = eliminate
                 solver = SolverKamino(model, config=config)
+                # The welded bodies follow joint frames changed after construction
+                joint_x_p = model.joint_X_p.numpy()
+                joint_x_p[child_weld, :3] = (0.6, 0.0, 0.1)
+                model.joint_X_p.assign(joint_x_p)
+                solver.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
                 state_previous, state_next = model.state(), model.state()
 
                 for _ in range(50):
@@ -1075,6 +1080,36 @@ class TestSolverKaminoLOXJoints(_LOXTestCase):
                     transported = body_qd[base, :3] + np.cross(body_qd[base, 3:], lever)
                     np.testing.assert_allclose(body_qd[body, :3], transported, rtol=0.0, atol=1.0e-5)
                     np.testing.assert_allclose(body_qd[body, 3:], body_qd[base, 3:], rtol=0.0, atol=1.0e-6)
+
+    def test_massless_body_welded_to_world_holds_its_island(self):
+        """Hold a massive body welded to the world through a massless body, with world islands kept dynamic."""
+        builder = newton.ModelBuilder()
+        SolverKamino.register_custom_attributes(builder)
+        base = builder.add_link()
+        link = builder.add_link(
+            xform=wp.transform((0.0, 0.0, 0.2), wp.quat_identity()),
+            mass=1.0,
+            inertia=wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+            lock_inertia=True,
+        )
+        world_weld = builder.add_joint_fixed(parent=-1, child=base)
+        weld = builder.add_joint_fixed(
+            parent=base, child=link, parent_xform=wp.transform((0.0, 0.0, 0.2), wp.quat_identity())
+        )
+        builder.add_articulation([world_weld, weld])
+        model = builder.finalize(device=self.default_device)
+        config = self.make_config()
+        config.use_collision_detector = False
+        config.lox.eliminate_fixed_world_islands = False
+        solver = SolverKamino(model, config=config)
+        state_previous, state_next = model.state(), model.state()
+
+        for _ in range(100):
+            solver.step(state_previous, state_next, model.control(), contacts=None, dt=0.01)
+            state_previous, state_next = state_next, state_previous
+
+        np.testing.assert_array_equal(solver.status.numpy()["failed"], [0])
+        np.testing.assert_allclose(state_previous.body_q.numpy(), model.body_q.numpy(), rtol=0.0, atol=1.0e-3)
 
     def test_prescribed_contact_does_not_reject_dynamic_world(self):
         """Ignore contacts whose two incident bodies are prescribed."""

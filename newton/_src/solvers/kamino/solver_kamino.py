@@ -813,8 +813,11 @@ class SolverKamino(SolverBase, CouplingInterface):
             or collision_config.pipeline == "primitive"
             or collision_config.broadphase == "explicit"
         )
+        # LOX simulates massless bodies, so it keeps their joints
         self._model_kamino = self._kamino.ModelKamino.from_newton(
-            model, include_shape_contact_pairs=include_shape_contact_pairs
+            model,
+            include_shape_contact_pairs=include_shape_contact_pairs,
+            cull_massless_body_joints=config.dynamics_solver != "lox",
         )
 
         # Store for which joints the limits are finite. This is used to validate that finiteness of limits is not changed at runtime.

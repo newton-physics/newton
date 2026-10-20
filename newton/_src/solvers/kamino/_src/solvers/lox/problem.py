@@ -32,12 +32,14 @@ from ...kinematics.joints import compute_joints_data
 from ...kinematics.limits import LimitsKamino
 from .problem_kernels import (
     _accumulate_aligned_joint_wrenches,
+    _accumulate_block_structural_effective_mass,
     _carry_welded_bodies,
     _compute_structural_effective_mass,
     _count_box_rows,
     _enable_bodies_in_weighted_blocks,
     _finish_box_rows,
     _finish_contacts,
+    _floor_structural_effective_mass,
     _load_contacts,
     _load_dynamic_rows,
     _load_joint_frictions,
@@ -113,53 +115,60 @@ def _connected_component_labels(
         labels = updated
 
 
-def _welded_body_poses(
+def _welded_body_paths(
     welded: np.ndarray,
     anchor_of_label: dict[int, int],
     labels: np.ndarray,
-    weld_parent: np.ndarray,
-    weld_child: np.ndarray,
-    weld_parent_xform: np.ndarray,
-    weld_child_xform: np.ndarray,
-    body_com: np.ndarray,
-) -> tuple[np.ndarray, list[wp.transformf]]:
-    """Return the anchor of each welded body and its center-of-mass pose in the anchor's center-of-mass frame.
+    weld_joints: np.ndarray,
+    joint_parent: np.ndarray,
+    joint_child: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Return the anchor of each welded body and the chain of welds from the anchor to it.
 
-    The welds of each island form a tree, which a traversal from its anchor composes.
+    The welds of each island form a tree, which a traversal from its anchor orders.
+
+    Returns:
+        The anchor of each welded body, the offsets of their chains, and the joint and
+        direction (``1`` from parent to child) of each chain link, from the anchor outward.
     """
-    neighbors: dict[int, list[tuple[int, wp.transformf]]] = {}
-    for parent, child, parent_xform, child_xform in zip(
-        weld_parent.tolist(), weld_child.tolist(), weld_parent_xform, weld_child_xform, strict=True
-    ):
-        # Origin pose of the child in the parent's origin frame, and its inverse
-        child_in_parent = wp.transform_multiply(
-            wp.transformf(*parent_xform), wp.transform_inverse(wp.transformf(*child_xform))
-        )
-        neighbors.setdefault(parent, []).append((child, child_in_parent))
-        neighbors.setdefault(child, []).append((parent, wp.transform_inverse(child_in_parent)))
+    neighbors: dict[int, list[tuple[int, int, int]]] = {}
+    for joint in weld_joints.tolist():
+        parent, child = int(joint_parent[joint]), int(joint_child[joint])
+        neighbors.setdefault(parent, []).append((child, joint, 1))
+        neighbors.setdefault(child, []).append((parent, joint, 0))
 
-    origin_in_anchor: dict[int, wp.transformf] = {}
+    link_to: dict[int, tuple[int, int, int]] = {}
     for anchor in anchor_of_label.values():
-        origin_in_anchor[anchor] = wp.transform_identity(dtype=wp.float32)
+        visited = {anchor}
         stack = [anchor]
         while stack:
             body = stack.pop()
-            for neighbor, neighbor_in_body in neighbors.get(body, ()):
-                if neighbor not in origin_in_anchor:
-                    origin_in_anchor[neighbor] = wp.transform_multiply(origin_in_anchor[body], neighbor_in_body)
+            for neighbor, joint, forward in neighbors.get(body, ()):
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    link_to[neighbor] = (body, joint, forward)
                     stack.append(neighbor)
 
     anchors = np.array([anchor_of_label[int(labels[b])] for b in welded], dtype=np.int32)
-    poses = []
+    offsets = [0]
+    path_joints: list[int] = []
+    path_forward: list[int] = []
     for body, anchor in zip(welded.tolist(), anchors.tolist(), strict=True):
-        anchor_com = wp.transformf(wp.vec3f(*body_com[anchor]), wp.quat_identity(dtype=wp.float32))
-        body_com_pose = wp.transformf(wp.vec3f(*body_com[body]), wp.quat_identity(dtype=wp.float32))
-        poses.append(
-            wp.transform_multiply(
-                wp.transform_inverse(anchor_com), wp.transform_multiply(origin_in_anchor[body], body_com_pose)
-            )
-        )
-    return anchors, poses
+        chain = []
+        link = body
+        while link != anchor:
+            link, joint, forward = link_to[link]
+            chain.append((joint, forward))
+        for joint, forward in reversed(chain):
+            path_joints.append(joint)
+            path_forward.append(forward)
+        offsets.append(len(path_joints))
+    return (
+        anchors,
+        np.array(offsets, dtype=np.int32),
+        np.array(path_joints, dtype=np.int32),
+        np.array(path_forward, dtype=np.int32),
+    )
 
 
 def _body_row_incidence(
@@ -293,14 +302,71 @@ class LOXProblem:
         self._allocate_effort_rows(dynamic_world, dynamic_dof)
         self._allocate_unilaterals(*self._allocate_joint_frictions())
 
+        # Rows on dynamic bodies without inertia take the effective mass of their kind on their blocks
+        inverse_mass = model.bodies.inv_m_i.numpy()
+        inverse_inertia = model.bodies.inv_i_I_i.numpy()
+        dynamic = np.asarray(dynamic_bodies, dtype=np.int32)
+        singular = (inverse_mass[dynamic] == 0.0) | (np.linalg.matrix_rank(inverse_inertia[dynamic]) < 3)
+        self._block_effective_mass = (
+            wp.zeros((self.system.num_blocks, 2), dtype=wp.float32, device=self.device)
+            if singular.any() and self._data.structural_rows.count > 0
+            else None
+        )
+
+    def _floor_massless_structural_effective_mass(self) -> None:
+        """Give the structural rows without inertia the largest effective mass of their kind on their body blocks."""
+        structural_rows = self._data.structural_rows
+        body_block = self.system.data.body_block
+        self._block_effective_mass.zero_()
+        wp.launch(
+            _accumulate_block_structural_effective_mass,
+            dim=structural_rows.count,
+            inputs=[
+                structural_rows.body_a,
+                structural_rows.body_b,
+                structural_rows.jacobian_a,
+                structural_rows.jacobian_b,
+                body_block,
+                structural_rows.effective_mass,
+            ],
+            outputs=[self._block_effective_mass],
+            device=self.device,
+        )
+        wp.launch(
+            _floor_structural_effective_mass,
+            dim=structural_rows.count,
+            inputs=[
+                structural_rows.body_a,
+                structural_rows.body_b,
+                structural_rows.jacobian_a,
+                structural_rows.jacobian_b,
+                body_block,
+                self._block_effective_mass,
+            ],
+            outputs=[structural_rows.effective_mass],
+            device=self.device,
+        )
+
     def carry_welded_bodies(self) -> None:
-        """Move the bodies welded to kinematic bodies rigidly with them, in the Kamino body state."""
+        """Move the bodies welded to kinematic bodies rigidly with them, in the Kamino body state.
+
+        The relative poses follow the current joint frames and centers of mass of the Newton model.
+        """
         if self.welded_bodies is None:
             return
         wp.launch(
             _carry_welded_bodies,
             dim=self.welded_bodies.shape[0],
-            inputs=[self.welded_bodies, self.welded_anchors, self.welded_poses],
+            inputs=[
+                self.welded_bodies,
+                self.welded_anchors,
+                self.welded_path_offsets,
+                self.welded_path_joints,
+                self.welded_path_forward,
+                self.model._model.joint_X_p,
+                self.model._model.joint_X_c,
+                self.model._model.body_com,
+            ],
             outputs=[self.kamino_data.bodies.q_i, self.kamino_data.bodies.u_i],
             device=self.device,
         )
@@ -484,6 +550,8 @@ class LOXProblem:
                 outputs=[self._data.structural_rows.effective_mass],
                 device=self.device,
             )
+            if self._block_effective_mass is not None:
+                self._floor_massless_structural_effective_mass()
             # The joint assembly adds the multiplier impulses of the penalized structural rows
             self._data.structural_rows.body_impulse.zero_()
         self.system.add_joint_rows(
@@ -1008,7 +1076,9 @@ class LOXProblem:
         """
         self.welded_bodies = None
         self.welded_anchors = None
-        self.welded_poses = None
+        self.welded_path_offsets = None
+        self.welded_path_joints = None
+        self.welded_path_forward = None
         source_model = self.model._model
         body_count = self.model.size.sum_of_num_bodies
         if source_model is None:
@@ -1052,19 +1122,14 @@ class LOXProblem:
         welded = np.isin(labels, list(anchor_of_label)) & ~kinematic
         if welded.any():
             welded_bodies = np.flatnonzero(welded).astype(np.int32)
-            anchors, poses = _welded_body_poses(
-                welded_bodies,
-                anchor_of_label,
-                labels,
-                joint_parent[fixed_pair],
-                joint_child[fixed_pair],
-                source_model.joint_X_p.numpy()[fixed_pair],
-                source_model.joint_X_c.numpy()[fixed_pair],
-                source_model.body_com.numpy(),
+            anchors, path_offsets, path_joints, path_forward = _welded_body_paths(
+                welded_bodies, anchor_of_label, labels, np.flatnonzero(fixed_pair), joint_parent, joint_child
             )
             self.welded_bodies = wp.array(welded_bodies, dtype=wp.int32, device=self.device)
             self.welded_anchors = wp.array(anchors, dtype=wp.int32, device=self.device)
-            self.welded_poses = wp.array(poses, dtype=wp.transformf, device=self.device)
+            self.welded_path_offsets = wp.array(path_offsets, dtype=wp.int32, device=self.device)
+            self.welded_path_joints = wp.array(path_joints, dtype=wp.int32, device=self.device)
+            self.welded_path_forward = wp.array(path_forward, dtype=wp.int32, device=self.device)
             prescribed |= welded
         if self.eliminate_fixed_world_islands:
             prescribed |= welded_to_world

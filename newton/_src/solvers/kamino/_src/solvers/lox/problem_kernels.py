@@ -34,12 +34,14 @@ from .system_kernels import compute_structural_correction, is_rotational_structu
 
 __all__ = [
     "_accumulate_aligned_joint_wrenches",
+    "_accumulate_block_structural_effective_mass",
     "_carry_welded_bodies",
     "_compute_structural_effective_mass",
     "_count_box_rows",
     "_enable_bodies_in_weighted_blocks",
     "_finish_box_rows",
     "_finish_contacts",
+    "_floor_structural_effective_mass",
     "_load_contacts",
     "_load_dynamic_rows",
     "_load_joint_frictions",
@@ -247,17 +249,38 @@ def _carry_welded_bodies(
     # Inputs:
     welded_bodies: wp.array[wp.int32],
     welded_anchors: wp.array[wp.int32],
-    welded_poses: wp.array[wp.transformf],
+    path_offsets: wp.array[wp.int32],
+    path_joints: wp.array[wp.int32],
+    path_forward: wp.array[wp.int32],
+    joint_X_p: wp.array[wp.transformf],
+    joint_X_c: wp.array[wp.transformf],
+    body_com: wp.array[wp.vec3f],
     # Outputs:
     body_q: wp.array[wp.transformf],
     body_u: wp.array[wp.spatial_vectorf],
 ):
-    """Move each welded body rigidly with its kinematic anchor, from their center-of-mass poses and twists."""
+    """Move each welded body rigidly with its kinematic anchor, from their center-of-mass poses and twists.
+
+    The origin pose of the body in the anchor's origin frame composes the welds from the anchor outward.
+    """
     tid = wp.tid()
     body = welded_bodies[tid]
     anchor = welded_anchors[tid]
+    relative = wp.transform_identity(dtype=wp.float32)
+    for link in range(path_offsets[tid], path_offsets[tid + 1]):
+        joint = path_joints[link]
+        child_in_parent = wp.transform_multiply(joint_X_p[joint], wp.transform_inverse(joint_X_c[joint]))
+        if path_forward[link] != 0:
+            relative = wp.transform_multiply(relative, child_in_parent)
+        else:
+            relative = wp.transform_multiply(relative, wp.transform_inverse(child_in_parent))
+    identity = wp.quat_identity(dtype=wp.float32)
+    anchor_com = wp.transformf(body_com[anchor], identity)
+    relative_com = wp.transform_multiply(
+        wp.transform_inverse(anchor_com), wp.transform_multiply(relative, wp.transformf(body_com[body], identity))
+    )
     anchor_pose = body_q[anchor]
-    pose = wp.transform_multiply(anchor_pose, welded_poses[tid])
+    pose = wp.transform_multiply(anchor_pose, relative_com)
     anchor_twist = body_u[anchor]
     angular_velocity = wp.spatial_bottom(anchor_twist)
     lever = wp.transform_get_translation(pose) - wp.transform_get_translation(anchor_pose)
@@ -794,6 +817,78 @@ def _compute_structural_effective_mass(
                     inverse_effective_mass -= forward[row] * forward[row]
 
             effective_mass[structural_row] = 1.0 / inverse_effective_mass if inverse_effective_mass > 1.0e-12 else 0.0
+
+
+@wp.func
+def _row_body_block(body: wp.int32, body_block: wp.array[wp.int32]) -> wp.int32:
+    """Block of a row body, or ``-1`` for the world and prescribed bodies."""
+    if body < 0:
+        return -1
+    return body_block[body]
+
+
+@wp.func
+def _structural_row_kind(jacobian_a: vec6f, jacobian_b: vec6f) -> wp.int32:
+    """Kind of a structural row: ``0`` when it moves a body linearly [kg], ``1`` when it only rotates them [kg m^2]."""
+    for axis in range(3):
+        if jacobian_a[axis] != 0.0 or jacobian_b[axis] != 0.0:
+            return 0
+    return 1
+
+
+@wp.kernel
+def _accumulate_block_structural_effective_mass(
+    # Inputs:
+    body_a: wp.array[wp.int32],
+    body_b: wp.array[wp.int32],
+    jacobian_a: wp.array[vec6f],
+    jacobian_b: wp.array[vec6f],
+    body_block: wp.array[wp.int32],
+    effective_mass: wp.array[wp.float32],
+    # Outputs:
+    block_effective_mass: wp.array2d[wp.float32],
+):
+    """Accumulate the largest structural effective mass of each row kind on each body block."""
+    row = wp.tid()
+    kind = _structural_row_kind(jacobian_a[row], jacobian_b[row])
+    mass = effective_mass[row]
+    block_a = _row_body_block(body_a[row], body_block)
+    block_b = _row_body_block(body_b[row], body_block)
+    if block_a >= 0:
+        wp.atomic_max(block_effective_mass, block_a, kind, mass)
+    if block_b >= 0 and block_b != block_a:
+        wp.atomic_max(block_effective_mass, block_b, kind, mass)
+
+
+@wp.kernel
+def _floor_structural_effective_mass(
+    # Inputs:
+    body_a: wp.array[wp.int32],
+    body_b: wp.array[wp.int32],
+    jacobian_a: wp.array[vec6f],
+    jacobian_b: wp.array[vec6f],
+    body_block: wp.array[wp.int32],
+    block_effective_mass: wp.array2d[wp.float32],
+    # Outputs:
+    effective_mass: wp.array[wp.float32],
+):
+    """Give the rows whose bodies carry no inertia along them the largest effective mass of their kind on their blocks.
+
+    Such a row ties a massless body to the world or to another massless or prescribed body. The
+    massless body moves with the bodies welded to it in its block, whose rows carry their inertia.
+    """
+    row = wp.tid()
+    if effective_mass[row] > 0.0:
+        return
+    kind = _structural_row_kind(jacobian_a[row], jacobian_b[row])
+    mass = wp.float32(0.0)
+    block_a = _row_body_block(body_a[row], body_block)
+    block_b = _row_body_block(body_b[row], body_block)
+    if block_a >= 0:
+        mass = block_effective_mass[block_a, kind]
+    if block_b >= 0:
+        mass = wp.max(mass, block_effective_mass[block_b, kind])
+    effective_mass[row] = mass
 
 
 @wp.kernel
