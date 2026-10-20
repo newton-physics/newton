@@ -354,7 +354,7 @@ class LOXSolver:
             | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
         )
         if self._seed_topology is not None and flags & reseed_flags:
-            self._estimate_joint_penalty_scale(self._config.joint_penalty_seed_time_step, warn_failures=False)
+            self._estimate_joint_penalty_scale(float(self._config.joint_penalty_seed_time_step), warn_failures=False)
 
     def validate_model_changed(self, flags: ModelFlags | int) -> None:
         """Validate the joint friction and effort limits of the Newton model when its joint DOF values change."""
