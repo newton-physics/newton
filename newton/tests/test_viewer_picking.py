@@ -421,8 +421,12 @@ def test_picking_ignores_earlier_loop_closure(test: TestPickingSetup, device):
 
     def os_inertia(loop_first: bool) -> np.ndarray:
         builder = newton.ModelBuilder()
-        arm = builder.add_link(xform=wp.transform((0.2, 0.0, 0.0), wp.quat_identity()), mass=10.0)
-        finger = builder.add_link(xform=wp.transform((0.45, 0.0, 0.0), wp.quat_identity()), mass=0.1)
+        arm = builder.add_link(
+            xform=wp.transform((0.2, 0.0, 0.0), wp.quat_identity()), mass=10.0, inertia=wp.mat33(np.eye(3) * 0.1)
+        )
+        finger = builder.add_link(
+            xform=wp.transform((0.45, 0.0, 0.0), wp.quat_identity()), mass=0.1, inertia=wp.mat33(np.eye(3) * 1.0e-4)
+        )
         if loop_first:
             builder.add_joint_ball(-1, finger, parent_xform=wp.transform((0.45, 0.0, 0.0), wp.quat_identity()))
         j1 = builder.add_joint_revolute(
