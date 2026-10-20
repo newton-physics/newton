@@ -1,0 +1,1 @@
+Fix `newton.eval_inverse_dynamics_passive()` returning a wrong `coriolis_force` for floating-base articulations whose base translates and rotates at the same time. The free-joint correction now covers every link below the free joint, not only the base body.

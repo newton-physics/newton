@@ -13,6 +13,7 @@ import types
 import unittest
 import warnings
 from contextlib import nullcontext
+from typing import ClassVar
 from unittest import mock
 from urllib.parse import urlparse
 
@@ -668,7 +669,7 @@ class TestImportUsdPhysics(unittest.TestCase):
 
         fake_coacd.run_coacd = run_coacd
 
-        with patch_sys_module("coacd", fake_coacd):
+        with patch_sys_module("coacd", fake_coacd), mock.patch.object(newton.config, "cache_dir_meshes", None):
             builder = newton.ModelBuilder()
             builder.add_usd(stage)
             self.assertEqual(captured["threshold"], 0.05)
@@ -678,6 +679,103 @@ class TestImportUsdPhysics(unittest.TestCase):
             builder.default_mesh_approximation_cfg.coacd_threshold = 0.5
             builder.add_usd(stage)
             self.assertEqual(captured["threshold"], 0.5)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_physx_convex_decomposition_limits(self):
+        """Import opt-in PhysX limits without merging disconnected components."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        class LaterHullResolver(usd.SchemaResolver):
+            name = "later"
+            mapping: ClassVar[dict] = {
+                usd.PrimType.SHAPE: {"max_hull_vertices": usd.SchemaResolver.SchemaAttribute("later:hullVertexLimit")}
+            }
+
+        stage = Usd.Stage.CreateInMemory()
+        UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+        UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+        UsdPhysics.Scene.Define(stage, "/physicsScene")
+        source = newton.Mesh.create_sphere(
+            num_latitudes=8, num_longitudes=12, compute_normals=False, compute_uvs=False, compute_inertia=False
+        )
+        for name in ("/Plain", "/Physx", "/Default", "/Other", "/Hull"):
+            vertices, indices = source.vertices, source.indices
+            if name == "/Physx":
+                vertices = np.concatenate((vertices, vertices + np.array([10.0, 0.0, 0.0])))
+                indices = np.concatenate((indices, indices + len(source.vertices)))
+            mesh = UsdGeom.Mesh.Define(stage, name)
+            mesh.CreateFaceVertexCountsAttr().Set([3] * (len(indices) // 3))
+            mesh.CreateFaceVertexIndicesAttr().Set(indices.tolist())
+            mesh.CreatePointsAttr().Set([Gf.Vec3f(*point) for point in vertices.tolist()])
+            prim = mesh.GetPrim()
+            prim.CreateAttribute("later:hullVertexLimit", Sdf.ValueTypeNames.Int).Set(12)
+            UsdPhysics.CollisionAPI.Apply(prim)
+            approximation = UsdPhysics.Tokens.convexHull if name == "/Hull" else UsdPhysics.Tokens.convexDecomposition
+            UsdPhysics.MeshCollisionAPI.Apply(prim).GetApproximationAttr().Set(approximation)
+            if name != "/Plain":
+                prim.AddAppliedSchema("PhysxConvexDecompositionCollisionAPI")
+            if name in ("/Plain", "/Physx", "/Other", "/Hull"):
+                hulls, vertices = (1, 8) if name == "/Physx" else (2, 16)
+                prim.CreateAttribute("physxConvexDecompositionCollision:maxConvexHulls", Sdf.ValueTypeNames.Int).Set(
+                    hulls
+                )
+                prim.CreateAttribute("physxConvexDecompositionCollision:hullVertexLimit", Sdf.ValueTypeNames.Int).Set(
+                    vertices
+                )
+                prim.CreateAttribute("physxConvexHullCollision:hullVertexLimit", Sdf.ValueTypeNames.Int).Set(
+                    4 if name == "/Other" else 32
+                )
+        calls = []
+        fake_coacd = types.ModuleType("coacd")
+        fake_coacd.Mesh = lambda vertices, indices: (vertices, indices)
+
+        def run_coacd(cmesh, **kwargs):
+            calls.append(kwargs)
+            return [cmesh]
+
+        fake_coacd.run_coacd = run_coacd
+        for physx_resolver, later_resolver in ((False, False), (True, False), (True, True)):
+            for load_visual_shapes in (False, True):
+                with self.subTest(
+                    physx_resolver=physx_resolver, later_resolver=later_resolver, load_visual_shapes=load_visual_shapes
+                ):
+                    calls.clear()
+                    builder = newton.ModelBuilder()
+                    resolvers = [usd.SchemaResolverPhysx()] if physx_resolver else []
+                    if later_resolver:
+                        resolvers.append(LaterHullResolver())
+                    with patch_sys_module("coacd", fake_coacd):
+                        builder.add_usd(
+                            stage,
+                            load_visual_shapes=load_visual_shapes,
+                            schema_resolvers=resolvers,
+                        )
+                    merged = [call for call in calls if call["merge"]]
+                    self.assertEqual(
+                        sorted(call["max_convex_hull"] for call in merged), [1, 1, 2, 32] if physx_resolver else []
+                    )
+                    self.assertTrue(all(not call.get("decimate", False) for call in calls))
+                    self.assertTrue(all("max_ch_vertex" not in call for call in calls))
+                    hulls = [i for i, kind in enumerate(builder.shape_type) if kind == newton.GeoType.CONVEX_MESH]
+                    self.assertEqual(len(hulls), 6)
+                    expected = {"/Plain": 32, "/Physx": 8, "/Default": 64, "/Other": 16, "/Hull": 32}
+                    if later_resolver:
+                        expected["/Default"] = 12
+                    for shape in hulls:
+                        label = builder.shape_label[shape]
+                        path = next(path for path in expected if label.startswith(path))
+                        limit = expected[path] if physx_resolver else newton.Mesh.MAX_HULL_VERTICES
+                        self.assertEqual(builder.shape_source[shape].maxhullvert, limit)
+                        self.assertLessEqual(len(builder.shape_source[shape].vertices), limit)
+                        if path == "/Physx":
+                            # Each separated component keeps its own hull, even with a budget of one.
+                            extent = builder.shape_source[shape].vertices[:, 0]
+                            self.assertLess(float(np.ptp(extent)), 3.0)
+                    for device in devices:
+                        with self.subTest(device=device):
+                            model = builder.finalize(device=device)
+                            self.assertEqual(model.shape_count, builder.shape_count)
+                            self.assertTrue(np.isfinite(model.shape_scale.numpy()).all())
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_disabled_mesh_collider_skips_approximation(self):
@@ -8786,9 +8884,14 @@ def Xform "Articulation" (
                 with self.subTest(articulated=articulated, enabled=enabled, ignore_paths=ignore_paths):
                     joint_x.CreateJointEnabledAttr().Set(enabled)
                     builder = newton.ModelBuilder()
-                    result = builder.add_usd(
-                        stage, ignore_paths=ignore_paths, load_visual_shapes=False, load_sites=False
-                    )
+                    with warnings.catch_warnings():
+                        # usd-core 25.5 reports an articulation without enabled joints as invalid.
+                        warnings.filterwarnings(
+                            "ignore", "Invalid ArticulationDesc", category=newton.exceptions.NewtonWarning
+                        )
+                        result = builder.add_usd(
+                            stage, ignore_paths=ignore_paths, load_visual_shapes=False, load_sites=False
+                        )
                     self.assertNotIn(str(joint_x.GetPath()), result["path_joint_map"])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
