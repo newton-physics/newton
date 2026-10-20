@@ -1939,7 +1939,7 @@ class CollisionPipeline:
 
     @classmethod
     def create_from_usd(
-        cls, scene_prim: Usd.Prim | UsdPhysics.Scene, model: Model, **overrides: Any
+        cls, model: Model, scene_prim: Usd.Prim | UsdPhysics.Scene, **overrides: Any
     ) -> CollisionPipeline:
         """Create a :class:`CollisionPipeline` from ``NewtonCollisionPipelineAPI``.
 
@@ -1964,9 +1964,9 @@ class CollisionPipeline:
         that contain shapes.
 
         Args:
+            model: The simulation model to build the pipeline for.
             scene_prim: A ``UsdPhysics.Scene`` prim with ``NewtonCollisionPipelineAPI``
                 applied, or its typed schema object.
-            model: The simulation model to build the pipeline for.
             **overrides: Additional :meth:`__init__` keyword arguments that take
                 precedence over the USD-authored values.
 
