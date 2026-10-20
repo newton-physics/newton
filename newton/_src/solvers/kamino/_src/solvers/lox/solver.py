@@ -225,7 +225,10 @@ class LOXSolver:
         if model.size.sum_of_num_bodies == 0:
             raise ValueError("LOX requires at least one rigid body.")
         source_model = model._model
+        self._massless_bodies = None
         if source_model is not None:
+            # LOX decides which bodies it prescribes from their masses, so runtime edits keep them
+            self._massless_bodies = LOXSolver._find_massless_bodies(source_model)
             singular_bodies = LOXSolver._find_unsupported_singular_inertia_bodies(source_model)
             if singular_bodies:
                 raise ValueError(
@@ -266,6 +269,12 @@ class LOXSolver:
         self._seed_topology = (
             build_seed_topology(self._problem.system, structural_rows) if structural_rows.count > 0 else None
         )
+
+    @staticmethod
+    def _find_massless_bodies(model: Model) -> np.ndarray:
+        """Returns whether each body of the Newton model has zero inverse mass and inverse inertia."""
+        inverse_inertia = model.body_inv_inertia.numpy().reshape(model.body_count, 9)
+        return (model.body_inv_mass.numpy() == 0.0) & ~inverse_inertia.any(axis=1)
 
     @staticmethod
     def _find_unsupported_singular_inertia_bodies(model: Model) -> list[str]:
@@ -370,15 +379,30 @@ class LOXSolver:
         self._problem.carry_welded_bodies()
 
     def validate_model_changed(self, flags: ModelFlags | int) -> None:
-        """Validate the joint friction and effort limits of the Newton model when its joint DOF values change."""
-        if not flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES):
+        """Validate the joint friction and effort limits when the joint DOF values change, and that no body
+        became massless or gained mass when the inertial properties change."""
+        check_joints = bool(flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES))
+        check_masses = bool(flags & ModelFlags.BODY_INERTIAL_PROPERTIES) and self._massless_bodies is not None
+        if not (check_joints or check_masses):
             return
         # Host-side validation cannot synchronize aliased Newton arrays while a
         # CUDA graph is being captured. The same topology was validated when the
         # solver was built; captured property updates retain that topology.
         if self._device.is_cuda and self._device.is_capturing:
             return
-        self._problem.validate_model_changed()
+        if check_joints:
+            self._problem.validate_model_changed()
+        if check_masses:
+            source_model = self._model._model
+            flipped = np.flatnonzero(LOXSolver._find_massless_bodies(source_model) != self._massless_bodies)
+            if flipped.size > 0:
+                labels = ", ".join(
+                    f"'{source_model.body_label[b]}'" if source_model.body_label else f"body {b}" for b in flipped
+                )
+                raise ValueError(
+                    "LOX does not support making a body massless or giving a massless body mass after "
+                    f"construction: {labels}."
+                )
 
     def reset(
         self,

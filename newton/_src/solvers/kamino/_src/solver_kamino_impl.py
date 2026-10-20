@@ -445,13 +445,6 @@ class SolverKaminoImpl(SolverBase):
         """
         return self._config.dynamics_solver != "lox" and self._config.dynamics.cull_speculative_contacts
 
-    @property
-    def skip_fully_prescribed_contacts(self) -> bool:
-        """
-        Returns whether external contacts between two immovable bodies are skipped, which LOX does.
-        """
-        return self._config.dynamics_solver == "lox"
-
     ###
     # Configurations
     ###

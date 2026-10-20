@@ -813,11 +813,11 @@ class SolverKamino(SolverBase, CouplingInterface):
             or collision_config.pipeline == "primitive"
             or collision_config.broadphase == "explicit"
         )
-        # LOX simulates massless bodies, so it keeps their joints
+        # LOX simulates massless and PROXY bodies, so only kinematic bodies are immovable for it
         self._model_kamino = self._kamino.ModelKamino.from_newton(
             model,
             include_shape_contact_pairs=include_shape_contact_pairs,
-            cull_massless_body_joints=config.dynamics_solver != "lox",
+            kinematic_only_immovable=config.dynamics_solver == "lox",
         )
 
         # Store for which joints the limits are finite. This is used to validate that finiteness of limits is not changed at runtime.
@@ -1204,7 +1204,7 @@ class SolverKamino(SolverBase, CouplingInterface):
                     friction_mix_mode=self._config.materials.friction_mix_mode,
                     restitution_mix_mode=self._config.materials.restitution_mix_mode,
                     cull_speculative_contacts=self._solver_kamino.cull_speculative_contacts,
-                    skip_fully_prescribed_contacts=self._solver_kamino.skip_fully_prescribed_contacts,
+                    kinematic_only_immovable=self._config.dynamics_solver == "lox",
                 )
         else:
             self._detector = None
@@ -1674,6 +1674,7 @@ class SolverKamino(SolverBase, CouplingInterface):
             check_actuation=check_actuation,
             check_axes=check_axes,
             check_body_immovability=check_body_immovability,
+            kinematic_only_immovable=self._config.dynamics_solver == "lox",
         )
         violations = self._notify_violations.numpy()
         dynamic_joint = violations[self._kamino.StructuralUpdateViolation.DYNAMIC_CTS]

@@ -1633,6 +1633,7 @@ class LOXProblem:
                     self._data.contact_rows.world_count,
                     self._data.contact_rows.world_offset,
                     self.system.data.body_vector_index,
+                    self.model._model.body_flags if self.model._model is not None else None,
                     time_step,
                     stabilization_fraction,
                     dead_zone,

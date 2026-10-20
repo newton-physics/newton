@@ -14,6 +14,7 @@ from functools import cache
 
 import warp as wp
 
+from ......sim import BodyFlags
 from ...core.joints import JointActuationType, JointCorrectionMode, JointDoFType
 from ...core.math import compute_body_pose_update_with_logmap, contact_wrench_matrix_from_points
 from ...core.types import mat36f, mat66f, vec6f
@@ -473,6 +474,7 @@ def _load_contacts(
     world_count: wp.array[wp.int32],
     world_offset: wp.array[wp.int32],
     body_vector_index: wp.array[wp.int32],
+    body_flags: wp.array[wp.int32],
     model_time_dt: wp.array[wp.float32],
     stabilization_fraction: wp.float32,
     dead_zone: wp.float32,
@@ -512,6 +514,13 @@ def _load_contacts(
     if not a_is_dynamic and not b_is_dynamic:
         source_to_internal[cid] = -1
         return
+    # A proxy body only touches dynamic bodies that are not proxies
+    if body_flags:
+        a_is_proxy = bid_a_global >= 0 and (body_flags[bid_a_global] & int(BodyFlags.PROXY)) != 0
+        b_is_proxy = bid_b_global >= 0 and (body_flags[bid_b_global] & int(BodyFlags.PROXY)) != 0
+        if (a_is_proxy or b_is_proxy) and not (a_is_dynamic and b_is_dynamic and a_is_proxy != b_is_proxy):
+            source_to_internal[cid] = -1
+            return
     destination = world_offset[wid] + wp.atomic_add(world_count, wid, 1)
     source_to_internal[cid] = destination
     a_jacobian = mat36f(0.0)

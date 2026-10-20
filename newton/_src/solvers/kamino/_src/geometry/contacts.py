@@ -985,7 +985,7 @@ def make_convert_contacts_newton_to_kamino(
     friction_mix_mode: MaterialMixMode = MaterialMixMode.AVERAGE,
     restitution_mix_mode: MaterialMixMode = MaterialMixMode.MIN,
     cull_speculative: bool = DEFAULT_CULL_SPECULATIVE_CONTACTS,
-    skip_fully_prescribed: bool = False,
+    kinematic_only_immovable: bool = False,
 ):
     """
     Generates a kernel to convert Newton contacts to the Kamino format.
@@ -995,8 +995,8 @@ def make_convert_contacts_newton_to_kamino(
         restitution_mix_mode: The mixing mode to use for restitution.
         cull_speculative: If ``True``, skip speculative contacts, i.e., contacts
             with positive margin-shifted distance.
-        skip_fully_prescribed: If ``True``, skip contacts between bodies that
-            cannot respond to contact impulses.
+        kinematic_only_immovable: Whether only KINEMATIC bodies are immovable,
+            see :func:`is_immovable_for_kamino`.
 
     Returns:
         A kernel function that converts Newton contacts to the Kamino format.
@@ -1090,16 +1090,6 @@ def make_convert_contacts_newton_to_kamino(
         wid_0 = shape_world[sid_0]
         wid_1 = shape_world[sid_1]
 
-        if wp.static(skip_fully_prescribed):
-            dynamic_0 = bid_0 >= 0 and not is_immovable_for_kamino(
-                body_inv_mass[bid_0], body_inv_inertia[bid_0], body_flags[bid_0]
-            )
-            dynamic_1 = bid_1 >= 0 and not is_immovable_for_kamino(
-                body_inv_mass[bid_1], body_inv_inertia[bid_1], body_flags[bid_1]
-            )
-            if not dynamic_0 and not dynamic_1:
-                return
-
         # Determine the world index.  Global shapes (shape_world == -1) can
         # collide with shapes from any world, so fall back to the other shape.
         wid = wid_0
@@ -1178,8 +1168,10 @@ def make_convert_contacts_newton_to_kamino(
         # endpoint is exercised against an infinite-mass anchor.
         if bid_A >= 0 and bid_B >= 0:
             if is_immovable_for_kamino(
-                body_inv_mass[bid_A], body_inv_inertia[bid_A], body_flags[bid_A]
-            ) and is_immovable_for_kamino(body_inv_mass[bid_B], body_inv_inertia[bid_B], body_flags[bid_B]):
+                body_inv_mass[bid_A], body_inv_inertia[bid_A], body_flags[bid_A], kinematic_only_immovable
+            ) and is_immovable_for_kamino(
+                body_inv_mass[bid_B], body_inv_inertia[bid_B], body_flags[bid_B], kinematic_only_immovable
+            ):
                 return
 
         # Retrieve the material properties for this contact
@@ -1477,7 +1469,7 @@ def convert_contacts_newton_to_kamino(
     friction_mix_mode: Literal["average", "multiply", "max", "min", "geometric_average"] = "average",
     restitution_mix_mode: Literal["average", "multiply", "max", "min", "geometric_average"] = "min",
     cull_speculative_contacts: bool = DEFAULT_CULL_SPECULATIVE_CONTACTS,
-    skip_fully_prescribed_contacts: bool = False,
+    kinematic_only_immovable: bool = False,
 ):
     """
     Converts Newton's :class:`Contacts` to Kamino's :class:`ContactsKamino` format.
@@ -1522,10 +1514,9 @@ def convert_contacts_newton_to_kamino(
         cull_speculative_contacts:
             If ``True`` (the default), drop speculative contacts (contacts with
             positive margin-shifted distance).
-        skip_fully_prescribed_contacts:
-            If ``True``, omit contacts between two bodies that Kamino treats as
-            immovable, i.e. the world, massless bodies, and kinematic or proxy
-            bodies. Defaults to ``False``.
+        kinematic_only_immovable:
+            Whether only KINEMATIC bodies are immovable, see
+            :func:`is_immovable_for_kamino`. Defaults to ``False``.
     """
     # Skip conversion if there are no contacts to convert or no capacity to store them.
     if contacts_out.model_max_contacts_host == 0 or contacts_in.rigid_contact_max == 0:
@@ -1572,7 +1563,7 @@ def convert_contacts_newton_to_kamino(
         friction_mix_mode=MaterialMixMode.from_string(friction_mix_mode),
         restitution_mix_mode=MaterialMixMode.from_string(restitution_mix_mode),
         cull_speculative=cull_speculative_contacts,
-        skip_fully_prescribed=skip_fully_prescribed_contacts,
+        kinematic_only_immovable=kinematic_only_immovable,
     )
 
     # Launch the conversion kernel to convert Newton contacts to Kamino's format.
