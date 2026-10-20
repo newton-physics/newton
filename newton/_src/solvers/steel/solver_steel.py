@@ -1381,7 +1381,7 @@ class SolverSteel(SolverBase):
         """
 
         BODY_AWAKE = "body_awake"
-        """Per-body sleep flags of ``enable_sleeping``."""
+        """Per-body awake flags, ``True`` for awake and ``False`` for sleeping bodies; requires ``enable_sleeping``."""
 
     @dataclass(eq=False)
     class Observables(SolverBase.Observables):
@@ -2596,18 +2596,25 @@ class SolverSteel(SolverBase):
         *,
         contacts: Contacts | None = None,
         requires_grad: bool | None = None,
-    ) -> SolverBase.Observables:
-        """Allocate observable arrays; ``body_awake`` starts with the solver's current flags."""
+    ) -> "SolverSteel.Observables":
+        """Allocate observable arrays; ``body_awake`` starts with the solver's current flags.
+
+        See :meth:`SolverBase.observables` for the shared allocation contract and errors.
+        """
         observables = super().observables(kinds, contacts=contacts, requires_grad=requires_grad)
         if observables.is_requested(self.ObservableKind.BODY_AWAKE):
-            wp.launch(
-                _publish_body_awake,
-                dim=self.model.body_count,
-                inputs=[self._sleeping.body_awake],
-                outputs=[observables.body_awake],
-                device=self.model.device,
-            )
+            self._copy_body_awake(observables)
         return observables
+
+    def _copy_body_awake(self, observables: "SolverSteel.Observables") -> None:
+        """Copy the solver's per-body awake flags into ``observables.body_awake``."""
+        wp.launch(
+            _publish_body_awake,
+            dim=self.model.body_count,
+            inputs=[self._sleeping.body_awake],
+            outputs=[observables.body_awake],
+            device=self.model.device,
+        )
 
     @property
     def _contact_torsion_shape_radius(self) -> wp.array | None:
@@ -5887,13 +5894,7 @@ class SolverSteel(SolverBase):
                 device=self.model.device,
             )
         if observables is not None and observables.is_requested(self.ObservableKind.BODY_AWAKE):
-            wp.launch(
-                _publish_body_awake,
-                dim=self.model.body_count,
-                inputs=[self._sleeping.body_awake],
-                outputs=[observables.body_awake],
-                device=self.model.device,
-            )
+            self._copy_body_awake(observables)
         return state_out
 
     def _advance(

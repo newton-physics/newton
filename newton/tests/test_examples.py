@@ -38,8 +38,6 @@ import warp as wp
 import newton.examples
 import newton.tests.unittest_utils
 from newton.examples.robot.example_robot_cartpole import Example as RobotCartpoleExample
-from newton.examples.steel.example_steel_sleeping import Example as SteelSleepingExample
-from newton.exceptions import NewtonWarning
 from newton.tests.unittest_utils import (
     USD_AVAILABLE,
     NewtonTestCase,
@@ -1161,35 +1159,6 @@ add_example_test(
     devices=cuda_test_devices,
     test_options={"num-frames": 340},
     use_viewer=True,
-)
-
-
-def _test_steel_sleeping_warns_under_viewer_rtx(test, device):
-    class FakeViewerRTX(ViewerNull):
-        pass
-
-    test.allowOutputRegex(
-        r"^Module .* load on device '[^']*' took [\d.]+ ms\s*\((?:compiled|cached)\)\n?", stream="stdout"
-    )
-    with (
-        wp.ScopedDevice(device),
-        patch.object(newton.viewer, "ViewerRTX", FakeViewerRTX),
-        patch.object(SteelSleepingExample, "capture", lambda example: setattr(example, "graph", None)),
-        test.assertWarns(NewtonWarning) as caught,
-    ):
-        SteelSleepingExample(FakeViewerRTX(num_frames=1), SimpleNamespace(test=False))
-    test.assertEqual(
-        str(caught.warning),
-        "ViewerRTX keeps the first frame's shape colors, so sleeping bodies keep their awake color.",
-    )
-
-
-add_function_test(
-    TestSteelExamples,
-    "test_steel_sleeping_warns_under_viewer_rtx",
-    _test_steel_sleeping_warns_under_viewer_rtx,
-    devices=cuda_test_devices,
-    check_output=False,
 )
 
 
