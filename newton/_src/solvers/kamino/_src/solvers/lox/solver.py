@@ -252,8 +252,10 @@ class LOXSolver:
         if flags & ModelFlags.BODY_PROPERTIES and self._problem.dynamic_body_topology_changed():
             self._rebuild_rigid_topology()
 
-    def validate_model_changed(self) -> None:
-        """Validate LOX-specific values derived from the Newton model."""
+    def validate_model_changed(self, flags: ModelFlags | int) -> None:
+        """Validate the joint friction and effort limits of the Newton model when its joint DOF values change."""
+        if not flags & (ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.JOINT_DOF_FORCE_PROPERTIES):
+            return
         # Host-side validation cannot synchronize aliased Newton arrays while a
         # CUDA graph is being captured. The same topology was validated when the
         # solver was built; captured property updates retain that topology.

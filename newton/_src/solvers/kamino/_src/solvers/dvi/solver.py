@@ -401,8 +401,8 @@ class DVISolver:
     def notify_model_changed(self, flags: object) -> None:
         del flags
 
-    def validate_model_changed(self) -> None:
-        pass
+    def validate_model_changed(self, flags: object) -> None:
+        del flags
 
     def reset(self, problem: DualProblem | None = None, world_mask: wp.array[wp.bool] | None = None):
         """

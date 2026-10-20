@@ -819,7 +819,7 @@ class SolverKaminoImpl(SolverBase):
         """Validate solver-specific structural invariants before model updates."""
         if self._solver_fk is not None:
             self._solver_fk.validate_model_changed(flags)
-        self._solver_fd.validate_model_changed()
+        self._solver_fd.validate_model_changed(flags)
 
     @override
     def update_contacts(self, contacts: Contacts, state: State | None = None) -> None:
