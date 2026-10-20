@@ -3480,7 +3480,9 @@ class ModelBuilder:
         Note:
             For visual separation of worlds, it is recommended to use the viewer's
             `set_world_offsets()` method instead of physical spacing. This improves numerical
-            stability by keeping all worlds at the origin in the physics simulation.
+            stability by keeping all worlds at the origin in the physics simulation. With
+            ``separate_worlds=False``, this does not apply: copies share one world, so place them
+            apart with ``spacing`` or ``xforms`` to keep them from starting in contact.
 
             Python's cyclic garbage collector is temporarily disabled during this operation.
             Its previous state is restored before returning or propagating an exception.
@@ -3496,7 +3498,7 @@ class ModelBuilder:
             To approximate mesh shapes, call
             :meth:`~newton.ModelBuilder.approximate_meshes` on ``builder`` before
             passing it here. Replication copies mesh references, so approximating
-            first yields a single simplified copy shared across all worlds;
+            first yields a single simplified copy shared across all copies;
             approximating afterwards allocates one copy per replicated shape.
 
         Args:
@@ -3589,11 +3591,11 @@ class ModelBuilder:
         # Copies with a non-identity transform, as world indices and (N, 7) float32 rows.
         moved_worlds = np.asarray([i for i, xform in enumerate(xforms) if xform is not None], dtype=np.int64)
         moved_xforms = np.asarray([xform for xform in xforms if xform is not None], dtype=np.float32).reshape(-1, 7)
+        # Moved copies whose rotation is not the identity; only these rotate velocities.
+        rotated = ~np.all(moved_xforms[:, 3:] == _IDENTITY_ROTATION, axis=1)
+        translations_only = not np.any(rotated)
         offsets = np.asarray(
             [np.zeros(3, dtype=np.float32) if xform is None else xform.p for xform in xforms], dtype=np.float32
-        )
-        translations_only = all(
-            xform is None or np.array_equal(np.asarray(xform.q), _IDENTITY_ROTATION) for xform in xforms
         )
 
         def source_list(attr: str) -> list:
@@ -3758,8 +3760,7 @@ class ModelBuilder:
                 )
                 coord_base = moved_worlds[:, None, None] * counts["joint_coord"]
                 joint_q[coord_base + q_index[None]] = transform_multiply_rows(xform_local, xform_prev[None])
-                rotated = None if translations_only else ~np.all(moved_xforms[:, 3:] == _IDENTITY_ROTATION, axis=1)
-                if rotated is not None and np.any(rotated):
+                if np.any(rotated):
                     qd_targets = moved_worlds[rotated, None, None] * len(joint_qd_source) + qd_index[None]
                     twist = joint_qd[qd_targets].reshape((*qd_targets.shape[:2], 2, 3))
                     rotate_vectors(xform_local[rotated, :, None, 3:], twist)
@@ -3807,13 +3808,12 @@ class ModelBuilder:
         attribute_specs.pop("body_qd")
         if counts["body"]:
             body_qd = np.tile(pack_warp_values(builder.body_qd, wp.spatial_vectorf), (world_count, 1))
-            if not translations_only:
-                for world_index, xform in enumerate(xforms):
-                    if xform is None or np.array_equal(np.asarray(xform.q), _IDENTITY_ROTATION):
-                        continue
-                    sl = slice(world_index * counts["body"], (world_index + 1) * counts["body"])
-                    rotate_vectors(xform.q, body_qd[sl, :3])
-                    rotate_vectors(xform.q, body_qd[sl, 3:])
+            if np.any(rotated):
+                # Shaped (copy, body, linear/angular, 3); fancy indexing copies, so write back.
+                twists = body_qd.reshape((world_count, -1, 2, 3))
+                rotated_twists = twists[moved_worlds[rotated]]
+                rotate_vectors(moved_xforms[rotated, None, None, 3:], rotated_twists)
+                twists[moved_worlds[rotated]] = rotated_twists
             if "body_qd" in array_starts:
                 self.body_qd[array_starts["body_qd"] :] = body_qd
             else:
