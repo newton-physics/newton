@@ -220,8 +220,12 @@ class DVISolver:
         if len({c.unilateral_solver for c in self._config}) != 1:
             raise ValueError("All worlds must use the same DVI unilateral solver.")
         self._apgd = None
-        self._use_schur_complement = self._config[0].use_schur_complement
-        if any(c.use_schur_complement != self._use_schur_complement for c in self._config[1:]):
+        # Account for the bilateral response in every bounded-drive update.
+        # Raw body inverse inertia can dwarf the constrained joint mobility.
+        auto_schur = model.size.sum_of_num_effort_joint_cts > 0
+        schur_modes = [auto_schur if c.use_schur_complement is None else c.use_schur_complement for c in self._config]
+        self._use_schur_complement = schur_modes[0]
+        if any(mode != self._use_schur_complement for mode in schur_modes[1:]):
             raise ValueError("All worlds must use the same DVI Schur-complement configuration.")
         self._warmstart = warmstart
         self._collect_info = collect_info
@@ -518,8 +522,9 @@ class DVISolver:
         ``D_bb * lambda_b = -(v_f,b + D_bu * lambda_u)``.
 
         The unilateral block is updated iteratively with projection onto the
-        nonnegative and Coulomb cones. By default, direct bilateral solves are
-        alternated with unilateral sweeps. The optional Schur path instead
+        box bounds, nonnegative cone, and Coulomb cones. Without bounded PD
+        drives, the default alternates direct bilateral solves with unilateral
+        sweeps. Bounded PD drives automatically select the Schur path, which
         eliminates the bilateral response through
         ``D_uu - D_ub * D_bb^-1 * D_bu``. The dense path materializes this
         operator for PGS, while sparse PGS applies a compact low-rank

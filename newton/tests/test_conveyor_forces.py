@@ -16,7 +16,7 @@ import warp as wp
 
 import newton
 from newton.examples.basic.example_basic_conveyor_forces import ConveyorForceModel
-from newton.tests.unittest_utils import NewtonTestCase, add_function_test, get_test_devices
+from newton.tests.unittest_utils import MODULE_LOAD_OUTPUT_RE, NewtonTestCase, add_function_test, get_test_devices
 
 BELT_HALF_X = 1.5
 BELT_HALF_Y = 6.0
@@ -25,8 +25,6 @@ BELT_TOP_Z = 0.5
 BOX_HALF = 0.2
 CONTACT_FRICTION = 2.0e-5
 BELT_FRICTION = 0.5
-
-_MODULE_LOAD_OUTPUT_RE = r"^Module .* load on device '[^']*' took [\d.]+ ms\s*\((?:compiled|cached)\)\n?"
 
 
 def _make_solver(solver_name, model):
@@ -466,7 +464,7 @@ class TestConveyorForces(NewtonTestCase):
     def setUp(self):
         """Allow the lazy module-load messages these scenes emit."""
         super().setUp()
-        self.allowOutputRegex(_MODULE_LOAD_OUTPUT_RE, stream="stdout")
+        self.allowOutputRegex(MODULE_LOAD_OUTPUT_RE, stream="stdout")
 
 
 _devices = get_test_devices()

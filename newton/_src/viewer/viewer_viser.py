@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     import viser
 
 from ..core.types import Axis, override
+from ..exceptions import NewtonWarning
 from .camera import Camera
 from .image_logger import (
     _atlas_layout,
@@ -389,6 +390,7 @@ class ViewerViser(ViewerBase):
                 warnings.warn(
                     "Viser textured mesh batches do not support varying per-instance opacity; "
                     "the mesh material opacity is used. Use separate batches for different opacities.",
+                    NewtonWarning,
                     stacklevel=3,
                 )
         return mesh.export(file_type="glb")
@@ -396,6 +398,7 @@ class ViewerViser(ViewerBase):
     def __init__(
         self,
         *,
+        host: str = "0.0.0.0",
         port: int = 8080,
         paused: bool = False,
         label: str | None = None,
@@ -411,10 +414,14 @@ class ViewerViser(ViewerBase):
         It launches a web server that serves an interactive 3D visualization.
 
         Args:
+            host: Address the web server binds to. Defaults to ``"0.0.0.0"``
+                (every interface); use ``"127.0.0.1"`` to keep the viewer local
+                to this machine. Must be an address of this machine; viser
+                does not report bind failures and blocks instead.
             port: Port number for the web server. Defaults to 8080.
             paused: Whether simulation stepping starts paused.
             label: Optional label for the viser server window title.
-            verbose: If True, print the server URL when starting. Defaults to True.
+            verbose: If True, log the server URL when starting. Defaults to True.
             share: If True, create a publicly accessible URL via viser's share feature.
             record_to_viser: Path to record the viewer to a ``*.viser`` recording file
                 (e.g. "my_recording.viser"). If None, the viewer will not record to a file.
@@ -494,7 +501,7 @@ class ViewerViser(ViewerBase):
         self._line_versions = {}
 
         # Initialize viser server
-        self._server = viser.ViserServer(port=port, label=label or "Newton Viewer", verbose=verbose)
+        self._server = viser.ViserServer(host=host, port=port, label=label or "Newton Viewer", verbose=verbose)
         self._camera_request: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
         self._camera_fov_radians: float | None = None
         self._camera_up_axis = 2
@@ -511,12 +518,12 @@ class ViewerViser(ViewerBase):
         if share:
             self._share_url = self._server.request_share_url()
             if verbose:
-                print(f"Viser share URL: {self._share_url}")
+                _logger.info("Viser share URL: %s", self._share_url)
         else:
             self._share_url = None
 
         if verbose:
-            print(f"Viser server running at: {self.url}")
+            _logger.info("Viser server running at: %s", self.url)
 
         # Recording state
         self._frame_dt = 0.0
@@ -528,7 +535,7 @@ class ViewerViser(ViewerBase):
         self._setup_gui()
 
         if self._serializer is not None and verbose:
-            print(f"Recording to: {record_to_viser}")
+            _logger.info("Recording to: %s", record_to_viser)
 
     @override
     def clear_model(self):
@@ -1439,9 +1446,13 @@ class ViewerViser(ViewerBase):
         Returns:
             str: Browser URL for the running viser server.
         """
+        # Match viser's startup URL: a wildcard bind is reachable on localhost.
+        host = self._server.get_host()
+        if host == "0.0.0.0":
+            host = "localhost"
         if self.is_jupyter_notebook:
-            return self._build_browser_url(self._port)
-        return f"http://localhost:{self._port}"
+            return self._build_browser_url(self._port, local_host=host)
+        return f"http://{host}:{self._port}"
 
     @staticmethod
     def _normalize_jupyter_base_url(base_url: str) -> str:
@@ -1858,11 +1869,14 @@ class ViewerViser(ViewerBase):
         texture_image = prepare_viewer_texture(texture)
 
         if texture_image is not None and uvs_np is None:
-            warnings.warn(f"Mesh {name} has a texture but no UVs; texture will be ignored.", stacklevel=2)
+            warnings.warn(
+                f"Mesh {name} has a texture but no UVs; texture will be ignored.", NewtonWarning, stacklevel=2
+            )
             texture_image = None
         if texture_image is not None and uvs_np is not None and len(uvs_np) != len(points_np):
             warnings.warn(
                 f"Mesh {name} has {len(uvs_np)} UVs for {len(points_np)} vertices; texture will be ignored.",
+                NewtonWarning,
                 stacklevel=2,
             )
             texture_image = None
@@ -1877,6 +1891,7 @@ class ViewerViser(ViewerBase):
             if trimesh_mesh is None:
                 warnings.warn(
                     "Viser textured meshes require trimesh; falling back to untextured rendering.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
 
@@ -2623,7 +2638,7 @@ class ViewerViser(ViewerBase):
         self._serializer = None
 
         if self.verbose:
-            print(f"Recording saved to: {self._record_to_viser}")
+            _logger.info("Recording saved to: %s", self._record_to_viser)
 
     @override
     def log_lines(

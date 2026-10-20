@@ -39,6 +39,7 @@ try:
     from run_pr_benchmarks import build_pr_config, load_benchmark_patterns
     from simulation import (
         bench_anymal,
+        bench_cloth,
         bench_contacts,
         bench_kamino,
         bench_mujoco,
@@ -203,6 +204,57 @@ class TestSimulationBenchmarks(unittest.TestCase):
         for benchmark_name in benchmark_names:
             self.assertIn(benchmark_name, inventory)
             self.assertFalse(any(pattern.search(benchmark_name) for pattern in patterns), benchmark_name)
+
+    def test_deformable_rigid_collision_benchmarks_stay_out_of_pr_gate(self):
+        """Keep large cases nightly and guard coarse cloth in the PR gate."""
+        benchmark_names = (
+            "simulation.bench_cloth.DeformableRigidCollision.time_collide",
+            "simulation.bench_cloth.DeformableRigidCollisionScale.time_collide",
+        )
+        inventory = {entry["name"]: entry for entry in self._discover_benchmarks(pr_gate=False)}
+        patterns = tuple(re.compile(selection) for selection in load_benchmark_patterns())
+        for benchmark_name in benchmark_names:
+            with self.subTest(benchmark_name=benchmark_name):
+                self.assertIn(benchmark_name, inventory)
+                self.assertFalse(any(pattern.search(benchmark_name) for pattern in patterns))
+        self.assertEqual(bench_cloth.DeformableRigidCollision.repeat, 3)
+        self.assertEqual(bench_cloth.DeformableRigidCollisionScale.repeat, 1)
+        coarse_name = "simulation.bench_cloth.FastDeformableRigidCoarseCloth.time_collide"
+        self.assertIn(coarse_name, inventory)
+        self.assertTrue(any(pattern.search(coarse_name) for pattern in patterns))
+        self.assertEqual(
+            {case[1] for case in bench_cloth.FastDeformableRigidCoarseCloth.params[0]},
+            {"box", "capsule", "mesh"},
+        )
+        vbd_name = "simulation.bench_cloth.FastDeformableRigidCoarseClothVBD.time_simulate"
+        self.assertIn(vbd_name, inventory)
+        self.assertTrue(any(pattern.search(vbd_name) for pattern in patterns))
+        self.assertIn(
+            ("box_coarse_cloth_256", "box", 8, 256, 1, False),
+            bench_cloth.FastDeformableRigidCoarseClothVBD.params[0],
+        )
+
+    def test_deformable_rigid_benchmark_rejects_overflow(self):
+        """Reject each truncated contact stream but allow exactly full buffers."""
+        benchmark = bench_cloth.DeformableRigidCollision()
+        benchmark.pipeline = SimpleNamespace(broad_phase_pair_count=self._FakeArray([8]), shape_pairs_max=8)
+        benchmark.contacts = SimpleNamespace(
+            rigid_contact_count=self._FakeArray([8]),
+            rigid_contact_max=8,
+            soft_contact_count=self._FakeArray([8]),
+            soft_contact_max=8,
+        )
+        benchmark._verify_contact_capacity()
+        for label, counter in (
+            ("candidate pairs", benchmark.pipeline.broad_phase_pair_count),
+            ("rigid contacts", benchmark.contacts.rigid_contact_count),
+            ("soft contacts", benchmark.contacts.soft_contact_count),
+        ):
+            with self.subTest(counter=label):
+                counter.values[0] = 9
+                with self.assertRaisesRegex(RuntimeError, f"overflows {label}: 9 > 8"):
+                    benchmark._verify_contact_capacity()
+                counter.values[0] = 8
 
     def test_deformable_collision_benchmark_is_in_pr_gate(self):
         """Keep the large-scene deformable collision benchmark in the PR gate."""
@@ -388,6 +440,99 @@ class TestSimulationBenchmarks(unittest.TestCase):
         )
         self.assertIsNotNone(model_key)
         self.assertEqual(model_key, solver_key)
+
+    def test_large_world_startup_phases(self):
+        """Include finalization in model time and collision setup in solver time."""
+        benchmark = bench_model.KpiInitializeModelLargeWorld()
+        clock = [0.0]
+
+        def advance(seconds):
+            clock[0] += seconds
+            return Mock()
+
+        builder = Mock()
+        builder.add_body.side_effect = lambda **kwargs: advance(1.0)
+        builder.finalize.side_effect = lambda: advance(2.0)
+        phases = {}
+        with (
+            patch.object(bench_model.newton, "ModelBuilder", return_value=builder),
+            patch.object(bench_model.newton.Mesh, "create_box"),
+            patch.object(bench_model.newton, "CollisionPipeline", side_effect=lambda *args, **kwargs: advance(3.0)),
+            patch.object(bench_model, "SolverXPBD", side_effect=lambda *args: advance(4.0)),
+            patch("time.perf_counter", side_effect=lambda: clock[0]),
+            patch.object(wp, "synchronize_device", side_effect=lambda: advance(0.5)),
+        ):
+            benchmark._initialize(4, phases)
+
+        self.assertEqual(phases, {"finalize": 2.5, "model": 7.0, "solver": 7.5})
+
+    def test_large_world_startup_cache_excludes_warmup(self):
+        """Average matching warm samples and expose each initialization metric."""
+        benchmark = bench_model.KpiInitializeModelLargeWorld()
+        cases = []
+        clock = [0.0]
+
+        def initialize(shape_count, phase_times=None):
+            cases.append(shape_count)
+            clock[0] += 100.0 if phase_times is None else 10.0
+            if phase_times is not None:
+                scale = len(cases) - 2
+                phase_times.update(model=4.0 * scale, finalize=2.0 * scale, solver=3.0 * scale)
+            return Mock(), Mock(), Mock()
+
+        with (
+            patch.object(benchmark, "_initialize", side_effect=initialize),
+            patch.object(wp, "get_cuda_device_count", return_value=1),
+            patch.object(wp, "ScopedDevice"),
+            patch.object(wp, "synchronize_device"),
+            patch("time.perf_counter", side_effect=lambda: clock[0]),
+        ):
+            metrics = benchmark.setup_cache()
+
+        self.assertEqual(cases, [4, 10000, 10000, 10000, 10000])
+        self.assertEqual(benchmark.track_initialize_model(metrics), 8.0)
+        self.assertEqual(benchmark.track_mean_finalize_time(metrics), 4.0)
+        self.assertEqual(benchmark.track_initialize_solver(metrics), 6.0)
+        self.assertEqual(benchmark.track_mean_startup_time(metrics), 10.0)
+
+    def test_large_world_cpu_memory_accepts_startup_cache(self):
+        """Warm only CPU without CUDA and accept optional cached timing metrics."""
+        benchmark = bench_model.KpiInitializeModelLargeWorld()
+        with (
+            patch.object(benchmark, "_initialize", return_value=(Mock(), Mock(), Mock())) as initialize,
+            patch.object(wp, "get_cuda_device_count", return_value=0),
+            patch.object(wp, "ScopedDevice") as scoped_device,
+            patch.object(wp, "synchronize_device"),
+        ):
+            self.assertIsNone(benchmark.setup_cache())
+            initialize.assert_called_once_with(4)
+            scoped_device.assert_called_once_with("cpu")
+            for metrics in (None, {"model": 1.0}):
+                benchmark.peakmem_initialize_model_cpu(metrics)
+            self.assertEqual(initialize.call_count, 3)
+            self.assertEqual(initialize.call_args.args, (10000,))
+
+    def test_large_world_startup_metrics_share_one_cache(self):
+        """Discover the phase metrics and CPU peak memory with a shared startup cache."""
+        prefix = "setup.bench_model.KpiInitializeModelLargeWorld."
+        inventory = {
+            entry["name"].removeprefix(prefix): entry
+            for entry in self._discover_benchmarks(pr_gate=False)
+            if entry["name"].startswith(prefix)
+        }
+        self.assertEqual(
+            set(inventory),
+            {
+                "track_initialize_model",
+                "track_mean_finalize_time",
+                "track_initialize_solver",
+                "track_mean_startup_time",
+                "peakmem_initialize_model_cpu",
+            },
+        )
+        cache_keys = {entry["setup_cache_key"] for entry in inventory.values()}
+        self.assertEqual(len(cache_keys), 1)
+        self.assertNotIn(None, cache_keys)
 
     def test_metric_setup_caches_skip_without_cuda(self):
         """Skip metric caches without constructing CPU workloads."""

@@ -3,6 +3,7 @@
 
 """Group and order articulation joints without reading USD or changing a builder."""
 
+import logging
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -10,6 +11,8 @@ import numpy as np
 import numpy.typing as npt
 
 from ..utils import topology
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -54,7 +57,7 @@ class _ArticulationJointPlan:
         if joint_ordering is None:
             return np.arange(len(self.joint_names))
         if verbose:
-            print(f"Sorting joints using {joint_ordering} ordering...")
+            logger.info("Sorting joints using %s ordering...", joint_ordering)
         sorted_joints, reversed_joint_list = topology.topological_sort_undirected(
             self.joint_edges, use_dfs=joint_ordering == "dfs", ensure_single_root=True
         )
@@ -65,5 +68,5 @@ class _ArticulationJointPlan:
                 f"Reversed joints are not supported: {reversed_joint_names}. Ensure that the joint parent body is defined as physics:body0 and the child is defined as physics:body1 in the joint prim."
             )
         if verbose:
-            print("Joint ordering:", sorted_joints)
+            logger.info("Joint ordering: %s", sorted_joints)
         return sorted_joints

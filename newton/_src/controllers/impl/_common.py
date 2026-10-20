@@ -527,6 +527,12 @@ _GATHER_KERNELS_BY_DTYPE_AND_RANK = {
     wp.quat: {1: _gather_rank1_port_kernel},
 }
 
+# Overloads instantiated lazily on launch change the module hash, making the
+# compiled module depend on launch order; declare the table's dtypes up front.
+for _dtype, _kernels in _GATHER_KERNELS_BY_DTYPE_AND_RANK.items():
+    if 1 in _kernels:
+        wp.overload(_gather_rank1_port_kernel, {"port": wp.indexedarray(dtype=_dtype), "out": wp.array[_dtype]})
+
 
 def _port_source(
     port: wp.array | wp.indexedarray,

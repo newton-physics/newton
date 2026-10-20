@@ -366,6 +366,14 @@ def is_bounded_effort_limit_wp(tau_max: float) -> bool:
 
 
 @wp.func
+def clamp_joint_effort_wp(tau: float, tau_max: float) -> float:
+    """Clamp an actuator command to a bounded effort limit; pass unbounded commands through."""
+    if is_bounded_effort_limit_wp(tau_max):
+        return wp.clamp(tau, -tau_max, tau_max)
+    return tau
+
+
+@wp.func
 def has_effort_cts_wp(act_type: int, k_p: float, k_d: float, tau_max: float) -> bool:
     """Returns whether one joint DoF requires a bounded implicit-PD row."""
     return has_implicit_pd_wp(act_type, k_p, k_d) and is_bounded_effort_limit_wp(tau_max)
@@ -1984,11 +1992,11 @@ class JointsData:
     h_j := a_j * dq_j^{-} + dt * tau_j_tot
     dq_b_j := inv_m_j * h_j
     ```
-    For unbounded implicit PD, the joint dynamics constraint includes
-    ``tau_j_tot`` according to the actuation type:
+    For DoFs with armature, viscous damping or unbounded implicit PD, this path
+    assembles ``tau_j_tot`` as follows according to the actuation type:
 
-    - ``PASSIVE``: ``tau_j``
-    - ``FORCE``: ``tau_j + tau_j_ff``
+    - ``PASSIVE``: ``clamp(tau_j, -tau_j_max, tau_j_max)``
+    - ``FORCE``: ``clamp(tau_j + tau_j_ff, -tau_j_max, tau_j_max)``
     - ``POSITION``: ``tau_j + k_p_j * (q_j_ref - q_j^{-})``
     - ``VELOCITY``: ``tau_j + k_d_j * dq_j_ref``
     - ``POSITION_VELOCITY``:
