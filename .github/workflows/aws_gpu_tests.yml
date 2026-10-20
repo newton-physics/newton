@@ -58,6 +58,10 @@ on:
         required: true
       CODECOV_TOKEN:
         required: true
+    outputs:
+      warp-cache-key-prefix:
+        description: 'Key prefix of the Warp kernel cache for the GPU architecture the tests ran on'
+        value: ${{ jobs.gpu-unit-tests.outputs.warp-cache-key-prefix }}
   workflow_dispatch:
     inputs:
       instance-type:
@@ -141,6 +145,8 @@ jobs:
     runs-on: ${{ needs.start-runner.outputs.label }} # run the job on the newly created runner
     permissions:
       contents: read
+    outputs:
+      warp-cache-key-prefix: ${{ steps.gpu-arch.outputs.warp-cache-key-prefix }}
     env:
       HOME: /actions-runner
       PYTHONFAULTHANDLER: "1" # Dump tracebacks on fatal signals (SIGSEGV, SIGABRT, etc.)
@@ -167,7 +173,9 @@ jobs:
         id: gpu-arch
         run: |
           nvidia-smi --query-gpu=name,compute_cap --format=csv | tee -a "$GITHUB_STEP_SUMMARY"
-          echo "sm=sm$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -n1 | tr -d '.')" >> "$GITHUB_OUTPUT"
+          sm="sm$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -n1 | tr -d '.')"
+          echo "sm=$sm" >> "$GITHUB_OUTPUT"
+          echo "warp-cache-key-prefix=warp-kernels-gpu-$sm-" >> "$GITHUB_OUTPUT"
           echo "driver=$(nvidia-smi --query-gpu=driver_version --format=csv,noheader | head -n1)" >> "$GITHUB_OUTPUT"
 
       # Warp kernel binaries are architecture-specific, so each GPU type keeps its own cache.
@@ -179,9 +187,9 @@ jobs:
         uses: actions/cache/restore@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
         with:
           path: /actions-runner/.cache/warp
-          key: warp-kernels-gpu-${{ steps.gpu-arch.outputs.sm }}-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
+          key: ${{ steps.gpu-arch.outputs.warp-cache-key-prefix }}${{ hashFiles('uv.lock', 'newton/**/*.py') }}
           restore-keys: |
-            warp-kernels-gpu-${{ steps.gpu-arch.outputs.sm }}-
+            ${{ steps.gpu-arch.outputs.warp-cache-key-prefix }}
 
       - name: Check disk space
         run: df -h
@@ -216,7 +224,7 @@ jobs:
           PYTHONFAULTHANDLER: "1"
           # sys.monitoring coverage core: avoids settrace overhead in unmeasured code
           COVERAGE_CORE: "sysmon"
-        run: uv run --extra dev --extra torch-cu13 --extra rtx -m newton.tests --strict-warnings --no-cache-clear --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
+        run: uv run --extra dev --extra torch-cu13 --extra rtx -m newton.tests --strict-warnings --parallel-timeout 4500 --no-cache-clear --junit-report-xml rspec.xml --coverage --coverage-xml coverage.xml
 
       - name: Save OVRTX shader cache
         if: github.event_name != 'merge_group' && steps.restore-ovrtx-shader-cache.outputs.cache-hit != 'true'
@@ -232,7 +240,7 @@ jobs:
         uses: actions/cache/save@668228422ae6a00e4ad889ee87cd7109ec5666a7  # v5.0.4
         with:
           path: /actions-runner/.cache/warp
-          key: warp-kernels-gpu-${{ steps.gpu-arch.outputs.sm }}-${{ hashFiles('uv.lock', 'newton/**/*.py') }}
+          key: ${{ steps.gpu-arch.outputs.warp-cache-key-prefix }}${{ hashFiles('uv.lock', 'newton/**/*.py') }}
 
       - name: Check disk space (post-test)
         if: always()

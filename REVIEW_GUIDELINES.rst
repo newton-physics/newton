@@ -28,6 +28,40 @@ implementation can follow every coding standard while solving the wrong
 problem, or implement the specification while introducing an unsuitable
 public contract.
 
+.. _review-questions:
+
+Questions for every change
+--------------------------
+
+Ask these of every change, including small bug fixes, in proportion to its
+size. The Fit gates below add depth for large proposals.
+
+#. **Simplest:** Is this the smallest change that solves the stated problem?
+   Question each new parameter, mode, alias, public symbol, and file, and
+   prefer an existing mechanism. Check whether ``main`` or another open pull
+   request already covers the change, and whether unrelated parts should be
+   split out.
+#. **Principled:** Does it fix the cause at the right layer rather than a
+   symptom, proxy, or workaround? Prefer designs that are correct by
+   construction over detecting and reporting bad states, and upstream fixes
+   when Warp or another dependency owns the behavior. Treat loosened
+   thresholds, suppressed warnings, and special cases as prompts to look
+   deeper.
+#. **Honest contract:** Does every accepted input either take effect or get
+   rejected? Look for silent fallbacks, partially honored options, and
+   documentation, changelog entries, or tests that describe behavior the code
+   does not implement.
+#. **Siblings:** When the change fixes a defect or you find one, check
+   sibling code paths, such as other joint types, entity kinds, importers,
+   solvers, and duplicated helpers, for the same pattern.
+#. **Tests:** Would each new test fail without the change, for the failure
+   mode it claims? Could an existing test, class, or fixture be extended
+   instead? Are the model, step count, and device matrix as small as
+   possible?
+#. **Cost:** What does the change add to the default path? Setup, import,
+   memory, and steady-state costs need evidence even when the change is not
+   about performance.
+
 Review feedback
 ---------------
 
@@ -98,10 +132,10 @@ Apply four gates:
   left, who can maintain and validate it, and which existing priority will
   lose capacity.
 
-For new or changed user-authorable configuration, require an explicit USD
-schema disposition: reuse an existing USD schema; add or track a USD schema
-with lifecycle ownership, importer coverage, and runtime coverage; or explain
-why the concept is intentionally runtime-only or non-authorable.
+For authorable simulation features, apply the schema and importer policy in
+:ref:`source-code-guidelines`: schema design should inform the API before merge.
+Require implemented support, an explicitly accepted and tracked deferral, or a
+reason this does not apply. A follow-up issue alone is not acceptance.
 
 Return one explicit verdict:
 
@@ -131,6 +165,10 @@ Check for:
   inputs, or outputs; and
 - inconsistencies between the implementation, documentation, tests, and
   stated behavior.
+
+For authorable features, trace schema parsing through the builder to runtime
+behavior and check tests against equivalent builder-created models. Verify
+schema semantics and the documented supported subset.
 
 Review the relevant invariants, boundary conditions, failure paths, state and
 resource ownership, and supported execution modes. Pay particular attention
@@ -162,6 +200,21 @@ Apply the :ref:`source-code-guidelines` to every code and public-API change.
 They are authoritative for public exports, namespaces, naming, signatures,
 types, documentation, testing, compatibility, and repository conventions.
 
+For test changes, explicitly assess :ref:`test-organization-and-runtime`.
+Confirm that tests exercise the actual implementation and verify meaningful
+technical results. Flag tests that replace the functionality under test with
+mocks or only check fake interfaces, expected calls, or canned responses. Apply
+the ``newton/tests/test_api.py`` exception only to targeted checks of actual API
+contracts; it does not excuse mock-only tests or missing functional coverage.
+Inspect related existing coverage and check whether new assertions or scenarios
+could extend it, whether new solver-specific modules are placed correctly, and
+whether related tests reuse an appropriate class, module, and fixture. Assess
+redundant simulation work and added CI cost; new or expanded expensive scenarios
+need before/after measurements and justification. Ground concerns in the
+specific duplicated coverage, avoidable setup, or misplaced tests. Preserve
+meaningful coverage, failure diagnosis, and test independence, and weigh setup
+reuse against lost class-level parallelism when recommending consolidation.
+
 For public API changes, check the canonical public path, stability status,
 signature and defaults, behavior and return contract, documentation, and
 generated API reference. Enforce the deprecation policy and migration guidance
@@ -170,6 +223,9 @@ for incompatible changes.
 Check the repository obligations relevant to the change, including:
 
 - focused regression coverage and documentation;
+- schema/importer coverage, compatible schema-package versions, and deferrals;
+- diagnostics that follow the error, warning, and logging rules, including
+  Newton warning categories and module loggers instead of ``print()``;
 - accurate, correctly categorized Towncrier fragments for user-facing changes;
 - dependency and lockfile changes, licenses, and required notices;
 - packaging, supported platforms, workflows, and downstream compatibility;

@@ -86,7 +86,7 @@ def make_row_index_kernel(max_blocks: int):
     block values are copied.
     """
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False})
     def row_index_kernel(
         num_nzb: wp.array[wp.int32],
         nzb_start: wp.array[wp.int32],
@@ -130,7 +130,7 @@ def make_fill_sort_kernel():
     is the exclusive end of world ``w``'s block segment.
     """
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False})
     def fill_sort_kernel(
         num_nzb: wp.array[wp.int32],
         nzb_start: wp.array[wp.int32],
@@ -161,7 +161,7 @@ def make_cursor_kernel():
     block for that body, or ``-1`` if the body has no blocks.
     """
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False})
     def cursor_kernel(
         num_nzb: wp.array[wp.int32],
         nzb_start: wp.array[wp.int32],
@@ -192,7 +192,7 @@ def make_fill_row_sorted_kernel():
     the transpose hot loop reads ``row_idx_sorted[idx]`` sequentially instead of chasing ``gb``.
     """
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False})
     def fill_row_sorted_kernel(
         num_nzb: wp.array[wp.int32],
         nzb_start: wp.array[wp.int32],
@@ -477,7 +477,7 @@ def make_fused_cr_kernel(max_rows: int, max_cols: int, max_blocks: int, block_di
             out[i] = av
         return out
 
-    @wp.kernel
+    @wp.kernel(module="unique", module_options={"enable_backward": False})
     def fused_cr_kernel(
         # Problem dims / offsets:
         ncts: wp.array[wp.int32],

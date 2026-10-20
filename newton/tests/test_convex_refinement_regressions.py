@@ -11,6 +11,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.geometry.support_function import _CONVEX_HULL_VALID
 from newton.tests.test_convex_contact_witness import (
     _create_witness_kernel,
     _failed_distance_query,
@@ -19,7 +20,9 @@ from newton.tests.test_convex_contact_witness import (
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
-def _contacts(test, device, half, vertices, indices, pose, scale, *, swap=False, split=False, margin=0.0):
+def _contacts(
+    test, device, half, vertices, indices, pose, scale, *, swap=False, split=False, margin=0.0, triangle=False
+):
     """Return physical witnesses and box-to-mesh normals through the public pipeline."""
     builder = newton.ModelBuilder()
     body = builder.add_body(xform=pose, mass=1.0, inertia=wp.mat33(np.eye(3)))
@@ -29,6 +32,8 @@ def _contacts(test, device, half, vertices, indices, pose, scale, *, swap=False,
     for box in (False, True) if swap else (True, False):
         if box:
             box_index = builder.add_shape_box(-1, hx=half[0], hy=half[1], hz=half[2], cfg=cfg)
+        elif triangle:
+            builder.add_shape_mesh(body, mesh=mesh, scale=scale, cfg=cfg)
         else:
             builder.add_shape_convex_hull(body, mesh=mesh, scale=scale, cfg=cfg)
     model = builder.finalize(device)
@@ -104,6 +109,22 @@ def test_refinement_signed_separation(test, device):
                 test.assertTrue(np.all(depths < 0.0))
             elif shift == -2.0 * gap:
                 test.assertTrue(np.all(depths > 0.0))
+
+    # A near-touching box-hull pair can have a valid portal but an uncertified
+    # GJK shortcut. Keep the portal witnesses and depth when that query fails.
+    vertices = np.array(list(product((-0.5, 0.5), repeat=3)), dtype=np.float32)
+    indices = ConvexHull(vertices).simplices
+    pose = wp.transform(wp.vec3(1.000001, 0.0, 0.49), wp.quat_identity())
+    expected_gap = float(pose.p[0]) - 1.0
+    for split, swap in product((False, True) if device.is_cuda else (False,), (False, True)):
+        with test.subTest(shortcut_fallback=True, split=split, swap=swap):
+            pa, pb, normals = _contacts(
+                test, device, np.full(3, 0.5), vertices, indices, pose, np.ones(3), split=split, swap=swap
+            )
+            np.testing.assert_allclose(normals, np.tile([1.0, 0.0, 0.0], (len(normals), 1)), atol=1.0e-5)
+            np.testing.assert_allclose(pa[:, 0], 0.5, atol=1.0e-6)
+            np.testing.assert_allclose(pb[:, 0], 0.5 + expected_gap, atol=1.0e-6)
+            np.testing.assert_allclose(np.sum((pa - pb) * normals, axis=1), -expected_gap, atol=1.0e-6)
 
 
 def test_refinement_source_topology(test, device):
@@ -217,6 +238,28 @@ def test_refinement_unconverged_query_separation(test, device):
     test_refinement_failed_query_separation(test, device, unconverged=True)
 
 
+def test_refinement_triangle_box_depth(test, device):
+    """Resolve a small triangle on a wide box through the nearest supporting face."""
+    half = np.array([10.0, 10.0, 0.5])
+    vertices = np.array([[0.0, 0.0, 0.0], [0.0, 0.01, 0.0], [0.01, 0.0, 0.0]], dtype=np.float32)
+    # At the edge, the initial portal can exit sideways by 0.1 m instead of
+    # through the top by 0.02 m. Include a shallow contact as a control.
+    for position, swap in product(((9.9, 0.1, 0.48), (0.3, 0.2, 0.4999)), (False, True)):
+        with test.subTest(position=position, swap=swap):
+            pose = wp.transform(wp.vec3(position), wp.quat_identity())
+            pa, pb, normals = _contacts(
+                test, device, half, vertices, [0, 1, 2], pose, np.ones(3), swap=swap, triangle=True
+            )
+            np.testing.assert_allclose(normals, np.tile([0.0, 0.0, 1.0], (len(normals), 1)), atol=1.0e-5)
+            depths = np.sum((pa - pb) * normals, axis=1)
+            np.testing.assert_allclose(depths, half[2] - position[2], atol=1.0e-5)
+            np.testing.assert_allclose(pa[:, 2], half[2], atol=1.0e-5)
+            local = pb - position
+            np.testing.assert_allclose(local[:, 2], 0.0, atol=1.0e-5)
+            test.assertGreaterEqual(float(np.min(local[:, :2])), -1.0e-5)
+            test.assertLessEqual(float(np.max(np.sum(local[:, :2], axis=1))), 0.01 + 1.0e-5)
+
+
 def test_refinement_resting_box_stack(test, device):
     """Report face contacts for centered, nearly aligned resting cubes.
 
@@ -263,6 +306,98 @@ def test_refinement_resting_box_stack(test, device):
                 test.assertAlmostEqual(float(np.dot(pb - pa, normals[i])), 0.0, delta=1.0e-4)
 
 
+def _sphere_points(count, seed):
+    """Return ``count`` distinct points on a unit sphere, all of them hull vertices."""
+    points = np.random.default_rng(seed).normal(size=(count, 3))
+    return (points / np.linalg.norm(points, axis=1, keepdims=True)).astype(np.float32)
+
+
+def test_refinement_box_hull_depth(test, device):
+    """Match box-hull depths to a brute-force Minkowski-difference minimum.
+
+    Covers the serial and the block-cooperative Gauss-map certificates, hulls
+    with and without support acceleration, and non-uniform and mirroring
+    scales, which reverse the stored face orientation.
+    """
+    from scipy.spatial import ConvexHull
+
+    half = np.array([0.5, 0.4, 0.3])
+    corners = np.array(list(product(*[(-value, value) for value in half])))
+    scales = (np.array([0.4, 0.4, 0.4]), np.array([0.5, 0.3, 0.2]), np.array([-0.4, 0.3, 0.25]))
+    rng = np.random.default_rng(4792)
+    poses = []
+    for _ in range(6):
+        rotation = rng.normal(size=4)
+        rotation /= np.linalg.norm(rotation)
+        poses.append(wp.transform(wp.vec3(rng.uniform(-0.45, 0.45, size=3)), wp.quat(*rotation)))
+    # Hulls below the acceleration vertex threshold use the exhaustive support
+    # scan; larger ones get support lookup tables and hill-climbing walks.
+    for vertex_count, split, swap in product((24, 300), (False, True) if device.is_cuda else (False,), (False, True)):
+        with test.subTest(vertices=vertex_count, split=split, swap=swap):
+            vertices = _sphere_points(vertex_count, vertex_count)
+            mesh = newton.Mesh(vertices, ConvexHull(vertices).simplices.astype(np.int32).ravel(), compute_inertia=False)
+            builder = newton.ModelBuilder()
+            cfg = builder.ShapeConfig(margin=0.0, gap=1.0e-3, density=0.0)
+            cases = []
+            for case, (scale, pose) in enumerate(product(scales, poses)):
+                # Space the cases apart so only each box and its hull touch.
+                offset = np.array([4.0 * case, 0.0, 0.0])
+                world = wp.transform(wp.vec3(np.asarray(pose.p) + offset), pose.q)
+                body = builder.add_body(xform=world, mass=1.0, inertia=wp.mat33(np.eye(3)))
+                box_xform = wp.transform(wp.vec3(offset), wp.quat_identity())
+                shapes = {}
+                for box in (False, True) if swap else (True, False):
+                    if box:
+                        shapes["box"] = builder.add_shape_box(
+                            -1, xform=box_xform, hx=half[0], hy=half[1], hz=half[2], cfg=cfg
+                        )
+                    else:
+                        shapes["hull"] = builder.add_shape_convex_hull(body, mesh=mesh, scale=scale, cfg=cfg)
+                partner = np.array([wp.transform_point(pose, wp.vec3(vertex * scale)) for vertex in vertices])
+                minkowski = ConvexHull((corners[:, None] - partner[None, :]).reshape(-1, 3))
+                points = minkowski.points[minkowski.vertices]
+                depth = -float(np.max(minkowski.equations[:, 3]))
+                if depth > 1.0e-3:
+                    cases.append((shapes["box"], shapes["hull"], body, offset, points, depth))
+            test.assertGreater(len(cases), 10)
+            model = builder.finalize(device)
+            # Every hull must carry verified topology so the exact scan can run.
+            support = model._shape_support_data.numpy()
+            for _box, hull, *_rest in cases:
+                test.assertNotEqual(int(support[hull][3]) & int(_CONVEX_HULL_VALID), 0)
+            threshold = 0 if split else 10**9
+            with patch("newton._src.sim.collide._SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD", threshold):
+                pipeline = newton.CollisionPipeline(model, broad_phase="explicit")
+            test.assertEqual(pipeline.narrow_phase.split_gjk_mpr, split)
+            test.assertEqual(pipeline.narrow_phase.convex_support_acceleration, vertex_count >= 256)
+            contacts = pipeline.contacts()
+            state = model.state()
+            pipeline.collide(state, contacts)
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            shape0 = contacts.rigid_contact_shape0.numpy()[:count]
+            shape1 = contacts.rigid_contact_shape1.numpy()[:count]
+            points0 = contacts.rigid_contact_point0.numpy()[:count]
+            points1 = contacts.rigid_contact_point1.numpy()[:count]
+            normals = contacts.rigid_contact_normal.numpy()[:count]
+            body_q = state.body_q.numpy()
+            for box, hull, body, offset, minkowski_points, depth in cases:
+                pair = np.flatnonzero(((shape0 == box) & (shape1 == hull)) | ((shape0 == hull) & (shape1 == box)))
+                test.assertGreater(len(pair), 0)
+                pose = wp.transform(*body_q[body])
+                depths = []
+                for i in pair:
+                    box_first = shape0[i] == box
+                    box_point = (points0[i] if box_first else points1[i]) - offset
+                    local = points1[i] if box_first else points0[i]
+                    hull_point = np.asarray(wp.transform_point(pose, wp.vec3(local))) - offset
+                    normal = normals[i] if box_first else -normals[i]
+                    depths.append(float(np.dot(box_point - hull_point, normal)))
+                    # The reported normal must attain the minimum too, which
+                    # tolerates ties between equally shallow axes.
+                    test.assertAlmostEqual(float(np.max(minkowski_points @ normal)), depth, delta=1.0e-4)
+                test.assertAlmostEqual(max(depths), depth, delta=1.0e-4)
+
+
 class TestConvexRefinementRegressions(unittest.TestCase):
     pass
 
@@ -272,7 +407,9 @@ for function in (
     test_refinement_source_topology,
     test_refinement_failed_query_separation,
     test_refinement_unconverged_query_separation,
+    test_refinement_triangle_box_depth,
     test_refinement_resting_box_stack,
+    test_refinement_box_hull_depth,
 ):
     add_function_test(TestConvexRefinementRegressions, function.__name__, function, devices=get_test_devices())
 
