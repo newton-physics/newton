@@ -295,7 +295,8 @@ While :meth:`~newton.ModelBuilder.begin_world` and :meth:`~newton.ModelBuilder.e
 To place many copies of a builder in one shared world, for example to build a pile of bodies
 that collide with each other, pass ``separate_worlds=False``. The copies are added to the
 current world context in a single batched pass, which is much faster than calling
-:meth:`~newton.ModelBuilder.add_builder` once per copy:
+:meth:`~newton.ModelBuilder.add_builder` once per copy. Open a world first, as below: outside a world
+context the copies join the global world ``-1``, and not every solver supports dynamic bodies there.
 
 .. testcode::
 
@@ -308,21 +309,23 @@ current world context in a single batched pass, which is much faster than callin
 
    scene = newton.ModelBuilder()
    scene.add_ground_plane()
+   scene.begin_world()
    scene.replicate(
        box,
        copy_count=3,
        separate_worlds=False,
        xforms=[wp.transform((0.0, 0.0, 0.5 + 1.1 * i), wp.quat_identity()) for i in range(3)],
    )
+   scene.end_world()
 
    pile_model = scene.finalize()
    print("world_count:", pile_model.world_count)
-   print("body_count:", pile_model.body_count)
+   print("body_world:", pile_model.body_world.numpy().tolist())
 
 .. testoutput::
 
    world_count: 1
-   body_count: 3
+   body_world: [0, 0, 0]
 
 
 .. _implicit-mpm-worlds:
