@@ -799,7 +799,6 @@ def collide_box_box(
         contact_dist[i] = MAXVAL
     contact_pos = _mat83f()
     contact_normals = _mat83f()
-    contact_count = 0
 
     # Compute transforms between box's frames
     pos21 = wp.transpose(box1_rot) @ (box2_pos - box1_pos)
@@ -818,6 +817,8 @@ def collide_box_box(
     s_sum_3 = 3.0 * (box1_size + box2_size)
     separation = wp.float32(margin + s_sum_3[0] + s_sum_3[1] + s_sum_3[2])
     axis_code = wp.int32(-1)
+    # An edge axis must beat the best face axis by more than float32 rounding at box scale.
+    edge_bias = 1.0e-5 * (s_sum_3[0] + s_sum_3[1] + s_sum_3[2]) / 3.0
 
     # First test: consider boxes' face normals
     for i in range(3):
@@ -874,7 +875,7 @@ def collide_box_box(
                 return contact_dist, contact_pos, contact_normals
 
             # Track minimum separation and which edge-edge pair it occurs on
-            if c3 < separation * (1.0 - 1e-12):
+            if c3 < separation - edge_bias:
                 separation = c3
                 # Determine which corners/edges are closest
                 cle1 = 0
@@ -925,7 +926,6 @@ def collide_box_box(
         for i in range(wp.static(3)):
             lp += rt[i] * s[i] * wp.where(clcorner & 1 << i, 1.0, -1.0)
 
-        m = wp.int32(1)
         dirs = wp.int32(0)
 
         cn1 = wp.vec3(0.0)
@@ -943,68 +943,91 @@ def collide_box_box(
         k = dirs * dirs
 
         # Find potential contact points
-
+        # Face clipping can emit 16 edge clips plus 4 reference and 4 incident corners. The first attempt keeps them in
+        # that order; if more than eight lie within the margin, the second keeps distinct incident corners, then
+        # reference corners, then edge clips. Candidates of one corner differ by float32 rounding of box-scale
+        # coordinates, so the dedup tolerance stays at that scale.
+        dedup_tol = 1.0e-6 * wp.length(box1_size + box2_size)
         n = wp.int32(0)
+        for attempt in range(2):
+            n = wp.int32(0)
+            overflow = wp.bool(False)
+            for f in range(3):
+                family = wp.where(attempt == 0, f, 2 - f)
+                if family == 0:
+                    for i in range(k):
+                        for q in range(2):
+                            # lines_a and lines_b (lines between corners) computed on the fly
+                            lav = lp + wp.where(i < 2, wp.vec3(0.0), wp.where(i == 2, cn1, cn2))
+                            lbv = wp.where(i == 0 or i == 3, cn1, cn2)
 
-        for i in range(k):
-            for q in range(2):
-                # lines_a and lines_b (lines between corners) computed on the fly
-                lav = lp + wp.where(i < 2, wp.vec3(0.0), wp.where(i == 2, cn1, cn2))
-                lbv = wp.where(i == 0 or i == 3, cn1, cn2)
+                            if wp.abs(lbv[q]) > MINVAL:
+                                br = 1.0 / lbv[q]
+                                for j in range(-1, 2, 2):
+                                    l = ss[q] * wp.float32(j)
+                                    c1 = (l - lav[q]) * br
+                                    if c1 < 0 or c1 > 1:
+                                        continue
+                                    c2 = lav[1 - q] + lbv[1 - q] * c1
+                                    if wp.abs(c2) > ss[1 - q]:
+                                        continue
 
-                if wp.abs(lbv[q]) > MINVAL:
-                    br = 1.0 / lbv[q]
-                    for j in range(-1, 2, 2):
-                        l = ss[q] * wp.float32(j)
-                        c1 = (l - lav[q]) * br
-                        if c1 < 0 or c1 > 1:
-                            continue
-                        c2 = lav[1 - q] + lbv[1 - q] * c1
-                        if wp.abs(c2) > ss[1 - q]:
-                            continue
+                                    cand = lav + c1 * lbv
+                                    if cand[2] <= margin and (
+                                        attempt == 0 or _box_face_candidate_is_new(points, n, cand, dedup_tol)
+                                    ):
+                                        if n < 8:
+                                            points[n] = cand
+                                            n += 1
+                                        else:
+                                            overflow = True
+                elif family == 1:
+                    if dirs == 2:
+                        ax = cn1[0]
+                        bx = cn2[0]
+                        ay = cn1[1]
+                        by = cn2[1]
+                        C = safe_div(1.0, ax * by - bx * ay)
 
-                        points[n] = lav + c1 * lbv
-                        n += 1
+                        for i in range(4):
+                            llx = wp.where(i // 2, lx, -lx)
+                            lly = wp.where(i % 2, ly, -ly)
 
-        if dirs == 2:
-            ax = cn1[0]
-            bx = cn2[0]
-            ay = cn1[1]
-            by = cn2[1]
-            C = safe_div(1.0, ax * by - bx * ay)
+                            x = llx - lp[0]
+                            y = lly - lp[1]
 
-            for i in range(4):
-                llx = wp.where(i // 2, lx, -lx)
-                lly = wp.where(i % 2, ly, -ly)
+                            u = (x * by - y * bx) * C
+                            v = (y * ax - x * ay) * C
 
-                x = llx - lp[0]
-                y = lly - lp[1]
+                            if u > 0 and v > 0 and u < 1 and v < 1:
+                                cand = wp.vec3(llx, lly, lp[2] + u * cn1[2] + v * cn2[2])
+                                if cand[2] <= margin and (
+                                    attempt == 0 or _box_face_candidate_is_new(points, n, cand, dedup_tol)
+                                ):
+                                    if n < 8:
+                                        points[n] = cand
+                                        n += 1
+                                    else:
+                                        overflow = True
+                else:
+                    for i in range(1 << dirs):
+                        tmpv = lp + wp.float32(i & 1) * cn1 + wp.float32((i & 2) != 0) * cn2
+                        if tmpv[0] > -lx and tmpv[0] < lx and tmpv[1] > -ly and tmpv[1] < ly:
+                            cand = tmpv
+                            if cand[2] <= margin and (
+                                attempt == 0 or _box_face_candidate_is_new(points, n, cand, dedup_tol)
+                            ):
+                                if n < 8:
+                                    points[n] = cand
+                                    n += 1
+                                else:
+                                    overflow = True
+            if not overflow:
+                break
 
-                u = (x * by - y * bx) * C
-                v = (y * ax - x * ay) * C
-
-                if u > 0 and v > 0 and u < 1 and v < 1:
-                    points[n] = wp.vec3(llx, lly, lp[2] + u * cn1[2] + v * cn2[2])
-                    n += 1
-
-        for i in range(1 << dirs):
-            tmpv = lp + wp.float32(i & 1) * cn1 + wp.float32((i & 2) != 0) * cn2
-            if tmpv[0] > -lx and tmpv[0] < lx and tmpv[1] > -ly and tmpv[1] < ly:
-                points[n] = tmpv
-                n += 1
-
-        m = n
-        n = wp.int32(0)
-
-        for i in range(m):
-            if points[i][2] > margin:
-                continue
-            if i != n:
-                points[n] = points[i]
-
-            points[n, 2] *= 0.5
-            depth[n] = points[n, 2] * 2.0
-            n += 1
+        for i in range(n):
+            points[i, 2] *= 0.5
+            depth[i] = points[i, 2] * 2.0
 
         # Set up contact frame
         rw = wp.where(box_idx, box2_rot, box1_rot) @ wp.transpose(rotmore)
@@ -1219,6 +1242,16 @@ def collide_box_box(
         contact_normals[i] = normal
 
     return contact_dist, contact_pos, contact_normals
+
+
+@wp.func
+def _box_face_candidate_is_new(points: _mat83f, count: int, candidate: wp.vec3, tol: float) -> bool:
+    """Return whether a face-clipping candidate is farther than ``tol`` in x or y from every kept candidate."""
+    for kept in range(count):
+        offset = points[kept] - candidate
+        if wp.abs(offset[0]) < tol and wp.abs(offset[1]) < tol:
+            return False
+    return True
 
 
 @wp.func

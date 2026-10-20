@@ -225,6 +225,12 @@ class TestModelBuilderBvhConstructor(unittest.TestCase):
 
 
 class TestModelMesh(unittest.TestCase):
+    def setUp(self):
+        """Keep backend stubs isolated from persistent mesh caches."""
+        cache_setting = mock.patch.object(newton.config, "cache_dir_meshes", None)
+        cache_setting.start()
+        self.addCleanup(cache_setting.stop)
+
     class _FakeDecompositionMesh:
         """Store mesh data passed to a fake decomposition backend."""
 

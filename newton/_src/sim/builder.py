@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 import numpy as np
 import warp as wp
 
+from ... import config
 from ..core._warnings import _external_warning_stacklevel
 from ..core.types import (
     MAXVAL,
@@ -47,6 +48,7 @@ from ..geometry import (
     Mesh,
     ParticleFlags,
     ShapeFlags,
+    _convex_cache,
     compute_inertia_shape,
     compute_shape_radius,
     transform_inertia,
@@ -9208,6 +9210,8 @@ class ModelBuilder:
         shape_indices: list[int] | None = None,
         raise_on_failure: bool = False,
         keep_visual_shapes: bool = False,
+        *,
+        cache_dir: str | os.PathLike[str] | None = None,
         **remeshing_kwargs: dict[str, Any],
     ) -> set[int]:
         """Approximates the mesh shapes of the model.
@@ -9270,6 +9274,17 @@ class ModelBuilder:
             method: The method to use for approximating the mesh shapes.
             shape_indices: The indices of the shapes to simplify. Entries that are not ``MESH`` or ``CONVEX_MESH`` shapes are ignored. If `None`, all mesh shapes that have the :attr:`ShapeFlags.COLLIDE_SHAPES` flag set are simplified.
             raise_on_failure: If `True`, raises an exception if the remeshing fails. If `False`, it will log a warning and continue with the fallback method.
+            keep_visual_shapes: If `True`, retain the original geometry as visual-only shapes.
+            cache_dir: Directory for persistent ``coacd`` and ``vhacd``
+                decomposition caching. Created if missing; ``None`` uses
+                :attr:`newton.config.cache_dir_meshes`, which defaults to ``None``
+                (no disk caching). Set that global setting to a directory to
+                enable caching for subsequent calls, including USD imports.
+                An explicit directory overrides the global setting. Entries are
+                keyed by mesh geometry, effective backend
+                settings, backend versions, and cache format version. Corrupt or
+                incompatible entries are recomputed; cache I/O failures are logged
+                and do not prevent approximation. Other methods ignore this option.
             **remeshing_kwargs: Additional keyword arguments passed to the remeshing function.
 
         Returns:
@@ -9359,6 +9374,8 @@ class ModelBuilder:
         remeshed_shapes = set()
 
         if method == "coacd" or method == "vhacd":
+            if cache_dir is None:
+                cache_dir = config.cache_dir_meshes
             empty_decomposition_shape = None
             decomposition_failed = False
             try:
@@ -9383,41 +9400,47 @@ class ModelBuilder:
                 for shape in shape_indices:
                     mesh: Mesh = self.shape_source[shape]
                     scale = self.shape_scale[shape]
-                    cache_key = (hash(mesh), mesh.maxhullvert)
-                    if cache_key in decompositions:
-                        decomposition = decompositions[cache_key]
+                    cache_write_key = None
+                    # Mesh.__hash__ does not include the hull-vertex limit.
+                    hash_m = (hash(mesh), mesh.maxhullvert)
+                    if hash_m in decompositions:
+                        decomposition = decompositions[hash_m]
                     else:
-                        decomposition = []
-                        # Decomposition backends may merge disconnected convex parts into one hull.
-                        for component_vertices, component_faces in split_mesh_components(mesh):
-                            if method == "coacd":
-                                cmesh = coacd.Mesh(component_vertices, component_faces)
-                                coacd_settings = {
-                                    "threshold": self.default_mesh_approximation_cfg.coacd_threshold,
-                                    "mcts_nodes": 20,
-                                    "mcts_iterations": 5,
-                                    "mcts_max_depth": 1,
-                                    "merge": False,
-                                }
-                                coacd_settings.update(remeshing_kwargs)
-                                # Cap with Qhull rather than CoACD's decimation, which is orders of magnitude slower.
-                                decomposition.extend(
-                                    remesh_convex_hull(v, maxhullvert=mesh.maxhullvert)
-                                    if 0 < mesh.maxhullvert < len(v)
-                                    else (v, f)
-                                    for v, f in coacd.run_coacd(cmesh, **coacd_settings)
-                                )
-                            else:
-                                tmesh = trimesh.Trimesh(component_vertices, component_faces)
-                                vhacd_settings = {
-                                    "maxNumVerticesPerCH": mesh.maxhullvert,
-                                }
-                                vhacd_settings.update(remeshing_kwargs)
-                                component_decomposition = trimesh.decomposition.convex_decomposition(
-                                    tmesh, **vhacd_settings
-                                )
-                                decomposition.extend((d["vertices"], d["faces"]) for d in component_decomposition)
-                        decompositions[cache_key] = decomposition
+                        settings = (
+                            {
+                                "threshold": self.default_mesh_approximation_cfg.coacd_threshold,
+                                "mcts_nodes": 20,
+                                "mcts_iterations": 5,
+                                "mcts_max_depth": 1,
+                                "merge": False,
+                            }
+                            if method == "coacd"
+                            else {"maxNumVerticesPerCH": mesh.maxhullvert}
+                        )
+                        settings.update(remeshing_kwargs)
+                        cache_key = _convex_cache.hash_inputs(mesh, method, settings) if cache_dir is not None else None
+                        decomposition = _convex_cache.try_load(cache_dir, cache_key) if cache_key is not None else None
+                        if decomposition is None:
+                            decomposition = []
+                            # Decomposition backends may merge disconnected convex parts into one hull.
+                            for component_vertices, component_faces in split_mesh_components(mesh):
+                                if method == "coacd":
+                                    cmesh = coacd.Mesh(component_vertices, component_faces)
+                                    # Cap with Qhull rather than CoACD's decimation, which is orders of magnitude slower.
+                                    decomposition.extend(
+                                        remesh_convex_hull(v, maxhullvert=mesh.maxhullvert)
+                                        if 0 < mesh.maxhullvert < len(v)
+                                        else (v, f)
+                                        for v, f in coacd.run_coacd(cmesh, **settings)
+                                    )
+                                else:
+                                    tmesh = trimesh.Trimesh(component_vertices, component_faces)
+                                    component_decomposition = trimesh.decomposition.convex_decomposition(
+                                        tmesh, **settings
+                                    )
+                                    decomposition.extend((d["vertices"], d["faces"]) for d in component_decomposition)
+                            cache_write_key = cache_key
+                        decompositions[hash_m] = decomposition
                     if len(decomposition) == 0:
                         if raise_on_failure:
                             empty_decomposition_shape = shape
@@ -9489,6 +9512,8 @@ class ModelBuilder:
                                     self.add_shape_collision_filter_pair(filtered_part, extra_shape)
                             convex_parts_by_shape.setdefault(shape, []).append(extra_shape)
                     remeshed_shapes.add(shape)
+                    if cache_write_key is not None:
+                        _convex_cache.write(cache_dir, cache_write_key, decomposition)
             except Exception as e:
                 if raise_on_failure:
                     raise RuntimeError(f"Remeshing with method '{method}' failed.") from e

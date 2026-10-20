@@ -1208,6 +1208,43 @@ with convex hulls, bounding boxes, or convex decompositions:
 Supported methods: ``"convex_hull"`` (default), ``"bounding_box"``, ``"bounding_sphere"``,
 ``"coacd"`` (convex decomposition), ``"vhacd"``.
 
+CoACD and V-HACD decompositions support opt-in disk caching for reuse across
+builders and processes, including automatic approximation during USD import.
+Mesh decomposition caching is disabled by default. Enable it by setting a
+directory through :mod:`newton.config` before importing a scene:
+
+.. code-block:: python
+
+    import newton
+
+    newton.config.cache_dir_meshes = ".cache/convex"
+    builder = newton.ModelBuilder()
+    builder.add_usd("robot.usda")  # Uses this cache for authored convex decompositions.
+
+    # Disable mesh decomposition caching for subsequent calls and imports.
+    newton.config.cache_dir_meshes = None
+
+Explicit ``cache_dir`` directories on :meth:`~ModelBuilder.approximate_meshes`
+override the global setting. Omitting the argument or passing ``None`` uses
+:attr:`config.cache_dir_meshes` at call time. Asset downloads are controlled
+independently by :attr:`config.cache_dir_assets` and remain cached by default in
+the Newton cache directory (``NEWTON_CACHE_PATH`` or the platform's user cache
+location). Setting that to ``None`` keeps each download in a fresh temporary
+directory until process exit. The asset cache environment default is read when
+Newton is imported. These settings do not affect
+:meth:`Mesh.build_sdf`, which retains its explicit, opt-in cache.
+
+Cache directories are created if needed. Entries include the source geometry, effective decomposition options
+(including the hull-vertex limit), backend versions, and cache format version in
+their keys. Shape scales, transforms, and materials are applied independently,
+so cached parts can be reused by differently configured shapes. Missing, corrupt,
+or incompatible entries are recomputed; cache I/O errors are logged without
+preventing approximation. Backend dependencies must still be installed. Failed
+decompositions and fallback hulls are not cached. Delete the directory to reclaim
+disk space. Other approximation methods ignore ``cache_dir``.
+
+Cache locations are runtime settings; they are not authored in USD.
+
 .. note::
    ``approximate_meshes()`` modifies the builder's shape geometry in-place. By default
    (``keep_visual_shapes=False``), the original mesh is replaced for both collision and
