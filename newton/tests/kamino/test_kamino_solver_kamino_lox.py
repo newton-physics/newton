@@ -747,7 +747,7 @@ class TestSolverKaminoLOXJoints(_LOXTestCase):
         # A free body with mass but a singular inverse inertia leaves its rotation without inertia
         builder = newton.ModelBuilder()
         SolverKamino.register_custom_attributes(builder)
-        builder.add_body(mass=1.0)
+        builder.add_body(mass=1.0, inertia=wp.mat33f(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0))
         model = builder.finalize(device=self.default_device)
         model.body_inv_inertia.zero_()
         with self.assertRaisesRegex(ValueError, "joint DOFs without armature"):
