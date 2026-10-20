@@ -167,16 +167,20 @@ class DeterminismExample:
         self.viewer.end_frame()
 
     def test_final(self):
-        """Verify the deterministic copies are bitwise equal and no copy dropped constraint rows."""
-        for copies in self.copies.values():
+        """Verify every copy is finite, no copy dropped constraint rows and the deterministic copies are bitwise equal."""
+        state_names = ("body_q", "body_qd", "joint_q", "joint_qd")
+        for mode, copies in self.copies.items():
             for copy in copies:
-                assert not np.any(copy.solver.constraint_overflow.numpy()), "A copy overflowed its constraint rows"
+                assert not np.any(copy.solver.constraint_overflow.numpy()), f"A {mode} copy overflowed its rows"
+                for name in state_names:
+                    assert np.all(np.isfinite(getattr(copy.state_0, name).numpy())), (
+                        f"A {mode} copy has non-finite {name}"
+                    )
         copy_a, copy_b = self.copies["deterministic"]
-        for name in ("body_q", "body_qd", "joint_q", "joint_qd"):
+        for name in state_names:
             a = getattr(copy_a.state_0, name).numpy()
             b = getattr(copy_b.state_0, name).numpy()
-            assert np.all(np.isfinite(a)), f"Deterministic copy has non-finite {name}"
-            assert np.array_equal(a, b), f"Deterministic copies differ in {name}"
+            assert a.tobytes() == b.tobytes(), f"Deterministic copies differ in {name}"
 
 
 class _SimulationCopy:
