@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 import numpy as np
 import warp as wp
 
+from ... import config
 from ..core._warnings import _external_warning_stacklevel
 from ..core.types import (
     MAXVAL,
@@ -47,6 +48,7 @@ from ..geometry import (
     Mesh,
     ParticleFlags,
     ShapeFlags,
+    _convex_cache,
     compute_inertia_shape,
     compute_shape_radius,
     transform_inertia,
@@ -217,8 +219,13 @@ _CONVEX_SUPPORT_MIN_VERTICES = 256
 _CONVEX_SUPPORT_LUT_RESOLUTION = 32
 
 
-def _convex_hull_adjacency(source: Mesh, *, certify: bool = True) -> list[set[int]] | None:
-    """Validate hull adjacency, using strict geometry checks for depth certification."""
+def _convex_hull_adjacency(source: Mesh, *, certify: bool = True) -> tuple[list[set[int]], np.ndarray] | None:
+    """Validate hull adjacency, using strict geometry checks for depth certification.
+
+    Returns the vertex adjacency and one ``(a, b, c1, c2)`` row per hull edge.
+    ``c1`` and ``c2`` complete the edge's two faces such that
+    ``cross(b - a, c1 - a)`` and ``cross(c2 - a, b - a)`` point outward.
+    """
     vertices = np.asarray(source.vertices, dtype=np.float32).reshape(-1, 3)
     vertex_count = len(vertices)
     if vertex_count < 4:
@@ -275,7 +282,10 @@ def _convex_hull_adjacency(source: Mesh, *, certify: bool = True) -> list[set[in
         group.append(vertex)
 
     edge_incidence: Counter[tuple[int, int]] = Counter()
+    edge_faces: dict[tuple[int, int], list[int]] = {}
     faces = set()
+    # Face windings vary; orient each face away from the interior vertex mean.
+    center = vertices64.mean(axis=0)
     for triangle in triangles[nondegenerate]:
         welded = tuple(int(welded_vertex[int(vertex)]) for vertex in triangle)
         if len(set(welded)) < 3:
@@ -284,8 +294,16 @@ def _convex_hull_adjacency(source: Mesh, *, certify: bool = True) -> list[set[in
         if certify and face in faces:
             return None
         faces.add(face)
-        for first, second in ((welded[0], welded[1]), (welded[1], welded[2]), (welded[2], welded[0])):
-            edge_incidence[min(first, second), max(first, second)] += 1
+        a, b, c = (int(vertex) for vertex in triangle)
+        if np.dot(np.cross(vertices64[b] - vertices64[a], vertices64[c] - vertices64[a]), vertices64[a] - center) < 0.0:
+            b, c = c, b
+        for first, second, third in ((a, b, c), (b, c, a), (c, a, b)):
+            key = (int(welded_vertex[first]), int(welded_vertex[second]))
+            edge = (min(key), max(key))
+            edge_incidence[edge] += 1
+            record = edge_faces.setdefault(edge, [first, second, third, -1])
+            if record[2] != third:
+                record[3] = third
     if not edge_incidence or any(count != 2 for count in edge_incidence.values()):
         if not certify and vertex_count >= _CONVEX_SUPPORT_MIN_VERTICES:
             logger.warning(
@@ -333,7 +351,7 @@ def _convex_hull_adjacency(source: Mesh, *, certify: bool = True) -> list[set[in
                 stack.append(neighbor)
     if visited != surface:
         return None
-    return adjacent
+    return adjacent, np.asarray(list(edge_faces.values()), dtype=np.int32).reshape(-1, 4)
 
 
 def _build_convex_support_acceleration(
@@ -344,7 +362,10 @@ def _build_convex_support_acceleration(
     vertex_count = len(vertices)
     if vertex_count < _CONVEX_SUPPORT_MIN_VERTICES:
         return None
-    adjacent = _convex_hull_adjacency(source, certify=False) if adjacency is None else adjacency
+    adjacent = adjacency
+    if adjacent is None:
+        topology = _convex_hull_adjacency(source, certify=False)
+        adjacent = topology[0] if topology is not None else None
     if adjacent is None or any(not neighbors for neighbors in adjacent):
         return None
 
@@ -4525,7 +4546,7 @@ class ModelBuilder:
             verbose: If True, log additional information about the parsed USD file. Default is False.
             ignore_paths: A list of regular expressions matching prim paths to ignore.
             collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
-            enable_self_collisions: Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions``; if neither is authored, this value takes precedence.
+            enable_self_collisions: Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions`` on the articulation root, or on the cable ``BasisCurves`` prim for cable-owned articulations; if neither is authored, this value takes precedence.
             apply_up_axis_from_stage: If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
             root_path: The USD path to import, defaults to "/". Bound physics materials
                 outside this subtree are resolved without importing unrelated bodies
@@ -9189,6 +9210,8 @@ class ModelBuilder:
         shape_indices: list[int] | None = None,
         raise_on_failure: bool = False,
         keep_visual_shapes: bool = False,
+        *,
+        cache_dir: str | os.PathLike[str] | None = None,
         **remeshing_kwargs: dict[str, Any],
     ) -> set[int]:
         """Approximates the mesh shapes of the model.
@@ -9251,6 +9274,17 @@ class ModelBuilder:
             method: The method to use for approximating the mesh shapes.
             shape_indices: The indices of the shapes to simplify. Entries that are not ``MESH`` or ``CONVEX_MESH`` shapes are ignored. If `None`, all mesh shapes that have the :attr:`ShapeFlags.COLLIDE_SHAPES` flag set are simplified.
             raise_on_failure: If `True`, raises an exception if the remeshing fails. If `False`, it will log a warning and continue with the fallback method.
+            keep_visual_shapes: If `True`, retain the original geometry as visual-only shapes.
+            cache_dir: Directory for persistent ``coacd`` and ``vhacd``
+                decomposition caching. Created if missing; ``None`` uses
+                :attr:`newton.config.cache_dir_meshes`, which defaults to ``None``
+                (no disk caching). Set that global setting to a directory to
+                enable caching for subsequent calls, including USD imports.
+                An explicit directory overrides the global setting. Entries are
+                keyed by mesh geometry, effective backend
+                settings, backend versions, and cache format version. Corrupt or
+                incompatible entries are recomputed; cache I/O failures are logged
+                and do not prevent approximation. Other methods ignore this option.
             **remeshing_kwargs: Additional keyword arguments passed to the remeshing function.
 
         Returns:
@@ -9340,6 +9374,8 @@ class ModelBuilder:
         remeshed_shapes = set()
 
         if method == "coacd" or method == "vhacd":
+            if cache_dir is None:
+                cache_dir = config.cache_dir_meshes
             empty_decomposition_shape = None
             decomposition_failed = False
             try:
@@ -9364,41 +9400,47 @@ class ModelBuilder:
                 for shape in shape_indices:
                     mesh: Mesh = self.shape_source[shape]
                     scale = self.shape_scale[shape]
-                    cache_key = (hash(mesh), mesh.maxhullvert)
-                    if cache_key in decompositions:
-                        decomposition = decompositions[cache_key]
+                    cache_write_key = None
+                    # Mesh.__hash__ does not include the hull-vertex limit.
+                    hash_m = (hash(mesh), mesh.maxhullvert)
+                    if hash_m in decompositions:
+                        decomposition = decompositions[hash_m]
                     else:
-                        decomposition = []
-                        # Decomposition backends may merge disconnected convex parts into one hull.
-                        for component_vertices, component_faces in split_mesh_components(mesh):
-                            if method == "coacd":
-                                cmesh = coacd.Mesh(component_vertices, component_faces)
-                                coacd_settings = {
-                                    "threshold": self.default_mesh_approximation_cfg.coacd_threshold,
-                                    "mcts_nodes": 20,
-                                    "mcts_iterations": 5,
-                                    "mcts_max_depth": 1,
-                                    "merge": False,
-                                }
-                                coacd_settings.update(remeshing_kwargs)
-                                # Cap with Qhull rather than CoACD's decimation, which is orders of magnitude slower.
-                                decomposition.extend(
-                                    remesh_convex_hull(v, maxhullvert=mesh.maxhullvert)
-                                    if 0 < mesh.maxhullvert < len(v)
-                                    else (v, f)
-                                    for v, f in coacd.run_coacd(cmesh, **coacd_settings)
-                                )
-                            else:
-                                tmesh = trimesh.Trimesh(component_vertices, component_faces)
-                                vhacd_settings = {
-                                    "maxNumVerticesPerCH": mesh.maxhullvert,
-                                }
-                                vhacd_settings.update(remeshing_kwargs)
-                                component_decomposition = trimesh.decomposition.convex_decomposition(
-                                    tmesh, **vhacd_settings
-                                )
-                                decomposition.extend((d["vertices"], d["faces"]) for d in component_decomposition)
-                        decompositions[cache_key] = decomposition
+                        settings = (
+                            {
+                                "threshold": self.default_mesh_approximation_cfg.coacd_threshold,
+                                "mcts_nodes": 20,
+                                "mcts_iterations": 5,
+                                "mcts_max_depth": 1,
+                                "merge": False,
+                            }
+                            if method == "coacd"
+                            else {"maxNumVerticesPerCH": mesh.maxhullvert}
+                        )
+                        settings.update(remeshing_kwargs)
+                        cache_key = _convex_cache.hash_inputs(mesh, method, settings) if cache_dir is not None else None
+                        decomposition = _convex_cache.try_load(cache_dir, cache_key) if cache_key is not None else None
+                        if decomposition is None:
+                            decomposition = []
+                            # Decomposition backends may merge disconnected convex parts into one hull.
+                            for component_vertices, component_faces in split_mesh_components(mesh):
+                                if method == "coacd":
+                                    cmesh = coacd.Mesh(component_vertices, component_faces)
+                                    # Cap with Qhull rather than CoACD's decimation, which is orders of magnitude slower.
+                                    decomposition.extend(
+                                        remesh_convex_hull(v, maxhullvert=mesh.maxhullvert)
+                                        if 0 < mesh.maxhullvert < len(v)
+                                        else (v, f)
+                                        for v, f in coacd.run_coacd(cmesh, **settings)
+                                    )
+                                else:
+                                    tmesh = trimesh.Trimesh(component_vertices, component_faces)
+                                    component_decomposition = trimesh.decomposition.convex_decomposition(
+                                        tmesh, **settings
+                                    )
+                                    decomposition.extend((d["vertices"], d["faces"]) for d in component_decomposition)
+                            cache_write_key = cache_key
+                        decompositions[hash_m] = decomposition
                     if len(decomposition) == 0:
                         if raise_on_failure:
                             empty_decomposition_shape = shape
@@ -9470,6 +9512,8 @@ class ModelBuilder:
                                     self.add_shape_collision_filter_pair(filtered_part, extra_shape)
                             convex_parts_by_shape.setdefault(shape, []).append(extra_shape)
                     remeshed_shapes.add(shape)
+                    if cache_write_key is not None:
+                        _convex_cache.write(cache_dir, cache_write_key, decomposition)
             except Exception as e:
                 if raise_on_failure:
                     raise RuntimeError(f"Remeshing with method '{method}' failed.") from e
@@ -14233,10 +14277,19 @@ class ModelBuilder:
                 ):
                     source_key = hash(source)
                     if source_key not in support_cache:
-                        adjacent = _convex_hull_adjacency(source)
-                        hull_flag = _CONVEX_HULL_VALID if adjacent is not None else 0
-                        cached = (-1, -1, -1, hull_flag)
+                        topology = _convex_hull_adjacency(source)
+                        adjacent = None
+                        hull_flag = 0
+                        # Verified hulls lead their neighbor block with their edge
+                        # count and faces for exact separating-axis certificates.
+                        edge_block = np.zeros(0, dtype=np.int32)
+                        if topology is not None:
+                            adjacent, edges = topology
+                            hull_flag = _CONVEX_HULL_VALID
+                            edge_block = np.concatenate(([len(edges)], edges.ravel())).astype(np.int32)
+                        cached = (-1, -1, neighbor_offset if len(edge_block) else -1, hull_flag)
                         acceleration = _build_convex_support_acceleration(source, adjacency=adjacent)
+                        neighbors = np.zeros(0, dtype=np.int32)
                         if acceleration is not None:
                             lut, offsets, neighbors = acceleration
                             cached = (
@@ -14245,12 +14298,15 @@ class ModelBuilder:
                                 neighbor_offset,
                                 _CONVEX_SUPPORT_LUT_RESOLUTION | hull_flag,
                             )
+                            # Neighbor offsets are relative to the block start.
+                            offsets = offsets + len(edge_block)
                             support_lut_chunks.append(lut)
                             support_offset_chunks.append(offsets)
-                            support_neighbor_chunks.append(neighbors)
                             lut_offset += len(lut)
                             vertex_offset += len(offsets)
-                            neighbor_offset += len(neighbors)
+                        if len(edge_block) or len(neighbors):
+                            support_neighbor_chunks.append(np.concatenate((edge_block, neighbors)).astype(np.int32))
+                            neighbor_offset += len(support_neighbor_chunks[-1])
                         support_cache[source_key] = cached
                     metadata = support_cache[source_key]
                 shape_support_data.append(metadata)
