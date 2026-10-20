@@ -433,6 +433,22 @@ class SolverKaminoImpl(SolverBase):
         """
         return self._metrics
 
+    @property
+    def cull_speculative_contacts(self) -> bool:
+        """
+        Returns whether external contacts with a positive gap are culled before the dynamics solve.
+
+        LOX keeps them, since its contact law lets a separated contact close its gap within the step.
+        """
+        return self._config.dynamics_solver != "lox" and self._config.dynamics.cull_speculative_contacts
+
+    @property
+    def skip_fully_prescribed_contacts(self) -> bool:
+        """
+        Returns whether external contacts between two immovable bodies are skipped, which LOX does.
+        """
+        return self._config.dynamics_solver == "lox"
+
     ###
     # Configurations
     ###

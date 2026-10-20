@@ -895,11 +895,6 @@ class SolverKamino(SolverBase, CouplingInterface):
             contacts=self._contacts_kamino,
             config=self._config,
         )
-        self._cull_speculative_contacts = self._config.dynamics.cull_speculative_contacts
-        self._skip_fully_prescribed_contacts = False
-        if self._config.dynamics_solver == "lox":
-            self._cull_speculative_contacts = False
-            self._skip_fully_prescribed_contacts = True
 
         # Initialize the internal Kamino control wrapper
         self._control_kamino = self._kamino.ControlKamino()
@@ -1193,8 +1188,8 @@ class SolverKamino(SolverBase, CouplingInterface):
                     convert_forces=False,
                     friction_mix_mode=self._config.materials.friction_mix_mode,
                     restitution_mix_mode=self._config.materials.restitution_mix_mode,
-                    cull_speculative_contacts=self._cull_speculative_contacts,
-                    skip_fully_prescribed_contacts=self._skip_fully_prescribed_contacts,
+                    cull_speculative_contacts=self._solver_kamino.cull_speculative_contacts,
+                    skip_fully_prescribed_contacts=self._solver_kamino.skip_fully_prescribed_contacts,
                 )
         else:
             self._detector = None

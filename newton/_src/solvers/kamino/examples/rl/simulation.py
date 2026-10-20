@@ -164,8 +164,8 @@ class SimulatorFromNewton:
             self._newton_state,
             self._newton_contacts,
             self._contacts,
-            cull_speculative_contacts=self._config.solver.dynamics_solver != "lox",
-            skip_fully_prescribed_contacts=self._config.solver.dynamics_solver == "lox",
+            cull_speculative_contacts=self._solver.cull_speculative_contacts,
+            skip_fully_prescribed_contacts=self._solver.skip_fully_prescribed_contacts,
         )
 
     def step(self):
