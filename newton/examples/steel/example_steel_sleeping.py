@@ -160,7 +160,7 @@ class Example:
         self.previous_body_awake = None
         self.towers_asleep_at_kick = False
         self.towers_woken_by_kick = set()
-        self.max_sleeping_body_motion = 0.0
+        self.sleeping_body_moved_frame = None
 
         self.capture()
 
@@ -206,14 +206,14 @@ class Example:
         self.viewer.end_frame()
 
     def test_post_step(self):
-        """Record which towers wake after the kick and how far sleeping bodies move."""
+        """Record which towers wake after the kick and whether a sleeping body changes its pose."""
         body_q = self.state_0.body_q.numpy()
         body_awake = self.solver.body_awake.numpy() != 0
         if self.previous_body_q is not None:
             asleep = ~body_awake & ~self.previous_body_awake
-            if asleep.any():
-                motion = np.abs(body_q[asleep] - self.previous_body_q[asleep]).max()
-                self.max_sleeping_body_motion = max(self.max_sleeping_body_motion, float(motion))
+            frozen = body_q[asleep].tobytes() == self.previous_body_q[asleep].tobytes()
+            if not frozen and self.sleeping_body_moved_frame is None:
+                self.sleeping_body_moved_frame = self.frame
         if self.frame == KICK_FRAME:
             self.towers_asleep_at_kick = not body_awake[self.body_tower >= 0].any()
         if self.frame > KICK_FRAME:
@@ -234,8 +234,8 @@ class Example:
             raise AssertionError(
                 f"The kick woke towers {sorted(self.towers_woken_by_kick)}, expected [{TARGET_TOWER}]."
             )
-        if self.max_sleeping_body_motion != 0.0:
-            raise AssertionError(f"A sleeping body moved by {self.max_sleeping_body_motion} between frames.")
+        if self.sleeping_body_moved_frame is not None:
+            raise AssertionError(f"A sleeping body changed its pose at frame {self.sleeping_body_moved_frame}.")
 
 
 if __name__ == "__main__":
