@@ -198,6 +198,18 @@ unknown names are rejected. ``ObservableKind`` is not iterable; query
 ``solver.supported_observables`` for the names accepted by the configured backend.
 An inherited name does not imply support for that observable.
 
+Steel sleep flags
+^^^^^^^^^^^^^^^^^
+
+With ``enable_sleeping=True``, :class:`~newton.solvers.SolverSteel` exposes
+:attr:`~newton.solvers.SolverSteel.ObservableKind.BODY_AWAKE` through
+``observables.body_awake``, a ``bool`` array with shape ``(model.body_count,)``.
+A step that receives the container writes ``True`` for awake bodies and ``False``
+for sleeping ones, also during graph replay. A new container holds the solver's
+current flags. :meth:`~newton.solvers.SolverSteel.reset` and
+:meth:`~newton.solvers.SolverSteel.notify_model_changed` wake bodies, which the
+next step reports. Without sleeping the kind is unsupported and requesting it raises.
+
 .. _mujoco_overflow_observable:
 
 MuJoCo overflow diagnostics

@@ -66,7 +66,7 @@ def advance_frame_index(frame_index: wp.array[wp.int32]):
 @wp.kernel(enable_backward=False)
 def update_shape_colors(
     shape_body: wp.array[wp.int32],
-    body_awake: wp.array[wp.int32],
+    body_awake: wp.array[wp.bool],
     awake_color: wp.array[wp.vec3],
     sleep_color: wp.vec3,
     shape_color: wp.array[wp.vec3],
@@ -74,7 +74,7 @@ def update_shape_colors(
     """Color the shapes of sleeping bodies with ``sleep_color`` and the rest with their awake color."""
     shape_id = wp.tid()
     body_id = shape_body[shape_id]
-    if body_id >= 0 and body_awake[body_id] == 0:
+    if body_id >= 0 and not body_awake[body_id]:
         shape_color[shape_id] = sleep_color
     else:
         shape_color[shape_id] = awake_color[shape_id]
@@ -139,6 +139,7 @@ class Example:
         )
         self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.contacts = self.collision_pipeline.contacts()
+        self.observables = self.solver.observables({SolverSteel.ObservableKind.BODY_AWAKE})
 
         self.state_0 = self.model.state()
         self.state_1 = self.model.state()
@@ -190,7 +191,11 @@ class Example:
                     outputs=[self.state_0.body_f],
                 )
             self.collision_pipeline.collide(self.state_0, self.contacts)
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            # Only the last substep's flags are rendered.
+            observables = self.observables if substep == self.sim_substeps - 1 else None
+            self.solver.step(
+                self.state_0, self.state_1, self.control, self.contacts, self.sim_dt, observables=observables
+            )
             self.state_0, self.state_1 = self.state_1, self.state_0
         wp.launch(advance_frame_index, dim=1, outputs=[self.frame_index])
 
@@ -205,7 +210,7 @@ class Example:
         wp.launch(
             update_shape_colors,
             dim=self.model.shape_count,
-            inputs=[self.model.shape_body, self.solver.body_awake, self.awake_shape_color, self.sleep_color],
+            inputs=[self.model.shape_body, self.observables.body_awake, self.awake_shape_color, self.sleep_color],
             outputs=[self.model.shape_color],
         )
         self.viewer.begin_frame(self.sim_time)
@@ -215,7 +220,7 @@ class Example:
     def test_post_step(self):
         """Record which towers wake after the kick and whether a sleeping body changes its pose."""
         body_q = self.state_0.body_q.numpy()
-        body_awake = self.solver.body_awake.numpy() != 0
+        body_awake = self.observables.body_awake.numpy()
         if self.previous_body_q is not None:
             asleep = ~body_awake & ~self.previous_body_awake
             frozen = body_q[asleep].tobytes() == self.previous_body_q[asleep].tobytes()

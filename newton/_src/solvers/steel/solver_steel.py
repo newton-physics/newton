@@ -7,6 +7,7 @@ import os
 import re
 import warnings
 import weakref
+from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import cache
 from typing import Literal
@@ -179,7 +180,7 @@ from .kernels import (
     update_qdd_from_velocity,
     vector_add_inplace,
 )
-from .sleeping import _SleepState
+from .sleeping import _publish_body_awake, _SleepState
 from .sparse_contact import (
     _get_sparse_contact_response_kernel,
     apply_sparse_factor_velocity,
@@ -1347,6 +1348,13 @@ class SolverSteel(SolverBase):
         sleeps; pass ``sleep_skip_constraints=False`` (or leave sleeping off) to keep the
         solved forces.
 
+        With ``enable_sleeping``, :attr:`SolverSteel.Observables.body_awake` is populated when
+        :attr:`SolverSteel.ObservableKind.BODY_AWAKE` is requested: ``True`` for an awake body and
+        ``False`` for a sleeping one, as of the end of the step. :meth:`reset` and
+        :meth:`notify_model_changed` wake bodies, which the next step reports. Bodies of
+        articulations with no responding degrees of freedom always read ``True``. Without
+        ``enable_sleeping`` the kind is not in :attr:`supported_observables`, so requesting it raises.
+
     Example:
 
         .. code-block:: python
@@ -1361,7 +1369,38 @@ class SolverSteel(SolverBase):
                 state_in, state_out = state_out, state_in
     """
 
-    SUPPORTED_OBSERVABLES = frozenset({SolverBase.ObservableKind.BODY_PARENT_F, SolverBase.ObservableKind.CONTACT_F})
+    class ObservableKind(SolverBase.ObservableKind):
+        """Standard and Steel-specific observable kinds.
+
+        See :ref:`solver_observables` for solver-specific kinds.
+
+        .. experimental::
+        """
+
+        BODY_AWAKE = "body_awake"
+        """Per-body sleep flags of ``enable_sleeping``."""
+
+    @dataclass(eq=False)
+    class Observables(SolverBase.Observables):
+        """Standard and Steel-specific observable arrays.
+
+        .. experimental::
+            The solver observable API may change without prior notice.
+        """
+
+        body_awake: wp.array[wp.bool] | None = SolverBase.Observables.field(  # noqa: RUF009
+            dtype=wp.bool,
+            frequency=Model.AttributeFrequency.BODY,
+        )
+        """Per-body awake flags as of the end of the step that wrote them, shape ``(body_count,)``."""
+
+    SUPPORTED_OBSERVABLES = frozenset(
+        {
+            SolverBase.ObservableKind.BODY_PARENT_F,
+            SolverBase.ObservableKind.CONTACT_F,
+            ObservableKind.BODY_AWAKE,
+        }
+    )
 
     # Constructor options. Most are fixed at construction; the _StepOption ones are read at every step.
     solve_mode = _ConstructionOption()
@@ -2542,14 +2581,30 @@ class SolverSteel(SolverBase):
         return self._velocity_limits_fused
 
     @property
-    def body_awake(self) -> wp.array[wp.int32] | None:
-        """Per-body flags of ``enable_sleeping``, ``1`` awake and ``0`` asleep, shape [body_count]; ``None`` without it.
+    def supported_observables(self) -> frozenset[str]:
+        """Return the observables available for this configuration; ``BODY_AWAKE`` requires ``enable_sleeping``."""
+        kinds = super().supported_observables
+        return kinds if self._sleeping is not None else kinds - {self.ObservableKind.BODY_AWAKE}
 
-        The solver writes this device array in place as islands sleep and wake, also during CUDA
-        graph replay, so the same array stays valid for the solver's lifetime; treat it as
-        read-only. Bodies of articulations with no responding degrees of freedom always read ``1``.
-        """
-        return None if self._sleeping is None else self._sleeping.body_awake
+    @override
+    def observables(
+        self,
+        kinds: Iterable[str],
+        *,
+        contacts: Contacts | None = None,
+        requires_grad: bool | None = None,
+    ) -> SolverBase.Observables:
+        """Allocate observable arrays; ``body_awake`` starts with the solver's current flags."""
+        observables = super().observables(kinds, contacts=contacts, requires_grad=requires_grad)
+        if observables.is_requested(self.ObservableKind.BODY_AWAKE):
+            wp.launch(
+                _publish_body_awake,
+                dim=self.model.body_count,
+                inputs=[self._sleeping.body_awake],
+                outputs=[observables.body_awake],
+                device=self.model.device,
+            )
+        return observables
 
     @property
     def _contact_torsion_shape_radius(self) -> wp.array | None:
@@ -5826,6 +5881,14 @@ class SolverSteel(SolverBase):
                 dim=observables.contact_f.shape[0],
                 inputs=[*self._contact_force_inputs(contacts, inv_dt), contacts.rigid_contact_max],
                 outputs=[observables.contact_f],
+                device=self.model.device,
+            )
+        if observables is not None and observables.is_requested(self.ObservableKind.BODY_AWAKE):
+            wp.launch(
+                _publish_body_awake,
+                dim=self.model.body_count,
+                inputs=[self._sleeping.body_awake],
+                outputs=[observables.body_awake],
                 device=self.model.device,
             )
         return state_out

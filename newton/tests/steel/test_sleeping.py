@@ -57,18 +57,20 @@ def test_disabled_allocates_no_state(test, device):
     """Keep sleep state absent on the default solver path."""
     _model, _pipeline, solver, _states, _control = _scene(device, enabled=False)
     test.assertIsNone(solver._sleeping)
-    test.assertIsNone(solver.body_awake)
+    test.assertNotIn(SolverSteel.ObservableKind.BODY_AWAKE, solver.supported_observables)
+    with test.assertRaises(ValueError):
+        solver.observables({SolverSteel.ObservableKind.BODY_AWAKE})
 
 
 def test_separated_boxes_sleep_and_force_wakes_one(test, device):
-    """Sleep independent boxes, wake only the forced island, and publish both through ``body_awake``."""
+    """Sleep independent boxes, wake only the forced island, and report both through ``BODY_AWAKE``."""
     _model, pipeline, solver, states, control = _scene(device)
-    body_awake = solver.body_awake
-    test.assertEqual((body_awake.dtype, body_awake.shape), (wp.int32, (2,)))
-    with test.assertRaises(AttributeError):
-        solver.body_awake = body_awake
-    _advance_boxes(pipeline, solver, states, control, 120)
-    np.testing.assert_array_equal(body_awake.numpy(), [0, 0])
+    observables = solver.observables({SolverSteel.ObservableKind.BODY_AWAKE})
+    body_awake = observables.body_awake
+    test.assertEqual((body_awake.dtype, body_awake.shape), (wp.bool, (2,)))
+    np.testing.assert_array_equal(body_awake.numpy(), [True, True])
+    _advance_boxes(pipeline, solver, states, control, 120, observables=observables)
+    np.testing.assert_array_equal(body_awake.numpy(), [False, False])
     test.assertNotEqual(*solver._sleeping.body_island.numpy())
     before = states[0].body_q.numpy().copy()
     _advance_boxes(pipeline, solver, states, control, 10)
@@ -76,9 +78,12 @@ def test_separated_boxes_sleep_and_force_wakes_one(test, device):
     force = np.zeros((2, 6), dtype=np.float32)
     force[0, 0] = 100.0
     states[0].body_f.assign(force)
-    _advance_boxes(pipeline, solver, states, control, 1, clear=False)
-    np.testing.assert_array_equal(body_awake.numpy(), [1, 0])
+    _advance_boxes(pipeline, solver, states, control, 1, clear=False, observables=observables)
+    np.testing.assert_array_equal(body_awake.numpy(), [True, False])
     test.assertGreater(states[0].body_qd.numpy()[0, 0], 0.0)
+    solver.reset(states[0])
+    _advance_boxes(pipeline, solver, states, control, 1, observables=observables)
+    np.testing.assert_array_equal(body_awake.numpy(), [True, True])
 
 
 def test_nonfinite_force_wakes_and_propagates(test, device):
@@ -168,24 +173,25 @@ def test_cuda_graph_sleep_and_wake(test, device):
     """Advance sleep timers and wake on a captured force during graph replay."""
     model, pipeline, solver, states, control = _scene(device)
     contacts = pipeline.contacts()
+    observables = solver.observables({SolverSteel.ObservableKind.BODY_AWAKE})
     for _ in range(2):
         pipeline.collide(states[0], contacts)
-        solver.step(states[0], states[1], control, contacts, DT)
+        solver.step(states[0], states[1], control, contacts, DT, observables=observables)
         states.reverse()
     with wp.ScopedCapture(device=model.device) as capture:
         for _ in range(2):
             pipeline.collide(states[0], contacts)
-            solver.step(states[0], states[1], control, contacts, DT)
+            solver.step(states[0], states[1], control, contacts, DT, observables=observables)
             states.reverse()
     for _ in range(100):
         wp.capture_launch(capture.graph)
-    np.testing.assert_array_equal(solver.body_awake.numpy(), [0, 0])
+    np.testing.assert_array_equal(observables.body_awake.numpy(), [False, False])
     forces = np.zeros((2, 6), dtype=np.float32)
     forces[0, 0] = 100.0
     states[0].body_f.assign(forces)
     states[1].body_f.assign(forces)
     wp.capture_launch(capture.graph)
-    np.testing.assert_array_equal(solver.body_awake.numpy(), [1, 0])
+    np.testing.assert_array_equal(observables.body_awake.numpy(), [True, False])
 
 
 def _parent_wrench_scene(device):
