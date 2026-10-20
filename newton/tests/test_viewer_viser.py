@@ -103,6 +103,21 @@ class TestViewerViserInteraction(unittest.TestCase):
         self.viewer.set_model(model)
         return model
 
+    def test_gaussian_colors_follow_sh_color_space(self):
+        """Display linear Gaussian radiance sRGB-encoded and sRGB radiance as is."""
+        sh_c0 = 0.28209479177387814
+        sh = np.full((1, 3), (0.2 - 0.5) / sh_c0, dtype=np.float32)
+        for color_space, expected in (
+            (newton.utils.ColorSpace.SRGB, 0.2),
+            (newton.utils.ColorSpace.LINEAR, newton.utils.color_linear_to_srgb([0.2] * 3)[0]),
+        ):
+            gaussian = newton.Gaussian(
+                positions=np.zeros((1, 3), dtype=np.float32), sh_coeffs=sh, sh_color_space=color_space
+            )
+            with mock.patch.object(self.viewer._server.scene, "add_gaussian_splats") as add_splats:
+                self.viewer.log_gaussian(f"/gaussian_{int(color_space)}", gaussian)
+            np.testing.assert_allclose(add_splats.call_args.kwargs["rgbs"], [[expected] * 3], atol=1e-5)
+
     def test_hidden_shapes_preserve_colors(self):
         """Restore colored rigid geometry after toggling visual and collision layers."""
         model = self.make_model()
