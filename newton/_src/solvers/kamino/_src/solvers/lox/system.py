@@ -110,8 +110,8 @@ class LOXSystem:
         self.block_body_counts = tuple(block_body_counts.tolist())
         """Number of bodies of each factor block."""
         self.num_blocks = len(self.block_body_counts)
-        # Single-body blocks keep a direct 6 x 6 inverse; the sparse LLT factorizes the other blocks
-        self.num_sparse_blocks = self.num_blocks - sum(count == 1 for count in self.block_body_counts)
+        # Single-body blocks keep a direct 6 x 6 inverse; the sparse LLT factorizes the blocks of several bodies
+        self.num_sparse_blocks = sum(count > 1 for count in self.block_body_counts)
 
         body_block = np.full(self.num_bodies, -1, dtype=np.int32)
         body_local = np.full(self.num_bodies, -1, dtype=np.int32)
