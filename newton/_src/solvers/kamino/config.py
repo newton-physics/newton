@@ -393,6 +393,9 @@ class ConstrainedDynamicsConfig(ConfigBase):
     Whether to cull speculative (= separated) contacts in the dynamics solve.
     These contacts have occasionally led to numerical instabilities, and
     can yield inaccurate restitutive impacts.
+
+    The LOX backend keeps speculative contacts independently of this setting:
+    its contact law lets a separated contact close its gap within the step.
     """
 
     @override
@@ -1110,7 +1113,8 @@ class LOXSolverConfig:
         only; cable and deformable extensions are not supported.
 
     Unlike the PADMM and DVI backends, LOX advances immovable (kinematic, proxy, and
-    massless) bodies with their velocity in ``state_in.body_qd``.
+    massless) bodies with their velocity in ``state_in.body_qd``, and it keeps speculative
+    contacts regardless of :attr:`ConstrainedDynamicsConfig.cull_speculative_contacts`.
     """
 
     max_iterations: int = 16
