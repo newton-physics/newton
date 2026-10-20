@@ -243,6 +243,10 @@ The first release deliberately supports a narrow, predictable set of inputs:
   For disjoint topology, the dihedral uses both copies of the shared edge as placed in
   ``restShapePoints``. Coplanar, consistently oriented rest panels therefore remain flat.
 
+  Authored overrides use this same signed dihedral convention after mesh handedness and
+  reflection corrections. Import preserves the authored angle's sign. The linked proposal
+  specifies degrees but does not define a sign convention.
+
   For non-planar cloth, Newton warns when the unauthored flat default applies without a
   valid rest shape or bend override. Set ``"restShape"`` to preserve the imported dihedrals.
   Rejected rest data does not suppress this warning; a valid zero-angle override does.
@@ -308,6 +312,13 @@ Known gaps of the experimental importer, tracked as follow-ups:
 * **Rest geometry** -- rest shapes are fixed at import time and do not update during
   simulation. Invalid cloth or volume rest geometry falls back to the simulation shape
   for the whole prim.
+* **Self-contact filtering** -- :class:`~newton.solvers.SolverVBD`'s
+  ``particle_rest_shape_contact_exclusion_radius`` uses initial positions in
+  :attr:`~newton.Model.particle_q`; imported rest geometry does not change this reference.
+  A nonzero radius can exclude contacts between initially folded or compressed regions,
+  even if they are far apart at rest. The default, ``0``, disables this distance filter.
+  This also applies to ``rest_shape_exclusion_radius`` in
+  :meth:`~newton.CollisionPipeline.init_soft_self_contact`.
 * **Disjoint cloth edges** -- adjacent rest triangles may give their shared edge different
   lengths. Newton logs a warning and uses the last adjacent triangle's rest length for
   bending. Both triangles retain their own rest bases and masses.
