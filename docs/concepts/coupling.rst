@@ -385,10 +385,11 @@ proxy source or an ADMM entry. It consumes coupling forces through
 ``state.body_f`` and reports articulated effective mass as the inverse of the
 axis mean of the endpoint mobility ``J H^-1 J^T``, where ``H`` is the tree-only
 joint-space mass matrix with armature at ``model.joint_q``. The effective mass is
-evaluated on the host, so query it outside graph capture. Its input-state hook
-saves the friction-patch history on the first coupler write of a step and
-restores it after an iteration restart, so repeated solves of one step start
-from the same history; a reset cancels the pending restore. Owning particles,
+evaluated on the host, so query it outside graph capture. After a coupler
+state write, Steel's next step saves the friction-patch history; after an
+iteration restart, it restores the saved copy instead, so repeated solves of one
+step start from the same history. Both run inside the step, so a graph captured
+from the coupled step records them; a reset cancels both. Owning particles,
 acting as a proxy destination, sleeping, contact warm starting, contact
 compliance and contact torsion raise :class:`NotImplementedError`. Coupled use
 is validated with ``solve_mode="matrix_free"`` and the ``"immediate"``

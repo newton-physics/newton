@@ -287,6 +287,36 @@ def test_graph_capture_matches_eager(test, device):
     np.testing.assert_allclose(results[1][60:], results[0][60:], atol=1.0e-3)
 
 
+def test_graph_capture_after_sync_matches_eager(test, device):
+    """Replay a coupled step captured after ``sync_entry_states`` exactly like eager stepping."""
+    results = []
+    for use_graph in (False, True):
+        model, boxes = _build_box_cloth(
+            device, box_z=0.13, box_xy=(3.0, 0.0), box_joint_qd=(1.0, 0.3, -0.5, 0.0, 0.0, 3.0), ground=True
+        )
+        rollout = _Rollout(model, _coupled(model, boxes, iterations=3))
+        for _ in range(12):
+            rollout.step()
+        # A coupler write between steps must not leave the captured step without its history save.
+        rollout.solver.sync_entry_states(rollout.state_0, DT)
+        graph = None
+        if use_graph:
+            with wp.ScopedCapture(device) as capture:
+                rollout.step()
+                rollout.step()
+            graph = capture.graph
+        trajectory = []
+        for _ in range(30):
+            if graph is None:
+                rollout.step()
+                rollout.step()
+            else:
+                wp.capture_launch(graph)
+            trajectory.append(rollout.state_0.body_q.numpy().copy())
+        results.append(np.asarray(trajectory))
+    np.testing.assert_array_equal(results[1], results[0])
+
+
 def _build_rolling_sphere(device):
     """Build an articulated sphere rolling and spinning on the ground, next to a cloth sheet."""
     radius = 0.02
@@ -792,6 +822,7 @@ for _name, _func in (
     ("test_box_rests_on_cloth_like_mujoco", test_box_rests_on_cloth_like_mujoco),
     ("test_worlds_are_isolated", test_worlds_are_isolated),
     ("test_graph_capture_matches_eager", test_graph_capture_matches_eager),
+    ("test_graph_capture_after_sync_matches_eager", test_graph_capture_after_sync_matches_eager),
     ("test_articulated_graph_capture_matches_eager", test_articulated_graph_capture_matches_eager),
     ("test_unsupported_options_raise", test_unsupported_options_raise),
     ("test_articulated_effective_mass", test_articulated_effective_mass),

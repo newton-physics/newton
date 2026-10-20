@@ -2334,7 +2334,7 @@ class SolverSteel(SolverBase, CouplingInterface):
 
         self._step = 0
         self._force_mass_update = False
-        self._coupling_patch_history_saved = False
+        self._coupling_patch_history_snapshot_pending = False
         self._coupling_patch_history_restore_pending = False
         self._mass_update_requested = wp.zeros(model.articulation_count, dtype=wp.int32, device=model.device)
         self._last_step_dt = None
@@ -2716,7 +2716,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         world_mask = self._normalize_reset_world_mask(world_mask)
         if flags & ModelFlags.CONSTRAINT_PROPERTIES:
             _validate_equality_constraints(self.model)
-        self._coupling_patch_history_saved = False
+        self._coupling_patch_history_snapshot_pending = False
         self._coupling_patch_history_restore_pending = False
         if self._sleeping is not None:
             self._sleeping.notify(flags)
@@ -2897,7 +2897,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         """
         del flags
         # A reset distribution is not a repeated solve: unselected worlds keep their live history.
-        self._coupling_patch_history_saved = False
+        self._coupling_patch_history_snapshot_pending = False
         self._coupling_patch_history_restore_pending = False
         if self._contact_compliance:
             _contact_compliance.clear(self)
@@ -2943,23 +2943,21 @@ class SolverSteel(SolverBase, CouplingInterface):
         iteration_restart: bool = False,
         dt: float = 0.0,
     ) -> None:
-        """Save or rewind the carried friction-patch history around coupler state writes.
+        """Schedule a save or rewind of the carried friction-patch history for the next step.
 
-        The first kinematic write after a step saves the history; an iteration restart restores it
-        before the next step, so repeated solves of one coupled step start from the same history.
+        After a kinematic write the next step saves the history; after an iteration restart it restores
+        the saved copy, so repeated solves of one coupled step start from the same history.
         """
         del state, dt
         self._require_coupling_support()
         if not self._friction_anchors_enabled:
             return
         kinematic = int(flags) & int(StateFlags.BODY_Q | StateFlags.BODY_QD | StateFlags.JOINT_Q | StateFlags.JOINT_QD)
+        # step() runs both, so a graph captured from the coupled step records them; a reset cancels both.
         if iteration_restart:
-            # Deferred to step(): a reset that follows this notification cancels it.
             self._coupling_patch_history_restore_pending = True
-        elif kinematic and not self._coupling_patch_history_saved:
-            self._friction_patches.snapshot_history()
-        # Until the next step, reset or model change, the carried history equals the saved copy.
-        self._coupling_patch_history_saved |= bool(iteration_restart or kinematic)
+        elif kinematic:
+            self._coupling_patch_history_snapshot_pending = True
 
     @override
     def coupling_eval_effective_mass(
@@ -6229,8 +6227,10 @@ class SolverSteel(SolverBase, CouplingInterface):
         """Run the stages of :meth:`step` after its input checks."""
         if self._coupling_patch_history_restore_pending:
             self._friction_patches.restore_history()
-            self._coupling_patch_history_restore_pending = False
-        self._coupling_patch_history_saved = False
+        elif self._coupling_patch_history_snapshot_pending:
+            self._friction_patches.snapshot_history()
+        self._coupling_patch_history_restore_pending = False
+        self._coupling_patch_history_snapshot_pending = False
         if self._contact_torsion_enabled:
             validate_torsion_step(self)
             if self._device_torsion is not None:
