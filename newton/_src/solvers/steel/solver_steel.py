@@ -8769,35 +8769,41 @@ class SolverSteel(SolverBase):
         if limit_sizes:
             self._reserve_rows(self._articulation_world_index, self._slot_counter, launch_limits)
 
-        for size, kernel in self._joint_friction_warp_kernels.items():
-            n_arts = self._n_arts_by_size[size]
-            wp.launch_tiled(
-                kernel,
-                dim=[(n_arts + _JOINT_LIMIT_WARPS_PER_BLOCK - 1) // _JOINT_LIMIT_WARPS_PER_BLOCK],
-                inputs=[
-                    n_arts,
-                    self._articulation_dof_start,
-                    self._art_to_world,
-                    self._group_to_art[size],
-                    self._constraint_art_active,
-                    self._friction_dof_supported,
-                    self._kinematic_dof_mask,
-                    model.joint_friction,
-                    dt,
-                    max_constraints,
-                ],
-                outputs=[
-                    self._slot_counter,
-                    self._J_by_size[size],
-                    self._row_type,
-                    self._row_parent,
-                    self._row_mu,
-                    self._phi,
-                    self._target_velocity,
-                ],
-                block_dim=32 * _JOINT_LIMIT_WARPS_PER_BLOCK,
-                device=model.device,
-            )
+        def launch_friction(mode):
+            for size, kernel in self._joint_friction_warp_kernels.items():
+                n_arts = self._n_arts_by_size[size]
+                wp.launch_tiled(
+                    kernel,
+                    dim=[(n_arts + _JOINT_LIMIT_WARPS_PER_BLOCK - 1) // _JOINT_LIMIT_WARPS_PER_BLOCK],
+                    inputs=[
+                        n_arts,
+                        self._articulation_dof_start,
+                        self._art_to_world,
+                        self._group_to_art[size],
+                        self._constraint_art_active,
+                        self._friction_dof_supported,
+                        self._kinematic_dof_mask,
+                        model.joint_friction,
+                        dt,
+                        max_constraints,
+                    ],
+                    outputs=[
+                        self._slot_counter,
+                        self._J_by_size[size],
+                        self._row_type,
+                        self._row_parent,
+                        self._row_mu,
+                        self._phi,
+                        self._target_velocity,
+                        mode,
+                        self._row_cursor,
+                    ],
+                    block_dim=32 * _JOINT_LIMIT_WARPS_PER_BLOCK,
+                    device=model.device,
+                )
+
+        if self._joint_friction_warp_kernels:
+            self._reserve_rows(self._articulation_world_index, self._slot_counter, launch_friction)
 
         if self._velocity_limit_slot is not None:
 
@@ -11328,8 +11334,16 @@ def _get_joint_friction_warp_kernel(size: int, device_arch: str, warps_per_block
         const unsigned active_mask = __ballot_sync(MASK, active != 0);
         const int active_count = __popc(active_mask);
         int first_slot = 0;
-        if (lane == 0 && active_count != 0)
-            first_slot = atomicAdd(&world_slot_counter.data[world], active_count);
+        if (lane == 0 && active_count != 0) {{
+            if (row_slot_mode == {int(ROW_SLOTS_ATOMIC)}) {{
+                first_slot = atomicAdd(&world_slot_counter.data[world], active_count);
+            }} else {{
+                // One warp owns the articulation; see assign_world_row_slots.
+                first_slot = element_row_cursor.data[articulation];
+                element_row_cursor.data[articulation] = first_slot + active_count;
+                if (row_slot_mode == {int(ROW_SLOTS_COUNT)}) first_slot = {int(ROW_SLOT_COUNT_PASS)};
+            }}
+        }}
         first_slot = __shfl_sync(MASK, first_slot, 0);
         if (active != 0) {{
             const unsigned lower_lanes = lane == 0 ? 0u : ((1u << lane) - 1u);
@@ -11368,6 +11382,8 @@ def _get_joint_friction_warp_kernel(size: int, device_arch: str, warps_per_block
         world_row_mu: wp.array2d[float],
         world_phi: wp.array2d[float],
         world_target_velocity: wp.array2d[float],
+        row_slot_mode: int,
+        element_row_cursor: wp.array[int],
     ): ...
 
     def joint_friction_warp_template(  # pragma: no cover - compiled by wp.kernel
@@ -11388,6 +11404,8 @@ def _get_joint_friction_warp_kernel(size: int, device_arch: str, warps_per_block
         world_row_mu: wp.array2d[float],
         world_phi: wp.array2d[float],
         world_target_velocity: wp.array2d[float],
+        row_slot_mode: int,
+        element_row_cursor: wp.array[int],
     ):
         block, _lane = wp.tid()
         joint_friction_warp_native(
@@ -11409,12 +11427,16 @@ def _get_joint_friction_warp_kernel(size: int, device_arch: str, warps_per_block
             world_row_mu,
             world_phi,
             world_target_velocity,
+            row_slot_mode,
+            element_row_cursor,
         )
 
     name = f"build_joint_friction_rows_warp_{size}_{warps_per_block}"
     joint_friction_warp_template.__name__ = name
     joint_friction_warp_template.__qualname__ = name
-    return wp.kernel(enable_backward=False, module="unique")(joint_friction_warp_template)
+    return wp.kernel(enable_backward=False, module="unique", module_options=WARP_DETERMINISM_OFF)(
+        joint_friction_warp_template
+    )
 
 
 @cache

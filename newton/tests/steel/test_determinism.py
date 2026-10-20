@@ -19,6 +19,7 @@ import newton
 import newton.examples
 import newton.tests.unittest_utils
 from newton._src.solvers.steel.kernels import (
+    PGS_CONSTRAINT_TYPE_JOINT_FRICTION,
     PGS_CONSTRAINT_TYPE_JOINT_LIMIT,
     _get_tree_fk_kernel,
     _get_tree_tau_kernel,
@@ -57,6 +58,9 @@ SPLIT_OPTIONS = {
 
 # Device-prepared contact torsion rows follow the contact rows of their world.
 TORSION_OPTIONS = {**MATRIX_FREE_OPTIONS, "contact_torsion_device": True, "articulation_constraint_max": 512}
+
+# Joint-friction rows alongside the contact, drive, joint-limit and velocity-limit rows.
+FRICTION_OPTIONS = {**MATRIX_FREE_OPTIONS, "enable_joint_friction": True}
 
 # Warm-started impulses are matched through contact matching and carried across steps.
 WARMSTART_OPTIONS = {**MATRIX_FREE_OPTIONS, "contact_warmstart": True, "velocity_iterations": 2}
@@ -163,8 +167,11 @@ def test_full_reset_matches_fresh_solver(test, device):
             np.testing.assert_array_equal(body_qd, fresh_body_qd)
 
 
-def _build_contact_scene(device, worlds=4, boxes=6, ants=2, torsion_radius=0.0):
-    """Floating ants dropped onto each other and onto a pile of free boxes in every world."""
+def _build_contact_scene(device, worlds=4, boxes=6, ants=2, torsion_radius=0.0, joint_friction=0.0):
+    """Floating ants dropped onto each other and onto a pile of free boxes in every world.
+
+    A positive ``joint_friction`` adds a floating prismatic, ball and D6 chain and sets it on every non-free DOF.
+    """
     env = newton.ModelBuilder()
     SolverSteel.register_custom_attributes(env)
     for ant in range(ants):
@@ -185,6 +192,8 @@ def _build_contact_scene(device, worlds=4, boxes=6, ants=2, torsion_radius=0.0):
             )
         )
         env.add_shape_box(body, hx=0.06, hy=0.05, hz=0.06, cfg=newton.ModelBuilder.ShapeConfig(density=300.0, mu=0.7))
+    if joint_friction > 0.0:
+        _add_mixed_chain(env, wp.vec3(-0.2, -1.0, 0.12))
     builder = newton.ModelBuilder()
     SolverSteel.register_custom_attributes(builder)
     builder.replicate(env, worlds)
@@ -193,12 +202,49 @@ def _build_contact_scene(device, worlds=4, boxes=6, ants=2, torsion_radius=0.0):
     model.joint_velocity_limit.fill_(8.0)
     if torsion_radius > 0.0:
         model.steel.min_torsional_patch_radius.fill_(torsion_radius)
+    if joint_friction > 0.0:
+        friction = np.zeros(model.joint_dof_count, dtype=np.float32)
+        joint_dofs = np.repeat(model.joint_type.numpy(), np.diff(model.joint_qd_start.numpy()))
+        friction[joint_dofs != newton.JointType.FREE] = joint_friction
+        model.joint_friction.assign(friction)
     return model
+
+
+def _add_mixed_chain(builder, position):
+    """Add a floating chain of prismatic, ball and D6 joints with limits on its linear axes."""
+    dof = newton.ModelBuilder.JointDofConfig
+    links = []
+    for index in range(4):
+        link = builder.add_link(xform=wp.transform(position + wp.vec3(0.12 * index, 0.0, 0.0), wp.quat_identity()))
+        builder.add_shape_box(link, hx=0.05, hy=0.04, hz=0.03, cfg=newton.ModelBuilder.ShapeConfig(density=400.0))
+        links.append(link)
+    offset = wp.transform(wp.vec3(0.12, 0.0, 0.0), wp.quat_identity())
+    joints = [
+        builder.add_joint_free(links[0]),
+        builder.add_joint_prismatic(
+            links[0], links[1], parent_xform=offset, axis=newton.Axis.X, limit_lower=-0.04, limit_upper=0.04
+        ),
+        builder.add_joint_ball(links[1], links[2], parent_xform=offset),
+        builder.add_joint_d6(
+            links[2],
+            links[3],
+            parent_xform=offset,
+            linear_axes=[dof(axis=newton.Axis.Z, limit_lower=-0.03, limit_upper=0.03)],
+            angular_axes=[dof(axis=newton.Axis.X), dof(axis=newton.Axis.Y)],
+        ),
+    ]
+    builder.add_articulation(joints)
 
 
 def _actuate(model, control):
     torques = np.zeros(model.joint_dof_count, dtype=np.float32)
     torques[np.arange(model.joint_dof_count) % 14 >= 6] = 30.0
+    # The mixed chain is unactuated.
+    dof_counts = np.diff(model.joint_qd_start.numpy())
+    dof_type = np.repeat(model.joint_type.numpy(), dof_counts)
+    dof_articulation = np.repeat(model.joint_articulation.numpy(), dof_counts)
+    chain = (newton.JointType.PRISMATIC, newton.JointType.BALL, newton.JointType.D6)
+    torques[np.isin(dof_articulation, dof_articulation[np.isin(dof_type, chain)])] = 0.0
     control.joint_f.assign(torques)
 
 
@@ -255,12 +301,15 @@ def test_deterministic_runs_are_bitwise_identical(test, device):
     configurations = [("split", model, SPLIT_OPTIONS, False)]
     if wp.get_device(device).is_cuda:
         torsion_model = _build_contact_scene(device, torsion_radius=0.02)
+        friction_model = _build_contact_scene(device, joint_friction=0.4)
         configurations += [
             ("split_graph", model, SPLIT_OPTIONS, True),
             ("matrix_free", model, MATRIX_FREE_OPTIONS, False),
             ("matrix_free_graph", model, MATRIX_FREE_OPTIONS, True),
             ("torsion_graph", torsion_model, TORSION_OPTIONS, True),
             ("warmstart_graph", model, WARMSTART_OPTIONS, True),
+            ("joint_friction", friction_model, FRICTION_OPTIONS, False),
+            ("joint_friction_graph", friction_model, FRICTION_OPTIONS, True),
         ]
     for name, scene, options, graph in configurations:
         with test.subTest(name):
@@ -342,12 +391,14 @@ def test_deterministic_launches_replay_identically(test, device):
     model = _build_contact_scene(device, worlds=8)
     torsion_model = _build_contact_scene(device, worlds=8, torsion_radius=0.02)
     ant_model = _build_contact_scene(device, worlds=8, boxes=0)
+    friction_model = _build_contact_scene(device, worlds=8, joint_friction=0.4)
     for name, scene, options in (
         ("matrix_free", model, MATRIX_FREE_OPTIONS),
         ("split", model, SPLIT_OPTIONS),
         ("torsion", torsion_model, TORSION_OPTIONS),
         ("warmstart", model, WARMSTART_OPTIONS),
         ("sparse", ant_model, SPARSE_OPTIONS),
+        ("joint_friction", friction_model, FRICTION_OPTIONS),
     ):
         with test.subTest(name):
             solver = SolverSteel(scene, deterministic=RUN_TO_RUN, **options)
@@ -452,7 +503,7 @@ def test_overflow_warning_names_deterministic_mode(test, device):
 
 
 def test_deterministic_joint_rows_follow_articulation_order(test, device):
-    """Give the drive, joint-limit and velocity-limit rows of a world their slots in articulation order."""
+    """Give a world's drive, joint-limit, joint-friction and velocity-limit rows their slots in articulation order."""
     arts_per_world = 40
     env = newton.ModelBuilder()
     for art in range(arts_per_world):
@@ -475,6 +526,9 @@ def test_deterministic_joint_rows_follow_articulation_order(test, device):
     # Every joint violates its upper limit by a different amount, so limit rows are told apart by phi.
     q = 0.2 + 0.001 * np.arange(model.joint_coord_count, dtype=np.float32)
     model.joint_q.assign(q)
+    # Distinct coefficients tell the friction rows apart by their bound.
+    friction = 1.0 + 0.01 * np.arange(model.joint_dof_count, dtype=np.float32)
+    model.joint_friction.assign(friction)
     solver = SolverSteel(
         model,
         deterministic=RUN_TO_RUN,
@@ -483,7 +537,8 @@ def test_deterministic_joint_rows_follow_articulation_order(test, device):
         joint_limit_activation_gap=0.0,
         enable_joint_velocity_limits=True,
         fuse_joint_velocity_limits=False,
-        articulation_constraint_max=4 * arts_per_world,
+        enable_joint_friction=True,
+        articulation_constraint_max=5 * arts_per_world,
     )
     state = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state)
@@ -494,14 +549,65 @@ def test_deterministic_joint_rows_follow_articulation_order(test, device):
     velocity_limit_slot = solver._velocity_limit_slot.numpy().reshape(2, arts_per_world, 2)
     row_type = solver._row_type.numpy()
     phi = solver._phi.numpy()
+    row_mu = solver._row_mu.numpy()
     for world in range(2):
         np.testing.assert_array_equal(drive_slot[world], order)
         limit_rows = np.nonzero(row_type[world] == PGS_CONSTRAINT_TYPE_JOINT_LIMIT)[0]
         np.testing.assert_array_equal(limit_rows, arts_per_world + order)
         np.testing.assert_allclose(phi[world, limit_rows], 0.1 - q.reshape(2, arts_per_world)[world], atol=1.0e-6)
-        np.testing.assert_array_equal(
-            velocity_limit_slot[world].reshape(-1), 2 * arts_per_world + np.arange(2 * arts_per_world)
+        friction_rows = np.nonzero(row_type[world] == PGS_CONSTRAINT_TYPE_JOINT_FRICTION)[0]
+        np.testing.assert_array_equal(friction_rows, 2 * arts_per_world + order)
+        np.testing.assert_allclose(
+            row_mu[world, friction_rows], 0.005 * friction.reshape(2, arts_per_world)[world], rtol=1.0e-6
         )
+        np.testing.assert_array_equal(
+            velocity_limit_slot[world].reshape(-1), 3 * arts_per_world + np.arange(2 * arts_per_world)
+        )
+
+
+def test_deterministic_joint_friction_rows_follow_dof_order(test, device):
+    """Give a world's joint-friction rows of revolute, prismatic, ball and D6 joints their slots in DOF order."""
+    arts_per_world = 48
+    dof = newton.ModelBuilder.JointDofConfig
+    env = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    for art in range(arts_per_world):
+        link = env.add_link(xform=wp.transform(wp.vec3(0.5 * art, 0.0, 1.0), wp.quat_identity()))
+        env.add_shape_box(link, hx=0.1, hy=0.02, hz=0.02)
+        anchor = wp.transform(wp.vec3(0.5 * art, 0.0, 1.0), wp.quat_identity())
+        kind = art % 4
+        if kind == 0:
+            joint = env.add_joint_revolute(-1, link, parent_xform=anchor, axis=newton.Axis.Y)
+        elif kind == 1:
+            joint = env.add_joint_prismatic(-1, link, parent_xform=anchor, axis=newton.Axis.X)
+        elif kind == 2:
+            joint = env.add_joint_ball(-1, link, parent_xform=anchor)
+        else:
+            joint = env.add_joint_d6(
+                -1,
+                link,
+                parent_xform=anchor,
+                linear_axes=[dof(axis=newton.Axis.Z)],
+                angular_axes=[dof(axis=newton.Axis.X)],
+            )
+        env.add_articulation([joint])
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder.replicate(env, 2)
+    model = builder.finalize(device=device)
+    friction = 1.0 + 0.01 * np.arange(model.joint_dof_count, dtype=np.float32)
+    model.joint_friction.assign(friction)
+    solver = SolverSteel(model, deterministic=RUN_TO_RUN, enable_joint_friction=True, articulation_constraint_max=128)
+    state = model.state()
+    newton.eval_fk(model, model.joint_q, model.joint_qd, state)
+    solver.step(state, model.state(), model.control(), None, 0.005)
+
+    world_dofs = model.joint_dof_count // 2
+    row_type = solver._row_type.numpy()
+    row_mu = solver._row_mu.numpy()
+    for world in range(2):
+        friction_rows = np.nonzero(row_type[world] == PGS_CONSTRAINT_TYPE_JOINT_FRICTION)[0]
+        np.testing.assert_array_equal(friction_rows, np.arange(world_dofs))
+        expected = 0.005 * friction[world * world_dofs : (world + 1) * world_dofs]
+        np.testing.assert_allclose(row_mu[world, friction_rows], expected, rtol=1.0e-6)
 
 
 def test_deterministic_bilateral_rows_follow_element_order(test, device):
@@ -645,6 +751,7 @@ for _fn in (
     test_warm_started_full_reset_matches_fresh_solver,
     test_deterministic_launches_replay_identically,
     test_deterministic_joint_rows_follow_articulation_order,
+    test_deterministic_joint_friction_rows_follow_dof_order,
     test_deterministic_bilateral_rows_follow_element_order,
     test_inherited_global_mode_keeps_steel_ordering,
 ):
