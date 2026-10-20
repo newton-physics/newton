@@ -7,7 +7,10 @@ from collections import namedtuple
 from types import SimpleNamespace
 
 import numpy as np
+import warp as wp
 
+from newton import Axis
+from newton._src.viewer.camera import Camera
 from newton._src.viewer.viewer_gl import ViewerGL
 from newton._src.viewer.viewer_gui import ViewerGui
 from newton._src.viewer.viewer_null import ViewerNull
@@ -242,6 +245,128 @@ class TestViewerGLNumFramesValidation(unittest.TestCase):
         """Reject flag bits outside the supported CUDA interop categories."""
         with self.assertRaises(ValueError):
             ViewerGL(enable_cuda_interop=ViewerGL.CudaInterop(1 << 10))
+
+
+class TestViewerGizmos(unittest.TestCase):
+    def setUp(self) -> None:
+        try:
+            from imgui_bundle import imgui, imguizmo
+        except ImportError:
+            self.skipTest("imgui_bundle is required")
+
+        self.imgui = imgui
+        self.giz = imguizmo.im_guizmo
+        context = imgui.create_context()
+        self.addCleanup(imgui.destroy_context, context)
+        self.io = imgui.get_io()
+        self.io.set_ini_filename("")
+        self.io.display_size = (800, 600)
+        self.io.delta_time = 1.0 / 60.0
+        # Build draw lists without a window or GPU renderer.
+        self.io.backend_flags |= imgui.BackendFlags_.renderer_has_textures
+        self.viewer = ViewerGL.__new__(ViewerGL)
+        self.viewer.camera = Camera(width=800, height=600, pos=(0.0, 0.0, 5.0), up_axis="Y")
+        self.viewer.camera.yaw = -90.0
+        self.viewer._rendering_paused = False
+        self.viewer._gizmo_log = {}
+        self.viewer.gizmo_is_using = False
+        self.viewer.show_ui = True
+        self.gui = ViewerGui.__new__(ViewerGui)
+        self.gui._viewer = self.viewer
+        self.gui.ui = SimpleNamespace(is_available=True, io=self.io, giz=self.giz)
+        self.gui._gizmo_active = {}
+        self.gui._gizmo_hovered = False
+        self.gui._camera_dolly_scroll_sensitivity = 0.15
+        # ImGuizmo owns global drag state; always release it before destroying ImGui.
+        self.addCleanup(self.frame, 0.0, 0.0, False)
+        self.frame(0.0, 0.0, False)
+
+    def frame(self, x: float, y: float, down: bool) -> None:
+        self.io.add_mouse_pos_event(x, y)
+        self.io.add_mouse_button_event(0, down)
+        self.imgui.new_frame()
+        self.giz.begin_frame()
+        try:
+            self.gui._render_gizmos()
+        finally:
+            self.imgui.render()
+
+    def test_drag_and_snap_with_multiple_operations(self) -> None:
+        """Capture handles, preserve drags across idle operations, and snap only on release."""
+        for translate in (None, (Axis.X, Axis.Y)):
+            with self.subTest(translate=translate):
+                target = wp.transform((0.0, 0.0, 0.0), wp.quat_identity())
+                snap = wp.transform((0.1, 0.2, 0.3), wp.quat_identity())
+                other = wp.transform((1.0, 1.0, 0.0), wp.quat_identity())
+                self.viewer._gizmo_log.clear()
+                self.viewer.log_gizmo("target", target, translate=translate, snap_to=snap)
+                self.viewer.log_gizmo("other", other)
+                self.frame(0.0, 0.0, False)
+                # The X arrow is right of the origin at (400, 300).
+                self.frame(420.0, 300.0, False)
+                camera_pos = tuple(self.viewer.camera.pos)
+                self.gui.handle_mouse_scroll(1.0)
+                self.assertEqual(tuple(self.viewer.camera.pos), camera_pos)
+                self.assertTrue(self.gui.is_mouse_capturing())
+
+                self.frame(420.0, 300.0, True)
+                self.frame(440.0, 300.0, True)
+                self.assertTrue(self.viewer.gizmo_is_using)
+                self.assertTrue(self.gui._gizmo_active["target"])
+                self.assertFalse(self.gui._gizmo_active["other"])
+                first_x = float(target[0])
+                self.assertGreater(first_x, 0.0)
+                np.testing.assert_allclose(np.asarray(target)[1:], (0.0, 0.0, 0.0, 0.0, 0.0, 1.0), atol=1e-6)
+                np.testing.assert_array_equal(other, (1.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0))
+
+                # Stable names must survive a different logging order.
+                self.viewer._gizmo_log = dict(reversed(tuple(self.viewer._gizmo_log.items())))
+                self.frame(440.0, 300.0, True)
+                self.assertAlmostEqual(target[0], first_x, places=5)
+                self.assertTrue(self.gui._gizmo_active["target"])
+                self.frame(460.0, 300.0, True)
+                self.assertGreater(target[0], first_x)
+                self.frame(460.0, 300.0, False)
+                np.testing.assert_array_equal(target, snap)
+                self.assertFalse(self.viewer.gizmo_is_using)
+                self.assertFalse(self.gui._gizmo_active["target"])
+
+                # A later idle frame must not snap again.
+                snap[0] = 2.0
+                self.frame(0.0, 0.0, False)
+                self.assertAlmostEqual(target[0], 0.1)
+                self.viewer._gizmo_log.clear()
+                self.frame(0.0, 0.0, False)
+                self.frame(0.0, 0.0, False)
+                self.assertEqual(self.gui._gizmo_active, {})
+                self.assertFalse(self.gui.is_mouse_capturing())
+
+    def test_rotation_with_restricted_axes(self) -> None:
+        """Rotate around the enabled axis and snap after releasing the ring."""
+        target = wp.transform((0.0, 0.0, 0.0), wp.quat_identity())
+        snap = wp.transform((0.1, 0.2, 0.3), wp.quat_identity())
+        self.viewer.log_gizmo("target", target, translate=(Axis.X, Axis.Y), rotate=(Axis.Z,), snap_to=snap)
+        # The Z ring crosses the upper-right quadrant around the origin.
+        self.frame(420.0, 280.0, False)
+        self.assertTrue(self.gui.is_mouse_capturing())
+        self.frame(420.0, 280.0, True)
+        self.frame(430.0, 300.0, True)
+        self.assertTrue(self.gui._gizmo_active["target"])
+        np.testing.assert_allclose(np.asarray(target)[:5], 0.0, atol=1e-6)
+        self.assertGreater(abs(target[5]), 0.1)
+        self.assertAlmostEqual(float(np.linalg.norm(np.asarray(target)[3:])), 1.0, places=5)
+        self.frame(430.0, 300.0, False)
+        np.testing.assert_array_equal(target, snap)
+        self.assertFalse(self.viewer.gizmo_is_using)
+
+    def test_idle_transform_is_unchanged(self) -> None:
+        """Preserve the caller's quaternion representation when no handle modifies it."""
+        target = wp.transform((0.0, 0.0, 0.0), wp.quat(0.0, 0.0, 0.0, -1.0))
+        original = np.asarray(target).copy()
+        # Also exercise the legacy raw-transform entry.
+        self.viewer._gizmo_log["target"] = target
+        self.frame(0.0, 0.0, False)
+        np.testing.assert_array_equal(target, original)
 
 
 if __name__ == "__main__":

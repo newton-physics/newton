@@ -58,6 +58,7 @@ class ViewerGui:
 
         # Gizmo active-frame tracking (handles snap_to on release)
         self._gizmo_active = {}
+        self._gizmo_hovered = False
         self._frame_prepared = False
 
         # FPS tracking
@@ -105,7 +106,11 @@ class ViewerGui:
     def is_mouse_capturing(self) -> bool:
         if not self.is_available:
             return False
-        return bool(self.ui.io.want_capture_mouse)
+        return bool(
+            self.ui.io.want_capture_mouse
+            or (self.show_ui and self._gizmo_hovered)
+            or (self.show_ui and getattr(self._viewer, "gizmo_is_using", False))
+        )
 
     def is_keyboard_capturing(self) -> bool:
         if not self.is_available:
@@ -116,6 +121,7 @@ class ViewerGui:
         """Release camera motion and gizmos when the displayed image freezes."""
         self._cam_vel.fill(0.0)
         self._gizmo_active.clear()
+        self._gizmo_hovered = False
         self._viewer.gizmo_is_using = False
 
     def should_ignore_mouse_input(self, allow_active_pick_drag: bool = False) -> bool:
@@ -516,8 +522,9 @@ class ViewerGui:
         self._loading_splash_active = False
         self._loading_splash_text = None
 
-    def _render_gizmos(self):
+    def _render_gizmos(self) -> None:
         viewer = self._viewer
+        self._gizmo_hovered = False
         if not self.is_available:
             return
         if viewer.is_rendering_paused():
@@ -614,19 +621,19 @@ class ViewerGui:
             M = transform_to_matrix(transform)
             M_ = m44_to_mat16(M)
 
-            op_modified = False
+            # The binding requires named operations, so render each separately.
+            # Use stable per-operation IDs and retain state before the next call.
+            op_modified = is_active = False
             for op in ops:
-                op_modified = safe_bool(giz.manipulate(view_, proj_, op, giz.MODE.world, M_, None, None)) or op_modified
-
-            any_gizmo_is_using = safe_bool(giz.is_using_any())
-            if hasattr(giz, "is_using"):
-                is_active = safe_bool(giz.is_using()) and any_gizmo_is_using
-            else:
-                is_active = op_modified or (was_active and any_gizmo_is_using)
+                giz.push_id(int(op))
+                op_modified |= safe_bool(giz.manipulate(view_, proj_, op, giz.MODE.world, M_, None, None))
+                self._gizmo_hovered |= safe_bool(giz.is_over(op))
+                is_active |= safe_bool(giz.is_using())
+                giz.pop_id()
 
             if was_active and not is_active and snap_to is not None:
                 transform_assign(transform, snap_to)
-            else:
+            elif op_modified:
                 M[:] = M_.values.reshape(4, 4, order="F")
                 transform_assign_matrix(transform, M)
 
