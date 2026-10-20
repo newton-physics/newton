@@ -252,8 +252,9 @@ class CouplingInterface:
     def coupling_notify_iteration_restarts(self, enabled: bool) -> None:
         """Declare whether the coupler may restart a step's solve.
 
-        Called once after construction. With ``enabled`` false, ``iteration_restart`` is only passed with
-        ``dt=0`` during a reset, so a solver can skip saving the state a restart restores.
+        Called once after the entry solvers are constructed, before any other hook. With ``enabled``
+        false, ``iteration_restart`` is only passed with ``dt=0`` during a reset, so a solver can skip
+        saving the state a restart restores. A solver may reject unsupported coupled options here.
 
         Args:
             enabled: Whether ``coupling_notify_input_state_update`` may receive ``iteration_restart=True``

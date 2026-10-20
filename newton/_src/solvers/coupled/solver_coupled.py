@@ -918,11 +918,11 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 free_root_joints=None if index_lists is None else index_lists.free_root_joints,
             )
 
-        self._after_entries_constructed()
-
         restarts = self._iteration_restarts_possible()
         for entry in self._entries.values():
             entry.solver.coupling_notify_iteration_restarts(restarts)
+
+        self._after_entries_constructed()
 
         for entry in self._entries.values():
             entry.state_0 = entry.view.state()
@@ -2547,8 +2547,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
     def _effective_mass_refresh_flags(self) -> int:
         """Return the model flags after which entry effective masses are evaluated again."""
         return int(
-            ModelFlags.BODY_INERTIAL_PROPERTIES
+            ModelFlags.JOINT_PROPERTIES
             | ModelFlags.JOINT_DOF_PROPERTIES
+            | ModelFlags.BODY_PROPERTIES
+            | ModelFlags.BODY_INERTIAL_PROPERTIES
             | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
         )
 

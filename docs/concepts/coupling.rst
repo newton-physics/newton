@@ -390,17 +390,19 @@ axis mean of the endpoint mobility ``J H^-1 J^T``, where ``H`` is the tree-only
 joint-space mass matrix with armature at ``model.joint_q``; kinematic DOFs take
 the large armature that Steel's solve gives them. The endpoint is a body-frame
 offset from the body COM. The effective mass is evaluated on the host, so query
-it outside graph capture. Proxy and ADMM couplers evaluate it again after body
-inertial and joint armature notifications. A repeated solve of a coupled step
-also restores Steel's step count, so ``update_mass_matrix_interval`` counts
-coupled steps. When the coupler runs
+it outside graph capture. Proxy and ADMM couplers evaluate it again after body,
+body inertial, joint and joint DOF notifications, so issue those outside graph
+capture too. In coupled use ``update_mass_matrix_interval`` counts coupled steps:
+Steel rebuilds the mass matrix at the first substep of every interval-th coupled
+step, so repeated solves of one step use the same matrix. When the coupler runs
 more than one iteration, Steel's next step after a coupler state write saves the
 friction-patch history; after an iteration restart, it restores the saved copy
 instead, so repeated solves of one step start from the same history. Both run
 inside the step, so a graph captured from the coupled step records them; a reset
 cancels both. Owning particles, acting as a proxy destination, sleeping, contact
 warm starting, contact compliance and contact torsion raise
-:class:`NotImplementedError` when the coupled solver is constructed. Coupled use
+:class:`NotImplementedError` when the coupled solver is constructed; a
+standalone Steel on a ``ModelView`` keeps them. Coupled use
 is validated with ``solve_mode="matrix_free"`` and the ``"immediate"``
 articulated contact response. Set ``model.rigid_contact_max`` to the capacity of
 the coupled contact buffer before constructing the coupled solver, because Steel

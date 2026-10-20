@@ -12,6 +12,7 @@ import newton
 from newton.solvers import SolverMuJoCo, SolverSteel, SolverVBD
 from newton.solvers.experimental.coupled import (
     CouplingInterface,
+    ModelView,
     SolverCoupled,
     SolverCoupledADMM,
     SolverCoupledProxy,
@@ -83,7 +84,7 @@ def _build_box_cloth(
     return model, boxes
 
 
-def _coupled(model, boxes, rigid_factory=_steel, *, iterations=1, mode="lagged", in_place=False):
+def _coupled(model, boxes, rigid_factory=_steel, *, iterations=1, mode="lagged", in_place=False, substeps=1):
     rigid_bodies = list(range(model.body_count))
     return SolverCoupledProxy(
         model=model,
@@ -94,6 +95,7 @@ def _coupled(model, boxes, rigid_factory=_steel, *, iterations=1, mode="lagged",
                 bodies=rigid_bodies,
                 joints=list(range(model.joint_count)),
                 in_place=in_place,
+                substeps=substeps,
             ),
             SolverCoupledProxy.Entry(
                 name="vbd",
@@ -178,7 +180,7 @@ def test_iteration_restart_preserves_patch_history(test, device):
 
 
 def test_restarts_keep_mass_matrix_cadence(test, device):
-    """Refresh a lagged mass matrix on the coupled-step cadence, however often the coupler repeats a step."""
+    """Refresh a lagged mass matrix on the coupled-step cadence, however often the coupler repeats a step or substeps."""
 
     def build(cloth):
         builder = newton.ModelBuilder()
@@ -231,6 +233,14 @@ def test_restarts_keep_mass_matrix_cadence(test, device):
         model = build(cloth=True)
         coupled_q = _Rollout(model, _coupled(model, None, steel, iterations=iterations)).run(60)
         np.testing.assert_allclose(coupled_q, reference_q, atol=1.0e-6, err_msg=f"iterations={iterations}")
+    # With substeps the matrix is rebuilt at the first substep of a due coupled step, also when repeated.
+    substepped = {}
+    for iterations in (1, 3):
+        model = build(cloth=True)
+        substepped[iterations] = _Rollout(model, _coupled(model, None, steel, iterations=iterations, substeps=3)).run(
+            60
+        )
+    np.testing.assert_allclose(substepped[3], substepped[1], atol=1.0e-6, err_msg="substeps=3")
 
 
 def test_contact_feedback_is_consumed_exactly(test, device):
@@ -496,6 +506,11 @@ def test_unsupported_options_raise(test, device):
         # ADMM treats a NotImplementedError from its effective-mass query as an unsupported hook.
         with test.assertRaisesRegex(NotImplementedError, name):
             _admm(model, box, rod_bodies, lambda v, kwargs=kwargs: _steel(v, **kwargs))
+        # Without a coupler a view is ordinary standalone use.
+        model, _, _ = _build_box_rod(device, rod=False)
+        if torsion_radius:
+            set_torsion_radius(model, torsion_radius)
+        _steel(ModelView(model, "standalone"), **kwargs)
 
 
 def test_articulated_effective_mass(test, device):
@@ -665,6 +680,12 @@ def test_effective_mass_follows_solve_armature(test, device):
         model.joint_armature.assign(armature)
         coupled.notify_model_changed(newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES)
         test.assertAlmostEqual(mass(), 303.01, delta=1.0e-2, msg=name)
+        # Making the hinged cube kinematic takes the welded tip with it.
+        flags = model.body_flags.numpy()
+        flags[0] |= int(newton.BodyFlags.KINEMATIC)
+        model.body_flags.assign(flags)
+        coupled.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+        test.assertGreater(mass(), 1.0e10, msg=name)
 
 
 def test_offset_contact_turns_hinge(test, device):

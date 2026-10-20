@@ -2339,8 +2339,9 @@ class SolverSteel(SolverBase, CouplingInterface):
         self._coupling_patch_history_snapshot_pending = False
         self._coupling_patch_history_restore_pending = False
         self._coupling_iteration_restarts = True
-        # Step count at the start of the coupled step, restored before a repeated solve of it.
-        self._coupling_step_start = 0
+        # Coupled steps started so far, and whether this step is the first of a (repeated) coupled solve.
+        self._coupling_step_count = 0
+        self._coupling_first_substep = False
         self._coupling_step_start_pending = False
         self._coupling_step_rewind_pending = False
         self._mass_update_requested = wp.zeros(model.articulation_count, dtype=wp.int32, device=model.device)
@@ -2551,8 +2552,6 @@ class SolverSteel(SolverBase, CouplingInterface):
         )
         # Worlds whose step read invalid joint friction; allocated after the step's buffers to keep their layout.
         self._joint_friction_invalid = wp.zeros(int(model.world_count) + 1, dtype=wp.bool, device=model.device)
-        if isinstance(model, ModelView):
-            self._require_coupling_support()
 
     def _refresh_shape_materials(self) -> None:
         """Copy the model's current friction and restitution coefficients into the solver's fixed buffers."""
@@ -2958,8 +2957,8 @@ class SolverSteel(SolverBase, CouplingInterface):
 
         When the coupler may restart a step, the next step after a kinematic write saves the history and
         the next step after an iteration restart restores the saved copy, so repeated solves of one
-        coupled step start from the same history. A repeated solve also restores the step count, so
-        ``update_mass_matrix_interval`` counts coupled steps.
+        coupled step start from the same history. In coupled use ``update_mass_matrix_interval`` counts
+        coupled steps: the mass matrix is rebuilt at the first substep of every interval-th one.
 
         Args:
             state: Entry input state written by the coupler.
@@ -2984,11 +2983,12 @@ class SolverSteel(SolverBase, CouplingInterface):
 
     @override
     def coupling_notify_iteration_restarts(self, enabled: bool) -> None:
-        """Save the friction-patch history for coupled steps only when a restart can follow.
+        """Reject unsupported coupled options, and save the patch history only when a restart can follow.
 
         Args:
             enabled: Whether the coupler may restart a step's solve.
         """
+        self._require_coupling_support()
         self._coupling_iteration_restarts = bool(enabled)
 
     @override
@@ -3188,6 +3188,15 @@ class SolverSteel(SolverBase, CouplingInterface):
             return None
         rows, inv_mass, inv_rot = (np.asarray(column) for column in zip(*weights, strict=True))
         return rows, inv_mass, inv_rot
+
+    def _mass_matrix_refresh_due(self) -> bool:
+        """Return whether this step rebuilds every articulation's mass matrix."""
+        if self._force_mass_update:
+            return True
+        if self._coupling_step_count == 0:
+            return self._step % self._update_mass_matrix_interval == 0
+        # Coupled: the first substep of every interval-th coupled step, so repeated solves refresh alike.
+        return self._coupling_first_substep and (self._coupling_step_count - 1) % self._update_mass_matrix_interval == 0
 
     def _require_coupling_support(self) -> None:
         """Reject solver options that are not validated inside a coupled simulation."""
@@ -6275,10 +6284,9 @@ class SolverSteel(SolverBase, CouplingInterface):
         body_parent_f: wp.array | None,
     ) -> State:
         """Run the stages of :meth:`step` after its input checks."""
-        if self._coupling_step_rewind_pending:
-            self._step = self._coupling_step_start
-        elif self._coupling_step_start_pending:
-            self._coupling_step_start = self._step
+        if self._coupling_step_start_pending and not self._coupling_step_rewind_pending:
+            self._coupling_step_count += 1
+        self._coupling_first_substep = self._coupling_step_start_pending or self._coupling_step_rewind_pending
         self._coupling_step_rewind_pending = False
         self._coupling_step_start_pending = False
         if self._coupling_patch_history_restore_pending:
@@ -7628,7 +7636,7 @@ class SolverSteel(SolverBase, CouplingInterface):
         else:
             stage3_qd = state_in.joint_qd
 
-        refresh_composite = (self._step % self._update_mass_matrix_interval) == 0 or self._force_mass_update
+        refresh_composite = self._mass_matrix_refresh_due()
         fk_inputs = [
             model.articulation_start,
             self._articulation_joint_end,
@@ -7879,7 +7887,7 @@ class SolverSteel(SolverBase, CouplingInterface):
     def _stage1_crba(self, state_aug: State):
         """Build the joint-space mass matrix of articulations due for a refresh and add drive terms."""
         model = self.model
-        global_flag = 1 if ((self._step % self._update_mass_matrix_interval) == 0 or self._force_mass_update) else 0
+        global_flag = 1 if self._mass_matrix_refresh_due() else 0
         self._mass_update_global_flag = global_flag
         wp.launch(
             build_mass_update_mask,
