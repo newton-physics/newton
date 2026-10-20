@@ -126,6 +126,7 @@ class Example:
 
         scene, self.body_tower, self.block = build_scene()
         builder = newton.ModelBuilder()
+        # Replicate once so the bodies belong to world 0 rather than the global world.
         builder.replicate(scene, 1)
         builder.add_ground_plane()
         self.model = builder.finalize()
@@ -177,7 +178,7 @@ class Example:
         self.graph = capture.graph
 
     def simulate(self):
-        """Advance the towers by one rendered frame."""
+        """Launch one rendered frame of substeps; ``capture()`` records it into the CUDA graph."""
         for substep in range(self.sim_substeps):
             self.state_0.clear_forces()
             self.viewer.apply_forces(self.state_0)
@@ -194,7 +195,7 @@ class Example:
         wp.launch(advance_frame_index, dim=1, outputs=[self.frame_index])
 
     def step(self):
-        """Advance the towers by one rendered frame."""
+        """Advance the towers by one rendered frame by replaying the CUDA graph."""
         wp.capture_launch(self.graph)
         self.sim_time += self.frame_dt
         self.frame += 1
