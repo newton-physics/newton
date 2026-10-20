@@ -245,11 +245,10 @@ def _add_mixed_chain(builder, position):
 
 
 def _actuate(model, control):
-    torques = np.zeros(model.joint_dof_count, dtype=np.float32)
-    torques[np.arange(model.joint_dof_count) % 14 >= 6] = 30.0
-    # The mixed chain is unactuated.
     dof_counts = np.diff(model.joint_qd_start.numpy())
     dof_type = np.repeat(model.joint_type.numpy(), dof_counts)
+    # Hinges only: a free joint's joint_f is a body wrench. The mixed chain is unactuated.
+    torques = np.where(dof_type == newton.JointType.REVOLUTE, 30.0, 0.0).astype(np.float32)
     dof_articulation = np.repeat(model.joint_articulation.numpy(), dof_counts)
     chain = (newton.JointType.PRISMATIC, newton.JointType.BALL, newton.JointType.D6)
     torques[np.isin(dof_articulation, dof_articulation[np.isin(dof_type, chain)])] = 0.0
@@ -350,8 +349,8 @@ def test_warm_started_full_reset_matches_fresh_solver(test, device):
     reused = SolverSteel(model, deterministic=RUN_TO_RUN, **options)
     simulate(reused, 5)
     reused.reset(model.state())
-    (state_hash, finite), contact_f = simulate(reused, 7)
-    (fresh_hash, _), fresh_contact_f = simulate(SolverSteel(model, deterministic=RUN_TO_RUN, **options), 7)
+    (state_hash, finite), contact_f = simulate(reused, 12)
+    (fresh_hash, _), fresh_contact_f = simulate(SolverSteel(model, deterministic=RUN_TO_RUN, **options), 12)
     test.assertTrue(finite)
     test.assertEqual(state_hash, fresh_hash)
     test.assertGreater(np.abs(contact_f).max(), 0.0)
