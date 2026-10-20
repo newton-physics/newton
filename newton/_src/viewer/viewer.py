@@ -606,6 +606,7 @@ class ViewerBase(ABC):
         layer._body_instances = ()
         layer._body_indices_host = ()
         layer._shape_xforms = None
+        layer._shape_world_xforms = None
         layer._shape_parents = None
         layer._shape_worlds = None
         layer._shape_scales = None
@@ -2309,7 +2310,7 @@ class ViewerBase(ABC):
             self.worlds = []  # World index for each shape
 
             self.model_shapes = []
-            self.geometry_scales = []
+            self._geometry_scales = []
 
             self.world_xforms = None
             self.colors_changed: bool = False
@@ -2334,8 +2335,6 @@ class ViewerBase(ABC):
             shape_index: int,
             world: int = -1,
             opacity: float = 1.0,
-            *,
-            geometry_scale: wp.vec3 | None = None,
         ):
             """
             Add an instance of the geometry to the batch.
@@ -2349,7 +2348,6 @@ class ViewerBase(ABC):
                 shape_index: The shape index.
                 world: The world index.
                 opacity: The opacity of the instance.
-                geometry_scale: Source dimensions [m] for primitive rendering.
             """
             self.parents.append(parent)
             self.xforms.append(xform)
@@ -2359,7 +2357,6 @@ class ViewerBase(ABC):
             self.materials.append(material)
             self.worlds.append(world)
             self.model_shapes.append(shape_index)
-            self.geometry_scales.append(scale if geometry_scale is None else geometry_scale)
 
         def finalize(
             self,
@@ -2388,7 +2385,6 @@ class ViewerBase(ABC):
                 self.opacities = wp.array(self.opacities, dtype=wp.float32, device=self.device)
             self.materials = wp.array(self.materials, dtype=wp.vec4, device=self.device)
             self.worlds = wp.array(self.worlds, dtype=int, device=self.device)
-            self.geometry_scales = wp.array(self.geometry_scales, dtype=wp.vec3, device=self.device)
 
             self.world_xforms = wp.zeros_like(self.xforms)
 
@@ -2801,6 +2797,7 @@ class ViewerBase(ABC):
             else:
                 batch = self._shape_resources[shape_hash]
             self._shape_resource_rows[s] = (shape_hash, len(batch.scales))
+            batch._geometry_scales.append(geo_scale)
             batch.add(
                 parent=parent,
                 xform=xform,
@@ -2809,7 +2806,6 @@ class ViewerBase(ABC):
                 material=material,
                 opacity=opacity,
                 shape_index=int(model_shapes[s]),
-                geometry_scale=wp.vec3(geo_scale),
             )
 
         for resource in self._shape_resources.values():
@@ -2819,7 +2815,7 @@ class ViewerBase(ABC):
             resource.opacities = np.asarray(resource.opacities, dtype=np.float32)
             resource.materials = np.asarray(resource.materials, dtype=np.float32)
             resource.model_shapes = np.asarray(resource.model_shapes, dtype=np.int32)
-            resource.geometry_scales = np.asarray(resource.geometry_scales, dtype=np.float32)
+            resource._geometry_scales = np.asarray(resource._geometry_scales, dtype=np.float32)
         self._shape_transparent_mask = shape_transparent_mask
 
     def _populate_shapes(self):
@@ -2873,7 +2869,7 @@ class ViewerBase(ABC):
             batch.opacities = resource.opacities[rows]
             batch.materials = resource.materials[rows]
             batch.model_shapes = resource.model_shapes[rows]
-            batch.geometry_scales = resource.geometry_scales[rows]
+            batch._geometry_scales = resource._geometry_scales[rows]
             self._shape_instances[int(shape_hash)] = batch
 
         # each shape instance object (batch) is associated with one slice
@@ -2885,6 +2881,7 @@ class ViewerBase(ABC):
         self.model_shape_color = wp.empty(total_instances, dtype=wp.vec3, device=self.device)
         self.model_shape_opacity = wp.empty(total_instances, dtype=wp.float32, device=self.device)
         self._shape_xforms = wp.empty(total_instances, dtype=wp.transform, device=self.device)
+        self._shape_world_xforms = wp.zeros(total_instances, dtype=wp.transform, device=self.device)
         self._shape_parents = wp.empty(total_instances, dtype=int, device=self.device)
         self._shape_worlds = wp.empty(total_instances, dtype=int, device=self.device)
         self._shape_scales = wp.empty(total_instances, dtype=wp.vec3, device=self.device)
@@ -2904,8 +2901,7 @@ class ViewerBase(ABC):
             batch.worlds = self._shape_worlds[span]
             batch.scales = self._shape_scales[span]
             batch.materials = wp.array(batch.materials, dtype=wp.vec4, device=self.device)
-            batch.geometry_scales = wp.array(batch.geometry_scales, dtype=wp.vec3, device=self.device)
-            batch.world_xforms = wp.zeros_like(batch.xforms)
+            batch.world_xforms = self._shape_world_xforms[span]
 
         slot_to_shape = (
             np.concatenate([batch.model_shapes for batch in batches]) if batches else np.empty(0, dtype=np.int32)

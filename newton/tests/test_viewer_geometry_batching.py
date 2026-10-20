@@ -195,12 +195,23 @@ class TestViewerGeometryBatching(unittest.TestCase):
         self.assertIs(viewer._shape_resources, descriptors)
         self.assertIsNot(viewer._shape_instances, batches_before)
         batches = list(viewer._shape_instances.values())
+        offset = 0
+        for batch in batches:
+            count = len(batch.xforms)
+            self.assertEqual(batch.world_xforms.ptr, viewer._shape_world_xforms[offset : offset + count].ptr)
+            self.assertIsNone(batch.world_xforms.deleter)
+            offset += count
+        self.assertEqual(offset, len(viewer._shape_world_xforms))
         instance_batches = [batch for batch in batches if min(batch.model_shapes) < 0]
         self.assertEqual(sum(len(batch.scales) for batch in instance_batches), 4)
         self.assertTrue(all(np.all(batch.scales.numpy() != 0) for batch in instance_batches))
         self.assertTrue(names_before.issubset({batch.name for batch in batches}))
         for batch in batches:
-            self.assertTrue({"selected", "selection_indices", "choice_indices", "base_scales"}.isdisjoint(vars(batch)))
+            self.assertTrue(
+                {"selected", "selection_indices", "choice_indices", "base_scales", "geometry_scales"}.isdisjoint(
+                    vars(batch)
+                )
+            )
         self.assertEqual(sum(batch.geo_type == newton.GeoType.PLANE for batch in batches), 1)
         self.assertEqual(np.count_nonzero(viewer._slot_to_shape >= 0), 2)
         mesh_batch = next(batch for batch in instance_batches if batch.geo_type == newton.GeoType.MESH)
@@ -263,6 +274,7 @@ class TestViewerGeometryBatching(unittest.TestCase):
                 value is None
                 for value in (
                     viewer._shape_xforms,
+                    viewer._shape_world_xforms,
                     viewer._shape_parents,
                     viewer._shape_worlds,
                     viewer._shape_scales,

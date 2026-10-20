@@ -273,6 +273,16 @@ class TestViewerGLGetFrame(unittest.TestCase):
             self.assertEqual(
                 sum(len(batch.xforms) for batch in viewer._shape_instances.values()), sum(i >= 0 for i in values)
             )
+            offset = 0
+            for batch in viewer._shape_instances.values():
+                count = len(batch.xforms)
+                self.assertEqual(batch.world_xforms.ptr, viewer._shape_world_xforms[offset : offset + count].ptr)
+                self.assertIsNone(batch.world_xforms.deleter)
+                self.assertNotIn("geometry_scales", vars(batch))
+                if batch.geo_type == newton.GeoType.CAPSULE:
+                    np.testing.assert_allclose(batch.scales.numpy(), np.tile((0.15, 0.15, 0.25), (count, 1)))
+                offset += count
+            self.assertEqual(offset, len(viewer._shape_world_xforms))
             for name, obj in viewer.objects.items():
                 if isinstance(obj, MeshInstancerGL) and name.startswith("/model/shapes/"):
                     self.assertLessEqual(obj.num_instances, 2 * obj.active_instances)

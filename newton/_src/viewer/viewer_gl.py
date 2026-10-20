@@ -73,21 +73,6 @@ def _capsule_duplicate_float(in_values: wp.array[wp.float32], out_values: wp.arr
 
 
 @wp.kernel
-def _capsule_build_body_scales(
-    geometry_scales: wp.array[wp.vec3],
-    out_scales: wp.array[wp.vec3],
-):
-    # model.shape_scale stores capsule params as (radius, half_height, _unused).
-    # ViewerGL instances scale meshes with a full (x, y, z) vector, so we expand to
-    # (radius, radius, half_height) for the cylinder body.
-    tid = wp.tid()
-    scale = geometry_scales[tid]
-    r = scale[0]
-    half_height = scale[1]
-    out_scales[tid] = wp.vec3(r, r, half_height)
-
-
-@wp.kernel
 def _capsule_build_cap_xforms_and_scales(
     capsule_xforms: wp.array[wp.transform],
     capsule_scales: wp.array[wp.vec3],
@@ -357,8 +342,6 @@ class ViewerGL(ViewerBase):
     def _init_extra_layer_state(self, layer):
         super()._init_extra_layer_state(layer)
         layer._packed_groups = []
-        layer._capsule_keys = set()
-        layer._packed_world_xforms = None
         layer._packed_vbo_xforms = None
         layer._packed_vbo_xforms_host = None
         layer.picking = None
@@ -374,7 +357,7 @@ class ViewerGL(ViewerBase):
     ) -> int:
         # For capsules, ignore (radius, half_height) in the geometry hash so varying-length capsules batch together.
         # Capsule dimensions are stored per-shape in model.shape_scale as (radius, half_height, _unused) and
-        # are remapped in set_model() to per-instance render scales (radius, radius, half_height).
+        # are remapped at batch construction to render scales (radius, radius, half_height).
         if geo_type == nt.GeoType.CAPSULE:
             geo_scale = (1.0, 1.0)
         return super()._hash_geometry(geo_type, geo_scale, thickness, is_solid, geo_src, mirror)
@@ -583,8 +566,6 @@ class ViewerGL(ViewerBase):
 
         # Packed GPU arrays for batched shape transform computation
         self._packed_groups = []
-        self._capsule_keys = set()
-        self._packed_world_xforms = None
         self._packed_vbo_xforms = None
         self._packed_vbo_xforms_host = None
         self._shape_opacity_update_flags = None
@@ -675,30 +656,15 @@ class ViewerGL(ViewerBase):
 
         device = self.device
 
-        groups = []
-        capsule_keys = set()
+        self._packed_groups = []
         total = 0
 
-        for key, shapes in self._shape_instances.items():
-            n = shapes.xforms.shape[0] if isinstance(shapes.xforms, wp.array) else len(shapes.xforms)
-            if n == 0:
-                continue
-            if shapes.geo_type == nt.GeoType.CAPSULE:
-                capsule_keys.add(key)
-            groups.append((key, shapes, total, n))
+        for shapes in self._shape_instances.values():
+            n = len(shapes.xforms)
+            self._packed_groups.append((shapes, total, n))
             total += n
 
-        self._capsule_keys = capsule_keys
-        self._packed_groups = groups
-
-        # World xforms output (capsules read these for cap sphere computation)
-        all_world_xforms = wp.empty(total, dtype=wp.transform, device=device)
-
-        for _key, shapes, offset, n in groups:
-            if _key in capsule_keys:
-                shapes.world_xforms = all_world_xforms[offset : offset + n]
-
-            if _key not in capsule_keys:
+            if shapes.geo_type != nt.GeoType.CAPSULE:
                 mesh = self.objects.get(shapes.mesh)
                 if isinstance(mesh, MeshGL):
                     instancer = self.objects.get(shapes.name)
@@ -716,7 +682,6 @@ class ViewerGL(ViewerBase):
                         instancer.set_mesh(mesh)
                     instancer.draw_edge = shapes.geo_type != nt.GeoType.PLANE
 
-        self._packed_world_xforms = all_world_xforms
         self._packed_vbo_xforms = wp.empty(total, dtype=wp.mat44, device=device)
         self._packed_vbo_xforms_host = wp.empty(total, dtype=wp.mat44, device="cpu", pinned=device.is_cuda)
         self._shape_opacity_update_flags = wp.zeros(2, dtype=wp.int32, device=device)
@@ -733,6 +698,8 @@ class ViewerGL(ViewerBase):
         for shapes in self._shape_instances.values():
             count = len(shapes.xforms)
             if shapes.geo_type == nt.GeoType.CAPSULE:
+                # Capsule cylinders use (radius, radius, half_height), not model dimensions.
+                shapes.scales.assign(shapes._geometry_scales[:, (0, 0, 1)])
                 counts[shapes.name + "/capsule_cylinder"] = count
                 counts[shapes.name + "/capsule_caps"] = 2 * count
             else:
@@ -748,17 +715,6 @@ class ViewerGL(ViewerBase):
         for key in stale:
             self.objects.pop(key).destroy()
 
-        for batch in self._shape_instances.values():
-            if batch.geo_type != nt.GeoType.CAPSULE or len(batch.scales) == 0:
-                continue
-            wp.launch(
-                _capsule_build_body_scales,
-                dim=len(batch.scales),
-                inputs=[batch.geometry_scales],
-                outputs=[batch.scales],
-                device=self.device,
-                record_tape=False,
-            )
         self._build_packed_vbo_arrays()
 
     def _shape_opacity_groups_changed(self) -> bool:
@@ -1777,7 +1733,7 @@ class ViewerGL(ViewerBase):
                 self._shape_opacity_update_flags,
                 opacity_check_enabled,
             ],
-            outputs=[self._packed_world_xforms, self._packed_vbo_xforms],
+            outputs=[self._shape_world_xforms, self._packed_vbo_xforms],
             device=self.device,
             record_tape=False,
         )
@@ -1798,7 +1754,7 @@ class ViewerGL(ViewerBase):
         host_np = self._packed_vbo_xforms_host.numpy()
 
         layer_hidden = self._layer_force_hidden()
-        for key, shapes, offset, count in self._packed_groups:
+        for shapes, offset, count in self._packed_groups:
             visible = self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type) and not layer_hidden
             colors = shapes.colors if self.model_changed or shapes.colors_changed else None
             opacities = (
@@ -1806,7 +1762,7 @@ class ViewerGL(ViewerBase):
             )
             materials = shapes.materials if self.model_changed else None
 
-            if key in self._capsule_keys:
+            if shapes.geo_type == nt.GeoType.CAPSULE:
                 self.log_capsules(
                     shapes.name,
                     shapes.mesh,

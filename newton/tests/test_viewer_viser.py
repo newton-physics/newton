@@ -209,6 +209,15 @@ class TestViewerViserInteraction(unittest.TestCase):
                     visible_worlds = worlds
                 offsets = self.viewer.world_offsets.numpy()
                 self.viewer.log_state(state)
+                offset = 0
+                for batch in self.viewer._shape_instances.values():
+                    count = len(batch.xforms)
+                    self.assertEqual(
+                        batch.world_xforms.ptr, self.viewer._shape_world_xforms[offset : offset + count].ptr
+                    )
+                    self.assertIsNone(batch.world_xforms.deleter)
+                    offset += count
+                self.assertEqual(offset, len(self.viewer._shape_world_xforms))
                 observed = []
                 for name, handle in self.viewer._scene_handles.items():
                     if not name.startswith("/layers/instances/") or not hasattr(handle, "batched_scales"):

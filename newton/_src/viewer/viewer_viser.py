@@ -622,7 +622,6 @@ class ViewerViser(ViewerBase):
         layer.picking = None
         layer._last_state = None
         layer._shape_instance_batches_by_name = {}
-        layer._packed_shape_world_xforms = None
         layer._packed_shape_groups = []
         layer._packed_shape_colors_host = None
         layer._packed_shape_colors_device = None
@@ -687,26 +686,21 @@ class ViewerViser(ViewerBase):
         """Pack model shape outputs for one kernel launch and host transfer."""
         batches = list(self._shape_instances.values())
         self._shape_instance_batches_by_name = {batch.name: batch for batch in batches}
-        total = sum(len(batch.xforms) for batch in batches)
         self._packed_shape_groups = []
-        self._packed_shape_world_xforms = None
         self._packed_shape_colors_host = None
         self._packed_shape_colors_device = None
         self._shape_colors_changed_device = None
         self._packed_shape_opacities_host = None
         self._packed_shape_opacities_device = None
         self._shape_opacities_changed_device = None
-        if total == 0:
+        if not batches:
             return
 
-        packed = wp.empty(total, dtype=wp.transform, device=self.device)
         offset = 0
         for batch in batches:
             count = len(batch.xforms)
-            batch.world_xforms = packed[offset : offset + count]
             self._packed_shape_groups.append((batch, offset, count))
             offset += count
-        self._packed_shape_world_xforms = packed
         if self.model_shape_color is not None:
             self._packed_shape_colors_device = wp.empty_like(self.model_shape_color)
             self._shape_colors_changed_device = wp.zeros(1, dtype=wp.int32, device=self.device)
@@ -2307,8 +2301,8 @@ class ViewerViser(ViewerBase):
 
     @override
     def _log_shapes(self, state: newton.State):
-        packed = self._packed_shape_world_xforms
-        if packed is None:
+        packed = self._shape_world_xforms
+        if len(packed) == 0:
             super()._log_shapes(state)
             return
 
