@@ -184,34 +184,44 @@ def update_shape_xforms(
 
 
 @wp.kernel
-def update_model_shape_xforms(
-    shape_xforms: wp.array[wp.transform],
-    shape_parents: wp.array[int],
-    body_q: wp.array[wp.transform],
-    shape_worlds: wp.array[int],
-    world_offsets: wp.array[wp.vec3],
-    layer_xform: wp.transform,
-    slot_to_shape: wp.array[wp.int32],
-    world_xforms: wp.array[wp.transform],
+def update_shape_choice_scales(
+    base_scales: wp.array[wp.vec3],
+    selected: wp.array[int],
+    selection_indices: wp.array[int],
+    choice_indices: wp.array[int],
+    scales: wp.array[wp.vec3],
 ):
-    """Compute model shape transforms in viewer batch order."""
+    """Project selected catalog bodies without reading selections on the host."""
+    tid = wp.tid()
+    scale = wp.vec3(0.0)
+    if selected[selection_indices[tid]] == choice_indices[tid]:
+        scale = base_scales[tid]
+    scales[tid] = scale
+
+
+@wp.kernel
+def update_render_shape_inputs(
+    slot_to_shape: wp.array[int],
+    model_xforms: wp.array[wp.transform],
+    model_parents: wp.array[int],
+    model_worlds: wp.array[int],
+    model_scales: wp.array[wp.vec3],
+    model_types: wp.array[int],
+    xforms: wp.array[wp.transform],
+    parents: wp.array[int],
+    worlds: wp.array[int],
+    scales: wp.array[wp.vec3],
+):
+    """Refresh live model inputs while retaining catalog-owned render geometry."""
     slot = wp.tid()
     shape = slot_to_shape[slot]
-    shape_xform = shape_xforms[shape]
-    shape_parent = shape_parents[shape]
-
-    if shape_parent >= 0:
-        world_xform = wp.transform_multiply(body_q[shape_parent], shape_xform)
-    else:
-        world_xform = shape_xform
-
-    if world_offsets:
-        shape_world = shape_worlds[shape]
-        if shape_world >= 0 and shape_world < world_offsets.shape[0]:
-            offset = world_offsets[shape_world]
-            world_xform = wp.transform(world_xform.p + offset, world_xform.q)
-
-    world_xforms[slot] = wp.transform_multiply(layer_xform, world_xform)
+    if shape >= 0:
+        xforms[slot] = model_xforms[shape]
+        parents[slot] = model_parents[shape]
+        worlds[slot] = model_worlds[shape]
+        geo = model_types[shape]
+        if geo == newton.GeoType.MESH or geo == newton.GeoType.CONVEX_MESH:
+            scales[slot] = model_scales[shape]
 
 
 @wp.kernel
@@ -222,7 +232,9 @@ def repack_shape_colors(
 ):
     """Repack model-order shape colors into viewer batch order."""
     tid = wp.tid()
-    packed_shape_colors[tid] = shape_colors[slot_to_shape[tid]]
+    shape = slot_to_shape[tid]
+    if shape >= 0:
+        packed_shape_colors[tid] = shape_colors[shape]
 
 
 @wp.kernel
@@ -233,7 +245,9 @@ def repack_shape_opacities(
 ):
     """Repack model-order shape opacities into viewer batch order."""
     tid = wp.tid()
-    packed_shape_opacities[tid] = wp.clamp(shape_opacities[slot_to_shape[tid]], 0.0, 1.0)
+    shape = slot_to_shape[tid]
+    if shape >= 0:
+        packed_shape_opacities[tid] = wp.clamp(shape_opacities[shape], 0.0, 1.0)
 
 
 @wp.kernel

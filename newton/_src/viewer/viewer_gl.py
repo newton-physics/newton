@@ -74,16 +74,14 @@ def _capsule_duplicate_float(in_values: wp.array[wp.float32], out_values: wp.arr
 
 @wp.kernel
 def _capsule_build_body_scales(
-    shape_scale: wp.array[wp.vec3],
-    shape_indices: wp.array[wp.int32],
+    geometry_scales: wp.array[wp.vec3],
     out_scales: wp.array[wp.vec3],
 ):
     # model.shape_scale stores capsule params as (radius, half_height, _unused).
     # ViewerGL instances scale meshes with a full (x, y, z) vector, so we expand to
     # (radius, radius, half_height) for the cylinder body.
     tid = wp.tid()
-    s = shape_indices[tid]
-    scale = shape_scale[s]
+    scale = geometry_scales[tid]
     r = scale[0]
     half_height = scale[1]
     out_scales[tid] = wp.vec3(r, r, half_height)
@@ -116,15 +114,14 @@ def _capsule_build_cap_xforms_and_scales(
 
 @wp.kernel
 def _compute_shape_vbo_xforms(
-    shape_transform: wp.array[wp.transformf],
-    shape_body: wp.array[int],
+    local_xforms: wp.array[wp.transformf],
+    parents: wp.array[int],
     body_q: wp.array[wp.transformf],
-    shape_scale: wp.array[wp.vec3],
-    shape_type: wp.array[int],
-    shape_world: wp.array[int],
+    scales: wp.array[wp.vec3],
+    worlds: wp.array[int],
     world_offsets: wp.array[wp.vec3],
     layer_xform: wp.transform,
-    write_indices: wp.array[int],
+    slot_to_shape: wp.array[int],
     shape_opacity: wp.array[wp.float32],
     packed_shape_opacity: wp.array[wp.float32],
     opacity_update_flags: wp.array[wp.int32],
@@ -132,14 +129,12 @@ def _compute_shape_vbo_xforms(
     out_world_xforms: wp.array[wp.transformf],
     out_vbo_xforms: wp.array[wp.mat44],
 ):
-    """Process all model shapes, write mat44 to grouped output positions."""
-    tid = wp.tid()
-    out_idx = write_indices[tid]
-    if out_idx < 0:
-        return
+    """Compute VBO transforms from the viewer's packed render instances."""
+    out_idx = wp.tid()
+    shape = slot_to_shape[out_idx]
 
-    local_xform = shape_transform[tid]
-    parent = shape_body[tid]
+    local_xform = local_xforms[out_idx]
+    parent = parents[out_idx]
 
     if parent >= 0:
         xform = wp.transform_multiply(body_q[parent], local_xform)
@@ -147,7 +142,7 @@ def _compute_shape_vbo_xforms(
         xform = local_xform
 
     if world_offsets:
-        wi = shape_world[tid]
+        wi = worlds[out_idx]
         if wi >= 0 and wi < world_offsets.shape[0]:
             p = wp.transform_get_translation(xform)
             xform = wp.transform(p + world_offsets[wi], wp.transform_get_rotation(xform))
@@ -159,16 +154,10 @@ def _compute_shape_vbo_xforms(
     q = wp.transform_get_rotation(xform)
     R = wp.quat_to_matrix(q)
 
-    # Only mesh/convex_mesh shapes use model scale; other primitives have
-    # their dimensions baked into the geometry mesh, so scale is (1,1,1).
-    geo = shape_type[tid]
-    if geo == nt.GeoType.MESH or geo == nt.GeoType.CONVEX_MESH:
-        s = shape_scale[tid]
-    else:
-        s = wp.vec3(1.0, 1.0, 1.0)
+    s = scales[out_idx]
 
-    if opacity_check_enabled != 0:
-        opacity = wp.clamp(shape_opacity[tid], 0.0, 1.0)
+    if opacity_check_enabled != 0 and shape >= 0:
+        opacity = wp.clamp(shape_opacity[shape], 0.0, 1.0)
         previous_opacity = wp.clamp(packed_shape_opacity[out_idx], 0.0, 1.0)
         opacity_delta = opacity - previous_opacity
         if opacity_delta < -1.0e-6 or opacity_delta > 1.0e-6:
@@ -359,7 +348,6 @@ class ViewerGL(ViewerBase):
         super()._init_extra_layer_state(layer)
         layer._packed_groups = []
         layer._capsule_keys = set()
-        layer._packed_write_indices = None
         layer._packed_world_xforms = None
         layer._packed_vbo_xforms = None
         layer._packed_vbo_xforms_host = None
@@ -586,7 +574,6 @@ class ViewerGL(ViewerBase):
         # Packed GPU arrays for batched shape transform computation
         self._packed_groups = []
         self._capsule_keys = set()
-        self._packed_write_indices = None
         self._packed_world_xforms = None
         self._packed_vbo_xforms = None
         self._packed_vbo_xforms_host = None
@@ -607,12 +594,13 @@ class ViewerGL(ViewerBase):
         super().clear_model()
 
     @override
-    def set_model(self, model: nt.Model | None):
+    def set_model(self, model: nt.Model | None, *, shape_choices: Sequence[ViewerBase.ShapeChoices] = ()):
         """
         Set the Newton model to visualize.
 
         Args:
             model: The Newton model instance.
+            shape_choices: Experimental body-local geometry catalogs, as in :meth:`ViewerBase.set_model`.
 
         Note:
             Switching between models with the same up-axis preserves the
@@ -626,7 +614,7 @@ class ViewerGL(ViewerBase):
         if model is not None and model.device != self.device:
             self._invalidate_pbo()
 
-        super().set_model(model)
+        super().set_model(model, shape_choices=shape_choices)
 
         if self.gui is not None:
             # Reading shape_flags back from the device belongs here, not in the
@@ -636,42 +624,6 @@ class ViewerGL(ViewerBase):
         # ``ViewerBase.set_model`` may have switched ``self.device`` to the model's device.
         if self._image_logger is not None:
             self._image_logger.set_device(self.device)
-
-        if self.model is not None:
-            # For capsule batches, replace per-instance scales with (radius, radius, half_height)
-            # so the capsule instancer path has the needed parameters.
-            shape_scale = self.model.shape_scale
-            if shape_scale.device != self.device:
-                # Defensive: ensure inputs are on the launch device.
-                shape_scale = wp.clone(shape_scale, device=self.device)
-
-            def _ensure_indices_wp(model_shapes) -> wp.array:
-                # Return shape indices as a Warp array on the viewer device
-                if isinstance(model_shapes, wp.array):
-                    if model_shapes.device == self.device:
-                        return model_shapes
-                    return wp.array(model_shapes.numpy().astype(np.int32), dtype=wp.int32, device=self.device)
-                return wp.array(model_shapes, dtype=wp.int32, device=self.device)
-
-            for batch in self._shape_instances.values():
-                if batch.geo_type != nt.GeoType.CAPSULE:
-                    continue
-
-                shape_indices = _ensure_indices_wp(batch.model_shapes)
-                num_shapes = len(shape_indices)
-                out_scales = wp.empty(num_shapes, dtype=wp.vec3, device=self.device)
-                if num_shapes == 0:
-                    batch.scales = out_scales
-                    continue
-                wp.launch(
-                    _capsule_build_body_scales,
-                    dim=num_shapes,
-                    inputs=[shape_scale, shape_indices],
-                    outputs=[out_scales],
-                    device=self.device,
-                    record_tape=False,
-                )
-                batch.scales = out_scales
 
         self.picking = Picking(model, world_offsets=self.world_offsets)
         self.picking.visible_worlds_mask = self._visible_worlds_mask
@@ -688,7 +640,7 @@ class ViewerGL(ViewerBase):
                 pass
 
         # Build packed arrays for batched GPU rendering of shape instances
-        self._build_packed_vbo_arrays()
+        self._rebuild_gl_shape_caches()
 
         fb_w, fb_h = self.renderer.window.get_framebuffer_size()
         self.camera = Camera(width=fb_w, height=fb_h, up_axis=model.up_axis if model else "Z")
@@ -707,11 +659,7 @@ class ViewerGL(ViewerBase):
             self.wind.direction = prev_wind.direction
 
     def _build_packed_vbo_arrays(self):
-        """Build write-index + output arrays for batched shape transform computation.
-
-        The kernel processes all model shapes (coalesced reads), uses a write-index
-        array to scatter results into contiguous groups in the output buffer.
-        """
+        """Build packed output arrays in the viewer's render-instance order."""
         from .gl.opengl import MeshGL, MeshInstancerGL  # noqa: PLC0415
 
         if self.model is None:
@@ -720,7 +668,6 @@ class ViewerGL(ViewerBase):
             self._shape_opacity_update_flags_host = None
             return
 
-        shape_count = self.model.shape_count
         device = self.device
 
         groups = []
@@ -744,15 +691,10 @@ class ViewerGL(ViewerBase):
             self._shape_opacity_update_flags_host = None
             return
 
-        # Write-index: maps model shape index → packed output position (-1 = skip)
-        write_np = np.full(shape_count, -1, dtype=np.int32)
         # World xforms output (capsules read these for cap sphere computation)
         all_world_xforms = wp.empty(total, dtype=wp.transform, device=device)
 
         for _key, shapes, offset, n in groups:
-            model_shapes = np.asarray(shapes.model_shapes, dtype=np.int32)
-            write_np[model_shapes] = np.arange(offset, offset + n, dtype=np.int32)
-
             if _key in capsule_keys:
                 shapes.world_xforms = all_world_xforms[offset : offset + n]
 
@@ -770,7 +712,6 @@ class ViewerGL(ViewerBase):
                         instancer.draw_edge = shapes.geo_type != nt.GeoType.PLANE
                         self.objects[shapes.name] = instancer
 
-        self._packed_write_indices = wp.array(write_np, dtype=int, device=device)
         self._packed_world_xforms = all_world_xforms
         self._packed_vbo_xforms = wp.empty(total, dtype=wp.mat44, device=device)
         self._packed_vbo_xforms_host = wp.empty(total, dtype=wp.mat44, device="cpu", pinned=device.is_cuda)
@@ -800,35 +741,19 @@ class ViewerGL(ViewerBase):
             obj = self.objects.pop(k)
             del obj
 
-        shape_scale = self.model.shape_scale
-        if shape_scale.device != self.device:
-            shape_scale = wp.clone(shape_scale, device=self.device)
-
-        def _ensure_indices_wp(model_shapes) -> wp.array:
-            if isinstance(model_shapes, wp.array):
-                if model_shapes.device == self.device:
-                    return model_shapes
-                return wp.array(model_shapes.numpy().astype(np.int32), dtype=wp.int32, device=self.device)
-            return wp.array(model_shapes, dtype=wp.int32, device=self.device)
-
         for batch in self._shape_instances.values():
-            if batch.geo_type != nt.GeoType.CAPSULE:
-                continue
-            shape_indices = _ensure_indices_wp(batch.model_shapes)
-            num_shapes = len(shape_indices)
-            out_scales = wp.empty(num_shapes, dtype=wp.vec3, device=self.device)
-            if num_shapes == 0:
-                batch.scales = out_scales
+            if batch.geo_type != nt.GeoType.CAPSULE or len(batch.scales) == 0:
                 continue
             wp.launch(
                 _capsule_build_body_scales,
-                dim=num_shapes,
-                inputs=[shape_scale, shape_indices],
-                outputs=[out_scales],
+                dim=len(batch.scales),
+                inputs=[batch.geometry_scales],
+                outputs=[batch.scales],
                 device=self.device,
                 record_tape=False,
             )
-            batch.scales = out_scales
+            if batch.selected is not None:
+                wp.copy(batch.base_scales, batch.scales)
 
         self._build_packed_vbo_arrays()
 
@@ -838,13 +763,13 @@ class ViewerGL(ViewerBase):
             self.model is None
             or self.model.shape_opacity is None
             or self._shape_transparent_mask is None
-            or self._shape_to_slot is None
+            or self._slot_to_shape is None
         ):
             return False
 
         opacities = np.clip(self.model.shape_opacity.numpy(), 0.0, 1.0)
         current_mask = np.zeros_like(self._shape_transparent_mask, dtype=bool)
-        rendered_shapes = self._shape_to_slot >= 0
+        rendered_shapes = self._slot_to_shape[self._slot_to_shape >= 0]
         current_mask[rendered_shapes] = opacities[rendered_shapes] < OPAQUE_OPACITY_THRESHOLD
         return bool(np.any(current_mask != self._shape_transparent_mask))
 
@@ -868,10 +793,8 @@ class ViewerGL(ViewerBase):
         self._sdf_isomesh_populated = False
         self.model_shape_color = None
         self.model_shape_opacity = None
-        self._shape_to_slot = None
         self._slot_to_shape = None
         self._slot_to_shape_wp = None
-        self._shape_to_batch = None
         self._shape_transparent_mask = None
 
         self._populate_shapes()
@@ -1850,24 +1773,24 @@ class ViewerGL(ViewerBase):
             self._sync_shape_opacities_from_model()
 
         if use_packed_cuda:
+            self._update_shape_inputs()
             opacity_check_enabled = 0 if self.model_changed and not self._shape_batches_have_transparency else 1
             if opacity_check_enabled:
                 self._shape_opacity_update_flags.zero_()
 
-            # ---- Single kernel over all model shapes, scatter-write to grouped output ----
+            # ---- Single kernel gathering shapes in render-instance order ----
             wp.launch(
                 _compute_shape_vbo_xforms,
-                dim=self.model.shape_count,
+                dim=len(self._packed_vbo_xforms),
                 inputs=[
-                    self.model.shape_transform,
-                    self.model.shape_body,
+                    self._shape_xforms,
+                    self._shape_parents,
                     state.body_q,
-                    self.model.shape_scale,
-                    self.model.shape_type,
-                    self.model.shape_world,
+                    self._shape_scales,
+                    self._shape_worlds,
                     self.world_offsets,
                     self.layer.xform,
-                    self._packed_write_indices,
+                    self._slot_to_shape_wp,
                     self.model.shape_opacity,
                     self.model_shape_opacity,
                     self._shape_opacity_update_flags,

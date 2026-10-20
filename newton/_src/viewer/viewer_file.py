@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Mapping, Sequence
 from collections.abc import Set as AbstractSet
 from pathlib import Path
 from typing import Any, Generic, TypeVar
@@ -1199,12 +1199,15 @@ class ViewerFile(ViewerBase):
         self._running = True
 
     @override
-    def set_model(self, model: Model | None):
+    def set_model(self, model: Model | None, *, shape_choices: Sequence[ViewerBase.ShapeChoices] = ()):
         """Override set_model to record the model when it is set.
 
         Args:
             model: Model to bind to this viewer.
+            shape_choices: Unsupported by the model/state recording format.
         """
+        if shape_choices:
+            raise NotImplementedError("ViewerFile cannot record shape choices.")
         super().set_model(model)
 
         if model is not None and not self._model_recorded:

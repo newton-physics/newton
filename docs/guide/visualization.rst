@@ -185,6 +185,40 @@ All viewers support ``set_visible_worlds()`` to limit visualization to a subset 
     viewer.set_model(model)
     viewer.set_visible_worlds(range(4))
 
+Body-local Geometry Choices
+~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+``set_model(..., shape_choices=...)`` can bind several visual appearances to the
+same live body. Each body in a catalog :class:`~newton.Model` defines one choice;
+its body-local shapes may differ in number, type, dimensions, and appearance.
+The viewer borrows an integer Warp array containing one choice index per target
+body. Updating that array changes the displayed geometry on the next
+``log_state()`` call, without rebinding the model.
+
+.. code-block:: python
+
+    selected = wp.zeros(len(target_bodies), dtype=wp.int32, device=model.device)
+    choices = newton.viewer.ViewerBase.ShapeChoices(catalog_model, target_bodies, selected)
+    viewer.set_model(model, shape_choices=[choices])
+
+    selected.fill_(1)  # Display catalog body 1 on each target body.
+    viewer.log_state(model.state())
+
+This experimental interface uses the same instance batches as ordinary shapes.
+It changes rendering only: the application remains responsible for changing
+physics geometry when needed. Catalog geometry and appearance are immutable
+after binding; target poses follow the live state. Invalid choice indices hide
+that body's catalog geometry. Catalog shapes must belong to bodies; planes and
+Gaussians are not supported as choices. Catalog collision overlays show triangle surfaces,
+not SDF isosurfaces or margin shells.
+
+GL and Viser update selections without reading them back to the CPU. Instance
+storage still grows with the number of choices times the number of visible
+target bodies; inactive choices are masked, not compacted. Use
+``set_visible_worlds()`` to restrict large training scenes.
+``ViewerRTX`` and ``ViewerFile`` reject shape choices; their optimized transform
+and state-recording paths do not yet support this interface.
+
 .. _viewer-live-plots:
 
 Live Plots

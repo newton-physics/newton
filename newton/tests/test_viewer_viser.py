@@ -22,7 +22,7 @@ import warp as wp
 import newton
 from newton.examples import _ExampleBrowser
 from newton.examples.basic.example_basic_pendulum import Example as PendulumExample
-from newton.viewer import ViewerViser
+from newton.viewer import ViewerBase, ViewerViser
 
 
 @unittest.skipUnless(importlib.util.find_spec("viser"), "Requires viser")
@@ -149,7 +149,7 @@ class TestViewerViserInteraction(unittest.TestCase):
                 np.testing.assert_array_equal(handles[0].batched_colors, expected)
 
     def test_visible_worlds_rebuild_instance_scales(self):
-        """Resize real Viser batches when narrowing and restoring visible worlds."""
+        """Resize ordinary and selected geometry while preserving its pose and appearance."""
         world = newton.ModelBuilder()
         body = world.add_body()
         world.add_shape_box(body, hx=0.2, hy=0.3, hz=0.4)
@@ -170,6 +170,60 @@ class TestViewerViserInteraction(unittest.TestCase):
                 self.assertEqual(len(handles), 1)
                 self.assertEqual(handles[0].batched_positions.shape, (count, 3))
                 np.testing.assert_allclose(handles[0].batched_scales, np.ones((count, 3)))
+
+        catalog = newton.ModelBuilder()
+        colors = ((0.8, 0.2, 0.1), (0.1, 0.4, 0.9))
+        for choice in range(2):
+            body = catalog.add_body()
+            catalog.add_shape_box(
+                body,
+                hx=0.1 + 0.1 * choice,
+                hy=0.2,
+                hz=0.3,
+                xform=wp.transform((0.2 * (choice + 1), 0.0, 0.0), wp.quat_identity()),
+                color=colors[choice],
+                opacity=0.4 + 0.4 * choice,
+            )
+        selected = wp.array([0, 1, 0], dtype=int, device="cpu")
+        layer = self.viewer.activate("choices")
+        layer.xform = wp.transform((0.0, 3.0, 0.0), wp.quat_identity())
+        self.viewer.set_model(
+            model,
+            shape_choices=(ViewerBase.ShapeChoices(catalog.finalize(device="cpu"), (0, 1, 2), selected),),
+        )
+        self.viewer.set_world_offsets((2.0, 0.0, 0.0))
+        visible_worlds = None
+        for choices, worlds in (((0, 1, 0), None), ((1, 0, 1), None), ((1, -1, 0), [1, 2]), ((0, 1, 0), None)):
+            with self.subTest(choices=choices, worlds=worlds):
+                selected.assign(choices)
+                if worlds != visible_worlds:
+                    self.viewer.set_visible_worlds(worlds)
+                    visible_worlds = worlds
+                offsets = self.viewer.world_offsets.numpy()
+                self.viewer.log_state(state)
+                observed = []
+                for name, handle in self.viewer._scene_handles.items():
+                    if not name.startswith("/layers/choices/") or not hasattr(handle, "batched_scales"):
+                        continue
+                    if handle.visible:
+                        active = np.any(handle.batched_scales != 0.0, axis=1)
+                        observed.extend(
+                            zip(
+                                handle.batched_positions[active],
+                                handle.batched_colors[active],
+                                handle.batched_opacities[active],
+                                strict=True,
+                            )
+                        )
+                expected_worlds = [world for world in (range(3) if worlds is None else worlds) if choices[world] >= 0]
+                self.assertEqual(len(observed), len(expected_worlds))
+                for world in expected_worlds:
+                    choice = choices[world]
+                    expected_position = offsets[world] + (0.2 * (choice + 1), 3.0, 0.0)
+                    matches = [entry for entry in observed if np.allclose(entry[0], expected_position)]
+                    self.assertEqual(len(matches), 1, (expected_position, observed))
+                    np.testing.assert_array_equal(matches[0][1], (np.asarray(colors[choice]) * 255).astype(np.uint8))
+                    self.assertAlmostEqual(matches[0][2], 0.4 + 0.4 * choice, places=6)
 
     def test_clear_releases_hidden_mesh_assets(self):
         """Release cached model geometry after clearing the scene for an example switch."""

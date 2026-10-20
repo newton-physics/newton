@@ -120,6 +120,10 @@ class TestViewerRTXVersionCompatibility(unittest.TestCase):
         """Drive the stage prim at each body's label and warn about bodies without one."""
         viewer, model = self._borrowed_viewer(["/World/a", "/World/missing", "code_body"], {"/World/a"})
         try:
+            choices = ViewerRTX.ShapeChoices(model, (0,), wp.zeros(1, dtype=int, device="cpu"))
+            with self.assertRaisesRegex(NotImplementedError, "shape choices"):
+                viewer.set_model(model, shape_choices=(choices,))
+            self.assertIsNone(viewer.model)
             with self.assertWarnsRegex(UserWarning, "2 of 3 bodies"):
                 viewer.set_model(model)
             self.assertEqual(viewer._prim_paths, ("/World/a",))

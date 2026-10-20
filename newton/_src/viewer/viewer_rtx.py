@@ -50,7 +50,7 @@ from .image_logger import ImageLogger, _validate
 from .picking import Picking
 from .plot_logger import PlotLogger
 from .utils import OPAQUE_OPACITY_THRESHOLD
-from .viewer import _DEFAULT_LAYER_ID
+from .viewer import _DEFAULT_LAYER_ID, ViewerBase
 from .viewer_gui import ViewerGui
 from .viewer_usd import ViewerUSD
 from .wind import Wind
@@ -1341,12 +1341,15 @@ void main() {
     # ------------------------------------------------ ViewerUSD overrides
 
     @override
-    def set_model(self, model: newton.Model | None) -> None:
+    def set_model(self, model: newton.Model | None, *, shape_choices: Sequence[ViewerBase.ShapeChoices] = ()) -> None:
         """Set the Newton model to visualize.
 
         Args:
             model: The Newton model instance.
+            shape_choices: Unsupported by this viewer's retained scene.
         """
+        if shape_choices:
+            raise NotImplementedError("ViewerRTX does not support shape choices.")
         super().set_model(model)
         # ``ViewerBase.set_model`` may have switched ``self.device`` to the model's device.
         self._image_logger.set_device(self.device)

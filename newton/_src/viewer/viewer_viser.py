@@ -632,14 +632,15 @@ class ViewerViser(ViewerBase):
         layer._shape_opacities_changed_device = None
 
     @override
-    def set_model(self, model: newton.Model | None):
+    def set_model(self, model: newton.Model | None, *, shape_choices: Sequence[ViewerBase.ShapeChoices] = ()):
         """Set the model and initialize interactive picking for it.
 
         Args:
             model: Model to visualize and interact with.
+            shape_choices: Alternative shapes selected for live model bodies.
         """
         previous_up_axis = self._camera_up_axis
-        super().set_model(model)
+        super().set_model(model, shape_choices=shape_choices)
         self._build_packed_shape_arrays()
         self.picking = Picking(model, world_offsets=self.world_offsets) if model is not None else None
         if self.picking is not None:
@@ -2183,6 +2184,7 @@ class ViewerViser(ViewerBase):
         if (
             existing is not None
             and shape_batch is not None
+            and shape_batch.selected is None
             and not self.model_changed
             and existing["count"] == num_instances
         ):
@@ -2296,28 +2298,28 @@ class ViewerViser(ViewerBase):
             return
 
         packed = self._packed_shape_world_xforms
-        if packed is None or self._slot_to_shape_wp is None:
+        if packed is None:
             super().log_state(state)
             self._render_picking_line()
             return
 
         self._sync_shape_colors_from_model()
         self._sync_shape_opacities_from_model()
+        self._update_shape_inputs()
 
-        from .kernels import update_model_shape_xforms  # noqa: PLC0415
+        from .kernels import update_shape_xforms  # noqa: PLC0415
         from .viewer_viser_kernels import detect_shape_color_changes, detect_shape_opacity_changes  # noqa: PLC0415
 
         wp.launch(
-            kernel=update_model_shape_xforms,
+            kernel=update_shape_xforms,
             dim=len(packed),
             inputs=[
-                self.model.shape_transform,
-                self.model.shape_body,
+                self._shape_xforms,
+                self._shape_parents,
                 state.body_q,
-                self.model.shape_world,
+                self._shape_worlds,
                 self.world_offsets,
                 self.layer.xform,
-                self._slot_to_shape_wp,
             ],
             outputs=[packed],
             device=self.device,

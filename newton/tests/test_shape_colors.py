@@ -673,32 +673,44 @@ class TestShapeColors(unittest.TestCase):
         self.assertEqual(opaque_objects, {"opaque": opaque})
         self.assertEqual(transparent_objects, [("transparent", transparent)])
 
-    def test_viewer_gl_opacity_kernel_sets_dirty_and_regroup_flags(self):
-        """Flag opacity changes and opaque-threshold crossings on the device."""
+    def test_viewer_gl_instance_kernel_preserves_transforms_and_opacity(self):
+        """Render repeated bodies and catalog geometry while tracking live shape opacity."""
         device = wp.get_device("cpu")
+        rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), np.pi / 2)
         common_inputs = [
-            wp.array([wp.transform_identity()], dtype=wp.transformf, device=device),
-            wp.array([-1], dtype=wp.int32, device=device),
-            wp.empty(0, dtype=wp.transformf, device=device),
-            wp.array([wp.vec3(1.0, 1.0, 1.0)], dtype=wp.vec3, device=device),
-            wp.array([int(newton.GeoType.BOX)], dtype=wp.int32, device=device),
-            wp.array([-1], dtype=wp.int32, device=device),
-            wp.empty(0, dtype=wp.vec3, device=device),
-            wp.transform_identity(),
-            wp.array([0], dtype=wp.int32, device=device),
+            wp.array(
+                [
+                    wp.transform((0.25, 0, 0), wp.quat_identity()),
+                    wp.transform((0.5, 0, 0), wp.quat_identity()),
+                    wp.transform((0.25, 0, 0), wp.quat_identity()),
+                ],
+                dtype=wp.transformf,
+                device=device,
+            ),
+            wp.array([1, 0, 1], dtype=wp.int32, device=device),
+            wp.array(
+                [wp.transform((1, 0, 0), wp.quat_identity()), wp.transform((0, 2, 0), rotation)],
+                dtype=wp.transformf,
+                device=device,
+            ),
+            wp.array([(2, 3, 4), (1, 1, 1), (2, 3, 4)], dtype=wp.vec3, device=device),
+            wp.array([1, 0, 1], dtype=wp.int32, device=device),
+            wp.array([(10, 0, 0), (-10, 0, 0)], dtype=wp.vec3, device=device),
+            wp.transform((0, 0, 3), wp.quat_identity()),
+            wp.array([2, 0, -1], dtype=wp.int32, device=device),
         ]
-        out_world_xforms = wp.empty(1, dtype=wp.transformf, device=device)
-        out_vbo_xforms = wp.empty(1, dtype=wp.mat44, device=device)
+        out_world_xforms = wp.zeros(3, dtype=wp.transformf, device=device)
+        out_vbo_xforms = wp.zeros(3, dtype=wp.mat44, device=device)
 
         def get_flags(current_opacity, previous_opacity):
             flags = wp.zeros(2, dtype=wp.int32, device=device)
             wp.launch(
                 _compute_shape_vbo_xforms,
-                dim=1,
+                dim=3,
                 inputs=[
                     *common_inputs,
-                    wp.array([current_opacity], dtype=wp.float32, device=device),
-                    wp.array([previous_opacity], dtype=wp.float32, device=device),
+                    wp.array([current_opacity, 0.8, 1.0], dtype=wp.float32, device=device),
+                    wp.array([1.0, previous_opacity, 0.2], dtype=wp.float32, device=device),
                     flags,
                     1,
                 ],
@@ -709,6 +721,14 @@ class TestShapeColors(unittest.TestCase):
 
         np.testing.assert_array_equal(get_flags(0.5, 1.0), [1, 1])
         np.testing.assert_array_equal(get_flags(0.5, 0.4), [1, 0])
+        np.testing.assert_array_equal(get_flags(0.5, 0.5), [0, 0])
+        np.testing.assert_allclose(out_world_xforms.numpy()[:, :3], [(-10, 2.25, 3), (11.5, 0, 3), (-10, 2.25, 3)])
+        mesh_matrix = [[0, 2, 0, 0], [-3, 0, 0, 0], [0, 0, 4, 0], [-10, 2.25, 3, 1]]
+        box_matrix = [[1, 0, 0, 0], [0, 1, 0, 0], [0, 0, 1, 0], [11.5, 0, 3, 1]]
+        np.testing.assert_allclose(out_vbo_xforms.numpy(), [mesh_matrix, box_matrix, mesh_matrix], atol=1e-6)
+        common_inputs[3][2:3].zero_()
+        np.testing.assert_array_equal(get_flags(0.5, 0.5), [0, 0])
+        np.testing.assert_array_equal(out_vbo_xforms.numpy()[2, :3, :3], np.zeros((3, 3)))
 
     def test_viewer_gl_rebuilds_opacity_dependent_caches(self):
         """Rebuild all shape caches after an opacity pass transition."""
@@ -729,10 +749,8 @@ class TestShapeColors(unittest.TestCase):
         viewer._sdf_isomesh_populated = True
         viewer.model_shape_color = object()
         viewer.model_shape_opacity = object()
-        viewer._shape_to_slot = np.array([0], dtype=np.int32)
         viewer._slot_to_shape = np.array([0], dtype=np.int32)
         viewer._slot_to_shape_wp = object()
-        viewer._shape_to_batch = [object()]
         viewer._shape_transparent_mask = np.array([False])
         viewer._populate_shapes = Mock()
         viewer._rebuild_gl_shape_caches = Mock()
@@ -932,8 +950,8 @@ class TestShapeColors(unittest.TestCase):
         self.assertIsNotNone(viewer.last_opacities)
         np.testing.assert_allclose(viewer.last_opacities[0], 0.7, atol=1e-6, rtol=1e-6)
 
-    def test_viewer_builds_inverse_shape_color_slot_mapping(self):
-        """Verify packed color slots can be mapped back to model shape indices."""
+    def test_viewer_maps_render_slots_to_model_shapes(self):
+        """Map every rendered color slot to its corresponding model shape."""
         builder = newton.ModelBuilder()
         body0 = builder.add_body(mass=1.0)
         body1 = builder.add_body(mass=1.0)
@@ -946,23 +964,15 @@ class TestShapeColors(unittest.TestCase):
         viewer.set_model(model)
 
         packed_shape_colors = viewer.model_shape_color
-        shape_to_slot = viewer._shape_to_slot
         slot_to_shape = viewer._slot_to_shape
 
         self.assertIsNotNone(packed_shape_colors)
-        self.assertIsNotNone(shape_to_slot)
         self.assertIsNotNone(slot_to_shape)
         assert packed_shape_colors is not None
-        assert shape_to_slot is not None
         assert slot_to_shape is not None
         self.assertEqual(len(slot_to_shape), len(packed_shape_colors))
-
-        rendered_shapes = np.flatnonzero(shape_to_slot >= 0)
-        self.assertEqual(len(rendered_shapes), len(slot_to_shape))
-        np.testing.assert_array_equal(np.sort(slot_to_shape), rendered_shapes)
-        for shape_idx in rendered_shapes:
-            slot = int(shape_to_slot[shape_idx])
-            self.assertEqual(int(slot_to_shape[slot]), int(shape_idx))
+        np.testing.assert_array_equal(np.sort(slot_to_shape), np.arange(model.shape_count))
+        np.testing.assert_allclose(packed_shape_colors.numpy(), model.shape_color.numpy()[slot_to_shape])
 
     def test_viewer_repacks_runtime_shape_colors_into_packed_order(self):
         """Verify runtime color sync repacks model colors into packed viewer order."""
