@@ -133,7 +133,7 @@ optionally accelerates the resulting map:
   splitting iterations.
 
 LOX contact extensions
------------------------------------
+----------------------
 
 Enable these features through ``config.lox`` after selecting
 ``dynamics_solver="lox"``. They are disabled by default.
@@ -153,7 +153,7 @@ Enable these features through ``config.lox`` after selecting
   applies either way: by default, the bounce target is fixed at the beginning of
   the step.
 * ``contact_spatial_friction=True`` accounts for the shape ``mu_torsional`` and
-  ``mu_rolling`` coefficients, both in metres.  Sliding, torsion, and rolling
+  ``mu_rolling`` coefficients, both in metres. Sliding, torsion, and rolling
   share one elliptic friction budget. Contacts with zero angular coefficients
   retain the classical 3D contact solve.
 
