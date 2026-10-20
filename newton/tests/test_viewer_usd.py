@@ -365,13 +365,16 @@ class TestViewerUSD(unittest.TestCase):
             dtype=wp.vec3,
         )
         indices = wp.array([0, 1, 2], dtype=wp.int32)
-        xforms = wp.array([wp.transform_identity(), wp.transform_identity()], dtype=wp.transform)
-        scales = wp.array([[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]], dtype=wp.vec3)
+        xforms = wp.array([wp.transform_identity()] * 3, dtype=wp.transform)
+        scales = wp.array([[1.0, 1.0, 1.0]] * 3, dtype=wp.vec3)
         opacities = wp.array([0.25, 0.75], dtype=wp.float32)
 
-        viewer.begin_frame(0.0)
+        start_frame = 17
+        viewer.begin_frame(start_frame / viewer.fps)
         viewer.log_mesh("/opacity_mesh", points, indices)
-        viewer.log_instances("/opacity_instances", "/opacity_mesh", xforms, scales, None, None, opacities=opacities)
+        viewer.log_instances(
+            "/opacity_instances", "/opacity_mesh", xforms[:2], scales[:2], None, None, opacities=opacities
+        )
 
         for i, expected in enumerate((0.25, 0.75)):
             prim = viewer.stage.GetPrimAtPath(f"/root/opacity_instances/instance_{i}")
@@ -383,6 +386,16 @@ class TestViewerUSD(unittest.TestCase):
                 np.array([expected], dtype=np.float32),
                 atol=1e-6,
             )
+
+        for frame, count in enumerate((1, 0, 3), start=start_frame + 1):
+            viewer.begin_frame(frame / viewer.fps)
+            viewer.log_instances("/opacity_instances", "/opacity_mesh", xforms[:count], scales[:count], None, None)
+            for i in range(max(2, count)):
+                prim = viewer.stage.GetPrimAtPath(f"/root/opacity_instances/instance_{i}")
+                visibility = UsdGeom.Imageable(prim).GetVisibilityAttr()
+                self.assertEqual(visibility.Get(frame), "inherited" if i < count else "invisible")
+                self.assertEqual(visibility.Get(start_frame), "inherited" if i < 2 else "invisible")
+                self.assertEqual(visibility.Get(start_frame - 1), "invisible")
 
     def test_log_instances_authors_preview_surface_opacity(self):
         """Author per-instance PreviewSurface appearance."""
@@ -549,8 +562,8 @@ class TestViewerUSD(unittest.TestCase):
         viewer.log_state(viewer.model.state())
         viewer.end_frame()
 
-        prim_a = viewer.stage.GetPrimAtPath("/root/layers/solverA/model/shapes/shape_0/instance_0")
-        prim_b = viewer.stage.GetPrimAtPath("/root/layers/solverB/model/shapes/shape_0/instance_0")
+        prim_a = viewer.stage.GetPrimAtPath("/root/layers/solverA/model/shapes").GetChildren()[0].GetChild("instance_0")
+        prim_b = viewer.stage.GetPrimAtPath("/root/layers/solverB/model/shapes").GetChildren()[0].GetChild("instance_0")
 
         self.assertTrue(prim_a.IsValid())
         self.assertTrue(prim_b.IsValid())
@@ -571,8 +584,9 @@ class TestViewerUSD(unittest.TestCase):
         viewer.log_state(viewer.model.state())
         viewer.end_frame()
 
-        prim_a = viewer.stage.GetPrimAtPath("/root/layers/solverA/model/shapes/shape_0/instance_0")
-        prim_b = viewer.stage.GetPrimAtPath("/root/layers/solverB/model/shapes/shape_0/instance_0")
+        prim_a = viewer.stage.GetPrimAtPath("/root/layers/solverA/model/shapes").GetChildren()[0].GetChild("instance_0")
+        prim_b = viewer.stage.GetPrimAtPath("/root/layers/solverB/model/shapes").GetChildren()[0].GetChild("instance_0")
+        prim_a_path, prim_b_path = prim_a.GetPath(), prim_b.GetPath()
         material_a, _ = UsdShade.MaterialBindingAPI(prim_a).ComputeBoundMaterial()
         material_b, _ = UsdShade.MaterialBindingAPI(prim_b).ComputeBoundMaterial()
         material_a_path = material_a.GetPath()
@@ -580,8 +594,8 @@ class TestViewerUSD(unittest.TestCase):
 
         viewer.remove_layer("solverA")
 
-        prim_a = viewer.stage.GetPrimAtPath("/root/layers/solverA/model/shapes/shape_0/instance_0")
-        prim_b = viewer.stage.GetPrimAtPath("/root/layers/solverB/model/shapes/shape_0/instance_0")
+        prim_a = viewer.stage.GetPrimAtPath(prim_a_path)
+        prim_b = viewer.stage.GetPrimAtPath(prim_b_path)
 
         self.assertFalse(prim_a.IsValid())
         self.assertTrue(prim_b.IsValid())
@@ -589,9 +603,15 @@ class TestViewerUSD(unittest.TestCase):
         self.assertTrue(viewer.stage.GetPrimAtPath(material_b_path).IsValid())
 
     def test_layer_visibility_hides_usd_instances(self):
+        """Hide inactive layers and source references without erasing earlier frames."""
         viewer = self._make_viewer()
         viewer.activate("solverA")
-        viewer.set_model(_build_box_model())
+        model = _build_box_model()
+        source = newton.ModelBuilder()
+        source.add_shape_box(source.add_body(), hx=0.5, hy=0.5, hz=0.5)
+        source.add_shape_sphere(source.add_body(), radius=0.5)
+        body_indices = wp.zeros(1, dtype=int, device=model.device)
+        viewer.set_model(model, body_instances=(ViewerUSD.BodyInstances(source.finalize(), (0,), body_indices),))
 
         viewer.begin_frame(0.0)
         viewer.log_state(viewer.model.state())
@@ -602,10 +622,30 @@ class TestViewerUSD(unittest.TestCase):
         viewer.log_state(viewer.model.state())
         viewer.end_frame()
 
-        prim = viewer.stage.GetPrimAtPath("/root/layers/solverA/model/shapes/shape_0/instance_0")
+        prim = viewer.stage.GetPrimAtPath("/root/layers/solverA/model/shapes").GetChildren()[0].GetChild("instance_0")
         visibility = UsdGeom.Imageable(prim).GetVisibilityAttr().Get(viewer._frame_index)
 
         self.assertEqual(visibility, "invisible")
+
+        viewer.set_layer_visible("solverA", True)
+        for frame, body_index in enumerate((0, -1, 0), start=10):
+            body_indices.fill_(body_index)
+            viewer.begin_frame(frame / viewer.fps)
+            viewer.log_state(model.state())
+            imageable = UsdGeom.Imageable(prim)
+            self.assertEqual(imageable.ComputeVisibility(frame), "invisible" if body_index < 0 else "inherited")
+            self.assertEqual(imageable.ComputeVisibility(0), "inherited")
+
+        body_indices.fill_(1)
+        viewer.begin_frame(1.0)
+        viewer.log_state(model.state())
+        groups = viewer.stage.GetPrimAtPath("/root/layers/solverA/model/shapes").GetChildren()
+        new_instance = next(group.GetChild("instance_0") for group in groups if group != prim.GetParent())
+        imageable = UsdGeom.Imageable(new_instance)
+        self.assertEqual(imageable.ComputeVisibility(viewer.fps), "inherited")
+        self.assertEqual(imageable.ComputeVisibility(viewer.fps - 1), "invisible")
+        self.assertEqual(imageable.ComputeVisibility(0), "invisible")
+        self.assertEqual(UsdGeom.Imageable(prim).ComputeVisibility(viewer.fps), "invisible")
 
     def test_log_mesh_dynamic_time_samples_topology(self):
         """Time-sample changing mesh topology when dynamic is enabled."""

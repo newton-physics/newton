@@ -1,1 +1,1 @@
-Add experimental body-local geometry choices to viewer model binding, using the normal instance batches and borrowed Warp selection arrays in GL and Viser.
+Add experimental body instancing with borrowed source-body references and compact active-shape batches in GL and Viser.

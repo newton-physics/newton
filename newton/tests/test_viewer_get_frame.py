@@ -12,7 +12,7 @@ import warp as wp
 
 import newton
 import newton.viewer
-from newton._src.viewer.gl.opengl import RendererGL
+from newton._src.viewer.gl.opengl import MeshInstancerGL, RendererGL
 from newton._src.viewer.viewer_gl import ViewerGL
 
 
@@ -239,6 +239,83 @@ class TestViewerGLGetFrame(unittest.TestCase):
                 self.assertGreater(np.ptp(cuda_frame.numpy()), 0)
         finally:
             viewer.close()
+
+    def test_body_instances_compact_and_reuse_render_resources(self):
+        """Render active sources only, retaining geometry but retiring unused instances."""
+        viewer = _make_headless_viewer_gl_or_skip(self, width=160, height=120)
+        self.addCleanup(viewer.close)
+        builder = newton.ModelBuilder()
+        bodies = []
+        for x in (-0.6, 0.0, 0.6):
+            body = builder.add_body(xform=wp.transform((x, 0.0, 0.0), wp.quat_identity()))
+            builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+            bodies.append(body)
+        model = builder.finalize(device=viewer.device)
+        catalog = newton.ModelBuilder()
+        box_body = catalog.add_body()
+        catalog.add_shape_box(box_body, hx=0.2, hy=0.2, hz=0.2, color=(1.0, 0.0, 0.0))
+        capsule_body = catalog.add_body()
+        catalog.add_shape_capsule(capsule_body, radius=0.15, half_height=0.25, color=(0.0, 0.0, 1.0))
+        sources = catalog.finalize(device=viewer.device)
+        indices = wp.array([box_body, box_body, capsule_body], dtype=wp.int32, device=viewer.device)
+        viewer.set_model(model, body_instances=[ViewerGL.BodyInstances(sources, bodies, indices)])
+        viewer.set_camera(pos=wp.vec3(2.0, -3.0, 2.0), pitch=-25.0, yaw=120.0)
+        state = model.state()
+
+        def render(values):
+            indices.assign(np.asarray(values, dtype=np.int32))
+            viewer.begin_frame(0.0)
+            viewer.log_state(state)
+            viewer.end_frame()
+            self.assertEqual(
+                sum(len(batch.xforms) for batch in viewer._shape_instances.values()), sum(i >= 0 for i in values)
+            )
+            for name, obj in viewer.objects.items():
+                if isinstance(obj, MeshInstancerGL) and name.startswith("/model/shapes/"):
+                    self.assertLessEqual(obj.num_instances, 2 * obj.active_instances)
+            return viewer.get_frame().numpy().copy()
+
+        initial = render([box_body, box_body, capsule_body])
+        box_name = next(
+            batch.name for batch in viewer._shape_instances.values() if batch.geo_type == newton.GeoType.BOX
+        )
+        box_instancer = viewer.objects[box_name]
+        box_mesh = box_instancer.mesh
+        self.assertEqual(box_instancer.active_instances, 2)
+        render([box_body, capsule_body, capsule_body])
+        self.assertIs(viewer.objects[box_name], box_instancer)
+        self.assertEqual(box_instancer.active_instances, 1)
+        all_capsules = render([capsule_body] * len(bodies))
+        self.assertNotIn(box_name, viewer.objects)
+        self.assertIn(box_mesh, viewer.objects.values())
+        self.assertFalse(np.array_equal(initial, all_capsules))
+        render([box_body, box_body, capsule_body])
+        render([-1] * len(bodies))
+        self.assertFalse(
+            any(
+                isinstance(obj, MeshInstancerGL) and name.startswith("/model/shapes/")
+                for name, obj in viewer.objects.items()
+            )
+        )
+        render([box_body] * len(bodies))
+        self.assertIs(viewer.objects[box_name].mesh, box_mesh)
+        self.assertEqual(viewer.objects[box_name].active_instances, len(bodies))
+        render([box_body, capsule_body, capsule_body])
+
+        # An ordinary shape's opaque-to-transparent transition uses the same
+        # population path, without retaining its old opaque draw batch.
+        viewer.set_model(model)
+        viewer.begin_frame(0.0)
+        viewer.log_state(state)
+        viewer.end_frame()
+        opaque_names = {batch.name for batch in viewer._shape_instances.values()}
+        model.shape_opacity.fill_(0.5)
+        viewer.begin_frame(1.0)
+        viewer.log_state(state)
+        viewer.end_frame()
+        self.assertFalse(opaque_names & {batch.name for batch in viewer._shape_instances.values()})
+        self.assertTrue(all(name not in viewer.objects for name in opaque_names))
+        self.assertEqual(sum(len(batch.xforms) for batch in viewer._shape_instances.values()), len(bodies))
 
     def test_large_quad_is_stable_under_parallel_camera_translation(self):
         """Keep a large uniform quad stable while translating the camera parallel to it."""

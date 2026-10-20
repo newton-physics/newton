@@ -33,7 +33,6 @@ from .kernels import (
     repack_shape_opacities,
     transform_points,
     update_render_shape_inputs,
-    update_shape_choice_scales,
 )
 from .transform import transform_add_translation, transform_from_array, transform_multiply
 from .utils import OPAQUE_OPACITY_THRESHOLD
@@ -116,22 +115,23 @@ class Layer:
 
 class ViewerBase(ABC):
     @dataclass(frozen=True)
-    class ShapeChoices:
-        """Geometry choices attached to live bodies without changing the physics model.
+    class BodyInstances:
+        """Instances of source-model bodies attached to live simulation bodies.
 
-        This experimental API supports mesh and primitive shapes. Each catalog
-        body defines one choice, including all of its body-local shapes. Catalog
-        geometry, target body order, and appearance are immutable after binding. Collision overlays
-        use the catalog's triangle surfaces rather than SDF isosurfaces or margin
-        shells. Gaussian and plane catalogs are not supported.
+        This experimental API borrows direct source-body references. Source
+        geometry, target body order, and appearance are immutable after binding.
+        Reference arrays are read on the host before each frame; batches are
+        rebuilt only when references change. Only active shapes occupy instance
+        buffers. Collision overlays use source triangle surfaces rather than SDF
+        isosurfaces or margin shells. Gaussian and plane sources are not supported.
         """
 
         model: newton.Model
-        """Catalog model whose body indices identify choices."""
+        """Source model whose bodies provide geometry and appearance."""
         bodies: Sequence[int]
         """Live-model body indices whose shapes are replaced for rendering."""
-        selected: wp.array[int]
-        """Borrowed choice indices, one per target body. Invalid choices are hidden."""
+        body_indices: wp.array[int]
+        """Borrowed source-body indices, one per target body. Invalid indices omit the instance."""
 
     class SDFMarginMode(enum.IntEnum):
         """Controls which offset surface is visualized for SDF debug wireframes."""
@@ -599,7 +599,12 @@ class ViewerBase(ABC):
 
         # Shape instance batches (shape hash -> ShapeInstances)
         layer._shape_instances = {}
-        layer._shape_choices = ()
+        layer._shape_resources = {}
+        layer._shape_resource_rows = None
+        layer._shape_references = None
+        layer._body_instance_shapes = ()
+        layer._body_instances = ()
+        layer._body_indices_host = ()
         layer._shape_xforms = None
         layer._shape_parents = None
         layer._shape_worlds = None
@@ -729,43 +734,44 @@ class ViewerBase(ABC):
         """Hook for backends to initialize additional per-layer attributes."""
         return
 
-    def set_model(self, model: newton.Model | None, *, shape_choices: Sequence[ShapeChoices] = ()):
+    def set_model(self, model: newton.Model | None, *, body_instances: Sequence[BodyInstances] = ()):
         """Set the model to be visualized.
 
         Args:
             model: The Newton model to visualize.
-            shape_choices: Experimental body-local geometry catalogs. The viewer
-                borrows their selection arrays and never changes the physics model.
+            body_instances: Experimental instances of source-model bodies. The
+                viewer borrows their references and never changes the physics model.
         """
         bodies = set()
-        for choices in shape_choices:
+        for instances in body_instances:
             if model is None:
-                raise ValueError("Shape choices require a live model.")
-            if choices.model.body_count == 0:
-                raise ValueError("A shape-choice catalog must contain at least one body.")
+                raise ValueError("Body instances require a live model.")
+            if instances.model.body_count == 0:
+                raise ValueError("A body-instance source must contain at least one body.")
             if any(
-                not isinstance(body, (int, np.integer)) or not 0 <= body < model.body_count for body in choices.bodies
+                not isinstance(body, (int, np.integer)) or not 0 <= body < model.body_count for body in instances.bodies
             ):
-                raise ValueError("Shape-choice targets must be valid live-model body indices.")
-            if len(set(choices.bodies)) != len(choices.bodies) or bodies.intersection(choices.bodies):
-                raise ValueError("A live body may belong to only one shape-choice catalog.")
-            bodies.update(choices.bodies)
-            if choices.selected.ndim != 1 or choices.selected.dtype != wp.int32:
-                raise ValueError("Shape-choice selections must be a one-dimensional int32 Warp array.")
-            if len(choices.selected) != len(choices.bodies) or choices.selected.device != model.device:
-                raise ValueError("Shape-choice selections must match target bodies and the live model device.")
-            if np.any(choices.model.shape_body.numpy() < 0):
-                raise ValueError("Every catalog shape must be attached to a catalog body.")
+                raise ValueError("Body-instance targets must be valid live-model body indices.")
+            if len(set(instances.bodies)) != len(instances.bodies) or bodies.intersection(instances.bodies):
+                raise ValueError("A live body may belong to only one body-instance binding.")
+            bodies.update(instances.bodies)
+            if instances.body_indices.ndim != 1 or instances.body_indices.dtype != wp.int32:
+                raise ValueError("Source-body indices must be a one-dimensional int32 Warp array.")
+            if len(instances.body_indices) != len(instances.bodies) or instances.body_indices.device != model.device:
+                raise ValueError("Source-body indices must match target bodies and the live model device.")
+            if np.any(instances.model.shape_body.numpy() < 0):
+                raise ValueError("Every source shape must be attached to a source body.")
             if np.any(
-                np.isin(choices.model.shape_type.numpy(), (int(newton.GeoType.GAUSSIAN), int(newton.GeoType.PLANE)))
+                np.isin(instances.model.shape_type.numpy(), (int(newton.GeoType.GAUSSIAN), int(newton.GeoType.PLANE)))
             ):
-                raise NotImplementedError("Gaussian and plane shape choices are not supported.")
+                raise NotImplementedError("Gaussian and plane body-instance sources are not supported.")
 
         if self.model is not None:
             self.clear_model()
 
         self.model = model
-        self._shape_choices = tuple(shape_choices)
+        self._body_instances = tuple(body_instances)
+        self._body_indices_host = tuple(instances.body_indices.numpy().copy() for instances in body_instances)
 
         self._visible_worlds = None
 
@@ -775,6 +781,7 @@ class ViewerBase(ABC):
                 model._shape_sdf_index.numpy().copy() if model._shape_sdf_index is not None else None
             )
             self._build_visible_worlds_mask()
+            self._compile_shapes()
             self._populate_shapes()
 
             self.scene_scale = self._estimate_scene_scale() or 1.0
@@ -827,23 +834,6 @@ class ViewerBase(ABC):
         else:
             self._visible_worlds = None
         self._build_visible_worlds_mask()
-
-        # Clear shape instance batches but preserve geometry cache
-        self._shape_instances = {}
-        self._gaussian_instances = []
-        self._sdf_isomesh_instances = {}
-        self._sdf_isomesh_populated = False
-        self.model_shape_color = None
-        self.model_shape_opacity = None
-        self._slot_to_shape = None
-        self._slot_to_shape_wp = None
-        self._shape_transparent_mask = None
-        self._triangle_appearance_groups = None
-        self._triangle_appearance_signature = None
-        self._triangle_color_cached = None
-        self._triangle_opacity_cached = None
-        self._triangle_color_change_flag = None
-        self._triangle_opacity_change_flag = None
 
         self._populate_shapes()
         if self._user_spacing is not None:
@@ -1174,6 +1164,14 @@ class ViewerBase(ABC):
         if self.model is None:
             return
 
+        self._sync_body_instances()
+        self._log_shapes(state)
+        self._log_gaussian_shapes(state)
+        self._log_non_shape_state(state)
+        self.model_changed = False
+
+    def _log_shapes(self, state: newton.State):
+        """Submit the current compact shape batches."""
         self._sync_shape_colors_from_model()
         self._sync_shape_opacities_from_model()
         self._update_shape_inputs()
@@ -1220,12 +1218,18 @@ class ViewerBase(ABC):
             shapes.colors_changed = False
             shapes.opacities_changed = False
 
-        self._log_gaussian_shapes(state)
-        self._log_non_shape_state(state)
-        self.model_changed = False
+    def _sync_body_instances(self) -> None:
+        """Regroup active shapes when borrowed source-body references change."""
+        indices = tuple(instances.body_indices.numpy().copy() for instances in self._body_instances)
+        if all(
+            np.array_equal(current, cached) for current, cached in zip(indices, self._body_indices_host, strict=True)
+        ):
+            return
+        self._body_indices_host = indices
+        self._populate_shapes()
 
     def _update_shape_inputs(self):
-        """Refresh live geometry and selection in the shared render-instance buffers."""
+        """Refresh live geometry in the shared render-instance buffers."""
         if self._slot_to_shape_wp is not None:
             wp.launch(
                 update_render_shape_inputs,
@@ -1242,16 +1246,6 @@ class ViewerBase(ABC):
                 device=self.device,
                 record_tape=False,
             )
-        for shapes in self._shape_instances.values():
-            if shapes.selected is not None:
-                wp.launch(
-                    update_shape_choice_scales,
-                    dim=len(shapes.scales),
-                    inputs=[shapes.base_scales, shapes.selected, shapes.selection_indices, shapes.choice_indices],
-                    outputs=[shapes.scales],
-                    device=self.device,
-                    record_tape=False,
-                )
 
     def _sync_shape_colors_from_model(self):
         """Propagate model-owned shape colors into viewer batches.
@@ -2316,10 +2310,6 @@ class ViewerBase(ABC):
 
             self.model_shapes = []
             self.geometry_scales = []
-            self.selected = None
-            self.selection_indices = []
-            self.choice_indices = []
-            self.base_scales = None
 
             self.world_xforms = None
             self.colors_changed: bool = False
@@ -2346,8 +2336,6 @@ class ViewerBase(ABC):
             opacity: float = 1.0,
             *,
             geometry_scale: wp.vec3 | None = None,
-            selection_index: int = 0,
-            choice_index: int = 0,
         ):
             """
             Add an instance of the geometry to the batch.
@@ -2362,8 +2350,6 @@ class ViewerBase(ABC):
                 world: The world index.
                 opacity: The opacity of the instance.
                 geometry_scale: Source dimensions [m] for primitive rendering.
-                selection_index: Index of the target body's borrowed selection.
-                choice_index: Catalog body index represented by this instance.
             """
             self.parents.append(parent)
             self.xforms.append(xform)
@@ -2374,8 +2360,6 @@ class ViewerBase(ABC):
             self.worlds.append(world)
             self.model_shapes.append(shape_index)
             self.geometry_scales.append(scale if geometry_scale is None else geometry_scale)
-            self.selection_indices.append(selection_index)
-            self.choice_indices.append(choice_index)
 
         def finalize(
             self,
@@ -2405,10 +2389,6 @@ class ViewerBase(ABC):
             self.materials = wp.array(self.materials, dtype=wp.vec4, device=self.device)
             self.worlds = wp.array(self.worlds, dtype=int, device=self.device)
             self.geometry_scales = wp.array(self.geometry_scales, dtype=wp.vec3, device=self.device)
-            if self.selected is not None:
-                self.selection_indices = wp.array(self.selection_indices, dtype=int, device=self.device)
-                self.choice_indices = wp.array(self.choice_indices, dtype=int, device=self.device)
-                self.base_scales = wp.clone(self.scales)
 
             self.world_xforms = wp.zeros_like(self.xforms)
 
@@ -2595,8 +2575,11 @@ class ViewerBase(ABC):
             texture=getattr(src, "texture", None),
         )
 
-    # creates meshes and instances for each shape in the Model
-    def _populate_shapes(self):
+    def _compile_shapes(self):
+        """Compile source geometry and appearance once, independently of active instances."""
+        self._shape_resources = {}
+        self._gaussian_instances = []
+
         # convert to NumPy
         shape_body = self.model.shape_body.numpy()
         shape_geo_src = list(self.model.shape_source)
@@ -2625,59 +2608,61 @@ class ViewerBase(ABC):
         )
         model_shape_count = len(shape_body)
         model_shapes = np.arange(model_shape_count, dtype=np.int32)
-        selections = [None] * model_shape_count
-        selection_indices = np.zeros(model_shape_count, dtype=np.int32)
-        choice_indices = np.zeros(model_shape_count, dtype=np.int32)
-        replaced_bodies = {body for choices in self._shape_choices for body in choices.bodies}
+        replaced_bodies = {body for binding in self._body_instances for body in binding.bodies}
         if self._shape_sdf_index_host is not None:
             self._shape_sdf_index_host[np.isin(shape_body, tuple(replaced_bodies))] = -1
         body_worlds = self.model.body_world.numpy()
 
-        # Normalize catalogs into the same render instances used by ordinary shapes.
-        for choices in self._shape_choices:
-            source = choices.model
-            source_bodies = source.shape_body.numpy()
-            source_flags = source.shape_flags.numpy()
-            source_shapes = np.flatnonzero((source_flags & int(newton.ShapeFlags.SITE)) == 0)
-            targets = [
-                index for index, body in enumerate(choices.bodies) if self._should_render_world(body_worlds[body])
-            ]
-            rows = np.tile(source_shapes, len(targets))
-            target_rows = np.repeat(np.asarray(targets, dtype=np.int32), len(source_shapes))
-            parents = np.asarray(choices.bodies, dtype=np.int32)[target_rows]
-            count = len(rows)
-            shape_body = np.concatenate((shape_body, parents))
-            shape_world = np.concatenate((shape_world, body_worlds[parents]))
-            shape_geo_src.extend(source.shape_source[index] for index in rows)
-            shape_geo_type = np.concatenate((shape_geo_type, source.shape_type.numpy()[rows]))
-            shape_geo_scale = np.concatenate((shape_geo_scale, source.shape_scale.numpy()[rows]))
-            shape_geo_thickness = np.concatenate((shape_geo_thickness, source.shape_margin.numpy()[rows]))
-            shape_geo_is_solid = np.concatenate((shape_geo_is_solid, source.shape_is_solid.numpy()[rows]))
-            shape_transform = np.concatenate((shape_transform, source.shape_transform.numpy()[rows]))
-            shape_flags = np.concatenate((shape_flags, source_flags[rows]))
-            source_colors = (
-                source.shape_color.numpy() if source.shape_color is not None else [None] * source.shape_count
-            )
-            shape_display_color.extend(source_colors[index] for index in rows)
-            source_opacities = (
-                source.shape_opacity.numpy() if source.shape_opacity is not None else np.ones(source.shape_count)
-            )
-            shape_display_opacity = np.concatenate((shape_display_opacity, source_opacities[rows]))
-            shape_sdf_index = np.concatenate((shape_sdf_index, np.full(count, -1)))
-            site_size_is_display = np.concatenate((site_size_is_display, np.zeros(count, dtype=bool)))
-            model_shapes = np.concatenate((model_shapes, np.full(count, -1, dtype=np.int32)))
-            selections.extend([choices.selected] * count)
-            selection_indices = np.concatenate((selection_indices, target_rows))
-            choice_indices = np.concatenate((choice_indices, source_bodies[rows]))
+        ordinary = ~np.isin(shape_body, tuple(replaced_bodies))
+        self._shape_references = np.column_stack((model_shapes[ordinary], shape_body[ordinary], shape_world[ordinary]))
+
+        # Cache body-to-shape ranges once; reference changes only gather their rows.
+        source_offsets = {}
+        self._body_instance_shapes = []
+        for binding in self._body_instances:
+            source = binding.model
+            if id(source) not in source_offsets:
+                source_flags = source.shape_flags.numpy()
+                source_bodies = source.shape_body.numpy()
+                source_rows = np.flatnonzero((source_flags & int(newton.ShapeFlags.SITE)) == 0)
+                source_rows = source_rows[np.argsort(source_bodies[source_rows], kind="stable")]
+                offsets = np.concatenate(
+                    ([0], np.cumsum(np.bincount(source_bodies[source_rows], minlength=source.body_count)))
+                )
+                source_offsets[id(source)] = (offsets, source_rows + len(model_shapes))
+                shape_geo_src.extend(source.shape_source)
+                shape_geo_type = np.concatenate((shape_geo_type, source.shape_type.numpy()))
+                shape_geo_scale = np.concatenate((shape_geo_scale, source.shape_scale.numpy()))
+                shape_geo_thickness = np.concatenate((shape_geo_thickness, source.shape_margin.numpy()))
+                shape_geo_is_solid = np.concatenate((shape_geo_is_solid, source.shape_is_solid.numpy()))
+                shape_transform = np.concatenate((shape_transform, source.shape_transform.numpy()))
+                shape_flags = np.concatenate((shape_flags, source_flags))
+                shape_display_color.extend(
+                    source.shape_color.numpy() if source.shape_color is not None else [None] * source.shape_count
+                )
+                shape_display_opacity = np.concatenate(
+                    (
+                        shape_display_opacity,
+                        source.shape_opacity.numpy()
+                        if source.shape_opacity is not None
+                        else np.ones(source.shape_count),
+                    )
+                )
+                shape_sdf_index = np.concatenate((shape_sdf_index, np.full(source.shape_count, -1)))
+                site_size_is_display = np.concatenate((site_size_is_display, np.zeros(source.shape_count, dtype=bool)))
+                model_shapes = np.concatenate((model_shapes, np.full(source.shape_count, -1, dtype=np.int32)))
+            targets = np.asarray(binding.bodies, dtype=np.int32)
+            offsets, rows = source_offsets[id(source)]
+            self._body_instance_shapes.append((targets, body_worlds[targets], offsets, rows))
 
         shape_transparent_mask = np.zeros(model_shape_count, dtype=bool)
+        self._shape_resource_rows = np.full((len(model_shapes), 2), -1, dtype=np.int64)
 
         # loop over shapes
-        for s in range(len(shape_body)):
-            if model_shapes[s] >= 0 and shape_body[s] in replaced_bodies:
+        for s in range(len(model_shapes)):
+            if s < model_shape_count and not ordinary[s]:
                 continue
-            # skip shapes from non-visible worlds
-            if not self._should_render_world(shape_world[s]):
+            if s >= model_shape_count and shape_flags[s] & int(newton.ShapeFlags.SITE):
                 continue
 
             geo_type = shape_geo_type[s]
@@ -2702,11 +2687,11 @@ class ViewerBase(ABC):
             # Gaussians bypass the mesh instancing pipeline; render as point clouds.
             if geo_type == newton.GeoType.GAUSSIAN:
                 if isinstance(geo_src, newton.Gaussian):
-                    parent = shape_body[s]
                     xform = transform_from_array(shape_transform[s])
-                    gname = self._qualify(f"/model/gaussians/gaussian_{len(self._gaussian_instances)}")
+                    parent, world = int(shape_body[s]), int(shape_world[s])
+                    gname = self._qualify(f"/model/gaussians/gaussian_{s}")
                     self._gaussian_instances.append(
-                        (gname, geo_src, int(parent), xform, int(shape_world[s]), int(shape_flags[s]), parent == -1)
+                        (gname, geo_src, parent, xform, world, int(shape_flags[s]), parent == -1)
                     )
                 continue
 
@@ -2748,8 +2733,6 @@ class ViewerBase(ABC):
 
             # shape options
             flags = shape_flags[s]
-            parent = shape_body[s]
-            static = parent == -1
             opacity = float(shape_display_opacity[s])
             opacity = max(0.0, min(1.0, opacity))
             transparent = opacity < OPAQUE_OPACITY_THRESHOLD
@@ -2771,19 +2754,6 @@ class ViewerBase(ABC):
             if is_collision_shape and is_visible and has_sdf:
                 # Remove COLLIDE_SHAPES flag so this is treated as a visual shape
                 flags = flags & ~int(newton.ShapeFlags.COLLIDE_SHAPES)
-
-            shape_hash = (self._hash_shape(geo_hash, static, flags, transparent), id(selections[s]))
-
-            # ensure batch exists
-            if shape_hash not in self._shape_instances:
-                shape_name = self._qualify(f"/model/shapes/shape_{len(self._shape_instances)}")
-                batch = ViewerBase.ShapeInstances(shape_name, static, flags, mesh_name, self.device)
-                batch.geo_type = geo_type
-                batch.transparent = transparent
-                batch.selected = selections[s]
-                self._shape_instances[shape_hash] = batch
-            else:
-                batch = self._shape_instances[shape_hash]
 
             xform = transform_from_array(shape_transform[s])
             scale = np.array([1.0, 1.0, 1.0])
@@ -2819,7 +2789,18 @@ class ViewerBase(ABC):
                     color = wp.vec3(0.125, 0.125, 0.15)
                 material = wp.vec4(0.5, 0.0, 1.0, 0.0)
 
-            # add render instance
+            parent = int(shape_body[s]) if s < model_shape_count else 0
+            static = parent == -1
+            shape_hash = self._hash_shape(geo_hash, static, flags, transparent)
+            if shape_hash not in self._shape_resources:
+                shape_name = self._qualify(f"/model/shapes/shape_{shape_hash & 0xFFFFFFFFFFFFFFFF:016x}")
+                batch = ViewerBase.ShapeInstances(shape_name, static, flags, mesh_name, self.device)
+                batch.geo_type = geo_type
+                batch.transparent = transparent
+                self._shape_resources[shape_hash] = batch
+            else:
+                batch = self._shape_resources[shape_hash]
+            self._shape_resource_rows[s] = (shape_hash, len(batch.scales))
             batch.add(
                 parent=parent,
                 xform=xform,
@@ -2828,11 +2809,72 @@ class ViewerBase(ABC):
                 material=material,
                 opacity=opacity,
                 shape_index=int(model_shapes[s]),
-                world=shape_world[s],
                 geometry_scale=wp.vec3(geo_scale),
-                selection_index=int(selection_indices[s]),
-                choice_index=int(choice_indices[s]),
             )
+
+        for resource in self._shape_resources.values():
+            resource.xforms = np.asarray(resource.xforms, dtype=np.float32)
+            resource.scales = np.asarray(resource.scales, dtype=np.float32)
+            resource.colors = np.asarray(resource.colors, dtype=np.float32)
+            resource.opacities = np.asarray(resource.opacities, dtype=np.float32)
+            resource.materials = np.asarray(resource.materials, dtype=np.float32)
+            resource.model_shapes = np.asarray(resource.model_shapes, dtype=np.int32)
+            resource.geometry_scales = np.asarray(resource.geometry_scales, dtype=np.float32)
+        self._shape_transparent_mask = shape_transparent_mask
+
+    def _populate_shapes(self):
+        """Project active references into compact native batches using compiled resources."""
+        self._shape_instances = {}
+        self._sdf_isomesh_instances = {}
+        self._sdf_isomesh_populated = False
+        self.model_changed = True
+
+        references = [self._shape_references]
+        for (targets, worlds, offsets, rows), bodies in zip(
+            self._body_instance_shapes, self._body_indices_host, strict=True
+        ):
+            valid = (bodies >= 0) & (bodies < len(offsets) - 1)
+            active = bodies[valid]
+            counts = offsets[active + 1] - offsets[active]
+            ends = np.cumsum(counts)
+            starts = ends - counts
+            source_rows = np.repeat(offsets[active] - starts, counts) + np.arange(ends[-1] if len(ends) else 0)
+            references.append(
+                np.column_stack(
+                    (rows[source_rows], np.repeat(targets[valid], counts), np.repeat(worlds[valid], counts))
+                )
+            )
+        references = np.concatenate(references)
+        if self._visible_worlds is not None:
+            references = references[(references[:, 2] == -1) | np.isin(references[:, 2], tuple(self._visible_worlds))]
+        resource_rows = self._shape_resource_rows[references[:, 0]]
+        valid = resource_rows[:, 1] >= 0
+        references, resource_rows = references[valid], resource_rows[valid]
+        order = np.argsort(resource_rows[:, 0], kind="stable")
+        references, resource_rows = references[order], resource_rows[order]
+        hashes, starts = np.unique(resource_rows[:, 0], return_index=True)
+        ends = np.concatenate((starts, [len(references)]))[1:]
+        groups = dict(zip(hashes, zip(starts, ends, strict=True), strict=True))
+        for shape_hash, resource in self._shape_resources.items():
+            if shape_hash not in groups:
+                continue
+            start, end = groups[shape_hash]
+            rows = resource_rows[start:end, 1]
+            batch = ViewerBase.ShapeInstances(
+                resource.name, resource.static, resource.flags, resource.mesh, self.device
+            )
+            batch.geo_type = resource.geo_type
+            batch.transparent = resource.transparent
+            batch.parents = references[start:end, 1]
+            batch.worlds = references[start:end, 2]
+            batch.xforms = resource.xforms[rows]
+            batch.scales = resource.scales[rows]
+            batch.colors = resource.colors[rows]
+            batch.opacities = resource.opacities[rows]
+            batch.materials = resource.materials[rows]
+            batch.model_shapes = resource.model_shapes[rows]
+            batch.geometry_scales = resource.geometry_scales[rows]
+            self._shape_instances[int(shape_hash)] = batch
 
         # each shape instance object (batch) is associated with one slice
         batches = list(self._shape_instances.values())
@@ -2840,23 +2882,19 @@ class ViewerBase(ABC):
         total_instances = int(offsets[-1])
 
         # Allocate single contiguous color buffer and copy initial per-batch colors
-        if total_instances:
-            self.model_shape_color = wp.zeros(total_instances, dtype=wp.vec3, device=self.device)
-            self.model_shape_opacity = wp.zeros(total_instances, dtype=wp.float32, device=self.device)
+        self.model_shape_color = wp.zeros(total_instances, dtype=wp.vec3, device=self.device)
+        self.model_shape_opacity = wp.zeros(total_instances, dtype=wp.float32, device=self.device)
         self._shape_xforms = wp.empty(total_instances, dtype=wp.transform, device=self.device)
         self._shape_parents = wp.empty(total_instances, dtype=int, device=self.device)
         self._shape_worlds = wp.empty(total_instances, dtype=int, device=self.device)
         self._shape_scales = wp.empty(total_instances, dtype=wp.vec3, device=self.device)
 
         for b_idx, batch in enumerate(batches):
-            if total_instances:
-                color_array = self.model_shape_color[offsets[b_idx] : offsets[b_idx + 1]]
-                opacity_array = self.model_shape_opacity[offsets[b_idx] : offsets[b_idx + 1]]
-                color_array.assign(wp.array(batch.colors, dtype=wp.vec3, device=self.device))
-                opacity_array.assign(wp.array(batch.opacities, dtype=wp.float32, device=self.device))
-                batch.finalize(shape_colors=color_array, shape_opacities=opacity_array)
-            else:
-                batch.finalize()
+            color_array = self.model_shape_color[offsets[b_idx] : offsets[b_idx + 1]]
+            opacity_array = self.model_shape_opacity[offsets[b_idx] : offsets[b_idx + 1]]
+            color_array.assign(wp.array(batch.colors, dtype=wp.vec3, device=self.device))
+            opacity_array.assign(wp.array(batch.opacities, dtype=wp.float32, device=self.device))
+            batch.finalize(shape_colors=color_array, shape_opacities=opacity_array)
             span = slice(offsets[b_idx], offsets[b_idx + 1])
             self._shape_xforms[span].assign(batch.xforms)
             self._shape_parents[span].assign(batch.parents)
@@ -2867,12 +2905,11 @@ class ViewerBase(ABC):
             batch.worlds = self._shape_worlds[span]
             batch.scales = self._shape_scales[span]
 
-        slot_to_shape = np.asarray([shape for batch in batches for shape in batch.model_shapes], dtype=np.int32)
-        self._slot_to_shape = slot_to_shape
-        self._slot_to_shape_wp = (
-            wp.array(slot_to_shape, dtype=wp.int32, device=self.device) if total_instances else None
+        slot_to_shape = (
+            np.concatenate([batch.model_shapes for batch in batches]) if batches else np.empty(0, dtype=np.int32)
         )
-        self._shape_transparent_mask = shape_transparent_mask
+        self._slot_to_shape = slot_to_shape
+        self._slot_to_shape_wp = wp.array(slot_to_shape, dtype=wp.int32, device=self.device)
         self._shape_batches_have_transparency = any(batch.transparent for batch in batches)
 
         # Note: SDF isomesh instances are populated lazily when show_collision is True
@@ -3148,7 +3185,7 @@ class ViewerBase(ABC):
         type_np = self.model.shape_type.numpy()
         scale_np = self.model.shape_scale.numpy()
         shape_count = len(shape_body)
-        replaced_bodies = {body for choices in self._shape_choices for body in choices.bodies}
+        replaced_bodies = {body for instances in self._body_instances for body in instances.bodies}
 
         for s in range(shape_count):
             if shape_body[s] in replaced_bodies:

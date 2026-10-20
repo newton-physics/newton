@@ -1341,15 +1341,15 @@ void main() {
     # ------------------------------------------------ ViewerUSD overrides
 
     @override
-    def set_model(self, model: newton.Model | None, *, shape_choices: Sequence[ViewerBase.ShapeChoices] = ()) -> None:
+    def set_model(self, model: newton.Model | None, *, body_instances: Sequence[ViewerBase.BodyInstances] = ()) -> None:
         """Set the Newton model to visualize.
 
         Args:
             model: The Newton model instance.
-            shape_choices: Unsupported by this viewer's retained scene.
+            body_instances: Unsupported by this viewer's retained scene.
         """
-        if shape_choices:
-            raise NotImplementedError("ViewerRTX does not support shape choices.")
+        if body_instances:
+            raise NotImplementedError("ViewerRTX does not support body instances.")
         super().set_model(model)
         # ``ViewerBase.set_model`` may have switched ``self.device`` to the model's device.
         self._image_logger.set_device(self.device)
@@ -1401,8 +1401,13 @@ void main() {
             self.picking.world_offsets = self.world_offsets
 
     @override
-    def _populate_shapes(self):
+    def _compile_shapes(self):
         # A borrowed stage already contains the model's geometry.
+        if self._borrowed_stage is None:
+            super()._compile_shapes()
+
+    @override
+    def _populate_shapes(self):
         if self._borrowed_stage is None:
             super()._populate_shapes()
 

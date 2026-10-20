@@ -1199,15 +1199,15 @@ class ViewerFile(ViewerBase):
         self._running = True
 
     @override
-    def set_model(self, model: Model | None, *, shape_choices: Sequence[ViewerBase.ShapeChoices] = ()):
+    def set_model(self, model: Model | None, *, body_instances: Sequence[ViewerBase.BodyInstances] = ()):
         """Override set_model to record the model when it is set.
 
         Args:
             model: Model to bind to this viewer.
-            shape_choices: Unsupported by the model/state recording format.
+            body_instances: Unsupported by the model/state recording format.
         """
-        if shape_choices:
-            raise NotImplementedError("ViewerFile cannot record shape choices.")
+        if body_instances:
+            raise NotImplementedError("ViewerFile cannot record body instances.")
         super().set_model(model)
 
         if model is not None and not self._model_recorded:

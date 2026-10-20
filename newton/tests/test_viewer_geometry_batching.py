@@ -3,6 +3,8 @@
 
 import inspect
 import unittest
+from contextlib import ExitStack
+from unittest.mock import patch
 
 import numpy as np
 import warp as wp
@@ -104,8 +106,8 @@ class _ViewerLegacyMeshSignatureProbe(ViewerNull):
 
 
 class TestViewerGeometryBatching(unittest.TestCase):
-    def test_body_shape_choices_share_native_batches(self):
-        """Render ragged body catalogs through ordinary batches and borrowed selections."""
+    def test_body_instances_share_compact_native_batches(self):
+        """Render only active source-body shapes through the ordinary instance path."""
         mesh = newton.Mesh(
             vertices=((0, 0, 0), (1, 0, 0), (0, 1, 0)),
             indices=(0, 1, 2),
@@ -135,28 +137,65 @@ class TestViewerGeometryBatching(unittest.TestCase):
         source = catalog.finalize(device="cpu")
         source.shape_color.assign(np.asarray(((1, 0, 0), (0, 1, 0), (0, 0, 1)), dtype=np.float32))
         source.shape_opacity.assign(np.asarray((1.0, 0.5, 1.0), dtype=np.float32))
-        selected = wp.array((0, 1, 0), dtype=int, device="cpu")
-        choices = ViewerBase.ShapeChoices(source, bodies, selected)
+        body_indices = wp.array((0, 0, 0), dtype=int, device="cpu")
+        instances = ViewerBase.BodyInstances(source, bodies, body_indices)
         viewer = ViewerNull()
-        viewer.set_model(model, shape_choices=(choices,))
+        viewer.set_model(model, body_instances=(instances,))
         viewer.set_world_offsets((0.0, 0.0, 0.0))
         viewer.log_state(model.state())
+        self.assertEqual(len(viewer._shape_scales), 5)  # Three active instances, plus two global shapes.
+        resources = viewer._geometry_cache.copy()
+        descriptors = viewer._shape_resources
+        self.assertEqual(sum(len(resource.scales) for resource in descriptors.values()), 2 + source.shape_count)
+        self.assertEqual(len(viewer._shape_resource_rows), model.shape_count + source.shape_count)
+        batches_before = viewer._shape_instances
+        names_before = {batch.name for batch in batches_before.values()}
+        viewer.log_state(model.state())
+        self.assertIs(viewer._shape_instances, batches_before)
+
+        # Activate the ragged source body, whose unused geometry is already uploaded.
+        body_indices.assign(np.asarray((0, 1, 0), dtype=np.int32))
+        with ExitStack() as guards:
+            guards.enter_context(
+                patch.object(
+                    viewer, "_compile_shapes", side_effect=AssertionError("Reference changes must not recompile.")
+                )
+            )
+            for array in (
+                model.shape_type,
+                model.shape_scale,
+                model.shape_transform,
+                model.shape_flags,
+                source.shape_type,
+                source.shape_scale,
+                source.shape_transform,
+                source.shape_flags,
+            ):
+                guards.enter_context(
+                    patch.object(
+                        array, "numpy", side_effect=AssertionError("Reference changes must reuse descriptors.")
+                    )
+                )
+            viewer.log_state(model.state())
+        self.assertEqual(viewer._geometry_cache, resources)
+        self.assertIs(viewer._shape_resources, descriptors)
+        self.assertIsNot(viewer._shape_instances, batches_before)
         batches = list(viewer._shape_instances.values())
-        choice_batches = [batch for batch in batches if batch.selected is not None]
-        self.assertEqual(sum(len(batch.scales) for batch in choice_batches), 9)
-        self.assertEqual(
-            sum(np.count_nonzero(np.any(batch.scales.numpy() != 0, axis=1)) for batch in choice_batches), 4
-        )
-        self.assertTrue(all(batch.selected is selected for batch in choice_batches))
+        instance_batches = [batch for batch in batches if min(batch.model_shapes) < 0]
+        self.assertEqual(sum(len(batch.scales) for batch in instance_batches), 4)
+        self.assertTrue(all(np.all(batch.scales.numpy() != 0) for batch in instance_batches))
+        self.assertTrue(names_before.issubset({batch.name for batch in batches}))
+        for batch in batches:
+            self.assertTrue({"selected", "selection_indices", "choice_indices", "base_scales"}.isdisjoint(vars(batch)))
         self.assertEqual(sum(batch.geo_type == newton.GeoType.PLANE for batch in batches), 1)
         self.assertEqual(np.count_nonzero(viewer._slot_to_shape >= 0), 2)
-        mesh_batch = next(batch for batch in choice_batches if batch.geo_type == newton.GeoType.MESH)
-        np.testing.assert_allclose(mesh_batch.materials.numpy(), ((0.2, 0.4, 0, 0),) * 3)
-        np.testing.assert_allclose(mesh_batch.colors.numpy(), ((0, 0, 1),) * 3)
-        np.testing.assert_allclose(mesh_batch.world_xforms.numpy()[:, :3], ((0, 0.25, 0), (1, 0.25, 0), (2, 0.25, 0)))
-        self.assertTrue(any(np.allclose(batch.opacities.numpy(), 0.5) for batch in choice_batches))
+        mesh_batch = next(batch for batch in instance_batches if batch.geo_type == newton.GeoType.MESH)
+        np.testing.assert_allclose(mesh_batch.materials.numpy(), ((0.2, 0.4, 0, 0),))
+        np.testing.assert_allclose(mesh_batch.colors.numpy(), ((0, 0, 1),))
+        np.testing.assert_allclose(mesh_batch.world_xforms.numpy()[:, :3], ((1, 0.25, 0),))
+        self.assertTrue(any(np.allclose(batch.opacities.numpy(), 0.5) for batch in instance_batches))
 
-        selected.assign(np.asarray((1, 0, 99), dtype=np.int32))
+        body_indices.assign(np.asarray((1, 0, 99), dtype=np.int32))
         transforms = model.shape_transform.numpy()
         transforms[ordinary_shape, :3] = (0.0, 0.0, 0.5)
         model.shape_transform.assign(transforms)
@@ -164,31 +203,29 @@ class TestViewerGeometryBatching(unittest.TestCase):
         scales[ordinary_shape] = (2.0, 3.0, 4.0)
         model.shape_scale.assign(scales)
         viewer.log_state(model.state())
-        self.assertEqual(
-            sum(np.count_nonzero(np.any(batch.scales.numpy() != 0, axis=1)) for batch in choice_batches), 3
-        )
+        batches = list(viewer._shape_instances.values())
+        self.assertEqual(np.count_nonzero(viewer._slot_to_shape < 0), 3)
         ordinary_batch = next(batch for batch in batches if ordinary_shape in batch.model_shapes)
         np.testing.assert_allclose(ordinary_batch.world_xforms.numpy()[0, :3], (0, 0, 0.5))
         np.testing.assert_allclose(ordinary_batch.scales.numpy()[0], (2, 3, 4))
         viewer.set_visible_worlds([1])
         viewer.log_state(model.state())
-        self.assertEqual(len(viewer._shape_scales), 5)  # Two global shapes plus three candidate shapes.
-        self.assertEqual(np.count_nonzero(np.any(viewer._shape_scales.numpy() != 0, axis=1)), 3)
+        self.assertEqual(len(viewer._shape_scales), 3)  # Two global shapes plus the one active source shape.
         viewer.set_visible_worlds([])
         viewer.log_state(model.state())
         self.assertEqual(len(viewer._shape_scales), 2)
         np.testing.assert_array_equal(model.shape_flags.numpy(), flags)
 
         for invalid in (
-            ViewerBase.ShapeChoices(source, (-1,), wp.array((0,), dtype=int, device="cpu")),
-            ViewerBase.ShapeChoices(source, (0, 0), wp.array((0, 0), dtype=int, device="cpu")),
-            ViewerBase.ShapeChoices(source, bodies, wp.array((0,), dtype=int, device="cpu")),
-            ViewerBase.ShapeChoices(source, bodies, wp.array((0, 0, 0), dtype=float, device="cpu")),
+            ViewerBase.BodyInstances(source, (-1,), wp.array((0,), dtype=int, device="cpu")),
+            ViewerBase.BodyInstances(source, (0, 0), wp.array((0, 0), dtype=int, device="cpu")),
+            ViewerBase.BodyInstances(source, bodies, wp.array((0,), dtype=int, device="cpu")),
+            ViewerBase.BodyInstances(source, bodies, wp.array((0, 0, 0), dtype=float, device="cpu")),
         ):
             with self.subTest(invalid=invalid), self.assertRaises(ValueError):
-                viewer.set_model(model, shape_choices=(invalid,))
+                viewer.set_model(model, body_instances=(invalid,))
         viewer.set_model(model)
-        self.assertFalse(viewer._shape_choices)
+        self.assertFalse(viewer._body_instances)
         self.assertEqual(len(viewer._shape_scales), 5)
 
         # A cached isosurface for the initial physical shape must not reappear.
@@ -196,13 +233,17 @@ class TestViewerGeometryBatching(unittest.TestCase):
         sdf_indices[model.shape_body.numpy() >= 0] = 0
         model._shape_sdf_index = wp.array(sdf_indices, dtype=int, device="cpu")
         model._texture_sdf_data = wp.zeros(1, dtype=TextureSDFData, device="cpu")
-        viewer.set_model(model, shape_choices=(choices,))
+        viewer.set_model(model, body_instances=(instances,))
         viewer._isomesh_cache[0] = mesh
         viewer._populate_sdf_isomesh_instances()
         self.assertFalse(viewer._sdf_isomesh_instances)
         np.testing.assert_array_equal(model._shape_sdf_index.numpy(), sdf_indices)
         viewer.clear_model()
-        self.assertFalse(viewer._shape_choices)
+        self.assertFalse(viewer._body_instances)
+        self.assertFalse(viewer._shape_resources)
+        self.assertIsNone(viewer._shape_resource_rows)
+        self.assertIsNone(viewer._shape_references)
+        self.assertFalse(viewer._body_instance_shapes)
         self.assertTrue(
             all(
                 value is None
@@ -217,7 +258,8 @@ class TestViewerGeometryBatching(unittest.TestCase):
         catalog.add_shape_plane(body=first)
         with self.assertRaisesRegex(NotImplementedError, "plane"):
             viewer.set_model(
-                model, shape_choices=(ViewerBase.ShapeChoices(catalog.finalize(device="cpu"), bodies, selected),)
+                model,
+                body_instances=(ViewerBase.BodyInstances(catalog.finalize(device="cpu"), bodies, body_indices),),
             )
 
     def test_mesh_visual_attributes_have_distinct_prototypes(self):

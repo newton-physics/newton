@@ -264,9 +264,9 @@ def test_viewer_file_playback(test: TestRecorder, device):
     try:
         # Record via ViewerFile
         viewer_file_record = ViewerFile(file_path, auto_save=False)
-        choices = ViewerFile.ShapeChoices(model, (body,), wp.zeros(1, dtype=int, device=device))
-        with test.assertRaisesRegex(NotImplementedError, "shape choices"):
-            viewer_file_record.set_model(model, shape_choices=(choices,))
+        instances = ViewerFile.BodyInstances(model, (body,), wp.zeros(1, dtype=int, device=device))
+        with test.assertRaisesRegex(NotImplementedError, "body instances"):
+            viewer_file_record.set_model(model, body_instances=(instances,))
         test.assertIsNone(viewer_file_record.model)
         test.assertIsNone(viewer_file_record.raw_model)
         viewer_file_record.set_model(model)

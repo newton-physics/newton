@@ -100,7 +100,8 @@ class TestViewerRTXVersionCompatibility(unittest.TestCase):
         builder = newton.ModelBuilder()
         for i, label in enumerate(labels):
             position = (0.0, 0.0, 0.0) if positions is None else positions[i]
-            builder.add_body(xform=wp.transform(position, wp.quat_identity()), label=label)
+            body = builder.add_body(xform=wp.transform(position, wp.quat_identity()), label=label)
+            builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
         model = builder.finalize(device="cpu")
         with (
             mock.patch.object(ovrtx, "__version__", "0.5.0"),
@@ -120,14 +121,16 @@ class TestViewerRTXVersionCompatibility(unittest.TestCase):
         """Drive the stage prim at each body's label and warn about bodies without one."""
         viewer, model = self._borrowed_viewer(["/World/a", "/World/missing", "code_body"], {"/World/a"})
         try:
-            choices = ViewerRTX.ShapeChoices(model, (0,), wp.zeros(1, dtype=int, device="cpu"))
-            with self.assertRaisesRegex(NotImplementedError, "shape choices"):
-                viewer.set_model(model, shape_choices=(choices,))
+            instances = ViewerRTX.BodyInstances(model, (0,), wp.zeros(1, dtype=int, device="cpu"))
+            with self.assertRaisesRegex(NotImplementedError, "body instances"):
+                viewer.set_model(model, body_instances=(instances,))
             self.assertIsNone(viewer.model)
             with self.assertWarnsRegex(UserWarning, "2 of 3 bodies"):
                 viewer.set_model(model)
             self.assertEqual(viewer._prim_paths, ("/World/a",))
             np.testing.assert_allclose(viewer._prim_linear.numpy()[0], np.diag([2.0, 2.0, 2.0]))
+            self.assertFalse(viewer.stage.GetPrimAtPath(viewer._get_path("/geometry")))
+            self.assertFalse(viewer.stage.GetPrimAtPath(viewer._get_path("/model/shapes")))
         finally:
             viewer.close()
 

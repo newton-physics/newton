@@ -149,7 +149,7 @@ class TestViewerViserInteraction(unittest.TestCase):
                 np.testing.assert_array_equal(handles[0].batched_colors, expected)
 
     def test_visible_worlds_rebuild_instance_scales(self):
-        """Resize ordinary and selected geometry while preserving its pose and appearance."""
+        """Compact visible instances while preserving source geometry, pose, and appearance."""
         world = newton.ModelBuilder()
         body = world.add_body()
         world.add_shape_box(body, hx=0.2, hy=0.3, hz=0.4)
@@ -184,18 +184,26 @@ class TestViewerViserInteraction(unittest.TestCase):
                 color=colors[choice],
                 opacity=0.4 + 0.4 * choice,
             )
-        selected = wp.array([0, 1, 0], dtype=int, device="cpu")
-        layer = self.viewer.activate("choices")
+        body_indices = wp.array([0, 1, 0], dtype=int, device="cpu")
+        layer = self.viewer.activate("instances")
         layer.xform = wp.transform((0.0, 3.0, 0.0), wp.quat_identity())
         self.viewer.set_model(
             model,
-            shape_choices=(ViewerBase.ShapeChoices(catalog.finalize(device="cpu"), (0, 1, 2), selected),),
+            body_instances=(ViewerBase.BodyInstances(catalog.finalize(device="cpu"), (0, 1, 2), body_indices),),
         )
         self.viewer.set_world_offsets((2.0, 0.0, 0.0))
         visible_worlds = None
-        for choices, worlds in (((0, 1, 0), None), ((1, 0, 1), None), ((1, -1, 0), [1, 2]), ((0, 1, 0), None)):
+        for choices, worlds in (
+            ((0, 1, 0), None),
+            ((1, 0, 1), None),
+            ((0, 0, 0), None),
+            ((1, 1, 1), None),
+            ((-1, -1, -1), None),
+            ((1, -1, 0), [1, 2]),
+            ((0, 1, 0), None),
+        ):
             with self.subTest(choices=choices, worlds=worlds):
-                selected.assign(choices)
+                body_indices.assign(choices)
                 if worlds != visible_worlds:
                     self.viewer.set_visible_worlds(worlds)
                     visible_worlds = worlds
@@ -203,18 +211,18 @@ class TestViewerViserInteraction(unittest.TestCase):
                 self.viewer.log_state(state)
                 observed = []
                 for name, handle in self.viewer._scene_handles.items():
-                    if not name.startswith("/layers/choices/") or not hasattr(handle, "batched_scales"):
+                    if not name.startswith("/layers/instances/") or not hasattr(handle, "batched_scales"):
                         continue
-                    if handle.visible:
-                        active = np.any(handle.batched_scales != 0.0, axis=1)
-                        observed.extend(
-                            zip(
-                                handle.batched_positions[active],
-                                handle.batched_colors[active],
-                                handle.batched_opacities[active],
-                                strict=True,
-                            )
+                    self.assertTrue(handle.visible)
+                    self.assertTrue(np.all(handle.batched_scales != 0.0))
+                    observed.extend(
+                        zip(
+                            handle.batched_positions,
+                            handle.batched_colors,
+                            handle.batched_opacities,
+                            strict=True,
                         )
+                    )
                 expected_worlds = [world for world in (range(3) if worlds is None else worlds) if choices[world] >= 0]
                 self.assertEqual(len(observed), len(expected_worlds))
                 for world in expected_worlds:

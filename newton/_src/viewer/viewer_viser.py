@@ -632,16 +632,15 @@ class ViewerViser(ViewerBase):
         layer._shape_opacities_changed_device = None
 
     @override
-    def set_model(self, model: newton.Model | None, *, shape_choices: Sequence[ViewerBase.ShapeChoices] = ()):
+    def set_model(self, model: newton.Model | None, *, body_instances: Sequence[ViewerBase.BodyInstances] = ()):
         """Set the model and initialize interactive picking for it.
 
         Args:
             model: Model to visualize and interact with.
-            shape_choices: Alternative shapes selected for live model bodies.
+            body_instances: Source bodies instanced on live model bodies.
         """
         previous_up_axis = self._camera_up_axis
-        super().set_model(model, shape_choices=shape_choices)
-        self._build_packed_shape_arrays()
+        super().set_model(model, body_instances=body_instances)
         self.picking = Picking(model, world_offsets=self.world_offsets) if model is not None else None
         if self.picking is not None:
             self.picking.visible_worlds_mask = self._visible_worlds_mask
@@ -666,14 +665,23 @@ class ViewerViser(ViewerBase):
         Args:
             worlds: World indices to show, or ``None`` to show all worlds.
         """
-        previous_batches = tuple(self._shape_instances.values())
         super().set_visible_worlds(worlds)
-        # Batches absent from the new selection will no longer be logged.
-        for shapes in previous_batches:
-            self.log_instances(shapes.name, shapes.mesh, None, None, None, None, hidden=True)
-        self._build_packed_shape_arrays()
         if self.picking is not None:
             self.picking.visible_worlds_mask = self._visible_worlds_mask
+
+    @override
+    def _populate_shapes(self):
+        previous_names = {batch.name for batch in self._shape_instances.values()}
+        super()._populate_shapes()
+        current_names = {batch.name for batch in self._shape_instances.values()}
+        for name in previous_names - current_names:
+            self._remove_plane_handles(name)
+            handle = self._scene_handles.pop(name, None)
+            if handle is not None:
+                self._detach_picking_callback(handle)
+                handle.remove()
+            self._instances.pop(name, None)
+        self._build_packed_shape_arrays()
 
     def _build_packed_shape_arrays(self) -> None:
         """Pack model shape outputs for one kernel launch and host transfer."""
@@ -2184,7 +2192,6 @@ class ViewerViser(ViewerBase):
         if (
             existing is not None
             and shape_batch is not None
-            and shape_batch.selected is None
             and not self.model_changed
             and existing["count"] == num_instances
         ):
@@ -2294,13 +2301,15 @@ class ViewerViser(ViewerBase):
             state: Current simulation state.
         """
         self._last_state = state
-        if self.model is None:
-            return
+        super().log_state(state)
+        if self.model is not None:
+            self._render_picking_line()
 
+    @override
+    def _log_shapes(self, state: newton.State):
         packed = self._packed_shape_world_xforms
         if packed is None:
-            super().log_state(state)
-            self._render_picking_line()
+            super()._log_shapes(state)
             return
 
         self._sync_shape_colors_from_model()
@@ -2416,11 +2425,6 @@ class ViewerViser(ViewerBase):
                 )
             shapes.colors_changed = False
             shapes.opacities_changed = False
-
-        self._log_gaussian_shapes(state)
-        self._log_non_shape_state(state)
-        self.model_changed = False
-        self._render_picking_line()
 
     def _log_particles(self, state: newton.State) -> None:
         """Skip particle compaction and transfer when particles are hidden."""

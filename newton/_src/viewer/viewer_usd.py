@@ -235,6 +235,15 @@ class ViewerUSD(ViewerBase):
         super().clear_model()
 
     @override
+    def _populate_shapes(self):
+        previous = tuple(self._shape_instances.values())
+        super()._populate_shapes()
+        current_names = {batch.name for batch in self._shape_instances.values()}
+        for batch in previous:
+            if batch.name not in current_names:
+                self.log_instances(batch.name, batch.mesh, None, None, None, None, hidden=True)
+
+    @override
     def begin_frame(self, time: float):
         """
         Begin a new frame at the given simulation time.
@@ -609,6 +618,11 @@ class ViewerUSD(ViewerBase):
         else:
             xforms = np.empty((0, 7), dtype=np.float32)
 
+        for instance in group_prim.GetChildren():
+            instance_name = instance.GetName()
+            if instance_name.startswith("instance_") and int(instance_name.removeprefix("instance_")) >= len(xforms):
+                UsdGeom.Imageable(instance).GetVisibilityAttr().Set("invisible", self._frame_index)
+
         if scales is not None:
             scales = scales.numpy()
         else:
@@ -658,6 +672,8 @@ class ViewerUSD(ViewerBase):
                 created_instance = True
 
                 _usd_add_xform(instance)
+                # USD holds its first sample backward, so record absence before creation.
+                UsdGeom.Imageable(instance).GetVisibilityAttr().Set("invisible", self._frame_index - 1)
 
             UsdGeom.Imageable(instance).GetVisibilityAttr().Set(
                 "inherited" if not hidden else "invisible", self._frame_index

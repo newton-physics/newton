@@ -680,24 +680,37 @@ class TestShapeColors(unittest.TestCase):
         common_inputs = [
             wp.array(
                 [
-                    wp.transform((0.25, 0, 0), wp.quat_identity()),
-                    wp.transform((0.5, 0, 0), wp.quat_identity()),
+                    wp.transform((100, 0, 0), wp.quat_identity()),
+                    wp.transform((100, 0, 0), wp.quat_identity()),
                     wp.transform((0.25, 0, 0), wp.quat_identity()),
                 ],
                 dtype=wp.transformf,
                 device=device,
             ),
-            wp.array([1, 0, 1], dtype=wp.int32, device=device),
+            wp.array([-1, -1, 1], dtype=wp.int32, device=device),
             wp.array(
                 [wp.transform((1, 0, 0), wp.quat_identity()), wp.transform((0, 2, 0), rotation)],
                 dtype=wp.transformf,
                 device=device,
             ),
-            wp.array([(2, 3, 4), (1, 1, 1), (2, 3, 4)], dtype=wp.vec3, device=device),
-            wp.array([1, 0, 1], dtype=wp.int32, device=device),
+            wp.array([(99, 99, 99), (1, 1, 1), (2, 3, 4)], dtype=wp.vec3, device=device),
+            wp.array([-1, -1, 1], dtype=wp.int32, device=device),
             wp.array([(10, 0, 0), (-10, 0, 0)], dtype=wp.vec3, device=device),
             wp.transform((0, 0, 3), wp.quat_identity()),
             wp.array([2, 0, -1], dtype=wp.int32, device=device),
+            wp.array(
+                [
+                    wp.transform((0.5, 0, 0), wp.quat_identity()),
+                    wp.transform_identity(),
+                    wp.transform((0.25, 0, 0), wp.quat_identity()),
+                ],
+                dtype=wp.transformf,
+                device=device,
+            ),
+            wp.array([0, -1, 1], dtype=wp.int32, device=device),
+            wp.array([0, -1, 1], dtype=wp.int32, device=device),
+            wp.array([(9, 9, 9), (1, 1, 1), (2, 3, 4)], dtype=wp.vec3, device=device),
+            wp.array([newton.GeoType.BOX, newton.GeoType.SPHERE, newton.GeoType.MESH], dtype=wp.int32, device=device),
         ]
         out_world_xforms = wp.zeros(3, dtype=wp.transformf, device=device)
         out_vbo_xforms = wp.zeros(3, dtype=wp.mat44, device=device)
@@ -729,40 +742,6 @@ class TestShapeColors(unittest.TestCase):
         common_inputs[3][2:3].zero_()
         np.testing.assert_array_equal(get_flags(0.5, 0.5), [0, 0])
         np.testing.assert_array_equal(out_vbo_xforms.numpy()[2, :3, :3], np.zeros((3, 3)))
-
-    def test_viewer_gl_rebuilds_opacity_dependent_caches(self):
-        """Rebuild all shape caches after an opacity pass transition."""
-
-        class FakeMeshInstancer:
-            pass
-
-        viewer = ViewerGL.__new__(ViewerGL)
-        viewer._layers = {"solverA": Layer("solverA")}
-        viewer._active_layer_id = "solverA"
-        viewer.objects = {
-            "/layers/solverA/model/shapes/shape_0": FakeMeshInstancer(),
-            "/layers/solverB/model/shapes/shape_0": FakeMeshInstancer(),
-        }
-        viewer._shape_instances = {"stale": object()}
-        viewer._gaussian_instances = [object()]
-        viewer._sdf_isomesh_instances = {0: object()}
-        viewer._sdf_isomesh_populated = True
-        viewer.model_shape_color = object()
-        viewer.model_shape_opacity = object()
-        viewer._slot_to_shape = np.array([0], dtype=np.int32)
-        viewer._slot_to_shape_wp = object()
-        viewer._shape_transparent_mask = np.array([False])
-        viewer._populate_shapes = Mock()
-        viewer._rebuild_gl_shape_caches = Mock()
-
-        with patch("newton._src.viewer.gl.opengl.MeshInstancerGL", FakeMeshInstancer):
-            viewer._rebuild_shape_batches_for_opacity_groups()
-
-        viewer._populate_shapes.assert_called_once_with()
-        viewer._rebuild_gl_shape_caches.assert_called_once_with()
-        self.assertTrue(viewer.model_changed)
-        self.assertNotIn("/layers/solverA/model/shapes/shape_0", viewer.objects)
-        self.assertIn("/layers/solverB/model/shapes/shape_0", viewer.objects)
 
     @staticmethod
     def _make_transparency_renderer(oit_supported: bool):

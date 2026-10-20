@@ -184,22 +184,6 @@ def update_shape_xforms(
 
 
 @wp.kernel
-def update_shape_choice_scales(
-    base_scales: wp.array[wp.vec3],
-    selected: wp.array[int],
-    selection_indices: wp.array[int],
-    choice_indices: wp.array[int],
-    scales: wp.array[wp.vec3],
-):
-    """Project selected catalog bodies without reading selections on the host."""
-    tid = wp.tid()
-    scale = wp.vec3(0.0)
-    if selected[selection_indices[tid]] == choice_indices[tid]:
-        scale = base_scales[tid]
-    scales[tid] = scale
-
-
-@wp.kernel
 def update_render_shape_inputs(
     slot_to_shape: wp.array[int],
     model_xforms: wp.array[wp.transform],
