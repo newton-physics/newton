@@ -1259,7 +1259,8 @@ class LOXSolverConfig:
     The time step enters the smooth system only through the implicit drive inertia
     ``dt * k_d + dt^2 * k_p``, so the seed grows with it. The default sits below the time steps of
     typical simulations, which errs toward a softer penalty. Set it to the simulation time step to seed
-    the penalty for that step.
+    the penalty for that step. Model changes notified through :meth:`SolverKamino.notify_model_changed`
+    that affect masses, armature or joint gains seed the penalty again at this time step.
     """
 
     projected_twist_fraction: float = 0.0

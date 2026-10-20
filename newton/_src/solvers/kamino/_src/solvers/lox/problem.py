@@ -258,12 +258,9 @@ class LOXProblem:
             raise ValueError("Joint effort limits must be nonnegative or positive infinity.")
 
     def prepare_joint_penalty_scale_seed(self, time_step: float) -> None:
-        """Prepare the initial rigid state for LOX penalty-scale seeding."""
+        """Prepare the current rigid state for LOX penalty-scale seeding at the uniform ``time_step``."""
         if not math.isfinite(time_step) or time_step <= 0.0:
             raise ValueError("The joint penalty seeding time step must be finite and positive.")
-        if np.any(self.kamino_data.time.steps.numpy() != 0):
-            raise RuntimeError("joint penalty scale seeding must run before the first step or after a solver reset.")
-
         self.model.time.set_uniform_timestep(time_step)
         compute_joints_data(
             model=self.model,

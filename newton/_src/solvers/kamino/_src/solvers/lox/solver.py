@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import numpy as np
 import warp as wp
 
 from ......sim import ModelFlags
@@ -22,7 +23,7 @@ from .projection_kernels import (
     make_contact_residuals_kernel,
     make_iteration_residuals_kernel,
 )
-from .seed import estimate_joint_penalty_scale
+from .seed import build_seed_topology, estimate_joint_penalty_scale
 from .solver_kernels import (
     _blend_accepted_twist,
     _finalize_world_iteration,
@@ -246,13 +247,26 @@ class LOXSolver:
         self._build_projection_schedule()
         self._iteration_condition = wp.zeros(1, dtype=wp.int32, device=self._device)
         self._initialize_splitting()
+        structural_rows = self._problem.data.structural_rows
+        self._seed_topology = (
+            build_seed_topology(self._problem.system, structural_rows) if structural_rows.count > 0 else None
+        )
 
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
-        """Accept model changes, which keep the LOX topology.
+        """Seed the joint penalty again when the masses, the armature or the joint gains change.
 
-        Kamino rejects updates that change the immovability of a body, which is all the topology depends on.
+        The seed runs on the device at :attr:`LOXSolverConfig.joint_penalty_seed_time_step`, from the
+        current rigid state, and keeps the warm start. The LOX topology depends only on the immovability
+        of the bodies, which Kamino keeps fixed after construction.
         """
-        del flags
+        reseed_flags = (
+            ModelFlags.BODY_INERTIAL_PROPERTIES
+            | ModelFlags.JOINT_DOF_PROPERTIES
+            | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+            | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
+        )
+        if self._seed_topology is not None and flags & reseed_flags:
+            self._estimate_joint_penalty_scale(self._config.joint_penalty_seed_time_step, warn_failures=False)
 
     def validate_model_changed(self, flags: ModelFlags | int) -> None:
         """Validate the joint friction and effort limits of the Newton model when its joint DOF values change."""
@@ -322,32 +336,13 @@ class LOXSolver:
             body, shared by the bodies of a joint-connected component, shape
             ``(num_bodies,)``. This is the solver's own array.
         """
-        problem = self._problem
-        model_time = problem.model.time
-        # Seeding assembles the system with the given uniform time step, so restore the
-        # time step of each world afterwards
-        saved_time_step = wp.clone(model_time.dt)
-        saved_inverse_time_step = wp.clone(model_time.inv_dt)
+        if np.any(self._problem.kamino_data.time.steps.numpy() != 0):
+            raise RuntimeError("joint penalty scale seeding must run before the first step or after a solver reset.")
+        self.reset()
         try:
-            problem.prepare_joint_penalty_scale_seed(time_step)
-            if problem.data.structural_rows.count > 0:
-                self.reset()
-                self._begin_time_step()
-                try:
-                    problem.build_smooth_system(model_time.dt, joint_penalty_scale=None)
-                    # Converge every structural mode within a conditioning bound
-                    estimate_joint_penalty_scale(
-                        problem.system,
-                        problem.data.structural_rows,
-                        self._data.joint_penalty_scale,
-                        self._config.min_joint_penalty_ratio,
-                        self._config.max_joint_penalty_ratio,
-                    )
-                finally:
-                    self.reset()
+            self._estimate_joint_penalty_scale(time_step, warn_failures=True)
         finally:
-            wp.copy(model_time.dt, saved_time_step)
-            wp.copy(model_time.inv_dt, saved_inverse_time_step)
+            self.reset()
         return self._data.joint_penalty_scale
 
     def solve_forward_dynamics(self, contacts: ContactsKamino | None = None) -> None:
@@ -498,8 +493,15 @@ class LOXSolver:
     # Internals - Time Step
     ###
 
-    def _begin_time_step(self) -> None:
-        """Load the constraint rows of the time step with the configured stabilization and warm start."""
+    def _begin_time_step(self, structural_warmstart_factor: float | None = None) -> None:
+        """Load the constraint rows of the time step with the configured stabilization and warm start.
+
+        Args:
+            structural_warmstart_factor: Scale of the structural multipliers of the previous time step,
+                or ``None`` for :attr:`LOXSolverConfig.joint_warmstart_factor`.
+        """
+        if structural_warmstart_factor is None:
+            structural_warmstart_factor = self._config.joint_warmstart_factor
         constraints = self._constraints
         self._problem.begin_time_step(
             self._model.time.dt,
@@ -510,8 +512,46 @@ class LOXSolver:
             limit_stabilization_fraction=constraints.beta,
             contact_stabilization_fraction=constraints.gamma,
             contact_dead_zone=constraints.delta,
-            structural_warmstart_factor=self._config.joint_warmstart_factor,
+            structural_warmstart_factor=structural_warmstart_factor,
         )
+
+    def _estimate_joint_penalty_scale(self, time_step: float, warn_failures: bool) -> None:
+        """Seed the joint penalty scale from the current rigid state at the uniform ``time_step``.
+
+        The structural rows load without damping their warm start, so the multipliers carry over.
+
+        Args:
+            time_step: Uniform time step of the seed [s].
+            warn_failures: Whether to warn about the components whose estimate failed, which reads the
+                status on the host.
+        """
+        problem = self._problem
+        model_time = problem.model.time
+        # Seeding assembles the system with the given uniform time step, so restore the
+        # time step of each world afterwards
+        saved_time_step = wp.clone(model_time.dt)
+        saved_inverse_time_step = wp.clone(model_time.inv_dt)
+        try:
+            problem.prepare_joint_penalty_scale_seed(time_step)
+            if self._seed_topology is not None:
+                self._begin_time_step(structural_warmstart_factor=1.0)
+                problem.build_smooth_system(model_time.dt, joint_penalty_scale=None)
+                # Converge every structural mode within a conditioning bound
+                estimate_joint_penalty_scale(
+                    problem.system,
+                    problem.data.structural_rows,
+                    self._seed_topology,
+                    self._data.joint_penalty_scale,
+                    self._config.min_joint_penalty_ratio,
+                    self._config.max_joint_penalty_ratio,
+                    warn_failures=warn_failures,
+                )
+                # The time steps order their factorization from their own matrices
+                if problem.system.linear_solver is not None:
+                    problem.system.linear_solver.reset()
+        finally:
+            wp.copy(model_time.dt, saved_time_step)
+            wp.copy(model_time.inv_dt, saved_inverse_time_step)
 
     def _update_system(self) -> None:
         """Assemble and factorize the weighted smooth system, then prepare the projections."""

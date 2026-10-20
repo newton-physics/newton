@@ -676,6 +676,42 @@ class TestSolverKaminoLOX(_LOXTestCase):
 
 
 class TestSolverKaminoLOXJoints(_LOXTestCase):
+    def test_joint_penalty_seed_follows_notified_mass_changes(self):
+        """Seed the joint penalty again when the masses change, and keep stepping a graph captured before."""
+        time_step = 0.01
+
+        def build(model):
+            config = self.make_config()
+            config.lox.joint_penalty_seed_time_step = time_step
+            return SolverKamino(model, config=config)
+
+        model = _build_driven_chain_model(world_count=2, device=self.default_device)
+        solver = build(model)
+        state_previous, state_next, control = model.state(), model.state(), model.control()
+        with wp.ScopedCapture(device=self.default_device) as capture:
+            solver.step(state_previous, state_next, control, contacts=None, dt=time_step)
+        seed = solver._solver_kamino.solver_fd._data.joint_penalty_scale
+        initial_seed = seed.numpy().copy()
+
+        # Make the child of each world heavier
+        mass = model.body_mass.numpy()
+        inertia = model.body_inertia.numpy()
+        mass[1::2] *= 50.0
+        inertia[1::2] *= 50.0
+        model.body_mass.assign(mass)
+        model.body_inv_mass.assign(1.0 / mass)
+        model.body_inertia.assign(inertia)
+        model.body_inv_inertia.assign(np.linalg.inv(inertia))
+        solver.notify_model_changed(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+
+        fresh_seed = build(model)._solver_kamino.solver_fd._data.joint_penalty_scale.numpy()
+        self.assertGreater(float(fresh_seed[0]), 2.0 * float(initial_seed[0]))
+        np.testing.assert_allclose(seed.numpy(), fresh_seed, rtol=1.0e-4)
+        for _ in range(5):
+            wp.capture_launch(capture.graph)
+        np.testing.assert_array_equal(solver.status.numpy()["failed"], [0, 0])
+        np.testing.assert_allclose(seed.numpy(), fresh_seed, rtol=1.0e-4)
+
     def test_massless_link_needs_inertia_on_its_free_joint_dof(self):
         """Reject a massless link whose revolute DOF has no armature, and step it once the DOF has armature."""
         for armature in (0.0, 0.01):
