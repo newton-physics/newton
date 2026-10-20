@@ -299,7 +299,7 @@ class ContactsKaminoData:
     """
 
     angular_friction: wp.array[wp.vec2f] | None = None
-    """Torsional and rolling friction coefficients [m], averaged per shape pair.
+    """Torsional and rolling friction coefficients [m], mixed per shape pair like the sliding friction.
 
     Shape of ``(model_max_contacts_host,)``; used by spatial LOX contacts.
     """
@@ -1220,8 +1220,12 @@ def make_convert_contacts_newton_to_kamino(
         kamino_frame[mcid] = q_frame
         kamino_material[mcid] = wp.vec2f(mu, epsilon)
         kamino_angular_friction[mcid] = wp.vec2f(
-            0.5 * (shape_mu_torsional[sid_0] + shape_mu_torsional[sid_1]),
-            0.5 * (shape_mu_rolling[sid_0] + shape_mu_rolling[sid_1]),
+            wp.static(make_get_mixed_material_pair_property(friction_mix_mode))(
+                shape_mu_torsional[sid_0], shape_mu_torsional[sid_1]
+            ),
+            wp.static(make_get_mixed_material_pair_property(friction_mix_mode))(
+                shape_mu_rolling[sid_0], shape_mu_rolling[sid_1]
+            ),
         )
         kamino_stiffness[mcid] = 0.0
         kamino_damping[mcid] = 0.0
@@ -1519,7 +1523,8 @@ def convert_contacts_newton_to_kamino(
             If ``True`` (the default), drop speculative contacts (contacts with
             positive margin-shifted distance).
         skip_fully_prescribed_contacts:
-            If ``True``, omit contacts between two world-static or zero-mass
+            If ``True``, omit contacts between two bodies that Kamino treats as
+            immovable, i.e. the world, massless bodies, and kinematic or proxy
             bodies. Defaults to ``False``.
     """
     # Skip conversion if there are no contacts to convert or no capacity to store them.

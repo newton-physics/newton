@@ -1830,6 +1830,12 @@ class TestGeometryContactConversions(NewtonTestCase):
                             rtol=1.0e-6,
                         )
 
+            # The external route mixes angular friction like sliding friction
+            convert_contacts_newton_to_kamino(model, state, external, contacts, friction_mix_mode="max")
+            count = int(contacts.model_active_contacts.numpy()[0])
+            self.assertGreater(count, 0)
+            np.testing.assert_allclose(contacts.angular_friction.numpy()[:count], np.tile([0.3, 0.6], (count, 1)))
+
             # Native geometries without angular material arrays get zero friction
             kamino.geoms.torsional_friction = None
             kamino.geoms.rolling_friction = None
