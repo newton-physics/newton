@@ -217,8 +217,13 @@ _CONVEX_SUPPORT_MIN_VERTICES = 256
 _CONVEX_SUPPORT_LUT_RESOLUTION = 32
 
 
-def _convex_hull_adjacency(source: Mesh, *, certify: bool = True) -> list[set[int]] | None:
-    """Validate hull adjacency, using strict geometry checks for depth certification."""
+def _convex_hull_adjacency(source: Mesh, *, certify: bool = True) -> tuple[list[set[int]], np.ndarray] | None:
+    """Validate hull adjacency, using strict geometry checks for depth certification.
+
+    Returns the vertex adjacency and one ``(a, b, c1, c2)`` row per hull edge.
+    ``c1`` and ``c2`` complete the edge's two faces such that
+    ``cross(b - a, c1 - a)`` and ``cross(c2 - a, b - a)`` point outward.
+    """
     vertices = np.asarray(source.vertices, dtype=np.float32).reshape(-1, 3)
     vertex_count = len(vertices)
     if vertex_count < 4:
@@ -275,7 +280,10 @@ def _convex_hull_adjacency(source: Mesh, *, certify: bool = True) -> list[set[in
         group.append(vertex)
 
     edge_incidence: Counter[tuple[int, int]] = Counter()
+    edge_faces: dict[tuple[int, int], list[int]] = {}
     faces = set()
+    # Face windings vary; orient each face away from the interior vertex mean.
+    center = vertices64.mean(axis=0)
     for triangle in triangles[nondegenerate]:
         welded = tuple(int(welded_vertex[int(vertex)]) for vertex in triangle)
         if len(set(welded)) < 3:
@@ -284,8 +292,16 @@ def _convex_hull_adjacency(source: Mesh, *, certify: bool = True) -> list[set[in
         if certify and face in faces:
             return None
         faces.add(face)
-        for first, second in ((welded[0], welded[1]), (welded[1], welded[2]), (welded[2], welded[0])):
-            edge_incidence[min(first, second), max(first, second)] += 1
+        a, b, c = (int(vertex) for vertex in triangle)
+        if np.dot(np.cross(vertices64[b] - vertices64[a], vertices64[c] - vertices64[a]), vertices64[a] - center) < 0.0:
+            b, c = c, b
+        for first, second, third in ((a, b, c), (b, c, a), (c, a, b)):
+            key = (int(welded_vertex[first]), int(welded_vertex[second]))
+            edge = (min(key), max(key))
+            edge_incidence[edge] += 1
+            record = edge_faces.setdefault(edge, [first, second, third, -1])
+            if record[2] != third:
+                record[3] = third
     if not edge_incidence or any(count != 2 for count in edge_incidence.values()):
         if not certify and vertex_count >= _CONVEX_SUPPORT_MIN_VERTICES:
             logger.warning(
@@ -333,7 +349,7 @@ def _convex_hull_adjacency(source: Mesh, *, certify: bool = True) -> list[set[in
                 stack.append(neighbor)
     if visited != surface:
         return None
-    return adjacent
+    return adjacent, np.asarray(list(edge_faces.values()), dtype=np.int32).reshape(-1, 4)
 
 
 def _build_convex_support_acceleration(
@@ -344,7 +360,10 @@ def _build_convex_support_acceleration(
     vertex_count = len(vertices)
     if vertex_count < _CONVEX_SUPPORT_MIN_VERTICES:
         return None
-    adjacent = _convex_hull_adjacency(source, certify=False) if adjacency is None else adjacency
+    adjacent = adjacency
+    if adjacent is None:
+        topology = _convex_hull_adjacency(source, certify=False)
+        adjacent = topology[0] if topology is not None else None
     if adjacent is None or any(not neighbors for neighbors in adjacent):
         return None
 
@@ -4525,7 +4544,7 @@ class ModelBuilder:
             verbose: If True, log additional information about the parsed USD file. Default is False.
             ignore_paths: A list of regular expressions matching prim paths to ignore.
             collapse_fixed_joints: If True, fixed joints are removed and the respective bodies are merged. Only considered if not set on the PhysicsScene as "newton:collapse_fixed_joints".
-            enable_self_collisions: Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions``; if neither is authored, this value takes precedence.
+            enable_self_collisions: Default for whether self-collisions are enabled for all shapes within an articulation. Resolved via the schema resolver from ``newton:selfCollisionEnabled`` (NewtonArticulationRootAPI) or ``physxArticulation:enabledSelfCollisions`` on the articulation root, or on the cable ``BasisCurves`` prim for cable-owned articulations; if neither is authored, this value takes precedence.
             apply_up_axis_from_stage: If True, the up axis of the stage will be used to set :attr:`newton.ModelBuilder.up_axis`. Otherwise, the stage will be rotated such that its up axis aligns with the builder's up axis. Default is False.
             root_path: The USD path to import, defaults to "/". Bound physics materials
                 outside this subtree are resolved without importing unrelated bodies
@@ -14233,10 +14252,19 @@ class ModelBuilder:
                 ):
                     source_key = hash(source)
                     if source_key not in support_cache:
-                        adjacent = _convex_hull_adjacency(source)
-                        hull_flag = _CONVEX_HULL_VALID if adjacent is not None else 0
-                        cached = (-1, -1, -1, hull_flag)
+                        topology = _convex_hull_adjacency(source)
+                        adjacent = None
+                        hull_flag = 0
+                        # Verified hulls lead their neighbor block with their edge
+                        # count and faces for exact separating-axis certificates.
+                        edge_block = np.zeros(0, dtype=np.int32)
+                        if topology is not None:
+                            adjacent, edges = topology
+                            hull_flag = _CONVEX_HULL_VALID
+                            edge_block = np.concatenate(([len(edges)], edges.ravel())).astype(np.int32)
+                        cached = (-1, -1, neighbor_offset if len(edge_block) else -1, hull_flag)
                         acceleration = _build_convex_support_acceleration(source, adjacency=adjacent)
+                        neighbors = np.zeros(0, dtype=np.int32)
                         if acceleration is not None:
                             lut, offsets, neighbors = acceleration
                             cached = (
@@ -14245,12 +14273,15 @@ class ModelBuilder:
                                 neighbor_offset,
                                 _CONVEX_SUPPORT_LUT_RESOLUTION | hull_flag,
                             )
+                            # Neighbor offsets are relative to the block start.
+                            offsets = offsets + len(edge_block)
                             support_lut_chunks.append(lut)
                             support_offset_chunks.append(offsets)
-                            support_neighbor_chunks.append(neighbors)
                             lut_offset += len(lut)
                             vertex_offset += len(offsets)
-                            neighbor_offset += len(neighbors)
+                        if len(edge_block) or len(neighbors):
+                            support_neighbor_chunks.append(np.concatenate((edge_block, neighbors)).astype(np.int32))
+                            neighbor_offset += len(support_neighbor_chunks[-1])
                         support_cache[source_key] = cached
                     metadata = support_cache[source_key]
                 shape_support_data.append(metadata)
