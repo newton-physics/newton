@@ -316,7 +316,7 @@ class TestUSDDeformableVolume(unittest.TestCase):
         self.assertAlmostEqual(sum(builder.particle_mass), 40.0 / 6.0, delta=1e-3)
 
     def test_volume_particle_radius_fallback(self):
-        """Sim-API TetMeshes fall back to the cloth/cable contact offset, not the builder default.
+        """Verify that sim-API TetMeshes fall back to the cloth/cable contact offset, not the builder default.
 
         AOUSD authors no particle radius for volume deformables, so the import used to resolve
         to ``ModelBuilder.default_particle_radius`` (0.1 m) - as large as an object-sized soft
@@ -342,10 +342,14 @@ class TestUSDDeformableVolume(unittest.TestCase):
             self.assertAlmostEqual(builder.particle_radius[i], builder.default_particle_radius, places=9)
 
     def test_volume_particle_radius_fallback_warns_on_builder_override(self):
-        """A user-set ModelBuilder.default_particle_radius no longer reaches sim-API volume
-        deformables: import emits one summary warning per add_usd() call with a migration
-        recipe and still applies the half-default-thickness fallback."""
+        """Verify that a user-set ModelBuilder.default_particle_radius triggers one summary
+        warning per add_usd() call with a migration recipe, while the half-default-thickness
+        fallback still applies."""
         from newton._src.utils.import_usd_deformable_utils import _BUILDER_STOCK_PARTICLE_RADIUS
+
+        # The stock-default constant must track ModelBuilder's default, so the warning never
+        # fires on the stock value or misses a real override.
+        self.assertEqual(newton.ModelBuilder().default_particle_radius, _BUILDER_STOCK_PARTICLE_RADIUS)
 
         for override, expect_warning in ((0.05, True), (_BUILDER_STOCK_PARTICLE_RADIUS, False)):
             with self.subTest(override=override):
@@ -364,13 +368,6 @@ class TestUSDDeformableVolume(unittest.TestCase):
                     self.assertIn("/World/SoftA", str(mentions[0].message))
                     self.assertIn("/World/SoftB", str(mentions[0].message))
                 self.assertTrue(np.allclose(builder.particle_radius, np.full(len(builder.particle_q), 0.0005)))
-
-    def test_builder_stock_particle_radius_constant_matches_builder(self):
-        """_BUILDER_STOCK_PARTICLE_RADIUS must track ModelBuilder's stock default, so the
-        override warning never fires on the stock value or misses a real override."""
-        from newton._src.utils.import_usd_deformable_utils import _BUILDER_STOCK_PARTICLE_RADIUS
-
-        self.assertEqual(newton.ModelBuilder().default_particle_radius, _BUILDER_STOCK_PARTICLE_RADIUS)
 
     def test_bare_tetmesh_ignores_per_point_masses(self):
         """A bare TetMesh (no deformable markers) keeps the legacy import; masses ignored."""
