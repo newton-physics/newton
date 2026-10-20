@@ -1674,10 +1674,12 @@ def test_support_loss_wakes_before_skipped_step(test, device):
 def test_fixed_table_supports_sleep_and_independent_force_wake(test, device):
     """Sleep both table-supported boxes and restore only the forced box's rows."""
     scene = _Scene(device, fixed_table=True)
-    scene.step()
+    observables = scene.solver.observables({SolverSteel.ObservableKind.BODY_AWAKE})
+    scene.step(observables=observables)
     active_rows = int(scene.row_counts().sum())
     test.assertGreater(active_rows, 0)
-    scene.settle()
+    scene.settle(observables=observables)
+    np.testing.assert_array_equal(observables.body_awake.numpy(), [True, False, False])
     islands = scene.solver._sleeping.body_island.numpy()[scene.bodies]
     test.assertNotEqual(*islands)
     np.testing.assert_array_equal(scene.solver._sleeping.root_supported.numpy()[islands], [1, 1])
@@ -1687,9 +1689,10 @@ def test_fixed_table_supports_sleep_and_independent_force_wake(test, device):
     force[scene.bodies[0], 0] = 100.0
     scene.states[0].body_f.assign(force)
 
-    scene.step(clear=False)
+    scene.step(clear=False, observables=observables)
 
     np.testing.assert_array_equal(scene.solver._sleeping.body_awake.numpy()[scene.bodies], [1, 0])
+    np.testing.assert_array_equal(observables.body_awake.numpy(), [True, True, False])
     rows = int(scene.row_counts().sum())
     test.assertGreater(rows, 0)
     test.assertLess(rows, active_rows)
@@ -1777,17 +1780,17 @@ class _Scene:
         self.states = [self.model.state(), self.model.state()]
         self.control = self.model.control()
 
-    def step(self, *, clear=True, collide=True, dt=0.005):
+    def step(self, *, clear=True, collide=True, dt=0.005, observables=None):
         if clear:
             self.states[0].clear_forces()
         if collide:
             self.pipeline.collide(self.states[0], self.contacts)
-        self.solver.step(self.states[0], self.states[1], self.control, self.contacts, dt)
+        self.solver.step(self.states[0], self.states[1], self.control, self.contacts, dt, observables=observables)
         self.states.reverse()
 
-    def settle(self):
+    def settle(self, *, observables=None):
         for _ in range(120):
-            self.step()
+            self.step(observables=observables)
         np.testing.assert_array_equal(self.solver._sleeping.body_awake.numpy()[self.bodies], [0, 0])
         if self.solver.constraint_overflow.numpy().any():
             raise AssertionError("Contact capacity exceeded")

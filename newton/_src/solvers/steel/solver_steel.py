@@ -1384,7 +1384,7 @@ class SolverSteel(SolverBase):
             The solver observable API may change without prior notice.
         """
 
-        body_awake: wp.array[wp.bool] | None = SolverBase.Observables.field(  # noqa: RUF009
+        body_awake: "wp.array[wp.bool] | None" = SolverBase.Observables.field(  # noqa: RUF009
             dtype=wp.bool,
             frequency=Model.AttributeFrequency.BODY,
         )
