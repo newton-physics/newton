@@ -220,6 +220,7 @@ def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None
     classes: list[str] = []
     functions: list[str] = []
     constants: list[str] = []
+    attributes: list[str] = []
     modules: list[str] = []
     deprecated: list[str] = []
 
@@ -235,6 +236,13 @@ def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None
         # ------------------------------------------------------------------
         if inspect.isclass(attr) or wp.types.type_is_struct(attr):
             classes.append(name)
+            continue
+
+        # ------------------------------------------------------------------
+        # Annotated mutable settings: document without capturing runtime values.
+        # ------------------------------------------------------------------
+        if name in getattr(module, "__annotations__", {}) and not name.isupper():
+            attributes.append(name)
             continue
 
         # ------------------------------------------------------------------
@@ -378,6 +386,11 @@ def write_module_page(mod_name: str, api_toctree_modules: set[str] | None = None
                 ]
             )
         lines.append("")
+
+    if attributes:
+        lines.extend([".. rubric:: Attributes", ""])
+        for name in sorted(attributes):
+            lines.extend([f".. autodata:: {name}", "   :no-value:", ""])
 
     if constants:
         constants.sort()

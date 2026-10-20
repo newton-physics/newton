@@ -398,6 +398,7 @@ class ViewerViser(ViewerBase):
     def __init__(
         self,
         *,
+        host: str = "0.0.0.0",
         port: int = 8080,
         paused: bool = False,
         label: str | None = None,
@@ -413,6 +414,10 @@ class ViewerViser(ViewerBase):
         It launches a web server that serves an interactive 3D visualization.
 
         Args:
+            host: Address the web server binds to. Defaults to ``"0.0.0.0"``
+                (every interface); use ``"127.0.0.1"`` to keep the viewer local
+                to this machine. Must be an address of this machine; viser
+                does not report bind failures and blocks instead.
             port: Port number for the web server. Defaults to 8080.
             paused: Whether simulation stepping starts paused.
             label: Optional label for the viser server window title.
@@ -496,7 +501,7 @@ class ViewerViser(ViewerBase):
         self._line_versions = {}
 
         # Initialize viser server
-        self._server = viser.ViserServer(port=port, label=label or "Newton Viewer", verbose=verbose)
+        self._server = viser.ViserServer(host=host, port=port, label=label or "Newton Viewer", verbose=verbose)
         self._camera_request: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
         self._camera_fov_radians: float | None = None
         self._camera_up_axis = 2
@@ -1441,9 +1446,13 @@ class ViewerViser(ViewerBase):
         Returns:
             str: Browser URL for the running viser server.
         """
+        # Match viser's startup URL: a wildcard bind is reachable on localhost.
+        host = self._server.get_host()
+        if host == "0.0.0.0":
+            host = "localhost"
         if self.is_jupyter_notebook:
-            return self._build_browser_url(self._port)
-        return f"http://localhost:{self._port}"
+            return self._build_browser_url(self._port, local_host=host)
+        return f"http://{host}:{self._port}"
 
     @staticmethod
     def _normalize_jupyter_base_url(base_url: str) -> str:
