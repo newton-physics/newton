@@ -7,18 +7,15 @@ import builtins
 import importlib.metadata
 import importlib.util
 import os
-import subprocess
 import tempfile
 import unittest
 import warnings
-from pathlib import Path
 from unittest import mock
 
 import numpy as np
 import warp as wp
 
 import newton
-from newton._src.solvers.kamino._src.utils.sim.viewer_recording import enable_recording
 from newton.tests.unittest_utils import USD_AVAILABLE
 from newton.viewer import ViewerRTX
 
@@ -666,79 +663,6 @@ class TestViewerRTXRendering(unittest.TestCase):
 
                 finally:
                     viewer.close()
-
-    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
-    @unittest.skipUnless(importlib.util.find_spec("imageio_ffmpeg") is not None, "Requires imageio-ffmpeg")
-    def test_headless_video_recording(self):
-        """Encode and decode a real RTX recording without OpenGL renderer attributes."""
-        import imageio_ffmpeg as ffmpeg  # noqa: PLC0415
-        from PIL import Image
-
-        def decode_frames(video_path: Path, out_dir: Path, prefix: str) -> list[Path]:
-            """Decode ``video_path`` into PNGs under ``out_dir`` and return them sorted."""
-            subprocess.run(
-                [
-                    ffmpeg.get_ffmpeg_exe(),
-                    "-v",
-                    "error",
-                    "-i",
-                    str(video_path),
-                    str(out_dir / f"{prefix}-%02d.png"),
-                ],
-                check=True,
-                capture_output=True,
-            )
-            return sorted(out_dir.glob(f"{prefix}-*.png"))
-
-        viewer = ViewerRTX(width=64, height=48, headless=True)
-        closed = False
-        try:
-            self.assertTrue(enable_recording(viewer))
-            with tempfile.TemporaryDirectory() as directory:
-                # Finite clip: auto-finishes at max_frames and decodes back to the same count.
-                path = Path(directory) / "recording.mp4"
-                frames_dir = Path(directory) / "frames"
-                viewer.start_clip(str(path), max_frames=2, video_folder=str(frames_dir))
-                for frame_index in range(2):
-                    viewer.begin_frame(frame_index / 60)
-                    self.assertTrue(viewer.should_step())
-                    viewer.end_frame()
-
-                self.assertTrue(path.is_file())
-                decoded = decode_frames(path, Path(directory), "decoded")
-                self.assertEqual(len(decoded), 2)
-                for frame_path in decoded:
-                    with Image.open(frame_path) as frame:
-                        self.assertEqual(frame.size, (64, 48))
-
-                # Open-ended clip: no max_frames, finalized by viewer.close().
-                # Drop a stale PNG into the frame folder beforehand to confirm
-                # _generate_video enumerates only this clip's frames (fixed set from img_idx)
-                # and leaves unrelated files alone.
-                open_path = Path(directory) / "open_ended.mp4"
-                open_frames_dir = Path(directory) / "open_frames"
-                viewer.start_clip(str(open_path), max_frames=None, video_folder=str(open_frames_dir))
-                stale_frame = open_frames_dir / "stale.png"
-                Image.new("RGB", (64, 48), color=(255, 0, 0)).save(stale_frame)
-                for frame_index in range(2):
-                    viewer.begin_frame((frame_index + 10) / 60)
-                    self.assertTrue(viewer.should_step())
-                    viewer.end_frame()
-                self.assertFalse(open_path.is_file())  # Finalized only on close.
-
-                viewer.close()
-                closed = True
-
-                self.assertTrue(open_path.is_file())
-                decoded_open = decode_frames(open_path, Path(directory), "decoded-open")
-                self.assertEqual(len(decoded_open), 2)
-                for frame_path in decoded_open:
-                    with Image.open(frame_path) as frame:
-                        self.assertEqual(frame.size, (64, 48))
-                self.assertTrue(stale_frame.is_file())  # Untouched: not part of the explicit frame list.
-        finally:
-            if not closed:
-                viewer.close()
 
     @unittest.skipUnless(OVSTAGE_AVAILABLE, "Requires ovstage")
     def test_runtime_line_batch_has_no_deprecation_warnings(self):

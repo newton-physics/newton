@@ -56,6 +56,17 @@ from newton.viewer import ViewerBase
 __all__ = ["add_recording_args", "enable_recording", "enable_recording_from_args"]
 
 
+def _positive_int(value: str) -> int:
+    """argparse ``type`` validator for a strictly positive integer."""
+    try:
+        parsed = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected an integer, got {value!r}") from None
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError(f"expected a positive integer, got {parsed}")
+    return parsed
+
+
 @dataclass
 class _VideoRecording:
     """Helper class to store video recording settings and state in the viewer."""
@@ -65,7 +76,6 @@ class _VideoRecording:
     ###
     record_video: bool = True
     default_video_folder: str = "./video"
-    async_save: bool = False
     num_skipped_frames: int = 0
 
     ###
@@ -101,7 +111,6 @@ def enable_recording(
     record_video: bool = True,
     default_video_folder: str = "./video",
     num_skipped_frames: int = 0,
-    async_save: bool = False,
     start_clip: bool = False,
     **kwargs,
 ) -> bool:
@@ -109,7 +118,9 @@ def enable_recording(
 
     Wires the recording machinery onto ``viewer`` but does **not** start
     recording. Call ``viewer.start_clip(...)`` to actually capture frames.
-    No directories are created until then.
+    No directories are created until then. Each captured PNG is written on a
+    background thread so the viewer render loop is not blocked by disk I/O;
+    pending saves are flushed before the video file is encoded.
 
     Args:
         viewer: A Newton viewer instance (typically a ``ViewerGL`` returned by
@@ -120,7 +131,6 @@ def enable_recording(
             pass an explicit ``video_folder`` to ``start_clip``. Not created
             on disk until a clip starts.
         num_skipped_frames: Number of leading captured frames to drop before saving.
-        async_save: If True, save each PNG on a background thread.
         start_clip: If True, will directly start a new clip.
 
     Returns:
@@ -142,7 +152,6 @@ def enable_recording(
 
     viewer._recording = _VideoRecording(
         default_video_folder=default_video_folder,
-        async_save=async_save,
         num_skipped_frames=num_skipped_frames,
     )
 
@@ -347,28 +356,26 @@ def _capture_frame(viewer, recording: _VideoRecording) -> bool:
         return False
 
     if recording.img_idx >= recording.num_skipped_frames:
+        # ``get_frame`` reuses ``frame_buffer`` across frames and ``.numpy()`` may
+        # share its backing storage (e.g. on a CPU-device viewer). Copy before
+        # handing the array off so the background saver owns its pixels and the
+        # next frame can overwrite ``frame_buffer`` safely.
         frame = viewer.get_frame(output=recording.frame_buffer)
         if recording.frame_buffer is None:
             recording.frame_buffer = frame
-
-        frame_np = frame.numpy()
-        image = Image.fromarray(frame_np, mode="RGB")
+        image = Image.fromarray(frame.numpy().copy(), mode="RGB")
 
         filename = os.path.join(
             recording.default_video_folder, f"{recording.img_idx - recording.num_skipped_frames:05d}.png"
         )
 
-        if recording.async_save:
-            t = threading.Thread(
-                target=image.save,
-                args=(filename,),
-                daemon=False,
-            )
-            t.start()
-            recording.save_threads.append(t)
-            recording.save_threads = [s for s in recording.save_threads if s.is_alive()]
-        else:
-            image.save(filename)
+        # Encode and write on a background thread so the viewer render loop is
+        # not blocked by disk I/O. Pending saves are joined before the video
+        # file is encoded (see ``_finish_clip`` / ``_generate_video``).
+        t = threading.Thread(target=image.save, args=(filename,), daemon=False)
+        t.start()
+        recording.save_threads.append(t)
+        recording.save_threads = [s for s in recording.save_threads if s.is_alive()]
 
     recording.img_idx += 1
     return True
@@ -514,7 +521,7 @@ def add_recording_args(
     )
     parser.add_argument(
         "--video-num-frames",
-        type=int,
+        type=_positive_int,
         default=default_video_num_frames,
         help=(
             video_num_frames_help
