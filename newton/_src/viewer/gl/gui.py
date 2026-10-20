@@ -77,8 +77,7 @@ class UI:
         self._refresh_io_metrics()
         self.dpi_scale = self._detect_dpi_scale()
 
-        # ``_apply_dpi_scaling`` resets to the base dark style and then scales
-        # it; no need to call ``_setup_dark_style`` separately here.
+        # Reset to ImGui defaults, apply the dark theme, then scale style and fonts.
         self._apply_dpi_scaling()
 
     def _refresh_io_metrics(self) -> None:
@@ -157,13 +156,13 @@ class UI:
 
         ``display_size`` is set to the framebuffer size, so ImGui works in
         framebuffer pixels. Without this rescale every widget would render at
-        ~half size on Retina/4K displays. Re-applying first restores the base
-        style (``_setup_dark_style``) so repeated calls do not compound.
+        ~half size on Retina/4K displays. Re-applying first resets to ImGui
+        defaults, then applies the dark theme (``_setup_dark_style``) before
+        scaling, so fields outside the theme do not compound either.
         """
         if not self.is_available:
             return
 
-        # Reset all sizes, including ImGui fields the Newton theme does not override.
         self.imgui.get_current_context().style = self.imgui.Style()
         self._setup_dark_style()
         style = self.imgui.get_style()

@@ -63,12 +63,14 @@ class TestViewerUI(unittest.TestCase):
         text_color = tuple(imgui.get_style().color_(imgui.Col_.text))
         for scale in (1.0, 2.0, 2.0, 1.5, 1.0):
             with self.subTest(scale=scale):
+                expected_style = imgui.Style()
+                expected_style.scale_all_sizes(scale)
                 self.ui.dpi_scale = scale
                 self.ui._apply_dpi_scaling()
                 style = imgui.get_style()
                 self.assertEqual(tuple(style.window_padding), (12.0 * scale, 12.0 * scale))
                 # This size is not explicitly overridden by the Newton theme.
-                self.assertEqual(tuple(style.separator_text_padding), (int(20.0 * scale), int(3.0 * scale)))
+                self.assertEqual(tuple(style.separator_text_padding), tuple(expected_style.separator_text_padding))
                 self.assertEqual(style.font_scale_dpi, scale)
                 self.assertEqual(tuple(style.color_(imgui.Col_.text)), text_color)
                 self.assertEqual(self.ui.io.fonts.fonts[0], font)
