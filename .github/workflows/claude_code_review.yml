@@ -16,12 +16,13 @@ name: Claude Auto Review
 # Trusted workflow steps prepare its inputs and publish its findings as inline
 # review comments and a summary.
 #
-# Reviews are throttled: a pull request is reviewed only after it has had no
-# new commits for the wait timer of the automated-review environment
-# (Settings > Environments; 30 minutes when this was written). The throttle
-# job waits without a runner, and a newer push cancels it. A review that has
-# started is never cancelled; a newer commit waits for it, and only the latest
-# commit is reviewed.
+# A pull request is reviewed as soon as it is opened or marked ready for
+# review. Later pushes are throttled: they are reviewed only after the pull
+# request has had no new commits for the wait timer of the automated-review
+# environment (Settings > Environments; 30 minutes when this was written). The
+# throttle job waits without a runner, and a newer push cancels it. A review
+# that has started is never cancelled; a newer commit waits for it, and only
+# the latest commit is reviewed.
 #
 # The first review of a pull request is a full review. Later reviews are
 # follow-ups that report only blocking (P0/P1) issues in the changes since the
@@ -35,10 +36,10 @@ on:
 
 jobs:
   throttle:
-    # Review non-draft, human-authored pull requests, including from forks.
-    # Skip events triggered by bots or by the Copilot coding agent (actor
-    # "Copilot", without a [bot] suffix), which the action rejects.
+    # Throttle only new commits; see the review job for which pull requests
+    # are reviewed.
     if: >-
+      github.event.action == 'synchronize' &&
       github.event.pull_request.draft == false &&
       github.event.pull_request.user.type != 'Bot' &&
       github.actor != 'Copilot' &&
@@ -79,7 +80,19 @@ jobs:
 
   review:
     needs: throttle
-    if: needs.throttle.outputs.review == 'true'
+    # Review non-draft, human-authored pull requests, including from forks.
+    # Skip events triggered by bots or by the Copilot coding agent (actor
+    # "Copilot", without a [bot] suffix), which the action rejects. Opening a
+    # pull request or marking it ready skips the throttle; for new commits,
+    # wait for it.
+    if: >-
+      !cancelled() &&
+      github.event.pull_request.draft == false &&
+      github.event.pull_request.user.type != 'Bot' &&
+      github.actor != 'Copilot' &&
+      !endsWith(github.actor, '[bot]') &&
+      (needs.throttle.outputs.review == 'true' ||
+       (github.event.action != 'synchronize' && needs.throttle.result == 'skipped'))
     runs-on: ubuntu-latest
     timeout-minutes: 60
     # Never cancel a review in progress; a newer run waits for it, and GitHub
