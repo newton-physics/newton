@@ -82,6 +82,25 @@ def _query_rotated_box(output: wp.array2d[float]):
         output[i, 3 + axis] = normal[axis]
 
 
+@wp.kernel
+def _query_box_beside_large_edge(positions: wp.array[wp.vec3], output: wp.array2d[float]):
+    """Query a small box diagonally beside the top +x edge of a 1000 m box."""
+    i = wp.tid()
+    a = GenericShapeData()
+    a.shape_type = int(GeoType.BOX)
+    a.scale = wp.vec3(500.0, 500.0, 5.0)
+    b = GenericShapeData()
+    b.shape_type = int(GeoType.BOX)
+    b.scale = wp.vec3(0.25, 0.25, 0.25)
+    separated, _, _, normal, distance = wp.static(create_solve_closest_distance(support_map).core)(
+        a, b, wp.quat_identity(), positions[i], 0.0, SupportMapDataProvider()
+    )
+    output[i, 0] = float(separated)
+    output[i, 1] = distance
+    for axis in range(3):
+        output[i, 2 + axis] = normal[axis]
+
+
 @wp.kernel(module="unique")
 def _query_separated_spheres_with_cutoff(cutoff: float, output: wp.array[float]):
     """Query tiny spheres separated by much more than their radius, with a separation cutoff."""
@@ -273,6 +292,31 @@ def test_rotated_box_above_large_face(test, device):
     # The 0.1 mm boundary can round outside the near-contact branch and
     # keeps the witness-difference normal.
     np.testing.assert_allclose(actual[900:, 3:6], np.tile([0.0, 0.0, 1.0], (100, 1)), atol=2e-3)
+
+
+def test_box_beside_large_edge(test, device):
+    """Resolve sub-millimeter gaps beside a long edge, where the closest Minkowski feature is an edge."""
+    # Offsets are multiples of the float32 spacing near 500 m, so every input and
+    # Minkowski coordinate is exact and the reference normal is known.
+    spacing = 2.0**-15
+    offsets = np.array([(23, 23), (30, 11), (9, 31), (40, 40), (3, 5), (64, 7)], dtype=np.float64)
+    cases = [(kx, y, kz) for kx, kz in offsets for y in (0.0, 123.5, -377.25, 444.0, -2.0, 251.125)]
+    positions = np.array([(500.25 + kx * spacing, y, 5.25 + kz * spacing) for kx, y, kz in cases], dtype=np.float32)
+    output = wp.zeros((len(cases), 5), dtype=float, device=device)
+    wp.launch(
+        _query_box_beside_large_edge,
+        dim=len(cases),
+        inputs=[wp.array(positions, dtype=wp.vec3, device=device)],
+        outputs=[output],
+        device=device,
+    )
+    actual = output.numpy()
+    gaps = np.array([(kx, 0.0, kz) for kx, _, kz in cases]) * spacing
+    distances = np.linalg.norm(gaps, axis=1)
+    np.testing.assert_array_equal(actual[:, 0], 1.0)
+    # The distance comes from witness sums, which round at the float32 spacing near 500 m.
+    np.testing.assert_allclose(actual[:, 1], distances, atol=2.0 * spacing, rtol=0.0)
+    np.testing.assert_allclose(actual[:, 2:5], gaps / distances[:, None], atol=1e-3)
 
 
 def test_early_exit_preserves_separated_sphere_witnesses(test, device):
@@ -522,6 +566,7 @@ for _test in (
     test_tiny_initial_center_displacement,
     test_true_overlap,
     test_rotated_box_above_large_face,
+    test_box_beside_large_edge,
     test_early_exit_preserves_separated_sphere_witnesses,
     test_separation_cutoff_matches_exact_query_within_cutoff,
     test_positional_iteration_arguments_keep_their_meaning,

@@ -46,10 +46,9 @@ def _contacts(
     box_index = -1
     for box in (False, True) if swap else (True, False):
         if box and hull_box:
-            from scipy.spatial import ConvexHull
-
-            corners = np.array(list(product(*((-h, h) for h in half))), dtype=np.float32)
-            hull = newton.Mesh(corners, ConvexHull(corners).simplices.ravel().astype(np.int32), compute_inertia=False)
+            hull = newton.Mesh.create_box(
+                *half, duplicate_vertices=False, compute_normals=False, compute_uvs=False, compute_inertia=False
+            )
             box_index = builder.add_shape_convex_hull(-1, mesh=hull, cfg=cfg)
         elif box:
             box_index = builder.add_shape_box(-1, hx=half[0], hy=half[1], hz=half[2], cfg=cfg)

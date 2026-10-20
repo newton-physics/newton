@@ -140,9 +140,14 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
         bc[i1] = lambda1
 
         closest = lambda0 * a + lambda1 * b
-        if lambda0 > 0.0 and lambda1 > 0.0 and wp.length_sq(closest) <= EPSILON * EPSILON:
-            # Project directly to avoid cancellation along a nearly touching edge.
-            closest = wp.cross(edge, wp.cross(a, edge)) * (1.0 / vsq)
+        if lambda0 > 0.0 and lambda1 > 0.0:
+            # The weighted endpoint sum keeps roundoff at the endpoints' scale. When the
+            # closest point is far shorter than the endpoints (a nearly touching edge, or a
+            # small gap beside a long edge), that roundoff tilts its direction, so project
+            # onto the edge line instead.
+            scale_sq = wp.max(wp.length_sq(a), wp.length_sq(b))
+            if wp.length_sq(closest) <= wp.max(EPSILON * EPSILON, 1.0e-4 * scale_sq):
+                closest = wp.cross(edge, wp.cross(a, edge)) * (1.0 / vsq)
         return closest, bc, mask
 
     @wp.func
@@ -546,10 +551,11 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
             if wp.dot(near_normal, support.BtoA) >= 0.0:
                 return False, point_a, point_b, wp.vec3(0.0), 0.0
 
-        # Take the normal from the projected closest point. Rebuilding it from the
-        # witnesses sums large support coordinates, and that tangential roundoff
-        # tilts the normal of a small gap toward a distant hull corner (e.g. a
-        # millimeter gap above a 1000 m ground box).
+        # Take the normal from the closest point. closest_triangle and closest_segment
+        # project it onto the simplex face or edge where a vertex sum would cancel.
+        # Rebuilding it from the witnesses sums large support coordinates, and that
+        # tangential roundoff tilts the normal of a small gap toward a distant hull
+        # corner (e.g. a millimeter gap above a 1000 m ground box).
         normal = wp.normalize(-v)
         return True, point_a, point_b, normal, wp.dot(point_b - point_a, normal)
 
