@@ -2289,6 +2289,8 @@ class ViewerViser(ViewerBase):
         self._last_state = state
         if self.model is None:
             return
+        if self.picking is not None:
+            self.picking._refresh_os_inertia(state)
 
         packed = self._packed_shape_world_xforms
         if packed is None or self._slot_to_shape_wp is None:
