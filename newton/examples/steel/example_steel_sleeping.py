@@ -22,6 +22,7 @@ import warp as wp
 
 import newton
 import newton.examples
+from newton.exceptions import NewtonWarning
 from newton.solvers import SolverSteel
 
 TOWER_HEIGHTS = (6, 7, 5, 6)
@@ -158,6 +159,7 @@ class Example:
         if isinstance(self.viewer, newton.viewer.ViewerRTX):
             warnings.warn(
                 "ViewerRTX keeps the first frame's shape colors, so sleeping bodies keep their awake color.",
+                NewtonWarning,
                 stacklevel=2,
             )
         self.viewer.set_model(self.model)

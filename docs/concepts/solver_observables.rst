@@ -204,11 +204,14 @@ Steel sleep flags
 With ``enable_sleeping=True``, :class:`~newton.solvers.SolverSteel` exposes
 :attr:`~newton.solvers.SolverSteel.ObservableKind.BODY_AWAKE` through
 ``observables.body_awake``, a ``bool`` array with shape ``(model.body_count,)``.
-A step that receives the container writes ``True`` for awake bodies and ``False``
-for sleeping ones, also during graph replay. A new container holds the solver's
-current flags. :meth:`~newton.solvers.SolverSteel.reset` and
-:meth:`~newton.solvers.SolverSteel.notify_model_changed` wake bodies, which the
-next step reports. Without sleeping the kind is unsupported and requesting it raises.
+A step that receives the container overwrites it with ``True`` for awake bodies and
+``False`` for sleeping ones as of the end of that step, also during graph replay;
+other steps leave it unchanged. A new container holds the solver's current flags.
+:meth:`~newton.solvers.SolverSteel.reset` and
+:meth:`~newton.solvers.SolverSteel.notify_model_changed` wake islands according to
+the sleeping rules but do not write existing containers; the next step that
+receives one reports the result. Without sleeping the kind is unsupported and
+requesting it raises.
 
 .. _mujoco_overflow_observable:
 

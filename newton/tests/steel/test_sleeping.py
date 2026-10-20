@@ -82,6 +82,7 @@ def test_separated_boxes_sleep_and_force_wakes_one(test, device):
     np.testing.assert_array_equal(body_awake.numpy(), [True, False])
     test.assertGreater(states[0].body_qd.numpy()[0, 0], 0.0)
     solver.reset(states[0])
+    np.testing.assert_array_equal(body_awake.numpy(), [True, False])
     _advance_boxes(pipeline, solver, states, control, 1, observables=observables)
     np.testing.assert_array_equal(body_awake.numpy(), [True, True])
 
