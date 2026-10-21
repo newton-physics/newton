@@ -129,6 +129,18 @@ class TestModelAttributeSpecs(unittest.TestCase):
             "Model._CORE_ATTRIBUTE_SPECS with the correct frequency, references, row width, and compaction policy.",
         )
 
+        # The shared registry also describes built-in State and Control storage.
+        frequency = newton.Model.AttributeFrequency
+        for name, expected_frequency in (
+            ("particle_q", frequency.PARTICLE),
+            ("particle_qd", frequency.PARTICLE),
+            ("particle_f", frequency.PARTICLE),
+            ("body_f", frequency.BODY),
+            ("joint_f", frequency.JOINT_DOF),
+        ):
+            with self.subTest(attribute=name):
+                self.assertEqual(model.get_attribute_frequency(name), expected_frequency)
+
 
 class TestParallelJointWarning(unittest.TestCase):
     """Warn on parallel joints between the same pair of bodies."""
