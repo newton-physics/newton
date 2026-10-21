@@ -1475,6 +1475,10 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 edge_range_tri = shape_edge_range[tri_shape]
                 num_edges = get_edge_count(tri_type, edge_range_tri, hfd_tri)
 
+                # Barrier before the reset: a warp still evaluating the previous
+                # pass's exit test would otherwise read the new value, re-enter that
+                # loop, and spin, because only thread 0 advances ``progress``.
+                wp.tile_stack_clear(edge_stack)
                 wp.tile_scatter_masked(progress, 0, 0, t == 0)
 
                 sdf_is_heightfield = sdf_is_hfield
@@ -1950,6 +1954,8 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
                 edge_start = block_in_pair * chunk_size
                 edge_end = wp.min(edge_start + chunk_size, num_edges)
 
+                # Barrier before the reset; see ``mesh_sdf_collision_kernel``.
+                wp.tile_stack_clear(edge_stack)
                 wp.tile_scatter_masked(progress, 0, edge_start, t == 0)
 
                 sdf_is_heightfield = sdf_is_hfield
