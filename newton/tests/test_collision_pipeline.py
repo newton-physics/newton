@@ -5,7 +5,6 @@ import gc
 import itertools
 import unittest
 import warnings
-import weakref
 from collections import Counter
 from enum import IntFlag, auto
 from unittest import mock
@@ -13,6 +12,7 @@ from unittest import mock
 import numpy as np
 import warp as wp
 import warp.examples
+from packaging.version import Version
 
 import newton
 from newton import GeoType
@@ -69,6 +69,9 @@ from newton.tests.unittest_utils import (
     get_test_devices,
 )
 from newton.tests.utils.soft_contacts import evaluate_soft_contact_force_mask
+
+# Older Warp destroys textures immediately during CUDA capture (NVIDIA/warp#2066).
+_WARP_NEEDS_CAPTURE_GC_GUARD = Version(wp.__version__) < Version("1.19.0.dev20261020")
 
 
 class TestLevel(IntFlag):
@@ -195,8 +198,9 @@ class CollisionSetup:
     def capture(self):
         if wp.get_device(self._device).is_cuda:
             # Cyclic GC can destroy an earlier scene's SDF textures, which CUDA forbids during capture.
-            gc_was_enabled = gc.isenabled()
-            gc.disable()
+            gc_was_enabled = _WARP_NEEDS_CAPTURE_GC_GUARD and gc.isenabled()
+            if gc_was_enabled:
+                gc.disable()
             try:
                 with wp.ScopedCapture(device=self._device) as capture:
                     self.simulate()
@@ -759,77 +763,6 @@ def test_mesh_mesh_bvh_vs_bvh(_test, device, broad_phase: str):
     test_mesh_mesh_sdf_modes(
         _test, device, sdf_max_resolution_a=None, sdf_max_resolution_b=None, broad_phase=broad_phase
     )
-
-
-def test_collision_capture_defers_sdf_texture_cleanup(test, device):
-    """Defer unreachable SDF texture cleanup until CUDA capture finishes."""
-    gc_was_enabled = gc.isenabled()
-    thresholds = gc.get_threshold()
-    gc.collect()
-    gc.enable()
-    gc.set_threshold(0)
-    try:
-        mesh = newton.Mesh.create_box(0.5, 0.5, 0.5)
-        mesh.build_sdf(max_resolution=16, device=device)
-        texture_ref = weakref.ref(mesh.sdf._coarse_texture)
-        # Keep a discarded scene pending cyclic collection regardless of Warp version.
-        discarded_scene = {"mesh": mesh}
-        discarded_scene["cycle"] = discarded_scene
-        del mesh, discarded_scene
-
-        simulate = CollisionSetup.simulate
-
-        def simulate_with_gc_pressure(setup):
-            gc.set_threshold(gc.get_count()[0] + 1, 1000000, 1000000)
-            allocations = [[] for _ in range(32)]
-            simulate(setup)
-            del allocations
-
-        with mock.patch.object(CollisionSetup, "simulate", simulate_with_gc_pressure):
-            setup = CollisionSetup(
-                viewer=newton.viewer.ViewerNull(),
-                device=device,
-                solver_fn=newton.solvers.SolverXPBD,
-                sim_substeps=2,
-                shape_type_a=GeoType.MESH,
-                shape_type_b=GeoType.MESH,
-                sdf_max_resolution_a=16,
-            )
-            setup.capture()
-
-        test.assertTrue(gc.isenabled())
-        setup.step()
-        test.assertTrue(np.isfinite(setup.state_0.body_q.numpy()).all())
-        gc.collect()
-        test.assertIsNone(texture_ref())
-
-        for gc_enabled in (False, True):
-            if gc_enabled:
-                gc.enable()
-            else:
-                gc.disable()
-            setup.capture()
-            test.assertEqual(gc.isenabled(), gc_enabled)
-            with mock.patch.object(setup, "simulate", side_effect=RuntimeError("capture interrupted")):
-                with test.assertRaisesRegex(RuntimeError, "capture interrupted"):
-                    setup.capture()
-            test.assertEqual(gc.isenabled(), gc_enabled)
-    finally:
-        gc.set_threshold(*thresholds)
-        gc.collect()
-        if gc_was_enabled:
-            gc.enable()
-        else:
-            gc.disable()
-
-
-add_function_test(
-    TestCollisionPipeline,
-    "test_collision_capture_defers_sdf_texture_cleanup",
-    test_collision_capture_defers_sdf_texture_cleanup,
-    devices=get_cuda_test_devices(),
-    check_output=False,
-)
 
 
 # Add mesh-mesh SDF mode tests for all broad phase modes
@@ -3740,6 +3673,50 @@ add_function_test(
     TestMeshConvexMidphase,
     "test_triangle_contact_with_hull_aabb_center_outside",
     test_triangle_contact_with_hull_aabb_center_outside,
+    devices=get_test_devices(),
+)
+
+
+def test_triangle_contact_independent_of_hull_tessellation(test, device):
+    """Keep triangle contacts for a hull sunk below the mean of its unevenly spaced vertices."""
+    # A 41 x 54 x 13 mm sole whose 5 mm bottom fillets carry most of its
+    # vertices. Its vertex mean sits 3.0 mm above the bottom and its volume
+    # centroid 6.6 mm. Sunk 5 mm into a floor, it must keep the floor contacts.
+    half_x, half_y, half_z, radius = 0.0205, 0.027, 0.0065, 0.005
+    profile = [(-half_x, half_z), (half_x, half_z)]
+    for center_x, start in ((half_x - radius, 0.0), (radius - half_x, -0.5 * np.pi)):
+        for angle in np.linspace(start, start - 0.5 * np.pi, 9):
+            profile.append((center_x + radius * np.cos(angle), radius - half_z + radius * np.sin(angle)))
+    vertices = np.array([[x, y, z] for y in (-half_y, half_y) for x, z in profile])
+    hull = newton.Mesh(vertices, [0, 1, 2], compute_inertia=False).compute_convex_hull()
+    depth = 0.005
+    builder = newton.ModelBuilder()
+    cfg = builder.ShapeConfig(margin=0.0, gap=0.01)
+    floor = [[-1.0, -1.0, 0.0], [1.0, -1.0, 0.0], [1.0, 1.0, 0.0], [-1.0, 1.0, 0.0]]
+    builder.add_shape_mesh(-1, mesh=newton.Mesh(floor, [0, 1, 2, 0, 2, 3], compute_inertia=False), cfg=cfg)
+    body = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, half_z - depth), wp.quat_identity()))
+    builder.add_shape_convex_hull(body, mesh=hull, cfg=cfg)
+    model = builder.finalize(device=device)
+    state = model.state()
+    interior_point = model._shape_interior_point
+    # Cover both the finalized interior points and the narrow-phase fallback.
+    for reduction, precomputed in itertools.product((False, True), (True, False)):
+        with test.subTest(reduce_contacts=reduction, precomputed=precomputed):
+            model._shape_interior_point = interior_point if precomputed else None
+            pipeline = newton.CollisionPipeline(model, reduce_contacts=reduction)
+            contacts = pipeline.contacts()
+            pipeline.collide(state, contacts)
+            count = int(contacts.rigid_contact_count.numpy()[0])
+            test.assertGreater(count, 0)
+            distances = wp.empty(contacts.rigid_contact_max, dtype=float, device=device)
+            newton.eval_rigid_contact_kinematics(model, state, contacts, out_distance=distances)
+            test.assertAlmostEqual(float(distances.numpy()[:count].min()), -depth, delta=1.0e-5)
+
+
+add_function_test(
+    TestMeshConvexMidphase,
+    "test_triangle_contact_independent_of_hull_tessellation",
+    test_triangle_contact_independent_of_hull_tessellation,
     devices=get_test_devices(),
 )
 

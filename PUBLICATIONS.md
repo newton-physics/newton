@@ -46,6 +46,8 @@ published citation when available and retain an accessible preprint link.
 
 - **FlashNeRD: Performance-First Contact-Rich Neural Robot Dynamics**. *M. Ataei, M. A. Nabian, J. Xu, M. Macklin, Y. Narang, E. Heiden, O. Zhang, Y. Guo, R. D'Sa, O. Hennigh, G. State, S. Choudhry*. October 2026. [arXiv:2610.09130](https://arxiv.org/abs/2610.09130)
 
+- **RoboSimStudio: An Interactive Toolkit for Rapid Real2Sim of Robot Manipulation Tasks**. *K. Chen, S. Xie, U. Yoo, X. Zhu, C. Magner, A. Zhu, D. Kim, E. Heiden, E. Coumans, M. Macklin, S. Huang, K. Goldberg*. October 2026. [arXiv:2610.18835](https://arxiv.org/abs/2610.18835)
+
 - **Same Action, Different Outcome: Variability in Dynamic Cloth Manipulation**. *M. Dadgostar, G. Alenyà, J. Borràs*. October 2026. [arXiv:2610.10801](https://arxiv.org/abs/2610.10801)
 
 - **Mixed Material Point Methods for Stiff Elastoplasticity**. *G. Daviet*. ACM Transactions on Graphics 45(4), July 2026. [DOI:10.1145/3811345](https://doi.org/10.1145/3811345)

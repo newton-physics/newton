@@ -62,10 +62,15 @@ from .constants import (
 )
 from .enums import EqType as _EqType
 from .enums import _ActuatorBiasType, _ActuatorDynamicsType, _ActuatorGainType
-from .equality import MJC_OBJ_BODY, MjcEqualityTargetKind, _register_equality_constraint_attributes
+from .equality import (
+    MJC_OBJ_BODY,
+    MjcEqualityTargetKind,
+    _register_equality_constraint_attributes,
+    _register_equality_tendon_attributes,
+)
 from .geometry import build_shape_layout, compile_layout_collision_masks
 from .kernels import (
-    _snapshot_nacon_count,
+    _sync_nacon_count,
     apply_mjc_body_f_kernel,
     apply_mjc_control_kernel,
     apply_mjc_free_joint_f_to_body_f_kernel,
@@ -883,9 +888,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
     def _set_mujoco_warp_module_options(self) -> None:
         """Configure loaded shared modules without overriding code-generated bounds."""
-        for module in [*_mujoco_warp_deterministic_modules(), kernels]:
+        # The contact conversion kernel lives in its own fast-math module.
+        contact_module = convert_newton_contacts_to_mjwarp_kernel.module
+        for module in [*_mujoco_warp_deterministic_modules(), kernels, contact_module]:
             max_records = (
-                self._deterministic_max_records if module.__name__ in _MUJOCO_WARP_DYNAMIC_RECORD_MODULES else 0
+                self._deterministic_max_records
+                if getattr(module, "__name__", None) in _MUJOCO_WARP_DYNAMIC_RECORD_MODULES
+                else 0
             )
             options = {
                 "deterministic": self._deterministic,
@@ -3255,6 +3264,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 mjcf_attribute_name="coef",
             )
         )
+        _register_equality_tendon_attributes(builder)
         # endregion tendon attributes
 
         # --- Spatial tendon attributes ---
@@ -4306,6 +4316,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         1. **Constructor argument** - If provided, same value is used for all worlds.
         2. **Newton model custom attribute** (``model.mujoco.<option>``) - Supports per-world values.
         3. **MuJoCo default** - Used if neither of the above is set.
+
+        For imported MJCF position drives using joint-target control and ``dampratio``,
+        construction writes resolved damping into zero entries of ``model.joint_target_kd``
+        and consumes the placeholders in ``model.mujoco.actuator_biasprm``. These coefficients
+        use the initial physical inertia, armature, and position gain; later inertia edits
+        or solver reconstruction do not recompute them. Update ``joint_target_kd`` explicitly
+        to change damping. Other consumers of the same model see the initialized values.
+        Native CPU mode resolves only the template world when ``separate_worlds=True``.
 
         Args:
             model: The model to be simulated.
@@ -5466,7 +5484,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._last_rigid_contact_max = contacts.rigid_contact_max
 
         # Zero nacon before the kernel — the full path uses atomic_add to count
-        # contacts; the fast path restores the count from last_nacon_count.
+        # contacts; on the fast path _sync_nacon_count restores the count.
         self.mjw_data.nacon.zero_()
 
         bodies_per_world = self.model.body_count // self.model.world_count
@@ -5537,20 +5555,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 contacts.contact_generation,
                 self._last_contact_generation,
                 self._contact_tid_to_cid,
-                self._last_nacon_count,
             ],
             device=model.device,
         )
 
-        # Snapshot the final nacon count and generation so the fast path can
-        # restore them on subsequent substeps.  Runs as a separate dim=1
-        # kernel AFTER the main kernel completes so that:
-        #  - nacon_out has its final value (from atomic_add on full path, or
-        #    restored from last_nacon_count on fast path)
+        # Runs as a separate dim=1 kernel AFTER the main kernel completes so that:
+        #  - nacon has its final value from the full path's atomic_add, and
+        #    the main kernel never writes nacon directly (deterministic mode
+        #    rejects mixing direct writes with atomic updates)
         #  - last_contact_generation is only updated after ALL threads in the
         #    main kernel have read it (avoids a cross-block race)
         wp.launch(
-            _snapshot_nacon_count,
+            _sync_nacon_count,
             dim=1,
             inputs=[
                 self.mjw_data.nacon,
@@ -6909,6 +6925,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         eq_constraint_relpose = get_custom_attribute("equality_constraint_relpose")
         eq_constraint_joint1 = get_custom_attribute("equality_constraint_joint1")
         eq_constraint_joint2 = get_custom_attribute("equality_constraint_joint2")
+        eq_constraint_tendon1 = get_custom_attribute("equality_constraint_tendon1")
+        eq_constraint_tendon2 = get_custom_attribute("equality_constraint_tendon2")
         eq_constraint_polycoef = get_custom_attribute("equality_constraint_polycoef")
         eq_constraint_enabled = get_custom_attribute("equality_constraint_enabled")
         eq_constraint_world = get_custom_attribute("equality_constraint_world")
@@ -7636,6 +7654,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Key = (dof, is_position): position and velocity sub-actuators can have
         # different ranges.
         joint_target_ranges: dict[tuple[int, bool], dict[str, Any]] = {}
+        joint_target_position_rows: dict[int, int] = {}
         if mujoco_attrs is not None and hasattr(mujoco_attrs, "actuator_trnid"):
             jt_count = model.custom_frequency_counts.get("mujoco:actuator", 0)
             jt_trnid = get_custom_attribute("actuator_trnid")
@@ -7668,15 +7687,19 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     continue
                 if jt_trntype is not None and int(jt_trntype[row]) != int(SolverMuJoCo.TrnType.JOINT):
                     continue
-                if jt_world is not None:
-                    w = int(jt_world[row])
-                    if w != first_world and w != -1:
-                        continue
                 if jt_trnid is None:
                     continue
                 dof = int(jt_trnid[row, 0])
                 if dof < 0:
                     continue
+                kinds = classify_joint_target_kinds(row)
+                # Retain each world's actual source row for one-time damping resolution.
+                if True in kinds:
+                    joint_target_position_rows[dof] = row
+                if jt_world is not None:
+                    w = int(jt_world[row])
+                    if w != first_world and w != -1:
+                        continue
                 info = {
                     "actuator_idx": row,
                     "has_ctrlrange": bool(jt_has_ctrlrange[row]) if jt_has_ctrlrange is not None else False,
@@ -7686,7 +7709,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     "forcerange": tuple(jt_forcerange[row]) if jt_forcerange is not None else None,
                     "forcelimited": int(jt_forcelimited[row]) if jt_forcelimited is not None else None,
                 }
-                for is_position in classify_joint_target_kinds(row):
+                for is_position in kinds:
                     joint_target_ranges[(dof, is_position)] = info
 
         def joint_target_actuator_kwargs(base: dict[str, Any], dof: int, is_position: bool) -> dict[str, Any]:
@@ -8218,6 +8241,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         mjc_eq_to_newton_eq_dict = {}
         converted_loop_joint_targets = set()
         converted_mimic_targets = set()
+        # Tendon equalities are added once the MuJoCo tendon names are known.
+        tendon_constraints = []
         for i in selected_constraints:
             constraint_type = eq_constraint_type[i]
             target_kind = get_eq_target_kind(i)
@@ -8269,6 +8294,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     eq.solref = eq_constraint_solref[i]
                 if eq_constraint_solimp is not None:
                     eq.solimp = eq_constraint_solimp[i]
+            elif constraint_type == _EqType.TENDON:
+                tendon_constraints.append(i)
+                continue
             else:
                 continue
 
@@ -8473,6 +8501,30 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         selected_tendons, mjc_tendon_names = self._init_tendons(
             model, spec, joint_mapping, shape_mapping, site_mapping, first_world
         )
+
+        tendon_name_mapping = dict(zip(selected_tendons, mjc_tendon_names, strict=True))
+        tendon_name_mapping[-1] = ""  # omitted tendon2
+        for i in tendon_constraints:
+            t1_name = tendon_name_mapping.get(int(eq_constraint_tendon1[i]))
+            t2_name = tendon_name_mapping.get(int(eq_constraint_tendon2[i]))
+            if not t1_name or t2_name is None:
+                warnings.warn(
+                    f"Skipping tendon equality constraint {i}: its tendons are not in the MuJoCo export.",
+                    NewtonWarning,
+                    stacklevel=2,
+                )
+                continue
+            eq = spec.add_equality()
+            eq.type = mujoco.mjtEq.mjEQ_TENDON
+            eq.active = eq_constraint_enabled[i]
+            eq.name1 = t1_name
+            eq.name2 = t2_name
+            eq.data[0:5] = eq_constraint_polycoef[i]
+            if eq_constraint_solref is not None:
+                eq.solref = eq_constraint_solref[i]
+            if eq_constraint_solimp is not None:
+                eq.solimp = eq_constraint_solimp[i]
+            mjc_eq_to_newton_eq_dict[eq.id] = i
 
         # Process MuJoCo general actuators (motor, general, etc.) from custom attributes
         actuator_count += self._init_actuators(
@@ -9012,6 +9064,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 # each world infers its own pose from its synchronized qpos0.
                 self._update_eq_properties(preserve_inferred_poses=False)
             self.notify_model_changed(ModelFlags.ALL)
+            self._resolve_joint_target_damping(spec, joint_target_position_rows)
             if not self.use_mujoco_cpu:
                 # Keep the host template coherent after construction. Runtime
                 # GPU notifications intentionally update only device arrays.
@@ -10613,6 +10666,80 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self.mj_model.tendon_solimp_lim[:] = self.mjw_model.tendon_solimp_lim.numpy()[0]
             self.mj_model.tendon_armature[:] = self.mjw_model.tendon_armature.numpy()[0]
 
+    def _resolve_joint_target_damping(self, spec: Any, position_source_rows: dict[int, int]) -> None:
+        """Resolve imported damping once, after publishing each world's inertia and gains."""
+        attrs = getattr(self.model, "mujoco", None)
+        actuator_biasprm = getattr(attrs, "actuator_biasprm", None)
+        if actuator_biasprm is None or self.mjc_actuator_to_newton_actuator_idx is None:
+            return
+        biasprm = actuator_biasprm.numpy()
+        if not np.any(biasprm[:, 2] > 0.0):
+            return
+
+        dofs = self.mjc_actuator_to_newton_idx.numpy()
+        sources = self.mjc_actuator_ctrl_source.numpy()
+        source_rows = self.mjc_actuator_to_newton_actuator_idx.numpy()
+        source_dofs = attrs.actuator_trnid.numpy()[:, 0]
+        nworld = self.mjw_data.nworld
+        dofs_per_world = self.model.joint_dof_count // nworld
+        kd = self.model.joint_target_kd.numpy().reshape(nworld, dofs_per_world)
+        modes = self.model.joint_target_mode.numpy()
+        damping = []
+        for actuator, dof in enumerate(dofs):
+            if sources[actuator] != SolverMuJoCo.CtrlSource.JOINT_TARGET or dof < 0 or source_rows[actuator] < 0:
+                continue
+            # Ball axes share the imported actuator's base DOF and damping ratio.
+            source_dof = int(source_dofs[source_rows[actuator]])
+            # Native CPU MuJoCo only refreshes the template world's constants.
+            for world in range(1 if self.use_mujoco_cpu else nworld):
+                global_dof = world * dofs_per_world + int(dof)
+                row = position_source_rows.get(world * dofs_per_world + source_dof)
+                if row is None or modes[global_dof] != JointTargetMode.POSITION:
+                    continue
+                ratio = biasprm[row, 2]
+                if ratio > 0.0:
+                    damping.append((world, actuator, dof, row, ratio))
+        if not damping:
+            return
+
+        compiled_bias = self.mjw_model.actuator_biasprm.numpy()
+        if self.use_mujoco_cpu:
+            compiled_bias[0] = self.mj_model.actuator_biasprm
+        for world, actuator, dof, _, ratio in damping:
+            if kd[world, dof] == 0.0:
+                compiled_bias[world, actuator, 2] = ratio
+        self.mjw_model.actuator_biasprm.assign(compiled_bias)
+        if self.use_mujoco_cpu:
+            self.mj_model.actuator_biasprm[:] = compiled_bias[0]
+        # Resolve against physical inertia before restoring synthetic kinematic locking.
+        # The normal notification below then refreshes constants for the locked model.
+        if np.any((self._notify_body_flags.numpy() & int(BodyFlags.KINEMATIC)) != 0):
+            self._update_body_properties(apply_kinematic_armature=False)
+            if self.use_mujoco_cpu:
+                self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
+                self._mujoco.mj_setConst(self.mj_model, self.mj_data)
+            else:
+                with self._scoped_mujoco_warp_execution():
+                    self._mujoco_warp.set_const_0(self.mjw_model, self.mjw_data)
+            self._update_body_properties()
+            if self.use_mujoco_cpu:
+                self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
+        self.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
+        if self.use_mujoco_cpu:
+            compiled_bias[0] = self.mj_model.actuator_biasprm
+            self.mjw_model.actuator_biasprm.assign(compiled_bias)
+        else:
+            compiled_bias = self.mjw_model.actuator_biasprm.numpy()
+            self.mj_model.actuator_biasprm[:] = compiled_bias[0]
+        for world, actuator, dof, row, _ in damping:
+            kd[world, dof] = -compiled_bias[world, actuator, 2]
+            # Consume the placeholder so rebuilding a solver respects later kd edits, including zero.
+            biasprm[row, 2] = compiled_bias[world, actuator, 2]
+            if world == 0:
+                spec.actuators[actuator].biasprm[2] = compiled_bias[world, actuator, 2]
+        self.model.joint_target_kd.assign(kd.reshape(-1))
+        actuator_biasprm.assign(biasprm)
+
     def _update_actuator_properties(self):
         """Update actuator properties in the MuJoCo model.
 
@@ -10848,6 +10975,31 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     f"Equality constraint types mismatch at position {c}: world 0 has type {types[0]}, "
                     f"but other worlds have types {types[1:].tolist()}."
                 )
+
+            # Tendon equalities export world 0's tendon names, so later worlds must target the same tendons.
+            tendon_world = getattr(model.mujoco, "tendon_world", None)
+            tendon_world = tendon_world.numpy() if tendon_world is not None else np.empty(0, dtype=np.int32)
+            # Index of each tendon within its world; global tendons keep a world-independent key.
+            order = np.argsort(tendon_world, kind="stable")
+            sorted_world = tendon_world[order]
+            tendon_key = np.empty(len(tendon_world), dtype=np.int64)
+            tendon_key[order] = np.arange(len(tendon_world)) - np.searchsorted(sorted_world, sorted_world)
+            tendon_key = np.where(tendon_world < 0, -2 - np.arange(len(tendon_world)), tendon_key)
+            for key in ("equality_constraint_tendon1", "equality_constraint_tendon2"):
+                tendon_refs = getattr(model.mujoco, key, None)
+                if tendon_refs is None or len(tendon_world) == 0:
+                    continue
+                tendon_refs = tendon_refs.numpy().reshape(world_count, constraints_per_world)
+                tendon_refs = np.where(tendon_refs >= 0, tendon_key[np.maximum(tendon_refs, 0)], -1)
+                mismatches = tendon_refs != tendon_refs[0]
+                if np.any(mismatches):
+                    c = int(np.argmax(np.any(mismatches, axis=0)))
+                    raise ValueError(
+                        "SolverMuJoCo requires homogeneous worlds. "
+                        f"Equality constraint {key.removeprefix('equality_constraint_')} mismatch at position {c}: "
+                        f"world 0 references tendon {tendon_refs[0, c]}, "
+                        f"but other worlds reference {tendon_refs[1:, c].tolist()}."
+                    )
 
     def render_mujoco_viewer(
         self,
