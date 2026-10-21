@@ -39,7 +39,7 @@ class TestBodyVariants(unittest.TestCase):
     def test_finalize_tables_and_initial_selection(self):
         cube, spheres = _variant("cube"), _variant("spheres")
         env = newton.ModelBuilder()
-        body = env.add_body(mass=2.0, com=(0.0, 0.0, 1.0), label="object")
+        body = env.add_body(mass=2.0, com=(0.0, 0.0, 1.0), inertia=wp.diag(wp.vec3(0.1)), label="object")
         env.add_shape_capsule(body, radius=0.01, half_height=0.01, cfg=newton.ModelBuilder.ShapeConfig(density=0.0))
         env.add_body_variants(body, [cube, spheres], initial=1, labels=["a", "b"])
         scene = newton.ModelBuilder()
@@ -62,7 +62,7 @@ class TestBodyVariants(unittest.TestCase):
         np.testing.assert_allclose(model.body_inv_mass.numpy(), [1.0 / mass] * 2, rtol=1e-6)
         np.testing.assert_allclose(model.body_com.numpy()[:, 2], [2.0 / mass] * 2, rtol=1e-6)
         offset_inertia = 2.0 * (1.0 - 2.0 / mass) ** 2 + sphere_mass * (2.0 / mass) ** 2
-        expected_ixx = np.asarray(spheres.body_inertia[0]).reshape(3, 3)[0, 0] + offset_inertia
+        expected_ixx = 0.1 + np.asarray(spheres.body_inertia[0]).reshape(3, 3)[0, 0] + offset_inertia
         np.testing.assert_allclose(model.body_inertia.numpy()[:, 0, 0], [expected_ixx] * 2, rtol=1e-5)
 
     def test_select_body_variants(self):
