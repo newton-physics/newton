@@ -286,6 +286,25 @@ class TestLogContacts(unittest.TestCase):
         assert_np_equal(sliding_colors[2], viewer._contact_disk_colors.numpy()[2])
         assert_np_equal(viewer._contact_disk_colors.numpy()[::2], viewer._contact_disk_colors.numpy()[1::2])
         contacts.force = None
+        # VBD corrects input poses in place. Replay must retain the separate
+        # collision input poses, rather than relocating witnesses to state_out.
+        example = SimpleNamespace(
+            viewer=viewer, state=model.state(), contact_state=state, contacts=contacts, sim_time=0.0
+        )
+        example.state.body_q.assign([wp.transform_identity()] * model.body_count)
+        example.render = lambda: viewer.log_contacts(example.contacts, example.contact_state)
+        history = WorkspaceHistory(example)
+        history.capture()
+        saved_poses = state.body_q.numpy().copy()
+        state.body_q.assign([wp.transform_identity()] * model.body_count)
+        example.sim_time = 1.0 / 60.0
+        history.capture()
+        history.select(0)
+        history.render()
+        assert_np_equal(viewer._contact_disk_xforms.numpy()[:, :3], np.asarray(expected_points), tol=2.0e-6)
+        self.assertIs(example.contact_state, state)
+        assert_np_equal(state.body_q.numpy(), example.state.body_q.numpy())
+        state.body_q.assign(saved_poses)
         # Opposing witnesses remain visible when the normal arrow is disabled.
         viewer.show_contact_normals = False
         with patch.object(viewer, "log_arrows") as arrows, patch.object(viewer, "log_lines") as lines:

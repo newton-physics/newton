@@ -116,6 +116,8 @@ class HistoryFrame:
     observables: dict[str, np.ndarray] = field(default_factory=dict)
     particle_states: dict[str, dict[str, np.ndarray]] = field(default_factory=dict)
     control: dict[str, np.ndarray] = field(default_factory=dict)
+    contact_state: dict[str, np.ndarray] = field(default_factory=dict)
+    """Collision input poses and velocities when distinct from the displayed State."""
 
     @property
     def soft_touching(self) -> int:
@@ -155,6 +157,7 @@ class WorkspaceHistory:
         self._recording_blocked = False
         self.message = ""
         self.display_state = None
+        self.display_contact_state = None
         self.display_control = None
         self.display_particle_states: dict[str, State] = {}
         self.display_contacts = None
@@ -260,6 +263,13 @@ class WorkspaceHistory:
             return
         arrays = _component_arrays(state, model=self.model)
         control_arrays = _component_arrays(getattr(example, "control", None), model=self.model)
+        contact_state = getattr(example, "contact_state", None)
+        contact_state_arrays = {
+            name: array
+            for name in ("body_q", "body_qd")
+            if contact_state is not state and (array := getattr(contact_state, name, None)) is not None
+        }
+        contact_state_bytes = sum(a.capacity for a in contact_state_arrays.values())
         # Coupled examples can draw particles from a separate State. Retain
         # those display arrays too, without copying solver grids or buffers.
         particle_states = {}
@@ -278,7 +288,10 @@ class WorkspaceHistory:
         particle_bytes = sum(a.capacity for fields in particle_states.values() for a in fields.values())
         # Reject oversized snapshots before any device-to-host transfer.
         control_bytes = sum(a.capacity for a in control_arrays.values())
-        if sum(a.capacity for a in arrays.values()) + particle_bytes + control_bytes > self.memory_limit // 2:
+        if (
+            sum(a.capacity for a in arrays.values()) + particle_bytes + control_bytes + contact_state_bytes
+            > self.memory_limit // 2
+        ):
             self.message = "A state exceeds the 64 MiB snapshot limit. Recording stopped."
             self._recording_blocked = True
             return
@@ -312,6 +325,7 @@ class WorkspaceHistory:
             sum(a.capacity for a in arrays.values())
             + particle_bytes
             + control_bytes
+            + contact_state_bytes
             + sum(n * array.strides[0] for array, n in contact_arrays.values())
             + sum(sum(n for _, n in ranges) * array.strides[0] for array, ranges in observable_arrays.values())
         )
@@ -321,6 +335,7 @@ class WorkspaceHistory:
             return
         saved_state = {name: array.numpy().copy() for name, array in arrays.items()}
         saved_control = {name: array.numpy().copy() for name, array in control_arrays.items()}
+        saved_contact_state = {name: array.numpy().copy() for name, array in contact_state_arrays.items()}
         saved_particle_states = {
             name: {field: array.numpy().copy() for field, array in fields.items()}
             for name, fields in particle_states.items()
@@ -332,6 +347,7 @@ class WorkspaceHistory:
         size = sum(a.nbytes for a in (*saved_state.values(), *saved_contacts.values(), *saved_observables.values()))
         size += sum(a.nbytes for fields in saved_particle_states.values() for a in fields.values())
         size += sum(a.nbytes for a in saved_control.values())
+        size += sum(a.nbytes for a in saved_contact_state.values())
         frame = HistoryFrame(
             time,
             saved_state,
@@ -345,6 +361,7 @@ class WorkspaceHistory:
             observables=saved_observables,
             particle_states=saved_particle_states,
             control=saved_control,
+            contact_state=saved_contact_state,
         )
         if replace_last:
             self.bytes_used -= self.frames.pop().size
@@ -414,6 +431,12 @@ class WorkspaceHistory:
         if self.loaded_index != self.index:
             live_state = getattr(example, "state_0", getattr(example, "state", None))
             _restore_component(self.display_state, live_state, frame.state)
+            if frame.contact_state:
+                # Contact witnesses use the collision input frame, which can
+                # precede solver corrections to the displayed body poses.
+                if self.display_contact_state is None:
+                    self.display_contact_state = State()
+                _restore_component(self.display_contact_state, example.contact_state, frame.contact_state)
             if frame.control:
                 _restore_component(self.display_control, example.control, frame.control)
             for name, fields in frame.particle_states.items():
@@ -447,7 +470,7 @@ class WorkspaceHistory:
             "state_0": self.display_state,
             "state_1": self.display_state,
             "state": self.display_state,
-            "contact_state": self.display_state,
+            "contact_state": self.display_contact_state if frame.contact_state else self.display_state,
             "contacts": self.display_contacts,
             "solver_observables": self.display_observables,
             "sim_time": frame.time,

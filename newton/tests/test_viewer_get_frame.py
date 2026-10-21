@@ -335,6 +335,11 @@ class TestViewerGLGetFrame(unittest.TestCase):
             actual = draw_segment(eye - forward, end, arrows=True)
             green = (actual[:, :, 1] > 150) & (actual[:, :, 0] < 80) & (actual[:, :, 2] < 80)
             self.assertEqual(np.count_nonzero(green), 0)
+            # Zero force (or a disabled length scale) must not produce the
+            # camera-facing arrowhead used for nonzero view-aligned vectors.
+            actual = draw_segment(start, start, arrows=True)
+            green = (actual[:, :, 1] > 150) & (actual[:, :, 0] < 80) & (actual[:, :, 2] < 80)
+            self.assertEqual(np.count_nonzero(green), 0)
         finally:
             viewer.close()
 

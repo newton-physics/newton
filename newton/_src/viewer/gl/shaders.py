@@ -1178,6 +1178,9 @@ void main()
 {
     vec4 s = gl_in[0].gl_Position;
     vec4 e = gl_in[1].gl_Position;
+    // An unloaded contact has a zero force vector. Cull it before the
+    // view-aligned fallback, which would otherwise cover its mode disk.
+    if (all(equal(s, e))) return;
     bool tip_clipped = e.z + e.w < 0.0;
     if (!clip_line_near(s, e)) return;
 
