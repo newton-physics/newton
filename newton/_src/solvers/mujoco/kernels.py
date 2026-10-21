@@ -399,7 +399,8 @@ def eval_mujoco_coupling_effective_mass_block_kernel(
 
 
 # Kernel functions
-@wp.kernel
+# fast math only approximates div/sqrt here; keep transcendentals out of this kernel
+@wp.kernel(module="unique", module_options={"fast_math": True})
 def convert_newton_contacts_to_mjwarp_kernel(
     body_q: wp.array[wp.transform],
     shape_body: wp.array[int],

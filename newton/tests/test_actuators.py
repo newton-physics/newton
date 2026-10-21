@@ -5356,6 +5356,11 @@ class TestActuatorStateAssign(unittest.TestCase):
             Actuator.State(drive_state=state).assign(Actuator.State())
 
 
+@wp.kernel
+def _noop_kernel():
+    pass
+
+
 @unittest.skipUnless(
     wp.get_device().is_cuda and wp.is_mempool_enabled(wp.get_device()),
     "CUDA graph capture requires CUDA device with memory pools",
@@ -5428,6 +5433,8 @@ class TestDriveStateGraphCapture(unittest.TestCase):
                 key = id(s0) if parity_graphs else None
                 if key not in graphs:
                     with wp.ScopedCapture(device) as capture:
+                        # Graphs rooted at a memset can start before prior stream work on R570 Ada GPUs (#4786).
+                        wp.launch(_noop_kernel, dim=1, device=device)
                         after = run(s0, s1, steps_per_graph, boundary_assign=not parity_graphs)
                     graphs[key] = (capture.graph, after)
                 graph, (s0, s1) = graphs[key]
