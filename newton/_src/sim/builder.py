@@ -55,6 +55,7 @@ from ..geometry import (
 )
 from ..geometry.flags import MeshProperties
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
+from ..geometry.rest_shape import _dihedral_angles, _tet_rest_geometry, _triangle_rest_geometry
 from ..geometry.sdf_utils import _resolve_paired_samples_flag
 from ..geometry.support_function import _CONVEX_HULL_VALID
 from ..geometry.types import Heightfield
@@ -62,7 +63,7 @@ from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_convex
 from ..math import quat_between_vectors_robust
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
-from ..utils.deprecation import RemovedAttribute, deprecate_nonkeyword_arguments
+from ..utils.deprecation import RemovedAttribute
 from ..utils.mesh import MeshAdjacency, split_mesh_components
 from .enums import (
     BodyFlags,
@@ -6762,58 +6763,6 @@ class ModelBuilder:
         self.joint_target_q[q_start + 3 : q_start + 7] = list(rest_rotation_value)
         return joint_id
 
-    @deprecate_nonkeyword_arguments
-    def add_joint_cable(
-        self,
-        parent: int,
-        child: int,
-        *,
-        parent_xform: Transform | None = None,
-        child_xform: Transform | None = None,
-        stretch_stiffness: float | None = None,
-        stretch_damping: float | None = None,
-        shear_stiffness: float | None = None,
-        shear_damping: float | None = None,
-        bend_stiffness: float | None = None,
-        bend_damping: float | None = None,
-        twist_stiffness: float | None = None,
-        twist_damping: float | None = None,
-        label: str | None = None,
-        collision_filter_parent: bool | None = None,
-        enabled: bool = True,
-        custom_attributes: dict[str, Any] | None = None,
-        **kwargs,
-    ) -> int:
-        """Deprecated alias for :meth:`add_joint_rod`.
-
-        .. deprecated:: 1.6
-            Use :meth:`add_joint_rod` instead.
-        """
-        warnings.warn(
-            "ModelBuilder.add_joint_cable() is deprecated in Newton 1.6; use add_joint_rod() instead.",
-            NewtonDeprecationWarning,
-            stacklevel=_external_warning_stacklevel(),
-        )
-        return self.add_joint_rod(
-            parent=parent,
-            child=child,
-            parent_xform=parent_xform,
-            child_xform=child_xform,
-            stretch_stiffness=stretch_stiffness,
-            stretch_damping=stretch_damping,
-            shear_stiffness=shear_stiffness,
-            shear_damping=shear_damping,
-            bend_stiffness=bend_stiffness,
-            bend_damping=bend_damping,
-            twist_stiffness=twist_stiffness,
-            twist_damping=twist_damping,
-            label=label,
-            collision_filter_parent=collision_filter_parent,
-            enabled=enabled,
-            custom_attributes=custom_attributes,
-            **kwargs,
-        )
-
     def add_tendon(
         self, route: Sequence[TendonGuide], *, label: str | None = None, custom_attributes: dict[str, Any] | None = None
     ) -> int:
@@ -11347,30 +11296,11 @@ class ModelBuilder:
             between the particles in their initial configuration.
 
         """
-        # compute basis for 2D rest pose
         q_ = np.asarray(self.particle_q)
         p = q_[i]
-        q = q_[j]
-        r = q_[k]
-
-        qp = q - p
-        rp = r - p
-
-        def normalized(a):
-            l = np.linalg.norm(a, axis=-1, keepdims=True)
-            l[l == 0] = 1.0
-            return a / l
-
-        n = normalized(np.cross(qp, rp))
-        e1 = normalized(qp)
-        e2 = normalized(np.cross(n, e1))
-
-        R = np.concatenate((e1[..., None], e2[..., None]), axis=-1)
-        M = np.concatenate((qp[..., None], rp[..., None]), axis=-1)
-
-        D = np.matmul(R.transpose(0, 2, 1), M)
-
-        areas = np.linalg.det(D) / 2.0
+        qp = q_[j] - p
+        rp = q_[k] - p
+        D, areas = _triangle_rest_geometry(qp, rp)
         areas[areas < 0.0] = 0.0
         valid_inds = (areas > 0.0).nonzero()[0]
         if len(valid_inds) < len(areas):
@@ -11474,7 +11404,6 @@ class ModelBuilder:
             The tetrahedron is created with a rest-pose based on the particle's initial configuration
 
         """
-        # compute basis for 2D rest pose
         p = np.array(self.particle_q[i])
         q = np.array(self.particle_q[j])
         r = np.array(self.particle_q[k])
@@ -11484,8 +11413,7 @@ class ModelBuilder:
         rp = r - p
         sp = s - p
 
-        Dm = np.array((qp, rp, sp)).T
-        volume = np.linalg.det(Dm) / 6.0
+        Dm, volume = _tet_rest_geometry(qp, rp, sp)
 
         if volume <= 0.0:
             logger.warning("inverted tetrahedral element")
@@ -11629,27 +11557,11 @@ class ModelBuilder:
             rest = np.zeros_like(i_, dtype=float)
             valid_mask = (i_ != -1) & (j_ != -1)
 
-            # compute rest angle
             x1_valid = particle_q_[i_[valid_mask]]
             x2_valid = particle_q_[j_[valid_mask]]
             x3_valid = particle_q_[k_[valid_mask]]
             x4_valid = particle_q_[l_[valid_mask]]
-
-            def normalized(a):
-                l = np.linalg.norm(a, axis=-1, keepdims=True)
-                l[l == 0] = 1.0
-                return a / l
-
-            n1 = normalized(np.cross(x3_valid - x1_valid, x4_valid - x1_valid))
-            n2 = normalized(np.cross(x4_valid - x2_valid, x3_valid - x2_valid))
-            e = normalized(x4_valid - x3_valid)
-
-            def dot(a, b):
-                return (a * b).sum(axis=-1)
-
-            cos_theta = np.clip(dot(n1, n2), -1.0, 1.0)
-            sin_theta = dot(np.cross(n1, n2), e)
-            rest[valid_mask] = np.arctan2(sin_theta, cos_theta)
+            rest[valid_mask] = _dihedral_angles(x1_valid, x2_valid, x3_valid, x4_valid, x3_valid, x4_valid)
             rest = rest.tolist()
 
         inds = np.concatenate((i_[:, None], j_[:, None], k_[:, None], l_[:, None]), axis=-1)

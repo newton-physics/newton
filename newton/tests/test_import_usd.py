@@ -8802,6 +8802,7 @@ def Xform "Articulation" (
             np.testing.assert_allclose(converted_row[6], legacy_row[6], atol=1e-6)
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    @_expect_jointless_articulation_warning
     def test_joint_ordering_cycle_raises(self):
         """Reject invalid joint graphs and propagate topological sort errors."""
         from pxr import Gf, Usd, UsdGeom, UsdPhysics
@@ -8880,14 +8881,9 @@ def Xform "Articulation" (
                 with self.subTest(articulated=articulated, enabled=enabled, ignore_paths=ignore_paths):
                     joint_x.CreateJointEnabledAttr().Set(enabled)
                     builder = newton.ModelBuilder()
-                    with warnings.catch_warnings():
-                        # usd-core 25.5 reports an articulation without enabled joints as invalid.
-                        warnings.filterwarnings(
-                            "ignore", "Invalid ArticulationDesc", category=newton.exceptions.NewtonWarning
-                        )
-                        result = builder.add_usd(
-                            stage, ignore_paths=ignore_paths, load_visual_shapes=False, load_sites=False
-                        )
+                    result = builder.add_usd(
+                        stage, ignore_paths=ignore_paths, load_visual_shapes=False, load_sites=False
+                    )
                     self.assertNotIn(str(joint_x.GetPath()), result["path_joint_map"])
 
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")

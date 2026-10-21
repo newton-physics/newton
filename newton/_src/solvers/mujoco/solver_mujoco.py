@@ -888,9 +888,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
     def _set_mujoco_warp_module_options(self) -> None:
         """Configure loaded shared modules without overriding code-generated bounds."""
-        for module in [*_mujoco_warp_deterministic_modules(), kernels]:
+        # The contact conversion kernel lives in its own fast-math module.
+        contact_module = convert_newton_contacts_to_mjwarp_kernel.module
+        for module in [*_mujoco_warp_deterministic_modules(), kernels, contact_module]:
             max_records = (
-                self._deterministic_max_records if module.__name__ in _MUJOCO_WARP_DYNAMIC_RECORD_MODULES else 0
+                self._deterministic_max_records
+                if getattr(module, "__name__", None) in _MUJOCO_WARP_DYNAMIC_RECORD_MODULES
+                else 0
             )
             options = {
                 "deterministic": self._deterministic,
