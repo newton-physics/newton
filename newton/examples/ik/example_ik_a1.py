@@ -1,15 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Solve a shared-object dual-arm reach task on the OneRobotics A1 stand.
-
-One :class:`newton.ik.IKSolver` solves position and rotation objectives for
-both terminal links simultaneously. A single interactive object frame moves
-both grasp poses together while preserving each wrist's orientation relative
-to that frame; a joint-limit objective keeps the solution valid.
-
-Command: python -m newton.examples ik_a1
-"""
+###########################################################################
+# Example IK A1 (shared-object poses)
+#
+# Inverse kinematics on the OneRobotics A1 bimanual stand with two terminal
+# links controlled by one interactive shared-object frame.
+#
+# - Uses position and rotation objectives for both terminal links
+# - Keeps both wrist poses relative to the shared object frame
+# - Uses a joint-limit objective to keep the solution valid
+#
+# Command: python -m newton.examples ik_a1
+###########################################################################
 
 import numpy as np
 import warp as wp
@@ -146,7 +149,7 @@ class Example:
 
     def capture(self):
         """Capture the IK solve as a Warp graph when CUDA supports it."""
-        if wp.get_device().is_cuda and not wp.config.verify_cuda:
+        if self.device.is_cuda and not wp.config.verify_cuda:
             with wp.ScopedCapture() as capture:
                 self.simulate()
             self.graph = capture.graph
@@ -189,16 +192,20 @@ class Example:
             raise ValueError("A1 inverse kinematics did not move either arm")
 
         body_q = self.state.body_q.numpy()
-        actual_positions = np.asarray([body_q[body, :3] for body in self.terminal_bodies])
-        position_errors = np.linalg.norm(actual_positions - self.target_positions, axis=1)
+        object_inv = wp.transform_inverse(self.object_tf)
+        relative_poses = [object_inv * wp.transform(*body_q[body]) for body in self.terminal_bodies]
+        relative_positions = np.asarray(
+            [wp.transform_get_translation(pose) for pose in relative_poses], dtype=np.float32
+        )
+        position_errors = np.linalg.norm(relative_positions - self.grasp_offsets, axis=1)
         if np.max(position_errors) > 1.0e-3:
-            raise ValueError(f"A1 terminal-link position errors are {position_errors} m")
+            raise ValueError(f"A1 relative grasp-position errors are {position_errors} m")
 
-        actual_rotations = body_q[self.terminal_bodies, 3:]
-        target_rotations = np.asarray(self.target_rotations)
-        orientation_alignment = np.abs(np.sum(actual_rotations * target_rotations, axis=1))
+        relative_rotations = np.asarray([wp.transform_get_rotation(pose) for pose in relative_poses])
+        grasp_rotations = np.asarray(self.grasp_rotations)
+        orientation_alignment = np.abs(np.sum(relative_rotations * grasp_rotations, axis=1))
         if np.min(orientation_alignment) < 0.9999:
-            raise ValueError(f"A1 terminal-link orientation alignment is {orientation_alignment}")
+            raise ValueError(f"A1 relative grasp-orientation alignment is {orientation_alignment}")
 
 if __name__ == "__main__":
     viewer, args = newton.examples.init()
