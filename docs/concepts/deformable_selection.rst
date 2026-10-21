@@ -212,7 +212,8 @@ deformable object index 2 and belongs to world 1. Index 3 refers to ``"cable_2"`
 
 Both mappings are created with the view. Treat them as read-only: editing one
 does not update the other or change the selection. The ``numpy()`` call above
-only makes the device values easy to inspect in Python.
+only makes the device values easy to inspect in Python. Use the Python list for
+host-side setup and the Warp array in device kernels.
 
 To find all selected cables in a world, use ``deformable_object_ranges()``:
 
@@ -231,6 +232,22 @@ There is one ``(start, end)`` pair per world. The end is excluded. World 1 has
 selected deformable object indices 1, 2, and 3. These are positions in the view, not body or
 particle indices. A world with no matches has equal start and end values, so it
 remains represented.
+
+``count_per_world`` includes every model world, even those without a match.
+It is ``None`` when their counts differ. For example, if only worlds 0 and 2
+contain a selected cloth:
+
+.. code-block:: python
+
+    cloth = DeformableSurfaceView(model, "cloth")
+    print(cloth.count)                       # 2
+    print(cloth.worlds)                      # [0, 2]
+    print(cloth.deformable_object_ranges())  # [(0, 1), (1, 1), (1, 2)]
+    print(cloth.count_per_world)             # None: the counts are [1, 0, 1]
+
+    world_id = 1
+    start, end = cloth.deformable_object_ranges()[world_id]
+    print(cloth.labels[start:end])           # []
 
 The same ranges are available on the device as a compact boundaries array:
 
@@ -252,7 +269,7 @@ The final 5 marks the end of the selected list. Three worlds need four boundarie
 Global deformable objects (world ``-1``) cannot share a view with deformable
 objects assigned to model worlds. A global-only view has one range, ``(0, count)``,
 and all its ``worlds`` and ``worlds_device`` entries are ``-1``. That single range is not indexed by a model
-world ID.
+world ID. Its ``count_per_world`` equals ``count``.
 
 Simulation element ranges answer a different question: which bodies or particles
 belong to one selected deformable object?

@@ -217,6 +217,7 @@ class TestDeformableSelection(unittest.TestCase):
 
         view = DeformableVolumeView(model, "/World/Soft")
         self.assertEqual(view.count, 1)
+        self.assertEqual(view.count_per_world, 1)
         self.assertEqual(view.deformable_object_ranges(), [(0, 1)])
         np.testing.assert_array_equal(view.deformable_object_boundaries.numpy(), [0, 1])
         np.testing.assert_array_equal(view.worlds_device.numpy(), [-1])
@@ -268,6 +269,11 @@ class TestDeformableSelection(unittest.TestCase):
         np.testing.assert_array_equal(view.worlds_device.numpy(), [0, 1, 1])
         self.assertEqual(view.labels, ["/World/ClothA", "/World/ClothA", "/World/ClothB"])
         self.assertEqual(view.get_particle_positions(view.model.state()).shape, (3, 4))
+
+        # Equal counts in the matching worlds do not hide the empty third world.
+        single = DeformableSurfaceView(view.model, "/World/ClothA")
+        self.assertIsNone(single.count_per_world)
+        self.assertEqual(single.deformable_object_ranges(), [(0, 1), (1, 2), (2, 2)])
 
     def test_deformable_object_ranges_slice_interleaved_objects_by_world(self):
         """Select each world's cables without gaps from intervening cloth and volume deformable objects."""

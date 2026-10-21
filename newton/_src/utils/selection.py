@@ -2763,7 +2763,11 @@ class _DeformableViewBase:
         self.count = object_count
         """Number of selected deformable objects across all worlds."""
         self.count_per_world = counts_per_world[0] if all_equal(counts_per_world) else None
-        """Number of selected deformable objects per world, or None when the counts vary."""
+        """Selected deformable objects per model world, or None when the counts vary.
+
+        Empty model worlds count as zero, so counts of ``[1, 0, 1]`` give ``None``.
+        A global-only selection has one partition and returns :attr:`count`.
+        """
         flat_ids = [i for ids in object_ids for i in ids]
         self.family = family
         """Geometric family selected by this view."""
