@@ -55,7 +55,6 @@ from .collision_masks import (
 )
 from .constants import (
     DEFAULT_LIMIT_SOLREF,
-    KINEMATIC_MIN_ARMATURE,
     KINEMATIC_WELD_DAMPRATIO,
     KINEMATIC_WELD_SOLIMP,
     KINEMATIC_WELD_TIMECONST_STEPS,
@@ -4505,7 +4504,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._kinematic_needs_target: np.ndarray | None = None
         self._jnt_kinematic_mocap: wp.array[wp.int32] | None = None
         self._kinematic_weld_dt: float | None = None
-        self._dof_armature_min: wp.array[float] | None = None
         self.mjc_actuator_ctrl_source: wp.array[wp.int32] | None = None
         """Control source for each MuJoCo actuator.
 
@@ -8683,6 +8681,19 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self.mjc_actuator_to_newton_ball_jnt = None
             self.mjc_actuator_to_newton_actuator_idx = None
 
+        # MuJoCo rejects movable bodies without mass and inertia, but only sees
+        # the geom-inferred inertia at compile time; Newton's zero is set later.
+        massless = []
+        for j, _, _ in kinematic_target_roots:
+            child = int(joint_child[j])
+            if body_mass[child] <= MJ_MINVAL or np.linalg.eigvalsh(body_inertia[child]).min() <= MJ_MINVAL:
+                massless.append(model.body_label[child])
+        if massless:
+            raise ValueError(
+                f"Kinematic root bodies {massless[:5]} have no mass or inertia. SolverMuJoCo holds kinematic "
+                "roots with a weld, and MuJoCo requires movable bodies to have positive mass and inertia."
+            )
+
         # MuJoCo has no prescribed DOFs; its idiom is a weld to a mocap target.
         # Only roots kinematic or marked switchable at conversion get one.
         kinematic_target_names = []
@@ -8940,31 +8951,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 jnt_kinematic_mocap = np.full(n_template_joints, -1, dtype=np.int32)
                 jnt_kinematic_mocap[template_jnt] = self.kinematic_target_mocap.numpy()
                 self._jnt_kinematic_mocap = wp.array(jnt_kinematic_mocap, dtype=wp.int32)
-
-                # A weld cannot hold DOFs without inertia; the armature used to.
-                joint_articulation = model.joint_articulation.numpy()
-                body_mass = model.body_mass.numpy()
-                body_inertia_trace = np.trace(model.body_inertia.numpy(), axis1=1, axis2=2)
-                dof_armature_min = np.zeros(self.mj_model.nv, dtype=np.float32)
-                massless = []
-                for j, _, _ in kinematic_target_roots:
-                    subtree = joint_child[joint_articulation == joint_articulation[j]]
-                    if body_mass[subtree].sum() > 0.0 and body_inertia_trace[subtree].sum() > 0.0:
-                        continue
-                    start = int(joint_mjc_dof_start[j])
-                    dof_armature_min[start : start + int(joint_dof_dim[j][0] + joint_dof_dim[j][1])] = (
-                        KINEMATIC_MIN_ARMATURE
-                    )
-                    massless.append(model.body_label[int(joint_child[j])])
-                if massless:
-                    warnings.warn(
-                        f"Kinematic root bodies {massless} have no mass or inertia; "
-                        f"SolverMuJoCo gives those DOFs an armature of {KINEMATIC_MIN_ARMATURE} so MuJoCo can "
-                        "weld them. Assign mass and inertia to control how contacts treat these bodies.",
-                        NewtonWarning,
-                        stacklevel=_external_warning_stacklevel(),
-                    )
-                    self._dof_armature_min = wp.array(dof_armature_min, dtype=wp.float32)
 
             # Create mjc_jnt_to_newton_jnt: MuJoCo[world, joint] -> Newton joint index
             # selected_joints[idx] is the Newton template joint index
@@ -9580,7 +9566,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         wp.launch(
             update_dof_armature_kernel,
             dim=self.mjc_dof_to_newton_dof.shape,
-            inputs=[self.mjc_dof_to_newton_dof, self._notify_joint_armature, self._dof_armature_min],
+            inputs=[self.mjc_dof_to_newton_dof, self._notify_joint_armature],
             outputs=[self.mjw_model.dof_armature],
             device=self.model.device,
         )

@@ -2308,19 +2308,15 @@ def update_dof_force_properties_kernel(
 def update_dof_armature_kernel(
     mjc_dof_to_newton_dof: wp.array2d[wp.int32],
     joint_armature: wp.array[float],
-    dof_armature_min: wp.array[float],
     # outputs
     dof_armature: wp.array2d[float],
 ):
-    """Update MuJoCo dof_armature from Newton joint_armature, floored per template DOF."""
+    """Update MuJoCo dof_armature from Newton joint_armature."""
     world, mjc_dof = wp.tid()
     newton_dof = mjc_dof_to_newton_dof[world, mjc_dof]
     if newton_dof < 0:
         return
-    armature = joint_armature[newton_dof]
-    if dof_armature_min:
-        armature = wp.max(armature, dof_armature_min[mjc_dof])
-    dof_armature[world, mjc_dof] = armature
+    dof_armature[world, mjc_dof] = joint_armature[newton_dof]
 
 
 @wp.kernel

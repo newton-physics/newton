@@ -1185,9 +1185,9 @@ Errors and warnings
 - Making a root without a target, or any non-root body, kinematic raises
   :class:`ValueError`. The check runs on eager notifications; inside CUDA
   graph capture such a body is not detected and stays dynamic in MuJoCo.
-- A kinematic root whose articulation has no mass or inertia cannot be
-  welded. Its DOFs get an armature of ``1`` and a
-  :class:`~newton.exceptions.NewtonWarning` is issued.
+- A kinematic root without positive mass and inertia raises
+  :class:`ValueError` at solver construction: MuJoCo requires them of
+  every movable body.
 - ``mujoco:kinematic_switchable`` on a body that is not a root with joint
   DOFs is ignored with a :class:`~newton.exceptions.NewtonWarning`.
 - An explicit ``njmax`` too small for the welds of switchable roots

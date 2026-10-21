@@ -2570,32 +2570,18 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                     solver.mjw_data.mocap_pos.numpy()[0, mocap], (x + 0.5 * 4.0 * dt, 0.0, 1.0), atol=1.0e-6
                 )
 
-    def test_massless_kinematic_root_gets_armature_floor(self):
-        """A weld cannot hold a massless body, so its DOFs get a warned armature floor."""
+    def test_massless_kinematic_root_raises(self):
+        """MuJoCo rejects movable bodies without mass; kinematic roots must not slip past that check."""
         for use_mujoco_cpu in (False, True):
             with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
                 builder = newton.ModelBuilder()
-                platform = builder.add_body(
-                    xform=wp.transform((0.0, 0.0, 0.45), wp.quat_identity()), is_kinematic=True, mass=0.0
-                )
+                platform = builder.add_body(is_kinematic=True, mass=0.0)
                 builder.add_shape_box(
                     platform, hx=1.0, hy=1.0, hz=0.05, cfg=newton.ModelBuilder.ShapeConfig(density=0.0)
                 )
-                box = builder.add_body(xform=wp.transform((0.0, 0.0, 0.6), wp.quat_identity()))
-                builder.add_shape_box(box, hx=0.1, hy=0.1, hz=0.1)
                 model = builder.finalize()
-                with self.assertWarnsRegex(NewtonWarning, "no mass or inertia"):
-                    solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, njmax=100, nconmax=20)
-                platform_dofs = solver.mjc_dof_to_newton_dof.numpy()[0] < 6
-                np.testing.assert_allclose(solver.mjw_model.dof_armature.numpy()[:, platform_dofs], 1.0)
-
-                state_0, state_1, control = model.state(), model.state(), model.control()
-                for _ in range(100):
-                    solver.step(state_0, state_1, control, None, 0.002)
-                    state_0, state_1 = state_1, state_0
-                body_q = state_0.body_q.numpy()
-                self.assertTrue(np.all(np.isfinite(body_q)))
-                self.assertAlmostEqual(float(body_q[box, 2]), 0.6, delta=2.0e-3)
+                with self.assertRaisesRegex(ValueError, "no mass or inertia"):
+                    SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
 
     def test_switchable_roots_reserve_weld_rows(self):
         """njmax leaves room for the welds of roots that start dynamic, or warns when it cannot."""

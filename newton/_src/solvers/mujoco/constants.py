@@ -26,9 +26,6 @@ KINEMATIC_WELD_TIMECONST_STEPS_RK4 = 8.0
 KINEMATIC_WELD_DAMPRATIO = 1.0
 """Kinematic weld damping ratio."""
 
-KINEMATIC_MIN_ARMATURE = 1.0
-"""Armature given to massless kinematic-root DOFs so MuJoCo can weld them."""
-
 KINEMATIC_WELD_SOLIMP = (0.99, 0.99, 0.001, 0.5, 2.0)
 """Constant-impedance weld solimp, so the target look-ahead cancels the weld damping exactly."""
 
