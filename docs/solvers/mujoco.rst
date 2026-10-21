@@ -1183,16 +1183,49 @@ infinite-mass constraint:
 Switching kinematic roots at runtime
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-:attr:`~newton.Model.body_flags` can switch a root between kinematic and
-dynamic after ``notify_model_changed(ModelFlags.BODY_PROPERTIES)``, as
-long as the root has a target. Roots that are kinematic in any world
-when the solver is created get one. To start a root dynamic and switch
-it later, set its ``mujoco:kinematic_switchable`` body attribute before
-creating the solver, or pass ``kinematic_switchable_roots=True`` to give
-every movable root a target. Each target adds a mocap body and an
-inactive weld to the exported MuJoCo model, and the default ``njmax``
-reserves the six constraint rows each inactive weld needs once its root
-turns kinematic.
+MuJoCo cannot add bodies or constraints to a compiled model, and all MuJoCo
+Warp worlds share one model, so the weld of every root that may become
+kinematic must exist when the solver is created. Roots that are kinematic in
+any world at that point get one automatically. To start a root dynamic and
+make it kinematic later, opt it in before creating the solver:
+
+- per body, with the ``mujoco:kinematic_switchable`` body attribute;
+- for every movable root, with ``kinematic_switchable_roots=True``.
+
+:attr:`~newton.Model.body_flags` can then switch these roots in either
+direction, per world, followed by
+``notify_model_changed(ModelFlags.BODY_PROPERTIES)``:
+
+.. testcode:: mujoco-kinematic-switchable
+
+   from newton.solvers import SolverMuJoCo
+
+   builder = newton.ModelBuilder()
+   SolverMuJoCo.register_custom_attributes(builder)
+   crate = builder.add_body(
+       xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()),
+       custom_attributes={"mujoco:kinematic_switchable": True},
+   )
+   builder.add_shape_box(crate, hx=0.1, hy=0.1, hz=0.1)
+   model = builder.finalize()
+   solver = SolverMuJoCo(model)
+
+   # Later: take over the crate's motion.
+   body_flags = model.body_flags.numpy()
+   body_flags[crate] = int(newton.BodyFlags.KINEMATIC)
+   model.body_flags.assign(body_flags)
+   solver.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
+
+For an imported asset, set the attribute on the builder after importing, for
+example
+``builder.custom_attributes["mujoco:kinematic_switchable"].values[body] = True``,
+or on ``model.mujoco.kinematic_switchable`` before creating the solver.
+
+Each opted-in root adds a mocap body and an inactive weld to the exported
+MuJoCo model, and the default ``njmax`` reserves the six constraint rows each
+inactive weld needs once its root turns kinematic. Opting in every root with
+``kinematic_switchable_roots=True`` costs little simulation time, but the
+reserved rows grow with the number of free bodies.
 
 Errors and warnings
 ~~~~~~~~~~~~~~~~~~~

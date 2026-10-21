@@ -395,7 +395,8 @@ The following patterns are valid and commonly used:
      - Yes
    * - Mass/inertia (see :ref:`Mass and Inertia`)
      - Not used for motion when fixed
-     - Preserved for body properties and future dynamic switching
+     - Preserved for body properties and future dynamic switching; :class:`~newton.solvers.SolverMuJoCo` also
+       uses it for contact softness
      - Fully used by dynamics
    * - Mass matrix / constraint role
      - No active DOFs when fixed to world
@@ -448,9 +449,18 @@ Implementation details differ by coordinate formulation:
   does not zero inverse mass/inertia inside its contact solver. Contacts against
   kinematic bodies can therefore be softer under SemiImplicit.
 
-In :class:`~newton.solvers.SolverMuJoCo`, kinematic roots are welded to mocap targets and keep their
-real mass, so their contacts are softer than an infinite-mass collider's; see
-:ref:`Kinematic Links and Fixed Roots <mujoco-kinematic-links-and-fixed-roots>` for details.
+:class:`~newton.solvers.SolverMuJoCo` follows MuJoCo, which has no prescribed degrees of freedom: it holds
+kinematic roots with a weld to a target that tracks the prescribed motion. This has user-visible consequences:
+
+- Switching a root between kinematic and dynamic at runtime requires opting the root in before the solver is
+  created, through the ``mujoco:kinematic_switchable`` body attribute or ``kinematic_switchable_roots=True``.
+  Roots that are kinematic when the solver is created are opted in automatically.
+- Kinematic roots keep their real mass, so contacts on a light kinematic body under a heavy load are softer than an
+  infinite-mass collider's.
+- A kinematic root without mass or inertia is driven as a MuJoCo mocap body. It cannot be switched to dynamic, and
+  contact friction and its dynamic descendants do not see its velocity.
+
+See :ref:`Kinematic Links and Fixed Roots <mujoco-kinematic-links-and-fixed-roots>` for details.
 
 .. _Joint types:
 

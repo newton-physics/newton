@@ -2396,7 +2396,7 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
         body_flags = model.body_flags.numpy()
         body_flags[root_body + 1] = int(BodyFlags.KINEMATIC)
         model.body_flags.assign(body_flags)
-        with self.assertRaisesRegex(ValueError, "child"):
+        with self.assertRaisesRegex(ValueError, "only root bodies"):
             solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
 
     @staticmethod
@@ -2683,8 +2683,33 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
         body_flags = model.body_flags.numpy()
         body_flags[root_body] = int(BodyFlags.KINEMATIC)
         model.body_flags.assign(body_flags)
-        with self.assertRaises(ValueError):
+        with self.assertRaisesRegex(ValueError, "mujoco:kinematic_switchable"):
             solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
+
+    def test_kinematic_switchable_opt_in_on_imported_body(self):
+        """An imported body opts into runtime kinematic switching through the builder or the model."""
+        mjcf = '<mujoco><worldbody><body name="crate" pos="0 0 1"><freejoint/><geom type="box" size=".1 .1 .1"/></body></worldbody></mujoco>'
+        for set_on_model in (False, True):
+            with self.subTest(set_on_model=set_on_model):
+                builder = newton.ModelBuilder()
+                SolverMuJoCo.register_custom_attributes(builder)
+                builder.add_mjcf(mjcf)
+                crate = next(i for i, label in enumerate(builder.body_label) if label.endswith("crate"))
+                if not set_on_model:
+                    builder.custom_attributes["mujoco:kinematic_switchable"].values[crate] = True
+                model = builder.finalize()
+                if set_on_model:
+                    switchable = model.mujoco.kinematic_switchable.numpy()
+                    switchable[crate] = True
+                    model.mujoco.kinematic_switchable.assign(switchable)
+
+                solver = SolverMuJoCo(model, disable_contacts=True)
+                self._assert_kinematic_state_matches_flags(model, solver)
+                body_flags = model.body_flags.numpy()
+                body_flags[crate] = int(BodyFlags.KINEMATIC)
+                model.body_flags.assign(body_flags)
+                solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
+                self._assert_kinematic_state_matches_flags(model, solver)
 
     def test_kinematic_root_tracks_prescribed_motion_and_holds_payload(self):
         """A shaken kinematic platform follows its prescribed pose and carries a box without slip."""

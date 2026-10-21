@@ -9635,10 +9635,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 )
             invalid = np.flatnonzero(kinematic & self._kinematic_needs_target)
             if invalid.size:
+                body = int(invalid[0])
+                joint = np.flatnonzero(self.model.joint_child.numpy() == body)
+                if joint.size and self.model.joint_parent.numpy()[joint[0]] >= 0:
+                    raise ValueError(
+                        f"Body {self.model.body_label[body]!r} cannot be kinematic: only root bodies, whose joint "
+                        "parent is the world, can be kinematic."
+                    )
                 raise ValueError(
-                    f"Body {self.model.body_label[invalid[0]]!r} cannot be kinematic: SolverMuJoCo only supports "
-                    "kinematic root bodies that were kinematic, had mujoco:kinematic_switchable set, or were "
-                    "covered by kinematic_switchable_roots=True when the solver was created."
+                    f"Body {self.model.body_label[body]!r} cannot be switched to kinematic: SolverMuJoCo prepares "
+                    "kinematic roots when it is created. Set the body's mujoco:kinematic_switchable attribute, or "
+                    "pass kinematic_switchable_roots=True, before creating the solver."
                 )
         if self.kinematic_target_eq is None:
             return
