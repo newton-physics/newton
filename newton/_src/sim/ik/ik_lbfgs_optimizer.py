@@ -14,7 +14,14 @@ import warp as wp
 
 from ..enums import JointType
 from ..model import Model
-from .ik_common import IKJacobianType, _initialize_body_q, compute_costs, eval_fk_batched, fk_accum
+from .ik_common import (
+    IKJacobianType,
+    _initialize_body_q,
+    _validate_articulation_tree,
+    compute_costs,
+    eval_fk_batched,
+    fk_accum,
+)
 from .ik_objectives import IKObjective
 
 
@@ -128,7 +135,14 @@ class IKOptimizerLBFGS:
 
     Raises:
         ValueError: If ``model`` contains a :attr:`~newton.JointType.ROD`
-            joint, which is not supported by this optimizer.
+            joint or a body with multiple incoming articulation joints,
+            which are not supported by this optimizer.
+
+    Note:
+        Forward kinematics follows articulation tree joints and ignores
+        loop-closing joints; loop-closure constraints are not enforced.
+        External root-parent poses are copied from :attr:`Model.body_q` at
+        construction. Rebuild the optimizer after changing those poses.
     """
 
     TILE_N_DOFS = None
@@ -147,6 +161,7 @@ class IKOptimizerLBFGS:
     ) -> IKOptimizerLBFGS:
         if model._has_rod_joints and JointType.ROD in model.joint_type.numpy():  # pyright: ignore[reportPrivateUsage]
             raise ValueError("IKOptimizerLBFGS does not support JointType.ROD joints.")
+        _validate_articulation_tree(model)
 
         n_dofs = model.joint_dof_count
         n_residuals = sum(o.residual_dim() for o in objectives)

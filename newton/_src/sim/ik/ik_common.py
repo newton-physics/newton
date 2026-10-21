@@ -7,10 +7,25 @@ from __future__ import annotations
 
 from enum import Enum
 
+import numpy as np
 import warp as wp
 
 from ..articulation import eval_single_articulation_fk
 from ..enums import BodyFlags
+from ..model import Model
+
+
+def _validate_articulation_tree(model: Model) -> None:
+    """Reject multiple articulated writers to a body pose before constructing IK."""
+    children = model.joint_child.numpy()
+    articulated = model.joint_articulation.numpy() >= 0
+    counts = np.bincount(children[articulated & (children >= 0)], minlength=model.body_count)
+    shared = np.flatnonzero(counts > 1)
+    if shared.size:
+        raise ValueError(
+            f"IK does not support bodies with multiple incoming articulation joints (body {shared[0]}). "
+            "Use a single articulation tree per body."
+        )
 
 
 class IKJacobianType(Enum):

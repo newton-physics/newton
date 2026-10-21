@@ -352,6 +352,37 @@ devices = get_test_devices()
 
 
 class TestIKFKKernels(unittest.TestCase):
+    def test_shared_articulation_body(self):
+        """Reject ambiguous FK ownership even when the objective targets a descendant."""
+        builder = newton.ModelBuilder()
+        shared, descendant, external = [builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3))) for _ in range(3)]
+        root = builder.add_joint_revolute(-1, shared, axis=newton.Axis.Z)
+        child = builder.add_joint_revolute(shared, descendant, axis=newton.Axis.Y)
+        builder.add_articulation([root, child])
+        other_root = builder.add_joint_revolute(external, shared, axis=newton.Axis.X)
+        builder.add_articulation([other_root])
+        model = builder.finalize(device="cpu")
+        positions = wp.zeros(1, dtype=wp.vec3, device="cpu")
+        rotations = wp.array([[0.0, 0.0, 0.0, 1.0]], dtype=wp.vec4, device="cpu")
+        for optimizer in (ik.IKOptimizer.LM, ik.IKOptimizer.LBFGS):
+            for mode in ik.IKJacobianType:
+                for link in (shared, descendant):
+                    for objective in (
+                        ik.IKObjectivePosition(link, wp.vec3(0.0), positions),
+                        ik.IKObjectiveRotation(link, wp.quat_identity(), rotations),
+                    ):
+                        with self.subTest(
+                            optimizer=optimizer, mode=mode, link=link, objective=type(objective).__name__
+                        ):
+                            with self.assertRaisesRegex(ValueError, "multiple incoming articulation joints"):
+                                ik.IKSolver(model, 1, [objective], optimizer=optimizer, jacobian_mode=mode)
+        # Direct optimizers and custom objectives must not bypass the FK check.
+        for optimizer_cls in (ik.IKOptimizerLM, ik.IKOptimizerLBFGS):
+            for mode in ik.IKJacobianType:
+                with self.subTest(optimizer=optimizer_cls.__name__, mode=mode):
+                    with self.assertRaisesRegex(ValueError, "multiple incoming articulation joints"):
+                        optimizer_cls(model, 1, [_NoopObjective()], jacobian_mode=mode)
+
     def test_unarticulated_objective_link(self):
         """Reject position and rotation targets on a standalone world-root joint."""
         builder = newton.ModelBuilder()
@@ -365,10 +396,12 @@ class TestIKFKKernels(unittest.TestCase):
         for objective in objectives:
             objective.bind_device("cpu")
             objective.set_batch_layout(3, 0, 1)
-            for mode in (ik.IKJacobianType.ANALYTIC, ik.IKJacobianType.AUTODIFF):
-                with self.subTest(objective=type(objective).__name__, mode=mode):
-                    with self.assertRaisesRegex(ValueError, "articulation"):
-                        objective.init_buffers(model, mode)
+            for link, message in ((body, "articulation"), (-1, "out of range"), (model.body_count, "out of range")):
+                objective.link_index = link
+                for mode in (ik.IKJacobianType.ANALYTIC, ik.IKJacobianType.AUTODIFF):
+                    with self.subTest(objective=type(objective).__name__, mode=mode, link=link):
+                        with self.assertRaisesRegex(ValueError, message):
+                            objective.init_buffers(model, mode)
 
 
 add_function_test(TestIKFKKernels, "test_fk_two_pass_parity", test_fk_two_pass_parity, devices)
