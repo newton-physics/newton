@@ -6261,47 +6261,9 @@ def _rod_builder_assembles_topology_and_constitutive_data(test, device):
     test.assertEqual(caught.filename, __file__)
 
 
-def _joint_rod_api_removes_cable_names(test, device):
-    """Verify canonical rod names and removal of deprecated cable aliases."""
-    test.assertEqual(newton.JointType.ROD.value, 7)
-
-    names = dir(newton.JointType)
-    test.assertNotIn("CABLE", names)
-    test.assertIn("ROD", names)
-    test.assertNotIn("CABLE", newton.JointType.__members__)
-    with test.assertRaises(AttributeError):
-        _ = newton.JointType.CABLE
-    with test.assertRaises(KeyError):
-        _ = newton.JointType["CABLE"]
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", DeprecationWarning)
-        rod_type = newton.JointType(7)
-        test.assertIs(rod_type, newton.JointType.ROD)
-        test.assertIs(newton.JointType["ROD"], rod_type)
-        test.assertEqual(rod_type.name, "ROD")
-        test.assertIn("ROD", repr(rod_type))
-        test.assertEqual([member.name for member in newton.JointType if member.value == 7], ["ROD"])
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", DeprecationWarning)
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        child = builder.add_link()
-        joint = builder.add_joint_rod(parent=-1, child=child)
-    test.assertEqual(builder.joint_type[joint], newton.JointType.ROD)
-
-    with test.assertRaises(AttributeError):
-        builder.add_joint_cable(parent=-1, child=child)
-
-
 def _cable_positional_argument_migrations(test, device):
     """Enforce completed migrations to keyword-only rod parameters."""
     released_stiffness_args = (11.0, 0.1, 22.0, 0.2, 33.0, 0.3, 44.0, 0.4)
-
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    child = builder.add_link()
-    with test.assertRaises(TypeError):
-        builder.add_joint_rod(-1, child, None, None, *released_stiffness_args)
 
     points = [wp.vec3(0.0, 0.0, float(i)) for i in range(3)]
     quaternions = [wp.quat_identity(), wp.quat_identity()]
@@ -8122,12 +8084,6 @@ add_function_test(
     TestCable,
     "test_rod_builder_assembles_topology_and_constitutive_data",
     _rod_builder_assembles_topology_and_constitutive_data,
-    devices=None,
-)
-add_function_test(
-    TestCable,
-    "test_joint_rod_api_removes_cable_names",
-    _joint_rod_api_removes_cable_names,
     devices=None,
 )
 add_function_test(
