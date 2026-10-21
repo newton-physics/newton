@@ -706,12 +706,14 @@ def parse_mjcf(
                         normals = np.array(mesh_attrib["normal"].split(), dtype=np.float32)
                     except ValueError as exc:
                         raise ValueError(f"Inline MJCF mesh {name!r} has invalid normal data.") from exc
-                    if len(normals) != 3 * len(vertices):
+                    if len(normals) not in (3, 3 * len(vertices)):
                         raise ValueError(
-                            f"Inline MJCF mesh {name!r} normal data must contain 3 values per vertex; "
+                            f"Inline MJCF mesh {name!r} normal data must contain 3 shared values or 3 values per vertex; "
                             f"got {len(normals)} values for {len(vertices)} vertices."
                         )
                     normals = normals.reshape(-1, 3)
+                    if len(normals) == 1:
+                        normals = np.repeat(normals, len(vertices), axis=0)
 
                 texcoords = None
                 if "texcoord" in mesh_attrib:
@@ -1112,6 +1114,7 @@ def parse_mjcf(
             geom_defaults = resolve_class_defaults(geom_class, defaults)
             geom_attrib = merge_attrib(geom_defaults.get("geom", {}), geom.attrib)
 
+            raw_geom_name = geom.attrib.get("name")
             geom_name = geom_attrib.get("name", f"{body_name}_geom_{geo_count}{'_visual' if just_visual else ''}")
             geom_type = geom_attrib.get("type", "sphere")
             fit_to_mesh = False
@@ -1379,6 +1382,7 @@ def parse_mjcf(
                             center_offset = wp.vec3(*com)
                             tf = tf * wp.transform(center_offset, fit_rot)
 
+            geom_shape_start = len(shapes)
             if geom_type == "sphere":
                 s = shape_builder.add_shape_sphere(
                     xform=tf,
@@ -1583,6 +1587,10 @@ def parse_mjcf(
                 if verbose:
                     logger.warning("MJCF parsing shape %s issue: geom type %s is unsupported", geom_name, geom_type)
 
+            if shape_builder is builder and raw_geom_name and len(shapes) > geom_shape_start:
+                # Preserve the first shape for multi-part meshes and visual/collider copies.
+                raw_geom_name_to_idx.setdefault(raw_geom_name, shapes[geom_shape_start])
+
             # Handle explicit mass: compute inertia using existing functions, add to body.
             # Visual geoms can still contribute authored mass when parse_visuals=True.
             if geom_mass_explicit is not None and geom_mass_explicit > 0.0 and link >= 0 and not explicit_mass_handled:
@@ -1682,6 +1690,7 @@ def parse_mjcf(
                 continue
             site_attrib = resolve_element_attrib(site, "site", defaults)
 
+            raw_site_name = site.attrib.get("name")
             site_name = site_attrib.get("name", f"{body_name}_site_{site_count}")
 
             # Check if site should be ignored by name
@@ -1764,6 +1773,8 @@ def parse_mjcf(
             )
             site_shapes.append(s)
             site_name_to_idx[sanitize_name(site_name)] = s
+            if raw_site_name:
+                raw_site_name_to_idx[raw_site_name] = s
 
         return site_shapes
 
@@ -2900,6 +2911,9 @@ def parse_mjcf(
     # Used to resolve equality constraints and actuators that reference entities by their short name.
     body_name_to_idx: dict[str, int] = {}
     site_name_to_idx: dict[str, int] = {}
+    # Spatial tendons need exact authored names within this import, without label aliases.
+    raw_site_name_to_idx: dict[str, int] = {}
+    raw_geom_name_to_idx: dict[str, int] = {}
     joint_name_to_idx: dict[str, int] = {}
 
     # Extract articulation label early for hierarchical label construction
@@ -3208,7 +3222,7 @@ def parse_mjcf(
                 logger.info("Parsed fixed tendon: %s (%s)", tendon_name, joint_names_str)
 
         def find_shape_by_name(name: str, want_site: bool) -> int:
-            """Find a shape index by name, disambiguating sites from geoms.
+            """Find a shape index by its exact MJCF name, disambiguating sites from geoms.
 
             MuJoCo allows sites and geoms to share the same name (different namespaces).
             Newton stores both as shapes in shape_label, so we need to pick the right one
@@ -3216,12 +3230,9 @@ def parse_mjcf(
 
             Returns -1 if no shape with the matching name and type is found.
             """
-            for i, label in enumerate(builder.shape_label):
-                if label == name or label.endswith(f"/{name}"):
-                    is_site = bool(builder.shape_flags[i] & ShapeFlags.SITE)
-                    if is_site == want_site:
-                        return i
-            return -1
+            if want_site:
+                return raw_site_name_to_idx.get(name, -1)
+            return raw_geom_name_to_idx.get(name, -1)
 
         for spatial in tendon_section.findall("spatial"):
             # Apply default class inheritance for spatial tendon attributes.
@@ -3235,8 +3246,6 @@ def parse_mjcf(
             for child in spatial:
                 if child.tag == "site":
                     site_name = child.attrib.get("site", "")
-                    if site_name:
-                        site_name = sanitize_name(site_name)
                     site_idx = find_shape_by_name(site_name, want_site=True) if site_name else -1
                     if site_idx < 0:
                         warnings.warn(
@@ -3249,8 +3258,6 @@ def parse_mjcf(
 
                 elif child.tag == "geom":
                     geom_name = child.attrib.get("geom", "")
-                    if geom_name:
-                        geom_name = sanitize_name(geom_name)
                     geom_idx = find_shape_by_name(geom_name, want_site=False) if geom_name else -1
                     if geom_idx < 0:
                         warnings.warn(
@@ -3263,7 +3270,6 @@ def parse_mjcf(
                     sidesite_name = child.attrib.get("sidesite", "")
                     sidesite_idx = -1
                     if sidesite_name:
-                        sidesite_name = sanitize_name(sidesite_name)
                         sidesite_idx = find_shape_by_name(sidesite_name, want_site=True)
                         if sidesite_idx < 0:
                             warnings.warn(
