@@ -21,6 +21,7 @@ import warp as wp
 import newton
 from newton.utils import compute_world_offsets, solidify_mesh
 
+from ..core.host_transform import transform_add_translation, transform_from_array, transform_multiply
 from ..core.types import MAXVAL, Axis
 from ..exceptions import NewtonWarning
 from .kernels import (
@@ -34,7 +35,6 @@ from .kernels import (
     repack_shape_opacities,
     transform_points,
 )
-from .transform import transform_add_translation, transform_from_array, transform_multiply
 from .utils import OPAQUE_OPACITY_THRESHOLD
 
 if TYPE_CHECKING:

@@ -22,6 +22,13 @@ import warp as wp
 
 import newton
 
+from ..core.host_transform import (
+    transform_assign_position_wxyz,
+    transform_inverse,
+    transform_point,
+    transform_to_position_wxyz,
+    transform_vector,
+)
 from ..core.types import Axis, override
 from ..exceptions import NewtonWarning
 from .camera import Camera
@@ -33,13 +40,6 @@ from .image_logger import (
     _validate,
 )
 from .picking import Picking
-from .transform import (
-    transform_assign_position_wxyz,
-    transform_inverse,
-    transform_point,
-    transform_to_position_wxyz,
-    transform_vector,
-)
 from .utils import prepare_viewer_texture, promote_to_clamped_float_array, to_numpy
 from .viewer import ViewerBase, is_jupyter_notebook
 

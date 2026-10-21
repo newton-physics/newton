@@ -25,9 +25,9 @@ import numpy as np
 import newton as nt
 from newton.selection import ArticulationView
 
+from ..core.host_transform import transform_assign, transform_assign_matrix, transform_to_matrix
 from ..core.types import Axis
 from .gl.gui import UI
-from .transform import transform_assign, transform_assign_matrix, transform_to_matrix
 
 if TYPE_CHECKING:
     from numpy.typing import ArrayLike
