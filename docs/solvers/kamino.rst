@@ -119,9 +119,7 @@ are attached to. With ``config.lox.eliminate_fixed_world_islands`` enabled, LOX
 also keeps the bodies welded to the world at their pose.
 
 LOX simulates bodies flagged :attr:`~newton.BodyFlags.PROXY` as dynamic bodies
-with their mass and inertia. Their contacts act only against dynamic bodies that
-are not proxies; LOX drops their contacts with the world, kinematic bodies, and
-other proxies.
+with their mass and inertia.
 
 LOX keeps speculative contacts, whose shapes are still separated, and lets each
 close its gap within the step. It ignores
@@ -164,7 +162,8 @@ Enable these features through ``config.lox`` after selecting
   ``k dt / (k dt + d)`` of existing penetration per step. Their bounce comes from
   the spring-damper, so they ignore restitution. Contacts without a positive
   stiffness, and contacts detected by Kamino's own collision pipelines, remain
-  hard.
+  hard. :class:`newton.CollisionPipeline` provides per-contact stiffness only for
+  hydroelastic contacts.
 * ``contact_implicit_restitution=True`` decides the restitution of speculative
   impacts inside each local contact update, from its current reaction-free normal
   velocity, which better preserves energy in speculative impacts. Restitution

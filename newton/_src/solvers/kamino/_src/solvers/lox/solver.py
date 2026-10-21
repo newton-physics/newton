@@ -399,7 +399,7 @@ class LOXSolver:
                 labels = ", ".join(
                     f"'{source_model.body_label[b]}'" if source_model.body_label else f"body {b}" for b in flipped
                 )
-                raise ValueError(
+                raise RuntimeError(
                     "LOX does not support making a body massless or giving a massless body mass after "
                     f"construction: {labels}."
                 )
@@ -618,15 +618,15 @@ class LOXSolver:
     # Internals - Time Step
     ###
 
-    def _begin_time_step(self, structural_warmstart_factor: float | None = None) -> None:
+    def _begin_time_step(self, structural_warmstart_scale: float | None = None) -> None:
         """Load the constraint rows of the time step with the configured stabilization and warm start.
 
         Args:
-            structural_warmstart_factor: Scale of the structural multipliers of the previous time step,
-                or ``None`` for :attr:`LOXSolverConfig.joint_warmstart_factor`.
+            structural_warmstart_scale: Scale of the structural multipliers of the previous time step,
+                or ``None`` for :attr:`LOXSolverConfig.joint_warmstart_scale`.
         """
-        if structural_warmstart_factor is None:
-            structural_warmstart_factor = self._config.joint_warmstart_factor
+        if structural_warmstart_scale is None:
+            structural_warmstart_scale = self._config.joint_warmstart_scale
         constraints = self._constraints
         self._problem.begin_time_step(
             self._model.time.dt,
@@ -637,7 +637,7 @@ class LOXSolver:
             limit_stabilization_fraction=constraints.beta,
             contact_stabilization_fraction=constraints.gamma,
             contact_dead_zone=constraints.delta,
-            structural_warmstart_factor=structural_warmstart_factor,
+            structural_warmstart_scale=structural_warmstart_scale,
         )
 
     def _estimate_joint_penalty_scale(self, time_step: float, warn_failures: bool) -> None:
@@ -659,7 +659,7 @@ class LOXSolver:
         try:
             problem.prepare_joint_penalty_scale_seed(time_step)
             if self._seed_topology is not None:
-                self._begin_time_step(structural_warmstart_factor=1.0)
+                self._begin_time_step(structural_warmstart_scale=1.0)
                 problem.build_smooth_system(model_time.dt, joint_penalty_scale=None)
                 # Converge every structural mode within a conditioning bound
                 estimate_joint_penalty_scale(

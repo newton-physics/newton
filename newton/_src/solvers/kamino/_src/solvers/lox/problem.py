@@ -418,7 +418,7 @@ class LOXProblem:
         limit_stabilization_fraction: float,
         contact_stabilization_fraction: float,
         contact_dead_zone: float,
-        structural_warmstart_factor: float,
+        structural_warmstart_scale: float,
     ) -> None:
         """Load the constraint rows of the time step and import the reactions of the previous time step once.
 
@@ -430,7 +430,7 @@ class LOXProblem:
             limit_stabilization_fraction: Fraction of the limit violation corrected in one step.
             contact_stabilization_fraction: Fraction of the contact penetration corrected in one step.
             contact_dead_zone: Symmetric contact distance dead zone of the stabilization [m].
-            structural_warmstart_factor: Scale applied to the structural multipliers of the
+            structural_warmstart_scale: Scale applied to the structural multipliers of the
                 previous time step.
         """
         self._joint_max_correction = joint_max_correction
@@ -446,7 +446,7 @@ class LOXProblem:
                     self._data.structural_rows.sparse_a_index,
                     self._data.structural_rows.sparse_b_index,
                     self._sparse_jacobian_data,
-                    structural_warmstart_factor,
+                    structural_warmstart_scale,
                 ],
                 outputs=[
                     self._data.structural_rows.jacobian_a,
@@ -1633,7 +1633,6 @@ class LOXProblem:
                     self._data.contact_rows.world_count,
                     self._data.contact_rows.world_offset,
                     self.system.data.body_vector_index,
-                    self.model._model.body_flags if self.model._model is not None else None,
                     time_step,
                     stabilization_fraction,
                     dead_zone,

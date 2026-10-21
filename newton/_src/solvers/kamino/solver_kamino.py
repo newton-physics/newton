@@ -163,6 +163,11 @@ class SolverKamino(SolverBase, CouplingInterface):
     massless body finite inertia) will raise a :class:`RuntimeError` from
     :meth:`notify_model_changed`.
 
+    The LOX backend treats only KINEMATIC bodies as immovable. It simulates PROXY
+    bodies as dynamic, so their flag may change at runtime, and raises a
+    :class:`RuntimeError` from :meth:`notify_model_changed` when a body becomes
+    massless or a massless body gains mass.
+
     With the PADMM and DVI backends, Kamino's integrator does not advance an
     immovable body's pose from its velocity. To animate such a body along a
     trajectory, write the target pose into ``state_in.body_q`` (and optionally

@@ -1277,7 +1277,7 @@ class LOXSolverConfig:
     structural reactions with it.
     """
 
-    joint_warmstart_factor: float = 0.9
+    joint_warmstart_scale: float = 0.9
     """Fraction of the previous structural reaction used to warm-start the next time step."""
 
     contact_compliance: bool = False
@@ -1288,7 +1288,8 @@ class LOXSolverConfig:
     :attr:`~newton.Contacts.rigid_contact_damping`: they add ``1 / (dt (k dt + d))``
     to their normal contact operator, recover the fraction ``k dt / (k dt + d)`` of
     their penetration per step, and ignore restitution. Other contacts, and contacts
-    detected by Kamino's own collision pipelines, remain hard.
+    detected by Kamino's own collision pipelines, remain hard. :class:`~newton.CollisionPipeline`
+    provides per-contact stiffness only for hydroelastic contacts.
     """
 
     contact_implicit_restitution: bool = False
@@ -1479,11 +1480,11 @@ class LOXSolverConfig:
                 f"Invalid projected_twist_fraction: {self.projected_twist_fraction}. Must be in range [0, 1]."
             )
         if (
-            not np.isfinite(self.joint_warmstart_factor)
-            or self.joint_warmstart_factor < 0.0
-            or self.joint_warmstart_factor > 1.0
+            not np.isfinite(self.joint_warmstart_scale)
+            or self.joint_warmstart_scale < 0.0
+            or self.joint_warmstart_scale > 1.0
         ):
-            raise ValueError(f"Invalid joint_warmstart_factor: {self.joint_warmstart_factor}. Must be in range [0, 1].")
+            raise ValueError(f"Invalid joint_warmstart_scale: {self.joint_warmstart_scale}. Must be in range [0, 1].")
         for name in ("contact_compliance", "contact_implicit_restitution", "contact_spatial_friction"):
             if not isinstance(getattr(self, name), bool):
                 raise ValueError(f"Invalid {name}: {getattr(self, name)}. Must be a boolean.")
