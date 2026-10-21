@@ -7510,6 +7510,10 @@ def test_mesh_midphase_many_pairs(test, device):
         test.assertIsNotNone(narrow_phase._midphase_narrow_kernel)
         test.assertGreater(mesh_pairs, narrow_phase.num_tile_blocks)
 
+    triangle_count = int(narrow_phase.triangle_pairs_count.numpy()[0])
+    triangle_pairs = narrow_phase.triangle_pairs.numpy()[:triangle_count]
+    test.assertEqual(len(np.unique(triangle_pairs, axis=0)), triangle_count)
+
     count = int(contacts.rigid_contact_count.numpy()[0])
     shape0 = contacts.rigid_contact_shape0.numpy()[:count]
     shape1 = contacts.rigid_contact_shape1.numpy()[:count]

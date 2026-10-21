@@ -3590,7 +3590,7 @@ class NarrowPhase:
                 midphase_inputs[-1] = narrow_blocks
                 wp.launch(
                     kernel=self._midphase_narrow_kernel,
-                    dim=[narrow_blocks, _MIDPHASE_NARROW_TILE_SIZE],
+                    dim=[narrow_blocks, _MIDPHASE_NARROW_TILE_SIZE if ENABLE_TILE_BVH_QUERY else 1],
                     inputs=midphase_inputs,
                     outputs=[
                         self.triangle_pairs,
