@@ -1164,9 +1164,6 @@ equality that is active exactly while the root is kinematic:
 - The weld time constant is two timesteps (eight under RK4, whose
   intermediate stages destabilize stiffer welds), set from the step size
   independently of MuJoCo's REFSAFE flag.
-- While a root is kinematic its MuJoCo ``body_gravcomp`` is ``1`` so the
-  weld does not carry the body's own weight; the authored
-  ``mujoco:gravcomp`` returns when it becomes dynamic.
 
 Kinematic roots keep their real mass, so the weld is not an
 infinite-mass constraint:
@@ -1174,11 +1171,9 @@ infinite-mass constraint:
 - Contacts on a kinematic body use its mass for their softness, so a
   light kinematic body under a heavy load penetrates more than an
   infinite-mass collider would.
-- Loads from contacts and dynamic descendants act through the weld,
-  which yields slightly within each step. Newton's output state always
-  reports the prescribed motion.
-- MuJoCo skips all passive forces, including gravity compensation, when
-  both springs and dampers are disabled.
+- The body's own weight and loads from contacts and dynamic descendants
+  act through the weld, which yields slightly within each step. Newton's
+  output state always reports the prescribed motion.
 
 Switching kinematic roots at runtime
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
