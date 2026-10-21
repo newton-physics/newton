@@ -2064,8 +2064,9 @@ class SolverSteel(SolverBase):
                 an unsupported mode raises :class:`ValueError`. An inherited unsupported mode emits a
                 :class:`~newton.exceptions.NewtonWarning` and falls back to the strongest supported one:
                 ``GPU_TO_GPU`` runs ``RUN_TO_RUN``, and any mode runs ``NOT_GUARANTEED`` with the propagation
-                responses. Steel's kernel modules always opt out of Warp's ``deterministic`` module option, so a
-                process-wide ``wp.config.deterministic`` only selects this mode.
+                responses. :attr:`deterministic` reports the mode that runs, after any fallback. Steel's kernel
+                modules always opt out of Warp's ``deterministic`` module option, so a process-wide
+                ``wp.config.deterministic`` only selects this mode.
         """
         self._kernel_overrides = current_kernel_overrides()
         if contact_compliance:
