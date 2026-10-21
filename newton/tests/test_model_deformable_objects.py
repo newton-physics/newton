@@ -15,6 +15,37 @@ from newton.tests.unittest_utils import get_test_devices
 
 
 class TestModelDeformableObjects(unittest.TestCase):
+    def test_unknown_reference_names_suggest_builtin_enums(self):
+        """Suggest enums for unregistered family names in builder and Model references."""
+        for name in ("curve", "surface", "volume", "missing"):
+            expected = f"Unknown custom attribute reference frequency {name!r}"
+            if name != "missing":
+                expected += f"; to reference the built-in {name} domain, use Model.AttributeFrequency.{name.upper()}"
+            for from_builder in (False, True):
+                with self.subTest(name=name, from_builder=from_builder):
+                    with self.assertRaises(ValueError) as error:
+                        if from_builder:
+                            builder = newton.ModelBuilder()
+                            builder.add_custom_attribute(
+                                newton.ModelBuilder.CustomAttribute(
+                                    name="reference",
+                                    dtype=wp.int32,
+                                    frequency=newton.Model.AttributeFrequency.ONCE,
+                                    references=name,
+                                    values={0: 0},
+                                )
+                            )
+                            builder.finalize(device="cpu")
+                        else:
+                            model = newton.Model(device="cpu")
+                            model.add_attribute(
+                                "reference",
+                                wp.array([0], dtype=wp.int32, device="cpu"),
+                                frequency=newton.Model.AttributeFrequency.ONCE,
+                                references=name,
+                            )
+                    self.assertEqual(str(error.exception), expected)
+
     def test_explicit_deformable_reference_domains(self):
         """Keep enum references to each deformable family through finalization and replication."""
         prototype = newton.ModelBuilder()

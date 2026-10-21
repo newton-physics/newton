@@ -2514,7 +2514,14 @@ class Model:
 
         reference_frequency = self._normalize_attribute_reference(references)
         if isinstance(reference_frequency, str) and reference_frequency not in self.custom_frequency_counts:
-            raise ValueError(f"Unknown custom attribute reference frequency {references!r}")
+            hint = ""
+            enum_name = reference_frequency.upper()
+            if enum_name in Model.AttributeFrequency.__members__:
+                hint = (
+                    f"; to reference the built-in {reference_frequency} domain, "
+                    f"use Model.AttributeFrequency.{enum_name}"
+                )
+            raise ValueError(f"Unknown custom attribute reference frequency {references!r}{hint}")
         if reference_frequency is not None and isinstance(attrib, wp.array):
             integral_dtypes = (wp.int8, wp.int16, wp.int32, wp.int64, wp.uint8, wp.uint16, wp.uint32, wp.uint64)
             scalar_dtype = getattr(attrib.dtype, "_wp_scalar_type_", attrib.dtype)
