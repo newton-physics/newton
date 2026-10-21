@@ -586,7 +586,8 @@ def eval_fk(
             ``state.body_qd``. Default updates both dynamic and kinematic bodies. Bodies that do not
             match the filter retain their existing values; they are not zeroed or invalidated.
         joint_mask: Optional bool array on ``model.device``, shape [joint_count]. Only enabled joints
-            update their child bodies; disabled joints preserve the existing body pose and velocity.
+            update their child bodies; unselected joints preserve the existing body pose and velocity.
+            This only selects FK writes and is independent of :attr:`Model.joint_enabled`.
             Enabled joints use their parents' current state, whether preserved or updated by this call.
             Descendants are not enabled automatically: include them to propagate an edit through a branch.
             Intersects with ``mask`` or ``indices`` and ``body_flag_filter``. Masked evaluation uses
