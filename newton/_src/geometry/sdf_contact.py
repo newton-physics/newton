@@ -1284,6 +1284,34 @@ def create_narrow_phase_process_mesh_mesh_contacts_kernel(
     use_identity_sdf_scale: bool = False,
     deterministic_reduction: bool = False,
 ):
+    """Create a mesh-mesh (or heightfield-mesh) SDF contact kernel.
+
+    The edges of each shape in a pair are tested against the other shape's
+    SDF, in two passes with the roles swapped.
+
+    Args:
+        writer_func: Contact writer function called for each generated contact.
+        enable_heightfields: When False, heightfield code paths are compiled out.
+        reduce_contacts: If True, return the variant that feeds the global
+            contact reducer.
+        speculative: Enable speculative contact admission.
+        use_precomputed_edge_data: Read mesh edges from precomputed unscaled
+            edge data instead of the mesh vertex and index buffers.
+        use_texture_sdf_only: Compile out the BVH fallback; every mesh SDF must
+            have a texture representation.
+        use_identity_sdf_scale: Compile out SDF scale conversions; requires
+            ``use_texture_sdf_only``.
+        deterministic_reduction: Use deterministic contact reduction. Only
+            applies when ``reduce_contacts`` is True.
+
+    Returns:
+        The mesh-SDF contact kernel, or its global-reduction variant when
+        ``reduce_contacts`` is True.
+
+    Raises:
+        ValueError: If ``use_identity_sdf_scale`` is set without
+            ``use_texture_sdf_only``.
+    """
     if use_identity_sdf_scale and not use_texture_sdf_only:
         raise ValueError("identity SDF scale specialization requires texture-only SDFs")
     # The reducer mode is tested inside fully unrolled directional loops. Keep
