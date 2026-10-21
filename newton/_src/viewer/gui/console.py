@@ -13,13 +13,13 @@ from collections import deque
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
-from ..exceptions import NewtonDeprecationWarning, NewtonWarning
+from ...exceptions import NewtonDeprecationWarning, NewtonWarning
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from typing import TextIO
 
-    from newton._src.viewer.viewer_workspace import ViewerWorkspace
+    from newton._src.viewer.gui.workspace import ViewerWorkspace
 
 
 _ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")

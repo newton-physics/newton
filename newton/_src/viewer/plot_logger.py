@@ -12,7 +12,7 @@ import numpy as np
 import warp as wp
 
 if TYPE_CHECKING:
-    from .gl.gui import UI
+    from .gui.ui import UI
 
 
 class PlotLogger:

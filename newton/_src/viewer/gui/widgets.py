@@ -23,7 +23,7 @@ if TYPE_CHECKING:
     from imgui_bundle import imgui
     from numpy.typing import ArrayLike
 
-    from newton._src.viewer.viewer_gui import ViewerGui
+    from newton._src.viewer.gui.viewer_gui import ViewerGui
 
 
 @dataclass

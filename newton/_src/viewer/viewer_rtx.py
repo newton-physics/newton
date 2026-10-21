@@ -46,12 +46,12 @@ if TYPE_CHECKING:
 from .camera import Camera
 from .gl.frame_cache import FrameCache
 from .gl.icon import set_window_icon
+from .gui.viewer_gui import ViewerGui
 from .image_logger import ImageLogger, _validate
 from .picking import Picking
 from .plot_logger import PlotLogger
 from .utils import OPAQUE_OPACITY_THRESHOLD
 from .viewer import _DEFAULT_LAYER_ID
-from .viewer_gui import ViewerGui
 from .viewer_usd import ViewerUSD
 from .wind import Wind
 

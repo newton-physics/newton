@@ -22,9 +22,9 @@ if TYPE_CHECKING:
     from typing import Any
 
     from newton import Model, State
+    from newton._src.viewer.gui.workspace import ViewerWorkspace
     from newton._src.viewer.viewer_model_tree import ModelTree
     from newton._src.viewer.viewer_types import TreeKey, ViewerExample
-    from newton._src.viewer.viewer_workspace import ViewerWorkspace
     from newton.viewer import ViewerBase
 
 

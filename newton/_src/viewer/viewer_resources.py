@@ -18,12 +18,12 @@ if TYPE_CHECKING:
     from newton import Gaussian, Heightfield, Mesh, Model
     from newton._src.geometry.sdf_texture import TextureSDFData
     from newton._src.geometry.sdf_utils import SDF
+    from newton._src.viewer.gui.workspace import ViewerWorkspace
     from newton._src.viewer.viewer_model_tree import ModelTree
     from newton._src.viewer.viewer_types import TreeKey, ViewerExample
-    from newton._src.viewer.viewer_workspace import ViewerWorkspace
 
+    from .gui.widgets import PhysicsWidgets
     from .viewer_session import ViewerSession
-    from .viewer_widgets import PhysicsWidgets
 
 
 class GeometryResources:

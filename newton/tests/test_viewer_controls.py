@@ -18,23 +18,23 @@ import newton
 from newton._src.geometry.sdf_texture import TextureSDFData, create_empty_texture_sdf_data
 from newton._src.geometry.sdf_utils import SDF, SDFData
 from newton._src.viewer.camera import Camera
-from newton._src.viewer.gl.gui import UI
-from newton._src.viewer.viewer_bvh import _bounds_lines, _query_bounds
-from newton._src.viewer.viewer_collision import CollisionInspector
-from newton._src.viewer.viewer_gl import ViewerGL
-from newton._src.viewer.viewer_gui import ViewerGui
-from newton._src.viewer.viewer_history import WorkspaceHistory
-from newton._src.viewer.viewer_model_tree import ModelTree
-from newton._src.viewer.viewer_null import ViewerNull
-from newton._src.viewer.viewer_properties import (
+from newton._src.viewer.gui.collision import CollisionInspector
+from newton._src.viewer.gui.properties import (
     Assignment,
     Frequency,
     PropertyInspector,
     component_attributes,
     joint_editor_options,
 )
+from newton._src.viewer.gui.ui import UI
+from newton._src.viewer.gui.viewer_gui import ViewerGui
+from newton._src.viewer.gui.workspace import ViewerWorkspace
+from newton._src.viewer.viewer_bvh import _bounds_lines, _query_bounds
+from newton._src.viewer.viewer_gl import ViewerGL
+from newton._src.viewer.viewer_history import WorkspaceHistory
+from newton._src.viewer.viewer_model_tree import ModelTree
+from newton._src.viewer.viewer_null import ViewerNull
 from newton._src.viewer.viewer_session import ViewerSession
-from newton._src.viewer.viewer_workspace import ViewerWorkspace
 from newton.tests.unittest_utils import patch_sys_module
 
 
@@ -62,7 +62,7 @@ class TestViewerUI(unittest.TestCase):
         """Advance ImGui time by elapsed frame durations, including a repeated timestamp."""
         elapsed = 0.0
         with mock.patch(
-            "newton._src.viewer.gl.gui.perf_counter",
+            "newton._src.viewer.gui.ui.perf_counter",
             side_effect=[0.0, 0.025, 0.050, 0.060, 0.060],
         ):
             for delta in (1.0 / 60.0, 0.025, 0.025, 0.010, 1e-6):
@@ -658,6 +658,7 @@ class TestViewerProperties(unittest.TestCase):
         state.joint_q.zero_()
         state.joint_qd.zero_()
         viewer = ViewerNull()
+        viewer.activate("primary")
         viewer.set_model(model)
         viewer._last_state = state
         ws = ViewerWorkspace.__new__(ViewerWorkspace)
@@ -695,16 +696,22 @@ class TestViewerProperties(unittest.TestCase):
         np.testing.assert_array_equal(state.joint_q.numpy(), 0.0)
         np.testing.assert_array_equal(state.joint_qd.numpy(), 0.0)
 
-        # Explicit application bindings do not require an Example object, and
-        # the state provider follows the application's double-buffer swap.
-        states = [state, historical]
+        # Custom loops register persistent components independently and log
+        # the current state after each buffer swap, without an Example object.
         control = model.control()
-        viewer.set_simulation(state=lambda: states[0], control=control)
+        solver = SolverXPBD(model)
+        pipeline = newton.CollisionPipeline(model)
+        viewer.set_control(control)
+        viewer.set_solver(solver)
+        viewer.set_collision_pipeline(pipeline)
         ws.example = None
         ws._drafts = {}
+        viewer.log_state(state)
         self.assertIs(ws.live_state(), state)
-        states.reverse()
+        viewer.log_state(historical)
         self.assertIs(ws.live_state(), historical)
+        self.assertIs(ws.session.solver, solver)
+        self.assertEqual(ws.session.collision_pipelines(model), [("Collision pipeline", pipeline)])
         inspector = PropertyInspector(ws)
         inspector._contexts()
         control_domain = next(domain for domain in inspector.domains if domain.frequency == Frequency.JOINT_COORD)
@@ -714,6 +721,47 @@ class TestViewerProperties(unittest.TestCase):
         self.assertEqual(control.joint_target_q.ptr, pointer)
         np.testing.assert_allclose(control.joint_target_q.numpy()[0], 0.45)
 
+        # Replacing or clearing one component must preserve the others, even
+        # when a conventional example would otherwise supply a fallback.
+        replacement = model.control()
+        viewer.set_control(replacement)
+        self.assertIs(ws.session.control, replacement)
+        self.assertIs(ws.session.solver, solver)
+        ws.example = SimpleNamespace(model=model, state_0=state, control=control, solver=solver, pipeline=pipeline)
+        viewer.set_control(None)
+        viewer.set_solver(None)
+        viewer.set_collision_pipeline(None)
+        self.assertIsNone(ws.session.control)
+        self.assertIsNone(ws.session.solver)
+        self.assertEqual(ws.session.collision_pipelines(model), [])
+        viewer.set_control(control)
+        viewer.set_solver(solver)
+        viewer.set_collision_pipeline(pipeline)
+        self.assertIs(ws.session.control, control)
+        self.assertTrue(ws._history_compatible)
+
+        # Layers retain separate components and logged states. Invalid model
+        # associations must not replace a valid existing component.
+        original_layer = viewer.layer.layer_id
+        viewer.activate("other")
+        for setter in (viewer.set_control, viewer.set_solver, viewer.set_collision_pipeline):
+            with self.assertRaisesRegex(ValueError, "set_model"):
+                setter(None)
+        other_model = builder.finalize(device="cpu")
+        viewer.set_model(other_model)
+        ws.model = other_model
+        self.assertIsNone(ws.session.control)
+        for setter, component in ((viewer.set_solver, solver), (viewer.set_collision_pipeline, pipeline)):
+            with self.assertRaisesRegex(ValueError, "active model"):
+                setter(component)
+        viewer.set_control(other_model.control())
+        self.assertIsNot(ws.session.control, control)
+        viewer.activate(original_layer)
+        ws.model = model
+        self.assertIs(ws.session.control, control)
+        self.assertIs(ws.session.solver, solver)
+        self.assertIs(viewer._last_state, historical)
+
         # Another layer can have identical array dimensions but a different
         # topology. The conventional adapter must not expose the old controls.
         rebuilt = builder.finalize(device="cpu")
@@ -722,6 +770,7 @@ class TestViewerProperties(unittest.TestCase):
         ws.example = SimpleNamespace(model=model, state_0=state, control=control)
         self.assertIsNone(ws.session.control)
         self.assertFalse(ws._history_compatible)
+        self.assertIsNone(viewer._last_state)
         ws.model = model
         self.assertIs(ws.session.control, control)
         self.assertTrue(ws._history_compatible)
@@ -1024,7 +1073,7 @@ class TestCollisionInspector(unittest.TestCase):
                 ws = SimpleNamespace(
                     viewer=viewer,
                     model=model,
-                    example=SimpleNamespace(collision_pipeline=pipeline),
+                    example=SimpleNamespace(collision_pipeline=pipeline, contacts=pipeline.contacts()),
                     history=None,
                     selected=None,
                     _at_live_frame=lambda: True,
@@ -1032,6 +1081,9 @@ class TestCollisionInspector(unittest.TestCase):
                 ws.session = ViewerSession.from_example(ws.example)
                 ws.select = lambda key, workspace=ws: setattr(workspace, "selected", key)
                 inspector = CollisionInspector(ws)
+                # A logged frame takes precedence over an example's other
+                # contact buffer, including when the normal glyphs are hidden.
+                self.assertIs(inspector._contacts_buffer(), contacts)
                 tree = ModelTree(model)
                 inspector.attach(tree)
                 with patch.object(inspector, "read", wraps=inspector.read) as read:
@@ -1245,6 +1297,7 @@ class TestCollisionInspector(unittest.TestCase):
                 self.assertIn(inspector.root, tree.labels)
                 self.assertFalse(inspector.pipelines)
                 viewer._last_contacts = None
+                ws.example.contacts = None
                 with patch.object(inspector, "read", wraps=inspector.read) as read:
                     inspector.attach(tree)
                     inspector.sync()

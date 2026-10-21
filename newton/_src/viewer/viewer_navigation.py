@@ -13,7 +13,7 @@ from ..geometry.kernels import sdf_box, sdf_capsule, sdf_cone, sdf_cylinder
 from ..geometry.types import GeoType
 
 if TYPE_CHECKING:
-    from newton._src.viewer.viewer_workspace import ViewerWorkspace
+    from newton._src.viewer.gui.workspace import ViewerWorkspace
 
 
 @wp.func

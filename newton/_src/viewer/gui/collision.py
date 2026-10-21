@@ -12,20 +12,20 @@ from typing import TYPE_CHECKING
 import numpy as np
 import warp as wp
 
-from ..sim.collide import CollisionPipeline
-from ..sim.contacts import Contacts
-from ..sim.model import Model
-from .viewer_attributes import Assignment, Frequency, PropertyDomain, attribute_summary, resolve_attribute
+from ...sim.collide import CollisionPipeline
+from ...sim.contacts import Contacts
+from ...sim.model import Model
+from ..viewer_attributes import Assignment, Frequency, PropertyDomain, attribute_summary, resolve_attribute
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from typing import Any
 
+    from newton._src.viewer.gui.workspace import ViewerWorkspace
     from newton._src.viewer.viewer_model_tree import ModelTree
     from newton._src.viewer.viewer_types import TreeKey
-    from newton._src.viewer.viewer_workspace import ViewerWorkspace
 
-    from .viewer_properties import PropertyInspector
+    from .properties import PropertyInspector
 
 
 @wp.kernel
@@ -221,9 +221,7 @@ class CollisionInspector:
         ws = self.workspace
         logged = getattr(ws.viewer, "_last_contacts", None)
         bound = ws.session.contacts
-        history = getattr(ws, "history", None)
-        sources = (logged, bound) if history is not None and history.replaying else (bound, logged)
-        for value in sources:
+        for value in (logged, bound):
             if isinstance(value, Contacts):
                 return value
         return None

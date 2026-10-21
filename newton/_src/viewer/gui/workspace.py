@@ -13,20 +13,20 @@ from typing import TYPE_CHECKING
 import numpy as np
 import warp as wp
 
-from ..._version import __version__
-from ..geometry.flags import ShapeFlags
-from ..geometry.raycast import raycast_kernel
-from ..geometry.types import GeoType
-from ..sim.articulation import eval_fk, eval_ik
-from ..sim.enums import BodyFlags, JointType, ModelFlags
-from ..sim.model import Model
-from ..sim.state import State
-from .viewer_dockspace import ViewerDockspace
-from .viewer_history import WorkspaceHistory, _component_arrays
-from .viewer_model_tree import ModelTree
-from .viewer_session import ViewerSession
-from .viewer_timeline import TimelineView
-from .viewer_widgets import PhysicsWidgets
+from ...._version import __version__
+from ...geometry.flags import ShapeFlags
+from ...geometry.raycast import raycast_kernel
+from ...geometry.types import GeoType
+from ...sim.articulation import eval_fk, eval_ik
+from ...sim.enums import BodyFlags, JointType, ModelFlags
+from ...sim.model import Model
+from ...sim.state import State
+from ..viewer_history import WorkspaceHistory, _component_arrays
+from ..viewer_model_tree import ModelTree
+from ..viewer_session import ViewerSession
+from .dockspace import ViewerDockspace
+from .timeline import TimelineView
+from .widgets import PhysicsWidgets
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -34,7 +34,7 @@ if TYPE_CHECKING:
 
     from numpy.typing import ArrayLike
 
-    from newton._src.viewer.viewer_gui import ViewerGui
+    from newton._src.viewer.gui.viewer_gui import ViewerGui
     from newton._src.viewer.viewer_types import TreeKey, ViewerExample
 
 
@@ -190,9 +190,9 @@ class ViewerWorkspace:
         self._active_timeline = None
         self._control_owner = None
         self._control_initial: dict[str, wp.array[Any]] = {}
-        from .viewer_collision import CollisionInspector  # noqa: PLC0415
-        from .viewer_console import ViewerConsole  # noqa: PLC0415
-        from .viewer_viewport import ViewportControls  # noqa: PLC0415
+        from .collision import CollisionInspector  # noqa: PLC0415
+        from .console import ViewerConsole  # noqa: PLC0415
+        from .viewport import ViewportControls  # noqa: PLC0415
 
         self.console = ViewerConsole(gui.console_capture)
         self.viewport_controls = ViewportControls(self)
@@ -201,13 +201,19 @@ class ViewerWorkspace:
     @property
     def session(self) -> ViewerSession:
         """Use explicit application bindings before the conventional example adapter."""
-        explicit = getattr(self.viewer, "_simulation_session", None)
-        key = (id(self.model), id(self.example), id(explicit))
+        components = getattr(self.viewer, "_inspection_components", None)
+        key = (id(self.model), id(self.example), id(components))
         if getattr(self, "_session_key", None) != key:
-            candidate = explicit if explicit is not None else ViewerSession.from_example(self.example)
-            compatible = explicit is not None or self.model is None or candidate.matches_model(self.model)
-            self._session = candidate if compatible else ViewerSession()
-            self._history_compatible = explicit is None and compatible
+            candidate = ViewerSession.from_example(self.example)
+            compatible = self.model is None or candidate.matches_model(self.model)
+            self._session = ViewerSession.from_example(self.example if compatible else None, components=components)
+            # The example runner records its own buffers. Explicit setters may
+            # expose those same objects without disabling the existing timeline.
+            self._history_compatible = (
+                compatible
+                and self._session.control is getattr(self.example, "control", None)
+                and self._session.solver is getattr(self.example, "solver", None)
+            )
             self._session_key = key
         return self._session
 
@@ -428,7 +434,7 @@ class ViewerWorkspace:
 
     def _camera_motion(self, start: wp.vec3, end: wp.vec3, **kwargs: Any) -> float:
         if self._navigation is None:
-            from .viewer_navigation import SelectionNavigation  # noqa: PLC0415
+            from ..viewer_navigation import SelectionNavigation  # noqa: PLC0415
 
             self._navigation = SelectionNavigation(self)
         return self._navigation(start, end, **kwargs)
@@ -615,7 +621,7 @@ class ViewerWorkspace:
                 self._deformable_selection = None
             if keys:
                 if self._deformable_selection is None:
-                    from .viewer_deformables import DeformableSelection  # noqa: PLC0415
+                    from ..viewer_deformables import DeformableSelection  # noqa: PLC0415
 
                     self._deformable_selection = DeformableSelection(self, keys)
                     self._deformable_selection.keys = signature
@@ -878,7 +884,7 @@ class ViewerWorkspace:
         self.viewer.renderer._joint_triangles = None
         if self._selection_joints and self.dockspace.viewport_visible:
             if self._joint_selections is None:
-                from .viewer_joint_selection import JointSelectionGroup  # noqa: PLC0415
+                from ..viewer_joint_selection import JointSelectionGroup  # noqa: PLC0415
 
                 self._joint_selections = JointSelectionGroup(self, self._selection_joints)
                 if len(self.selection) == 1 and self.selected[0] == "joint":
@@ -1836,7 +1842,7 @@ class ViewerWorkspace:
         if len(self.selection) == 1 and self.selected and self.selected[0] in ("body", "shape"):
             self._flag_buttons(self.selected)
         if not hasattr(self, "property_inspector"):
-            from .viewer_properties import PropertyInspector  # noqa: PLC0415
+            from .properties import PropertyInspector  # noqa: PLC0415
 
             self.property_inspector = PropertyInspector(self)
         if self.collision.handles(self.selected):

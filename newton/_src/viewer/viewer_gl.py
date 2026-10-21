@@ -24,12 +24,12 @@ from ..utils.render import copy_rgb_frame_uint8
 from .camera import Camera
 from .gl.frame_cache import FrameCache
 from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
+from .gui.viewer_gui import ViewerGui
 from .image_logger import ImageLogger
 from .picking import Picking
 from .plot_logger import PlotLogger
 from .utils import OPAQUE_OPACITY_THRESHOLD
 from .viewer import _DEFAULT_LAYER_ID, Layer, ViewerBase
-from .viewer_gui import ViewerGui
 from .wind import Wind
 
 
@@ -595,7 +595,6 @@ class ViewerGL(ViewerBase):
     def _init_layer_state(self, layer: Layer) -> None:
         super()._init_layer_state(layer)
         layer._workspace_deformables = None
-        layer._last_state = None
         layer._last_control = None
 
     @override

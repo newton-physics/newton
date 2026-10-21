@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from types import ModuleType
 
-    from newton._src.viewer.viewer_workspace import ViewerWorkspace
+    from newton._src.viewer.gui.workspace import ViewerWorkspace
 
 
 class ViewerDockspace:

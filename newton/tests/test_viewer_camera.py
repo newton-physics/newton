@@ -18,10 +18,10 @@ import warp as wp
 
 import newton
 from newton._src.viewer.camera import Camera
-from newton._src.viewer.viewer_gui import ViewerGui
+from newton._src.viewer.gui.viewer_gui import ViewerGui
+from newton._src.viewer.gui.workspace import ViewerWorkspace
 from newton._src.viewer.viewer_model_tree import ModelTree
 from newton._src.viewer.viewer_navigation import SelectionNavigation
-from newton._src.viewer.viewer_workspace import ViewerWorkspace
 from newton.viewer import ViewerGL
 
 

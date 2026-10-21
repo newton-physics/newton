@@ -7,9 +7,9 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.viewer.gui.workspace import ViewerWorkspace
 from newton._src.viewer.viewer_bvh import _bounds_lines, _query_bounds
 from newton._src.viewer.viewer_model_tree import ModelTree
-from newton._src.viewer.viewer_workspace import ViewerWorkspace
 from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
 from newton.viewer import ViewerNull
 

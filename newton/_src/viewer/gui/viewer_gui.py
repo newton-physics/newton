@@ -25,9 +25,9 @@ import numpy as np
 import newton as nt
 from newton.selection import ArticulationView
 
-from ..core.host_transform import transform_assign, transform_assign_matrix, transform_to_matrix
-from ..core.types import Axis
-from .gl.gui import UI
+from ...core.host_transform import transform_assign, transform_assign_matrix, transform_to_matrix
+from ...core.types import Axis
+from .ui import UI
 
 if TYPE_CHECKING:
     from numpy.typing import ArrayLike
@@ -79,7 +79,7 @@ class ViewerGui:
         self.workspace_enabled = workspace_enabled
         self.console_capture = None
         if self.workspace_enabled and self.is_available:
-            from .viewer_console import ConsoleCapture  # noqa: PLC0415
+            from .console import ConsoleCapture  # noqa: PLC0415
 
             self.ui.io.config_flags |= self.ui.imgui.ConfigFlags_.docking_enable
             self.ui.io.config_windows_move_from_title_bar_only = True
@@ -1089,7 +1089,7 @@ class ViewerGui:
 
         if self.workspace_enabled:
             if self.workspace is None:
-                from .viewer_workspace import ViewerWorkspace  # noqa: PLC0415
+                from .workspace import ViewerWorkspace  # noqa: PLC0415
 
                 self.workspace = ViewerWorkspace(self)
             self.workspace.bind(self._workspace_example)

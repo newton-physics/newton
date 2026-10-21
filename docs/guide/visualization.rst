@@ -91,7 +91,9 @@ All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a 
 **Core loop methods** — every viewer uses the same simulation loop pattern:
 
 - :meth:`~newton.viewer.ViewerBase.set_model` — assign a :class:`~newton.Model` (use :meth:`~newton.viewer.ViewerBase.set_visible_worlds` afterwards to limit the number of rendered worlds)
-- :meth:`~newton.viewer.ViewerBase.set_simulation` — optionally bind live State, Control, solver, and collision data for inspection, after setting the model
+- :meth:`~newton.viewer.ViewerBase.set_control` — optionally expose Control inputs to the inspector
+- :meth:`~newton.viewer.ViewerBase.set_solver` — optionally expose solver settings and resources
+- :meth:`~newton.viewer.ViewerBase.set_collision_pipeline` — optionally expose broadphase and narrowphase diagnostics
 - :meth:`~newton.viewer.ViewerBase.begin_frame` — start a new frame with the current simulation time
 - :meth:`~newton.viewer.ViewerBase.log_state` — update the viewer with the current :class:`~newton.State` (body transforms, particle positions, etc.)
 - :meth:`~newton.viewer.ViewerBase.end_frame` — finish the frame and present it
@@ -254,19 +256,23 @@ viewport. The console receives Newton Python logging records, with level
 filtering; warnings and errors open it automatically. Explicit display choices
 survive example switches. A new scene keeps its authored camera pose.
 
-Binding a custom simulation loop
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Inspecting a custom simulation loop
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The existing ``set_model`` / ``log_state`` / ``log_contacts`` loop remains
 valid. To expose inputs, solver settings, and collision metadata to the
-inspector, call :meth:`~newton.viewer.ViewerBase.set_simulation` after
-``set_model``:
+inspector, call :meth:`~newton.viewer.ViewerBase.set_control`,
+:meth:`~newton.viewer.ViewerBase.set_solver`, and
+:meth:`~newton.viewer.ViewerBase.set_collision_pipeline` after ``set_model``.
+Each setter is optional and changes only its component. State and Contacts
+inspection uses the objects supplied through ``log_state`` and ``log_contacts``:
 
 .. experimental::
-   ``ViewerBase.set_simulation`` is an experimental live inspection binding;
-   its parameters may change without the normal deprecation period. The
-   property editor currently uses it in ViewerGL. It does not enable the GUI
-   in ViewerRTX, Viser, or other backends.
+   ``ViewerBase.set_control``, ``ViewerBase.set_solver``, and
+   ``ViewerBase.set_collision_pipeline`` are experimental inspection methods
+   and may change without the normal deprecation period. The property editor
+   currently uses them in ViewerGL. They do not enable the GUI in ViewerRTX,
+   Viser, or other backends.
 
 .. code-block:: python
 
@@ -287,13 +293,9 @@ inspector, call :meth:`~newton.viewer.ViewerBase.set_simulation` after
     contacts = pipeline.contacts()
     viewer = ViewerGL()
     viewer.set_model(model)
-    viewer.set_simulation(
-        state=lambda: state_0,  # Resolve the current buffer after every swap.
-        control=control,
-        solver=solver,
-        collision_pipeline=pipeline,
-        contacts=contacts,
-    )
+    viewer.set_control(control)
+    viewer.set_solver(solver)
+    viewer.set_collision_pipeline(pipeline)
     time, dt = 0.0, 1.0 / 60.0
     while viewer.is_running():
         if viewer.should_step():
@@ -309,18 +311,20 @@ inspector, call :meth:`~newton.viewer.ViewerBase.set_simulation` after
         viewer.end_frame()
     viewer.close()
 
-Bindings belong to the active viewer layer. Repeating ``set_simulation``
-replaces that binding; omitted components are unbound. The application owns
-the simulation objects and stepping. Binding does not copy arrays, infer a
-solver, or run collision detection. Use a state provider for double-buffered
-loops; a direct State reference is appropriate only when that object remains
-the live state. A cleared or replaced model discards its binding.
+The setters retain references in the active viewer layer without copying
+arrays or stepping the simulation. Repeating a setter replaces only that
+component; passing ``None`` clears it, including any example-derived fallback.
+The solver and pipeline must belong to the active Model. Log the current State
+after each buffer swap; no State callback or separate registration is needed.
+The application owns all objects and stepping. Clearing or replacing a Model
+discards its inspected components and logged buffers.
 
 The example runner supplies an internal adapter for conventional example
 attributes (``state_0`` or ``state``, ``control``, ``solver``, ``contacts``, and
-collision pipelines). Existing examples do not need a binding call. Custom
-loops get inspection from ``set_simulation``; the example-runner history and
-replay callbacks are not automatically installed in custom loops.
+collision pipelines). Existing examples do not need registration calls.
+Explicit setters override discovery for their respective components. Custom
+loops use the setters and ordinary logging calls; the example-runner history
+and replay callbacks are not automatically installed in custom loops.
 
 Editing, history, and rebuilding
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -342,7 +346,7 @@ Editing, history, and rebuilding
   rendering throughput.
 * Topology editing and USD authoring are not provided by this inspector.
   Rebuild the Model, State, Control, Solver, and CollisionPipeline in the
-  application, then call ``set_model`` followed by ``set_simulation`` again.
+  application, then call ``set_model`` and the relevant component setters again.
   This clears scene-owned selection, caches, and history while retaining
   display preferences. No runtime inspector edits are written back to USD.
 
@@ -355,7 +359,7 @@ presentation and rendering:
 .. mermaid::
 
     flowchart TD
-        App[Application-owned simulation] --> Bind[Layer-local simulation binding]
+        App[Application-owned simulation] --> Bind[Component setters and frame logging]
         Adapter[Conventional example adapter] --> Bind
         Bind --> Data[Model tree and attribute metadata]
         Adapter --> History[Bounded display history]
@@ -364,9 +368,10 @@ presentation and rendering:
         UI --> GL[OpenGL overlays and selection rendering]
         UI --> Dock[Docked images, plots and console]
 
-Simulation discovery, model-tree metadata, frequency lookup, and recorded
-history have no ImGui or OpenGL dependency. The current panels, docking, and
-timeline presenter use ImGui; X-ray, selection outlines, joint glyphs, and
+Component discovery, model-tree metadata, frequency lookup, and recorded
+history have no ImGui or OpenGL dependency. The panels, widgets, docking, and
+timeline presenter are grouped in the internal viewer GUI package and use
+ImGui; X-ray, selection outlines, joint glyphs, and
 contact-label rendering use OpenGL. A future RTX frontend can reuse the data
 services and supply its own rendering integration. A browser frontend can
 reuse metadata and inspection rules through an application-owned transport;

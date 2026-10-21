@@ -13,12 +13,12 @@ from typing import TYPE_CHECKING, ClassVar
 import numpy as np
 import warp as wp
 
-from ..core.types import Axis
-from ..geometry.types import GeoType
-from ..sim.enums import JointTargetMode, JointType
-from ..sim.model import Model
-from ..sim.state import State
-from .viewer_attributes import (
+from ...core.types import Axis
+from ...geometry.types import GeoType
+from ...sim.enums import JointTargetMode, JointType
+from ...sim.model import Model
+from ...sim.state import State
+from ..viewer_attributes import (
     Assignment,
     Frequency,
     PropertyDomain,
@@ -27,8 +27,8 @@ from .viewer_attributes import (
     frequency_row_label,
     resolve_attribute,
 )
-from .viewer_frequencies import FrequencyCatalog
-from .viewer_widgets import PropertyEdit
+from ..viewer_frequencies import FrequencyCatalog
+from .widgets import PropertyEdit
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -37,8 +37,8 @@ if TYPE_CHECKING:
     from numpy.typing import ArrayLike
 
     from newton import Control
+    from newton._src.viewer.gui.workspace import ViewerWorkspace
     from newton._src.viewer.viewer_types import TreeKey
-    from newton._src.viewer.viewer_workspace import ViewerWorkspace
 
 
 def joint_editor_options(

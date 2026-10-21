@@ -9,13 +9,13 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from ..geometry.flags import ShapeFlags
-from ..geometry.types import GeoType
+from ...geometry.flags import ShapeFlags
+from ...geometry.types import GeoType
 
 if TYPE_CHECKING:
     from numpy.typing import ArrayLike
 
-    from newton._src.viewer.viewer_workspace import ViewerWorkspace
+    from newton._src.viewer.gui.workspace import ViewerWorkspace
 
 
 class ViewportControls:
@@ -27,7 +27,7 @@ class ViewportControls:
     )
 
     def __init__(self, workspace: ViewerWorkspace) -> None:
-        from .viewer_orientation import OrientationGizmo  # noqa: PLC0415
+        from .orientation import OrientationGizmo  # noqa: PLC0415
 
         self.workspace = workspace
         self.orientation = OrientationGizmo(self)

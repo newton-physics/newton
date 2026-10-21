@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from .viewer_widgets import PhysicsWidgets
+from .widgets import PhysicsWidgets
 
 if TYPE_CHECKING:
     from types import ModuleType

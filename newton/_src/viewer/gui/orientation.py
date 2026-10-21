@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from imgui_bundle import imgui
     from numpy.typing import ArrayLike
 
-    from newton._src.viewer.viewer_viewport import ViewportControls
+    from newton._src.viewer.gui.viewport import ViewportControls
 
 
 class OrientationGizmo:

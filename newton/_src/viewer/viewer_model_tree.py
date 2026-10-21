@@ -17,7 +17,7 @@ from .viewer_session import ViewerSession
 if TYPE_CHECKING:
     from typing import Any
 
-    from .viewer_collision import CollisionInspector
+    from .gui.collision import CollisionInspector
     from .viewer_types import TreeKey, ViewerExample
 
 

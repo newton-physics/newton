@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 
     from numpy.typing import ArrayLike
 
-    from newton._src.viewer.viewer_workspace import ViewerWorkspace
+    from newton._src.viewer.gui.workspace import ViewerWorkspace
 
 
 @wp.kernel

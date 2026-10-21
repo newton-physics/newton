@@ -11,7 +11,7 @@ import os
 import sys
 import warnings
 from abc import ABC, abstractmethod
-from collections.abc import Callable, Iterator, Sequence
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 
@@ -757,7 +757,8 @@ class ViewerBase(ABC):
         still-live layers).
         """
         layer.model = None
-        layer._simulation_session = None
+        layer._inspection_components: dict[str, Any] = {}
+        layer._last_state = None
         layer.model_changed = True
 
         # Shape instance batches (shape hash -> ShapeInstances)
@@ -894,55 +895,78 @@ class ViewerBase(ABC):
         """Hook for backends to initialize additional per-layer attributes."""
         return
 
-    def set_simulation(
-        self,
-        *,
-        state: newton.State | Callable[[], newton.State | None] | None = None,
-        control: newton.Control | None = None,
-        solver: SolverBase | None = None,
-        collision_pipeline: newton.CollisionPipeline | None = None,
-        contacts: newton.Contacts | None = None,
-    ) -> None:
-        """Bind optional live simulation data for inspection of the active layer.
+    def set_control(self, control: newton.Control | None) -> None:
+        """Set the Control inspected in the active viewer layer.
 
         .. experimental::
-            ``set_simulation`` is an experimental inspection binding. Its
-            parameters may change without the normal deprecation period.
+            ``set_control`` may change without the normal deprecation period.
 
-        Call after :meth:`set_model`. This replaces the previous binding; omitted
-        components are unbound. The application retains ownership of all objects
-        and of the simulation loop. No arrays are copied and no solver is stepped.
-        Clearing or replacing the layer's model clears its binding.
-
-        ViewerGL uses these references for State, Control, solver, and collision
-        inspection. Other backends retain them without adding a GUI. Ordinary
-        ``log_*`` calls remain required and continue to work without this method.
-        History recording through the example runner is a separate facility.
+        Call after :meth:`set_model`. Retains a reference without copying arrays
+        or changing other inspected components. Clearing or replacing the Model
+        clears this reference. ViewerGL exposes the inputs in its inspector;
+        other backends retain the reference without adding a GUI.
 
         Args:
-            state: Current state, or a provider resolving the live state after
-                buffer swaps. If omitted, inspection uses the last logged state.
-            control: Live inputs, editable while running or paused at the live frame.
-            solver: Solver whose settings and registered attributes are inspected.
-            collision_pipeline: Pipeline providing broadphase/narrowphase metadata.
-            contacts: Current contacts to inspect; rendering still uses ``log_contacts``.
+            control: Application-owned inputs, or None to clear them. Supported
+                inputs are editable while running or paused at the live frame.
 
         Raises:
-            ValueError: No model has been set, or solver/pipeline belongs to another model.
-            TypeError: The state is neither a State nor a callable provider.
+            ValueError: No model has been set.
         """
-        from .viewer_session import ViewerSession  # noqa: PLC0415
+        self._set_inspection_component("control", control)
 
+    def set_solver(self, solver: SolverBase | None) -> None:
+        """Set the solver inspected in the active viewer layer.
+
+        .. experimental::
+            ``set_solver`` may change without the normal deprecation period.
+
+        Call after :meth:`set_model`. Retains a reference for ViewerGL settings
+        and resource inspection; the application still owns and steps the solver.
+        Other components are unchanged. Clearing or replacing the Model clears
+        this reference. Other backends retain it without adding a GUI.
+
+        Args:
+            solver: Solver using the active Model, or None to clear it.
+
+        Raises:
+            ValueError: No model has been set, or the solver uses another model.
+        """
+        self._set_inspection_component("solver", solver)
+
+    def set_collision_pipeline(self, pipeline: newton.CollisionPipeline | None) -> None:
+        """Set the collision pipeline inspected in the active viewer layer.
+
+        .. experimental::
+            ``set_collision_pipeline`` may change without the normal deprecation period.
+
+        Call after :meth:`set_model`. Retains a reference for ViewerGL broadphase
+        and narrowphase inspection without running collision detection. Supply
+        the resulting contact buffer through :meth:`log_contacts`. Other
+        components are unchanged. Clearing or replacing the Model clears this
+        reference. Other backends retain it without adding a GUI.
+
+        Args:
+            pipeline: Pipeline using the active Model, or None to clear it.
+
+        Raises:
+            ValueError: No model has been set, or the pipeline uses another model.
+        """
+        self._set_inspection_component("collision_pipeline", pipeline)
+
+    def _set_inspection_component(self, name: str, component: object | None) -> None:
+        """Replace one layer-owned reference and invalidate inspection discovery.
+
+        An explicit None suppresses conventional example discovery for that
+        component. Replace the mapping so cached sessions retain their old
+        references and can detect when solver or pipeline resources change.
+        """
         if self.model is None:
-            raise ValueError("Call set_model() before binding simulation data.")
-        if state is not None and not isinstance(state, newton.State) and not callable(state):
-            raise TypeError("state must be a Newton State, a callable provider, or None")
-        for name, component in (("solver", solver), ("collision_pipeline", collision_pipeline)):
-            if component is not None and component.model is not self.model:
-                raise ValueError(f"{name} must belong to the viewer's active model")
-        self._simulation_session = ViewerSession(
-            state=state, control=control, solver=solver, collision_pipeline=collision_pipeline, contacts=contacts
-        )
+            raise ValueError("Call set_model() before setting inspection components.")
+        if name in ("solver", "collision_pipeline") and component is not None and component.model is not self.model:
+            raise ValueError(f"{name} must belong to the viewer's active model")
+        if name not in self._inspection_components or self._inspection_components[name] is not component:
+            self._inspection_components = {**self._inspection_components, name: component}
 
     def set_model(self, model: newton.Model | None):
         """Set the model to be visualized.
@@ -1372,6 +1396,7 @@ class ViewerBase(ABC):
             state: The current state of the simulation.
         """
 
+        self._last_state = state
         if self.model is None:
             return
 

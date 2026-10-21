@@ -447,7 +447,7 @@ class TestViewerGLFullscreenMainImage(unittest.TestCase):
 class TestViewerGuiDrawsLoggedImages(unittest.TestCase):
     def test_render_ui_draws_viewer_image_logger(self):
         """Verify the shared GUI draws whichever viewer owns the image logger."""
-        from newton._src.viewer.viewer_gui import _SIDEBAR_WIDTH_PX, ViewerGui  # noqa: PLC0415
+        from newton._src.viewer.gui.viewer_gui import _SIDEBAR_WIDTH_PX, ViewerGui  # noqa: PLC0415
 
         gui = ViewerGui.__new__(ViewerGui)
         gui._viewer = types.SimpleNamespace(_image_logger=mock.Mock())
@@ -459,7 +459,8 @@ class TestViewerGuiDrawsLoggedImages(unittest.TestCase):
 class TestViewerGLImageWindowSurvivesExampleSwitch(unittest.TestCase):
     def test_clear_model_keeps_drawing_logged_images(self):
         """Verify the image window is still drawn after clear_model drops example UI callbacks."""
-        from newton._src.viewer import viewer_gl, viewer_gui  # noqa: PLC0415
+        from newton._src.viewer import viewer_gl  # noqa: PLC0415
+        from newton._src.viewer.gui import viewer_gui  # noqa: PLC0415
 
         renderer = mock.MagicMock()
         renderer.window.get_framebuffer_size.return_value = (640, 480)

@@ -25,7 +25,7 @@ import warp as wp
 from ..exceptions import NewtonWarning
 
 if TYPE_CHECKING:
-    from .gl.gui import UI
+    from .gui.ui import UI
 
 
 _ACCEPTED_C = (1, 3, 4)

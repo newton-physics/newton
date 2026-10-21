@@ -10,8 +10,8 @@ import numpy as np
 import warp as wp
 
 from newton._src.viewer import viewer_gl
+from newton._src.viewer.gui.viewer_gui import ViewerGui
 from newton._src.viewer.plot_logger import PlotLogger
-from newton._src.viewer.viewer_gui import ViewerGui
 from newton._src.viewer.viewer_rtx import ViewerRTX
 from newton._src.viewer.viewer_usd import UsdGeom
 from newton.tests.unittest_utils import patch_sys_module
