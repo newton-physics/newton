@@ -416,8 +416,9 @@ def test_body_flag_filter(test, device):
     mask.fill_(True)
     newton.eval_fk(model, state.joint_q, state.joint_qd, state, joint_mask=mask)
     newton.eval_fk(model, state.joint_q, state.joint_qd, expected)
-    assert_np_equal(state.body_q.numpy(), expected.body_q.numpy(), tol=1.0e-6)
-    assert_np_equal(state.body_qd.numpy(), expected.body_qd.numpy(), tol=1.0e-6)
+    # Serial and tiled FK accumulate floating-point roundoff differently along chains.
+    assert_np_equal(state.body_q.numpy(), expected.body_q.numpy(), tol=2.0e-5)
+    assert_np_equal(state.body_qd.numpy(), expected.body_qd.numpy(), tol=2.0e-5)
     invalid_masks = [
         wp.zeros(1, dtype=bool, device=device),
         wp.zeros(model.joint_count, dtype=int, device=device),
