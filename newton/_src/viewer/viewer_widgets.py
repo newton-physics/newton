@@ -624,15 +624,8 @@ class PhysicsWidgets:
     def disclosure(self, label: str, *, default_open: bool = True) -> Iterator[bool]:
         """Group paged attributes without adding another panel or inset."""
         ui = self.ui
-        font = getattr(self.gui.ui, "heading_font", None)
-        if font is not None:
-            ui.push_font(font, 14.0)
-        try:
-            opened = ui.collapsing_header(label, ui.TreeNodeFlags_.default_open if default_open else 0)
-            self._tooltip()
-        finally:
-            if font is not None:
-                ui.pop_font()
+        opened = ui.collapsing_header(label, ui.TreeNodeFlags_.default_open if default_open else 0)
+        self._tooltip()
         yield opened
 
     @contextmanager
@@ -647,16 +640,8 @@ class PhysicsWidgets:
 
     @contextmanager
     def compound(self, label: str, *, editable: bool = False, unit: str = "", reason: str = "") -> Iterator[None]:
-        """Give a compound attribute a weighted heading and inset child rows."""
-        ui = self.ui
-        font = getattr(self.gui.ui, "heading_font", None)
-        if font is not None:
-            ui.push_font(font, 14.0)
-        try:
-            self._label(label, editable, unit, reason)
-        finally:
-            if font is not None:
-                ui.pop_font()
+        """Group compound attribute children using indentation and a regular label."""
+        self._label(label, editable, unit, reason)
         with self._child_rows():
             yield
 

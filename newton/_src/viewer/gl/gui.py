@@ -71,15 +71,6 @@ class UI:
             if os.path.isfile(font_path):
                 self.io.font_default = self.io.fonts.add_font_from_file_ttf(font_path, 14.0)
                 break
-        self.heading_font = None
-        for font_path in (
-            "C:/Windows/Fonts/seguisb.ttf",
-            "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-        ):
-            if os.path.isfile(font_path):
-                self.heading_font = self.io.fonts.add_font_from_file_ttf(font_path, 14.0)
-                break
         self.number_font = None
         for font_path in (
             "C:/Windows/Fonts/consola.ttf",
