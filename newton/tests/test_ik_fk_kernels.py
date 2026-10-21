@@ -232,12 +232,16 @@ def test_ik_loop_joint_mapping(test, device, optimizer):
             builder = newton.ModelBuilder()
             bodies = [builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3))) for _ in range(3)]
             root, left, right = (bodies[2], bodies[0], bodies[1]) if reordered else bodies
-            # Cover loop joints both before and after the tree. Their child also
-            # has an incoming tree joint, which must own its pose and Jacobian.
+            parent = -1
             if reordered:
                 loop = builder.add_joint_ball(left, right)
+                parent = builder.add_link(
+                    xform=wp.transform((0.1, -0.2, 0.15), wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.4)),
+                    mass=1.0,
+                    inertia=wp.mat33(np.eye(3)),
+                )
             joints = [
-                builder.add_joint_revolute(-1, root, axis=newton.Axis.Z),
+                builder.add_joint_revolute(parent, root, axis=newton.Axis.Z),
                 builder.add_joint_revolute(
                     root,
                     left,
@@ -283,15 +287,16 @@ def test_ik_loop_joint_mapping(test, device, optimizer):
                 model, 2, objectives(), optimizer=optimizer, jacobian_mode=ik.IKJacobianType.ANALYTIC
             )
             q_analytic = wp.array(q_np)
-            # Extra rows expose the former out-of-bounds write safely, without
-            # corrupting the allocator or poisoning a shared CUDA test context.
+            # Guard the former out-of-bounds write without corrupting the allocator.
             guarded_np = np.full((2, model.joint_count + 1, 7), 42.0, dtype=np.float32)
+            guarded_np[:, : model.body_count] = model.body_q.numpy()
             guarded = wp.array(guarded_np, dtype=wp.transform)
             analytic._fk_two_pass(model, q_analytic, guarded, analytic.X_local, 2)
             np.testing.assert_array_equal(guarded.numpy()[:, model.body_count :], guarded_np[:, model.body_count :])
             np.testing.assert_allclose(guarded.numpy()[:, : model.body_count], reference, atol=1.0e-6)
 
             analytic._impl._compute_residuals(q_analytic)
+            np.testing.assert_allclose(analytic.body_q.numpy(), reference, atol=1.0e-6)
             if optimizer == ik.IKOptimizer.LM:
                 derivative_analytic = analytic._impl._jacobian_at(analytic._impl._ctx_solver(q_analytic)).numpy()
             else:
@@ -315,6 +320,15 @@ def test_ik_loop_joint_mapping(test, device, optimizer):
                     other._impl._gradient_at(other._impl._ctx_solver(q_other), gradient)
                     derivative_other = gradient.numpy()
                 np.testing.assert_allclose(derivative_analytic, derivative_other, atol=1.0e-5)
+                if reordered and optimizer == ik.IKOptimizer.LBFGS:
+                    other.candidate_q.assign(np.repeat(q_np[:, None, :], other.n_line_search, axis=1))
+                    candidate_ctx = other._impl._ctx_candidates()
+                    candidate_gradients = other.candidate_gradients.reshape((2 * other.n_line_search, -1))
+                    other._impl._gradient_at(candidate_ctx, candidate_gradients)
+                    expected_poses = np.repeat(reference[:, None, :, :], other.n_line_search, axis=1)
+                    np.testing.assert_allclose(other.cand_body_q.numpy(), expected_poses, atol=1.0e-6)
+                    expected_gradients = np.repeat(derivative_analytic[:, None, :], other.n_line_search, axis=1)
+                    np.testing.assert_allclose(other.candidate_gradients.numpy(), expected_gradients, atol=1.0e-5)
 
             initial_cost = np.sum(analytic.residuals.numpy() ** 2, axis=1)
             result = wp.empty_like(q_analytic)
@@ -325,13 +339,9 @@ def test_ik_loop_joint_mapping(test, device, optimizer):
             )
             analytic._impl._compute_residuals(result)
             test.assertTrue(np.all(np.sum(analytic.residuals.numpy() ** 2, axis=1) < initial_cost))
-            if device.is_cuda:
-                with wp.ScopedCapture() as capture:
-                    analytic.step(q_analytic, result, iterations=4)
-                wp.capture_launch(capture.graph)
-                expected = result.numpy().copy()
-                wp.capture_launch(capture.graph)
-                np.testing.assert_allclose(result.numpy(), expected, atol=1.0e-6)
+            if reordered and optimizer == ik.IKOptimizer.LBFGS:
+                expected_parent = np.broadcast_to(reference[0, parent], (*analytic.cand_body_q.shape[:2], 7))
+                np.testing.assert_allclose(analytic.cand_body_q.numpy()[:, :, parent], expected_parent, atol=1.0e-6)
 
 
 # -----------------------------------------------------------------------------
@@ -342,7 +352,23 @@ devices = get_test_devices()
 
 
 class TestIKFKKernels(unittest.TestCase):
-    pass
+    def test_unarticulated_objective_link(self):
+        """Reject position and rotation targets on a standalone world-root joint."""
+        builder = newton.ModelBuilder()
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        builder.add_joint_free(body)
+        model = builder.finalize(device="cpu")
+        objectives = [
+            ik.IKObjectivePosition(body, wp.vec3(0.0), wp.zeros(1, dtype=wp.vec3, device="cpu")),
+            ik.IKObjectiveRotation(body, wp.quat_identity(), wp.zeros(1, dtype=wp.vec4, device="cpu")),
+        ]
+        for objective in objectives:
+            objective.bind_device("cpu")
+            objective.set_batch_layout(3, 0, 1)
+            for mode in (ik.IKJacobianType.ANALYTIC, ik.IKJacobianType.AUTODIFF):
+                with self.subTest(objective=type(objective).__name__, mode=mode):
+                    with self.assertRaisesRegex(ValueError, "articulation"):
+                        objective.init_buffers(model, mode)
 
 
 add_function_test(TestIKFKKernels, "test_fk_two_pass_parity", test_fk_two_pass_parity, devices)

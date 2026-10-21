@@ -14,7 +14,7 @@ import warp as wp
 
 from ..enums import JointType
 from ..model import Model
-from .ik_common import IKJacobianType, compute_costs, eval_fk_batched, fk_accum
+from .ik_common import IKJacobianType, _initialize_body_q, compute_costs, eval_fk_batched, fk_accum
 from .ik_objectives import IKObjective
 
 
@@ -278,11 +278,15 @@ class IKOptimizerLM:
                 fn(obj, offset, *extra)
 
     def _alloc_solver_buffers(self, grad: bool) -> None:
+        """Allocate solver storage and seed FK with the model's body poses."""
         device = self.device
         model = self.model
 
         self.qd_zero = wp.zeros((self.n_batch, self.n_dofs), dtype=wp.float32, device=device)
-        self.body_q = wp.zeros((self.n_batch, model.body_count), dtype=wp.transform, requires_grad=grad, device=device)
+        self.body_q = wp.empty((self.n_batch, model.body_count), dtype=wp.transform, requires_grad=grad, device=device)
+        wp.launch(
+            _initialize_body_q, dim=self.body_q.shape, inputs=[model.body_q], outputs=[self.body_q], device=device
+        )
         self.body_qd = (
             wp.zeros((self.n_batch, model.body_count), dtype=wp.spatial_vector, device=device) if grad else None
         )
@@ -942,6 +946,7 @@ class IKOptimizerLM:
             # outputs
             X_local_out: wp.array2d[wp.transform],  # (n_batch, n_joints)
         ):
+            """Evaluate local transforms only for articulation-tree joints."""
             row, local_joint_idx = wp.tid()
             if joint_articulation[local_joint_idx] < 0:
                 return

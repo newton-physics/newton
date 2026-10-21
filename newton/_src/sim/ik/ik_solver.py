@@ -204,7 +204,10 @@ class IKSolver:
     Forward kinematics follows articulation tree joints. Joints outside
     articulations, including loop-closing joints, do not contribute to link
     poses or their position/rotation Jacobians; loop-closure constraints are
-    not enforced by this solver.
+    not enforced by this solver. Position and rotation objectives require a
+    link with an incoming articulation joint and raise :class:`ValueError`
+    otherwise. External root parents retain their :attr:`Model.body_q` pose
+    from solver initialization.
 
     Args:
         model: Shared articulation model.

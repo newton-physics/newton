@@ -107,6 +107,16 @@ def eval_fk_batched(model, joint_q, joint_qd, body_q, body_qd):
 
 
 @wp.kernel
+def _initialize_body_q(
+    model_body_q: wp.array[wp.transform],
+    body_q: wp.array2d[wp.transform],
+):
+    """Seed each batch row with model poses, including external root parents."""
+    row, body = wp.tid()
+    body_q[row, body] = model_body_q[body]
+
+
+@wp.kernel
 def fk_accum(
     joint_parent: wp.array[wp.int32],
     joint_child: wp.array[wp.int32],
@@ -115,6 +125,7 @@ def fk_accum(
     X_local: wp.array2d[wp.transform],
     body_q: wp.array2d[wp.transform],
 ):
+    """Accumulate articulation-tree transforms into their child-body poses."""
     problem_idx, local_joint_idx = wp.tid()
     if joint_articulation[local_joint_idx] < 0:
         return

@@ -12,6 +12,25 @@ from ..model import Model
 from .ik_common import IKJacobianType
 
 
+def _link_joint_ancestors(model: Model, link_index: int) -> np.ndarray:
+    """Find a link's tree ancestors, rejecting links outside articulations."""
+    joint_child = model.joint_child.numpy()
+    joint_articulation = model.joint_articulation.numpy()
+    incoming = np.flatnonzero((joint_child == link_index) & (joint_articulation >= 0))
+    if not 0 <= link_index < model.body_count or incoming.size == 0:
+        raise ValueError(
+            f"IK objective link {link_index} must have an incoming articulation joint; "
+            "add its tree joints with ModelBuilder.add_articulation()."
+        )
+    joint_ancestor = model.joint_ancestor.numpy()
+    ancestors = np.zeros(model.joint_count, dtype=bool)
+    joint = incoming[0]
+    while joint != -1:
+        ancestors[joint] = True
+        joint = joint_ancestor[joint]
+    return ancestors
+
+
 class IKObjective:
     """Base class for inverse-kinematics objectives.
 
@@ -258,7 +277,8 @@ class IKObjectivePosition(IKObjective):
     """Match the world-space position of a point on a link.
 
     Args:
-        link_index: Body index whose frame defines the constrained link.
+        link_index: Body index whose frame defines the constrained link. Must
+            be the child of an articulation joint.
         link_offset: Point in the link's local frame [m].
         target_positions: Target positions [m], shape [problem_count].
         weight: Scalar multiplier applied to the residual and Jacobian rows.
@@ -288,29 +308,10 @@ class IKObjectivePosition(IKObjective):
             jacobian_mode: Jacobian backend selected for this objective.
         """
         self._require_batch_layout()
+        ancestors = _link_joint_ancestors(model, self.link_index)
         if jacobian_mode == IKJacobianType.ANALYTIC:
             joint_qd_start_np = model.joint_qd_start.numpy()
-            dof_to_joint_np = np.empty(joint_qd_start_np[-1], dtype=np.int32)
-            for j in range(len(joint_qd_start_np) - 1):
-                dof_to_joint_np[joint_qd_start_np[j] : joint_qd_start_np[j + 1]] = j
-
-            links_per_problem = model.body_count
-            joint_child_np = model.joint_child.numpy()
-            joint_articulation_np = model.joint_articulation.numpy()
-            body_to_joint_np = np.full(links_per_problem, -1, np.int32)
-            for j in range(model.joint_count):
-                child = joint_child_np[j]
-                if child != -1 and joint_articulation_np[j] >= 0:
-                    body_to_joint_np[child] = j
-
-            joint_q_start_np = model.joint_q_start.numpy()
-            ancestors = np.zeros(len(joint_q_start_np) - 1, dtype=bool)
-            joint_ancestor_np = model.joint_ancestor.numpy()
-            j = body_to_joint_np[self.link_index]
-            while j != -1:
-                ancestors[j] = True
-                j = joint_ancestor_np[j]
-            affects_dof_np = ancestors[dof_to_joint_np]
+            affects_dof_np = np.repeat(ancestors, np.diff(joint_qd_start_np))
             self.affects_dof = wp.array(affects_dof_np.astype(np.uint8), device=self.device)
         elif jacobian_mode == IKJacobianType.AUTODIFF:
             self.e_arrays = []
@@ -875,7 +876,8 @@ class IKObjectiveRotation(IKObjective):
     """Match the world-space orientation of a link frame.
 
     Args:
-        link_index: Body index whose frame defines the constrained link.
+        link_index: Body index whose frame defines the constrained link. Must
+            be the child of an articulation joint.
         link_offset_rotation: Local rotation from the body frame to the
             constrained frame, stored in ``(x, y, z, w)`` order.
         target_rotations: Target orientations, shape [problem_count]. Each
@@ -911,29 +913,10 @@ class IKObjectiveRotation(IKObjective):
             jacobian_mode: Jacobian backend selected for this objective.
         """
         self._require_batch_layout()
+        ancestors = _link_joint_ancestors(model, self.link_index)
         if jacobian_mode == IKJacobianType.ANALYTIC:
             joint_qd_start_np = model.joint_qd_start.numpy()
-            dof_to_joint_np = np.empty(joint_qd_start_np[-1], dtype=np.int32)
-            for j in range(len(joint_qd_start_np) - 1):
-                dof_to_joint_np[joint_qd_start_np[j] : joint_qd_start_np[j + 1]] = j
-
-            links_per_problem = model.body_count
-            joint_child_np = model.joint_child.numpy()
-            joint_articulation_np = model.joint_articulation.numpy()
-            body_to_joint_np = np.full(links_per_problem, -1, np.int32)
-            for j in range(model.joint_count):
-                child = joint_child_np[j]
-                if child != -1 and joint_articulation_np[j] >= 0:
-                    body_to_joint_np[child] = j
-
-            joint_q_start_np = model.joint_q_start.numpy()
-            ancestors = np.zeros(len(joint_q_start_np) - 1, dtype=bool)
-            joint_ancestor_np = model.joint_ancestor.numpy()
-            j = body_to_joint_np[self.link_index]
-            while j != -1:
-                ancestors[j] = True
-                j = joint_ancestor_np[j]
-            affects_dof_np = ancestors[dof_to_joint_np]
+            affects_dof_np = np.repeat(ancestors, np.diff(joint_qd_start_np))
             self.affects_dof = wp.array(affects_dof_np.astype(np.uint8), device=self.device)
         elif jacobian_mode == IKJacobianType.AUTODIFF:
             self.e_arrays = []
