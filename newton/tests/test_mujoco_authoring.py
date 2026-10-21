@@ -116,6 +116,27 @@ class TestMuJoCoActuatorAuthoring(unittest.TestCase):
         np.testing.assert_array_equal(solver.mj_model.actuator_gaintype, int(native.mjtGain.mjGAIN_DCMOTOR))
         self.assertEqual(solver.mj_model.nu, 4)
 
+    def test_add_actuator_dcmotor_nominal_inference_uses_damping(self):
+        """Include actuator damping when inferring electrical parameters."""
+        native = newton.solvers.SolverMuJoCo.import_mujoco()[0]
+        reference = native.MjSpec.from_string(
+            '<mujoco><actuator><dcmotor nominal="24 1.2 100" damping="0.001"/></actuator></mujoco>'
+        ).actuators[0]
+        builder = newton.ModelBuilder()
+        _, joint = _add_revolute(builder, "hinge")
+        index = mujoco.add_actuator_dcmotor(
+            builder,
+            mujoco.ActuatorTarget.joint(joint),
+            nominal=(24.0, 1.2, 100.0),
+            damping=(0.001,),
+        )
+
+        gainprm = builder.custom_attributes["mujoco:actuator_gainprm"].values[index]
+        biasprm = builder.custom_attributes["mujoco:actuator_biasprm"].values[index]
+        np.testing.assert_allclose(gainprm, reference.gainprm, rtol=1e-7, atol=1e-8)
+        np.testing.assert_allclose(biasprm, reference.biasprm, rtol=1e-7, atol=1e-8)
+        np.testing.assert_allclose(gainprm[:2], [4.4, 0.22], rtol=1e-7, atol=1e-8)
+
     def test_add_actuator_shortcuts_and_ranges(self):
         """Normalize shortcut parameters and authored range metadata."""
         builder = newton.ModelBuilder()

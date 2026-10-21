@@ -150,8 +150,12 @@ def add_actuator_dcmotor(
         if not 1 <= len(values) <= size:
             raise ValueError(f"{name} requires one to {size} values, got {len(values)}.")
         parameters[name] = [float(value) for value in values] + [0.0] * (size - len(values))
+    if not 1 <= len(damping) <= 3:
+        raise ValueError(f"damping requires one to 3 values, got {len(damping)}.")
+    padded_damping = [float(value) for value in damping] + [0.0] * (3 - len(damping))
     spec = _import_mujoco().MjSpec()
     actuator = spec.add_actuator()
+    actuator.damping = padded_damping
     actuator.set_to_dcmotor(resistance=resistance, ctrlspec=signature, **parameters)
     return _add_actuator(
         builder,
