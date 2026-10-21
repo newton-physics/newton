@@ -144,11 +144,16 @@ def _default_path_resolver(base_dir: str | None, file_path: str) -> str:
         raise ValueError(f"Cannot resolve relative path '{file_path}' without base directory")
 
 
+def _join_asset_dir(asset_dir: str | None, file_path: str) -> str:
+    return os.path.join(asset_dir, file_path) if asset_dir not in (None, ".") else file_path
+
+
 def _load_and_expand_mjcf(
     source: str,
     path_resolver: Callable[[str | None, str], str] = _default_path_resolver,
     include_stack: set[str] | None = None,
     main_dir: str | None = None,
+    inherited_asset_dirs: dict[str, str | None] | None = None,
 ) -> tuple[ET.Element, str | None]:
     """Load MJCF source and recursively expand <include> elements.
 
@@ -160,6 +165,7 @@ def _load_and_expand_mjcf(
             Default resolver joins paths and returns absolute file paths.
         include_stack: File paths on the active include stack for cycle detection
         main_dir: Main model directory for default asset lookup
+        inherited_asset_dirs: Including file's effective asset directories by asset tag
 
     Returns:
         Tuple of (root element, base directory or None for XML string input)
@@ -184,27 +190,27 @@ def _load_and_expand_mjcf(
         base_dir = os.path.dirname(source) or "."
         root = ET.parse(source).getroot()
 
-    if main_dir is None:
+    if not is_included:
         main_dir = base_dir
 
     # Extract this file's own asset directories BEFORE expanding
     # includes, so nested-include compilers cannot shadow it.
     own_compiler = root.find("compiler")
+    own_strippath = False
+    own_meshdir = own_texturedir = None
     if own_compiler is not None:
         own_assetdir = own_compiler.attrib.get("assetdir")
         own_strippath = own_compiler.attrib.get("strippath", "false").lower() in {"true", "1"}
-        if own_assetdir is None:
-            own_meshdir = own_compiler.attrib.get("meshdir", ".")
-            own_texturedir = own_compiler.attrib.get("texturedir", own_meshdir)
-        else:
-            own_meshdir = own_compiler.attrib.get("meshdir", own_assetdir)
-            own_texturedir = own_compiler.attrib.get("texturedir", own_assetdir)
-    else:
-        own_strippath = False
-        own_meshdir = "."
-        own_texturedir = "."
+        own_meshdir = own_compiler.attrib.get("meshdir", own_assetdir)
+        own_texturedir = own_compiler.attrib.get("texturedir", own_meshdir if own_assetdir is None else own_assetdir)
 
     asset_dir_by_tag = {"mesh": own_meshdir, "hfield": own_meshdir, "texture": own_texturedir}
+    # MuJoCo applies compiler asset directories model-wide, so main-model
+    # lookups inherit the including file's directories when this file sets none.
+    main_asset_dir_by_tag = {
+        tag: asset_dir if asset_dir is not None else (inherited_asset_dirs or {}).get(tag)
+        for tag, asset_dir in asset_dir_by_tag.items()
+    }
     own_file_assets = [elem for elem in root.iter() if elem.tag in asset_dir_by_tag and elem.get("file")]
 
     # Strip consumed asset directories so they don't leak into the parent tree
@@ -227,7 +233,9 @@ def _load_and_expand_mjcf(
 
         # Recursive call - each included file extracts its own compiler and
         # resolves its own asset paths before returning.
-        included_root, _ = _load_and_expand_mjcf(resolved, path_resolver, include_stack, main_dir)
+        included_root, _ = _load_and_expand_mjcf(
+            resolved, path_resolver, include_stack, main_dir, main_asset_dir_by_tag
+        )
 
         # Replace include element with children of included root
         idx = list(parent).index(include)
@@ -241,14 +249,14 @@ def _load_and_expand_mjcf(
         file_attr = elem.get("file")
         if own_strippath:
             file_attr = os.path.basename(file_attr.replace("\\", "/"))
-        asset_dir = asset_dir_by_tag[elem.tag]
-        resolved_path = os.path.join(asset_dir, file_attr) if asset_dir != "." else file_attr
+        resolved_path = _join_asset_dir(asset_dir_by_tag[elem.tag], file_attr)
         asset_base_dir = base_dir
-        if path_resolver is _default_path_resolver and main_dir is not None:
+        if path_resolver is _default_path_resolver:
             # MuJoCo prefers assets beside the main model over included-file paths;
             # the included file's own asset directory remains a final fallback.
-            if os.path.isfile(os.path.join(main_dir, resolved_path)):
-                asset_base_dir = main_dir
+            main_path = _join_asset_dir(main_asset_dir_by_tag[elem.tag], file_attr)
+            if main_dir is not None and os.path.isfile(os.path.join(main_dir, main_path)):
+                asset_base_dir, resolved_path = main_dir, main_path
             elif (
                 is_included
                 and base_dir is not None

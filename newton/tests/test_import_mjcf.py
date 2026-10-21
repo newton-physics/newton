@@ -10544,6 +10544,68 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             root, _ = _load_and_expand_mjcf(main_path, resolve)
             self.assertEqual(root.find(".//mesh").get("file"), legacy_mesh)
 
+    def test_include_inherits_main_meshdir(self):
+        """Search the main model's meshdir for included files without their own compiler."""
+        robot_content = """\
+<mujoco>
+    <asset>
+        <mesh name="cube" file="cube.stl"/>
+    </asset>
+    <worldbody>
+        <geom type="mesh" mesh="cube"/>
+    </worldbody>
+</mujoco>"""
+        cases = (
+            ("direct", {"models/robot.xml": robot_content}, "models"),
+            (
+                "nested",
+                {
+                    "models/robot.xml": '<mujoco><include file="sub/part.xml"/></mujoco>',
+                    "models/sub/part.xml": robot_content,
+                },
+                os.path.join("models", "sub"),
+            ),
+        )
+        for name, files, included_dir in cases:
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmpdir:
+                for rel_path, content in files.items():
+                    os.makedirs(os.path.dirname(os.path.join(tmpdir, rel_path)), exist_ok=True)
+                    with open(os.path.join(tmpdir, rel_path), "w") as f:
+                        f.write(content)
+                main_path = os.path.join(tmpdir, "scene.xml")
+                with open(main_path, "w") as f:
+                    f.write('<mujoco><compiler meshdir="assets"/><include file="models/robot.xml"/></mujoco>')
+
+                # An unrelated mesh beside the main file must not shadow the included file's mesh.
+                self._create_cube_stl(os.path.join(tmpdir, "cube.stl"))
+                included_mesh = os.path.join(tmpdir, included_dir, "cube.stl")
+                self._create_cube_stl(included_mesh)
+                root, _ = _load_and_expand_mjcf(main_path)
+                self.assertEqual(root.find(".//mesh").get("file"), included_mesh)
+
+                os.makedirs(os.path.join(tmpdir, "assets"))
+                main_mesh = os.path.join(tmpdir, "assets", "cube.stl")
+                self._create_cube_stl(main_mesh)
+                root, _ = _load_and_expand_mjcf(main_path)
+                self.assertEqual(root.find(".//mesh").get("file"), main_mesh)
+
+    def test_xml_string_include_keeps_lookup_order(self):
+        """Prefer the included file's directory over its meshdir when the root is an XML string."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            models_dir = os.path.join(tmpdir, "models")
+            os.makedirs(os.path.join(models_dir, "meshes"))
+            self._create_cube_stl(os.path.join(models_dir, "meshes", "cube.stl"))
+            included_mesh = os.path.join(models_dir, "cube.stl")
+            self._create_cube_stl(included_mesh)
+            robot_path = os.path.join(models_dir, "robot.xml")
+            with open(robot_path, "w") as f:
+                f.write(
+                    '<mujoco><compiler meshdir="meshes"/><asset><mesh name="cube" file="cube.stl"/></asset></mujoco>'
+                )
+
+            root, _ = _load_and_expand_mjcf(f'<mujoco><include file="{robot_path}"/></mujoco>')
+            self.assertEqual(root.find(".//mesh").get("file"), included_mesh)
+
     def test_include_without_meshdir_still_works(self):
         """Test that includes without meshdir resolve relative to included file."""
         with tempfile.TemporaryDirectory() as tmpdir:
