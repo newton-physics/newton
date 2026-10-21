@@ -8,7 +8,6 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
-from enum import Enum
 from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
@@ -17,7 +16,6 @@ import warp as wp
 from ...core.reset import reset_world_selected as _reset_world_selected
 from ...geometry import ParticleFlags, ShapeFlags
 from ...sim import JointType, Model, ModelFlags, StateFlags
-from ..observables import SolverObservableFlags, SolverObservables
 from ..solver import SolverBase
 from .interface import (
     CouplingEndpointKind,
@@ -158,6 +156,14 @@ def _zero_reset_view_rows_kernel(
     global_id = local_to_global[local_id]
     if global_id >= 0 and _reset_world_selected(global_row_world[global_id], world_mask, world_count):
         values[local_id] = zero_value
+
+
+# Overloads instantiated lazily on launch change the module hash, making the
+# compiled module depend on launch order; declare the common dtypes up front.
+for _dtype in (wp.float32, wp.vec3, wp.mat33, wp.transform, wp.spatial_vector):
+    wp.overload(_copy_reset_view_rows_kernel, {"src": wp.array[_dtype], "dst": wp.array[_dtype]})
+    wp.overload(_scatter_reset_owned_rows_kernel, {"src": wp.array[_dtype], "dst": wp.array[_dtype]})
+    wp.overload(_zero_reset_view_rows_kernel, {"values": wp.array[_dtype], "zero_value": _dtype})
 
 
 def _identity_index_map(count: int, device) -> wp.array:
@@ -363,42 +369,58 @@ class SolverCoupled(SolverBase, CouplingInterface):
         in_place: bool = False
 
     @dataclass(eq=False)
-    class Observables(SolverObservables):
-        """Global observables and the entry-local containers that populate them."""
+    class Observables(SolverBase.Observables):
+        """Global observables and the entry-local containers that populate them.
 
-        entry_observables: dict[str, SolverObservables] = field(default_factory=dict, init=False, repr=False)
+        See :ref:`solver_observables` for coupled solver support and selection.
+        """
+
+        entry_observables: dict[str, SolverBase.Observables] = field(default_factory=dict, init=False, repr=False)
         """Observable containers allocated by each owning sub-solver."""
 
-        def select(self, flags: Iterable[Enum]) -> SolverCoupled.Observables:
-            """Select global fields and matching entry-local arrays without allocating."""
-            selected = super().select(flags)
+        def select(self, kinds: Iterable[str]) -> SolverCoupled.Observables:
+            """Select global fields and matching entry-local arrays without allocating.
+
+            See :ref:`solver_observables` for selection examples.
+            """
+            selected = super().select(kinds)
             selected.entry_observables = {
-                name: entry.select(selected.flags.intersection(entry.flags))
+                name: entry.select(selected.kinds.intersection(entry.kinds))
                 for name, entry in self.entry_observables.items()
             }
             return selected
 
-    OBSERVABLES_TYPE = Observables
-
     @property
-    def supported_observable_flags(self):
-        """Return body observables supported by every entry that owns bodies."""
-        flags = set()
-        body_entries = [entry for entry in self._entries.values() if entry.body_indices.shape[0] > 0]
-        for flag in (SolverObservableFlags.BODY_QDD, SolverObservableFlags.BODY_PARENT_F):
-            if body_entries and all(flag in entry.solver.supported_observable_flags for entry in body_entries):
-                flags.add(flag)
-        return frozenset(flags)
+    def supported_observables(self):
+        """Return body observables supported by every entry that owns bodies.
 
-    def observables(self, flags: Iterable[Enum], *, requires_grad: bool | None = None) -> Observables:
-        """Allocate parent-model observables and matching entry-local containers."""
+        See :ref:`solver_observables` for solver support.
+        """
+        kinds = set()
+        body_entries = [entry for entry in self._entries.values() if entry.body_indices.shape[0] > 0]
+        for kind in (SolverBase.ObservableKind.BODY_QDD, SolverBase.ObservableKind.BODY_PARENT_F):
+            if body_entries and all(kind in entry.solver.supported_observables for entry in body_entries):
+                kinds.add(kind)
+        return frozenset(kinds)
+
+    def observables(
+        self, kinds: Iterable[str], *, contacts: Contacts | None = None, requires_grad: bool | None = None
+    ) -> SolverCoupled.Observables:
+        """Allocate parent-model observables and matching entry-local containers.
+
+        ``contacts`` is unused because this solver exposes only body observables.
+
+        See :meth:`SolverBase.observables() <newton.solvers.SolverBase.observables>`
+        for the shared allocation contract and errors, and :ref:`solver_observables`
+        for usage and solver support.
+        """
         if requires_grad is None:
             requires_grad = self.model.requires_grad
-        with self._create_observables(flags, requires_grad=requires_grad) as observables:
+        with self._create_observables(kinds, contacts=contacts, requires_grad=requires_grad) as observables:
             for entry in self._entries.values():
-                entry_flags = observables.flags if entry.body_indices.shape[0] > 0 else ()
+                entry_kinds = observables.kinds if entry.body_indices.shape[0] > 0 else ()
                 observables.entry_observables[entry.name] = entry.solver.observables(
-                    entry_flags, requires_grad=requires_grad
+                    kinds=entry_kinds, requires_grad=requires_grad
                 )
             return observables
 
@@ -420,6 +442,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
         coupling: object | None = None,
     ) -> None:
         super().__init__(model)
+
+        if model.tendon_count:
+            raise ValueError("SolverCoupled does not yet support partitioning tendon routes; use XPBD or VBD directly")
 
         self._attribute_projections = self._build_attribute_projections()
         self._joint_constraint_starts = self._build_joint_constraint_starts()
@@ -875,10 +900,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
         if pairs is None:
             return
 
-        pair_count = min(int(getattr(view, "shape_contact_pair_count", pairs.shape[0])), pairs.shape[0])
+        pair_count = len(pairs)
         if pair_count == 0:
             view.shape_contact_pairs = wp.zeros(0, dtype=wp.vec2i, device=self.model.device)
-            view.shape_contact_pair_count = 0
             return
 
         shape_count = int(getattr(view, "shape_count", self.model.shape_count))
@@ -914,7 +938,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
         )
         count = int(filtered_count.numpy()[0])
         view.shape_contact_pairs = filtered_pairs[:count]
-        view.shape_contact_pair_count = count
 
     def _apply_global_shape_metadata(
         self,
@@ -1078,7 +1101,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         )
         if attachment_order is None:
             self._warn_compaction_fallback(
-                cfg, "the selected body-particle attachments do not have a homogeneous world layout"
+                cfg, "the selected particle-body attachments do not have a homogeneous world layout"
             )
             return None
         compact, failure_reason = self._compact_index_lists(
@@ -1098,8 +1121,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
     @staticmethod
     def _warn_compaction_fallback(cfg: SolverCoupled.Entry, reason: str) -> None:
-        logger.info(
-            f"SolverCoupled entry {cfg.name!r} could not be compacted because {reason}; using the full model layout.",
+        logger.debug(
+            "SolverCoupled entry %r could not be compacted because %s; using the full model layout.",
+            cfg.name,
+            reason,
         )
 
     def _entry_visible_shapes(self, cfg: SolverCoupled.Entry, visible_bodies: set[int]) -> set[int]:
@@ -1244,7 +1269,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             model.AttributeFrequency.TRIANGLE: list(range(model.tri_count)) if keep_deformables else [],
             model.AttributeFrequency.TETRAHEDRON: list(range(model.tet_count)) if keep_deformables else [],
             model.AttributeFrequency.SPRING: list(range(model.spring_count)) if keep_deformables else [],
-            model.AttributeFrequency.ATTACHMENT_BODY_PARTICLE: attachment_order,
+            model.AttributeFrequency.ATTACHMENT_PARTICLE_BODY: attachment_order,
             model.AttributeFrequency.WORLD: list(range(model.world_count)),
         }
         custom_frequency_orders = self._compact_custom_frequency_orders(built_in_frequency_orders)
@@ -1438,13 +1463,13 @@ class SolverCoupled(SolverBase, CouplingInterface):
     ) -> set[int]:
         """Select attachments whose endpoints are both owned by one entry."""
         model = self.model
-        if model.attachment_body_particle_count == 0:
+        if model.attachment_particle_body_count == 0:
             return set()
-        body = model.attachment_body_particle_body.numpy()
-        particle = model.attachment_body_particle_particle.numpy()
+        body = model.attachment_particle_body_body.numpy()
+        particle = model.attachment_particle_body_particle.numpy()
         return {
             attachment
-            for attachment in range(model.attachment_body_particle_count)
+            for attachment in range(model.attachment_particle_body_count)
             if int(body[attachment]) in body_set and int(particle[attachment]) in particle_set
         }
 
@@ -1457,10 +1482,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
         selected = self._body_particle_attachment_rows(body_set, particle_set)
         return self._ordered_world_subset(
             selected,
-            self.model.attachment_body_particle_world,
+            self.model.attachment_particle_body_world,
             None,
-            self.model.attachment_body_particle_count,
-            "body-particle attachments",
+            self.model.attachment_particle_body_count,
+            "particle-body attachments",
             allow_global=True,
         )
 
@@ -1477,7 +1502,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 {int(i) for i in cfg.particles},
             )
         )
-        attachment_frequency = model.AttributeFrequency.ATTACHMENT_BODY_PARTICLE
+        attachment_frequency = model.AttributeFrequency.ATTACHMENT_PARTICLE_BODY
         projections = self._entry_attribute_projections(None)
         world_frequency = model.AttributeFrequency.WORLD
         projections.setdefault(
@@ -1486,9 +1511,9 @@ class SolverCoupled(SolverBase, CouplingInterface):
         )
         projections[attachment_frequency] = _compact_index_projection(
             rows,
-            model.attachment_body_particle_count,
+            model.attachment_particle_body_count,
         )
-        view.attachment_body_particle_count = len(rows)
+        view.attachment_particle_body_count = len(rows)
         self._project_compact_attributes(
             view,
             projections,
@@ -1520,7 +1545,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         tri_order = compact.order(frequency.TRIANGLE)
         tet_order = compact.order(frequency.TETRAHEDRON)
         spring_order = compact.order(frequency.SPRING)
-        attachment_order = compact.order(frequency.ATTACHMENT_BODY_PARTICLE)
+        attachment_order = compact.order(frequency.ATTACHMENT_PARTICLE_BODY)
 
         body_global_to_local = {global_id: local_id for local_id, global_id in enumerate(body_order)}
         view.body_count = len(body_order)
@@ -1533,7 +1558,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         view.articulation_count = len(articulation_order)
         view.constraint_mimic_count = len(mimic_order)
         view.spring_count = len(spring_order)
-        view.attachment_body_particle_count = len(attachment_order)
+        view.attachment_particle_body_count = len(attachment_order)
         view.tri_count = len(tri_order)
         view.edge_count = len(edge_order)
         view.tet_count = len(tet_order)
@@ -2333,7 +2358,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
         contacts: Contacts | None,
         dt: float,
         *,
-        observables: SolverObservables | None = None,
+        observables: SolverBase.Observables | None = None,
     ) -> None:
         """Step all coupled sub-solvers for one time step.
 
@@ -2357,21 +2382,21 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
     def _reconcile_observables(self, observables: Observables) -> None:
         """Merge body-indexed entry observables into global observable arrays."""
-        for flag in (SolverObservableFlags.BODY_QDD, SolverObservableFlags.BODY_PARENT_F):
+        for flag in (SolverBase.ObservableKind.BODY_QDD, SolverBase.ObservableKind.BODY_PARENT_F):
             if observables.is_requested(flag):
-                getattr(observables, flag.value).zero_()
+                getattr(observables, flag).zero_()
 
         for entry in self._entries.values():
             entry_observables = observables.entry_observables[entry.name]
-            for flag in (SolverObservableFlags.BODY_QDD, SolverObservableFlags.BODY_PARENT_F):
+            for flag in (SolverBase.ObservableKind.BODY_QDD, SolverBase.ObservableKind.BODY_PARENT_F):
                 if (
                     not observables.is_requested(flag)
                     or not entry_observables.is_requested(flag)
                     or entry.body_indices.shape[0] == 0
                 ):
                     continue
-                src = getattr(entry_observables, flag.value)
-                dst = getattr(observables, flag.value)
+                src = getattr(entry_observables, flag)
+                dst = getattr(observables, flag)
                 wp.launch(
                     _scatter_spatial_observables_mapped,
                     dim=entry.body_indices.shape[0],
@@ -2838,7 +2863,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             entry_observables = self._active_observables.entry_observables[entry.name]
             # Entries without requested observables keep the plain step() call so
             # sub-solvers that predate the ``observables`` keyword remain usable.
-            if not entry_observables.flags:
+            if not entry_observables.kinds:
                 entry_observables = None
 
         def step_solver(state_in: State, state_out: State, step_dt: float) -> None:
@@ -2879,7 +2904,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
             return contacts
 
         filtered = self._ensure_entry_contact_buffer(entry, contacts)
-        keep_full_surface_contacts = filtered._enable_rigid_soft_full_surface_contact
         force_contact_update = int(self._entry_contact_sources.get(entry.name) is not contacts)
         if force_contact_update:
             self._entry_contact_sources[entry.name] = contacts
@@ -3025,11 +3049,11 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     contacts.soft_contact_tids,
                     contacts.soft_contact_indices,
                     contacts.soft_contact_barycentric,
+                    contacts._soft_contact_mesh_features,
                     entry.view.shape_flags,
                     entry.view.particle_flags,
                     int(ShapeFlags.COLLIDE_PARTICLES),
                     int(ParticleFlags.ACTIVE),
-                    int(keep_full_surface_contacts),
                     filtered.soft_contact_count,
                     filtered.soft_contact_particle,
                     filtered.soft_contact_shape,
@@ -3039,6 +3063,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     filtered.soft_contact_tids,
                     filtered.soft_contact_indices,
                     filtered.soft_contact_barycentric,
+                    filtered._soft_contact_mesh_features,
                     soft_src_to_dst,
                 ],
                 device=self.model.device,
@@ -3047,6 +3072,12 @@ class SolverCoupled(SolverBase, CouplingInterface):
         return filtered
 
     def _ensure_entry_contact_buffer(self, entry: SolverEntry, contacts: Contacts) -> Contacts:
+        # A non-compacted rigid-only view can retain the parent's particle allocation.
+        has_particles = entry.particle_indices.size > 0 or entry.proxy_particle_local_indices.size > 0
+        if has_particles and not entry.solver.coupling_supports_full_surface_soft_contacts():
+            contacts._assert_particle_only_soft_contacts(
+                f"SolverCoupled entry {entry.name!r} ({type(entry.solver).__name__})"
+            )
         filtered = self._entry_contact_buffers.get(entry.name)
         if filtered is None or not self._entry_contact_buffer_matches(filtered, contacts):
             from ...sim import Contacts  # noqa: PLC0415
@@ -3100,9 +3131,22 @@ class SolverCoupled(SolverBase, CouplingInterface):
             )
         filtered._contact_matching_mode = contacts.contact_matching_mode
         filtered._enable_rigid_soft_full_surface_contact = bool(
-            contacts._enable_rigid_soft_full_surface_contact
-            and entry.solver.coupling_supports_full_surface_soft_contacts()
+            contacts._enable_rigid_soft_full_surface_contact and has_particles
         )
+        if filtered._enable_rigid_soft_full_surface_contact and contacts._soft_contact_mesh_features is not None:
+            if filtered._soft_contact_mesh_features is None:
+                # Entry copies only consume features; detection scratch stays in the source buffer.
+                filtered._soft_contact_mesh_features = wp.full(
+                    contacts.soft_contact_max, wp.vec3i(-1), dtype=wp.vec3i, device=contacts.device
+                )
+            # Shape IDs and deformable feature IDs retain the parent numbering.
+            # Force evaluation supplies the entry view's remapped shape_body and poses.
+            filtered._soft_contact_mesh_data = contacts._soft_contact_mesh_data
+        else:
+            filtered._soft_contact_mesh_features = None
+            filtered._soft_contact_mesh_params = None
+            filtered._soft_contact_mesh_state = None
+            filtered._soft_contact_mesh_data = None
         return filtered
 
     @staticmethod
@@ -3148,7 +3192,6 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 )
                 if self.model.shape_contact_pairs is not None:
                     entry.view.shape_contact_pairs = wp.clone(self.model.shape_contact_pairs)
-                    entry.view.shape_contact_pair_count = int(self.model.shape_contact_pair_count)
                 self._customize_compact_view(entry.view)
                 self._filter_shape_contact_pairs(entry.view)
 
@@ -3161,7 +3204,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 return True
         configuration_dof = attribute.name in ("joint_axis", "mujoco:dof_ref", "mujoco:dof_springref")
         if flags & int(ModelFlags.JOINT_PROPERTIES):
-            if frequency in (model_frequency.JOINT, model_frequency.JOINT_COORD) or attribute.name == "joint_axis":
+            if frequency in (model_frequency.JOINT, model_frequency.JOINT_COORD) or attribute.name in (
+                "joint_axis",
+                "joint_target_q",
+            ):
                 return True
         if flags & int(ModelFlags.JOINT_DOF_PROPERTIES):
             if frequency == model_frequency.JOINT_DOF or attribute.name == "joint_target_q":
@@ -3172,6 +3218,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             ) or attribute.name == "joint_target_q":
                 return True
         if flags & int(ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES) and attribute.name in (
+            "joint_target_q",
             "mujoco:dof_ref",
             "mujoco:dof_springref",
         ):
@@ -3185,7 +3232,7 @@ class SolverCoupled(SolverBase, CouplingInterface):
             if frequency in (model_frequency.ONCE, model_frequency.WORLD):
                 return True
         if flags & int(ModelFlags.CONSTRAINT_PROPERTIES):
-            if frequency in (model_frequency.CONSTRAINT_MIMIC, model_frequency.ATTACHMENT_BODY_PARTICLE):
+            if frequency in (model_frequency.CONSTRAINT_MIMIC, model_frequency.ATTACHMENT_PARTICLE_BODY):
                 return True
             if any(token in attribute.name for token in ("constraint", ":eq_", "mimic")):
                 return True
@@ -3214,8 +3261,7 @@ def _entry_control(view: ModelView) -> Control:
     from ...sim import Control  # noqa: PLC0415
 
     control = Control()
-    use_coord_layout_targets = bool(getattr(view.parent, "use_coord_layout_targets", False))
-    target_q_count = int(view.joint_coord_count if use_coord_layout_targets else view.joint_dof_count)
+    target_q_count = int(view.joint_coord_count)
     dof_count = int(view.joint_dof_count)
     requires_grad = bool(getattr(view.parent, "requires_grad", False))
     device = view.parent.device
@@ -3256,11 +3302,9 @@ def _copy_control_to_entry(src: Control | None, entry: SolverEntry) -> Control |
 
     device = entry.view.parent.device
     dof_map = entry.joint_dof_local_to_global
-    use_coord_layout_targets = bool(getattr(entry.view.parent, "use_coord_layout_targets", False))
-    target_q_map = entry.joint_coord_local_to_global if use_coord_layout_targets else dof_map
     for name, local_to_global in (
         ("joint_f", dof_map),
-        ("joint_target_q", target_q_map),
+        ("joint_target_q", entry.joint_coord_local_to_global),
         ("joint_target_qd", dof_map),
         ("joint_act", dof_map),
     ):
@@ -3752,6 +3796,10 @@ def _prepare_filtered_contact_update_kernel(
         # entry lost contacts, so every filtered buffer mirrors the source flag, refreshed or cached.
         if counter_count > 2:
             dst_counters[2] = src_counters[2]
+        # Packing truncates the source count to its stored prefix. Preserve overflow
+        # provenance (including an upstream coupled copy) for the force consumer.
+        if soft_update != 0 and counter_count > 3:
+            dst_counters[3] = wp.int32(src_counters[1] > soft_contact_max or src_counters[3] != 0)
     if rigid_update != 0 and tid < rigid_contact_max:
         rigid_src_to_dst[tid] = -1
     if soft_update != 0 and tid < soft_contact_max:
@@ -3919,11 +3967,11 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     src_tids: wp.array[int],
     src_indices: wp.array[wp.vec3i],
     src_barycentric: wp.array[wp.vec3],
+    src_mesh_features: wp.array[wp.vec3i],
     shape_flags: wp.array[wp.int32],
     particle_flags: wp.array[wp.int32],
     collide_particles_mask: int,
     active_particle_mask: int,
-    keep_full_surface_contacts: int,
     dst_count: wp.array[wp.int32],
     dst_particle: wp.array[int],
     dst_shape: wp.array[int],
@@ -3933,6 +3981,7 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     dst_tids: wp.array[int],
     dst_indices: wp.array[wp.vec3i],
     dst_barycentric: wp.array[wp.vec3],
+    dst_mesh_features: wp.array[wp.vec3i],
     src_to_dst: wp.array[wp.int32],
 ):
     if update_filter[0] == 0:
@@ -3944,8 +3993,6 @@ def _filter_soft_contacts_global_shape_ids_kernel(
 
     particle = src_particle[contact_id]
     shape = src_shape[contact_id]
-    if particle < 0 and keep_full_surface_contacts == 0:
-        return
     if shape < 0 or shape >= shape_flags.shape[0]:
         return
     if (shape_flags[shape] & collide_particles_mask) == 0:
@@ -3971,9 +4018,19 @@ def _filter_soft_contacts_global_shape_ids_kernel(
     dst_body_pos[dst_id] = src_body_pos[contact_id]
     dst_body_vel[dst_id] = src_body_vel[contact_id]
     dst_normal[dst_id] = src_normal[contact_id]
-    dst_tids[dst_id] = src_tids[contact_id]
+    # soft_contact_tids is indexed by candidate thread, not by contact, and full-surface mesh
+    # contacts are appended past the candidate range, so the source array can be shorter than
+    # soft_contact_count.
+    if contact_id < src_tids.shape[0]:
+        dst_tids[dst_id] = src_tids[contact_id]
+    else:
+        dst_tids[dst_id] = -1
     # Carry the unified feature record too (the particle-only path writes (p, -1, -1) + (1, 0, 0)); VBD
     # reads these fields, so dropping them delivers the contact as (-1, -1, -1) and regresses coupled
     # VBD even with full-surface contact off (E7).
     dst_indices[dst_id] = src_indices[contact_id]
     dst_barycentric[dst_id] = src_barycentric[contact_id]
+    if dst_mesh_features:
+        dst_mesh_features[dst_id] = wp.vec3i(-1, -1, -1)
+        if src_mesh_features:
+            dst_mesh_features[dst_id] = src_mesh_features[contact_id]

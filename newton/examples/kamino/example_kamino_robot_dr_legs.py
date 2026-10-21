@@ -131,6 +131,8 @@ class Example:
             self.config.dvi.inequality_sweeps_per_iteration = 3
             self.config.dvi.bilateral_solve_interval = 1
             self.config.dvi.contact_warmstart_method = "key_and_position_with_tangential_net_force"
+            self.config.dvi.unilateral_solver = getattr(args, "unilateral_solver", "pgs")
+            self.config.dvi.use_schur_complement = getattr(args, "use_schur_complement", None)
         self.solver = newton.solvers.SolverKamino(self.model, config=self.config)
 
         # Create state and control data containers
@@ -146,7 +148,9 @@ class Example:
         else:
             self.collision_pipeline = None
             self.contacts = newton.CollisionPipeline(self.model).contacts()
-        self.solver_observables = self.solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+        self.solver_observables = self.solver.observables(
+            contacts=self.contacts, kinds={self.solver.ObservableKind.CONTACT_F}
+        )
 
         # Attach the model to the viewer for visualization
         self.viewer.set_model(self.model)
@@ -332,6 +336,18 @@ class Example:
             choices=("padmm", "dvi"),
             default="padmm",
             help="Kamino dynamics solver to use.",
+        )
+        parser.add_argument(
+            "--unilateral-solver",
+            choices=("pgs", "apgd"),
+            default="pgs",
+            help="DVI unilateral subsolver; APGD uses De Saxce contact correction.",
+        )
+        parser.add_argument(
+            "--use-schur-complement",
+            action=argparse.BooleanOptionalAction,
+            default=None,
+            help="Eliminate bilateral rows during DVI unilateral solves (automatic for bounded PD drives).",
         )
         parser.add_argument(
             "--linear-solver-type",
