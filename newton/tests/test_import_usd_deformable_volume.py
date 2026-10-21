@@ -366,6 +366,7 @@ class TestUSDDeformableVolume(unittest.TestCase):
                 if expect_warning:
                     self.assertIn("/World/SoftA", str(mentions[0].message))
                     self.assertIn("/World/SoftB", str(mentions[0].message))
+                    self.assertEqual(mentions[0].filename, __file__)
                 self.assertTrue(np.allclose(builder.particle_radius, np.full(len(builder.particle_q), 0.0005)))
 
     def test_bare_tetmesh_ignores_per_point_masses(self):
