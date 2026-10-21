@@ -11,6 +11,7 @@ from typing import Any
 import numpy as np
 import warp as wp
 
+from ...exceptions import NewtonDeprecationWarning
 from .base import InputProcessorBase
 
 _UPDATE_STATE_LEGACY_DEPRECATION_MSG = (
@@ -357,7 +358,7 @@ class InputProcessorDelay(InputProcessorBase):
         """
         inputs = args[0] if args else kwargs.get("inputs")
         if not isinstance(inputs, InputProcessorBase.Inputs):
-            warnings.warn(_UPDATE_STATE_LEGACY_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            warnings.warn(_UPDATE_STATE_LEGACY_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
             self._push_targets(*args, **kwargs)
             return
         self._update_from_inputs(*args, **kwargs)

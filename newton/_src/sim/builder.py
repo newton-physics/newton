@@ -943,7 +943,7 @@ class ModelBuilder:
             self.control_computed_output_attr = control_computed_output_attr
             if delay_args is _ACTUATOR_ENTRY_DELAY_ARGS_UNSET:
                 return
-            warnings.warn(_ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            warnings.warn(_ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
             if not delay_args:
                 return
             from ..actuators.input_processors.input_processor_delay import InputProcessorDelay  # noqa: PLC0415
@@ -962,7 +962,7 @@ class ModelBuilder:
             """
             from ..actuators.input_processors.input_processor_delay import InputProcessorDelay  # noqa: PLC0415
 
-            warnings.warn(_ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            warnings.warn(_ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
             for i, proc_class in enumerate(self.input_processor_classes):
                 if issubclass(proc_class, InputProcessorDelay):
                     return [per_actuator[i] for per_actuator in self.input_processor_args]
@@ -3226,7 +3226,7 @@ class ModelBuilder:
         if delay_steps is not None:
             from ..actuators.input_processors.input_processor_delay import InputProcessorDelay  # noqa: PLC0415
 
-            warnings.warn(_ACTUATOR_DELAY_STEPS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            warnings.warn(_ACTUATOR_DELAY_STEPS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
             input_processors.insert(0, (InputProcessorDelay, {"delay_steps": delay_steps}))
 
         # --- Resolve drive kwargs and separate shared from per-DOF ---

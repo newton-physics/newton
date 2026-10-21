@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 import warp as wp
 
-from ..exceptions import NewtonDeprecationWarning
+from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from .clamping.base import ClampingBase
 from .drives.base import DriveBase
 from .effort_mode_explicit import _EffortModeExplicit
@@ -137,7 +137,7 @@ def _legacy_delay_updates(processors: list[InputProcessorBase]) -> list[InputPro
     """Return the delays whose ``update_state`` override still takes the deprecated 7-argument form."""
     legacy = [p for p in processors if isinstance(p, InputProcessorDelay) and p._overrides_legacy_update_state()]
     if legacy:
-        warnings.warn(_DELAY_UPDATE_STATE_OVERRIDE_DEPRECATION_MSG, DeprecationWarning, stacklevel=3)
+        warnings.warn(_DELAY_UPDATE_STATE_OVERRIDE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=3)
     return legacy
 
 
@@ -249,7 +249,7 @@ class Actuator:
             if delay_state is not None:
                 if input_processor_states is not None:
                     raise TypeError("Specify only one of 'input_processor_states' and deprecated 'delay_state'.")
-                warnings.warn(_DELAY_STATE_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+                warnings.warn(_DELAY_STATE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
                 input_processor_states = [delay_state]
 
             self.input_processor_states = input_processor_states
@@ -262,14 +262,14 @@ class Actuator:
             .. deprecated:: 1.8
                 Use :attr:`input_processor_states` instead.
             """
-            warnings.warn(_DELAY_STATE_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            warnings.warn(_DELAY_STATE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
             return next(
                 (s for s in self.input_processor_states or () if isinstance(s, InputProcessorDelay.State)), None
             )
 
         @delay_state.setter
         def delay_state(self, value: InputProcessorDelay.State | None) -> None:
-            warnings.warn(_DELAY_STATE_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            warnings.warn(_DELAY_STATE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
             states = self.input_processor_states or []
             for i, s in enumerate(states):
                 if isinstance(s, InputProcessorDelay.State):
@@ -406,7 +406,7 @@ class Actuator:
             raise TypeError("Actuator() missing required argument: 'drive'")
         input_processors = list(input_processors or [])
         if delay is not None:
-            warnings.warn(_DELAY_KEYWORD_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            warnings.warn(_DELAY_KEYWORD_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
             input_processors.insert(0, delay)
 
         self.indices = indices
@@ -547,12 +547,12 @@ class Actuator:
         .. deprecated:: 1.8
             Use :attr:`input_processors` instead.
         """
-        warnings.warn(_DELAY_ATTRIBUTE_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_DELAY_ATTRIBUTE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         return next((p for p in self.input_processors if isinstance(p, InputProcessorDelay)), None)
 
     @delay.setter
     def delay(self, value: InputProcessorDelay | None) -> None:
-        warnings.warn(_DELAY_ATTRIBUTE_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_DELAY_ATTRIBUTE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         processors = [p for p in self.input_processors if not isinstance(p, InputProcessorDelay)]
         if value is not None:
             value.finalize(self.device, self.num_actuators, requires_grad=self.requires_grad)
@@ -605,7 +605,7 @@ class Actuator:
             warnings.warn(
                 "Implicit actuation with InputProcessorBacklash predicts the link-side state from the "
                 "motor-side response only, so it is inaccurate while the backlash gap is open.",
-                UserWarning,
+                NewtonWarning,
                 stacklevel=2,
             )
         self._effort_mode = _EffortModeImplicit(

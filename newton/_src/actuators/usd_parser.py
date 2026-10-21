@@ -42,7 +42,7 @@ class _ComponentKindMeta(enum.EnumMeta):
             warnings.warn(_COMPONENT_KIND_CONTROLLER_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
             return cls.DRIVE
         if name == "DELAY":
-            warnings.warn(_COMPONENT_KIND_DELAY_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            warnings.warn(_COMPONENT_KIND_DELAY_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
             return cls.INPUT_PROCESSOR
         return super().__getattr__(name)
 
@@ -51,7 +51,7 @@ class _ComponentKindMeta(enum.EnumMeta):
             warnings.warn(_COMPONENT_KIND_CONTROLLER_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
             return cls.DRIVE
         if name == "DELAY":
-            warnings.warn(_COMPONENT_KIND_DELAY_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            warnings.warn(_COMPONENT_KIND_DELAY_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
             return cls.INPUT_PROCESSOR
         return super().__getitem__(name)
 
@@ -69,7 +69,7 @@ class ComponentKind(enum.Enum, metaclass=_ComponentKindMeta):
             warnings.warn(_COMPONENT_KIND_CONTROLLER_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
             return cls.DRIVE
         if value == "delay":
-            warnings.warn(_COMPONENT_KIND_DELAY_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            warnings.warn(_COMPONENT_KIND_DELAY_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
             return cls.INPUT_PROCESSOR
         return None
 
@@ -431,6 +431,7 @@ def parse_actuator_prim(prim, *, allow_unsafe_torch_checkpoints: bool = False) -
             if schema_name.startswith("Newton") and schema_name not in _BASE_SCHEMAS:
                 warnings.warn(
                     f"Actuator prim '{prim.GetPath()}' has unknown actuator schema '{schema_name}'; it is ignored",
+                    NewtonWarning,
                     stacklevel=2,
                 )
             continue
