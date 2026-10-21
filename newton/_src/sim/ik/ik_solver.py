@@ -201,6 +201,11 @@ class IKSolver:
     :class:`~newton.ik.IKOptimizerLBFGS`, and keeps the lowest-cost candidate for each
     base problem.
 
+    Forward kinematics follows articulation tree joints. Joints outside
+    articulations, including loop-closing joints, do not contribute to link
+    poses or their position/rotation Jacobians; loop-closure constraints are
+    not enforced by this solver.
+
     Args:
         model: Shared articulation model.
         n_problems: Number of base IK problems solved together.

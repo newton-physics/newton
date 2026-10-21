@@ -109,16 +109,26 @@ def eval_fk_batched(model, joint_q, joint_qd, body_q, body_qd):
 @wp.kernel
 def fk_accum(
     joint_parent: wp.array[wp.int32],
+    joint_child: wp.array[wp.int32],
+    joint_ancestor: wp.array[wp.int32],
+    joint_articulation: wp.array[wp.int32],
     X_local: wp.array2d[wp.transform],
     body_q: wp.array2d[wp.transform],
 ):
     problem_idx, local_joint_idx = wp.tid()
+    if joint_articulation[local_joint_idx] < 0:
+        return
     Xw = X_local[problem_idx, local_joint_idx]
-    parent = joint_parent[local_joint_idx]
-    while parent >= 0:
-        Xw = X_local[problem_idx, parent] * Xw
-        parent = joint_parent[parent]
-    body_q[problem_idx, local_joint_idx] = Xw
+    root = local_joint_idx
+    ancestor = joint_ancestor[root]
+    while ancestor >= 0:
+        Xw = X_local[problem_idx, ancestor] * Xw
+        root = ancestor
+        ancestor = joint_ancestor[ancestor]
+    parent = joint_parent[root]
+    if parent >= 0:
+        Xw = body_q[problem_idx, parent] * Xw
+    body_q[problem_idx, joint_child[local_joint_idx]] = Xw
 
 
 @wp.kernel

@@ -931,6 +931,7 @@ class IKOptimizerLM:
         @wp.kernel(module="unique")
         def _fk_local(
             joint_type: wp.array[wp.int32],  # (n_joints)
+            joint_articulation: wp.array[wp.int32],
             joint_q: wp.array2d[wp.float32],  # (n_batch, n_coords)
             joint_q_start: wp.array[wp.int32],  # (n_joints + 1)
             joint_qd_start: wp.array[wp.int32],  # (n_joints + 1)
@@ -942,6 +943,8 @@ class IKOptimizerLM:
             X_local_out: wp.array2d[wp.transform],  # (n_batch, n_joints)
         ):
             row, local_joint_idx = wp.tid()
+            if joint_articulation[local_joint_idx] < 0:
+                return
 
             t = joint_type[local_joint_idx]
             q_start = joint_q_start[local_joint_idx]
@@ -977,6 +980,7 @@ class IKOptimizerLM:
                 dim=[n_batch, model.joint_count],
                 inputs=[
                     model.joint_type,
+                    model.joint_articulation,
                     joint_q,
                     model.joint_q_start,
                     model.joint_qd_start,
@@ -996,6 +1000,9 @@ class IKOptimizerLM:
                 dim=[n_batch, model.joint_count],
                 inputs=[
                     model.joint_parent,
+                    model.joint_child,
+                    model.joint_ancestor,
+                    model.joint_articulation,
                     X_local,
                 ],
                 outputs=[

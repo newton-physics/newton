@@ -296,21 +296,20 @@ class IKObjectivePosition(IKObjective):
 
             links_per_problem = model.body_count
             joint_child_np = model.joint_child.numpy()
+            joint_articulation_np = model.joint_articulation.numpy()
             body_to_joint_np = np.full(links_per_problem, -1, np.int32)
             for j in range(model.joint_count):
                 child = joint_child_np[j]
-                if child != -1:
+                if child != -1 and joint_articulation_np[j] >= 0:
                     body_to_joint_np[child] = j
 
             joint_q_start_np = model.joint_q_start.numpy()
             ancestors = np.zeros(len(joint_q_start_np) - 1, dtype=bool)
-            joint_parent_np = model.joint_parent.numpy()
-            body = self.link_index
-            while body != -1:
-                j = body_to_joint_np[body]
-                if j != -1:
-                    ancestors[j] = True
-                body = joint_parent_np[j] if j != -1 else -1
+            joint_ancestor_np = model.joint_ancestor.numpy()
+            j = body_to_joint_np[self.link_index]
+            while j != -1:
+                ancestors[j] = True
+                j = joint_ancestor_np[j]
             affects_dof_np = ancestors[dof_to_joint_np]
             self.affects_dof = wp.array(affects_dof_np.astype(np.uint8), device=self.device)
         elif jacobian_mode == IKJacobianType.AUTODIFF:
@@ -920,21 +919,20 @@ class IKObjectiveRotation(IKObjective):
 
             links_per_problem = model.body_count
             joint_child_np = model.joint_child.numpy()
+            joint_articulation_np = model.joint_articulation.numpy()
             body_to_joint_np = np.full(links_per_problem, -1, np.int32)
             for j in range(model.joint_count):
                 child = joint_child_np[j]
-                if child != -1:
+                if child != -1 and joint_articulation_np[j] >= 0:
                     body_to_joint_np[child] = j
 
             joint_q_start_np = model.joint_q_start.numpy()
             ancestors = np.zeros(len(joint_q_start_np) - 1, dtype=bool)
-            joint_parent_np = model.joint_parent.numpy()
-            body = self.link_index
-            while body != -1:
-                j = body_to_joint_np[body]
-                if j != -1:
-                    ancestors[j] = True
-                body = joint_parent_np[j] if j != -1 else -1
+            joint_ancestor_np = model.joint_ancestor.numpy()
+            j = body_to_joint_np[self.link_index]
+            while j != -1:
+                ancestors[j] = True
+                j = joint_ancestor_np[j]
             affects_dof_np = ancestors[dof_to_joint_np]
             self.affects_dof = wp.array(affects_dof_np.astype(np.uint8), device=self.device)
         elif jacobian_mode == IKJacobianType.AUTODIFF:
