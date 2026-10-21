@@ -187,6 +187,43 @@ All viewers support ``set_visible_worlds()`` to limit visualization to a subset 
     viewer.set_model(model)
     viewer.set_visible_worlds(range(4))
 
+.. _viewer-live-plots:
+
+Live Plots
+~~~~~~~~~~
+
+:meth:`~newton.viewer.ViewerBase.log_scalar` and
+:meth:`~newton.viewer.ViewerBase.log_array` provide numeric diagnostics with
+backend-specific displays:
+
+- :class:`~newton.viewer.ViewerGL` and :class:`~newton.viewer.ViewerRTX`
+  display rolling scalar line plots and heatmaps for scalar, 1-D, and 2-D
+  NumPy or Warp arrays in a Plots window.
+- :class:`~newton.viewer.ViewerViser` displays rolling scalar line plots in
+  the sidebar. Generic array visualization is not supported.
+- :class:`~newton.viewer.ViewerRerun` forwards scalar and array data to
+  Rerun's native scalar visualization.
+
+For ``ViewerGL``, ``ViewerRTX``, and ``ViewerViser``, set
+``plot_history_size`` when constructing the viewer to configure the number
+of plotted scalar samples (default: 250). Use ``smoothing`` to average a
+group of raw samples into each plotted point, and ``clear=True`` with
+``log_scalar`` to reset a signal's history and pending smoothing samples.
+For example, with ``ViewerGL`` or ``ViewerRTX``:
+
+.. code-block:: python
+
+    viewer.log_scalar("Training/reward", reward, smoothing=10)
+    viewer.log_array("Training/observations", observations)
+
+In ``ViewerGL`` and ``ViewerRTX``, pass ``None`` to ``log_array`` to remove
+a heatmap. Logging works before the first rendered frame and in headless
+mode; plots are displayed when the viewer window and its UI are active.
+
+``ViewerRerun`` controls history through ``keep_scalar_history`` for
+scalars and ``keep_historical_data`` for arrays. It ignores ``clear`` and
+``smoothing``, and passing ``None`` to ``log_array`` is a no-op.
+
 .. _viewer-inspection:
 
 Interactive inspection in ViewerGL
@@ -218,7 +255,7 @@ filtering; warnings and errors open it automatically. Explicit display choices
 survive example switches. A new scene keeps its authored camera pose.
 
 Binding a custom simulation loop
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The existing ``set_model`` / ``log_state`` / ``log_contacts`` loop remains
 valid. To expose inputs, solver settings, and collision metadata to the
@@ -286,7 +323,7 @@ loops get inspection from ``set_simulation``; the example-runner history and
 replay callbacks are not automatically installed in custom loops.
 
 Editing, history, and rebuilding
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 * Control inputs can be changed while running or paused at the live frame.
   Edits update existing arrays so captured simulation graphs retain their
@@ -310,7 +347,7 @@ Editing, history, and rebuilding
   display preferences. No runtime inspector edits are written back to USD.
 
 Implementation boundaries
-^^^^^^^^^^^^^^^^^^^^^^^^^
+~~~~~~~~~~~~~~~~~~~~~~~~~
 
 The implementation separates reusable Python inspection services from local
 presentation and rendering:
@@ -336,43 +373,6 @@ reuse metadata and inspection rules through an application-owned transport;
 this change does not define serialization, remote permissions, or a network
 protocol. Future scene loading should replace the application-owned simulation
 and rebind it rather than making a GUI panel responsible for solver creation.
-
-.. _viewer-live-plots:
-
-Live Plots
-~~~~~~~~~~
-
-:meth:`~newton.viewer.ViewerBase.log_scalar` and
-:meth:`~newton.viewer.ViewerBase.log_array` provide numeric diagnostics with
-backend-specific displays:
-
-- :class:`~newton.viewer.ViewerGL` and :class:`~newton.viewer.ViewerRTX`
-  display rolling scalar line plots and heatmaps for scalar, 1-D, and 2-D
-  NumPy or Warp arrays in a Plots window.
-- :class:`~newton.viewer.ViewerViser` displays rolling scalar line plots in
-  the sidebar. Generic array visualization is not supported.
-- :class:`~newton.viewer.ViewerRerun` forwards scalar and array data to
-  Rerun's native scalar visualization.
-
-For ``ViewerGL``, ``ViewerRTX``, and ``ViewerViser``, set
-``plot_history_size`` when constructing the viewer to configure the number
-of plotted scalar samples (default: 250). Use ``smoothing`` to average a
-group of raw samples into each plotted point, and ``clear=True`` with
-``log_scalar`` to reset a signal's history and pending smoothing samples.
-For example, with ``ViewerGL`` or ``ViewerRTX``:
-
-.. code-block:: python
-
-    viewer.log_scalar("Training/reward", reward, smoothing=10)
-    viewer.log_array("Training/observations", observations)
-
-In ``ViewerGL`` and ``ViewerRTX``, pass ``None`` to ``log_array`` to remove
-a heatmap. Logging works before the first rendered frame and in headless
-mode; plots are displayed when the viewer window and its UI are active.
-
-``ViewerRerun`` controls history through ``keep_scalar_history`` for
-scalars and ``keep_historical_data`` for arrays. It ignores ``clear`` and
-``smoothing``, and passing ``None`` to ``log_array`` is a no-op.
 
 Real-time Viewers
 -----------------
