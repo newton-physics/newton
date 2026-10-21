@@ -305,19 +305,18 @@ def _run_hashes(model, options, steps, graph=False):
 def test_deterministic_runs_are_bitwise_identical(test, device):
     """Produce identical finite states in two runs at every eager step and every two-step CUDA graph boundary."""
     model = _build_contact_scene(device)
-    configurations = [("split", model, SPLIT_OPTIONS, False)]
-    if wp.get_device(device).is_cuda:
-        torsion_model = _build_contact_scene(device, torsion_radius=0.02)
-        friction_model = _build_contact_scene(device, joint_friction=0.4)
-        configurations += [
-            ("split_graph", model, SPLIT_OPTIONS, True),
-            ("matrix_free", model, MATRIX_FREE_OPTIONS, False),
-            ("matrix_free_graph", model, MATRIX_FREE_OPTIONS, True),
-            ("torsion_graph", torsion_model, TORSION_OPTIONS, True),
-            ("warmstart_graph", model, WARMSTART_OPTIONS, True),
-            ("joint_friction", friction_model, FRICTION_OPTIONS, False),
-            ("joint_friction_graph", friction_model, FRICTION_OPTIONS, True),
-        ]
+    torsion_model = _build_contact_scene(device, torsion_radius=0.02)
+    friction_model = _build_contact_scene(device, joint_friction=0.4)
+    configurations = [
+        ("split", model, SPLIT_OPTIONS, False),
+        ("split_graph", model, SPLIT_OPTIONS, True),
+        ("matrix_free", model, MATRIX_FREE_OPTIONS, False),
+        ("matrix_free_graph", model, MATRIX_FREE_OPTIONS, True),
+        ("torsion_graph", torsion_model, TORSION_OPTIONS, True),
+        ("warmstart_graph", model, WARMSTART_OPTIONS, True),
+        ("joint_friction", friction_model, FRICTION_OPTIONS, False),
+        ("joint_friction_graph", friction_model, FRICTION_OPTIONS, True),
+    ]
     for name, scene, options, graph in configurations:
         with test.subTest(name):
             first = _run_hashes(scene, options, 60, graph=graph)
@@ -754,12 +753,7 @@ class TestSteelDeterminism(unittest.TestCase):
 
 devices = get_test_devices()
 cuda_devices = get_cuda_test_devices()
-for _fn in (
-    test_crba_fill_par_dof_is_batch_invariant,
-    test_full_reset_matches_fresh_solver,
-    test_deterministic_runs_are_bitwise_identical,
-    test_deterministic_overflow_keeps_earliest_contacts,
-):
+for _fn in (test_full_reset_matches_fresh_solver, test_deterministic_overflow_keeps_earliest_contacts):
     add_function_test(TestSteelDeterminism, _fn.__name__, _fn, devices=devices)
 add_function_test(
     TestSteelDeterminism,
@@ -769,6 +763,8 @@ add_function_test(
     check_output=False,
 )
 for _fn in (
+    test_crba_fill_par_dof_is_batch_invariant,
+    test_deterministic_runs_are_bitwise_identical,
     test_warm_started_full_reset_matches_fresh_solver,
     test_deterministic_launches_replay_identically,
     test_deterministic_joint_rows_follow_articulation_order,
