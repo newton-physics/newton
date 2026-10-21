@@ -6261,9 +6261,9 @@ def _rod_builder_assembles_topology_and_constitutive_data(test, device):
     test.assertEqual(caught.filename, __file__)
 
 
-def _cable_positional_argument_migrations(test, device):
-    """Enforce completed migrations to keyword-only rod parameters."""
-    released_stiffness_args = (11.0, 0.1, 22.0, 0.2, 33.0, 0.3, 44.0, 0.4)
+def _rod_builder_rejects_positional_stiffness_arguments(test, device):
+    """Reject Newton 1.5 positional stiffness arguments to rod builders."""
+    stiffness_args = (11.0, 0.1, 22.0, 0.2, 33.0, 0.3, 44.0, 0.4)
 
     points = [wp.vec3(0.0, 0.0, float(i)) for i in range(3)]
     quaternions = [wp.quat_identity(), wp.quat_identity()]
@@ -6275,7 +6275,7 @@ def _cable_positional_argument_migrations(test, device):
             quaternions,
             0.05,
             None,
-            *released_stiffness_args,
+            *stiffness_args,
             body_frame_origin="com",
         )
 
@@ -6286,7 +6286,7 @@ def _cable_positional_argument_migrations(test, device):
             [(0, 1), (1, 2)],
             0.05,
             None,
-            *released_stiffness_args,
+            *stiffness_args,
             body_frame_origin="com",
         )
 
@@ -8088,8 +8088,8 @@ add_function_test(
 )
 add_function_test(
     TestCable,
-    "test_cable_positional_argument_migrations",
-    _cable_positional_argument_migrations,
+    "test_rod_builder_rejects_positional_stiffness_arguments",
+    _rod_builder_rejects_positional_stiffness_arguments,
     devices=None,
 )
 add_function_test(
