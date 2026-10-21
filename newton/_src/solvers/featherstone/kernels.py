@@ -89,28 +89,39 @@ def reduce_mimic_inertia(
     dof_start = articulation_dof_start[articulation]
     row_joint = dof_joint[dof_start + row]
     row_axis = dof_start + row - joint_qd_start[row_joint]
+    row_start = mimic_source_start[row_joint]
+    row_end = mimic_source_start[row_joint + 1]
     # Gather T^T (H + armature) T in source-joint order. Each output
     # has one owner, without a dynamic atomic record bound.
     for column in range(matrix_rows):
         column_joint = dof_joint[dof_start + column]
         column_axis = dof_start + column - joint_qd_start[column_joint]
+        column_start = mimic_source_start[column_joint]
+        column_end = mimic_source_start[column_joint + 1]
         total = float(0.0)
-        for ri in range(mimic_source_start[row_joint], mimic_source_start[row_joint + 1]):
-            source_row_joint = mimic_source_joint[ri]
-            source_row = joint_qd_start[source_row_joint] + row_axis
-            row_multiplier = float(1.0)
-            if source_row_joint != row_joint:
-                row_multiplier = joint_mimic_coeffs[source_row_joint][1]
-            for ci in range(mimic_source_start[column_joint], mimic_source_start[column_joint + 1]):
-                source_column_joint = mimic_source_joint[ci]
-                source_column = joint_qd_start[source_column_joint] + column_axis
-                column_multiplier = float(1.0)
-                if source_column_joint != column_joint:
-                    column_multiplier = joint_mimic_coeffs[source_column_joint][1]
-                value = H[matrix_start + (source_row - dof_start) * matrix_rows + source_column - dof_start]
-                if source_row == source_column:
-                    value += joint_armature[source_row]
-                total += row_multiplier * column_multiplier * value
+        if row_end - row_start == 1 and column_end - column_start == 1:
+            # A single source is the independent joint itself; most entries
+            # need no gather when only a few joints have followers.
+            total = H[matrix_start + row * matrix_rows + column]
+            if row == column:
+                total += joint_armature[dof_start + row]
+        elif row_start < row_end and column_start < column_end:
+            for ri in range(row_start, row_end):
+                source_row_joint = mimic_source_joint[ri]
+                source_row = joint_qd_start[source_row_joint] + row_axis
+                row_multiplier = float(1.0)
+                if source_row_joint != row_joint:
+                    row_multiplier = joint_mimic_coeffs[source_row_joint][1]
+                for ci in range(column_start, column_end):
+                    source_column_joint = mimic_source_joint[ci]
+                    source_column = joint_qd_start[source_column_joint] + column_axis
+                    column_multiplier = float(1.0)
+                    if source_column_joint != column_joint:
+                        column_multiplier = joint_mimic_coeffs[source_column_joint][1]
+                    value = H[matrix_start + (source_row - dof_start) * matrix_rows + source_column - dof_start]
+                    if source_row == source_column:
+                        value += joint_armature[source_row]
+                    total += row_multiplier * column_multiplier * value
 
         # Unused follower coordinates retain a unit diagonal to keep
         # the fixed-size solve nonsingular.

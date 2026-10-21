@@ -213,20 +213,29 @@ def test_featherstone_mimic_deterministic(test, device):
 
 def test_featherstone_mimic_reduction_gradients(test, device):
     """Preserve inertia, armature, and coefficient gradients in vectorized mimic reduction."""
-    model, *_ = _build_mimic_model(device, True)
+    builder = newton.ModelBuilder()
+    axes = [newton.ModelBuilder.JointDofConfig.create_unlimited(axis) for axis in (newton.Axis.X, newton.Axis.Y)]
+    joints = [
+        builder.add_joint_d6(-1, builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3))), linear_axes=axes)
+        for _ in range(3)
+    ]
+    builder.add_articulation(joints)
+    builder.set_joint_mimic(joints[1], joints[0], coeffs=(0.1, -1.5))
+    # The unrelated third joint also exercises the direct-copy fast path.
+    model = builder.finalize(device=device)
     solver = newton.solvers.SolverFeatherstone(model, deterministic=wp.DeterministicMode.NOT_GUARANTEED)
     rng = np.random.default_rng(42)
-    h_np = rng.standard_normal((4, 4)).astype(np.float32)
-    armature_np = np.linspace(0.1, 0.4, 4, dtype=np.float32)
-    seed_np = rng.standard_normal((4, 4)).astype(np.float32)
+    h_np = rng.standard_normal((6, 6)).astype(np.float32)
+    armature_np = np.linspace(0.1, 0.6, 6, dtype=np.float32)
+    seed_np = rng.standard_normal((6, 6)).astype(np.float32)
     h = wp.array(h_np.ravel(), device=device, requires_grad=True)
     armature = wp.array(armature_np, device=device, requires_grad=True)
     coeffs = wp.array(model.joint_mimic_coeffs.numpy(), dtype=wp.vec2, device=device, requires_grad=True)
-    output = wp.empty(16, device=device, requires_grad=True)
+    output = wp.empty(36, device=device, requires_grad=True)
     with wp.Tape() as tape:
         wp.launch(
             reduce_mimic_inertia,
-            dim=(model.articulation_count, 4),
+            dim=(model.articulation_count, 6),
             inputs=[
                 next(iter(solver._group_to_art.values())),
                 solver.articulation_H_start,
@@ -245,17 +254,17 @@ def test_featherstone_mimic_reduction_gradients(test, device):
             device=device,
         )
     tape.backward(grads={output: wp.array(seed_np.ravel(), device=device)})
-    transform = np.zeros((4, 4))
-    transform[:2, :2] = np.eye(2)
-    transform[2:, :2] = -1.5 * np.eye(2)
+    transform = np.eye(6)
+    transform[2:4, 2:4] = 0.0
+    transform[2:4, :2] = -1.5 * np.eye(2)
     expected_grad = transform @ seed_np @ transform.T
-    np.testing.assert_allclose(h.grad.numpy().reshape(4, 4), expected_grad, atol=1.0e-6)
+    np.testing.assert_allclose(h.grad.numpy().reshape(6, 6), expected_grad, atol=1.0e-6)
     np.testing.assert_allclose(armature.grad.numpy(), np.diag(expected_grad), atol=1.0e-6)
-    derivative = np.zeros((4, 4))
-    derivative[2:, :2] = np.eye(2)
+    derivative = np.zeros((6, 6))
+    derivative[2:4, :2] = np.eye(2)
     matrix = h_np + np.diag(armature_np)
     multiplier_grad = np.sum(seed_np * (derivative.T @ matrix @ transform + transform.T @ matrix @ derivative))
-    expected_coeffs = np.zeros((2, 2))
+    expected_coeffs = np.zeros((3, 2))
     expected_coeffs[1, 1] = multiplier_grad
     np.testing.assert_allclose(coeffs.grad.numpy(), expected_coeffs, atol=2.0e-6)
 
