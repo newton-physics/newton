@@ -18,6 +18,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Devicelike
+from ..exceptions import NewtonWarning
 from .broad_phase_common import (
     check_aabb_overlap_moving,
     is_pair_excluded,
@@ -471,7 +472,7 @@ class BroadPhaseExplicit:
             warnings.warn(
                 f"Explicit broad phase tests {shape_pair_count:,} shape pairs per collision call "
                 f"({busiest_world:,} in the busiest world). Consider broad_phase='sap' for large worlds.",
-                RuntimeWarning,
+                NewtonWarning,
                 stacklevel=3,
             )
 

@@ -36,8 +36,8 @@ class TestWarningCategories(unittest.TestCase):
         self.assertEqual([type(w.message) for w in caught], [NewtonDeprecationWarning])
 
     def test_library_warnings_use_newton_categories(self):
-        """Require an explicit, non-generic category for every warning Newton emits."""
-        generic = {None, "UserWarning", "DeprecationWarning", "Warning"}
+        """Require a newton.exceptions category for every warning Newton emits."""
+        allowed = set(newton.exceptions.__all__)
         offenders = []
         for relative, tree in _library_sources():
             for node in ast.walk(tree):
@@ -45,7 +45,7 @@ class TestWarningCategories(unittest.TestCase):
                     continue
                 category = node.args[1] if len(node.args) > 1 else None
                 category = next((k.value for k in node.keywords if k.arg == "category"), category)
-                if (ast.unparse(category) if category is not None else None) in generic:
+                if category is None or ast.unparse(category).rpartition(".")[2] not in allowed:
                     offenders.append(f"{relative}:{node.lineno}")
         self.assertEqual(offenders, [], "use a newton.exceptions warning category")
 
