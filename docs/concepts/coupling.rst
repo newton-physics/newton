@@ -104,7 +104,12 @@ size. Solvers that require identical worlds, such as
 every world. When an entry owns a body but not the body's incoming
 articulation joint from its parent body, the compact view gives the body a
 FREE joint to the world, like :meth:`~newton.ModelBuilder.add_joint_free`, so
-reduced-coordinate solvers move it as the root of its own articulation.
+reduced-coordinate solvers move it as the root of its own articulation. A
+hidden FREE joint to the world likewise becomes an identical synthesized FREE
+joint. A hidden joint of any other type to the world, such as the fixed mount
+of an arm, stays out of the view: the body keeps no incoming joint, and
+``SolverCoupled`` logs a warning because no entry simulates that joint. Give
+such a joint to the entry that owns its child body to keep the attachment.
 
 Coupling Hooks
 --------------
