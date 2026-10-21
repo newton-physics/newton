@@ -73,7 +73,7 @@ class TestBodyVariants(unittest.TestCase):
         flags = model.select_body_variants(
             wp.array([1, 0, 5], dtype=wp.int32, device="cpu"),
             bodies=wp.array([0, 1, 2], dtype=wp.int32, device="cpu"),
-            world_mask=world_mask,
+            changed_world_mask=world_mask,
         )
 
         self.assertEqual(flags, newton.ModelFlags.SHAPE_GEOMETRY | newton.ModelFlags.BODY_INERTIAL_PROPERTIES)

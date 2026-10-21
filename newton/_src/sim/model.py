@@ -60,7 +60,7 @@ def _select_body_variants_kernel(
     body_com: wp.array[wp.vec3],
     body_inertia: wp.array[wp.mat33],
     body_inv_inertia: wp.array[wp.mat33],
-    world_mask: wp.array[wp.bool],
+    changed_world_mask: wp.array[wp.bool],
 ):
     i = wp.tid()
     body = i
@@ -73,11 +73,11 @@ def _select_body_variants_kernel(
     if local < 0 or local >= body_variant_start[body + 1] - first:
         return
 
-    if world_mask.shape[0] > 0 and body_variant[body] != local:
+    if changed_world_mask.shape[0] > 0 and body_variant[body] != local:
         world = body_world[body]
         if world < 0:
-            world = world_mask.shape[0] - 1
-        world_mask[world] = True
+            world = changed_world_mask.shape[0] - 1
+        changed_world_mask[world] = True
     body_variant[body] = local
 
     selected = first + local
@@ -2154,7 +2154,7 @@ class Model:
         variants: wp.array[wp.int32],
         *,
         bodies: wp.array[wp.int32] | None = None,
-        world_mask: wp.array[wp.bool] | None = None,
+        changed_world_mask: wp.array[wp.bool] | None = None,
     ) -> int:
         """Select the active shape variant of bodies declared with
         :meth:`ModelBuilder.add_body_variants <newton.ModelBuilder.add_body_variants>`.
@@ -2165,10 +2165,10 @@ class Model:
         not rendered, but the shape BVH used by sensors still contains them. Shapes added to the
         body directly remain active for every variant.
 
-        The selection runs as a single kernel launch without host synchronization, so it can be
-        captured in a CUDA graph. Notify solvers and viewers with the returned flags::
+        Each body may appear at most once per call. The selection runs as a single kernel launch
+        without host synchronization, so it can be captured in a CUDA graph. Notify solvers and viewers with the returned flags::
 
-            flags = model.select_body_variants(variants, bodies=bodies, world_mask=world_mask)
+            flags = model.select_body_variants(variants, bodies=bodies, changed_world_mask=changed)
             solver.notify_model_changed(flags)
             viewer.notify_model_changed(flags)
 
@@ -2181,11 +2181,11 @@ class Model:
                 Entries outside that range, such as ``-1``, leave their body unchanged.
             bodies: Body index per entry of ``variants``. If ``None``, ``variants`` must have one
                 entry per body.
-            world_mask: Optional boolean mask of shape ``(world_count + 1,)`` in the
-                :meth:`~newton.solvers.SolverBase.reset` layout. Entries of worlds whose selection
-                changed are set to ``True``; other entries are left unchanged.
-
-        Each body may appear at most once per call.
+            changed_world_mask: Optional output mask of shape ``(world_count + 1,)`` in the
+                :meth:`~newton.solvers.SolverBase.reset` layout. The selection only writes it: entries
+                of worlds whose selection changed are set to ``True`` and other entries are left
+                unchanged, so pass a zeroed array to collect the changes of this call. The result can be
+                passed as the ``world_mask`` of solver methods.
 
         Returns:
             The :class:`~newton.ModelFlags` bit-mask to pass to ``notify_model_changed``.
@@ -2199,8 +2199,10 @@ class Model:
                 )
         elif bodies.shape != variants.shape:
             raise ValueError(f"bodies shape {bodies.shape} must match variants shape {variants.shape}.")
-        if world_mask is not None and world_mask.shape[0] != self.world_count + 1:
-            raise ValueError(f"world_mask must have shape ({self.world_count + 1},), got {world_mask.shape}.")
+        if changed_world_mask is not None and changed_world_mask.shape[0] != self.world_count + 1:
+            raise ValueError(
+                f"changed_world_mask must have shape ({self.world_count + 1},), got {changed_world_mask.shape}."
+            )
         flags = int(ModelFlags.SHAPE_GEOMETRY | ModelFlags.BODY_INERTIAL_PROPERTIES)
         if self.body_variant_count == 0 or variants.shape[0] == 0:
             return flags
@@ -2225,7 +2227,7 @@ class Model:
                 self.body_com,
                 self.body_inertia,
                 self.body_inv_inertia,
-                wp.empty(0, dtype=wp.bool, device=self.device) if world_mask is None else world_mask,
+                wp.empty(0, dtype=wp.bool, device=self.device) if changed_world_mask is None else changed_world_mask,
             ],
             device=self.device,
         )
