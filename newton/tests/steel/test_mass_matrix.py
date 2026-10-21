@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Mass-matrix assembly, diagonal mass, refresh cadence and inertial notifications of SolverSteel."""
+"""Mass-matrix assembly, diagonal mass, refresh cadence and model notifications of SolverSteel."""
 
 import gc
 import unittest
@@ -13,6 +13,7 @@ import warp as wp
 import newton
 from newton import ModelFlags
 from newton._src.solvers.steel._testing import kernel_overrides
+from newton._src.solvers.steel.friction_patches import _GEOMETRY_FIELDS
 from newton._src.solvers.steel.kernels import accumulate_group_diag_worlds, compute_composite_inertia
 from newton._src.solvers.steel.solver_steel import _get_composite_inertia_warp_kernel, _get_hinv_jt_kernel
 from newton.solvers import SolverSteel
@@ -950,6 +951,373 @@ for _name in (
     add_function_test(TestSteelNotifyInertial, _name, globals()[_name], devices=devices)
     add_function_test(
         TestSteelNotifyInertial, f"{_name}_split", globals()[_name], devices=get_test_devices(), solve_mode="split"
+    )
+
+
+NOTIFY_WORLD_COUNT = 3
+
+
+# Shape fields whose change retires friction-anchor history.
+GEOMETRY_FIELDS = (
+    "shape_body",
+    "shape_transform",
+    "shape_scale",
+    "shape_type",
+    "shape_source_ptr",
+    "shape_margin",
+    "shape_is_solid",
+)
+
+
+def _build_model_notify_device(device, ground=False):
+    """Worlds with a free sphere, a 3-link and a 2-link revolute chain: three response sizes."""
+    builder = newton.ModelBuilder()
+    for world in range(NOTIFY_WORLD_COUNT):
+        builder.begin_world()
+        sphere = builder.add_body(xform=wp.transform(wp.vec3(1.0, 0.0, 0.1), wp.quat_identity()))
+        builder.add_shape_sphere(sphere, radius=0.1)
+        for link_count, x in ((3, 0.0), (2, -1.0)):
+            parent, joints = -1, []
+            for link_index in range(link_count):
+                link = builder.add_link()
+                builder.add_shape_capsule(
+                    link, radius=0.05, half_height=0.1, xform=wp.transform(wp.vec3(0.0, 0.0, 0.1), wp.quat_identity())
+                )
+                joint_z = 0.5 if parent < 0 else 0.2
+                joints.append(
+                    builder.add_joint_revolute(
+                        parent,
+                        link,
+                        parent_xform=wp.transform(wp.vec3(x if parent < 0 else 0.0, 0.0, joint_z), wp.quat_identity()),
+                        axis=newton.Axis.Y,
+                        armature=0.01 * (world + link_index + 1),
+                        damping=0.1,
+                    )
+                )
+                parent = link
+            builder.add_articulation(joints)
+        builder.end_world()
+    if ground:
+        builder.add_ground_plane()
+    return builder.finalize(device=device)
+
+
+def _host_effective_armature(model):
+    """Host reference of the effective armature: kinematic joints take a large armature."""
+    armature = model.joint_armature.numpy().copy()
+    kinematic = (model.body_flags.numpy() & int(newton.BodyFlags.KINEMATIC)) != 0
+    joint_qd_start = model.joint_qd_start.numpy()
+    for joint, child in enumerate(model.joint_child.numpy()):
+        if kinematic[child]:
+            armature[joint_qd_start[joint] : joint_qd_start[joint + 1]] = 1.0e10
+    return armature
+
+
+def _assert_armature_matches(test, solver, fresh):
+    """Compare the effective armature and its size groups with the host rebuild and a fresh solver."""
+    armature = _host_effective_armature(solver.model)
+    np.testing.assert_array_equal(solver._joint_armature_device.numpy(), armature)
+    np.testing.assert_array_equal(solver._joint_armature_device.numpy(), fresh._joint_armature_device.numpy())
+    plan = solver._model_plan
+    test.assertEqual(len(solver._size_groups), 3)
+    for size in solver._size_groups:
+        expected = np.zeros((solver._n_arts_by_size[size], size), dtype=np.float32)
+        for group, art in enumerate(np.flatnonzero(plan.response_dof_count == size)):
+            start, count = plan.articulation_dof_start[art], plan.articulation_dof_count[art]
+            expected[group, :count] = armature[start : start + count]
+        np.testing.assert_array_equal(solver._R_by_size[size].numpy(), expected)
+        np.testing.assert_array_equal(solver._R_by_size[size].numpy(), fresh._R_by_size[size].numpy())
+
+
+def _randomize_history(patches, model, rng):
+    """Fill the previous patch frame with valid anchors on random shapes and bodies, including -1 sentinels."""
+    n = patches.previous.valid.shape[0]
+    patches.previous.valid.fill_(1)
+    for field, count in (("shape", model.shape_count), ("body", model.body_count)):
+        for side in ("a", "b"):
+            getattr(patches.previous, f"{field}_{side}").assign(rng.integers(-1, count, n).astype(np.int32))
+
+
+def _host_update_geometry(model, patches, seen, valid):
+    """Host reference of the friction-anchor geometry refresh: body radii and retired history."""
+    geometry = {name: getattr(model, name).numpy().copy() for name in GEOMETRY_FIELDS}
+    radii = np.zeros(model.body_count, dtype=np.float32)
+    for body, radius, transform in zip(
+        geometry["shape_body"], model.shape_collision_radius.numpy(), geometry["shape_transform"], strict=True
+    ):
+        if body >= 0:
+            radii[body] = max(radii[body], radius + np.linalg.norm(transform[:3]))
+    changed = np.zeros(model.shape_count, dtype=bool)
+    for name, values in geometry.items():
+        difference = values != seen[name]
+        if difference.ndim > 1:
+            difference = np.any(difference, axis=tuple(range(1, difference.ndim)))
+        changed |= difference
+    bodies = np.zeros(model.body_count, dtype=bool)
+    for shape_body in (seen["shape_body"], geometry["shape_body"]):
+        affected = shape_body[changed]
+        bodies[affected[affected >= 0]] = True
+    valid = valid.copy()
+    previous = patches.previous
+    for ids, mask in (
+        (previous.shape_a.numpy(), changed),
+        (previous.shape_b.numpy(), changed),
+        (previous.body_a.numpy(), bodies),
+        (previous.body_b.numpy(), bodies),
+    ):
+        hit = ids >= 0
+        valid[hit & mask[np.maximum(ids, 0)]] = 0
+    return radii, valid, geometry
+
+
+def test_armature_notify_matches_host_reference_and_fresh_solver(test, device, solve_mode="matrix_free"):
+    """Refresh the effective armature and its size groups like a host rebuild, from edited and replaced arrays."""
+    model = _build_model_notify_device(device)
+    solver = SolverSteel(model, solve_mode=solve_mode)
+    rng = np.random.default_rng(0)
+    for replace, flag in ((False, ModelFlags.JOINT_DOF_PROPERTIES), (True, ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES)):
+        with test.subTest(replace=replace):
+            values = rng.uniform(0.0, 0.5, model.joint_dof_count).astype(np.float32)
+            if replace:
+                model.joint_armature = wp.array(values, dtype=wp.float32, device=device)
+            else:
+                model.joint_armature.assign(values)
+            solver.notify_model_changed(flag)
+            _assert_armature_matches(test, solver, SolverSteel(model, solve_mode=solve_mode))
+
+
+def test_kinematic_notify_matches_host_reference_and_fresh_solver(test, device, solve_mode="matrix_free"):
+    """Give newly kinematic joints the large armature and drop it when they become dynamic again."""
+    model = _build_model_notify_device(device)
+    solver = SolverSteel(model, solve_mode=solve_mode)
+    model.joint_armature.fill_(0.25)
+    chain_link = int(model.joint_child.numpy()[1])
+    for flag in (newton.BodyFlags.KINEMATIC, newton.BodyFlags.DYNAMIC):
+        with test.subTest(flag=flag):
+            body_flags = model.body_flags.numpy()
+            body_flags[chain_link] = int(flag)
+            model.body_flags.assign(body_flags)
+            solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
+            _assert_armature_matches(test, solver, SolverSteel(model, solve_mode=solve_mode))
+
+
+def test_shape_notify_matches_host_reference(test, device, solve_mode="matrix_free"):
+    """Refresh body radii and retire exactly the anchors whose geometry changed."""
+    model = _build_model_notify_device(device)
+    solver = SolverSteel(model, solve_mode=solve_mode, friction_anchor_beta=0.2)
+    patches = solver._friction_patches
+    rng = np.random.default_rng(1)
+    seen = {name: getattr(model, name).numpy().copy() for name in GEOMETRY_FIELDS}
+    for edit in ("shape_transform", "shape_scale", "shape_margin", "shape_body", "shape_collision_radius", None):
+        with test.subTest(edit=edit):
+            _randomize_history(patches, model, rng)
+            valid_before = patches.previous.valid.numpy()
+            shape = int(rng.integers(model.shape_count))
+            if edit == "shape_body":
+                values = model.shape_body.numpy()
+                values[shape] = (values[shape] + 1) % model.body_count
+                model.shape_body.assign(values)
+            elif edit is not None:
+                values = getattr(model, edit).numpy()
+                values[shape] = values[shape] * 1.5 + 0.01
+                getattr(model, edit).assign(values)
+            solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
+            expected_radius, expected_valid, seen = _host_update_geometry(model, patches, seen, valid_before)
+            np.testing.assert_allclose(patches.body_radius.numpy(), expected_radius, rtol=1e-6)
+            np.testing.assert_array_equal(patches.previous.valid.numpy(), expected_valid)
+            if edit not in (None, "shape_collision_radius"):
+                test.assertLess(np.count_nonzero(expected_valid), np.count_nonzero(valid_before))
+    test.assertGreater(np.count_nonzero(patches.previous.valid.numpy()), 0)
+
+
+def test_world_mask_limits_warmstart_invalidation(test, device, solve_mode="matrix_free"):
+    """Discard warm-start impulses of the masked worlds only, keep overflow status, and validate the mask."""
+    model = _build_model_notify_device(device)
+    solver = SolverSteel(model, solve_mode=solve_mode, contact_warmstart=True)
+    histories = (solver._ws_prev_impulses, solver._ws_prev_mf_impulses)
+    test.assertEqual(histories[0].shape[0], NOTIFY_WORLD_COUNT)
+    cases = (
+        ([False, True, False, False], [False, True, False]),
+        ([True, False, True, False], [True, False, True]),
+        (None, [True, True, True]),
+    )
+    for flag in (ModelFlags.JOINT_DOF_PROPERTIES, ModelFlags.SHAPE_PROPERTIES):
+        for mask, cleared in cases:
+            with test.subTest(flag=flag, mask=mask):
+                for history in histories:
+                    history.fill_(7.0)
+                solver.constraint_overflow.fill_(True)
+                world_mask = None if mask is None else wp.array(mask, dtype=wp.bool, device=device)
+                solver.notify_model_changed(flag, world_mask=world_mask)
+                for history in histories:
+                    expected = np.where(np.asarray(cleared)[:, None], 0.0, 7.0)
+                    np.testing.assert_array_equal(history.numpy(), np.broadcast_to(expected, history.shape))
+                test.assertTrue(solver.constraint_overflow.numpy().all())
+    for history in histories:
+        history.fill_(7.0)
+    with test.assertRaisesRegex(ValueError, r"model\.world_count \+ 1 \(4\)"):
+        solver.notify_model_changed(
+            ModelFlags.JOINT_DOF_PROPERTIES, world_mask=wp.ones(NOTIFY_WORLD_COUNT, dtype=wp.bool, device=device)
+        )
+    for history in histories:
+        test.assertTrue(np.all(history.numpy() == 7.0))
+
+
+class TestSteelNotifyDevice(unittest.TestCase):
+    def test_geometry_fields_match_the_solver(self):
+        """Keep the host reference's geometry fields equal to the solver's."""
+        self.assertEqual(GEOMETRY_FIELDS, _GEOMETRY_FIELDS)
+
+    @unittest.skipUnless(wp.is_cuda_available(), "CUDA graph capture requires a CUDA device")
+    def test_armature_and_shape_notify_capture_into_a_graph(self):
+        """Replay a captured notify and pick up armature and geometry written in place after the capture."""
+        device = wp.get_device("cuda:0")
+        model = _build_model_notify_device(device)
+        solver = SolverSteel(model, friction_anchor_beta=0.2)
+        patches = solver._friction_patches
+        flags = (
+            ModelFlags.JOINT_PROPERTIES
+            | ModelFlags.JOINT_DOF_PROPERTIES
+            | ModelFlags.BODY_INERTIAL_PROPERTIES
+            | ModelFlags.SHAPE_PROPERTIES
+        )
+        with wp.ScopedCapture(device=device) as capture:
+            solver.notify_model_changed(flags)
+        seen = {name: getattr(model, name).numpy().copy() for name in GEOMETRY_FIELDS}
+        rng = np.random.default_rng(2)
+        _randomize_history(patches, model, rng)
+        valid_before = patches.previous.valid.numpy()
+        model.joint_armature.assign(rng.uniform(0.0, 0.5, model.joint_dof_count).astype(np.float32))
+        model.shape_collision_radius.assign(model.shape_collision_radius.numpy() * 2.0)
+        scale = model.shape_scale.numpy()
+        scale[2] *= 1.25
+        model.shape_scale.assign(scale)
+        wp.capture_launch(capture.graph)
+        _assert_armature_matches(self, solver, SolverSteel(model))
+        expected_radius, expected_valid, _ = _host_update_geometry(model, patches, seen, valid_before)
+        np.testing.assert_allclose(patches.body_radius.numpy(), expected_radius, rtol=1e-6)
+        np.testing.assert_array_equal(patches.previous.valid.numpy(), expected_valid)
+        self.assertLess(np.count_nonzero(expected_valid), np.count_nonzero(valid_before))
+
+    @unittest.skipUnless(wp.is_cuda_available(), "CUDA graph capture requires a CUDA device")
+    def test_narrow_dof_flags_and_material_copies_capture_into_a_graph(self):
+        """Replay a captured narrow-flag notify and pick up armature, damping and materials edited in place."""
+        device = wp.get_device("cuda:0")
+        model = _build_model_notify_device(device)
+        solver = SolverSteel(model)
+        flags = (
+            ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
+            | ModelFlags.JOINT_DOF_FORCE_PROPERTIES
+            | ModelFlags.SHAPE_PROPERTIES
+        )
+        with wp.ScopedCapture(device=device) as capture:
+            solver.notify_model_changed(flags)
+        rng = np.random.default_rng(3)
+        model.joint_armature.assign(rng.uniform(0.0, 0.5, model.joint_dof_count).astype(np.float32))
+        damping = rng.uniform(0.1, 1.0, model.joint_dof_count).astype(np.float32)
+        model.joint_damping.assign(damping)
+        materials = {"shape_material_mu": solver._shape_mu, "shape_material_restitution": solver._shape_restitution}
+        edited = {}
+        for name in materials:
+            edited[name] = rng.uniform(0.01, 0.9, model.shape_count).astype(np.float32)
+            getattr(model, name).assign(edited[name])
+        solver._mass_update_requested.zero_()
+        wp.capture_launch(capture.graph)
+        _assert_armature_matches(self, solver, SolverSteel(model))
+        np.testing.assert_array_equal(solver._passive_joint_damping.numpy()[: model.joint_dof_count], damping)
+        for name, buffer in materials.items():
+            np.testing.assert_array_equal(buffer.numpy()[: model.shape_count], edited[name], err_msg=name)
+        self.assertTrue(np.all(solver._mass_update_requested.numpy() == 1))
+
+    @unittest.skipUnless(wp.is_cuda_available(), "CUDA graph capture requires a CUDA device")
+    def test_captured_notify_reads_its_captured_arrays(self):
+        """Keep reading the captured armature array after a replacement until an eager notify."""
+        device = wp.get_device("cuda:0")
+        model = _build_model_notify_device(device)
+        solver = SolverSteel(model)
+        with wp.ScopedCapture(device=device) as capture:
+            solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
+        captured = model.joint_armature
+        captured.fill_(0.125)
+        model.joint_armature = wp.full(model.joint_dof_count, 0.375, dtype=wp.float32, device=device)
+        wp.capture_launch(capture.graph)
+        np.testing.assert_array_equal(solver._joint_armature_device.numpy(), np.float32(0.125))
+        solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES)
+        _assert_armature_matches(self, solver, SolverSteel(model))
+
+    @unittest.skipUnless(wp.is_cuda_available(), "CUDA graph capture requires a CUDA device")
+    def test_captured_world_mask_follows_the_live_mask(self):
+        """Replay a captured masked notify against the mask values written before each replay."""
+        device = wp.get_device("cuda:0")
+        model = _build_model_notify_device(device)
+        solver = SolverSteel(model, contact_warmstart=True)
+        mask = wp.zeros(NOTIFY_WORLD_COUNT + 1, dtype=wp.bool, device=device)
+        with wp.ScopedCapture(device=device) as capture:
+            solver.notify_model_changed(ModelFlags.JOINT_DOF_PROPERTIES, world_mask=mask)
+        for selected in range(NOTIFY_WORLD_COUNT):
+            values = np.zeros(NOTIFY_WORLD_COUNT + 1, dtype=bool)
+            values[selected] = True
+            mask.assign(values)
+            solver._ws_prev_mf_impulses.fill_(7.0)
+            wp.capture_launch(capture.graph)
+            history = solver._ws_prev_mf_impulses.numpy()
+            self.assertTrue(np.all(history[selected] == 0.0))
+            self.assertTrue(np.all(np.delete(history, selected, axis=0) == 7.0))
+
+    @unittest.skipUnless(wp.is_cuda_available(), "CUDA graph capture requires a CUDA device")
+    def test_captured_notify_steps_like_eager_notify(self):
+        """Step bitwise like an eager notify after a captured notify of in-place model edits."""
+        device = wp.get_device("cuda:0")
+        trajectories = []
+        for capture_notify in (False, True):
+            model = _build_model_notify_device(device, ground=True)
+            solver = SolverSteel(
+                model, friction_anchor_beta=0.2, contact_warmstart=True, articulation_constraint_max=64
+            )
+            flags = ModelFlags.JOINT_DOF_PROPERTIES | ModelFlags.SHAPE_PROPERTIES
+            graph = None
+            if capture_notify:
+                with wp.ScopedCapture(device=device) as graph:
+                    solver.notify_model_changed(flags)
+            pipeline = newton.CollisionPipeline(model, contact_matching="latest")
+            contacts = pipeline.contacts()
+            state_0, state_1 = model.state(), model.state()
+            control = model.control()
+            history = []
+            for step in range(40):
+                if step == 20:
+                    model.joint_armature.fill_(0.2)
+                    model.shape_material_mu.fill_(0.2)
+                    scale = model.shape_scale.numpy()
+                    scale[0] *= 1.1
+                    model.shape_scale.assign(scale)
+                    if graph is None:
+                        solver.notify_model_changed(flags)
+                    else:
+                        wp.capture_launch(graph.graph)
+                pipeline.collide(state_0, contacts)
+                solver.step(state_0, state_1, control, contacts, DT)
+                state_0, state_1 = state_1, state_0
+                history.append(state_0.joint_q.numpy().copy())
+            trajectories.append(np.stack(history))
+        np.testing.assert_array_equal(trajectories[1], trajectories[0])
+        self.assertFalse(np.array_equal(trajectories[0][19], trajectories[0][39]))
+
+
+for _name in (
+    "test_armature_notify_matches_host_reference_and_fresh_solver",
+    "test_kinematic_notify_matches_host_reference_and_fresh_solver",
+    "test_shape_notify_matches_host_reference",
+    "test_world_mask_limits_warmstart_invalidation",
+):
+    add_function_test(TestSteelNotifyDevice, _name, globals()[_name], devices=devices)
+# Friction anchors and warm start require the matrix-free solve.
+for _name in (
+    "test_armature_notify_matches_host_reference_and_fresh_solver",
+    "test_kinematic_notify_matches_host_reference_and_fresh_solver",
+):
+    add_function_test(
+        TestSteelNotifyDevice, f"{_name}_split", globals()[_name], devices=get_test_devices(), solve_mode="split"
     )
 
 

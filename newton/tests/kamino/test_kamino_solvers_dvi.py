@@ -26,6 +26,7 @@ from newton._src.solvers.kamino._src.linalg import LLTBlockedRCMSolver, LLTBlock
 from newton._src.solvers.kamino._src.solvers.common import WarmStartMode
 from newton._src.solvers.kamino._src.solvers.dvi import DVISolver
 from newton._src.solvers.kamino._src.solvers.dvi.kernels import (
+    BILATERAL_FAILED_PIVOT_SHIFT,
     _find_bilateral_factor_row_start,
     _initialize_dvi_status,
     _solve_bilateral_unilateral_response,
@@ -67,10 +68,11 @@ from newton._src.solvers.kamino._src.solvers.dvi.sparse_kernels import (
 from newton._src.solvers.kamino._src.solvers.dvi.types import DVIConfigStruct, DVIState, convert_config_to_struct
 from newton._src.solvers.kamino._src.solvers.metrics import SolutionMetrics
 from newton._src.solvers.kamino.solver_kamino import SolverKamino
-from newton.tests.kamino import setup_tests, test_context
+from newton.tests.kamino import expect_contact_capacity_warning, setup_tests, test_context
 from newton.tests.kamino.test_kamino_solvers_padmm import TestSetup
 from newton.tests.kamino.utils.extract import extract_delassus, extract_problem_vector
 from newton.tests.kamino.utils.make import make_containers, make_test_problem_fourbar, update_containers
+from newton.tests.unittest_utils import MODULE_LOAD_OUTPUT_RE, NewtonTestCase
 from newton.tests.utils import basics, testing
 
 
@@ -383,11 +385,12 @@ def _evaluate_solution_metrics(test: TestSetup, solver: DVISolver) -> dict[str, 
     }
 
 
-class TestDVISolver(unittest.TestCase):
+class TestDVISolver(NewtonTestCase):
     def setUp(self):
         if not test_context.setup_done:
             setup_tests(clear_cache=False)
         self.device = wp.get_device(test_context.device)
+        self.allowOutputRegex(MODULE_LOAD_OUTPUT_RE, stream="stdout")
 
     def test_00_sparse_projection_is_allocated_only_for_schur(self):
         """Allocate the large sparse response workspace only for Schur solves."""
@@ -565,6 +568,7 @@ class TestDVISolver(unittest.TestCase):
 
     def test_00a2_dvi_contact_capacity_reports_per_world_overflow(self):
         """Report contacts dropped when one world exhausts its capacity."""
+        expect_contact_capacity_warning(self)
         builder = newton.ModelBuilder()
         builder.add_ground_plane()
         for world_index in range(50):
@@ -624,6 +628,17 @@ class TestDVISolver(unittest.TestCase):
         self.assertIsInstance(solver._bilateral_solver, LLTBlockedRCMSolver)
         self.assertEqual(solver._bilateral_solver._block_size, 16)
         self.assertTrue(solver._bilateral_solver._reuse_permutation)
+        self.assertEqual(solver._bilateral_solver._failed_pivot_shift, BILATERAL_FAILED_PIVOT_SHIFT)
+
+        # Both bilateral solvers retry failed pivots by default, and an explicit shift still wins.
+        for kwargs, expected_shift in (({}, BILATERAL_FAILED_PIVOT_SHIFT), ({"failed_pivot_shift": 0.0}, 0.0)):
+            with self.subTest(kwargs=kwargs):
+                solver._config = [
+                    kamino_config.DVISolverConfig(bilateral_solver_type="LLTB", bilateral_solver_kwargs=kwargs)
+                ]
+                solver._allocate_bilateral_solver(make_model([3]))
+                self.assertIsInstance(solver._bilateral_solver, LLTBlockedSolver)
+                self.assertEqual(solver._bilateral_solver._failed_pivot_shift, expected_shift)
 
         solver._config = [
             kamino_config.DVISolverConfig(bilateral_solver_type="LLTB"),
@@ -2169,7 +2184,7 @@ class TestDVISolver(unittest.TestCase):
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
             model=model,
-            max_world_contacts=4,
+            max_world_contacts=8,
             sparse=True,
         )
         update_containers(

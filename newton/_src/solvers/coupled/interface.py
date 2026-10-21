@@ -256,7 +256,15 @@ class CouplingInterface:
         return False
 
     def coupling_supports_full_surface_soft_contacts(self) -> bool:
-        """Return whether the solver consumes edge and face soft contacts."""
+        """Return whether the solver consumes edge and face soft contacts.
+
+        Full-surface entry buffers retain detected geometry and mesh feature data.
+        Mesh force evaluation must test eligibility at the consumer's current
+        positions; a force-mask snapshot from an earlier state is insufficient.
+        Geometric constraints can consume all detected rows independently.
+        Entries with particles must support this contract to receive full-surface
+        contacts; rigid-only entries receive no soft contacts and need not support it.
+        """
         return False
 
     def coupling_eval_gravity_acceleration(

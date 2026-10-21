@@ -565,15 +565,21 @@ class MeshAdjacency:
         cand = order[pos]  # (tri_count, 3)
         found = edge_key[cand] == slot_key
 
-        # Link a slot to its candidate only if the opposite vertex matches a stored
-        # opposite (o0 -> side 0, o1 -> side 1), mirroring _compute_edge_adjacency.
-        side0 = found & (slot_opp == edges[cand, 0])
-        side1 = found & ~side0 & (slot_opp == edges[cand, 1])
-
-        tri_edge_indices = np.where(side0 | side1, cand, -1).astype(np.int32)
+        # Link a slot to its candidate only if the opposite vertex matches a stored opposite
+        # (o0 -> side 0, o1 -> side 1). Coincident or duplicated faces can match one side more
+        # than once, so each side resolves to the first matching triangle in traversal order,
+        # never reusing the triangle that holds side 0, as _compute_edge_adjacency does.
+        match0 = found & (slot_opp == edges[cand, 0])
+        match1 = found & (slot_opp == edges[cand, 1])
         tri_ids = np.broadcast_to(np.arange(tri_count, dtype=np.int32)[:, None], (tri_count, 3))
-        edge_tri_indices[cand[side0], 0] = tri_ids[side0]
-        edge_tri_indices[cand[side1], 1] = tri_ids[side1]
+
+        # Reduce triangle ids directly: sorting every hit is unnecessary even when faces coincide.
+        edge_tri_indices.fill(tri_count)
+        np.minimum.at(edge_tri_indices[:, 0], cand[match0], tri_ids[match0])
+        side1 = match1 & (tri_ids != edge_tri_indices[cand, 0])
+        np.minimum.at(edge_tri_indices[:, 1], cand[side1], tri_ids[side1])
+        edge_tri_indices[edge_tri_indices == tri_count] = -1
+        tri_edge_indices = np.where(match0 | match1, cand, -1).astype(np.int32)
         return edge_tri_indices, tri_edge_indices
 
     @staticmethod
