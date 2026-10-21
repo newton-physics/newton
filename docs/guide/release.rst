@@ -290,11 +290,6 @@ otherwise.
      - Verify all dependency pins in ``pyproject.toml`` use stable
        (non-pre-release) versions.
    * - ☐
-     - Recheck dependency-version consistency and companion-release
-       availability against the final GA dependency set.  Repeat the clean
-       integration installation and conversion/loading smoke test if any
-       dependency or converter version changed since the last validated RC.
-   * - ☐
      - Bump the version in ``pyproject.toml`` to ``X.Y.Z`` (remove the RC suffix) and
        run ``uv run docs/generate_api.py``.
    * - ☐
