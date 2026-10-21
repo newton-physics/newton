@@ -143,9 +143,12 @@ def create_solve_closest_distance(support_func: Any, _support_funcs: Any = None)
         if lambda0 > 0.0 and lambda1 > 0.0:
             # The weighted endpoint sum keeps roundoff at the endpoints' scale. When the
             # closest point is far shorter than the endpoints (a nearly touching edge, or a
-            # small gap beside a long edge), that roundoff tilts its direction, so project
-            # onto the edge line instead. Below 1% of the endpoint length the sum's direction
-            # error exceeds ~1e-5 rad. Above it, keep the sum so well-conditioned queries
+            # small gap beside a long edge), that roundoff tilts its direction. Projecting
+            # onto the edge line removes the part along the edge, which comes from t. About
+            # eps * |a| remains across the edge (cross(a, edge) cancels too), so a long edge
+            # that is not axis-aligned in this frame can still tilt a millimeter gap by
+            # degrees. Project only below 1% of the endpoint length, where the along-edge
+            # tilt exceeds ~1e-5 rad. Above it, keep the sum so well-conditioned queries
             # round as before; projecting them too shifted exact-boundary distances on CUDA.
             scale_sq = wp.max(wp.length_sq(a), wp.length_sq(b))
             if wp.length_sq(closest) <= wp.max(EPSILON * EPSILON, 1.0e-4 * scale_sq):

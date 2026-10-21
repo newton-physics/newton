@@ -34,11 +34,14 @@ def _contacts(
     margin=0.0,
     triangle=False,
     hull_box=False,
+    ground=None,
 ):
     """Return physical witnesses and box-to-mesh normals through the public pipeline.
 
     With ``hull_box``, the static box is an eight-corner convex hull instead of a box primitive.
+    ``ground`` is the static box's pose (identity by default).
     """
+    ground = wp.transform_identity() if ground is None else ground
     builder = newton.ModelBuilder()
     body = builder.add_body(xform=pose, mass=1.0, inertia=wp.mat33(np.eye(3)))
     cfg = builder.ShapeConfig(margin=margin, gap=1.0e-3, density=0.0)
@@ -49,9 +52,9 @@ def _contacts(
             hull = newton.Mesh.create_box(
                 *half, duplicate_vertices=False, compute_normals=False, compute_uvs=False, compute_inertia=False
             )
-            box_index = builder.add_shape_convex_hull(-1, mesh=hull, cfg=cfg)
+            box_index = builder.add_shape_convex_hull(-1, xform=ground, mesh=hull, cfg=cfg)
         elif box:
-            box_index = builder.add_shape_box(-1, hx=half[0], hy=half[1], hz=half[2], cfg=cfg)
+            box_index = builder.add_shape_box(-1, xform=ground, hx=half[0], hy=half[1], hz=half[2], cfg=cfg)
         elif triangle:
             builder.add_shape_mesh(body, mesh=mesh, scale=scale, cfg=cfg)
         else:
@@ -287,6 +290,8 @@ def test_refinement_triangle_above_wide_ground(test, device):
     normal rebuilt from them tilted by a few degrees for a millimeter gap. The
     manifold then measured depth along that normal to a far ground corner and
     reported contacts meters deep, launching objects resting on the ground.
+    The split GJK/MPR kernels take only generic convex pairs, so they see the
+    triangle as a flat convex hull.
     """
     # Mesh triangles captured from assets resting on a wide ground, relative to its top face [m].
     cases = {
@@ -307,17 +312,38 @@ def test_refinement_triangle_above_wide_ground(test, device):
             np.array([50.0, 50.0, 1.0]),
         ),
     }
-    for (name, (points, half)), hull_box, swap in product(cases.items(), (False, True), (False, True)):
-        with test.subTest(triangle=name, hull_box=hull_box, swap=swap):
+    # (mesh triangle, split kernels)
+    paths = [(True, False), (False, False)] + ([(False, True)] if device.is_cuda else [])
+    level = wp.transform_identity()
+    tilted = wp.transform(wp.vec3(0.0), wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 0.4, 0.0)), 0.35))
+    for (name, (points, half)), (mesh, split), hull_box, swap, ground in product(
+        cases.items(), paths, (False, True), (False, True), (level, tilted)
+    ):
+        with test.subTest(triangle=name, mesh=mesh, split=split, hull_box=hull_box, swap=swap, tilted=ground != level):
             vertices = np.array(points, dtype=np.float32)
-            pose = wp.transform(wp.vec3(0.0, 0.0, half[2]), wp.quat_identity())
+            pose = wp.transform_multiply(ground, wp.transform(wp.vec3(0.0, 0.0, half[2]), wp.quat_identity()))
             pa, pb, normals = _contacts(
-                test, device, half, vertices, [0, 1, 2], pose, np.ones(3), swap=swap, triangle=True, hull_box=hull_box
+                test,
+                device,
+                half,
+                vertices,
+                [0, 1, 2],
+                pose,
+                np.ones(3),
+                swap=swap,
+                split=split,
+                triangle=mesh,
+                hull_box=hull_box,
+                ground=ground,
             )
-            np.testing.assert_allclose(normals, np.tile([0.0, 0.0, 1.0], (len(normals), 1)), atol=1.0e-4)
+            up = np.array(wp.quat_rotate(ground.q, wp.vec3(0.0, 0.0, 1.0)))
+            np.testing.assert_allclose(normals, np.tile(up, (len(normals), 1)), atol=1.0e-4)
+            # Witness sums round at the ground's float32 spacing; on a tilted ground
+            # part of that rounding lies along the normal.
+            slack = 1.0e-5 + 2.0 * float(np.spacing(np.float32(np.max(half))))
             gaps = np.sum((pb - pa) * normals, axis=1)
-            test.assertGreaterEqual(float(np.min(gaps)), float(np.min(vertices[:, 2])) - 1.0e-5)
-            test.assertLessEqual(float(np.max(gaps)), float(np.max(vertices[:, 2])) + 1.0e-5)
+            test.assertGreaterEqual(float(np.min(gaps)), float(np.min(vertices[:, 2])) - slack)
+            test.assertLessEqual(float(np.max(gaps)), float(np.max(vertices[:, 2])) + slack)
 
 
 def test_refinement_resting_box_stack(test, device):

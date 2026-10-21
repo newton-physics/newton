@@ -295,7 +295,9 @@ def test_rotated_box_above_large_face(test, device):
 def test_box_beside_large_edge(test, device):
     """Resolve sub-millimeter gaps beside a long edge, where the closest Minkowski feature is an edge."""
     # Offsets are multiples of the float32 spacing near 500 m, so every input and
-    # Minkowski coordinate is exact and the reference normal is known.
+    # Minkowski coordinate is exact and the reference normal is known. The edge is
+    # axis-aligned in GJK's frame, where the projection removes the whole error; an
+    # edge yawed in that frame keeps rounding across the edge (see closest_segment).
     spacing = 2.0**-15
     offsets = np.array([(23, 23), (30, 11), (9, 31), (40, 40), (3, 5), (64, 7)], dtype=np.float64)
     cases = [(kx, y, kz) for kx, kz in offsets for y in (0.0, 123.5, -377.25, 444.0, -2.0, 251.125)]
