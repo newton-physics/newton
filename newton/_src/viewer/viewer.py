@@ -1150,10 +1150,12 @@ class ViewerBase(ABC):
         """Adapt contact-visualization scales to the current model.
 
         Sets the relative ``contact_viz_scale`` default and adapts
-        ``contact_force_scale`` to the mean dynamic weight per world.
+        ``contact_force_scale`` to the mean dynamic mass of populated local
+        worlds plus shared global dynamic mass, multiplied by the first
+        gravity vector's magnitude.
 
-        Falls back to the literal defaults if the relevant model data is
-        unavailable (e.g. no shapes / no dynamic bodies / zero gravity).
+        Uses nominal gravity when gravity is zero or unavailable, and a unit
+        characteristic force when no dynamic mass is available.
         """
         # Save the previous defaults so we can detect user overrides set
         # before the model was attached (rare but possible).
@@ -1171,7 +1173,14 @@ class ViewerBase(ABC):
             mass_np = self.model.body_mass.numpy()
             inv_mass_np = self.model.body_inv_mass.numpy()
             dyn_mask = np.isfinite(mass_np) & (inv_mass_np > 0.0)
-            total_mass = float(mass_np[dyn_mask].sum()) if dyn_mask.any() else 0.0
+            dynamic_mass = mass_np[dyn_mask]
+            mean_mass = float(dynamic_mass.sum())
+            if self.model.body_world is not None:
+                worlds = self.model.body_world.numpy()[dyn_mask]
+                local_mask = worlds >= 0
+                # Global bodies are shared by local worlds, not another replica.
+                mean_mass = float(dynamic_mass[~local_mask].sum())
+                mean_mass += float(dynamic_mass[local_mask].sum()) / max(1, len(np.unique(worlds[local_mask])))
             g_mag = 9.81
             if self.model.gravity is not None:
                 g_np = self.model.gravity.numpy()
@@ -1180,10 +1189,7 @@ class ViewerBase(ABC):
                     g_mag = float(np.linalg.norm(g0))
                     if not np.isfinite(g_mag) or g_mag <= 0.0:
                         g_mag = 9.81
-            F_char = total_mass * g_mag
-            if dyn_mask.any() and self.model.body_world is not None:
-                worlds = self.model.body_world.numpy()[dyn_mask]
-                F_char /= max(1, len(np.unique(worlds)))
+            F_char = mean_mass * g_mag
         if not np.isfinite(F_char) or F_char <= 0.0:
             F_char = 1.0
 
@@ -1428,7 +1434,7 @@ class ViewerBase(ABC):
           (gated on :attr:`show_contact_normals`).
         * ``"/contacts/modes"`` — thin oriented disks at each contact, color
           coded by inferred contact mode (open / stick / slip) when contact
-          force output is available, else by a uniform default color
+          force output is available, else amber to indicate an unknown mode
           (gated on :attr:`show_contact_disks`).
         * ``"/contacts/forces"`` — arrows along the linear part of
           the contact-force output (gated on :attr:`show_contact_forces`;
@@ -1609,7 +1615,7 @@ class ViewerBase(ABC):
                     contacts.rigid_contact_offset0,
                     contacts.rigid_contact_offset1,
                     contacts.rigid_contact_normal,
-                    contact_f,  # may be None — kernel falls back to default color
+                    contact_f,  # may be None — kernel uses the unknown-mode color
                     contact_scale * 0.2,
                     contact_scale * 0.004,  # cylinder half-height
                     float(self.contact_mode_eps_force),
@@ -1655,6 +1661,7 @@ class ViewerBase(ABC):
                     self.model.shape_world,
                     self.model.shape_collision_radius,
                     self.world_offsets,
+                    self.layer.xform,
                     self._visible_worlds_mask,
                     contacts.rigid_contact_count,
                     contacts.rigid_contact_shape0,

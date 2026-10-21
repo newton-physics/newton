@@ -573,6 +573,7 @@ def compute_contact_force_arrows(
     shape_world: wp.array[int],
     shape_collision_radius: wp.array[float],
     world_offsets: wp.array[wp.vec3],
+    layer_xform: wp.transform,
     visible_worlds_mask: wp.array[int],
     contact_count: wp.array[int],
     contact_shape0: wp.array[int],
@@ -630,9 +631,9 @@ def compute_contact_force_arrows(
         contact_center += world_offsets[world_a if world_a >= 0 else world_b]
 
     f_lin = -wp.spatial_top(contact_force[tid])  # Flip sign so positive force is along normal
-    line_start[tid] = contact_center
+    line_start[tid] = wp.transform_point(layer_xform, contact_center)
     pair_radius = wp.min(shape_collision_radius[shape_a], shape_collision_radius[shape_b])
-    line_end[tid] = contact_center + (force_scale * pair_radius) * f_lin
+    line_end[tid] = wp.transform_point(layer_xform, contact_center + (force_scale * pair_radius) * f_lin)
 
 
 @wp.kernel
