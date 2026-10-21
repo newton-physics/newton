@@ -200,13 +200,6 @@ class Example:
         if np.min(orientation_alignment) < 0.9999:
             raise ValueError(f"A1 terminal-link orientation alignment is {orientation_alignment}")
 
-    @staticmethod
-    def create_parser():
-        """Create the common Newton example parser."""
-        return newton.examples.create_parser()
-
-
 if __name__ == "__main__":
-    parser = Example.create_parser()
-    viewer, args = newton.examples.init(parser)
+    viewer, args = newton.examples.init()
     newton.examples.run(Example(viewer, args), args)

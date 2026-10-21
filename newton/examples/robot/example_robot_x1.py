@@ -28,10 +28,11 @@ def update_x1_position_targets(
     motion_time: wp.array[wp.float32],
     home_q: wp.array[wp.float32],
     pregrasp_q: wp.array[wp.float32],
+    controlled_coordinates: wp.array[wp.int32],
     target_q: wp.array[wp.float32],
 ):
     """Blend the lift and dual-arm position targets toward pre-grasp."""
-    coordinate = wp.tid()
+    coordinate = controlled_coordinates[wp.tid()]
     time = motion_time[0]
 
     blend = wp.clamp((time - DRIVE_DURATION) / ARM_MOTION_DURATION, 0.0, 1.0)
@@ -138,6 +139,7 @@ class Example:
         }
         for label, target in pose.items():
             pregrasp_q[joint_coordinates[label]] = target
+        controlled_coordinates = np.asarray([joint_coordinates[label] for label in pose], dtype=np.int32)
 
         self.model = builder.finalize()
         self.state_0 = self.model.state()
@@ -146,8 +148,9 @@ class Example:
         self.home_q = wp.array(home_q, dtype=wp.float32, device=self.device)
         self.pregrasp_q = wp.array(pregrasp_q, dtype=wp.float32, device=self.device)
         self.wheel_dofs = wp.array(wheel_dofs, dtype=wp.int32, device=self.device)
+        self.controlled_coordinate_indices = wp.array(controlled_coordinates, dtype=wp.int32, device=self.device)
         self.motion_time = wp.zeros(1, dtype=wp.float32, device=self.device)
-        self.controlled_coordinates = np.asarray([joint_coordinates[label] for label in pose], dtype=np.int32)
+        self.controlled_coordinates = controlled_coordinates
         self.base_body = next(
             (index for index, label in enumerate(builder.body_label) if label.rsplit("/", 1)[-1] == "base_link"),
             None,
@@ -180,8 +183,8 @@ class Example:
             self.state_0.clear_forces()
             wp.launch(
                 update_x1_position_targets,
-                dim=self.model.joint_coord_count,
-                inputs=[self.motion_time, self.home_q, self.pregrasp_q],
+                dim=len(self.controlled_coordinate_indices),
+                inputs=[self.motion_time, self.home_q, self.pregrasp_q, self.controlled_coordinate_indices],
                 outputs=[self.control.joint_target_q],
                 device=self.device,
             )
@@ -241,13 +244,6 @@ class Example:
         if max_position_error > 0.05:
             raise ValueError(f"X1 controlled joints missed pre-grasp by {max_position_error:.3f} rad or m")
 
-    @staticmethod
-    def create_parser():
-        """Create the common Newton example parser."""
-        return newton.examples.create_parser()
-
-
 if __name__ == "__main__":
-    parser = Example.create_parser()
-    viewer, args = newton.examples.init(parser)
+    viewer, args = newton.examples.init()
     newton.examples.run(Example(viewer, args), args)
