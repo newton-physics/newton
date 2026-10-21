@@ -186,14 +186,6 @@ _JOINT_TWIST_LIMIT_DEPRECATION_MSG = (
     "will be removed in a future release. They were never used; limit joint rotations with the per-DOF "
     "limits of ModelBuilder.JointDofConfig instead."
 )
-_ADD_ROD_POSITIONS_DEPRECATION_MSG = (
-    "ModelBuilder.add_rod(positions=...) is deprecated in Newton 1.6; "
-    "construct newton.Rod(...) and pass it with add_rod(rod=...) instead."
-)
-_ADD_ROD_GRAPH_DEPRECATION_MSG = (
-    "ModelBuilder.add_rod_graph() is deprecated in Newton 1.6; "
-    "construct newton.Rod(..., edges=...) and pass it with add_rod(rod=...) instead."
-)
 _REPLICATE_WORLD_COUNT_DEPRECATION_MSG = (
     "ModelBuilder.replicate(world_count=...) is deprecated in Newton 1.8; use copy_count=... instead."
 )
@@ -2145,7 +2137,7 @@ class ModelBuilder:
         self.curve_label: list[str] = []
         """Labels of rod-backed deformable objects, aligned with :attr:`curve_world`.
 
-        Native :meth:`add_rod` and :meth:`add_rod_graph` calls each append one entry.
+        Native :meth:`add_rod` calls each append one entry.
         USD cable imports record one entry per simulation prim, except that curves
         welded into a graph share one entry for the complete graph. A prim containing
         several disconnected curves also has one entry. See :ref:`deformable-objects`
@@ -6574,8 +6566,8 @@ class ModelBuilder:
             Rod joints use each anchor frame's local ``+Z`` as the corresponding
             segment's material tangent axis for separating axial stretch from
             shear and twist from bend. At structural rest, the transformed
-            parent and child anchor points coincide. :meth:`add_rod` and
-            :meth:`add_rod_graph` satisfy both conventions automatically.
+            parent and child anchor points coincide. :meth:`add_rod` satisfies
+            both conventions automatically.
 
         Args:
             parent: The index of the parent body.
@@ -10005,10 +9997,8 @@ class ModelBuilder:
 
     def add_rod(
         self,
-        positions: list[Vec3] | None = None,
         *,
-        quaternions: list[Quat] | None = None,
-        radius: float | None = None,
+        rod: Rod,
         cfg: ShapeConfig | None = None,
         stretch_stiffness: float | None = None,
         stretch_damping: float | None = None,
@@ -10018,24 +10008,17 @@ class ModelBuilder:
         bend_damping: float | None = None,
         twist_stiffness: float | None = None,
         twist_damping: float | None = None,
-        closed: bool | None = None,
         label: str | None = None,
         wrap_in_articulation: bool = True,
         color: Vec3 | None = None,
         body_frame_origin: Literal["start", "com"] = "com",
-        rod: Rod | None = None,
         junction_collision_filter: bool = True,
     ) -> tuple[list[int], list[int]]:
         """Adds a rod composed of capsule bodies connected by rod joints.
 
-        Exactly one input form is required:
-
-        - ``positions=...`` constructs an ordered chain. The separate
-          ``quaternions`` and ``closed`` arguments belong only to this
-          compatibility form.
-        - ``rod=...`` uses the geometry, frames, topology, and optional
-          constitutive data stored on a :class:`newton.Rod`, which may represent
-          an ordered chain or an explicit graph.
+        Uses the geometry, frames, topology, and optional constitutive data
+        stored on a :class:`newton.Rod`, which may represent an ordered chain
+        or an explicit graph.
 
         The remaining arguments configure assembly. Each segment becomes a
         capsule body, and incident segments are connected by rod joints with
@@ -10046,22 +10029,7 @@ class ModelBuilder:
         normalized and minimally rotated to align while preserving roll.
 
         Args:
-            positions: Geometry source for the ordered-chain form: centerline
-                node positions (segment endpoints) in world space [m].
-                Mutually exclusive with ``rod``.
-
-                .. deprecated:: 1.6
-                    Construct a :class:`newton.Rod` and pass it with
-                    ``rod=...`` instead.
-            quaternions: Optional per-segment (per-edge) orientations in world space. If provided,
-                must have ``len(positions) - 1`` elements and each quaternion should align the capsule's
-                local +Z with the segment direction ``positions[i+1] - positions[i]``. If None,
-                orientations are computed automatically to align +Z with each segment direction.
-                Valid only with ``positions``; must be None when ``rod`` is
-                supplied.
-            radius: Capsule radius [m] for the ``positions`` form. If None,
-                defaults to 0.1 m. Must be None with ``rod``; the Rod's radius
-                is used, with the same default when it is unset.
+            rod: Initial/rest geometry, frame, topology, and constitutive-data source.
             cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
             stretch_stiffness: Per-joint rod stretch stiffness, stored directly as ``target_ke`` [N/m].
                 If None, it is derived locally from Rod material or section rigidity;
@@ -10083,10 +10051,6 @@ class ModelBuilder:
                 ``bend_stiffness`` otherwise.
             twist_damping: Optional per-joint rod twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
                 only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
-            closed: For the ``positions`` form, whether to connect the last
-                segment back to the first. Repeat the first position at the end
-                to include the closing segment. When using ``rod``, pass
-                ``closed=True`` to the :class:`newton.Rod` constructor instead.
             label: Optional label prefix for bodies, shapes, joints, and articulations.
                 The same name is appended to :attr:`curve_label` for this rod; if None,
                 a generated ``curve_N`` label is used. See :ref:`deformable-objects`.
@@ -10104,8 +10068,6 @@ class ModelBuilder:
                 the body origin at the initial segment midpoint so the
                 body origin and COM coincide. Defaults to ``"com"``; ``"start"`` remains
                 a supported option.
-            rod: Initial/rest geometry, frame, topology, and constitutive-data source for
-                the prepared-object form. Mutually exclusive with ``positions``.
             junction_collision_filter: Whether to suppress self-collisions
                 between incident, non-jointed segments at graph junctions.
                 Has no effect for an ordered chain.
@@ -10131,12 +10093,7 @@ class ModelBuilder:
             articulations may remain outside them.
 
         Raises:
-            ValueError: If both or neither of ``positions`` and ``rod`` are supplied.
-            TypeError: If ``rod`` is not a :class:`newton.Rod`, or a Rod is
-                passed as ``positions``.
-            ValueError: If ``quaternions``, ``radius``, or ``closed`` is non-None
-                with ``rod``.
-            ValueError: If ``positions`` and ``quaternions`` lengths are incompatible.
+            TypeError: If ``rod`` is not a :class:`newton.Rod`.
             ValueError: If initial/rest positions or frames have incompatible lengths,
                 non-finite or too-short edges, or invalid frame alignment.
             ValueError: If the structural-rest centerline of a closed chain does not close.
@@ -10165,182 +10122,13 @@ class ModelBuilder:
               midpoint, and centerline endpoints are at local ``(0, 0, -half_height)`` and
               ``(0, 0, half_height)``.
         """
-        if (positions is None) == (rod is None):
-            raise ValueError("add_rod: exactly one of positions and rod must be supplied")
-
-        if isinstance(positions, Rod):
-            raise TypeError("add_rod: pass a Rod with the rod keyword, not as positions")
-
-        if rod is not None and not isinstance(rod, Rod):
+        if not isinstance(rod, Rod):
             raise TypeError(f"add_rod: rod must be a Rod, got {type(rod).__name__}")
 
         start_body = self.body_count
         start_joint = self.joint_count
-        if rod is not None:
-            if quaternions is not None:
-                raise ValueError("add_rod: quaternions must be None when rod is supplied")
-            if radius is not None:
-                raise ValueError("add_rod: radius must be None when rod is supplied; set rod.radius instead")
-            if closed is not None:
-                raise ValueError("add_rod: closed must be None when rod is supplied")
-            result = self._add_rod_object(
-                rod,
-                cfg=cfg,
-                stretch_stiffness=stretch_stiffness,
-                stretch_damping=stretch_damping,
-                shear_stiffness=shear_stiffness,
-                shear_damping=shear_damping,
-                bend_stiffness=bend_stiffness,
-                bend_damping=bend_damping,
-                twist_stiffness=twist_stiffness,
-                twist_damping=twist_damping,
-                label=label,
-                wrap_in_articulation=wrap_in_articulation,
-                junction_collision_filter=junction_collision_filter,
-                color=color,
-                body_frame_origin=body_frame_origin,
-            )
-            self._record_curve_deformable_object(label, (start_body, self.body_count), (start_joint, self.joint_count))
-            return result
-
-        assert positions is not None
-        warnings.warn(
-            _ADD_ROD_POSITIONS_DEPRECATION_MSG,
-            NewtonDeprecationWarning,
-            stacklevel=_external_warning_stacklevel(),
-        )
-        result = self._add_rod_chain(
-            positions,
-            quaternions=quaternions,
-            radius=radius,
-            cfg=cfg,
-            stretch_stiffness=stretch_stiffness,
-            stretch_damping=stretch_damping,
-            shear_stiffness=shear_stiffness,
-            shear_damping=shear_damping,
-            bend_stiffness=bend_stiffness,
-            bend_damping=bend_damping,
-            twist_stiffness=twist_stiffness,
-            twist_damping=twist_damping,
-            closed=closed,
-            label=label,
-            wrap_in_articulation=wrap_in_articulation,
-            color=color,
-            body_frame_origin=body_frame_origin,
-        )
-        self._record_curve_deformable_object(label, (start_body, self.body_count), (start_joint, self.joint_count))
-        return result
-
-    def add_rod_graph(
-        self,
-        node_positions: list[Vec3],
-        edges: list[tuple[int, int]],
-        *,
-        radius: float = 0.1,
-        cfg: ShapeConfig | None = None,
-        stretch_stiffness: float | None = None,
-        stretch_damping: float | None = None,
-        shear_stiffness: float | None = None,
-        shear_damping: float | None = None,
-        bend_stiffness: float | None = None,
-        bend_damping: float | None = None,
-        twist_stiffness: float | None = None,
-        twist_damping: float | None = None,
-        label: str | None = None,
-        wrap_in_articulation: bool = True,
-        quaternions: list[Quat] | None = None,
-        junction_collision_filter: bool = True,
-        color: Vec3 | None = None,
-        body_frame_origin: Literal["start", "com"] = "com",
-    ) -> tuple[list[int], list[int]]:
-        """Adds a rod *graph* (supports junctions) from nodes + edges.
-
-        .. deprecated:: 1.6
-            Construct a :class:`newton.Rod` with ``edges=...`` and pass it to
-            :meth:`add_rod` with ``rod=...`` instead.
-
-        Representation:
-
-        - Each *edge* becomes a capsule rigid body spanning from ``node_positions[u]`` to
-          ``node_positions[v]`` (local +Z points toward ``v``).
-        - Rod joints are created between edge-bodies that share a node, using a spanning-tree
-          traversal so that each body has a single parent in an articulation.
-
-        Notes:
-
-        - If ``wrap_in_articulation=True`` (default), joints are created as a forest (one
-          free-rooted articulation per connected component). This keeps the joint graph
-          articulation-safe (tree/forest), avoiding cycles at junctions.
-        - Cycles in the edge adjacency graph are *not* explicitly closed with extra joints when
-          ``wrap_in_articulation=True`` (cycles would violate articulation tree constraints). If
-          you need closed loops, build them explicitly without placing the joints in an articulation.
-        - If ``wrap_in_articulation=False``, joints are created directly at each node to connect
-          all incident edges. This can preserve rings/loops, but does not produce an articulation
-          tree (edges may effectively have multiple "parents" in the joint graph).
-
-        Args:
-            node_positions: Junction node positions in world space.
-            edges: List of (u, v) node index pairs defining rod segments. Each edge creates one
-                capsule body oriented so its local +Z points from node ``u`` to node ``v``.
-            radius: Capsule radius.
-            cfg: Shape configuration for the capsules. If None, :attr:`default_shape_cfg` is used.
-            stretch_stiffness: Per-joint rod stretch stiffness, stored directly as ``target_ke`` [N/m].
-                Defaults to 1.0e5.
-            stretch_damping: Stretch damping [N·s/m] (per joint). Defaults to 0.0.
-            shear_stiffness: Optional per-joint transverse shear stiffness [N/m]. If None, defaults to
-                ``stretch_stiffness``.
-            shear_damping: Optional per-joint transverse shear damping [N·s/m]. If None, defaults to
-                ``stretch_damping`` only when both ``shear_stiffness`` and ``shear_damping`` are None. Otherwise defaults to 0.0.
-            bend_stiffness: Per-joint rod bend stiffness, stored directly as ``target_ke`` [N·m/rad].
-                Defaults to 0.0.
-            bend_damping: Bend damping [N·m·s/rad] (per joint). Defaults to 0.0.
-            twist_stiffness: Optional per-joint rod twist stiffness [N·m/rad]. If None, defaults to
-                ``bend_stiffness``.
-            twist_damping: Optional per-joint rod twist damping [N·m·s/rad]. If None, defaults to ``bend_damping``
-                only when both ``twist_stiffness`` and ``twist_damping`` are None. Otherwise defaults to 0.0.
-            label: Optional label prefix for bodies, shapes, joints, and articulations.
-                The same name is appended to :attr:`curve_label` for this rod; if None,
-                a generated ``curve_N`` label is used. See :ref:`deformable-objects`.
-                Generated joint labels retain
-                the historical ``{label}_cable_{n}`` form for compatibility.
-            wrap_in_articulation: If True, places each connected component's generated joints and a
-                free joint to the world in one articulation.
-            quaternions: Optional per-edge orientations in world space. If provided, must have
-                ``len(edges)`` elements and each quaternion must align the capsule's local +Z with
-                the corresponding edge direction ``node_positions[v] - node_positions[u]``. If
-                None, orientations are computed automatically to align +Z with each edge direction.
-            junction_collision_filter: If True, adds collision filters between *non-jointed* segment
-                bodies that are incident to a junction node (degree >= 3). This prevents immediate
-                self-collision impulses at welded junctions, even though the joint set is a spanning
-                tree (so not all incident body pairs are directly jointed).
-            color: Optional display RGB color with values in ``[0, 1]`` applied to all generated
-                capsule shapes. If None, the graph uses the default rod color.
-            body_frame_origin: Body-frame placement for each generated capsule. ``"start"`` preserves
-                the convention where the body origin is at the edge start node
-                (``node_positions[u]`` for edge ``(u, v)``), and the COM/shape are offset by half
-                the edge length. ``"com"`` places the body origin at the edge midpoint so the body
-                origin and COM coincide. Defaults to ``"com"``; ``"start"`` remains
-                a supported option.
-
-        Returns:
-            A pair ``(body_indices, joint_indices)`` where bodies correspond to
-            edges in the same order as ``edges``. ``joint_indices`` contains only rod joints,
-            not the automatically-created free root joints.
-
-        Raises:
-            ValueError: If ``body_frame_origin`` is not ``"start"`` or ``"com"``.
-        """
-        start_body = self.body_count
-        start_joint = self.joint_count
-        warnings.warn(
-            _ADD_ROD_GRAPH_DEPRECATION_MSG,
-            NewtonDeprecationWarning,
-            stacklevel=_external_warning_stacklevel(),
-        )
-        result = self._add_rod_graph(
-            node_positions,
-            edges,
-            radius=radius,
+        result = self._add_rod_object(
+            rod,
             cfg=cfg,
             stretch_stiffness=stretch_stiffness,
             stretch_damping=stretch_damping,
@@ -10352,7 +10140,6 @@ class ModelBuilder:
             twist_damping=twist_damping,
             label=label,
             wrap_in_articulation=wrap_in_articulation,
-            quaternions=quaternions,
             junction_collision_filter=junction_collision_filter,
             color=color,
             body_frame_origin=body_frame_origin,
