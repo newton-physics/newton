@@ -306,7 +306,7 @@ class ViewerGL(ViewerBase):
 
         # Only create UI in non-headless mode to avoid OpenGL context dependency
         if not headless:
-            self.gui = ViewerGui(self, self.renderer.window)
+            self.gui = ViewerGui(self, self.renderer.window, workspace_enabled=True)
             self.renderer.window.push_handlers(on_scale=self._on_window_scale)
         else:
             self.gui = None
@@ -595,6 +595,8 @@ class ViewerGL(ViewerBase):
     def _init_layer_state(self, layer: Layer) -> None:
         super()._init_layer_state(layer)
         layer._workspace_deformables = None
+        layer._last_state = None
+        layer._last_control = None
 
     @override
     def set_model(self, model: nt.Model | None):

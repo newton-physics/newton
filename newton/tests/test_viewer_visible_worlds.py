@@ -7,7 +7,9 @@ import numpy as np
 import warp as wp
 
 import newton
-from newton._src.viewer.viewer_workspace import ModelTree, ViewerWorkspace
+from newton._src.viewer.viewer_bvh import _bounds_lines, _query_bounds
+from newton._src.viewer.viewer_model_tree import ModelTree
+from newton._src.viewer.viewer_workspace import ViewerWorkspace
 from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
 from newton.viewer import ViewerNull
 
@@ -195,6 +197,49 @@ def test_visible_worlds_transforms(test: TestViewerVisibleWorlds, device):
     positions = xforms[:, :3]
     expected = np.array([[-5.0, 0.0, 1.0], [5.0, 0.0, 1.0]])
     assert_np_equal(positions, expected, tol=1e-4)
+
+    # The selected model BVH obeys the same visibility mask, including after
+    # replacing that mask. Hidden bounds must neither draw nor affect framing.
+    workspace = ViewerWorkspace.__new__(ViewerWorkspace)
+    workspace.viewer, workspace.model = viewer, model
+    workspace.example = workspace.history = None
+    workspace.selected = ("bvh", "shapes")
+    viewer._last_state = state
+    bvhs = ModelTree(model).resources.bvhs
+    resource = bvhs.entries[workspace.selected].get()
+    indices = wp.empty(model.shape_count, dtype=int, device=device)
+    count = wp.zeros(1, dtype=int, device=device)
+    starts = wp.empty(model.shape_count * 12, dtype=wp.vec3, device=device)
+    ends = wp.empty_like(starts)
+    empty_vec = wp.empty(0, dtype=wp.vec3, device=device)
+    empty_int = wp.empty(0, dtype=int, device=device)
+    for visible in ([0, 2], [], [1, 3], None):
+        viewer.set_visible_worlds(visible, reflow=False)
+        count.zero_()
+        wp.launch(
+            _query_bounds,
+            dim=1,
+            inputs=[resource.id, False, -1, 1, indices, count],
+            device=device,
+        )
+        wp.launch(
+            _bounds_lines,
+            dim=(model.shape_count, 12),
+            inputs=[indices, count, *bvhs._geometry_args(workspace, resource, -1, empty_vec, empty_int)],
+            outputs=[starts, ends],
+            device=device,
+        )
+        items = indices.numpy()[: int(count.numpy()[0])]
+        worlds = resource.groups.numpy()[items]
+        active = np.ones(len(items), dtype=bool) if visible is None else np.isin(worlds, visible)
+        lines = np.stack((starts.numpy(), ends.numpy())).reshape(2, model.shape_count, 12, 3)
+        np.testing.assert_array_equal(lines[:, ~active], 0.0)
+        bounds = bvhs.bounds(workspace)
+        if active.any():
+            expected = np.stack((lines[:, active].min(axis=(0, 1, 2)), lines[:, active].max(axis=(0, 1, 2))))
+            np.testing.assert_allclose(bounds, expected, atol=1e-6)
+        else:
+            test.assertIsNone(bounds)
 
 
 devices = get_test_devices()

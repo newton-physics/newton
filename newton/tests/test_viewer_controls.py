@@ -4,11 +4,6 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    pass
-
 import inspect
 import unittest
 from contextlib import nullcontext
@@ -29,6 +24,7 @@ from newton._src.viewer.viewer_collision import CollisionInspector
 from newton._src.viewer.viewer_gl import ViewerGL
 from newton._src.viewer.viewer_gui import ViewerGui
 from newton._src.viewer.viewer_history import WorkspaceHistory
+from newton._src.viewer.viewer_model_tree import ModelTree
 from newton._src.viewer.viewer_null import ViewerNull
 from newton._src.viewer.viewer_properties import (
     Assignment,
@@ -37,7 +33,8 @@ from newton._src.viewer.viewer_properties import (
     component_attributes,
     joint_editor_options,
 )
-from newton._src.viewer.viewer_workspace import ModelTree, ViewerWorkspace
+from newton._src.viewer.viewer_session import ViewerSession
+from newton._src.viewer.viewer_workspace import ViewerWorkspace
 from newton.tests.unittest_utils import patch_sys_module
 
 
@@ -83,7 +80,7 @@ class TestViewerUI(unittest.TestCase):
         imgui = self.ui.imgui
         font = self.ui.io.fonts.add_font_default()
         self.ui._setup_dark_style()
-        text_color = tuple(imgui.get_style().color_(imgui.Col_.text))
+        colors = [tuple(imgui.get_style().color_(i)) for i in range(imgui.Col_.count)]
         for scale in (1.0, 2.0, 2.0, 1.5, 1.0):
             with self.subTest(scale=scale):
                 expected_style = imgui.Style()
@@ -95,7 +92,7 @@ class TestViewerUI(unittest.TestCase):
                 # This size is not explicitly overridden by the Newton theme.
                 self.assertEqual(tuple(style.separator_text_padding), tuple(expected_style.separator_text_padding))
                 self.assertEqual(style.font_scale_dpi, scale)
-                self.assertEqual(tuple(style.color_(imgui.Col_.text)), text_color)
+                self.assertEqual([tuple(style.color_(i)) for i in range(imgui.Col_.count)], colors)
                 self.assertEqual(self.ui.io.fonts.fonts[0], font)
 
 
@@ -356,6 +353,7 @@ class TestViewerShapeProperties(unittest.TestCase):
         # In particular the Examples tab remains selected after a switch.
         workspace = ViewerWorkspace.__new__(ViewerWorkspace)
         workspace.model, workspace.tree, workspace.example = model, None, None
+        workspace.viewer = ViewerNull()
         workspace.selection, workspace.selected, workspace.message = set(), None, ""
         workspace.gui = SimpleNamespace(ui=SimpleNamespace(imgui=None))
         workspace.widgets = None
@@ -375,6 +373,8 @@ class TestViewerShapeProperties(unittest.TestCase):
         workspace = ViewerWorkspace.__new__(ViewerWorkspace)
         workspace._cache = {}
         workspace._live_cache = {}
+        workspace.viewer = ViewerNull()
+        workspace.model = None
         workspace.world = 1
         workspace.widgets = SimpleNamespace(
             group=lambda *_args, **_kwargs: nullcontext(True),
@@ -429,7 +429,7 @@ class TestViewerGLShouldStep(unittest.TestCase):
 
     def test_gui_popup_owns_viewer_shortcuts(self) -> None:
         """Keep popup keys from closing or changing the simulation without keyboard capture."""
-        viewer = SimpleNamespace(_paused=False, _step_requested=False, show_ui=True)
+        viewer = SimpleNamespace(_paused=False, _step_requested=False, show_ui=True, _display_options_user={})
         gui = ViewerGui.__new__(ViewerGui)
         gui._viewer = viewer
         gui.workspace = gui.console_capture = None
@@ -457,6 +457,7 @@ class TestViewerGLShouldStep(unittest.TestCase):
             popup = False
             gui.handle_key_press(key.SPACE)
             self.assertTrue(viewer._paused)
+            self.assertTrue(viewer._display_options_user["_paused"])
             gui.handle_key_press(key.PERIOD)
             self.assertTrue(viewer._step_requested)
             gui.handle_key_press(key.ESCAPE, close_fn=lambda: closed.append(True))
@@ -638,6 +639,93 @@ class TestViewerGLNumFramesValidation(unittest.TestCase):
 
 
 class TestViewerProperties(unittest.TestCase):
+    def test_selected_articulation_joint_states(self) -> None:
+        """Recover every selected articulation's coordinates from maximal or historical poses."""
+        from newton.solvers import SolverXPBD  # noqa: PLC0415
+
+        builder = newton.ModelBuilder()
+        for _ in range(2):
+            body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            joint = builder.add_joint_revolute(-1, body, axis=newton.Axis.Z)
+            builder.add_articulation([joint])
+        model = builder.finalize(device="cpu")
+        state = model.state()
+        expected_q = np.array([0.25, -0.65], dtype=np.float32)
+        expected_qd = np.array([0.3, -0.4], dtype=np.float32)
+        state.joint_q.assign(expected_q)
+        state.joint_qd.assign(expected_qd)
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+        state.joint_q.zero_()
+        state.joint_qd.zero_()
+        viewer = ViewerNull()
+        viewer.set_model(model)
+        viewer._last_state = state
+        ws = ViewerWorkspace.__new__(ViewerWorkspace)
+        ws.model, ws.viewer = model, viewer
+        ws.example = SimpleNamespace(state_0=state, solver=SolverXPBD(model))
+        ws.history = ws._kinematic_state = ws._kinematic_indices = None
+        ws._cache, ws._live_cache = {}, {}
+        ws.selection = {("articulation", 0), ("joint", 1)}
+        ws.selected = ("joint", 1)
+        shown = ws.joint_display_state()
+        np.testing.assert_allclose(shown.joint_q.numpy(), expected_q, atol=1e-6)
+        np.testing.assert_allclose(shown.joint_qd.numpy(), expected_qd, atol=1e-6)
+
+        # A body can be the active row while joint domains from the other
+        # selected items are still displayed by the property inspector.
+        ws.selection.add(("body", 1))
+        ws.selected = ("body", 1)
+        ws._live_cache.clear()
+        shown = ws.joint_display_state()
+        np.testing.assert_allclose(shown.joint_q.numpy(), expected_q, atol=1e-6)
+
+        # Historical rendering must use the displayed poses, without replacing
+        # either live State's reduced coordinates or body transforms.
+        historical = model.state()
+        historical.joint_q.assign(-expected_q)
+        historical.joint_qd.assign(-expected_qd)
+        newton.eval_fk(model, historical.joint_q, historical.joint_qd, historical)
+        viewer._last_state = historical
+        ws.example.solver = None
+        ws.example.timeline = SimpleNamespace(frames=[0, 1], index=0)
+        ws._live_cache.clear()
+        shown = ws.joint_display_state()
+        np.testing.assert_allclose(shown.joint_q.numpy(), -expected_q, atol=1e-6)
+        np.testing.assert_allclose(shown.joint_qd.numpy(), -expected_qd, atol=1e-6)
+        np.testing.assert_array_equal(state.joint_q.numpy(), 0.0)
+        np.testing.assert_array_equal(state.joint_qd.numpy(), 0.0)
+
+        # Explicit application bindings do not require an Example object, and
+        # the state provider follows the application's double-buffer swap.
+        states = [state, historical]
+        control = model.control()
+        viewer.set_simulation(state=lambda: states[0], control=control)
+        ws.example = None
+        ws._drafts = {}
+        self.assertIs(ws.live_state(), state)
+        states.reverse()
+        self.assertIs(ws.live_state(), historical)
+        inspector = PropertyInspector(ws)
+        inspector._contexts()
+        control_domain = next(domain for domain in inspector.domains if domain.frequency == Frequency.JOINT_COORD)
+        self.assertIs(inspector._owner(control_domain, Assignment.CONTROL), control)
+        pointer = control.joint_target_q.ptr
+        self.assertTrue(ws.apply_edit(control, "joint_target_q", 0, [0.45], joint_index=0))
+        self.assertEqual(control.joint_target_q.ptr, pointer)
+        np.testing.assert_allclose(control.joint_target_q.numpy()[0], 0.45)
+
+        # Another layer can have identical array dimensions but a different
+        # topology. The conventional adapter must not expose the old controls.
+        rebuilt = builder.finalize(device="cpu")
+        viewer.set_model(rebuilt)
+        ws.model = rebuilt
+        ws.example = SimpleNamespace(model=model, state_0=state, control=control)
+        self.assertIsNone(ws.session.control)
+        self.assertFalse(ws._history_compatible)
+        ws.model = model
+        self.assertIs(ws.session.control, control)
+        self.assertTrue(ws._history_compatible)
+
     def test_element_selection_property_domains(self) -> None:
         builder = newton.ModelBuilder()
         for point in ((0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 1)):
@@ -663,28 +751,6 @@ class TestViewerProperties(unittest.TestCase):
             inspector._contexts()
             domain = next(d for d in inspector.domains if d.frequency == frequency)
             self.assertEqual(list(domain.indices), [1])
-
-    def test_camera_sensor_history_clock(self) -> None:
-        from newton.examples.sensors.example_sensor_camera import Example  # noqa: PLC0415
-
-        example = Example.__new__(Example)
-        example.model = newton.ModelBuilder().finalize(device="cpu")
-        example.state = example.model.state()
-        example.viewer = Mock()
-        example.sim_time, example.frame_dt = 0.0, 0.005
-        example.dof_home = example.dof_radius = None
-        example.render_sensors = Mock(return_value=False)
-        history = WorkspaceHistory(example)
-        history.capture()
-        with patch("warp.launch"), patch("newton.eval_fk"):
-            for _ in range(2):
-                example.step()
-                history.capture()
-                example.render()
-        self.assertEqual([frame.time for frame in history.frames], [0.0, 0.005, 0.01])
-        self.assertEqual(history.index, 2)
-        self.assertEqual(history.dt, example.frame_dt)
-        self.assertEqual([call.args[0] for call in example.viewer.begin_frame.call_args_list], [0.005, 0.01])
 
     def test_history_without_top_level_example_model(self) -> None:
         builder = newton.ModelBuilder()
@@ -767,6 +833,10 @@ class TestViewerProperties(unittest.TestCase):
             "target", wp.full(count, shape, dtype=int, device="cpu"), frequency, namespace="probe", references="shape"
         )
         ws.tree = tree = ModelTree(model)
+        ws.selected = ("articulation", 0)
+        inspector._contexts()
+        domain = next(domain for domain in inspector.domains if domain.frequency == frequency)
+        np.testing.assert_array_equal(domain.indices, np.arange(count))
         group = next(key for key, (freq, _) in tree.custom.groups.items() if freq == frequency)
         self.assertEqual(tree.parents[group], ("articulation", 0))
         self.assertFalse(tree.children[group])
@@ -959,6 +1029,7 @@ class TestCollisionInspector(unittest.TestCase):
                     selected=None,
                     _at_live_frame=lambda: True,
                 )
+                ws.session = ViewerSession.from_example(ws.example)
                 ws.select = lambda key, workspace=ws: setattr(workspace, "selected", key)
                 inspector = CollisionInspector(ws)
                 tree = ModelTree(model)

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -14,12 +15,12 @@ import warp as wp
 from ..sim.contacts import Contacts
 from ..sim.model import Model
 from ..sim.state import State
-from .viewer_timeline import TimelineTransport
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from types import ModuleType
     from typing import Any
+
+    from numpy.typing import ArrayLike
 
     from newton._src.viewer.viewer_types import ViewerExample
     from newton.solvers import SolverBase
@@ -112,11 +113,9 @@ class HistoryFrame:
         return self.soft_shape_contacts + self.soft_self_contacts
 
 
-class WorkspaceHistory(TimelineTransport):
+class WorkspaceHistory:
     """Keep display snapshots separate from the solver's live state."""
 
-    track_label = "DISPLAY FRAMES + CONTACTS"
-    state_fields = ("body_q", "body_qd", "body_f", "joint_q", "joint_qd", "particle_q", "particle_qd", "particle_f")
     contact_fields = ("shape0", "shape1", "point0", "point1", "offset0", "offset1", "normal", "margin0", "margin1")
     soft_contact_fields = ("indices", "particle", "barycentric", "shape", "body_pos", "body_vel", "normal")
 
@@ -133,10 +132,6 @@ class WorkspaceHistory(TimelineTransport):
         self.max_frames = 60000
         self.playback_speed = 1.0
         self._playback_fraction = 0.0
-        self.loop_range = False
-        self.range_start = self.range_end = None
-        self.zoom = 1.0
-        self.bookmarks = []
         self.recording = True
         self._recording_blocked = False
         self.message = ""
@@ -182,15 +177,7 @@ class WorkspaceHistory(TimelineTransport):
 
     @property
     def replaying(self) -> bool:
-        return bool(self.frames) and (
-            self.index < len(self.frames) - 1
-            or (
-                self.loop_range
-                and self.range_start is not None
-                and self.range_end is not None
-                and self.range_end > self.range_start
-            )
-        )
+        return bool(self.frames) and self.index < len(self.frames) - 1
 
     def select(self, index: int) -> None:
         self.index = max(0, min(int(index), len(self.frames) - 1))
@@ -199,13 +186,7 @@ class WorkspaceHistory(TimelineTransport):
         self._playback_fraction += steps * self.playback_speed
         steps = int(self._playback_fraction)
         self._playback_fraction -= steps
-        index = self.index + steps
-        if self.loop_range and self.range_start is not None and self.range_end is not None:
-            start = self.frame_at_time(self.range_start)
-            end = self.frame_at_time(self.range_end)
-            if end > start and index > end:
-                index = start + (index - start) % (end - start + 1)
-        self.select(index)
+        self.select(self.index + steps)
 
     @staticmethod
     def _observable_ranges(
@@ -350,10 +331,6 @@ class WorkspaceHistory(TimelineTransport):
         if remove:
             del self.frames[:remove]
             self.first_frame += remove
-            self.bookmarks = [t for t in self.bookmarks if t >= self.frames[0].time]
-            if self.range_end is not None and self.range_end < self.frames[0].time:
-                self.loop_range = False
-                self.range_start = self.range_end = None
         if len(self.frames) > 1:
             self.dt = max(1e-9, self.frames[-1].time - self.frames[-2].time)
         self.index = len(self.frames) - 1
@@ -451,22 +428,58 @@ class WorkspaceHistory(TimelineTransport):
             for name, value in saved.items():
                 setattr(example, name, value)
 
-    def draw_recording_control(self, ui: ModuleType) -> None:
-        changed, enabled = ui.checkbox("Record history", self.recording)
-        if changed:
-            self.recording = enabled
-            if enabled:
-                self.message = ""
-                self._recording_blocked = False
-                if self.frames:
-                    self.frames.clear()
-                    self.index = self.bytes_used = self.first_frame = 0
-                    self.bookmarks.clear()
-                    self.range_start = self.range_end = None
-                    self.loop_range = False
-                    self._drag_span = None
-                    self.loaded_index = -1
-        if ui.is_item_hovered():
-            ui.set_tooltip(
-                "Record state and contacts in a bounded 128 MiB history. Playback continues simulation at the live frame."
-            )
+    @staticmethod
+    def mean_speed(velocity: ArrayLike | None) -> float:
+        """Mean linear speed, using velocities already copied for history."""
+        if velocity is None or len(velocity) == 0:
+            return float("nan")
+        linear = np.asarray(velocity)[:, :3]
+        return float(np.sqrt(np.einsum("ij,ij->i", linear, linear)).mean(dtype=np.float64))
+
+    def record_plot_frame(self, frame: HistoryFrame) -> None:
+        # A fixed ring keeps plot work independent of retained state size.
+        if not hasattr(self, "_plot_values"):
+            self._plot_values = np.empty((self.max_frames + 64, 5), dtype=np.float64)
+        index = (self.first_frame + len(self.frames) - 1) % len(self._plot_values)
+        self._plot_values[index] = (
+            frame.touching,
+            getattr(frame, "soft_shape_contacts", 0),
+            getattr(frame, "soft_self_contacts", 0),
+            frame.body_speed,
+            frame.particle_speed,
+        )
+        self._plot_revision = getattr(self, "_plot_revision", 0) + 1
+
+    def plot_samples(self, low: int, high: int, bins: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        """Preserve short contact peaks and average motion within each pixel bin."""
+        key = (self.first_frame, low, high, bins, getattr(self, "_plot_revision", 0))
+        if getattr(self, "_plot_cache_key", None) != key:
+            indices = np.arange(low, high + 1)
+            values = self._plot_values[(self.first_frame + indices) % len(self._plot_values)]
+            # Anchor bins to absolute frame numbers, including through eviction.
+            # Repartitioning the entire history on every append makes old peaks
+            # flicker even though none of those recorded values have changed.
+            stride = 1 if len(indices) <= bins else 1 << ((len(indices) - 1) // max(1, bins - 1)).bit_length()
+            begin, end = self.first_frame + low, self.first_frame + high + 1
+            boundaries = np.arange((begin // stride + 1) * stride, end, stride)
+            edges = np.r_[begin, boundaries, end] - begin
+            starts = edges[:-1]
+            counts = np.diff(edges)
+            contacts = np.maximum.reduceat(values[:, :3], starts, axis=0)
+            speeds = np.add.reduceat(values[:, 3:], starts, axis=0) / counts[:, None]
+            self._plot_cache = (low + (starts + edges[1:] - 1) * 0.5, low + edges, contacts, speeds)
+            self._plot_cache_key = key
+        return self._plot_cache
+
+    def frame_at_time(self, time: float) -> int:
+        return min(len(self.frames) - 1, bisect_left(self.frames, time, key=lambda frame: frame.time))
+
+    def set_recording(self, enabled: bool) -> None:
+        """Start a fresh bounded recording, or retain the current snapshots."""
+        self.recording = enabled
+        if enabled:
+            self.message = ""
+            self._recording_blocked = False
+            self.frames.clear()
+            self.index = self.bytes_used = self.first_frame = 0
+            self.loaded_index = -1

@@ -18,10 +18,10 @@ from .shaders import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
     from types import ModuleType
 
-    from newton._src.viewer.gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
+    from newton._src.viewer.gl.opengl import MeshGL, MeshInstancerGL, RendererGL
 
 
 def _proximity_vertex(source: str) -> str:
@@ -71,7 +71,7 @@ def _mesh_metrics(mesh: MeshGL) -> tuple[np.ndarray, np.ndarray]:
     return mesh._physics_metrics
 
 
-def _render_inspection_object(obj: MeshInstancerGL, pass_draws: str) -> None:
+def _render_inspection_object(obj: MeshGL | MeshInstancerGL, pass_draws: str) -> None:
     """Use prepared instance ranges when available, preserving the ordinary draws."""
     draws = getattr(obj, pass_draws, None)
     if draws is None:
@@ -179,7 +179,7 @@ class PhysicsSurfaceShader(ShaderShape):
     def render(
         self,
         renderer: RendererGL,
-        objects: Sequence[MeshInstancerGL],
+        objects: Sequence[tuple[str, MeshGL | MeshInstancerGL]],
         *,
         opaque: bool,
         oit: bool = False,
@@ -319,7 +319,7 @@ class PhysicsContactShader(ShaderGL):
             )
         }
 
-    def render(self, renderer: RendererGL, objects: Sequence[MeshInstancerGL | LinesGL]) -> None:
+    def render(self, renderer: RendererGL, objects: Mapping[str, MeshInstancerGL]) -> None:
         gl, loc = self._gl, self.locations
         if self._quad is None:
             import warp as wp  # noqa: PLC0415
@@ -514,7 +514,7 @@ class PhysicsShellShader(ShaderGL):
     def render(
         self,
         renderer: RendererGL,
-        objects: Sequence[MeshInstancerGL],
+        objects: Sequence[tuple[str, MeshGL | MeshInstancerGL]],
         *,
         oit: bool,
         collision: bool = False,
@@ -530,7 +530,7 @@ class PhysicsShellShader(ShaderGL):
     def _render_pass(
         self,
         renderer: RendererGL,
-        objects: Sequence[MeshInstancerGL],
+        objects: Sequence[tuple[str, MeshGL | MeshInstancerGL]],
         *,
         oit: bool,
         collision: bool,

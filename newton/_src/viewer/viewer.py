@@ -11,9 +11,9 @@ import os
 import sys
 import warnings
 from abc import ABC, abstractmethod
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import warp as wp
@@ -36,6 +36,9 @@ from .kernels import (
 )
 from .transform import transform_add_translation, transform_from_array, transform_multiply
 from .utils import OPAQUE_OPACITY_THRESHOLD
+
+if TYPE_CHECKING:
+    from ..solvers.solver import SolverBase
 
 MAX_TRIANGLE_OPACITY_GROUPS = 32
 MAX_TRIANGLE_APPEARANCE_GROUPS = MAX_TRIANGLE_OPACITY_GROUPS
@@ -172,6 +175,73 @@ class ViewerBase(ABC):
         active_layer_id = self.__dict__.get("_active_layer_id")
         if layers is not None and active_layer_id in layers:
             setattr(layers[active_layer_id], name, value)
+
+    @contextmanager
+    def _track_display_options(self) -> Iterator[None]:
+        """Remember display changes made during a GUI draw, not scene defaults."""
+        names = {
+            "sdf_margin_mode",
+            "contact_mode_eps_force",
+            "contact_mode_eps_velocity",
+            "contact_viz_scale",
+            "contact_normal_scale",
+            "contact_force_scale",
+            "gaussians_max_points",
+        }
+        owners = [(self, [name for name in vars(self.layer) if name.startswith("show_") or name in names])]
+        owners.append(
+            (
+                self,
+                [
+                    "show_ui",
+                    "vsync",
+                    "_paused",
+                    "camera_speed",
+                    "camera_slowdown",
+                    "show_contact_pairs",
+                    "show_contact_lines",
+                    "show_contact_labels",
+                ],
+            )
+        )
+        owners.append((getattr(self, "camera", None), ["fov", "near", "far"]))
+        owners.append(
+            (
+                getattr(self, "renderer", None),
+                [
+                    "draw_sky",
+                    "draw_shadows",
+                    "draw_wireframe",
+                    "draw_edges",
+                    "wireframe_line_width",
+                    "_light_color",
+                    "sky_upper",
+                    "sky_lower",
+                    "arrow_scale",
+                    "joint_scale",
+                    "com_scale",
+                    "contact_arrow_scale",
+                    "contact_normal_max_pixels",
+                    "contact_force_max_pixels",
+                    "contact_disk_scale",
+                ],
+            )
+        )
+        before = [
+            (owner, name, copy.deepcopy(getattr(owner, name)))
+            for owner, fields in owners
+            for name in fields
+            if hasattr(owner, name)
+        ]
+        try:
+            yield
+        finally:
+            for owner, name, previous in before:
+                value = getattr(owner, name)
+                if not np.array_equal(value, previous):
+                    if name == "contact_force_scale":
+                        value /= max(self._contact_force_scale_default, 1e-12)
+                    self._display_options_user[name] = copy.deepcopy(value)
 
     @contextmanager
     def _preserve_display_options(self, *, switching: bool = False) -> Iterator[None]:
@@ -687,6 +757,7 @@ class ViewerBase(ABC):
         still-live layers).
         """
         layer.model = None
+        layer._simulation_session = None
         layer.model_changed = True
 
         # Shape instance batches (shape hash -> ShapeInstances)
@@ -822,6 +893,56 @@ class ViewerBase(ABC):
     def _init_extra_layer_state(self, layer: Layer) -> None:
         """Hook for backends to initialize additional per-layer attributes."""
         return
+
+    def set_simulation(
+        self,
+        *,
+        state: newton.State | Callable[[], newton.State | None] | None = None,
+        control: newton.Control | None = None,
+        solver: SolverBase | None = None,
+        collision_pipeline: newton.CollisionPipeline | None = None,
+        contacts: newton.Contacts | None = None,
+    ) -> None:
+        """Bind optional live simulation data for inspection of the active layer.
+
+        .. experimental::
+            ``set_simulation`` is an experimental inspection binding. Its
+            parameters may change without the normal deprecation period.
+
+        Call after :meth:`set_model`. This replaces the previous binding; omitted
+        components are unbound. The application retains ownership of all objects
+        and of the simulation loop. No arrays are copied and no solver is stepped.
+        Clearing or replacing the layer's model clears its binding.
+
+        ViewerGL uses these references for State, Control, solver, and collision
+        inspection. Other backends retain them without adding a GUI. Ordinary
+        ``log_*`` calls remain required and continue to work without this method.
+        History recording through the example runner is a separate facility.
+
+        Args:
+            state: Current state, or a provider resolving the live state after
+                buffer swaps. If omitted, inspection uses the last logged state.
+            control: Live inputs, editable while running or paused at the live frame.
+            solver: Solver whose settings and registered attributes are inspected.
+            collision_pipeline: Pipeline providing broadphase/narrowphase metadata.
+            contacts: Current contacts to inspect; rendering still uses ``log_contacts``.
+
+        Raises:
+            ValueError: No model has been set, or solver/pipeline belongs to another model.
+            TypeError: The state is neither a State nor a callable provider.
+        """
+        from .viewer_session import ViewerSession  # noqa: PLC0415
+
+        if self.model is None:
+            raise ValueError("Call set_model() before binding simulation data.")
+        if state is not None and not isinstance(state, newton.State) and not callable(state):
+            raise TypeError("state must be a Newton State, a callable provider, or None")
+        for name, component in (("solver", solver), ("collision_pipeline", collision_pipeline)):
+            if component is not None and component.model is not self.model:
+                raise ValueError(f"{name} must belong to the viewer's active model")
+        self._simulation_session = ViewerSession(
+            state=state, control=control, solver=solver, collision_pipeline=collision_pipeline, contacts=contacts
+        )
 
     def set_model(self, model: newton.Model | None):
         """Set the model to be visualized.

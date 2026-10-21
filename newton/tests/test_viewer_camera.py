@@ -19,8 +19,9 @@ import warp as wp
 import newton
 from newton._src.viewer.camera import Camera
 from newton._src.viewer.viewer_gui import ViewerGui
+from newton._src.viewer.viewer_model_tree import ModelTree
 from newton._src.viewer.viewer_navigation import SelectionNavigation
-from newton._src.viewer.viewer_workspace import ModelTree, ViewerWorkspace
+from newton._src.viewer.viewer_workspace import ViewerWorkspace
 from newton.viewer import ViewerGL
 
 
@@ -43,6 +44,7 @@ class TestViewerCameraOrbit(unittest.TestCase):
         gui._viewer, gui.ui = viewer, None
         gui._cam_vel = np.zeros(3)
         gui._camera_orbit_sensitivity = 0.1
+        gui._camera_drag_buttons = 0
         center = np.zeros(3)
         bounds_calls = []
 
@@ -60,6 +62,7 @@ class TestViewerCameraOrbit(unittest.TestCase):
         gui.handle_key_press(key.F)
         self.assertTrue(gui.following_selection)
         distance = camera.pivot_distance
+        gui.handle_mouse_press(100, 100, mouse.LEFT, lambda x, y: (x, y))
         for step in range(4):
             center[:] = (step, -step * 0.3, step * 0.5)
             gui.handle_mouse_drag(100, 100, 27, 13, mouse.LEFT, lambda x, y: (x, y))
@@ -75,6 +78,7 @@ class TestViewerCameraOrbit(unittest.TestCase):
             gui.handle_key_press(key.F)
             self.assertAlmostEqual(camera.pivot_distance, distance)
 
+        gui.handle_mouse_release(127, 113, mouse.LEFT)
         gui.handle_key_release(key.F)
         previous = np.asarray(camera.pos)
         center += 10

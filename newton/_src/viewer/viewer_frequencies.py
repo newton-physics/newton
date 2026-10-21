@@ -17,8 +17,8 @@ if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
     from typing import Any
 
+    from newton._src.viewer.viewer_model_tree import ModelTree
     from newton._src.viewer.viewer_types import TreeKey
-    from newton._src.viewer.viewer_workspace import ModelTree
 
 
 def attribute_value(model: Model, name: str) -> Any:
@@ -41,6 +41,7 @@ class FrequencyCatalog:
         self.owners = {}
         self.labels = {}
         self.buckets = defaultdict(list)
+        self.articulations: dict[int, dict[str, np.ndarray]] = defaultdict(dict)
         self.groups = {}
         self.owner_groups = {}
         world_attributes = defaultdict(list)
@@ -85,6 +86,8 @@ class FrequencyCatalog:
             for indices in np.split(order, boundaries):
                 first = indices[0]
                 self.buckets[int(worlds[first])].append((frequency, int(owners[first]), indices))
+                if owners[first] >= 0:
+                    self.articulations[int(owners[first])][frequency] = indices
 
     @staticmethod
     def key(frequency: str, index: int) -> TreeKey:

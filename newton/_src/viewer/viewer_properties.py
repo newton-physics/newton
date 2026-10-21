@@ -6,7 +6,6 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
 from enum import IntEnum
 from typing import TYPE_CHECKING, ClassVar
 
@@ -18,11 +17,20 @@ from ..geometry.types import GeoType
 from ..sim.enums import JointTargetMode, JointType
 from ..sim.model import Model
 from ..sim.state import State
+from .viewer_attributes import (
+    Assignment,
+    Frequency,
+    PropertyDomain,
+    attribute_summary,
+    component_attributes,
+    frequency_row_label,
+    resolve_attribute,
+)
 from .viewer_frequencies import FrequencyCatalog
 from .viewer_widgets import PropertyEdit
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
+    from collections.abc import Sequence
     from typing import Any
 
     from numpy.typing import ArrayLike
@@ -30,39 +38,6 @@ if TYPE_CHECKING:
     from newton import Control
     from newton._src.viewer.viewer_types import TreeKey
     from newton._src.viewer.viewer_workspace import ViewerWorkspace
-
-
-Frequency = Model.AttributeFrequency
-Assignment = Model.AttributeAssignment
-
-
-def resolve_attribute(owner: object, name: str) -> tuple[object | None, str, Any]:
-    """Resolve the registry's namespace:name notation without flattening namespaces."""
-    if ":" in name:
-        namespace, name = name.split(":", 1)
-        owner = getattr(owner, namespace, None)
-    return owner, name, getattr(owner, name, None)
-
-
-def component_attributes(
-    model: Model, owner: object, component: Model.AttributeAssignment
-) -> Iterator[tuple[str, Model.AttributeSpec, object, str, Any]]:
-    """Use registered frequencies and actual component storage, including optional arrays."""
-    for name, spec in model._iter_attribute_specs():
-        if name.startswith("_") or spec.compaction_policy in ("world_start", "color_groups", "passthrough"):
-            continue
-        # Built-ins can exist on several components (e.g. Model's initial q).
-        # Custom assignments are authoritative, even though their seed lives on Model.
-        if spec.assignment is not None and spec.assignment != component:
-            continue
-        parent, attribute, value = resolve_attribute(owner, name)
-        if value is None:
-            continue
-        if isinstance(value, (wp.array, np.ndarray)) and value.size == 0:
-            continue
-        if isinstance(value, (list, tuple)) and not value:
-            continue
-        yield name, spec, parent, attribute, value
 
 
 def joint_editor_options(
@@ -79,47 +54,6 @@ def joint_editor_options(
     # limits belong in a constant-speed drag field, with Ctrl-click text entry.
     slider = bounds is not None and bounds[1] - bounds[0] <= 100.0
     return {"speed": speed, "bounds": bounds, "slider": slider}
-
-
-def attribute_summary(name: str, spec: Model.AttributeSpec, array: Any, component: Model.AttributeAssignment) -> str:
-    """Describe full storage using host metadata only, without reading array values."""
-    frequency = spec.frequency.name if isinstance(spec.frequency, Frequency) else str(spec.frequency)
-    lines = [f"{component.name.title()}.{name.replace(':', '.')}"]
-    if isinstance(array, wp.array):
-        lines.extend((f"Array shape: {array.shape}", f"Dtype: {wp.types.type_repr(array.dtype)}"))
-        element_shape = getattr(array.dtype, "_shape_", ())
-        if element_shape:
-            scalar = wp.types.type_repr(array.dtype._wp_scalar_type_)
-            lines.append(f"Element: {element_shape} of {scalar}")
-        lines.append(f"Device: {array.device}")
-    elif isinstance(array, np.ndarray):
-        lines.extend((f"Array shape: {array.shape}", f"Dtype: {array.dtype}"))
-    elif isinstance(array, (list, tuple)):
-        lines.append(f"{type(array).__name__.title()}: {len(array):,} entries")
-    else:
-        lines.append(f"Type: {type(array).__name__}")
-    lines.append(f"Frequency: {frequency}")
-    if spec.row_width != 1:
-        lines.append(f"Entries per row: {spec.row_width}")
-    if spec.references is not None:
-        references = spec.references.name if isinstance(spec.references, Frequency) else str(spec.references)
-        lines.append(f"References: {references}")
-    return "\n".join(lines)
-
-
-def frequency_row_label(frequency: Model.AttributeFrequency | str, index: int) -> str:
-    """Name a storage row by its registered domain and zero-based array index."""
-    name = frequency.name if isinstance(frequency, Frequency) else frequency or "element"
-    return f"{name.replace('_', ' ').lower()} {index}"
-
-
-@dataclass
-class PropertyDomain:
-    model: Model
-    frequency: Model.AttributeFrequency | str
-    indices: Sequence[int] | np.ndarray
-    # JOINT_COORD and JOINT_DOF rows are indexed by joint, not scalar coordinate.
-    joints: bool = False
 
 
 class PropertyInspector:
@@ -142,6 +76,11 @@ class PropertyInspector:
         self.context_key = None
         self.domains: list[PropertyDomain] = []
         self.component = Assignment.STATE
+
+    def clear(self) -> None:
+        """Release model domains while preserving the selected component tab."""
+        self.context_key = None
+        self.domains.clear()
 
     def _contexts(self) -> None:
         ws = self.workspace
@@ -213,8 +152,11 @@ class PropertyInspector:
                     owners = ws.read(model, "joint_articulation", start, end - start)
                     joints = np.flatnonzero(owners == index) + start
                     add(Frequency.JOINT, joints)
-                    for frequency, owners in model.custom_frequency_articulation.items():
-                        add(frequency, np.flatnonzero(owners.numpy() == index))
+                    if model.custom_frequency_articulation:
+                        if ws.tree is None:
+                            ws._ensure_tree()
+                        for frequency, rows in ws.tree.custom.articulations.get(index, {}).items():
+                            add(frequency, rows)
                 add(Frequency.JOINT_COORD, joints, joints=True)
                 add(Frequency.JOINT_DOF, joints, joints=True)
         elif (frequency := FrequencyCatalog.frequency((kind, index))) is not None:
@@ -256,9 +198,11 @@ class PropertyInspector:
         if component == Assignment.MODEL:
             return domain.model
         if component == Assignment.CONTROL:
+            if domain.model is not ws.model:
+                return None
             if ws.history is not None and ws.history.replaying:
                 return ws.history.display_control
-            return getattr(ws.example, "control", None) if domain.model is ws.model else None
+            return ws.session.control
         if domain.model is ws.model:
             return getattr(ws.viewer, "_last_state", None) or ws.live_state()
         return next((s.state for s in ws.tree.deformables.sources if s.model is domain.model), None)

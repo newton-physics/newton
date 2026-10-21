@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-from bisect import bisect_left
 from itertools import pairwise
 from time import perf_counter
 from typing import TYPE_CHECKING
@@ -19,12 +18,31 @@ if TYPE_CHECKING:
 
     from numpy.typing import ArrayLike
 
-    from newton._src.viewer.viewer_history import HistoryFrame
+    from newton._src.viewer.viewer_history import HistoryFrame, WorkspaceHistory
     from newton.viewer import ViewerBase
 
 
-class TimelineTransport:
+class TimelineView:
     """Render contact and motion tracks with exact frame navigation."""
+
+    def __init__(self, history: WorkspaceHistory) -> None:
+        self.history = history
+
+    @property
+    def recording(self) -> bool:
+        return self.history.recording
+
+    @recording.setter
+    def recording(self, value: bool) -> None:
+        self.history.recording = value
+
+    @property
+    def playback_speed(self) -> float:
+        return self.history.playback_speed
+
+    @playback_speed.setter
+    def playback_speed(self, value: float) -> None:
+        self.history.playback_speed = value
 
     default_height = 58
     contact_log = True
@@ -47,74 +65,31 @@ class TimelineTransport:
     def contact_channels(self) -> list[tuple[str, str, str, int, tuple[float, float, float]]]:
         """Offer only contact families supported by the scene's entities."""
         channels = []
-        if self.model.body_count:
+        if self.history.model.body_count:
             channels.append(("Rigid contacts", "touching", "show_rigid_contacts", 0, (0.40, 0.84, 0.78)))
-        if self.model.particle_count:
-            if self.model.shape_count:
+        if self.history.model.particle_count:
+            if self.history.model.shape_count:
                 channels.append(
                     ("Soft-rigid contacts", "soft_shape_contacts", "show_soft_rigid_contacts", 1, (0.36, 0.65, 1.0))
                 )
             channels.append(("Soft contacts", "soft_self_contacts", "show_soft_self_contacts", 2, (1.0, 0.50, 0.64)))
         return channels
 
-    @staticmethod
-    def mean_speed(velocity: ArrayLike | None) -> float:
-        """Mean linear speed, using velocities already copied for history."""
-        if velocity is None or len(velocity) == 0:
-            return float("nan")
-        linear = np.asarray(velocity)[:, :3]
-        return float(np.sqrt(np.einsum("ij,ij->i", linear, linear)).mean(dtype=np.float64))
-
-    def record_plot_frame(self, frame: HistoryFrame) -> None:
-        # A fixed ring keeps plot work independent of retained state size.
-        if not hasattr(self, "_plot_values"):
-            self._plot_values = np.empty((self.max_frames + 64, 5), dtype=np.float64)
-        index = (self.first_frame + len(self.frames) - 1) % len(self._plot_values)
-        self._plot_values[index] = (
-            frame.touching,
-            getattr(frame, "soft_shape_contacts", 0),
-            getattr(frame, "soft_self_contacts", 0),
-            frame.body_speed,
-            frame.particle_speed,
-        )
-        self._plot_revision = getattr(self, "_plot_revision", 0) + 1
-
-    def plot_samples(self, low: int, high: int, bins: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Preserve short contact peaks and average motion within each pixel bin."""
-        key = (self.first_frame, low, high, bins, getattr(self, "_plot_revision", 0))
-        if getattr(self, "_plot_cache_key", None) != key:
-            indices = np.arange(low, high + 1)
-            values = self._plot_values[(self.first_frame + indices) % len(self._plot_values)]
-            # Anchor bins to absolute frame numbers, including through eviction.
-            # Repartitioning the entire history on every append makes old peaks
-            # flicker even though none of those recorded values have changed.
-            stride = 1 if len(indices) <= bins else 1 << ((len(indices) - 1) // max(1, bins - 1)).bit_length()
-            begin, end = self.first_frame + low, self.first_frame + high + 1
-            boundaries = np.arange((begin // stride + 1) * stride, end, stride)
-            edges = np.r_[begin, boundaries, end] - begin
-            starts = edges[:-1]
-            counts = np.diff(edges)
-            contacts = np.maximum.reduceat(values[:, :3], starts, axis=0)
-            speeds = np.add.reduceat(values[:, 3:], starts, axis=0) / counts[:, None]
-            self._plot_cache = (low + (starts + edges[1:] - 1) * 0.5, low + edges, contacts, speeds)
-            self._plot_cache_key = key
-        return self._plot_cache
-
     def _readout_frame(self, viewer: ViewerBase, *, now: float | None = None) -> tuple[int, HistoryFrame]:
         """Sample live numbers at 10 Hz, retaining an actual frame/time pair."""
         now = perf_counter() if now is None else now
-        absolute = self.first_frame + self.index
+        absolute = self.history.first_frame + self.history.index
         previous = getattr(self, "_readout", None)
         if (
             previous is None
             or viewer.is_paused()
-            or self._readout_source is not self.frames
-            or not self.first_frame <= previous[0] <= absolute
-            or self.frames[self.index].time < previous[1].time
+            or self._readout_source is not self.history.frames
+            or not self.history.first_frame <= previous[0] <= absolute
+            or self.history.frames[self.history.index].time < previous[1].time
             or now - self._readout_time >= 0.1
         ):
-            self._readout = (absolute, self.frames[self.index])
-            self._readout_source = self.frames
+            self._readout = (absolute, self.history.frames[self.history.index])
+            self._readout_source = self.history.frames
             self._readout_time = now
         return self._readout
 
@@ -124,8 +99,8 @@ class TimelineTransport:
         """Damp live autoscaling without filtering recorded contact or motion data."""
         now = perf_counter() if now is None else now
         targets = np.array((np.log1p(contacts) if self.contact_log else contacts, speed))
-        end = self.first_frame + len(self.frames)
-        key = (id(self.frames), self.contact_log, *(getattr(self, name) for name in self.preference_names[3:]))
+        end = self.history.first_frame + len(self.history.frames)
+        key = (id(self.history.frames), self.contact_log, *(getattr(self, name) for name in self.preference_names[3:]))
         if getattr(self, "_scale_key", None) != key or viewer.is_paused() or end < self._scale_end:
             self._scale_values = targets
         else:
@@ -137,9 +112,6 @@ class TimelineTransport:
         self._scale_key, self._scale_end, self._scale_time = key, end, now
         contact_scale, speed_scale = self._scale_values
         return (np.expm1(contact_scale) if self.contact_log else contact_scale), speed_scale
-
-    def frame_at_time(self, time: float) -> int:
-        return min(len(self.frames) - 1, bisect_left(self.frames, time, key=lambda frame: frame.time))
 
     def _draw_activity_track(self, ui: ModuleType, viewer: ViewerBase) -> None:
         scale = viewer.gui.ui.dpi_scale
@@ -170,17 +142,17 @@ class TimelineTransport:
         y0 = pos.y + (2 if compact else 22) * scale
         y1 = pos.y + height - (2 if compact else 18) * scale
         plot_width, plot_height = max(1, x1 - x0), max(1, y1 - y0)
-        count = len(self.frames)
+        count = len(self.history.frames)
         low, high = 0, count - 1
         if not ui.is_mouse_down(0):
             self._drag_span = None
         if getattr(self, "_drag_span", None) is not None:
             # Store absolute frames so a bounded history can evict old frames
             # while a drag is active without invalidating the visible range.
-            low, high = (max(0, min(count - 1, i - self.first_frame)) for i in self._drag_span)
+            low, high = (max(0, min(count - 1, i - self.history.first_frame)) for i in self._drag_span)
         extent = max(1, high - low)
         if ui.is_item_activated():
-            self._drag_span = (self.first_frame + low, self.first_frame + high)
+            self._drag_span = (self.history.first_frame + low, self.history.first_frame + high)
         ratio = np.clip((ui.get_io().mouse_pos.x - x0) / plot_width, 0, 1)
         # A one-frame history has no index interval, even though its drawing
         # extent is nonzero. Both hover and scrub must select frame zero.
@@ -188,9 +160,9 @@ class TimelineTransport:
         if active and ui.is_mouse_down(0):
             viewer._paused = True
             viewer._step_requested = False
-            self.select(hover_index)
+            self.history.select(hover_index)
         bins = min(512, max(2, int(plot_width / (2 * scale))))
-        samples, edges, contacts, speeds = self.plot_samples(low, high, bins)
+        samples, edges, contacts, speeds = self.history.plot_samples(low, high, bins)
         channels = [channel for channel in self.contact_channels() if getattr(self, channel[2])]
         max_contacts = max((float(contacts[:, channel[3]].max()) for channel in channels), default=0.0)
         peak_contacts = max(1.0, max_contacts)
@@ -226,7 +198,7 @@ class TimelineTransport:
         for tick in () if compact else range(ticks + 1):
             x = x0 + plot_width * tick / ticks
             draw.add_line(ui.ImVec2(x, y0), ui.ImVec2(x, y1), grid)
-            t = self.frames[min(high, low + round(extent * tick / ticks))].time
+            t = self.history.frames[min(high, low + round(extent * tick / ticks))].time
             label = f"{t:.3f}"
             draw.add_text(ui.ImVec2(min(x, x1 - ui.calc_text_size(label).x), y1 + 3 * scale), muted, label)
         draw.push_clip_rect(ui.ImVec2(x0, y0 - 2 * scale), ui.ImVec2(x1 + 1, y1 + 1), True)
@@ -262,7 +234,7 @@ class TimelineTransport:
         draw.add_rect(
             pos, end, color((0.48, 0.48, 0.48, 1) if hovered or active else (0.30, 0.30, 0.30, 1)), corner, scale
         )
-        x = x0 + plot_width * (self.index - low) / extent
+        x = x0 + plot_width * (self.history.index - low) / extent
         accent = (1.0, 0.73, 0.30)
         top, bottom = pos.y + scale, end.y - scale
         for thickness, alpha in ((8, 0.10), (4, 0.24), (1.75, 1.0)):
@@ -276,11 +248,11 @@ class TimelineTransport:
                 color((*accent, 1)),
             )
         if hovered:
-            hover = self.frames[hover_index]
+            hover = self.history.frames[hover_index]
             x = x0 + plot_width * (hover_index - low) / extent
-            if hover_index != self.index:
+            if hover_index != self.history.index:
                 draw.add_line(ui.ImVec2(x, y0), ui.ImVec2(x, y1), muted)
-            details = [f"Frame {self.first_frame + hover_index}  |  {hover.time:.6f} s"]
+            details = [f"Frame {self.history.first_frame + hover_index}  |  {hover.time:.6f} s"]
             for label, attr, _, _, _ in self.contact_channels():
                 details.append(f"{label}: {getattr(hover, attr, 0):,}")
             for label, attr in (("Mean body speed", "body_speed"), ("Mean particle speed", "particle_speed")):
@@ -312,7 +284,7 @@ class TimelineTransport:
             )
             ui.table_next_column()
             self._draw_transport(ui, viewer, widgets)
-            if self.frames:
+            if self.history.frames:
                 self._draw_activity_track(ui, viewer)
             ui.table_next_column()
             ui.push_style_var(ui.StyleVar_.window_padding, ui.ImVec2(8 * scale, 2 * scale))
@@ -356,18 +328,18 @@ class TimelineTransport:
             "first",
             "First recorded frame",
             size=22,
-            enabled=bool(self.frames) and self.index > 0,
+            enabled=bool(self.history.frames) and self.history.index > 0,
             show_lock=False,
         ):
             viewer._paused, viewer._step_requested = True, False
-            self.select(0)
+            self.history.select(0)
         for label, icon, delta in (
             ("##previous_timeline_frame", "previous", -1),
             ("##next_timeline_frame", "play", 1),
         ):
             ui.same_line(spacing=4 * scale)
             ui.set_cursor_pos_y(row_y)
-            enabled = 0 <= self.index + delta < len(self.frames) if self.frames else delta > 0
+            enabled = 0 <= self.history.index + delta < len(self.history.frames) if self.history.frames else delta > 0
             if widgets.icon_button(
                 label,
                 icon,
@@ -377,9 +349,9 @@ class TimelineTransport:
                 show_lock=False,
             ):
                 viewer._paused = True
-                viewer._step_requested = not self.frames
-                if self.frames:
-                    self.select(self.index + delta)
+                viewer._step_requested = not self.history.frames
+                if self.history.frames:
+                    self.history.select(self.history.index + delta)
         ui.same_line(spacing=4 * scale)
         ui.set_cursor_pos_y(row_y)
         if widgets.icon_button(
@@ -387,12 +359,11 @@ class TimelineTransport:
             "last",
             "Latest recorded frame · resume live simulation here",
             size=22,
-            enabled=bool(self.frames) and self.index < len(self.frames) - 1,
+            enabled=bool(self.history.frames) and self.history.index < len(self.history.frames) - 1,
             show_lock=False,
         ):
             viewer._paused, viewer._step_requested = True, False
-            self.loop_range = False
-            self.select(len(self.frames) - 1)
+            self.history.select(len(self.history.frames) - 1)
         ui.same_line(spacing=6 * scale)
         ui.set_cursor_pos_y(row_y)
         speeds = [0.25, 0.5, 1.0, 2.0, 4.0]
@@ -400,20 +371,19 @@ class TimelineTransport:
         changed, speed = ui.combo("##playback_speed", speeds.index(self.playback_speed), [f"{x:g}x" for x in speeds])
         if changed:
             self.playback_speed = speeds[speed]
-        if hasattr(self, "draw_recording_control"):
-            ui.same_line(spacing=10 * scale)
-            ui.set_cursor_pos_y(row_y)
-            self.draw_recording_control(ui)
+        ui.same_line(spacing=10 * scale)
+        ui.set_cursor_pos_y(row_y)
+        self.draw_recording_control(ui)
         ui.pop_style_var()
-        if getattr(self, "message", ""):
-            ui.text_wrapped(self.message)
+        if self.history.message:
+            ui.text_wrapped(self.history.message)
 
     def _draw_readouts(self, ui: ModuleType, viewer: ViewerBase, widgets: PhysicsWidgets) -> None:
-        if not self.frames:
+        if not self.history.frames:
             ui.text_disabled("Frame  —")
             ui.text_disabled("Time   —")
             return
-        count = len(self.frames)
+        count = len(self.history.frames)
         absolute, frame = self._readout_frame(viewer)
         edit = widgets.number(
             "Frame",
@@ -421,20 +391,20 @@ class TimelineTransport:
             editable=True,
             integer=True,
             speed=1,
-            bounds=(self.first_frame, self.first_frame + count - 1),
+            bounds=(self.history.first_frame, self.history.first_frame + count - 1),
             label_width=60 * widgets.scale,
         )
         if edit.activated or edit.changed:
             viewer._paused = True
             viewer._step_requested = False
-            self.select(edit.value - self.first_frame)
+            self.history.select(edit.value - self.history.first_frame)
             absolute, frame = self._readout_frame(viewer)
         time = widgets.number(
             "Time",
             frame.time,
             editable=True,
-            speed=self.dt,
-            bounds=(self.frames[0].time, self.frames[-1].time),
+            speed=self.history.dt,
+            bounds=(self.history.frames[0].time, self.history.frames[-1].time),
             unit="s",
             label_width=60 * widgets.scale,
             format_spec=".6f" if viewer.is_paused() else ".3f",
@@ -442,7 +412,9 @@ class TimelineTransport:
         if time.activated or time.changed:
             viewer._paused = True
             viewer._step_requested = False
-            self.select(self.frame_at_time(time.value) if time.changed else absolute - self.first_frame)
+            self.history.select(
+                self.history.frame_at_time(time.value) if time.changed else absolute - self.history.first_frame
+            )
 
     def status_items(self) -> list[tuple[str, str, tuple[float, float, float]]]:
         """Read-only metrics for the selected frame, without device transfers."""
@@ -455,21 +427,23 @@ class TimelineTransport:
                 if value >= 10**power:
                     return f"{value / 10**power:.1f}{suffix}"
 
-        items = [("Step", f"{self.dt * 1000:.2f} ms", neutral)]
-        if self.frames:
-            frame = self.frames[self.index]
+        items = [("Step", f"{self.history.dt * 1000:.2f} ms", neutral)]
+        if self.history.frames:
+            frame = self.history.frames[self.history.index]
             for label, attr, _, _, rgb in self.contact_channels():
                 items.append((label, count(getattr(frame, attr, 0)), rgb))
-            if not hasattr(self, "recording"):
+            if not hasattr(self.history, "recording"):
                 items.append(("Depth", f"{frame.depth_mm:.2f} mm", neutral))
         memory = (
-            f"{self.bytes_used / 2**20:.1f} MiB" if self.bytes_used < 2**30 else f"{self.bytes_used / 2**30:.1f} GiB"
+            f"{self.history.bytes_used / 2**20:.1f} MiB"
+            if self.history.bytes_used < 2**30
+            else f"{self.history.bytes_used / 2**30:.1f} GiB"
         )
-        items.extend((("States", count(len(self.frames)), neutral), ("History", memory, neutral)))
-        if self.frames:
+        items.extend((("States", count(len(self.history.frames)), neutral), ("History", memory, neutral)))
+        if self.history.frames:
             for label, attr, entities, rgb in (
-                ("Body speed", "body_speed", self.model.body_count, (0.70, 0.61, 1.0)),
-                ("Particle speed", "particle_speed", self.model.particle_count, (1.0, 0.72, 0.36)),
+                ("Body speed", "body_speed", self.history.model.body_count, (0.70, 0.61, 1.0)),
+                ("Particle speed", "particle_speed", self.history.model.particle_count, (1.0, 0.72, 0.36)),
             ):
                 if not entities:
                     continue
@@ -480,3 +454,12 @@ class TimelineTransport:
                 else:
                     items.append((label, "—", rgb))
         return items
+
+    def draw_recording_control(self, ui: ModuleType) -> None:
+        changed, enabled = ui.checkbox("Record history", self.recording)
+        if changed:
+            self.history.set_recording(enabled)
+        if ui.is_item_hovered():
+            ui.set_tooltip(
+                "Record state and contacts in a bounded 128 MiB history. Playback continues simulation at the live frame."
+            )

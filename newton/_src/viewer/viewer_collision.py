@@ -15,14 +15,15 @@ import warp as wp
 from ..sim.collide import CollisionPipeline
 from ..sim.contacts import Contacts
 from ..sim.model import Model
-from .viewer_properties import Assignment, Frequency, PropertyDomain, attribute_summary, resolve_attribute
+from .viewer_attributes import Assignment, Frequency, PropertyDomain, attribute_summary, resolve_attribute
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from typing import Any
 
+    from newton._src.viewer.viewer_model_tree import ModelTree
     from newton._src.viewer.viewer_types import TreeKey
-    from newton._src.viewer.viewer_workspace import ModelTree, ViewerWorkspace
+    from newton._src.viewer.viewer_workspace import ViewerWorkspace
 
     from .viewer_properties import PropertyInspector
 
@@ -211,20 +212,18 @@ class CollisionInspector:
 
     def _contacts_buffer(self) -> Contacts | None:
         ws = self.workspace
-        for value in (getattr(ws.viewer, "_last_contacts", None), getattr(ws.example, "contacts", None)):
+        logged = getattr(ws.viewer, "_last_contacts", None)
+        bound = ws.session.contacts
+        history = getattr(ws, "history", None)
+        sources = (logged, bound) if history is not None and history.replaying else (bound, logged)
+        for value in sources:
             if isinstance(value, Contacts):
                 return value
         return None
 
     def _sources(self) -> list[tuple[str, CollisionPipeline]]:
         ws = self.workspace
-        result, seen = [], set()
-        for owner in (ws.example, ws.model, getattr(ws.example, "solver", None)):
-            for name, value in vars(owner).items() if hasattr(owner, "__dict__") else ():
-                if isinstance(value, CollisionPipeline) and value.model is ws.model and id(value) not in seen:
-                    seen.add(id(value))
-                    result.append((name.lstrip("_"), value))
-        return result
+        return ws.session.collision_pipelines(ws.model)
 
     def read(self, owner: object, name: str, start: int = 0, count: int = 1) -> np.ndarray:
         key = id(owner), name, start, count

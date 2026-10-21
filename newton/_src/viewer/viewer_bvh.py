@@ -15,14 +15,16 @@ import warp as wp
 from ..geometry.tri_mesh_collision import TriMeshCollisionDetector
 from ..geometry.types import GeoType
 from ..sim.collide import CollisionPipeline
+from .viewer_session import ViewerSession
 
 if TYPE_CHECKING:
     from collections.abc import Hashable
     from typing import Any
 
     from newton import Model, State
+    from newton._src.viewer.viewer_model_tree import ModelTree
     from newton._src.viewer.viewer_types import TreeKey, ViewerExample
-    from newton._src.viewer.viewer_workspace import ModelTree, ViewerWorkspace
+    from newton._src.viewer.viewer_workspace import ViewerWorkspace
     from newton.viewer import ViewerBase
 
 
@@ -74,6 +76,7 @@ def _bounds_lines(
     shape_world: wp.array[int],
     body_pose: wp.array[wp.transform],
     offsets: wp.array[wp.vec3],
+    visible_worlds: wp.array[int],
     layer: wp.transform,
     starts: wp.array[wp.vec3],
     ends: wp.array[wp.vec3],
@@ -85,6 +88,13 @@ def _bounds_lines(
     if slot >= count[0]:
         return
     item = indices[slot]
+    world = int(-1)
+    if shape >= 0:
+        world = shape_world[shape]
+    elif groups.shape[0] > item:
+        world = groups[item]
+    if world >= 0 and world < visible_worlds.shape[0] and visible_worlds[world] == 0:
+        return
     lower, upper = wp.vec3(0.0), wp.vec3(0.0)
     if mesh:
         a = vertices[triangles[item * 3]]
@@ -105,7 +115,6 @@ def _bounds_lines(
             if corner & (1 << bit):
                 start[component] = upper[component]
                 end[component] = upper[component]
-    world = int(-1)
     if shape >= 0:
         pose = shape_pose[shape]
         body = shape_body[shape]
@@ -113,9 +122,6 @@ def _bounds_lines(
             pose = body_pose[body] * pose
         start = wp.transform_point(pose, wp.cw_mul(start, shape_scale[shape]))
         end = wp.transform_point(pose, wp.cw_mul(end, shape_scale[shape]))
-        world = shape_world[shape]
-    elif groups.shape[0] > item:
-        world = groups[item]
     if world >= 0 and world < offsets.shape[0]:
         start += offsets[world]
         end += offsets[world]
@@ -141,6 +147,7 @@ def _frame_bounds(
     shape_world: wp.array[int],
     body_pose: wp.array[wp.transform],
     offsets: wp.array[wp.vec3],
+    visible_worlds: wp.array[int],
     layer: wp.transform,
     bounds: wp.array2d[float],
 ) -> None:
@@ -149,6 +156,13 @@ def _frame_bounds(
         return
     # Infinite planes have artificial finite BVH bounds, unsuitable for framing.
     if enabled_shapes.shape[0] > item and shape_type[enabled_shapes[item]] == int(GeoType.PLANE):
+        return
+    world = int(-1)
+    if shape >= 0:
+        world = shape_world[shape]
+    elif groups.shape[0] > item:
+        world = groups[item]
+    if world >= 0 and world < visible_worlds.shape[0] and visible_worlds[world] == 0:
         return
     lower, upper = wp.vec3(0.0), wp.vec3(0.0)
     if mesh:
@@ -162,16 +176,12 @@ def _frame_bounds(
         return
     pose = wp.transform_identity()
     scale = wp.vec3(1.0)
-    world = int(-1)
     if shape >= 0:
         pose = shape_pose[shape]
         body = shape_body[shape]
         if body >= 0:
             pose = body_pose[body] * pose
         scale = shape_scale[shape]
-        world = shape_world[shape]
-    elif groups.shape[0] > item:
-        world = groups[item]
     offset = wp.vec3(0.0)
     if world >= 0 and world < offsets.shape[0]:
         offset = offsets[world]
@@ -209,8 +219,11 @@ class BvhResources:
     meshes = ("bvh_collection", "meshes")
     page_size = 128
 
-    def __init__(self, model: Model, example: ViewerExample | None = None) -> None:
+    def __init__(
+        self, model: Model, example: ViewerExample | None = None, *, session: ViewerSession | None = None
+    ) -> None:
         self.model, self.example = model, example
+        self.session = session if session is not None else ViewerSession.from_example(example)
         self.entries = {}
         self._mesh_ids = None
         self._shape_pages = {}
@@ -298,7 +311,12 @@ class BvhResources:
     def _discover(self, tree: ModelTree) -> None:
         # Inspect known owners, never recursively traverse a model's object graph.
         seen = set()
-        for owner in (self.example, self.model, getattr(self.example, "solver", None)):
+        for name, pipeline in self.session.collision_pipelines(self.model):
+            detector = pipeline._soft_self_contact_detector
+            if detector is not None and id(detector) not in seen:
+                seen.add(id(detector))
+                self._add_detector(tree, detector, name)
+        for owner in (self.example, self.model, self.session.solver):
             for name, value in vars(owner).items() if hasattr(owner, "__dict__") else ():
                 if id(value) in seen:
                     continue
@@ -537,6 +555,7 @@ class BvhResources:
         viewer, model = ws.viewer, self.model
         mesh = isinstance(resource, wp.Mesh)
         state = self._state(ws)
+        visible_worlds = getattr(viewer, "_visible_worlds_mask", None)
         return [
             empty_vec if mesh else resource.lowers,
             empty_vec if mesh else resource.uppers,
@@ -551,6 +570,7 @@ class BvhResources:
             model.shape_world,
             state.body_q if state is not None else model.body_q,
             viewer.world_offsets if viewer.world_offsets is not None else empty_vec,
+            visible_worlds if visible_worlds is not None else empty_int,
             viewer.layer.xform,
         ]
 
@@ -643,6 +663,8 @@ class BvhResources:
             resource.id,
             group,
             query_count,
+            # Includes the visibility-mask allocation, which is replaced when
+            # worlds are toggled. Never replay a graph bound to the old mask.
             tuple(value.ptr if isinstance(value, wp.array) else value for value in args[:-1]),
             tuple(viewer.layer.xform),
             self._refit_signature(resource, state),

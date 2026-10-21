@@ -50,6 +50,13 @@ class ViewportControls:
         self._roles_key = None
         self._roles = ()
 
+    def clear_scene(self) -> None:
+        """Release scene caches while retaining viewport preferences."""
+        self._model = self._inspection_model = None
+        self._roles_key = None
+        self._roles = ()
+        self.orientation._animation = None
+
     def set_mode(self, mode: str) -> None:
         self.mode = mode
         viewer = self.workspace.viewer
@@ -268,8 +275,8 @@ class ViewportControls:
             for name, label in properties:
                 changed, value = ui.checkbox(label, bool(getattr(viewer, name)))
                 setattr(viewer, name, value)
-                if changed and name == "show_particles":
-                    viewer._particle_visibility_user = value
+                if changed:
+                    viewer._display_options_user[name] = value
 
         ui.begin_disabled(self.mode not in ("wire", "xray"))
         _, self.surface_grid = ui.checkbox("Adaptive surface grid", self.surface_grid)

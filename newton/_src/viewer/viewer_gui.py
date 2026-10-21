@@ -31,6 +31,9 @@ from .transform import transform_assign, transform_assign_matrix, transform_to_m
 
 if TYPE_CHECKING:
     from numpy.typing import ArrayLike
+    from pyglet.window import Window
+
+    from newton.viewer import ViewerBase
 
 
 # Width of the left sidebar in logical (96-DPI) pixels.
@@ -40,7 +43,7 @@ _SIDEBAR_WIDTH_PX = 300.0
 class ViewerGui:
     """Shared ImGui rendering for concrete viewers (GL / RTX)."""
 
-    def __init__(self, viewer, window):
+    def __init__(self, viewer: ViewerBase, window: Window, *, workspace_enabled: bool = False) -> None:
         self._viewer = viewer
         self.ui = UI(window)
         self.ui.key_press_filter = self._filter_gui_key_press
@@ -73,7 +76,7 @@ class ViewerGui:
         self._frame_prepared = False
         self.workspace = None
         # Created on the first UI frame; non-GL viewers keep their existing UI.
-        self.workspace_enabled = type(viewer).__name__ == "ViewerGL"
+        self.workspace_enabled = workspace_enabled
         self.console_capture = None
         if self.workspace_enabled and self.is_available:
             from .viewer_console import ConsoleCapture  # noqa: PLC0415
@@ -773,7 +776,8 @@ class ViewerGui:
                     self.ui.imgui.push_style_var(self.ui.imgui.StyleVar_.disabled_alpha, 1.0)
                     self.ui.imgui.begin_disabled()
                 try:
-                    self._render_ui()
+                    with self._viewer._track_display_options():
+                        self._render_ui()
                 finally:
                     if loading:
                         self.ui.imgui.end_disabled()

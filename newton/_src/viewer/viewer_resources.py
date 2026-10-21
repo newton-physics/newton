@@ -18,9 +18,11 @@ if TYPE_CHECKING:
     from newton import Gaussian, Heightfield, Mesh, Model
     from newton._src.geometry.sdf_texture import TextureSDFData
     from newton._src.geometry.sdf_utils import SDF
+    from newton._src.viewer.viewer_model_tree import ModelTree
     from newton._src.viewer.viewer_types import TreeKey, ViewerExample
-    from newton._src.viewer.viewer_workspace import ModelTree, ViewerWorkspace
+    from newton._src.viewer.viewer_workspace import ViewerWorkspace
 
+    from .viewer_session import ViewerSession
     from .viewer_widgets import PhysicsWidgets
 
 
@@ -30,9 +32,11 @@ class GeometryResources:
     root = ("sdf_collection", 0)
     page_size = 128
 
-    def __init__(self, model: Model, example: ViewerExample | None = None) -> None:
+    def __init__(
+        self, model: Model, example: ViewerExample | None = None, *, session: ViewerSession | None = None
+    ) -> None:
         self.model = model
-        self.bvhs = BvhResources(model, example)
+        self.bvhs = BvhResources(model, example, session=session)
         data = model._texture_sdf_data
         self.count = len(data) if data is not None else 0
         self._shape_pages = {}

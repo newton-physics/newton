@@ -26,7 +26,7 @@ current viewer session, or a persistent artifact:
       - Dependencies
     * - :class:`~newton.viewer.ViewerGL`
       - Interactive development and live debugging
-      - Real-time display; frame capture
+      - Scene inspector; local history in examples; frame capture
       - pyglet, imgui_bundle
     * - :class:`~newton.viewer.ViewerRTX`
       - Path-traced visualization on NVIDIA GPUs
@@ -70,7 +70,8 @@ depends on the viewer backend.
 
 Use a live viewer such as :class:`~newton.viewer.ViewerGL` to inspect the
 current scene and add :ref:`custom overlays <viewer-custom-visualization>` for
-contacts or other diagnostic data. For historical inspection, enable
+contacts or other diagnostic data. Its example runner also offers bounded
+local history; see :ref:`viewer-inspection`. For persistent or external historical inspection, enable
 ``keep_historical_data`` in :class:`~newton.viewer.ViewerRerun` to retain a
 timeline for the current viewer session, or use
 :ref:`ViewerFile <viewer-file-recording>` to create a persistent state-snapshot
@@ -90,6 +91,7 @@ All viewer backends inherit from :class:`~newton.viewer.ViewerBase` and share a 
 **Core loop methods** — every viewer uses the same simulation loop pattern:
 
 - :meth:`~newton.viewer.ViewerBase.set_model` — assign a :class:`~newton.Model` (use :meth:`~newton.viewer.ViewerBase.set_visible_worlds` afterwards to limit the number of rendered worlds)
+- :meth:`~newton.viewer.ViewerBase.set_simulation` — optionally bind live State, Control, solver, and collision data for inspection, after setting the model
 - :meth:`~newton.viewer.ViewerBase.begin_frame` — start a new frame with the current simulation time
 - :meth:`~newton.viewer.ViewerBase.log_state` — update the viewer with the current :class:`~newton.State` (body transforms, particle positions, etc.)
 - :meth:`~newton.viewer.ViewerBase.end_frame` — finish the frame and present it
@@ -184,6 +186,156 @@ All viewers support ``set_visible_worlds()`` to limit visualization to a subset 
     viewer = newton.viewer.ViewerNull()
     viewer.set_model(model)
     viewer.set_visible_worlds(range(4))
+
+.. _viewer-inspection:
+
+Interactive inspection in ViewerGL
+----------------------------------
+
+ViewerGL presents an explorer, a central viewport, State / Control / Model
+properties, and a timeline when running through ``newton.examples.run``.
+The explorer includes worlds, articulations, joints, bodies, shapes, deformable
+objects, custom attribute frequencies, and available geometry resources.
+Empty property categories are hidden. Custom attributes use their registered
+frequency, dtype, namespace, and reference metadata rather than solver-specific
+field-name rules.
+
+Select items in the explorer or viewport; Ctrl-click adds or removes selections.
+Press **F** to frame the selection, hold **F** to follow it, or pin following
+with the Properties follow button. Viewport controls switch between visual,
+collision, wireframe, and X-ray modes. X-ray is an inspection representation:
+its transparency and adaptive detail do not change collision geometry.
+
+The **Contacts** tab on a shape or body lists its contact pairs. While paused,
+it can number contact points in the viewport and inspect the selected contact.
+Contact mode colors require solver force observables; unavailable force data
+is distinguished from an unloaded contact. BVH overlays are bounded debug
+views of available current bounds, not an export of every backend's BVH nodes.
+
+Images and plots logged by the example appear as dockable tabs alongside the
+viewport. The console receives Newton Python logging records, with level
+filtering; warnings and errors open it automatically. Explicit display choices
+survive example switches. A new scene keeps its authored camera pose.
+
+Binding a custom simulation loop
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The existing ``set_model`` / ``log_state`` / ``log_contacts`` loop remains
+valid. To expose inputs, solver settings, and collision metadata to the
+inspector, call :meth:`~newton.viewer.ViewerBase.set_simulation` after
+``set_model``:
+
+.. experimental::
+   ``ViewerBase.set_simulation`` is an experimental live inspection binding;
+   its parameters may change without the normal deprecation period. The
+   property editor currently uses it in ViewerGL. It does not enable the GUI
+   in ViewerRTX, Viser, or other backends.
+
+.. code-block:: python
+
+    import newton
+    import warp as wp
+    from newton.solvers import SolverXPBD
+    from newton.viewer import ViewerGL
+
+    builder = newton.ModelBuilder()
+    body = builder.add_body(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()))
+    builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+    builder.add_ground_plane()
+    model = builder.finalize()
+    state_0, state_1 = model.state(), model.state()
+    control = model.control()
+    solver = SolverXPBD(model)
+    pipeline = newton.CollisionPipeline(model)
+    contacts = pipeline.contacts()
+    viewer = ViewerGL()
+    viewer.set_model(model)
+    viewer.set_simulation(
+        state=lambda: state_0,  # Resolve the current buffer after every swap.
+        control=control,
+        solver=solver,
+        collision_pipeline=pipeline,
+        contacts=contacts,
+    )
+    time, dt = 0.0, 1.0 / 60.0
+    while viewer.is_running():
+        if viewer.should_step():
+            state_0.clear_forces()
+            viewer.apply_forces(state_0)
+            pipeline.collide(state_0, contacts)
+            solver.step(state_0, state_1, control, contacts, dt)
+            state_0, state_1 = state_1, state_0
+            time += dt
+        viewer.begin_frame(time)
+        viewer.log_state(state_0)
+        viewer.log_contacts(contacts, state_0)
+        viewer.end_frame()
+    viewer.close()
+
+Bindings belong to the active viewer layer. Repeating ``set_simulation``
+replaces that binding; omitted components are unbound. The application owns
+the simulation objects and stepping. Binding does not copy arrays, infer a
+solver, or run collision detection. Use a state provider for double-buffered
+loops; a direct State reference is appropriate only when that object remains
+the live state. A cleared or replaced model discards its binding.
+
+The example runner supplies an internal adapter for conventional example
+attributes (``state_0`` or ``state``, ``control``, ``solver``, ``contacts``, and
+collision pipelines). Existing examples do not need a binding call. Custom
+loops get inspection from ``set_simulation``; the example-runner history and
+replay callbacks are not automatically installed in custom loops.
+
+Editing, history, and rebuilding
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+* Control inputs can be changed while running or paused at the live frame.
+  Edits update existing arrays so captured simulation graphs retain their
+  bindings. Reset Control restores the values first seen by the inspector.
+* Joint State coordinates and velocities can be edited only while paused at
+  the latest frame. A joint mask limits forward kinematics to the edited
+  branch. Unsupported or read-only properties remain visibly locked.
+* Recorded historical frames are display snapshots. They are read-only;
+  playback reaches the latest frame before live simulation resumes. They
+  are not solver checkpoints and cannot restart simulation from an arbitrary
+  earlier time.
+* Recording is enabled by default for compatible examples, bounded to
+  128 MiB and 60,000 display frames. A snapshot above 64 MiB stops recording
+  before state-array transfers. Recording copies selected state, control,
+  and contact arrays to the host; disable it when measuring simulation or
+  rendering throughput.
+* Topology editing and USD authoring are not provided by this inspector.
+  Rebuild the Model, State, Control, Solver, and CollisionPipeline in the
+  application, then call ``set_model`` followed by ``set_simulation`` again.
+  This clears scene-owned selection, caches, and history while retaining
+  display preferences. No runtime inspector edits are written back to USD.
+
+Implementation boundaries
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+The implementation separates reusable Python inspection services from local
+presentation and rendering:
+
+.. mermaid::
+
+    flowchart TD
+        App[Application-owned simulation] --> Bind[Layer-local simulation binding]
+        Adapter[Conventional example adapter] --> Bind
+        Bind --> Data[Model tree and attribute metadata]
+        Adapter --> History[Bounded display history]
+        Data --> UI[ImGui explorer and property panels]
+        History --> Timeline[ImGui timeline presenter]
+        UI --> GL[OpenGL overlays and selection rendering]
+        UI --> Dock[Docked images, plots and console]
+
+Simulation discovery, model-tree metadata, frequency lookup, and recorded
+history have no ImGui or OpenGL dependency. The current panels, docking, and
+timeline presenter use ImGui; X-ray, selection outlines, joint glyphs, and
+contact-label rendering use OpenGL. A future RTX frontend can reuse the data
+services and supply its own rendering integration. A browser frontend can
+reuse metadata and inspection rules through an application-owned transport;
+this change does not define serialization, remote permissions, or a network
+protocol. Future scene loading should replace the application-owned simulation
+and rebind it rather than making a GUI panel responsible for solver creation.
 
 .. _viewer-live-plots:
 
