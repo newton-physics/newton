@@ -207,6 +207,7 @@ class Example:
         if np.min(orientation_alignment) < 0.9999:
             raise ValueError(f"A1 relative grasp-orientation alignment is {orientation_alignment}")
 
+
 if __name__ == "__main__":
     viewer, args = newton.examples.init()
     newton.examples.run(Example(viewer, args), args)
