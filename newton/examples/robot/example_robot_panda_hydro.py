@@ -99,6 +99,7 @@ class Example:
             xform=wp.transform((-0.5, -0.5, 0.05), wp.quat_identity()),
             enable_self_collisions=False,
             parse_visuals_as_colliders=True,
+            joint_damping_mode="passive",
         )
 
         def find_body(name):

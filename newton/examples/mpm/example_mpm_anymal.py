@@ -66,6 +66,7 @@ class Example:
             enable_self_collisions=False,
             collapse_fixed_joints=True,
             ignore_inertial_definitions=False,
+            joint_damping_mode="passive",
         )
 
         # Disable collisions with bodies other than shanks

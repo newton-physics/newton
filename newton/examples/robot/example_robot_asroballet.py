@@ -566,7 +566,6 @@ class _AsRoBalletController:
     """Own the simulation state shared by all asRoBallet controllers."""
 
     def __init__(self, viewer, model_path: str, virtual_ball_joint: bool):
-        newton.use_coord_layout_targets = True
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
         self.sim_substeps = 10

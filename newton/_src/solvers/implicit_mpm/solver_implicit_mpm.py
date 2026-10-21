@@ -24,7 +24,6 @@ from ...core.types import override
 from ...geometry.particle_surface import ParticleSurface
 from ...sim import ModelFlags, StateFlags
 from ..coupled.interface import CouplingInterface
-from ..observables import SolverObservables
 from ..solver import SolverBase
 from .implicit_mpm_model import ImplicitMPMModel
 from .particle_surface_colliders import extrapolate_surface_sdf_into_colliders
@@ -57,6 +56,7 @@ from .implicit_mpm_solver_kernels import (
     compute_unilateral_strain_offset,
     fill_uniform_color_block_indices,
     free_velocity,
+    init_particle_strains,
     integrate_active_fraction,
     integrate_collider_fraction,
     integrate_collider_fraction_apic,
@@ -1910,7 +1910,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         contacts: newton.Contacts,
         dt: float,
         *,
-        observables: SolverObservables | None = None,
+        observables: SolverBase.Observables | None = None,
     ) -> None:
         """Advance the simulation by one time step.
 
@@ -3587,9 +3587,23 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     elastic_strain_prev = state_in.mpm.particle_elastic_strain
                     particle_Jp_prev = state_in.mpm.particle_Jp
 
-                state_out.mpm.particle_Jp.zero_()
-                state_out.mpm.particle_stress.zero_()
-                state_out.mpm.particle_elastic_strain.zero_()
+                # In place, the copy for skipped particles is a no-op, so no clone is needed for stress
+                wp.launch(
+                    init_particle_strains,
+                    dim=model.particle_count,
+                    inputs=[
+                        mpm_model.material_particle_flags,
+                        mpm_model.particle_density,
+                        elastic_strain_prev,
+                        particle_Jp_prev,
+                        state_in.mpm.particle_stress,
+                    ],
+                    outputs=[
+                        state_out.mpm.particle_elastic_strain,
+                        state_out.mpm.particle_Jp,
+                        state_out.mpm.particle_stress,
+                    ],
+                )
 
                 fem.interpolate(
                     update_particle_strains,

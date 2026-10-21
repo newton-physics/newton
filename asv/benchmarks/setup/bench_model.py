@@ -4,7 +4,9 @@
 import gc
 import os
 import sys
+import time
 from functools import partial
+from statistics import fmean
 
 # Force headless mode for CI environments before any pyglet imports
 os.environ["PYGLET_HEADLESS"] = "1"
@@ -22,10 +24,11 @@ sys.path.append(os.path.join(parent_dir, "simulation"))
 
 from bench_sensor_tiled_camera import SCENES as TILED_CAMERA_SCENES
 from benchmark_metrics import collect_startup_metrics
-from benchmark_mujoco import Example
+from benchmark_mujoco import Example, _startup_phase
 
 import newton
 from newton.sensors import SensorTiledCamera
+from newton.solvers import SolverXPBD
 from newton.viewer import ViewerGL
 
 
@@ -109,6 +112,107 @@ class KpiInitializeSolver(_KpiInitialize):
         return metrics[robot, world_count].solver_time
 
     track_initialize_solver.unit = "s"
+
+
+class KpiInitializeModelLargeWorld:
+    """Measure warm initialization of a large single-world model, SAP pipeline, and XPBD solver.
+
+    Model time includes finalization, and solver time includes collision pipeline
+    construction. Total startup stops after initialization, without a simulation
+    frame. This workload has no replication phase.
+    """
+
+    samples = 3
+    rounds = 1
+    repeat = 3
+    number = 1
+    min_run_count = 1
+    timeout = 3600
+
+    def setup_cache(self):
+        # Warm CPU kernels for the separate peak-memory measurement.
+        with wp.ScopedDevice("cpu"):
+            self._initialize(4)
+        if wp.get_cuda_device_count() == 0:
+            return None
+
+        # Warm the measured configuration before collecting phase averages.
+        workload = self._initialize(10000)
+        del workload
+        gc.collect()
+        wp.synchronize_device()
+
+        sample_times = []
+        for _ in range(self.samples):
+            phase_times = {}
+            start_time = time.perf_counter()
+            workload = self._initialize(10000, phase_times)
+            phase_times["total"] = time.perf_counter() - start_time
+            del workload
+            gc.collect()
+            wp.synchronize_device()
+            sample_times.append(phase_times)
+
+        return {name: fmean(times[name] for times in sample_times) for name in ("model", "finalize", "solver", "total")}
+
+    setup_cache.timeout = 3600
+
+    @staticmethod
+    def _initialize(shape_count, startup_phase_times=None):
+        with _startup_phase(startup_phase_times, "model"):
+            builder = newton.ModelBuilder()
+            mesh = newton.Mesh.create_box(0.1)
+            for i in range(shape_count):
+                body = builder.add_body(xform=wp.transform(wp.vec3(0.5 * (i % 200), 0.5 * (i // 200), 1.0)))
+                if i % 4 == 0:
+                    builder.add_shape_mesh(body, mesh=mesh)
+                elif i % 4 == 1:
+                    builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
+                elif i % 4 == 2:
+                    builder.add_shape_sphere(body, radius=0.1)
+                else:
+                    builder.add_shape_capsule(body, radius=0.1, half_height=0.1)
+            with _startup_phase(startup_phase_times, "finalize"):
+                model = builder.finalize()
+        with _startup_phase(startup_phase_times, "solver"):
+            # Bound runtime collision buffers independently of the model's pair count.
+            pipeline = newton.CollisionPipeline(
+                model, broad_phase="sap", shape_pairs_max=256, rigid_contact_max=128, max_triangle_pairs=128
+            )
+            solver = SolverXPBD(model)
+        return model, pipeline, solver
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def track_initialize_model(self, metrics):
+        return metrics["model"]
+
+    track_initialize_model.unit = "s"
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def track_mean_finalize_time(self, metrics):
+        return metrics["finalize"]
+
+    track_mean_finalize_time.unit = "s"
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def track_initialize_solver(self, metrics):
+        return metrics["solver"]
+
+    track_initialize_solver.unit = "s"
+
+    @skip_benchmark_if(wp.get_cuda_device_count() == 0)
+    def track_mean_startup_time(self, metrics):
+        return metrics["total"]
+
+    track_mean_startup_time.unit = "s"
+
+    def peakmem_initialize_model_cpu(self, metrics=None):
+        gc.collect()
+
+        with wp.ScopedDevice("cpu"):
+            model, pipeline, solver = self._initialize(10000)
+
+        del model, pipeline, solver
 
 
 class KpiInitializeViewerGL:
@@ -297,6 +401,7 @@ if __name__ == "__main__":
         "KpiInitializeModel": KpiInitializeModel,
         "FastInitializeModel": FastInitializeModel,
         "KpiInitializeSolver": KpiInitializeSolver,
+        "KpiInitializeModelLargeWorld": KpiInitializeModelLargeWorld,
         "FastInitializeSolver": FastInitializeSolver,
         "KpiInitializeViewerGL": KpiInitializeViewerGL,
         "FastInitializeViewerGL": FastInitializeViewerGL,

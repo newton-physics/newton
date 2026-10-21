@@ -385,6 +385,72 @@ def test_optional_control_and_contacts(test, device):
     test.assertLess(float(state_out.particle_q.numpy()[0, 1]), 1.0)
 
 
+def test_elastic_spring_compliance_is_iteration_independent(test, device):
+    """Preserve analytical spring compliance and its gradient across iterations."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=0.0, radius=0.0)
+    builder.add_particle(pos=(1.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0, radius=0.0)
+    builder.add_spring(0, 1, ke=10.0, kd=0.0, control=0.0)
+
+    model = builder.finalize(device=device, requires_grad=True)
+    solver = newton.solvers.SolverXPBD(model, iterations=4)
+
+    # Both buffer-lifetime paths must preserve x = 1 + 1 / (1 + ke * dt**2).
+    for requires_grad in (False, True):
+        with test.subTest(requires_grad=requires_grad):
+            state_in = model.state(requires_grad=requires_grad)
+            state_out = model.state(requires_grad=requires_grad)
+            state_in.particle_q.assign([(0.0, 0.0, 0.0), (2.0, 0.0, 0.0)])
+            if requires_grad:
+                with mock.patch.object(wp.config, "verify_autograd_array_access", True):
+                    with wp.Tape() as tape:
+                        solver.step(state_in, state_out, control=None, contacts=None, dt=0.1)
+                    output_grad = wp.array([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
+                    tape.backward(grads={state_out.particle_q: output_grad})
+                test.assertAlmostEqual(float(model.spring_stiffness.grad.numpy()[0]), -1.0 / 121.0, places=5)
+            else:
+                solver.step(state_in, state_out, control=None, contacts=None, dt=0.1)
+            test.assertAlmostEqual(float(state_out.particle_q.numpy()[1, 0]), 21.0 / 11.0, places=5)
+
+
+def test_elastic_bending_compliance_is_iteration_independent(test, device):
+    """Verify converged bending constraints preserve finite compliance."""
+    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+    for position, mass in (
+        ((0.0, 1.0, 0.0), 0.0),
+        ((0.0, -1.0, 0.0), 1.0),
+        ((0.0, 0.0, 0.0), 0.0),
+        ((1.0, 0.0, 0.0), 0.0),
+    ):
+        builder.add_particle(pos=wp.vec3(*position), vel=wp.vec3(0.0), mass=mass, radius=0.0)
+    builder.add_edge(0, 1, 2, 3, edge_ke=10.0, edge_kd=0.0)
+
+    model = builder.finalize(device=device)
+    state_in = model.state()
+    state_out = model.state()
+    solver = newton.solvers.SolverXPBD(model)
+
+    def solve(iterations: int) -> float:
+        state_in.particle_q.assign([(0.0, 1.0, 0.0), (0.0, -1.0, 1.0), (0.0, 0.0, 0.0), (1.0, 0.0, 0.0)])
+        state_in.particle_qd.zero_()
+        solver.iterations = iterations
+        solver.step(state_in, state_out, control=None, contacts=None, dt=0.1)
+        return float(state_out.particle_q.numpy()[1, 2])
+
+    four_iterations = solve(iterations=4)
+    eight_iterations = solve(iterations=8)
+
+    for value in (four_iterations, eight_iterations):
+        test.assertGreater(value, 0.0)
+        test.assertLess(value, 1.0)
+    test.assertAlmostEqual(
+        eight_iterations,
+        four_iterations,
+        places=5,
+        msg="Converged nonlinear iterations must not make a compliant bending edge artificially rigid.",
+    )
+
+
 def test_particle_particle_friction_with_relative_motion(test, device):
     """
     Test that friction DOES affect particles with different tangential velocities.
@@ -1373,6 +1439,7 @@ def test_articulation_contact_drift(test, device):
         floating=True,
         enable_self_collisions=False,
         ignore_inertial_definitions=True,
+        joint_damping_mode="passive",
     )
     armature_inertia = wp.mat33(np.eye(3, dtype=np.float32)) * 0.01
     for i in range(builder.body_count):
@@ -1511,7 +1578,7 @@ def test_xpbd_contact_force_static_equilibrium(test, device):
     control = model.control()
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
-    observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+    observables = solver.observables(contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F})
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
 
     dt = 1.0 / 60.0
@@ -1661,7 +1728,7 @@ def test_xpbd_contact_force_zero_when_no_contact(test, device):
     control = model.control()
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
-    observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+    observables = solver.observables(contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F})
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
 
     dt = 1.0 / 60.0
@@ -1697,7 +1764,7 @@ def test_xpbd_contact_force_zero_when_not_touching(test, device):
     control = model.control()
     collision_pipeline = newton.CollisionPipeline(model)
     contacts = collision_pipeline.contacts()
-    observables = solver.observables({newton.solvers.SolverObservableFlags.CONTACT_F})
+    observables = solver.observables(contacts=contacts, kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F})
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
 
     state_in.clear_forces()
@@ -1801,7 +1868,7 @@ def _run_single_body_steady_state(test, device, joint_kind: str, parent_kinemati
     model = builder.finalize(device=device)
 
     solver = newton.solvers.SolverXPBD(model, iterations=8)
-    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+    observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
     state_in = model.state()
     state_out = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
@@ -1925,7 +1992,7 @@ def test_xpbd_parent_force_chain_weight_propagation(test, device):
     model = builder.finalize(device=device)
 
     solver = newton.solvers.SolverXPBD(model, iterations=32)
-    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+    observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
     state_in = model.state()
     state_out = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
@@ -1983,7 +2050,7 @@ def test_xpbd_parent_force_not_allocated(test, device):
     model = builder.finalize(device=device)
 
     solver = newton.solvers.SolverXPBD(model, iterations=2)
-    observables = solver.observables(set())
+    observables = solver.observables(kinds=set())
     state_in = model.state()
     state_out = model.state()
 
@@ -2010,7 +2077,7 @@ def test_xpbd_parent_force_zero_for_free_body(test, device):
     model = builder.finalize(device=device)
 
     solver = newton.solvers.SolverXPBD(model, iterations=2)
-    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+    observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
     state_in = model.state()
     state_out = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
@@ -2076,7 +2143,7 @@ def test_xpbd_parent_f_centripetal_zero_g(test, device):
         angular_damping=0.0,
         enable_restitution=False,
     )
-    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+    observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
 
     state_in = model.state()
     state_out = model.state()
@@ -2170,7 +2237,7 @@ def test_xpbd_parent_f_consistent_across_solvers(test, device):
     ]:
         model = _build()
         solver = make_solver(model)
-        observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+        observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
         state_0, state_1 = model.state(), model.state()
         newton.eval_fk(model, model.joint_q, model.joint_qd, state_0)
         solver.step(state_0, state_1, None, None, dt, observables=observables)
@@ -2260,7 +2327,7 @@ def _newton_second_law_on_child(joint_kind, ic, *, dt, iters, device):
         angular_damping=0.0,
         enable_restitution=False,
     )
-    observables = solver.observables({newton.solvers.SolverObservableFlags.BODY_PARENT_F})
+    observables = solver.observables(kinds={newton.solvers.SolverBase.ObservableKind.BODY_PARENT_F})
     state_in = model.state()
     state_out = model.state()
     newton.eval_fk(model, model.joint_q, model.joint_qd, state_in)
@@ -2559,7 +2626,7 @@ def test_xpbd_mimic_applies_to_compound_d6_rotations(test, device):
 
 
 def test_xpbd_mimic_warns_for_unsupported_joint_types(test, device):
-    """Cap the reported indices when XPBD cannot enforce mimic relationships."""
+    """Cap XPBD's defensive warning for unsupported mimic metadata."""
     builder = newton.ModelBuilder()
     joints = []
     followers = []
@@ -2570,7 +2637,9 @@ def test_xpbd_mimic_warns_for_unsupported_joint_types(test, device):
         builder.add_shape_box(body_1, hx=0.1, hy=0.1, hz=0.1)
         reference = builder.add_joint_fixed(-1, body_0)
         follower = builder.add_joint_fixed(body_0, body_1)
-        builder.set_joint_mimic(follower, reference)
+        # Bypass the authoring guard to exercise defensive solver handling of
+        # unsupported metadata supplied directly by callers.
+        builder.joint_mimic_joint[follower] = reference
         joints.extend((reference, follower))
         followers.append(follower)
     builder.add_articulation(joints)
@@ -2599,6 +2668,15 @@ class TestSolverXPBD(unittest.TestCase):
             solver = newton.solvers.SolverXPBD(model)
 
         self.assertFalse(solver.enable_restitution)
+
+    def test_rejects_rod_joints(self):
+        """Raise at construction instead of silently skipping Rod joints in the constraint kernels."""
+        builder = newton.ModelBuilder()
+        builder.add_rod(
+            rod=newton.Rod([(0.0, 0.0, 0.0), (0.0, 0.0, 1.0), (0.0, 0.0, 2.0)], radius=0.1), body_frame_origin="com"
+        )
+        with self.assertRaisesRegex(ValueError, "JointType.ROD"):
+            newton.solvers.SolverXPBD(builder.finalize(device="cpu"))
 
     def test_compute_body_velocity_from_position_delta_is_deprecated(self):
         model = newton.ModelBuilder().finalize()
@@ -2658,6 +2736,22 @@ add_function_test(
     TestSolverXPBD,
     "test_optional_control_and_contacts",
     test_optional_control_and_contacts,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_elastic_spring_compliance_is_iteration_independent",
+    test_elastic_spring_compliance_is_iteration_independent,
+    devices=devices,
+    check_output=False,
+)
+
+add_function_test(
+    TestSolverXPBD,
+    "test_elastic_bending_compliance_is_iteration_independent",
+    test_elastic_bending_compliance_is_iteration_independent,
     devices=devices,
     check_output=False,
 )

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import math
 from typing import Any
 
@@ -11,11 +12,11 @@ import warp as wp
 from ..core.types import MAXVAL, Devicelike
 from ..geometry.collision_convex import ConvexQueryResult, create_write_convex_query_result
 from ..geometry.collision_core import (
-    ENABLE_TILE_BVH_QUERY,
     check_infinite_plane_bsphere_overlap,
     compute_bounding_sphere_from_aabb,
     compute_tight_aabb_from_support,
     convert_infinite_plane_to_cube,
+    convex_mesh_interior_point,
     create_compute_gjk_mpr_contacts,
     create_find_contacts,
     get_triangle_shape_from_mesh,
@@ -24,6 +25,7 @@ from ..geometry.collision_core import (
     post_process_minkowski_only,
 )
 from ..geometry.collision_primitive import (
+    _collide_capsule_cylinder_barrel,
     _collide_plane_capsule_contacts,
     collide_capsule_capsule,
     collide_plane_box,
@@ -87,6 +89,7 @@ from ..utils.heightfield import (
     get_triangle_shape_from_heightfield,
     heightfield_vs_convex_midphase,
 )
+from .penetration import create_solve_box_penetration
 
 _SPARSE_GJK_PAIR_CAPACITY_THRESHOLD = 1_000_000
 
@@ -173,6 +176,41 @@ class ConvexPairQueryData:
     rigid_gap: float
     contact_threshold: float
     enlarge: float
+
+
+@wp.func
+def _penetration_bounds_half(
+    shape: int,
+    shape_type: int,
+    shape_data: wp.array[wp.vec4],
+    lower: wp.array[wp.vec3],
+    upper: wp.array[wp.vec3],
+) -> wp.vec3:
+    """Use current primitive dimensions and cached hull bounds for penetration checks."""
+    data = shape_data[shape]
+    scale = wp.vec3(data[0], data[1], data[2])
+    half = wp.vec3(0.0)
+    if shape_type == GeoType.BOX or shape_type == GeoType.ELLIPSOID:
+        half = scale
+    elif shape_type == GeoType.SPHERE:
+        half = wp.vec3(scale[0])
+    elif shape_type == GeoType.CAPSULE:
+        half = wp.vec3(scale[0], scale[0], scale[0] + scale[1])
+    elif shape_type == GeoType.CYLINDER or shape_type == GeoType.CONE:
+        radius = scale[0]
+        if shape_type == GeoType.CYLINDER and scale[2] > 0.0 and scale[2] >= scale[1]:
+            radius += scale[1] * scale[1] / (scale[2] + wp.sqrt(scale[2] * scale[2] - scale[1] * scale[1]))
+        half = wp.vec3(radius, radius, scale[1])
+    elif shape_type == GeoType.CONVEX_MESH and lower.shape[0] > 0:
+        half = 0.5 * (upper[shape] - lower[shape])
+    return half
+
+
+# Threads per mesh-convex midphase query when there are many queries.
+_MIDPHASE_NARROW_TILE_SIZE = wp.constant(32)
+
+# Threads that share one overlap refinement's box-hull certificate.
+_REFINE_BLOCK_DIM = 32
 
 
 def create_prepare_convex_pair(external_aabb: bool, speculative: bool = False):
@@ -444,6 +482,22 @@ def create_narrow_phase_primitive_kernel(
     _module = f"narrow_phase_primitive_{writer_func.__name__}_{speculative}_{sparse_gjk_pairs}_{hydroelastic_enabled}"
 
     @wp.func(module=_module)
+    def _check_unit_scale_sdf(
+        shape_id: int,
+        scale: wp.vec3,
+        shape_unit_scale_sdf: wp.array[wp.int32],
+        unit_scale_sdf_rescaled: wp.array[wp.int32],
+    ):
+        if shape_unit_scale_sdf.shape[0] > 0:
+            if shape_unit_scale_sdf[shape_id] != 0 and (scale[0] != 1.0 or scale[1] != 1.0 or scale[2] != 1.0):
+                if wp.atomic_max(unit_scale_sdf_rescaled, 0, 1) == 0:
+                    wp.printf(
+                        "Warning: shape_scale of shape %d changed, but its texture SDF is queried at unit scale. "
+                        "Construct CollisionPipeline with dynamic_shape_scale=True, which is slower.\n",
+                        shape_id,
+                    )
+
+    @wp.func(module=_module)
     def _admit(
         contact_data: ContactData,
         position: wp.vec3,
@@ -489,6 +543,7 @@ def create_narrow_phase_primitive_kernel(
         shape_flags: wp.array[wp.int32],
         shape_sdf_index: wp.array[wp.int32],
         shape_edge_range: wp.array[wp.vec2i],
+        shape_unit_scale_sdf: wp.array[wp.int32],
         writer_data: Any,
         total_num_threads: int,
         # Output: pairs that need GJK/MPR processing
@@ -508,6 +563,7 @@ def create_narrow_phase_primitive_kernel(
         # Output: sdf-sdf hydroelastic collision pairs
         shape_pairs_sdf_sdf: wp.array[wp.vec2i],
         shape_pairs_sdf_sdf_count: wp.array[int],
+        unit_scale_sdf_rescaled: wp.array[wp.int32],
     ):
         """
         Fast narrow phase kernel for primitive shape collisions.
@@ -593,6 +649,8 @@ def create_narrow_phase_primitive_kernel(
                     idx = wp.atomic_add(shape_pairs_mesh_mesh_count, 0, 1)
                     if idx < shape_pairs_mesh_mesh.shape[0]:
                         shape_pairs_mesh_mesh[idx] = wp.vec2i(encoded_a, encoded_b)
+                        _check_unit_scale_sdf(shape_a, scale_a, shape_unit_scale_sdf, unit_scale_sdf_rescaled)
+                        _check_unit_scale_sdf(shape_b, scale_b, shape_unit_scale_sdf, unit_scale_sdf_rescaled)
                     continue
 
                 # All other heightfield pairs: route through mesh midphase + GJK/MPR.
@@ -632,6 +690,8 @@ def create_narrow_phase_primitive_kernel(
                 idx = wp.atomic_add(shape_pairs_mesh_mesh_count, 0, 1)
                 if idx < shape_pairs_mesh_mesh.shape[0]:
                     shape_pairs_mesh_mesh[idx] = wp.vec2i(shape_a, shape_b)
+                    _check_unit_scale_sdf(shape_a, scale_a, shape_unit_scale_sdf, unit_scale_sdf_rescaled)
+                    _check_unit_scale_sdf(shape_b, scale_b, shape_unit_scale_sdf, unit_scale_sdf_rescaled)
                 continue
 
             # Mesh-plane collision (infinite plane only)
@@ -660,7 +720,7 @@ def create_narrow_phase_primitive_kernel(
             if (
                 type_a >= GeoType.ELLIPSOID
                 or type_b == GeoType.CONE
-                or (type_a == GeoType.CAPSULE and type_b > GeoType.CAPSULE)
+                or (type_a == GeoType.CAPSULE and type_b > GeoType.CAPSULE and type_b != GeoType.CYLINDER)
             ):
                 if wp.static(sparse_gjk_pairs):
                     wp.atomic_add(gjk_candidate_pairs_count, 0, 1)
@@ -869,6 +929,26 @@ def create_narrow_phase_primitive_kernel(
                 contact_dist_0, contact_pos_0, contact_normal = collide_sphere_cylinder(
                     pos_a, sphere_radius, pos_b, cylinder_axis, cylinder_radius, cylinder_half_height
                 )
+
+            # -----------------------------------------------------------------
+            # Capsule-Cylinder collision: only exterior barrel witnesses.
+            # Unsupported cases leave contact_dist_0 unset and reach MPR/GJK.
+            # -----------------------------------------------------------------
+            elif is_capsule_a and is_cylinder_b and scale_b[2] == 0.0:
+                barrel_handled, barrel_dist, barrel_pos, barrel_normal = _collide_capsule_cylinder_barrel(
+                    pos_a,
+                    wp.quat_rotate(quat_a, wp.vec3(0.0, 0.0, 1.0)),
+                    scale_a[0],
+                    scale_a[1],
+                    pos_b,
+                    wp.quat_rotate(quat_b, wp.vec3(0.0, 0.0, 1.0)),
+                    scale_b[0],
+                    scale_b[1],
+                )
+                if barrel_handled:
+                    contact_dist_0 = barrel_dist
+                    contact_pos_0 = barrel_pos
+                    contact_normal = barrel_normal
 
             # -----------------------------------------------------------------
             # Sphere-Box collision (type_a=SPHERE=2, type_b=BOX=6)
@@ -1129,10 +1209,17 @@ def create_narrow_phase_kernel_gjk_mpr(
                 shape_data_b.center = 0.5 * (shape_collision_aabb_lower[shape_b] + shape_collision_aabb_upper[shape_b])
             data_provider = provider_type()
             data_provider.shape_support_data = shape_support_data
+            data_provider.support_neighbors = support_neighbors
+            if type_a != GeoType.PLANE and type_b != GeoType.PLANE:
+                shape_data_a.bounds_half = _penetration_bounds_half(
+                    shape_a, type_a, shape_data, shape_collision_aabb_lower, shape_collision_aabb_upper
+                )
+                shape_data_b.bounds_half = _penetration_bounds_half(
+                    shape_b, type_b, shape_data, shape_collision_aabb_lower, shape_collision_aabb_upper
+                )
             if wp.static(accelerated_support):
                 data_provider.support_lut = support_lut
                 data_provider.support_vertex_offsets = support_vertex_offsets
-                data_provider.support_neighbors = support_neighbors
 
             # Check for infinite planes
             is_infinite_plane_a = (type_a == GeoType.PLANE) and (scale_a[0] == 0.0 and scale_a[1] == 0.0)
@@ -1261,7 +1348,9 @@ def create_narrow_phase_kernels_gjk_mpr_split(
         post_process_contact = post_process_axial_on_discrete_contact
 
     support_funcs = create_support_map_function(support_func, use_precomputed_center=True)
-    solve_mpr = create_solve_mpr(support_func, _support_funcs=support_funcs)
+    solve_mpr = create_solve_mpr(
+        support_func, _support_funcs=support_funcs, depth_certificate=create_solve_box_penetration
+    )
     solve_gjk = create_solve_closest_distance(support_func, _support_funcs=support_funcs)
     prepare_pair = create_prepare_convex_pair(external_aabb, speculative)
     write_result = create_write_convex_query_result(
@@ -1333,10 +1422,10 @@ def create_narrow_phase_kernels_gjk_mpr_split(
             if valid:
                 provider = provider_type()
                 provider.shape_support_data = shape_support_data
+                provider.support_neighbors = support_neighbors
                 if wp.static(accelerated_support):
                     provider.support_lut = support_lut
                     provider.support_vertex_offsets = support_vertex_offsets
-                    provider.support_neighbors = support_neighbors
                 collision, point_a, point_b, normal, penetration, seed, witnesses_valid = wp.static(
                     solve_mpr.portal_core
                 )(
@@ -1348,8 +1437,33 @@ def create_narrow_phase_kernels_gjk_mpr_split(
                     provider,
                     wp.vec3(0.0),
                 )
-                needs_certificate = wp.static(solve_mpr.needs_certificate)(query.geom_a, query.geom_b)
-                if collision and (not witnesses_valid or needs_certificate):
+                refine_portal = False
+                if collision:
+                    if query.type_a != GeoType.PLANE and query.type_b != GeoType.PLANE:
+                        query.geom_a.bounds_half = _penetration_bounds_half(
+                            query.shape_a,
+                            query.type_a,
+                            shape_data,
+                            shape_collision_aabb_lower,
+                            shape_collision_aabb_upper,
+                        )
+                        query.geom_b.bounds_half = _penetration_bounds_half(
+                            query.shape_b,
+                            query.type_b,
+                            shape_data,
+                            shape_collision_aabb_lower,
+                            shape_collision_aabb_upper,
+                        )
+                    refine_portal = wp.static(solve_mpr.needs_refine)(
+                        query.geom_a,
+                        query.geom_b,
+                        query.relative_orientation_b,
+                        query.relative_position_b,
+                        query.enlarge,
+                        penetration,
+                        witnesses_valid,
+                    )
+                if collision and (not witnesses_valid or refine_portal):
                     # Queue confirmed overlaps from the back of the same array,
                     # keeping both passes compact without another work buffer.
                     result = ConvexQueryResult()
@@ -1417,9 +1531,18 @@ def create_narrow_phase_kernels_gjk_mpr_split(
             # refinements the back.
             num_distance = wp.min(gjk_work_items.shape[0], gjk_work_count[0])
             num_work_items = num_distance
+            # A refinement's box-hull certificate loops over the whole hull.
+            # Few pairs need it, so each takes a thread block that splits that
+            # loop; the first thread runs the remaining serial refinement.
+            lane = int(0)
+            first = tid
+            stride = total_num_threads
             if wp.static(refine_overlap):
                 num_work_items = wp.min(gjk_work_items.shape[0] - num_distance, gjk_work_count[1])
-            for work_index in range(tid, num_work_items, total_num_threads):
+                lane = tid % wp.block_dim()
+                first = tid / wp.block_dim()
+                stride = total_num_threads / wp.block_dim()
+            for work_index in range(first, num_work_items, stride):
                 pair_index = gjk_work_items[work_index]
                 witnesses_valid = False
                 if wp.static(refine_overlap):
@@ -1445,10 +1568,25 @@ def create_narrow_phase_kernels_gjk_mpr_split(
                 if valid:
                     provider = provider_type()
                     provider.shape_support_data = shape_support_data
+                    provider.support_neighbors = support_neighbors
+                    if query.type_a != GeoType.PLANE and query.type_b != GeoType.PLANE:
+                        query.geom_a.bounds_half = _penetration_bounds_half(
+                            query.shape_a,
+                            query.type_a,
+                            shape_data,
+                            shape_collision_aabb_lower,
+                            shape_collision_aabb_upper,
+                        )
+                        query.geom_b.bounds_half = _penetration_bounds_half(
+                            query.shape_b,
+                            query.type_b,
+                            shape_data,
+                            shape_collision_aabb_lower,
+                            shape_collision_aabb_upper,
+                        )
                     if wp.static(accelerated_support):
                         provider.support_lut = support_lut
                         provider.support_vertex_offsets = support_vertex_offsets
-                        provider.support_neighbors = support_neighbors
                     resolved = False
                     point_a = wp.vec3(0.0)
                     point_b = wp.vec3(0.0)
@@ -1456,26 +1594,63 @@ def create_narrow_phase_kernels_gjk_mpr_split(
                     signed_distance = float(0.0)
                     if wp.static(refine_overlap):
                         pending = query_results[pair_index]
-                        seed = pending.point_a
-                        if witnesses_valid:
-                            seed = wp.vec3(0.0)
-                        point_a, point_b, normal, penetration, resolved = wp.static(solve_mpr.refine_core)(
-                            query.geom_a,
-                            query.geom_b,
-                            query.relative_orientation_b,
-                            query.relative_position_b,
-                            query.enlarge,
-                            provider,
-                            seed,
-                            pending.point_a,
-                            pending.point_b,
-                            pending.normal,
-                            pending.signed_distance,
-                            witnesses_valid,
-                        )
-                        point_a -= normal * (0.5 * query.enlarge)
-                        point_b += normal * (0.5 * query.enlarge)
-                        signed_distance = -penetration + query.enlarge
+                        # Try a distance query for a near-touching invalid portal
+                        # before the heavier overlap recovery.
+                        separated_pair = not witnesses_valid and pending.signed_distance <= query.enlarge
+                        certificate_ready = False
+                        certificate_normal = wp.vec3(0.0)
+                        certificate_depth = float(0.0)
+                        if not separated_pair:
+                            certificate_ready, certificate_normal, certificate_depth = wp.static(
+                                solve_mpr.cooperative_certificate
+                            )(
+                                query.geom_a,
+                                query.geom_b,
+                                query.relative_orientation_b,
+                                query.relative_position_b,
+                                provider,
+                                pending.normal,
+                                lane,
+                                wp.block_dim(),
+                            )
+                        if lane == 0:
+                            penetration = float(0.0)
+                            if separated_pair:
+                                resolved, point_a, point_b, normal, penetration = wp.static(solve_mpr.separated_core)(
+                                    query.geom_a,
+                                    query.geom_b,
+                                    query.relative_orientation_b,
+                                    query.relative_position_b,
+                                    query.enlarge,
+                                    provider,
+                                )
+                            if not resolved:
+                                seed = pending.point_a
+                                if witnesses_valid:
+                                    seed = wp.vec3(0.0)
+                                point_a, point_b, normal, penetration, resolved = wp.static(solve_mpr.refine_core)(
+                                    query.geom_a,
+                                    query.geom_b,
+                                    query.relative_orientation_b,
+                                    query.relative_position_b,
+                                    query.enlarge,
+                                    provider,
+                                    seed,
+                                    pending.point_a,
+                                    pending.point_b,
+                                    pending.normal,
+                                    pending.signed_distance,
+                                    witnesses_valid,
+                                    certificate_ready,
+                                    certificate_normal,
+                                    certificate_depth,
+                                )
+                            point_a -= normal * (0.5 * query.enlarge)
+                            point_b += normal * (0.5 * query.enlarge)
+                            signed_distance = -penetration + query.enlarge
+                        else:
+                            resolved = True
+                            signed_distance = 1.0e30
                     # Unresolved refinements follow the ordinary distance query.
                     if not resolved:
                         resolved = True
@@ -1562,10 +1737,10 @@ def create_narrow_phase_kernels_gjk_mpr_split(
             )
             provider = provider_type()
             provider.shape_support_data = shape_support_data
+            provider.support_neighbors = support_neighbors
             if wp.static(accelerated_support):
                 provider.support_lut = support_lut
                 provider.support_vertex_offsets = support_vertex_offsets
-                provider.support_neighbors = support_neighbors
             wp.static(write_result)(
                 query.geom_a,
                 query.geom_b,
@@ -1631,123 +1806,167 @@ def narrow_phase_find_heightfield_triangle_overlaps_kernel(
 
 
 @wp.kernel(enable_backward=False)
-def narrow_phase_find_mesh_triangle_overlaps_kernel(
+def compute_shape_interior_points_kernel(
     shape_types: wp.array[int],
-    shape_transform: wp.array[wp.transform],
+    shape_data: wp.array[wp.vec4],
     shape_source: wp.array[wp.uint64],
-    shape_gap: wp.array[float],  # Per-shape contact gaps
-    shape_data: wp.array[wp.vec4],  # Shape data (scale xyz, margin w)
-    shape_collision_radius: wp.array[float],
-    shape_collision_aabb_lower: wp.array[wp.vec3],  # Local-space AABB lower bounds
-    shape_collision_aabb_upper: wp.array[wp.vec3],  # Local-space AABB upper bounds
-    shape_heightfield_index: wp.array[wp.int32],
-    heightfield_data: wp.array[HeightfieldData],
-    heightfield_elevations: wp.array[wp.float32],
-    shape_pairs_mesh: wp.array[wp.vec2i],
-    shape_pairs_mesh_count: wp.array[int],
-    total_num_threads: int,
     # outputs
-    triangle_pairs: wp.array[wp.vec3i],  # (shape_a, shape_b, triangle_idx)
-    triangle_pairs_count: wp.array[int],
+    shape_interior_point: wp.array[wp.vec3],
 ):
-    """Find triangles that overlap with a convex shape for mesh and heightfield pairs.
+    """Store an interior point of each shape in its scaled local frame.
 
-    For mesh pairs, uses a tiled BVH query. For heightfield pairs, projects the
-    convex shape's bounding sphere onto the heightfield grid and emits triangle
-    pairs for each overlapping cell.
-
-    Outputs triples of ``(mesh_or_hfield_shape, other_shape, triangle_idx)``.
+    Primitive origins are interior. A convex hull's origin and AABB center can
+    both lie outside it, so hulls use their volume centroid instead.
     """
-    tid, j = wp.tid()
+    shape = wp.tid()
+    point = wp.vec3(0.0, 0.0, 0.0)
+    if shape_types[shape] == GeoType.CONVEX_MESH:
+        data = shape_data[shape]
+        point = convex_mesh_interior_point(shape_source[shape], wp.vec3(data[0], data[1], data[2]))
+    shape_interior_point[shape] = point
 
-    num_mesh_pairs = shape_pairs_mesh_count[0]
 
-    # Strided loop over mesh pairs
-    for i in range(tid, num_mesh_pairs, total_num_threads):
-        pair = shape_pairs_mesh[i]
-        shape_a = pair[0]
-        shape_b = pair[1]
+def _create_find_mesh_triangle_overlaps_kernel(narrow_ratio: int):
+    """Create the mesh/heightfield-vs-convex midphase kernel.
 
-        type_a = shape_types[shape_a]
-        type_b = shape_types[shape_b]
+    The wide kernel (``narrow_ratio == 0``) runs a tile block per query while
+    there are at most as many queries as blocks. Beyond that, BVH traversal
+    latency bounds the midphase, and a narrow kernel launched with
+    ``narrow_ratio`` times as many one-warp blocks runs instead.
+    """
 
-        # -----------------------------------------------------------------
-        # Heightfield-vs-convex midphase (grid cell lookup)
-        # Pairs are normalized so the heightfield is always shape_a.
-        # -----------------------------------------------------------------
-        if type_a == GeoType.HFIELD:
-            # Only run on j==0; the j dimension is for tiled BVH queries (mesh only).
-            if j != 0:
+    @wp.kernel(enable_backward=False, module=f"narrow_phase_mesh_overlaps_{narrow_ratio}")
+    def narrow_phase_find_mesh_triangle_overlaps_kernel(
+        shape_types: wp.array[int],
+        shape_transform: wp.array[wp.transform],
+        shape_source: wp.array[wp.uint64],
+        shape_gap: wp.array[float],  # Per-shape contact gaps
+        shape_data: wp.array[wp.vec4],  # Shape data (scale xyz, margin w)
+        shape_collision_radius: wp.array[float],
+        shape_collision_aabb_lower: wp.array[wp.vec3],  # Local-space AABB lower bounds
+        shape_collision_aabb_upper: wp.array[wp.vec3],  # Local-space AABB upper bounds
+        shape_interior_point: wp.array[wp.vec3],  # Local interior points for back-face culling
+        shape_heightfield_index: wp.array[wp.int32],
+        heightfield_data: wp.array[HeightfieldData],
+        heightfield_elevations: wp.array[wp.float32],
+        shape_pairs_mesh: wp.array[wp.vec2i],
+        shape_pairs_mesh_count: wp.array[int],
+        total_num_threads: int,
+        # outputs
+        triangle_pairs: wp.array[wp.vec3i],  # (shape_a, shape_b, triangle_idx)
+        triangle_pairs_count: wp.array[int],
+    ):
+        """Find triangles that overlap with a convex shape for mesh and heightfield pairs.
+
+        For mesh pairs, uses a tiled BVH query. For heightfield pairs, projects the
+        convex shape's bounding sphere onto the heightfield grid and emits triangle
+        pairs for each overlapping cell.
+
+        Outputs triples of ``(mesh_or_hfield_shape, other_shape, triangle_idx)``.
+        """
+        tid, j = wp.tid()
+
+        num_mesh_pairs = shape_pairs_mesh_count[0]
+        if wp.static(narrow_ratio == 0):
+            # The wide GPU launch gives each query a block; past one query per
+            # block, the narrow launch takes over all of them.
+            if wp.block_dim() > _MIDPHASE_NARROW_TILE_SIZE and num_mesh_pairs > total_num_threads:
+                return
+        elif num_mesh_pairs <= total_num_threads // narrow_ratio:
+            return
+
+        # Strided loop over mesh pairs
+        for i in range(tid, num_mesh_pairs, total_num_threads):
+            pair = shape_pairs_mesh[i]
+            shape_a = pair[0]
+            shape_b = pair[1]
+
+            type_a = shape_types[shape_a]
+            type_b = shape_types[shape_b]
+
+            # -----------------------------------------------------------------
+            # Heightfield-vs-convex midphase (grid cell lookup)
+            # Pairs are normalized so the heightfield is always shape_a.
+            # -----------------------------------------------------------------
+            if type_a == GeoType.HFIELD:
+                # Only run on j==0; the j dimension is for tiled BVH queries (mesh only).
+                if j != 0:
+                    continue
+                hfd = heightfield_data[shape_heightfield_index[shape_a]]
+                heightfield_vs_convex_midphase(
+                    shape_a,
+                    shape_b,
+                    hfd,
+                    heightfield_elevations,
+                    shape_transform,
+                    shape_collision_aabb_lower,
+                    shape_collision_aabb_upper,
+                    shape_data,
+                    shape_gap,
+                    triangle_pairs,
+                    triangle_pairs_count,
+                    # A plane's cached local AABB does not bound its surface.
+                    type_b != GeoType.PLANE,
+                )
                 continue
-            hfd = heightfield_data[shape_heightfield_index[shape_a]]
-            heightfield_vs_convex_midphase(
-                shape_a,
-                shape_b,
-                hfd,
-                heightfield_elevations,
-                shape_transform,
-                shape_collision_aabb_lower,
-                shape_collision_aabb_upper,
+
+            # -----------------------------------------------------------------
+            # Mesh-vs-convex midphase (BVH query)
+            # -----------------------------------------------------------------
+            mesh_shape = -1
+            non_mesh_shape = -1
+
+            if type_a == GeoType.MESH and type_b != GeoType.MESH:
+                mesh_shape = shape_a
+                non_mesh_shape = shape_b
+            elif type_b == GeoType.MESH and type_a != GeoType.MESH:
+                mesh_shape = shape_b
+                non_mesh_shape = shape_a
+            else:
+                # Mesh-mesh collision not supported in this path
+                continue
+
+            # Get mesh BVH ID and mesh transform
+            mesh_id = shape_source[mesh_shape]
+            if mesh_id == wp.uint64(0):
+                continue
+
+            # Get mesh world transform
+            X_mesh_ws = shape_transform[mesh_shape]
+
+            # Get non-mesh shape world transform
+            X_ws = shape_transform[non_mesh_shape]
+
+            # Use the same margin+gap shell for triangle candidates that the
+            # narrow phase uses when accepting contacts.
+            gap_non_mesh = shape_gap[non_mesh_shape]
+            gap_mesh = shape_gap[mesh_shape]
+            gap_sum = gap_non_mesh + gap_mesh
+            margin_non_mesh = shape_data[non_mesh_shape][3]
+            margin_mesh = shape_data[mesh_shape][3]
+            contact_threshold = gap_sum + margin_non_mesh + margin_mesh
+
+            # Call mesh_vs_convex_midphase with the shape_data and pair contact threshold.
+            mesh_vs_convex_midphase(
+                j,
+                mesh_shape,
+                non_mesh_shape,
+                X_mesh_ws,
+                X_ws,
+                mesh_id,
+                shape_types,
                 shape_data,
-                shape_gap,
+                shape_source,
+                contact_threshold,
+                shape_interior_point[non_mesh_shape],
                 triangle_pairs,
                 triangle_pairs_count,
-                # A plane's cached local AABB does not bound its surface.
-                type_b != GeoType.PLANE,
             )
-            continue
 
-        # -----------------------------------------------------------------
-        # Mesh-vs-convex midphase (BVH query)
-        # -----------------------------------------------------------------
-        mesh_shape = -1
-        non_mesh_shape = -1
+    return narrow_phase_find_mesh_triangle_overlaps_kernel
 
-        if type_a == GeoType.MESH and type_b != GeoType.MESH:
-            mesh_shape = shape_a
-            non_mesh_shape = shape_b
-        elif type_b == GeoType.MESH and type_a != GeoType.MESH:
-            mesh_shape = shape_b
-            non_mesh_shape = shape_a
-        else:
-            # Mesh-mesh collision not supported in this path
-            continue
 
-        # Get mesh BVH ID and mesh transform
-        mesh_id = shape_source[mesh_shape]
-        if mesh_id == wp.uint64(0):
-            continue
-
-        # Get mesh world transform
-        X_mesh_ws = shape_transform[mesh_shape]
-
-        # Get non-mesh shape world transform
-        X_ws = shape_transform[non_mesh_shape]
-
-        # Use the same margin+gap shell for triangle candidates that the
-        # narrow phase uses when accepting contacts.
-        gap_non_mesh = shape_gap[non_mesh_shape]
-        gap_mesh = shape_gap[mesh_shape]
-        gap_sum = gap_non_mesh + gap_mesh
-        margin_non_mesh = shape_data[non_mesh_shape][3]
-        margin_mesh = shape_data[mesh_shape][3]
-        contact_threshold = gap_sum + margin_non_mesh + margin_mesh
-
-        # Call mesh_vs_convex_midphase with the shape_data and pair contact threshold.
-        mesh_vs_convex_midphase(
-            j,
-            mesh_shape,
-            non_mesh_shape,
-            X_mesh_ws,
-            X_ws,
-            mesh_id,
-            shape_types,
-            shape_data,
-            shape_source,
-            contact_threshold,
-            triangle_pairs,
-            triangle_pairs_count,
-        )
+narrow_phase_find_mesh_triangle_overlaps_kernel = _create_find_mesh_triangle_overlaps_kernel(0)
 
 
 def create_narrow_phase_process_mesh_triangle_contacts_kernel(
@@ -1774,8 +1993,7 @@ def create_narrow_phase_process_mesh_triangle_contacts_kernel(
         support_lut: wp.array[int],
         support_vertex_offsets: wp.array[int],
         support_neighbors: wp.array[int],
-        shape_collision_aabb_lower: wp.array[wp.vec3],
-        shape_collision_aabb_upper: wp.array[wp.vec3],
+        shape_interior_point: wp.array[wp.vec3],
         shape_gap: wp.array[float],  # Per-shape contact gaps
         shape_heightfield_index: wp.array[wp.int32],
         heightfield_data: wp.array[HeightfieldData],
@@ -1827,8 +2045,9 @@ def create_narrow_phase_process_mesh_triangle_contacts_kernel(
                 shape_source,
             )
             if shape_data_b.shape_type == GeoType.CONVEX_MESH:
-                # Avoid rebuilding the convex AABB for every candidate triangle.
-                shape_data_b.center = 0.5 * (shape_collision_aabb_lower[shape_b] + shape_collision_aabb_upper[shape_b])
+                # MPR/GJK need an interior seed. A hull's AABB center can lie
+                # outside it and flip the contact against thin triangles.
+                shape_data_b.center = shape_interior_point[shape_b]
 
             # Triangle position is vertex A in world space.
             # For heightfield prisms, edges are in heightfield-local space
@@ -1850,10 +2069,10 @@ def create_narrow_phase_process_mesh_triangle_contacts_kernel(
 
             data_provider = provider_type()
             data_provider.shape_support_data = shape_support_data
+            data_provider.support_neighbors = support_neighbors
             if wp.static(convex_support_acceleration):
                 data_provider.support_lut = support_lut
                 data_provider.support_vertex_offsets = support_vertex_offsets
-                data_provider.support_neighbors = support_neighbors
             wp.static(compute_contacts)(
                 shape_data_a,
                 shape_data_b,
@@ -2424,7 +2643,8 @@ class NarrowPhase:
             mesh_sdf_texture_only: Whether every participating mesh SDF has a texture representation,
                 allowing BVH fallback branches to be removed from mesh/SDF kernels.
             mesh_sdf_identity_scale_only: Whether every participating texture SDF is queried with
-                identity scale, allowing scale conversion branches to be removed.
+                identity scale, allowing scale conversion branches to be removed. Shapes whose SDF
+                has no baked scale must then keep unit ``shape_scale``.
             sdf_texture_paired_samples: Whether texture SDFs store adjacent x samples together.
                 This is model-wide so mesh-SDF kernels require only two bounded static variants.
             deterministic: Make contact generation and ordering independent of
@@ -2765,8 +2985,16 @@ class NarrowPhase:
             )
             # Overlap refinement runs beside separated distance queries; the
             # events fork it from and join it back to the caller's stream.
-            self.split_refine_stream = wp.Stream(device) if self.split_gjk_mpr else None
-            self.split_refine_events = (wp.Event(device), wp.Event(device)) if self.split_gjk_mpr else None
+            self._split_refine_stream = wp.Stream(device) if self.split_gjk_mpr else None
+            self._split_refine_events = (wp.Event(device), wp.Event(device)) if self.split_gjk_mpr else None
+            # Generic convex pairs run beside mesh and SDF stages when the scene has them.
+            overlap_convex = (
+                wp.get_device(device).is_cuda
+                and self.has_generic_convex_pairs
+                and (has_meshes or has_heightfields or hydroelastic_sdf is not None)
+            )
+            self._convex_stream = wp.Stream(device) if overlap_convex else None
+            self._convex_events = (wp.Event(device), wp.Event(device)) if overlap_convex else None
             self.shape_pairs_mesh = (
                 wp.zeros(max_candidate_pairs, dtype=wp.vec2i, device=device) if has_mesh_like else None
             )
@@ -2786,6 +3014,9 @@ class NarrowPhase:
             self.empty_tangent = None
             self._empty_sort_key = wp.zeros(0, dtype=wp.int64, device=device)
             self._empty_vec3 = wp.zeros(0, dtype=wp.vec3, device=device)
+            # CollisionPipeline enables this diagnostic only for unit-scale SDF queries.
+            self._shape_unit_scale_sdf = wp.zeros(0, dtype=wp.int32, device=device)
+            self._unit_scale_sdf_rescaled = wp.zeros(0, dtype=wp.int32, device=device)
             det_capacity = contact_max if contact_max is not None else max_candidate_pairs
             if deterministic:
                 self._sort_key_array = wp.zeros(det_capacity, dtype=wp.int64, device=device)
@@ -2808,8 +3039,15 @@ class NarrowPhase:
             # Indexed by shape id; all-zero means "no watertight bit set" so the
             # sign method falls back to automatic selection (see resolve_mesh_sign_method).
             self._empty_mesh_properties = wp.zeros(max(num_shapes, 1), dtype=wp.int32, device=device)
+            # A -1 start keeps pseudo-normal signs when no boundary flags are given.
+            self._empty_mesh_boundary_flags = wp.zeros(1, dtype=wp.uint8, device=device)
+            self._empty_shape_mesh_boundary_start = wp.full(max(num_shapes, 1), -1, dtype=wp.int32, device=device)
 
             self._empty_shape_support_data = wp.full(max(num_shapes, 1), (-1, -1, -1, 0), dtype=wp.vec4i, device=device)
+            # Per-shape interior points for mesh/heightfield triangle culling and MPR seeds.
+            self._shape_interior_point = (
+                wp.zeros(max(num_shapes, 1), dtype=wp.vec3, device=device) if has_meshes or has_heightfields else None
+            )
             self._empty_support_lut = wp.zeros(1, dtype=wp.int32, device=device)
             self._empty_support_vertex_offsets = wp.zeros(1, dtype=wp.int32, device=device)
             self._empty_support_neighbors = wp.zeros(1, dtype=wp.int32, device=device)
@@ -2839,6 +3077,12 @@ class NarrowPhase:
         num_blocks = max(min_blocks, min(candidate_blocks, max_blocks_limit))
         self.total_num_threads = self.block_dim * num_blocks
         self.num_tile_blocks = num_blocks
+        self._midphase_narrow_ratio = max(self.tile_size_mesh_convex // _MIDPHASE_NARROW_TILE_SIZE, 1)
+        self._midphase_narrow_kernel = (
+            _create_find_mesh_triangle_overlaps_kernel(self._midphase_narrow_ratio)
+            if self.tile_size_mesh_convex > _MIDPHASE_NARROW_TILE_SIZE and (has_meshes or has_heightfields)
+            else None
+        )
         # Split-convex blocks distribute independent serial pair queries across
         # lanes. Use one warp while preserving the block distribution; lanes
         # grid-stride over larger block queues. That suits the accelerated
@@ -2889,6 +3133,141 @@ class NarrowPhase:
             self.mesh_plane_block_offsets = None
             self.mesh_plane_block_counts = None
 
+    def _launch_generic_convex(
+        self,
+        device: Devicelike,
+        candidate_pair_count: wp.array[int],
+        shape_types: wp.array[int],
+        shape_data: wp.array[wp.vec4],
+        shape_transform: wp.array[wp.transform],
+        shape_source: wp.array[wp.uint64],
+        shape_support_data: wp.array[wp.vec4i],
+        support_lut: wp.array[int],
+        support_vertex_offsets: wp.array[int],
+        support_neighbors: wp.array[int],
+        shape_gap: wp.array[float],
+        shape_collision_radius: wp.array[float],
+        shape_collision_aabb_lower: wp.array[wp.vec3],
+        shape_collision_aabb_upper: wp.array[wp.vec3],
+        writer_data: Any,
+    ):
+        """Launch the GJK/MPR stage for the convex pairs routed by the primitive kernel."""
+        if self.has_generic_convex_pairs:
+            convex_pairs = self.gjk_candidate_pairs
+            convex_pair_count = candidate_pair_count if self.sparse_gjk_pairs else self.gjk_candidate_pairs_count
+            if self.split_gjk_mpr:
+                common_inputs = [
+                    shape_types,
+                    shape_data,
+                    shape_transform,
+                    shape_source,
+                    shape_support_data,
+                    support_lut,
+                    support_vertex_offsets,
+                    support_neighbors,
+                    shape_gap,
+                    shape_collision_radius,
+                    self.shape_aabb_lower,
+                    self.shape_aabb_upper,
+                    shape_collision_aabb_lower,
+                    shape_collision_aabb_upper,
+                ]
+                wp.launch(
+                    kernel=self.narrow_phase_mpr_kernel,
+                    dim=self.split_convex_total_num_threads,
+                    inputs=[
+                        convex_pairs,
+                        convex_pair_count,
+                        *common_inputs,
+                        self.split_convex_total_num_threads,
+                        self.split_query_results,
+                        self.split_gjk_work_items,
+                        self.split_gjk_work_count,
+                        self.split_manifold_work_items,
+                        self.split_manifold_work_count,
+                    ],
+                    device=device,
+                    block_dim=self.split_convex_block_dim,
+                    record_tape=False,
+                )
+                distance_inputs = [
+                    convex_pairs,
+                    *common_inputs,
+                    self.split_convex_total_num_threads,
+                    self.split_query_results,
+                    self.split_gjk_work_items,
+                    self.split_gjk_work_count,
+                    self.split_manifold_work_items,
+                    self.split_manifold_work_count,
+                ]
+                # Refinements and separated queries use disjoint queue segments
+                # and results, so their latency tails overlap on two streams.
+                main_stream = wp.get_stream(device)
+                fork_event, join_event = self._split_refine_events
+                self._split_refine_stream.wait_event(main_stream.record_event(fork_event))
+                wp.launch(
+                    kernel=self.narrow_phase_refine_kernel,
+                    dim=self.split_convex_total_num_threads,
+                    inputs=distance_inputs,
+                    device=device,
+                    stream=self._split_refine_stream,
+                    block_dim=_REFINE_BLOCK_DIM,
+                    record_tape=False,
+                )
+                wp.launch(
+                    kernel=self.narrow_phase_gjk_kernel,
+                    dim=self.split_convex_total_num_threads,
+                    inputs=distance_inputs,
+                    device=device,
+                    block_dim=self.split_convex_block_dim,
+                    record_tape=False,
+                )
+                main_stream.wait_event(self._split_refine_stream.record_event(join_event))
+                wp.launch(
+                    kernel=self.narrow_phase_manifold_kernel,
+                    dim=self.split_convex_total_num_threads,
+                    inputs=[
+                        convex_pairs,
+                        *common_inputs,
+                        writer_data,
+                        self.split_convex_total_num_threads,
+                        self.split_query_results,
+                        self.split_manifold_work_items,
+                        self.split_manifold_work_count,
+                    ],
+                    device=device,
+                    block_dim=self.split_convex_block_dim,
+                    record_tape=False,
+                )
+            else:
+                wp.launch(
+                    kernel=self.narrow_phase_kernel,
+                    dim=self.total_num_threads,
+                    inputs=[
+                        convex_pairs,
+                        convex_pair_count,
+                        shape_types,
+                        shape_data,
+                        shape_transform,
+                        shape_source,
+                        shape_support_data,
+                        support_lut,
+                        support_vertex_offsets,
+                        support_neighbors,
+                        shape_gap,
+                        shape_collision_radius,
+                        self.shape_aabb_lower,
+                        self.shape_aabb_upper,
+                        shape_collision_aabb_lower,
+                        shape_collision_aabb_upper,
+                        writer_data,
+                        self.total_num_threads,
+                    ],
+                    device=device,
+                    block_dim=self.block_dim,
+                    record_tape=False,
+                )
+
     def launch_custom_write(
         self,
         *,
@@ -2903,6 +3282,8 @@ class NarrowPhase:
         support_vertex_offsets: wp.array[wp.int32] | None = None,
         support_neighbors: wp.array[wp.int32] | None = None,
         shape_mesh_properties: wp.array[wp.int32] | None = None,  # Per-shape mesh property bitfield
+        mesh_boundary_flags: wp.array[wp.uint8] | None = None,  # Packed per-face open-boundary bits
+        shape_mesh_boundary_start: wp.array[wp.int32] | None = None,  # Per-shape start into the bits
         shape_sdf_index: wp.array[wp.int32],  # Per-shape index into texture_sdf_data (-1 for none)
         shape_gap: wp.array[wp.float32],  # per-shape contact gap (detection threshold)
         shape_base_gap: wp.array[wp.float32] | None = None,
@@ -2911,6 +3292,7 @@ class NarrowPhase:
         shape_collision_aabb_lower: wp.array[wp.vec3],  # Local-space AABB lower bounds
         shape_collision_aabb_upper: wp.array[wp.vec3],  # Local-space AABB upper bounds
         shape_voxel_resolution: wp.array[wp.vec3i],  # Voxel grid resolution per shape
+        shape_interior_point: wp.array[wp.vec3] | None = None,  # Local-space interior points
         texture_sdf_data: wp.array[TextureSDFData] | None = None,  # Compact texture SDF data table
         shape_heightfield_index: wp.array[wp.int32] | None = None,
         heightfield_data: wp.array[HeightfieldData] | None = None,
@@ -2941,16 +3323,27 @@ class NarrowPhase:
             shape_transform: Array of world-space transforms for each shape
             shape_source: Array of source pointers (mesh IDs, etc.) for each shape
             shape_support_data: Optional per-shape ``wp.vec4i`` metadata containing
-                packed support-LUT, vertex-offset, and neighbor starts plus the LUT resolution.
-                The final entry packs resolution in its low 16 bits and strict hull
-                validity in bit 16. Zero resolution disables acceleration.
+                packed support-LUT, vertex-offset, and ``support_neighbors`` block starts
+                plus the LUT resolution. The block start is also set for verified hulls
+                without acceleration. The final entry packs resolution in its low 16 bits
+                and strict hull validity in bit 16. Zero resolution disables acceleration.
             support_lut: Optional packed octahedral-direction lookup tables whose entries
                 select seed vertices for convex support walks.
             support_vertex_offsets: Optional packed CSR offsets delimiting each convex
-                vertex's entries in ``support_neighbors``.
-            support_neighbors: Optional packed CSR vertex-adjacency indices used by convex
-                support walks.
+                vertex's entries in ``support_neighbors``. They index past the hull's
+                edge records.
+            support_neighbors: Optional packed per-hull blocks. A verified hull's block
+                starts with its edge count and one ``(a, b, c1, c2)`` vertex record per
+                edge, whose faces ``cross(b - a, c1 - a)`` and ``cross(c2 - a, b - a)``
+                point outward; exact box-hull depth certificates read these records.
+                CSR vertex-adjacency indices for support walks follow. Without the edge
+                records, box-hull depths fall back to uncertified support-plane bounds.
             shape_mesh_properties: Per-shape mesh property bitfield.
+            mesh_boundary_flags: Optional packed per-face bits marking open-boundary
+                edges and vertices of meshes queried with pseudo-normal signs.
+            shape_mesh_boundary_start: Optional per-shape offset into
+                ``mesh_boundary_flags``, or -1 for shapes without boundary bits.
+                Without both arrays, pseudo-normal signs extend past open boundaries.
             shape_sdf_index: Per-shape SDF table index (-1 for shapes without SDF)
             texture_sdf_data: Compact array of TextureSDFData structs
             shape_gap: Array of per-shape contact gaps (detection threshold) for each shape
@@ -2961,9 +3354,16 @@ class NarrowPhase:
             shape_collision_aabb_lower: Local-space AABB lower bounds for each shape (for voxel binning)
             shape_collision_aabb_upper: Local-space AABB upper bounds for each shape (for voxel binning)
             shape_voxel_resolution: Voxel grid resolution for each shape (for voxel binning)
+            shape_interior_point: Optional scaled local-space point inside each shape [m],
+                used to cull back-facing mesh triangles and seed triangle contacts. If
+                ``None``, convex-mesh volume centroids are computed on each launch.
             mesh_edge_indices: Packed array of mesh edge vertex pairs for all shapes.
-            mesh_edge_centers: Packed precomputed mesh edge centers [m].
-            mesh_edge_halves: Packed precomputed mesh edge half-vectors [m].
+            mesh_edge_centers: Packed precomputed mesh edge centers (xyz) and radii (w) in
+                unscaled mesh coordinates [m]; the shape scale in ``shape_data`` is applied when read.
+                Layout matches :attr:`~newton.Model.mesh_edge_centers`.
+            mesh_edge_halves: Packed precomputed mesh edge half-vectors (xyz) in unscaled mesh
+                coordinates [m] and endpoint-ownership codes (w). Layout matches
+                :attr:`~newton.Model.mesh_edge_halves`.
             shape_edge_range: Per-shape (start, count) into mesh_edge_indices.
             hydroelastic_shape_sdf_data_prepared: Whether finalized hydroelastic SDF descriptors were cached upstream.
             shape_linear_velocity: Shape-origin linear velocities [m/s]. Required in speculative mode.
@@ -2977,6 +3377,9 @@ class NarrowPhase:
             device = self.device if self.device is not None else candidate_pair.device
         if shape_mesh_properties is None:
             shape_mesh_properties = self._empty_mesh_properties
+        if mesh_boundary_flags is None or shape_mesh_boundary_start is None:
+            mesh_boundary_flags = self._empty_mesh_boundary_flags
+            shape_mesh_boundary_start = self._empty_shape_mesh_boundary_start
         if shape_support_data is None:
             shape_support_data = self._empty_shape_support_data
         if support_lut is None:
@@ -3033,6 +3436,7 @@ class NarrowPhase:
                 shape_flags,
                 shape_sdf_index,
                 shape_edge_range,
+                self._shape_unit_scale_sdf,
                 writer_data,
                 self.total_num_threads,
             ],
@@ -3049,6 +3453,7 @@ class NarrowPhase:
                 self.shape_pairs_mesh_mesh_count,
                 self.shape_pairs_sdf_sdf,
                 self.shape_pairs_sdf_sdf_count,
+                self._unit_scale_sdf_rescaled,
             ],
             device=device,
             block_dim=self.block_dim,
@@ -3058,121 +3463,35 @@ class NarrowPhase:
         # Stage 2: Launch GJK/MPR kernel for remaining convex pairs
         # These are pairs that couldn't be handled analytically (box, cylinder, cone, convex hull, etc.)
         # All routing has been done by the primitive kernel, so this kernel just does GJK/MPR.
-        if self.has_generic_convex_pairs:
-            convex_pairs = self.gjk_candidate_pairs
-            convex_pair_count = candidate_pair_count if self.sparse_gjk_pairs else self.gjk_candidate_pairs_count
-            if self.split_gjk_mpr:
-                common_inputs = [
-                    shape_types,
-                    shape_data,
-                    shape_transform,
-                    shape_source,
-                    shape_support_data,
-                    support_lut,
-                    support_vertex_offsets,
-                    support_neighbors,
-                    shape_gap,
-                    shape_collision_radius,
-                    self.shape_aabb_lower,
-                    self.shape_aabb_upper,
-                    shape_collision_aabb_lower,
-                    shape_collision_aabb_upper,
-                ]
-                wp.launch(
-                    kernel=self.narrow_phase_mpr_kernel,
-                    dim=self.split_convex_total_num_threads,
-                    inputs=[
-                        convex_pairs,
-                        convex_pair_count,
-                        *common_inputs,
-                        self.split_convex_total_num_threads,
-                        self.split_query_results,
-                        self.split_gjk_work_items,
-                        self.split_gjk_work_count,
-                        self.split_manifold_work_items,
-                        self.split_manifold_work_count,
-                    ],
-                    device=device,
-                    block_dim=self.split_convex_block_dim,
-                    record_tape=False,
-                )
-                distance_inputs = [
-                    convex_pairs,
-                    *common_inputs,
-                    self.split_convex_total_num_threads,
-                    self.split_query_results,
-                    self.split_gjk_work_items,
-                    self.split_gjk_work_count,
-                    self.split_manifold_work_items,
-                    self.split_manifold_work_count,
-                ]
-                # Refinements and separated queries use disjoint queue segments
-                # and results, so their latency tails overlap on two streams.
-                main_stream = wp.get_stream(device)
-                fork_event, join_event = self.split_refine_events
-                self.split_refine_stream.wait_event(main_stream.record_event(fork_event))
-                wp.launch(
-                    kernel=self.narrow_phase_refine_kernel,
-                    dim=self.split_convex_total_num_threads,
-                    inputs=distance_inputs,
-                    device=device,
-                    stream=self.split_refine_stream,
-                    block_dim=self.split_convex_block_dim,
-                    record_tape=False,
-                )
-                wp.launch(
-                    kernel=self.narrow_phase_gjk_kernel,
-                    dim=self.split_convex_total_num_threads,
-                    inputs=distance_inputs,
-                    device=device,
-                    block_dim=self.split_convex_block_dim,
-                    record_tape=False,
-                )
-                main_stream.wait_event(self.split_refine_stream.record_event(join_event))
-                wp.launch(
-                    kernel=self.narrow_phase_manifold_kernel,
-                    dim=self.split_convex_total_num_threads,
-                    inputs=[
-                        convex_pairs,
-                        *common_inputs,
-                        writer_data,
-                        self.split_convex_total_num_threads,
-                        self.split_query_results,
-                        self.split_manifold_work_items,
-                        self.split_manifold_work_count,
-                    ],
-                    device=device,
-                    block_dim=self.split_convex_block_dim,
-                    record_tape=False,
-                )
-            else:
-                wp.launch(
-                    kernel=self.narrow_phase_kernel,
-                    dim=self.total_num_threads,
-                    inputs=[
-                        convex_pairs,
-                        convex_pair_count,
-                        shape_types,
-                        shape_data,
-                        shape_transform,
-                        shape_source,
-                        shape_support_data,
-                        support_lut,
-                        support_vertex_offsets,
-                        support_neighbors,
-                        shape_gap,
-                        shape_collision_radius,
-                        self.shape_aabb_lower,
-                        self.shape_aabb_upper,
-                        shape_collision_aabb_lower,
-                        shape_collision_aabb_upper,
-                        writer_data,
-                        self.total_num_threads,
-                    ],
-                    device=device,
-                    block_dim=self.block_dim,
-                    record_tape=False,
-                )
+        # Convex pairs only append contacts, so they overlap the mesh and SDF
+        # stages on a second stream; a few slow pairs no longer serialize them.
+        main_stream = None
+        if self._convex_stream is not None and self.has_generic_convex_pairs:
+            main_stream = wp.get_stream(device)
+            self._convex_stream.wait_event(main_stream.record_event(self._convex_events[0]))
+        # The explicit event already forks the stream, so skip ScopedStream's own sync.
+        with (
+            wp.ScopedStream(self._convex_stream, sync_enter=False)
+            if main_stream is not None
+            else contextlib.nullcontext()
+        ):
+            self._launch_generic_convex(
+                device,
+                candidate_pair_count,
+                shape_types,
+                shape_data,
+                shape_transform,
+                shape_source,
+                shape_support_data,
+                support_lut,
+                support_vertex_offsets,
+                support_neighbors,
+                shape_gap,
+                shape_collision_radius,
+                shape_collision_aabb_lower,
+                shape_collision_aabb_upper,
+                writer_data,
+            )
 
         # Skip mesh/heightfield kernels when no meshes or heightfields are present
         if self.has_meshes or self.has_heightfields:
@@ -3199,6 +3518,19 @@ class NarrowPhase:
                     record_tape=False,
                 )
 
+            if shape_interior_point is None:
+                if self._shape_interior_point.shape[0] < shape_types.shape[0]:
+                    self._shape_interior_point = wp.zeros(shape_types.shape[0], dtype=wp.vec3, device=device)
+                wp.launch(
+                    kernel=compute_shape_interior_points_kernel,
+                    dim=shape_types.shape[0],
+                    inputs=[shape_types, shape_data, shape_source],
+                    outputs=[self._shape_interior_point],
+                    device=device,
+                    record_tape=False,
+                )
+                shape_interior_point = self._shape_interior_point
+
             # Launch midphase: finds overlapping triangles for both mesh and heightfield pairs.
             # Heightfield-only scenes use scalar cell queries instead of tiled BVH traversal.
             if self._heightfield_packed_pairs:
@@ -3220,8 +3552,7 @@ class NarrowPhase:
                 ]
             else:
                 midphase_kernel = narrow_phase_find_mesh_triangle_overlaps_kernel
-                second_dim = self.tile_size_mesh_convex if ENABLE_TILE_BVH_QUERY else 1
-                midphase_dim = [self.num_tile_blocks, second_dim]
+                midphase_dim = [self.num_tile_blocks, self.tile_size_mesh_convex]
                 midphase_inputs = [
                     shape_types,
                     shape_transform,
@@ -3231,6 +3562,7 @@ class NarrowPhase:
                     shape_collision_radius,
                     shape_collision_aabb_lower,
                     shape_collision_aabb_upper,
+                    shape_interior_point,
                     shape_heightfield_index,
                     heightfield_data,
                     heightfield_elevations,
@@ -3250,6 +3582,22 @@ class NarrowPhase:
                 block_dim=self.tile_size_mesh_convex,
                 record_tape=False,
             )
+            if not self._heightfield_packed_pairs and self._midphase_narrow_kernel is not None:
+                # Many queries: one warp each, so more of them hide BVH latency.
+                narrow_blocks = self.num_tile_blocks * self._midphase_narrow_ratio
+                midphase_inputs[-1] = narrow_blocks
+                wp.launch(
+                    kernel=self._midphase_narrow_kernel,
+                    dim=[narrow_blocks, _MIDPHASE_NARROW_TILE_SIZE],
+                    inputs=midphase_inputs,
+                    outputs=[
+                        self.triangle_pairs,
+                        self.triangle_pairs_count,
+                    ],
+                    device=device,
+                    block_dim=_MIDPHASE_NARROW_TILE_SIZE,
+                    record_tape=False,
+                )
 
             # Launch contact processing for triangle pairs
             if self.reduce_contacts:
@@ -3307,8 +3655,7 @@ class NarrowPhase:
                         support_lut,
                         support_vertex_offsets,
                         support_neighbors,
-                        shape_collision_aabb_lower,
-                        shape_collision_aabb_upper,
+                        shape_interior_point,
                         shape_gap,
                         shape_heightfield_index,
                         heightfield_data,
@@ -3336,8 +3683,7 @@ class NarrowPhase:
                         support_lut,
                         support_vertex_offsets,
                         support_neighbors,
-                        shape_collision_aabb_lower,
-                        shape_collision_aabb_upper,
+                        shape_interior_point,
                         shape_gap,
                         shape_heightfield_index,
                         heightfield_data,
@@ -3443,6 +3789,8 @@ class NarrowPhase:
                             texture_sdf_data,
                             shape_sdf_index,
                             shape_mesh_properties,
+                            mesh_boundary_flags,
+                            shape_mesh_boundary_start,
                             shape_gap,
                             shape_base_gap,
                             shape_linear_velocity,
@@ -3481,6 +3829,8 @@ class NarrowPhase:
                             texture_sdf_data,
                             shape_sdf_index,
                             shape_mesh_properties,
+                            mesh_boundary_flags,
+                            shape_mesh_boundary_start,
                             shape_gap,
                             shape_base_gap,
                             shape_linear_velocity,
@@ -3556,6 +3906,9 @@ class NarrowPhase:
                 hydroelastic_shape_sdf_data_prepared,
             )
 
+        if main_stream is not None:
+            main_stream.wait_event(self._convex_stream.record_event(self._convex_events[1]))
+
         # Verify no collision pipeline buffers overflowed
         if self.verify_buffers:
             if self.global_contact_reducer is not None:
@@ -3630,6 +3983,8 @@ class NarrowPhase:
         support_vertex_offsets: wp.array[wp.int32] | None = None,
         support_neighbors: wp.array[wp.int32] | None = None,
         shape_mesh_properties: wp.array[wp.int32] | None = None,  # Per-shape mesh property bitfield
+        mesh_boundary_flags: wp.array[wp.uint8] | None = None,  # Packed per-face open-boundary bits
+        shape_mesh_boundary_start: wp.array[wp.int32] | None = None,  # Per-shape start into the bits
         shape_sdf_index: wp.array[wp.int32] | None = None,  # Per-shape index into texture_sdf_data (-1 for none)
         texture_sdf_data: wp.array[TextureSDFData] | None = None,  # Compact texture SDF data table
         shape_gap: wp.array[wp.float32],  # per-shape contact gap (detection threshold)
@@ -3639,6 +3994,7 @@ class NarrowPhase:
         shape_collision_aabb_lower: wp.array[wp.vec3] | None = None,  # Local-space AABB lower bounds
         shape_collision_aabb_upper: wp.array[wp.vec3] | None = None,  # Local-space AABB upper bounds
         shape_voxel_resolution: wp.array[wp.vec3i],  # Voxel grid resolution per shape
+        shape_interior_point: wp.array[wp.vec3] | None = None,  # Local-space interior points
         # Outputs
         contact_pair: wp.array[wp.vec2i],
         contact_position: wp.array[wp.vec3],
@@ -3666,16 +4022,27 @@ class NarrowPhase:
             shape_transform: Array of world-space transforms for each shape
             shape_source: Array of source pointers (mesh IDs, etc.) for each shape
             shape_support_data: Optional per-shape ``wp.vec4i`` metadata containing
-                packed support-LUT, vertex-offset, and neighbor starts plus the LUT resolution.
-                The final entry packs resolution in its low 16 bits and strict hull
-                validity in bit 16. Zero resolution disables acceleration.
+                packed support-LUT, vertex-offset, and ``support_neighbors`` block starts
+                plus the LUT resolution. The block start is also set for verified hulls
+                without acceleration. The final entry packs resolution in its low 16 bits
+                and strict hull validity in bit 16. Zero resolution disables acceleration.
             support_lut: Optional packed octahedral-direction lookup tables whose entries
                 select seed vertices for convex support walks.
             support_vertex_offsets: Optional packed CSR offsets delimiting each convex
-                vertex's entries in ``support_neighbors``.
-            support_neighbors: Optional packed CSR vertex-adjacency indices used by convex
-                support walks.
+                vertex's entries in ``support_neighbors``. They index past the hull's
+                edge records.
+            support_neighbors: Optional packed per-hull blocks. A verified hull's block
+                starts with its edge count and one ``(a, b, c1, c2)`` vertex record per
+                edge, whose faces ``cross(b - a, c1 - a)`` and ``cross(c2 - a, b - a)``
+                point outward; exact box-hull depth certificates read these records.
+                CSR vertex-adjacency indices for support walks follow. Without the edge
+                records, box-hull depths fall back to uncertified support-plane bounds.
             shape_mesh_properties: Per-shape mesh property bitfield.
+            mesh_boundary_flags: Optional packed per-face bits marking open-boundary
+                edges and vertices of meshes queried with pseudo-normal signs.
+            shape_mesh_boundary_start: Optional per-shape offset into
+                ``mesh_boundary_flags``, or -1 for shapes without boundary bits.
+                Without both arrays, pseudo-normal signs extend past open boundaries.
             shape_sdf_index: Per-shape SDF table index (-1 for shapes without SDF)
             texture_sdf_data: Compact array of TextureSDFData structs
             shape_gap: Array of per-shape contact gaps (detection threshold) for each shape
@@ -3685,6 +4052,9 @@ class NarrowPhase:
             shape_collision_aabb_lower: Local-space AABB lower bounds for each shape (for voxel binning)
             shape_collision_aabb_upper: Local-space AABB upper bounds for each shape (for voxel binning)
             shape_voxel_resolution: Voxel grid resolution for each shape (for voxel binning)
+            shape_interior_point: Optional scaled local-space point inside each shape [m],
+                used to cull back-facing mesh triangles and seed triangle contacts. If
+                ``None``, convex-mesh volume centroids are computed on each launch.
             contact_pair: Output array for contact shape pairs
             contact_position: Output array for contact positions (center point)
             contact_normal: Output array for contact normals
@@ -3790,6 +4160,8 @@ class NarrowPhase:
             support_vertex_offsets=support_vertex_offsets,
             support_neighbors=support_neighbors,
             shape_mesh_properties=shape_mesh_properties,
+            mesh_boundary_flags=mesh_boundary_flags,
+            shape_mesh_boundary_start=shape_mesh_boundary_start,
             shape_sdf_index=shape_sdf_index,
             texture_sdf_data=texture_sdf_data,
             shape_gap=shape_gap,
@@ -3798,6 +4170,7 @@ class NarrowPhase:
             shape_flags=shape_flags,
             shape_collision_aabb_lower=shape_collision_aabb_lower,
             shape_collision_aabb_upper=shape_collision_aabb_upper,
+            shape_interior_point=shape_interior_point,
             shape_voxel_resolution=shape_voxel_resolution,
             mesh_edge_indices=mesh_edge_indices,
             mesh_edge_centers=mesh_edge_centers,

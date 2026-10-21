@@ -248,6 +248,7 @@ class Example:
             enable_self_collisions=False,
             collapse_fixed_joints=True,
             force_show_colliders=False,
+            joint_damping_mode="passive",
         )
         builder.joint_q[:6] = [0.0, 0.0, 0.0, -1.59695, 0.0, 2.5307]
 
@@ -349,7 +350,6 @@ class Example:
             particle_count = self.model.particle_count
             self.model.particle_count = 0
             self.model.gravity.assign(self.gravity_zero)
-            self.model.shape_contact_pair_count = 0
 
             self.state_0.joint_qd.assign(self.target_joint_qd)
             self.robot_solver.step(self.state_0, self.state_1, self.control, None, self.sim_dt)

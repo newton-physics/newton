@@ -527,6 +527,89 @@ class TestSensorCamera(unittest.TestCase):
                 )
                 np.testing.assert_allclose(msaa_hdr.numpy(), center_hdr.numpy(), atol=1.0e-6)
 
+    @staticmethod
+    def _center_hdr(camera: SensorCamera, model: newton.Model, **update_kwargs) -> np.ndarray:
+        rays = SensorCamera.compute_camera_rays_pinhole(1, 1, camera_fov=0.8, device="cpu")
+        hdr = camera.allocate_image_color_hdr(1, 1, 1)
+        camera.update(
+            model.state(), TestSensorCamera._identity_transforms(1), rays, hdr_color_image=hdr, **update_kwargs
+        )
+        return hdr.numpy().reshape(-1)[:3]
+
+    def test_default_ambient_light_matches_previous_constants(self) -> None:
+        """The default ambient keeps the old ``0.5 * (0.4, 0.4, 0.45)`` sky term."""
+        model, camera = self._build_sphere_scene()
+        hdr = self._center_hdr(camera, model)
+        # The center ray hits the sphere facing +Z (the up axis), so only the sky term contributes.
+        srgb = np.array([0.25, 0.5, 0.75])
+        albedo = np.where(srgb <= 0.04045, srgb / 12.92, ((srgb + 0.055) / 1.055) ** 2.4)
+        np.testing.assert_allclose(hdr, albedo * np.array([0.2, 0.2, 0.225]), rtol=1.0e-3)
+
+    def test_set_ambient_light_scales_ambient_without_recompiling(self) -> None:
+        model, camera = self._build_sphere_scene()
+        default_hdr = self._center_hdr(camera, model)
+        kernel_count = len(camera._render_context._kernel_cache)
+
+        camera.set_ambient_light((0.4, 0.4, 0.45))
+        np.testing.assert_allclose(self._center_hdr(camera, model), 2.0 * default_hdr, rtol=1.0e-5)
+
+        camera.set_ambient_light((0.2, 0.4, 0.9), ground_color=(0.0, 0.0, 0.0))
+        tinted = self._center_hdr(camera, model)
+        np.testing.assert_allclose(tinted, default_hdr * np.array([1.0, 2.0, 4.0]), rtol=1.0e-5)
+        self.assertEqual(len(camera._render_context._kernel_cache), kernel_count)
+
+    def test_set_ambient_light_uniform_ground(self) -> None:
+        """``ground_color=None`` gives the same ambient for every surface orientation."""
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -2.0), q=wp.quat_identity()))
+        builder.add_shape_sphere(body, radius=0.75, color=(1.0, 1.0, 1.0))
+        model = builder.finalize(device="cpu")
+        camera = SensorCamera(model)
+        camera.set_ambient_light((0.3, 0.3, 0.3))
+        rays = SensorCamera.compute_camera_rays_pinhole(16, 16, camera_fov=0.8, device="cpu")
+        hdr = camera.allocate_image_color_hdr(1, 16, 16)
+        shape_index = camera.allocate_image_shape_index(1, 16, 16)
+        camera.update(
+            model.state(), self._identity_transforms(1), rays, hdr_color_image=hdr, shape_index_image=shape_index
+        )
+        hit = shape_index.numpy().reshape(-1) == 0
+        self.assertGreater(int(hit.sum()), 4)
+        np.testing.assert_allclose(hdr.numpy().reshape(-1, 3)[hit], 0.3, rtol=1.0e-5)
+
+    def test_default_light_color_scales_direct_light(self) -> None:
+        model, camera = self._build_sphere_scene()
+        config = camera.RenderConfig(enable_ambient_lighting=False)
+        camera.create_default_light()
+        white = self._center_hdr(camera, model, render_config=config)
+        self.assertGreater(float(white.min()), 0.0)
+        kernel_count = len(camera._render_context._kernel_cache)
+
+        camera.create_default_light(color=(0.5, 1.0, 2.0))
+        tinted = self._center_hdr(camera, model, render_config=config)
+        np.testing.assert_allclose(tinted, white * np.array([0.5, 1.0, 2.0]), rtol=1.0e-5)
+        self.assertEqual(len(camera._render_context._kernel_cache), kernel_count)
+
+    def test_lighting_follows_model_up_axis(self) -> None:
+        """A Y-up scene rotated from a Z-up one renders the same image with default lighting."""
+        rot = newton.Axis.Z.quat_between_axes(newton.Axis.Y)
+        images = []
+        for up_axis, q in ((newton.Axis.Z, wp.quat_identity()), (newton.Axis.Y, rot)):
+            builder = newton.ModelBuilder(up_axis=up_axis)
+            body = builder.add_body(xform=wp.transform(p=wp.quat_rotate(q, wp.vec3(0.0, 0.0, -2.0)), q=q))
+            builder.add_shape_sphere(body, radius=0.75, color=(0.25, 0.5, 0.75))
+            ground = builder.add_body(xform=wp.transform(p=wp.quat_rotate(q, wp.vec3(0.0, 0.0, -4.0)), q=q))
+            builder.add_shape_box(ground, hx=3.0, hy=3.0, hz=0.1, color=(0.8, 0.8, 0.8))
+            model = builder.finalize(device="cpu")
+            camera = SensorCamera(model)
+            camera.create_default_light()
+            rays = SensorCamera.compute_camera_rays_pinhole(24, 24, camera_fov=1.2, device="cpu")
+            hdr = camera.allocate_image_color_hdr(1, 24, 24)
+            transforms = wp.array([wp.transformf(wp.vec3f(0.0), wp.quatf(q))], dtype=wp.transformf, device="cpu")
+            camera.update(model.state(), transforms, rays, hdr_color_image=hdr)
+            images.append(hdr.numpy())
+        self.assertGreater(float(images[0].max()), 0.0)
+        np.testing.assert_allclose(images[1], images[0], atol=1.0e-4)
+
     def test_msaa_shades_distinct_particles_separately(self) -> None:
         """Keep shading from adjacent particles independent despite their shared hit ID."""
         builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -725,6 +808,30 @@ class TestSensorCamera(unittest.TestCase):
             camera.update(state, cpu_transforms, cuda_rays)
         with self.assertRaisesRegex(RuntimeError, "camera_rays must be on the model device"):
             camera.update(state, cuda_transforms, cpu_rays)
+
+    def test_fully_transparent_shape_does_not_occlude(self) -> None:
+        """A shape with opacity 0 is skipped, so the shape behind it stays visible."""
+        builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
+        ball_body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -3.0), q=wp.quat_identity()))
+        ball = builder.add_shape_sphere(ball_body, radius=0.5, color=(1.0, 0.0, 0.0))
+        helper_body = builder.add_body(xform=wp.transform(p=wp.vec3(0.0, 0.0, -1.5), q=wp.quat_identity()))
+        helper = builder.add_shape_box(helper_body, hx=1.0, hy=1.0, hz=0.05, opacity=0.0)
+        model = builder.finalize(device="cpu")
+        camera = SensorCamera(model)
+        rays = self._rays(8, 8, fov=math.radians(40.0))
+        depth = wp.zeros((1, 8, 8), dtype=wp.float32, device="cpu")
+        shape_index = wp.zeros((1, 8, 8), dtype=wp.uint32, device="cpu")
+        camera.update(
+            model.state(),
+            self._identity_transforms(1),
+            rays,
+            depth_image=depth,
+            shape_index_image=shape_index,
+        )
+
+        self.assertEqual(int(shape_index.numpy()[0, 4, 4]), ball)
+        self.assertNotIn(helper, np.unique(shape_index.numpy()))
+        self.assertAlmostEqual(float(depth.numpy()[0, 4, 4]), 2.5, delta=0.05)
 
     def test_update_renders_from_camera_transforms(self) -> None:
         """Verify SensorCamera renders from the camera transforms passed to update."""
@@ -1403,6 +1510,59 @@ class TestSensorCamera(unittest.TestCase):
         self.assertLessEqual(fwd, ray + 1.0e-4)
 
     # --- Utils to_rgba / flatten helpers (ported; new 3-D Utils) ---
+
+    def test_forward_depth_uses_camera_origin(self) -> None:
+        """Measure custom-ray hits from the camera plane with a rotated camera."""
+        pose = wp.transform(wp.vec3(3.0, -2.0, 1.0), wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.7))
+        for device in get_test_devices():
+            with self.subTest(device=device):
+                builder = newton.ModelBuilder()
+                builder.add_shape_box(
+                    -1,
+                    xform=pose * wp.transform(wp.vec3(0.0, 0.0, -5.0), wp.quat_identity()),
+                    hx=2.0,
+                    hy=2.0,
+                    hz=1.0,
+                )
+                model = builder.finalize(device=device)
+                camera = SensorCamera(model)
+                transforms = wp.array([pose], dtype=wp.transformf, device=device)
+                rays_np = np.zeros((1, 3, 1, 2, 3), dtype=np.float32)
+                # Pixel 0 uses a zero origin. Pixel 1 has lateral and forward
+                # offsets but still hits the camera-relative plane at 4 m.
+                rays_np[..., 1, 2] = -1.0
+                rays_np[0, 1, 0, 0] = (0.25, 0.1, -1.0)
+                rays_np[0, 2, 0, 0] = (0.0, 0.0, -1.0)
+                rays_np[0, 2, 0, 1, 2] = 1.0
+                rays = wp.array(rays_np, dtype=wp.vec3f, device=device)
+                depth = camera.allocate_image_depth(1, 3, 1)
+                forward = camera.allocate_image_depth(1, 3, 1)
+                camera.update(
+                    model.state(),
+                    transforms,
+                    rays,
+                    depth_image=depth,
+                    forward_depth_image=forward,
+                    clear_data=SensorCamera.ClearData(clear_depth=-7.0),
+                )
+                np.testing.assert_allclose(forward.numpy(), [[[4.0, 4.0, -7.0]]], atol=1.0e-5)
+                np.testing.assert_allclose(depth.numpy(), [[[4.0, 3.0, -7.0]]], atol=1.0e-5)
+                converted = SensorCamera.Utils.convert_ray_depth_to_forward_depth(depth, transforms, rays)
+                np.testing.assert_allclose(converted.numpy(), forward.numpy(), atol=1.0e-5)
+
+    def test_forward_depth_conversion_preserves_invalid_depth(self) -> None:
+        """Preserve zero and negative depth sentinels with custom ray origins."""
+        for device in get_test_devices():
+            with self.subTest(device=device):
+                rays_np = np.zeros((1, 3, 1, 2, 3), dtype=np.float32)
+                rays_np[..., 0, 2] = -1.0
+                rays_np[..., 1, 2] = -1.0
+                rays = wp.array(rays_np, dtype=wp.vec3f, device=device)
+                depth = wp.array([[[3.0, 0.0, -7.0]]], dtype=wp.float32, device=device)
+                forward = SensorCamera.Utils.convert_ray_depth_to_forward_depth(
+                    depth, self._identity_transforms(1, device=device), rays
+                )
+                np.testing.assert_allclose(forward.numpy(), [[[4.0, 0.0, -7.0]]], atol=1.0e-5)
 
     def test_utils_to_rgba_helpers_produce_canonical_outputs(self) -> None:
         """Verify the Utils to_rgba helpers return ``(view, H, W, 4)`` uint8 arrays."""

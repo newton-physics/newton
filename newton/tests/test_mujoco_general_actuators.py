@@ -3,8 +3,6 @@
 
 """Tests for MuJoCo actuator parsing and propagation."""
 
-import contextlib
-import io
 import os
 import tempfile
 import unittest
@@ -1307,11 +1305,10 @@ class TestMuJoCoSliderCrankActuators(unittest.TestCase):
         for old, new, warning in invalid_sites:
             with self.subTest(warning=warning):
                 builder = ModelBuilder()
-                stdout = io.StringIO()
-                with contextlib.redirect_stdout(stdout):
+                with self.assertLogs("newton", level="WARNING") as logs:
                     builder.add_mjcf(MJCF_SLIDERCRANK_ACTUATOR.replace(old, new), ctrl_direct=True, verbose=True)
 
-                self.assertIn(warning, stdout.getvalue())
+                self.assertIn(warning, "\n".join(logs.output))
                 model = builder.finalize()
                 self.assertEqual(model.custom_frequency_counts.get("mujoco:actuator", 0), 0)
 
@@ -1319,11 +1316,10 @@ class TestMuJoCoSliderCrankActuators(unittest.TestCase):
         """Mention slider-crank transmissions when no actuator target is provided."""
         mjcf = MJCF_SLIDERCRANK_ACTUATOR.replace('cranksite="crank"', "")
         mjcf = mjcf.replace('slidersite="slider"', "")
-        stdout = io.StringIO()
-        with contextlib.redirect_stdout(stdout):
+        with self.assertLogs("newton", level="WARNING") as logs:
             ModelBuilder().add_mjcf(mjcf, ctrl_direct=True, verbose=True)
 
-        self.assertIn("or slider-crank target, skipping", stdout.getvalue())
+        self.assertIn("or slider-crank target, skipping", "\n".join(logs.output))
 
     def test_slidercrank_actuator_rejects_invalid_crank_length(self):
         """Reject nonpositive or nonfinite slider-crank lengths."""
@@ -1526,7 +1522,7 @@ class TestMuJoCoSiteActuators(unittest.TestCase):
 
         state_0 = model.state()
         state_1 = model.state()
-        observables = solver.observables({solver.ObservableFlags.QFRC_ACTUATOR})
+        observables = solver.observables(kinds={solver.ObservableKind.QFRC_ACTUATOR})
         control = model.control()
 
         # Identify the Newton-side actuator ordering so we can set matching ctrl

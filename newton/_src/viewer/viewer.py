@@ -20,6 +20,7 @@ import newton
 from newton.utils import compute_world_offsets, solidify_mesh
 
 from ..core.types import MAXVAL, Axis
+from ..exceptions import NewtonWarning
 from .kernels import (
     build_active_particle_mask,
     compact,
@@ -1291,7 +1292,7 @@ class ViewerBase(ABC):
         contacts: newton.Contacts,
         state: newton.State,
         *,
-        observables: newton.solvers.SolverObservables | None = None,
+        observables: newton.solvers.SolverBase.Observables | None = None,
     ):
         """Render contact visualizations.
 
@@ -1322,8 +1323,9 @@ class ViewerBase(ABC):
                 velocities at the contact points.
             observables: Optional solver observables containing ``contact_f``. If
                 omitted, the deprecated ``contacts.force`` array is used.
-                Binds compatible contact storage on first use; newly allocated forces
-                are zero until the solver updates them.
+                ``contacts`` must be the buffer that produced ``contact_f``
+                (``observables.contacts``); newly allocated forces are zero until the
+                solver updates them. See :ref:`solver_observables`.
 
                 .. experimental::
                     The solver observable API may change without prior notice.
@@ -1342,8 +1344,11 @@ class ViewerBase(ABC):
         if observables is not None:
             if observables.model is not self.model:
                 raise ValueError("Solver observables must belong to the viewer's model.")
-            if contact_f is not None:
-                observables.bind_contacts(contacts)
+            if contact_f is not None and observables.contacts is not contacts:
+                raise ValueError(
+                    "Contact solver observables were produced with a different Contacts instance; "
+                    "pass the Contacts used by the step that produced them."
+                )
 
         # Get contact count, clamped to buffer size (counter may exceed max on overflow)
         max_contacts = contacts.rigid_contact_max
@@ -3258,12 +3263,14 @@ class ViewerBase(ABC):
                 warnings.warn(
                     f"Model.tri_color has {len(colors)} values for {tri_count} triangles; "
                     "rendering all triangles with the default color.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
                 colors = np.broadcast_to(default_color, (tri_count, 3)).copy()
             elif not np.all(np.isfinite(colors)):
                 warnings.warn(
                     "Model.tri_color contains non-finite values; replacing them with display-safe values.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
                 colors = np.nan_to_num(colors, nan=0.0, posinf=1.0, neginf=0.0)
@@ -3279,12 +3286,14 @@ class ViewerBase(ABC):
                 warnings.warn(
                     f"Model.tri_opacity has {len(opacities)} values for {tri_count} triangles; "
                     "rendering all triangles as opaque.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
                 opacities = np.ones(tri_count, dtype=np.float32)
             elif not np.all(np.isfinite(opacities)):
                 warnings.warn(
                     "Model.tri_opacity contains non-finite values; replacing them with display-safe values.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
                 opacities = np.nan_to_num(opacities, nan=1.0, posinf=1.0, neginf=0.0)
@@ -3294,6 +3303,7 @@ class ViewerBase(ABC):
             warnings.warn(
                 f"Model.tri_opacity contains {len(unique_opacities)} unique values; quantizing to at most "
                 f"{MAX_TRIANGLE_OPACITY_GROUPS} display-opacity groups.",
+                NewtonWarning,
                 stacklevel=2,
             )
             opacities = (
@@ -3306,6 +3316,7 @@ class ViewerBase(ABC):
             warnings.warn(
                 f"Model triangle appearance contains {unique_appearance_count} unique values; quantizing to at most "
                 f"{MAX_TRIANGLE_APPEARANCE_GROUPS} display groups.",
+                NewtonWarning,
                 stacklevel=2,
             )
             active_channels = np.flatnonzero(np.ptp(appearances, axis=0) > 0.0)

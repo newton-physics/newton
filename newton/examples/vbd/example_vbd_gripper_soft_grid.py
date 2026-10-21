@@ -19,6 +19,8 @@ Command: python -m newton.examples vbd_gripper_soft_grid
 
 from __future__ import annotations
 
+import argparse
+
 import numpy as np
 import warp as wp
 
@@ -116,7 +118,7 @@ PARAMS = {
 class Example:
     def __init__(self, viewer, args):
         self.viewer = viewer
-        self.params = PARAMS
+        self.params = {**PARAMS, "finger_mesh": getattr(args, "finger_mesh", PARAMS["finger_mesh"])}
         self.sim_time = 0.0
         self.fps = self.params["fps"]
         self.frame_dt = 1.0 / self.fps
@@ -352,6 +354,12 @@ class Example:
     def create_parser():
         parser = newton.examples.create_parser()
         parser.set_defaults(num_frames=PARAMS["num_frames"])
+        parser.add_argument(
+            "--finger-mesh",
+            action=argparse.BooleanOptionalAction,
+            default=PARAMS["finger_mesh"],
+            help="Use triangulated cube finger pads instead of analytic boxes.",
+        )
         return parser
 
 
