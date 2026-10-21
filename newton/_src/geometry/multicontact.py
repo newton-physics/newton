@@ -28,6 +28,8 @@ from .types import GeoType
 
 # Constants
 EPS = 0.00001
+# Upper bound [m], preserving the cleanup radius used before #4643.
+MAX_CLIP_VERTEX_MERGE_DISTANCE = 0.0031622776601683794
 # The tilt angle defines how much the search direction gets tilted while searching for
 # points on the contact manifold.
 TILT_ANGLE_RAD = wp.static(2.0 * math.pi / 180.0)
@@ -609,6 +611,38 @@ def approx_max_quadrilateral_area_with_calipers(hull: wp.array[wp.vec2], hull_co
 
 
 @wp.func
+def polygon_width(loop: wp.array[wp.vec2], loop_count: int) -> float:
+    """Estimate a convex polygon's narrowest width [m].
+
+    Area over the larger bounding extent is between half and sqrt(2) times
+    the true width. This linear-time estimate conservatively reduces merging
+    for triangular features instead of computing exact edge-normal spans.
+
+    Args:
+        loop: Convex polygon vertices [m].
+        loop_count: Number of vertices in the loop.
+
+    Returns:
+        Estimated width [m], or zero for points and segments.
+    """
+    if loop_count < 3:
+        return 0.0
+    lower = loop[0]
+    upper = loop[0]
+    twice_area = float(0.0)
+    for i in range(loop_count):
+        p = loop[i]
+        q = loop[(i + 1) % loop_count]
+        lower = wp.min(lower, p)
+        upper = wp.max(upper, p)
+        twice_area += p[0] * q[1] - q[0] * p[1]
+    extent = wp.max(upper[0] - lower[0], upper[1] - lower[1])
+    if extent <= 0.0:
+        return 0.0
+    return 0.5 * wp.abs(twice_area) / extent
+
+
+@wp.func
 def remove_zero_length_edges(loop: wp.array[wp.vec2], loop_count: int, eps: float) -> int:
     """
     Remove zero-length edges from a polygon loop.
@@ -788,9 +822,21 @@ def create_build_manifold(support_func: Any, writer_func: Any, post_process_cont
 
         normal_dot = wp.abs(wp.dot(projector_a.normal, projector_b.normal))
 
+        # Clipping wide, slightly tilted faces leaves sliver polygons whose
+        # extra vertices turn line contacts into poorly supported manifolds
+        # and destabilize resting stacks. Limit merging by half the estimated
+        # input feature width (with an EPS floor) so thin faces keep both sides.
+        # Small overlaps of wide faces can collapse entirely within the cap;
+        # these intentionally fall back to the single deepest contact.
+        merge_distance = wp.clamp(
+            0.5 * wp.min(polygon_width(m_a, m_a_count), polygon_width(m_b, m_b_count)),
+            EPS,
+            MAX_CLIP_VERTEX_MERGE_DISTANCE,
+        )
+
         loop_count = trim_all_in_place(m_a, m_a_count, m_b, m_b_count)
 
-        loop_count = remove_zero_length_edges(m_b, loop_count, EPS)
+        loop_count = remove_zero_length_edges(m_b, loop_count, merge_distance)
 
         if loop_count > 1:
             result = wp.vec4i()

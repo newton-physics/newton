@@ -417,6 +417,15 @@ Newton's per-DOF :attr:`~newton.Model.joint_target_mode` creates MuJoCo general 
 :attr:`~newton.Model.joint_effort_limit` is forwarded as ``actfrcrange`` on the joint
 (prismatic, revolute, and D6) or as ``forcerange`` on the actuator (ball).
 
+For MJCF position-only drives with ``dampratio`` and the default joint-target
+control mapping, solver construction resolves damping using each world's
+initial physical inertia, authored armature, and position gain, excluding
+synthetic armature used to lock kinematic bodies. It replaces the imported
+damping-ratio placeholder with the resulting coefficient and initializes zero entries in
+:attr:`~newton.Model.joint_target_kd`; nonzero explicit damping is preserved.
+Subsequent gain edits use the joint-target arrays and
+:attr:`~newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES` as usual.
+
 The full MuJoCo general-actuator model (arbitrary gain/bias/dynamics types
 and parameters, explicit transmission targets, ctrl/force/act ranges) is
 only reachable through the ``mujoco`` :ref:`custom-attribute namespace <mujoco-custom-attributes>`.
@@ -462,6 +471,12 @@ array; slot layout depends on the constraint type.
    * - :attr:`~newton.solvers.SolverMuJoCo.EqType.JOINT`
      - ``mjEQ_JOINT``
      - Polynomial coefficients forwarded in ``data[0:5]``.
+   * - :attr:`~newton.solvers.SolverMuJoCo.EqType.TENDON`
+     - ``mjEQ_TENDON``
+     - Couples two ``mujoco:tendon`` lengths (``equality_constraint_tendon1``
+       and ``equality_constraint_tendon2``). Polynomial coefficients forwarded
+       in ``data[0:5]``. MJCF and programmatic authoring only; USD import is not
+       supported yet.
    * - Mimic
      - ``mjEQ_JOINT``
      - Added via :meth:`~newton.ModelBuilder.set_joint_mimic`. Maps the
@@ -473,7 +488,8 @@ array; slot layout depends on the constraint type.
 Newton's core API does not expose equality constraints as a dedicated
 builder call. Construct them with the
 :doc:`newton.solvers.mujoco </api/newton_solvers_mujoco>` helpers
-``add_equality_connect``, ``add_equality_weld``, and ``add_equality_joint``,
+``add_equality_connect``, ``add_equality_weld``, ``add_equality_joint``, and
+``add_equality_tendon``,
 then read or update finalized fields via
 ``model.mujoco.equality_constraint_*``:
 

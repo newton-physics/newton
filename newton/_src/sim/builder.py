@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal
 import numpy as np
 import warp as wp
 
+from ... import config
 from ..core._warnings import _external_warning_stacklevel
 from ..core.types import (
     MAXVAL,
@@ -47,12 +48,14 @@ from ..geometry import (
     Mesh,
     ParticleFlags,
     ShapeFlags,
+    _convex_cache,
     compute_inertia_shape,
     compute_shape_radius,
     transform_inertia,
 )
 from ..geometry.flags import MeshProperties
 from ..geometry.inertia import validate_and_correct_inertia_kernel, verify_and_correct_inertia
+from ..geometry.rest_shape import _dihedral_angles, _tet_rest_geometry, _triangle_rest_geometry
 from ..geometry.sdf_utils import _resolve_paired_samples_flag
 from ..geometry.support_function import _CONVEX_HULL_VALID
 from ..geometry.types import Heightfield
@@ -92,6 +95,25 @@ else:
     UsdStage = Any
 
 logger = logging.getLogger(__name__)
+
+
+def _convex_hull_interior_point(vertices: np.ndarray, indices: np.ndarray | None) -> np.ndarray:
+    """Return the volume centroid of a convex hull mesh [m], in its unscaled local frame.
+
+    The faces are fanned into tetrahedra from the vertex mean, which is interior, so
+    the result lies inside the hull and does not depend on how densely each region
+    is tessellated. Degenerate hulls fall back to the vertex mean.
+    """
+    vertices = np.asarray(vertices, dtype=np.float64)
+    mean = vertices.mean(axis=0)
+    if indices is None or len(indices) < 3:
+        return mean
+    tris = vertices[np.asarray(indices, dtype=np.int64).reshape(-1, 3)] - mean
+    volumes = np.abs(np.einsum("ij,ij->i", tris[:, 0], np.cross(tris[:, 1], tris[:, 2])))
+    total = volumes.sum()
+    if not np.isfinite(total) or total <= 0.0:
+        return mean
+    return mean + (volumes[:, None] * tris.sum(axis=1)).sum(axis=0) / (4.0 * total)
 
 
 def _validate_opacity(value: Any, value_name: str) -> float:
@@ -4931,6 +4953,10 @@ class ModelBuilder:
                 See :ref:`custom_attributes` for details on custom attributes. If False (default), position/velocity
                 actuators use :attr:`~newton.solvers.SolverMuJoCo.CtrlSource.JOINT_TARGET` mode where control comes
                 from :attr:`newton.Control.joint_target_q` and :attr:`newton.Control.joint_target_qd`.
+                For position-only drives using ``dampratio``, constructing
+                :class:`~newton.solvers.SolverMuJoCo` initializes zero entries in
+                :attr:`newton.Model.joint_target_kd` with the resolved damping coefficients.
+                Subsequent damping edits use ``joint_target_kd`` as usual.
             path_resolver: Callback to resolve file paths. Takes (base_dir, file_path) and returns a resolved path. For <include> elements, can return either a file path or XML content directly. For asset elements (mesh, texture, etc.), must return an absolute file path. The default resolver joins paths and returns absolute file paths.
             legacy_margin_gap: If True, restore pre-MuJoCo-3.9 import behavior
                 where ``shape_margin`` is computed as ``mj_margin - mj_gap``.
@@ -9208,6 +9234,8 @@ class ModelBuilder:
         shape_indices: list[int] | None = None,
         raise_on_failure: bool = False,
         keep_visual_shapes: bool = False,
+        *,
+        cache_dir: str | os.PathLike[str] | None = None,
         **remeshing_kwargs: dict[str, Any],
     ) -> set[int]:
         """Approximates the mesh shapes of the model.
@@ -9270,6 +9298,17 @@ class ModelBuilder:
             method: The method to use for approximating the mesh shapes.
             shape_indices: The indices of the shapes to simplify. Entries that are not ``MESH`` or ``CONVEX_MESH`` shapes are ignored. If `None`, all mesh shapes that have the :attr:`ShapeFlags.COLLIDE_SHAPES` flag set are simplified.
             raise_on_failure: If `True`, raises an exception if the remeshing fails. If `False`, it will log a warning and continue with the fallback method.
+            keep_visual_shapes: If `True`, retain the original geometry as visual-only shapes.
+            cache_dir: Directory for persistent ``coacd`` and ``vhacd``
+                decomposition caching. Created if missing; ``None`` uses
+                :attr:`newton.config.cache_dir_meshes`, which defaults to ``None``
+                (no disk caching). Set that global setting to a directory to
+                enable caching for subsequent calls, including USD imports.
+                An explicit directory overrides the global setting. Entries are
+                keyed by mesh geometry, effective backend
+                settings, backend versions, and cache format version. Corrupt or
+                incompatible entries are recomputed; cache I/O failures are logged
+                and do not prevent approximation. Other methods ignore this option.
             **remeshing_kwargs: Additional keyword arguments passed to the remeshing function.
 
         Returns:
@@ -9359,6 +9398,8 @@ class ModelBuilder:
         remeshed_shapes = set()
 
         if method == "coacd" or method == "vhacd":
+            if cache_dir is None:
+                cache_dir = config.cache_dir_meshes
             empty_decomposition_shape = None
             decomposition_failed = False
             try:
@@ -9383,41 +9424,47 @@ class ModelBuilder:
                 for shape in shape_indices:
                     mesh: Mesh = self.shape_source[shape]
                     scale = self.shape_scale[shape]
-                    cache_key = (hash(mesh), mesh.maxhullvert)
-                    if cache_key in decompositions:
-                        decomposition = decompositions[cache_key]
+                    cache_write_key = None
+                    # Mesh.__hash__ does not include the hull-vertex limit.
+                    hash_m = (hash(mesh), mesh.maxhullvert)
+                    if hash_m in decompositions:
+                        decomposition = decompositions[hash_m]
                     else:
-                        decomposition = []
-                        # Decomposition backends may merge disconnected convex parts into one hull.
-                        for component_vertices, component_faces in split_mesh_components(mesh):
-                            if method == "coacd":
-                                cmesh = coacd.Mesh(component_vertices, component_faces)
-                                coacd_settings = {
-                                    "threshold": self.default_mesh_approximation_cfg.coacd_threshold,
-                                    "mcts_nodes": 20,
-                                    "mcts_iterations": 5,
-                                    "mcts_max_depth": 1,
-                                    "merge": False,
-                                }
-                                coacd_settings.update(remeshing_kwargs)
-                                # Cap with Qhull rather than CoACD's decimation, which is orders of magnitude slower.
-                                decomposition.extend(
-                                    remesh_convex_hull(v, maxhullvert=mesh.maxhullvert)
-                                    if 0 < mesh.maxhullvert < len(v)
-                                    else (v, f)
-                                    for v, f in coacd.run_coacd(cmesh, **coacd_settings)
-                                )
-                            else:
-                                tmesh = trimesh.Trimesh(component_vertices, component_faces)
-                                vhacd_settings = {
-                                    "maxNumVerticesPerCH": mesh.maxhullvert,
-                                }
-                                vhacd_settings.update(remeshing_kwargs)
-                                component_decomposition = trimesh.decomposition.convex_decomposition(
-                                    tmesh, **vhacd_settings
-                                )
-                                decomposition.extend((d["vertices"], d["faces"]) for d in component_decomposition)
-                        decompositions[cache_key] = decomposition
+                        settings = (
+                            {
+                                "threshold": self.default_mesh_approximation_cfg.coacd_threshold,
+                                "mcts_nodes": 20,
+                                "mcts_iterations": 5,
+                                "mcts_max_depth": 1,
+                                "merge": False,
+                            }
+                            if method == "coacd"
+                            else {"maxNumVerticesPerCH": mesh.maxhullvert}
+                        )
+                        settings.update(remeshing_kwargs)
+                        cache_key = _convex_cache.hash_inputs(mesh, method, settings) if cache_dir is not None else None
+                        decomposition = _convex_cache.try_load(cache_dir, cache_key) if cache_key is not None else None
+                        if decomposition is None:
+                            decomposition = []
+                            # Decomposition backends may merge disconnected convex parts into one hull.
+                            for component_vertices, component_faces in split_mesh_components(mesh):
+                                if method == "coacd":
+                                    cmesh = coacd.Mesh(component_vertices, component_faces)
+                                    # Cap with Qhull rather than CoACD's decimation, which is orders of magnitude slower.
+                                    decomposition.extend(
+                                        remesh_convex_hull(v, maxhullvert=mesh.maxhullvert)
+                                        if 0 < mesh.maxhullvert < len(v)
+                                        else (v, f)
+                                        for v, f in coacd.run_coacd(cmesh, **settings)
+                                    )
+                                else:
+                                    tmesh = trimesh.Trimesh(component_vertices, component_faces)
+                                    component_decomposition = trimesh.decomposition.convex_decomposition(
+                                        tmesh, **settings
+                                    )
+                                    decomposition.extend((d["vertices"], d["faces"]) for d in component_decomposition)
+                            cache_write_key = cache_key
+                        decompositions[hash_m] = decomposition
                     if len(decomposition) == 0:
                         if raise_on_failure:
                             empty_decomposition_shape = shape
@@ -9489,6 +9536,8 @@ class ModelBuilder:
                                     self.add_shape_collision_filter_pair(filtered_part, extra_shape)
                             convex_parts_by_shape.setdefault(shape, []).append(extra_shape)
                     remeshed_shapes.add(shape)
+                    if cache_write_key is not None:
+                        _convex_cache.write(cache_dir, cache_write_key, decomposition)
             except Exception as e:
                 if raise_on_failure:
                     raise RuntimeError(f"Remeshing with method '{method}' failed.") from e
@@ -11167,30 +11216,11 @@ class ModelBuilder:
             between the particles in their initial configuration.
 
         """
-        # compute basis for 2D rest pose
         q_ = np.asarray(self.particle_q)
         p = q_[i]
-        q = q_[j]
-        r = q_[k]
-
-        qp = q - p
-        rp = r - p
-
-        def normalized(a):
-            l = np.linalg.norm(a, axis=-1, keepdims=True)
-            l[l == 0] = 1.0
-            return a / l
-
-        n = normalized(np.cross(qp, rp))
-        e1 = normalized(qp)
-        e2 = normalized(np.cross(n, e1))
-
-        R = np.concatenate((e1[..., None], e2[..., None]), axis=-1)
-        M = np.concatenate((qp[..., None], rp[..., None]), axis=-1)
-
-        D = np.matmul(R.transpose(0, 2, 1), M)
-
-        areas = np.linalg.det(D) / 2.0
+        qp = q_[j] - p
+        rp = q_[k] - p
+        D, areas = _triangle_rest_geometry(qp, rp)
         areas[areas < 0.0] = 0.0
         valid_inds = (areas > 0.0).nonzero()[0]
         if len(valid_inds) < len(areas):
@@ -11294,7 +11324,6 @@ class ModelBuilder:
             The tetrahedron is created with a rest-pose based on the particle's initial configuration
 
         """
-        # compute basis for 2D rest pose
         p = np.array(self.particle_q[i])
         q = np.array(self.particle_q[j])
         r = np.array(self.particle_q[k])
@@ -11304,8 +11333,7 @@ class ModelBuilder:
         rp = r - p
         sp = s - p
 
-        Dm = np.array((qp, rp, sp)).T
-        volume = np.linalg.det(Dm) / 6.0
+        Dm, volume = _tet_rest_geometry(qp, rp, sp)
 
         if volume <= 0.0:
             logger.warning("inverted tetrahedral element")
@@ -11449,27 +11477,11 @@ class ModelBuilder:
             rest = np.zeros_like(i_, dtype=float)
             valid_mask = (i_ != -1) & (j_ != -1)
 
-            # compute rest angle
             x1_valid = particle_q_[i_[valid_mask]]
             x2_valid = particle_q_[j_[valid_mask]]
             x3_valid = particle_q_[k_[valid_mask]]
             x4_valid = particle_q_[l_[valid_mask]]
-
-            def normalized(a):
-                l = np.linalg.norm(a, axis=-1, keepdims=True)
-                l[l == 0] = 1.0
-                return a / l
-
-            n1 = normalized(np.cross(x3_valid - x1_valid, x4_valid - x1_valid))
-            n2 = normalized(np.cross(x4_valid - x2_valid, x3_valid - x2_valid))
-            e = normalized(x4_valid - x3_valid)
-
-            def dot(a, b):
-                return (a * b).sum(axis=-1)
-
-            cos_theta = np.clip(dot(n1, n2), -1.0, 1.0)
-            sin_theta = dot(np.cross(n1, n2), e)
-            rest[valid_mask] = np.arctan2(sin_theta, cos_theta)
+            rest[valid_mask] = _dihedral_angles(x1_valid, x2_valid, x3_valid, x4_valid, x3_valid, x4_valid)
             rest = rest.tolist()
 
         inds = np.concatenate((i_[:, None], j_[:, None], k_[:, None], l_[:, None]), axis=-1)
@@ -14401,7 +14413,8 @@ class ModelBuilder:
                     aabb_lower, aabb_upper, interior_point, nx, ny, nz = shape_aabb_cache[cache_key]
                 else:
                     # Primitive origins are interior. A hull's AABB center can lie
-                    # outside it, but its vertex mean cannot.
+                    # outside it, and its vertex mean follows the tessellation, so
+                    # hulls use their volume centroid.
                     interior_point = np.zeros(3)
                     # Compute AABB based on shape type
                     if shape_type == GeoType.MESH and shape_src is not None:
@@ -14417,7 +14430,8 @@ class ModelBuilder:
                     elif shape_type == GeoType.CONVEX_MESH and shape_src is not None:
                         lo = shape_src.vertices.min(axis=0) * np.array(shape_scale)
                         hi = shape_src.vertices.max(axis=0) * np.array(shape_scale)
-                        interior_point = shape_src.vertices.mean(axis=0) * np.array(shape_scale)
+                        centroid = _convex_hull_interior_point(shape_src.vertices, shape_src.indices)
+                        interior_point = centroid * np.array(shape_scale)
                         aabb_lower = np.minimum(lo, hi)
                         aabb_upper = np.maximum(lo, hi)
 

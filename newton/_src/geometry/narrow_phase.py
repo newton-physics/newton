@@ -26,6 +26,7 @@ from ..geometry.collision_core import (
     post_process_minkowski_only,
 )
 from ..geometry.collision_primitive import (
+    _collide_capsule_cylinder_barrel,
     _collide_plane_capsule_contacts,
     collide_capsule_capsule,
     collide_plane_box,
@@ -720,7 +721,7 @@ def create_narrow_phase_primitive_kernel(
             if (
                 type_a >= GeoType.ELLIPSOID
                 or type_b == GeoType.CONE
-                or (type_a == GeoType.CAPSULE and type_b > GeoType.CAPSULE)
+                or (type_a == GeoType.CAPSULE and type_b > GeoType.CAPSULE and type_b != GeoType.CYLINDER)
             ):
                 if wp.static(sparse_gjk_pairs):
                     wp.atomic_add(gjk_candidate_pairs_count, 0, 1)
@@ -929,6 +930,26 @@ def create_narrow_phase_primitive_kernel(
                 contact_dist_0, contact_pos_0, contact_normal = collide_sphere_cylinder(
                     pos_a, sphere_radius, pos_b, cylinder_axis, cylinder_radius, cylinder_half_height
                 )
+
+            # -----------------------------------------------------------------
+            # Capsule-Cylinder collision: only exterior barrel witnesses.
+            # Unsupported cases leave contact_dist_0 unset and reach MPR/GJK.
+            # -----------------------------------------------------------------
+            elif is_capsule_a and is_cylinder_b and scale_b[2] == 0.0:
+                barrel_handled, barrel_dist, barrel_pos, barrel_normal = _collide_capsule_cylinder_barrel(
+                    pos_a,
+                    wp.quat_rotate(quat_a, wp.vec3(0.0, 0.0, 1.0)),
+                    scale_a[0],
+                    scale_a[1],
+                    pos_b,
+                    wp.quat_rotate(quat_b, wp.vec3(0.0, 0.0, 1.0)),
+                    scale_b[0],
+                    scale_b[1],
+                )
+                if barrel_handled:
+                    contact_dist_0 = barrel_dist
+                    contact_pos_0 = barrel_pos
+                    contact_normal = barrel_normal
 
             # -----------------------------------------------------------------
             # Sphere-Box collision (type_a=SPHERE=2, type_b=BOX=6)
@@ -1796,7 +1817,7 @@ def compute_shape_interior_points_kernel(
     """Store an interior point of each shape in its scaled local frame.
 
     Primitive origins are interior. A convex hull's origin and AABB center can
-    both lie outside it, so hulls use their vertex mean instead.
+    both lie outside it, so hulls use their volume centroid instead.
     """
     shape = wp.tid()
     point = wp.vec3(0.0, 0.0, 0.0)
@@ -3336,7 +3357,7 @@ class NarrowPhase:
             shape_voxel_resolution: Voxel grid resolution for each shape (for voxel binning)
             shape_interior_point: Optional scaled local-space point inside each shape [m],
                 used to cull back-facing mesh triangles and seed triangle contacts. If
-                ``None``, convex-mesh vertex means are computed on each launch.
+                ``None``, convex-mesh volume centroids are computed on each launch.
             mesh_edge_indices: Packed array of mesh edge vertex pairs for all shapes.
             mesh_edge_centers: Packed precomputed mesh edge centers (xyz) and radii (w) in
                 unscaled mesh coordinates [m]; the shape scale in ``shape_data`` is applied when read.
@@ -3569,7 +3590,7 @@ class NarrowPhase:
                 midphase_inputs[-1] = narrow_blocks
                 wp.launch(
                     kernel=self._midphase_narrow_kernel,
-                    dim=[narrow_blocks, _MIDPHASE_NARROW_TILE_SIZE],
+                    dim=[narrow_blocks, _MIDPHASE_NARROW_TILE_SIZE if ENABLE_TILE_BVH_QUERY else 1],
                     inputs=midphase_inputs,
                     outputs=[
                         self.triangle_pairs,
@@ -4035,7 +4056,7 @@ class NarrowPhase:
             shape_voxel_resolution: Voxel grid resolution for each shape (for voxel binning)
             shape_interior_point: Optional scaled local-space point inside each shape [m],
                 used to cull back-facing mesh triangles and seed triangle contacts. If
-                ``None``, convex-mesh vertex means are computed on each launch.
+                ``None``, convex-mesh volume centroids are computed on each launch.
             contact_pair: Output array for contact shape pairs
             contact_position: Output array for contact positions (center point)
             contact_normal: Output array for contact normals
