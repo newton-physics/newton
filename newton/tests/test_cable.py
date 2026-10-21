@@ -1,7 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-import inspect
 import unittest
 import warnings
 from contextlib import nullcontext
@@ -3622,8 +3621,6 @@ def _rod_articulation_has_free_root_joint_impl(test: unittest.TestCase, _device)
 
 def _rod_eval_fk_reconstructs_body_state_impl(test: unittest.TestCase, device):
     """Reconstruct Rod body state with FK and round-trip through IK."""
-    test.addCleanup(setattr, newton, "use_coord_layout_targets", newton.use_coord_layout_targets)
-    newton.use_coord_layout_targets = True
 
     builder = newton.ModelBuilder()
     rod_bodies, rod_joints = _add_prepared_rod(
@@ -3706,8 +3703,6 @@ def _rod_eval_fk_reconstructs_body_state_impl(test: unittest.TestCase, device):
 
 def _rod_vbd_joint_f_applies_six_dof_wrench_impl(test: unittest.TestCase, device):
     """Verify VBD applies a Rod wrench and its reaction at each body's COM."""
-    test.addCleanup(setattr, newton, "use_coord_layout_targets", newton.use_coord_layout_targets)
-    newton.use_coord_layout_targets = True
 
     child_mass = 2.0
     force_x, torque_y = 12.0, 6.0
@@ -4011,209 +4006,165 @@ def _cable_rod_default_origin_matches_com_impl(test: unittest.TestCase, device):
 
 def _rod_control_target_q_does_not_override_structural_rest_impl(test: unittest.TestCase, device):
     """Verify Control.joint_target_q does not override Model-owned Rod structural rest."""
-    original_layout = newton.use_coord_layout_targets
-    try:
-        for use_coord_layout in (False, True):
-            newton.use_coord_layout_targets = use_coord_layout
-            rest_rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, -1.0)), 0.35)
-            initial_position = wp.vec3(0.08, 0.04, 0.12)
-            initial_rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.2) * rest_rotation
+    rest_rotation = wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, -1.0)), 0.35)
+    initial_position = wp.vec3(0.08, 0.04, 0.12)
+    initial_rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.2) * rest_rotation
 
-            builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
-            child = builder.add_link(
-                xform=wp.transform(initial_position, initial_rotation),
-                mass=1.0,
-                inertia=wp.mat33(np.eye(3)),
-            )
-            joint = builder.add_joint_rod(
-                -1,
-                child,
-                rest_rotation=rest_rotation,
-                stretch_stiffness=500.0,
-                bend_stiffness=20.0,
-            )
-            builder.add_articulation([joint])
-            builder.color()
-            if use_coord_layout:
-                model = builder.finalize(device=device)
-            else:
-                with test.assertWarnsRegex(DeprecationWarning, "legacy DOF-shaped joint_target_q layout"):
-                    model = builder.finalize(device=device)
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    child = builder.add_link(
+        xform=wp.transform(initial_position, initial_rotation),
+        mass=1.0,
+        inertia=wp.mat33(np.eye(3)),
+    )
+    joint = builder.add_joint_rod(
+        -1,
+        child,
+        rest_rotation=rest_rotation,
+        stretch_stiffness=500.0,
+        bend_stiffness=20.0,
+    )
+    builder.add_articulation([joint])
+    builder.color()
+    model = builder.finalize(device=device)
 
-            # An initial-pose Control target must not replace Model-owned rest.
-            control = model.control()
-            control_target = control.joint_target_q.numpy()
-            target_start = int(model.joint_target_q_start.numpy()[joint])
-            np.testing.assert_array_equal(control_target[target_start : target_start + 3], 0.0)
-            control_target[target_start : target_start + 3] = np.asarray(initial_position)
-            if use_coord_layout:
-                control_target[target_start + 3 : target_start + 7] = np.asarray(initial_rotation)
-            else:
-                initial_angles = wp.quat_to_euler(initial_rotation, 2, 1, 0)
-                control_target[target_start + 3 : target_start + 6] = np.asarray(initial_angles)
-            control.joint_target_q.assign(control_target)
+    # An initial-pose Control target must not replace Model-owned rest.
+    control = model.control()
+    control_target = control.joint_target_q.numpy()
+    target_start = int(model.joint_target_q_start.numpy()[joint])
+    np.testing.assert_array_equal(control_target[target_start : target_start + 3], 0.0)
+    control_target[target_start : target_start + 3] = np.asarray(initial_position)
+    control_target[target_start + 3 : target_start + 7] = np.asarray(initial_rotation)
+    control.joint_target_q.assign(control_target)
 
-            solver = newton.solvers.SolverVBD(model, iterations=5, rigid_compliant_alm=True)
-            state_0, state_1 = model.state(), model.state()
-            solver.step(state_0, state_1, control, None, 1.0 / 600.0)
+    solver = newton.solvers.SolverVBD(model, iterations=5, rigid_compliant_alm=True)
+    state_0, state_1 = model.state(), model.state()
+    solver.step(state_0, state_1, control, None, 1.0 / 600.0)
 
-            body_qd = state_1.body_qd.numpy()[child]
-            test.assertLess(float(np.dot(body_qd[:3], np.asarray(initial_position))), 0.0)
-            test.assertGreater(float(np.linalg.norm(body_qd[3:])), 1.0e-5)
-    finally:
-        newton.use_coord_layout_targets = original_layout
+    body_qd = state_1.body_qd.numpy()[child]
+    test.assertLess(float(np.dot(body_qd[:3], np.asarray(initial_position))), 0.0)
+    test.assertGreater(float(np.linalg.norm(body_qd[3:])), 1.0e-5)
 
 
 def _rod_notify_joint_properties_refreshes_structural_rest_impl(test: unittest.TestCase, device):
     """Refresh Rod rest through reference-pose and compatible broad flags."""
-    original_layout = newton.use_coord_layout_targets
-    try:
-        for use_coord_layout, flags in (
-            (False, newton.ModelFlags.JOINT_PROPERTIES),
-            (False, newton.ModelFlags.JOINT_DOF_PROPERTIES),
-            (False, newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES),
-            (True, newton.ModelFlags.JOINT_PROPERTIES),
-            (True, newton.ModelFlags.JOINT_DOF_PROPERTIES),
-            (True, newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES),
-        ):
-            newton.use_coord_layout_targets = use_coord_layout
-            builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
-            child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-            joint = builder.add_joint_rod(-1, child, bend_stiffness=20.0, twist_stiffness=10.0)
-            builder.add_articulation([joint])
-            builder.color()
-            if use_coord_layout:
-                model = builder.finalize(device=device)
-            else:
-                with test.assertWarnsRegex(DeprecationWarning, "legacy DOF-shaped joint_target_q layout"):
-                    model = builder.finalize(device=device)
+    for flags in (
+        newton.ModelFlags.JOINT_PROPERTIES,
+        newton.ModelFlags.JOINT_DOF_PROPERTIES,
+        newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES,
+    ):
+        builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+        child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        joint = builder.add_joint_rod(-1, child, bend_stiffness=20.0, twist_stiffness=10.0)
+        builder.add_articulation([joint])
+        builder.color()
+        model = builder.finalize(device=device)
 
-            solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
-            bend_before = solver.joint_rod_rest_kb_local.numpy().copy()
-            twist_before = solver.joint_rod_rest_twist.numpy().copy()
+        solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
+        bend_before = solver.joint_rod_rest_kb_local.numpy().copy()
+        twist_before = solver.joint_rod_rest_twist.numpy().copy()
 
-            rest_rotation = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.25) * wp.quat_from_axis_angle(
-                wp.vec3(0.0, 0.0, 1.0), 0.3
-            )
-            target = model.joint_target_q.numpy()
-            target_start = int(model.joint_target_q_start.numpy()[joint])
-            if use_coord_layout:
-                target[target_start + 3 : target_start + 7] = np.asarray(rest_rotation)
-            else:
-                target[target_start + 3 : target_start + 6] = np.asarray(wp.quat_to_euler(rest_rotation, 2, 1, 0))
-            model.joint_target_q.assign(target)
-            if flags == newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES:
-                solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
-                solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES)
-                np.testing.assert_array_equal(solver.joint_rod_rest_kb_local.numpy(), bend_before)
-                np.testing.assert_array_equal(solver.joint_rod_rest_twist.numpy(), twist_before)
-            solver.notify_model_changed(flags)
+        rest_rotation = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), 0.25) * wp.quat_from_axis_angle(
+            wp.vec3(0.0, 0.0, 1.0), 0.3
+        )
+        target = model.joint_target_q.numpy()
+        target_start = int(model.joint_target_q_start.numpy()[joint])
+        target[target_start + 3 : target_start + 7] = np.asarray(rest_rotation)
+        model.joint_target_q.assign(target)
+        if flags == newton.ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES:
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_FORCE_PROPERTIES)
+            solver.notify_model_changed(newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES)
+            np.testing.assert_array_equal(solver.joint_rod_rest_kb_local.numpy(), bend_before)
+            np.testing.assert_array_equal(solver.joint_rod_rest_twist.numpy(), twist_before)
+        solver.notify_model_changed(flags)
 
-            bend_after = solver.joint_rod_rest_kb_local.numpy()
-            twist_after = solver.joint_rod_rest_twist.numpy()
-            test.assertGreater(float(np.linalg.norm(bend_after - bend_before)), 1.0e-5)
-            test.assertGreater(float(np.linalg.norm(twist_after - twist_before)), 1.0e-5)
+        bend_after = solver.joint_rod_rest_kb_local.numpy()
+        twist_after = solver.joint_rod_rest_twist.numpy()
+        test.assertGreater(float(np.linalg.norm(bend_after - bend_before)), 1.0e-5)
+        test.assertGreater(float(np.linalg.norm(twist_after - twist_before)), 1.0e-5)
 
-            rebuilt_solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
-            np.testing.assert_allclose(bend_after, rebuilt_solver.joint_rod_rest_kb_local.numpy(), atol=1.0e-6)
-            np.testing.assert_allclose(twist_after, rebuilt_solver.joint_rod_rest_twist.numpy(), atol=1.0e-6)
-    finally:
-        newton.use_coord_layout_targets = original_layout
+        rebuilt_solver = newton.solvers.SolverVBD(model, rigid_compliant_alm=True)
+        np.testing.assert_allclose(bend_after, rebuilt_solver.joint_rod_rest_kb_local.numpy(), atol=1.0e-6)
+        np.testing.assert_allclose(twist_after, rebuilt_solver.joint_rod_rest_twist.numpy(), atol=1.0e-6)
 
 
 def _cable_generic_target_pose_is_structural_rest_impl(test: unittest.TestCase, device):
     """Verify generic Rod angular targets produce zero wrench at structural rest."""
-    original_layout = newton.use_coord_layout_targets
-    try:
-        for use_coord_layout in (False, True):
-            newton.use_coord_layout_targets = use_coord_layout
-            rest_angles = wp.vec3(0.21, -0.16, 0.13)
-            rest_rotation = wp.quat_from_euler(rest_angles, 2, 1, 0)
-            parent_pose = wp.transform(
-                wp.vec3(-0.3, 0.4, 0.2),
-                wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, -2.0, 0.5)), 0.4),
-            )
-            parent_xform = wp.transform(
-                wp.vec3(0.17, -0.09, 0.05),
-                wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.5, 1.0, -0.3)), 0.28),
-            )
-            child_xform = wp.transform(
-                wp.vec3(-0.08, 0.11, -0.04),
-                wp.quat_from_axis_angle(wp.normalize(wp.vec3(-0.2, 0.4, 1.0)), -0.31),
-            )
-            child_pose = (
-                parent_pose
-                * parent_xform
-                * wp.transform(wp.vec3(0.0), rest_rotation)
-                * wp.transform_inverse(child_xform)
-            )
+    rest_angles = wp.vec3(0.21, -0.16, 0.13)
+    rest_rotation = wp.quat_from_euler(rest_angles, 2, 1, 0)
+    parent_pose = wp.transform(
+        wp.vec3(-0.3, 0.4, 0.2),
+        wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, -2.0, 0.5)), 0.4),
+    )
+    parent_xform = wp.transform(
+        wp.vec3(0.17, -0.09, 0.05),
+        wp.quat_from_axis_angle(wp.normalize(wp.vec3(0.5, 1.0, -0.3)), 0.28),
+    )
+    child_xform = wp.transform(
+        wp.vec3(-0.08, 0.11, -0.04),
+        wp.quat_from_axis_angle(wp.normalize(wp.vec3(-0.2, 0.4, 1.0)), -0.31),
+    )
+    child_pose = (
+        parent_pose * parent_xform * wp.transform(wp.vec3(0.0), rest_rotation) * wp.transform_inverse(child_xform)
+    )
 
-            builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
-            parent = builder.add_link(
-                xform=parent_pose,
-                mass=1.0,
-                inertia=wp.mat33(np.eye(3)),
-                com=wp.vec3(0.06, -0.03, 0.02),
-            )
-            child = builder.add_link(
-                xform=child_pose,
-                mass=1.0,
-                inertia=wp.mat33(np.eye(3)),
-                com=wp.vec3(-0.04, 0.05, -0.01),
-            )
-            axes = (newton.Axis.X, newton.Axis.Y, newton.Axis.Z)
-            linear_axes = [
-                newton.ModelBuilder.JointDofConfig(
-                    axis=axis,
-                    target_ke=(300.0, 300.0, 500.0)[i],
-                    actuator_mode=newton.JointTargetMode.NONE,
-                )
-                for i, axis in enumerate(axes)
-            ]
-            angular_axes = [
-                newton.ModelBuilder.JointDofConfig(
-                    axis=axis,
-                    target_pos=float(rest_angles[i]),
-                    target_ke=(20.0, 20.0, 12.0)[i],
-                    actuator_mode=newton.JointTargetMode.NONE,
-                )
-                for i, axis in enumerate(axes)
-            ]
-            joint = builder.add_joint(
-                newton.JointType.ROD,
-                parent,
-                child,
-                parent_xform=parent_xform,
-                child_xform=child_xform,
-                linear_axes=linear_axes,
-                angular_axes=angular_axes,
-            )
-            builder.add_articulation([joint])
-            builder.color()
-            if use_coord_layout:
-                model = builder.finalize(device=device)
-            else:
-                with test.assertWarnsRegex(DeprecationWarning, "legacy DOF-shaped joint_target_q layout"):
-                    model = builder.finalize(device=device)
+    builder = newton.ModelBuilder(gravity=wp.vec3(0.0))
+    parent = builder.add_link(
+        xform=parent_pose,
+        mass=1.0,
+        inertia=wp.mat33(np.eye(3)),
+        com=wp.vec3(0.06, -0.03, 0.02),
+    )
+    child = builder.add_link(
+        xform=child_pose,
+        mass=1.0,
+        inertia=wp.mat33(np.eye(3)),
+        com=wp.vec3(-0.04, 0.05, -0.01),
+    )
+    axes = (newton.Axis.X, newton.Axis.Y, newton.Axis.Z)
+    linear_axes = [
+        newton.ModelBuilder.JointDofConfig(
+            axis=axis,
+            target_ke=(300.0, 300.0, 500.0)[i],
+            actuator_mode=newton.JointTargetMode.NONE,
+        )
+        for i, axis in enumerate(axes)
+    ]
+    angular_axes = [
+        newton.ModelBuilder.JointDofConfig(
+            axis=axis,
+            target_pos=float(rest_angles[i]),
+            target_ke=(20.0, 20.0, 12.0)[i],
+            actuator_mode=newton.JointTargetMode.NONE,
+        )
+        for i, axis in enumerate(axes)
+    ]
+    joint = builder.add_joint(
+        newton.JointType.ROD,
+        parent,
+        child,
+        parent_xform=parent_xform,
+        child_xform=child_xform,
+        linear_axes=linear_axes,
+        angular_axes=angular_axes,
+    )
+    builder.add_articulation([joint])
+    builder.color()
+    model = builder.finalize(device=device)
 
-            state_0, state_1 = model.state(), model.state()
-            newton.solvers.SolverVBD(model, iterations=5, rigid_compliant_alm=True).step(
-                state_0, state_1, model.control(), None, 1.0 / 240.0
-            )
-            np.testing.assert_allclose(
-                state_1.body_qd.numpy()[[parent, child]],
-                0.0,
-                atol=2.0e-5,
-                err_msg="a rod at structural rest must apply zero wrench",
-            )
-    finally:
-        newton.use_coord_layout_targets = original_layout
+    state_0, state_1 = model.state(), model.state()
+    newton.solvers.SolverVBD(model, iterations=5, rigid_compliant_alm=True).step(
+        state_0, state_1, model.control(), None, 1.0 / 240.0
+    )
+    np.testing.assert_allclose(
+        state_1.body_qd.numpy()[[parent, child]],
+        0.0,
+        atol=2.0e-5,
+        err_msg="a rod at structural rest must apply zero wrench",
+    )
 
 
 def _cable_rod_separate_rest_and_initial_pose_impl(test: unittest.TestCase, device):
     """Verify rod rest geometry is independent and authored frames are aligned."""
-    test.addCleanup(setattr, newton, "use_coord_layout_targets", newton.use_coord_layout_targets)
-    newton.use_coord_layout_targets = True
 
     def builder_target_rotation(builder: newton.ModelBuilder, joint: int) -> wp.quat:
         start = builder.joint_q_start[joint]
@@ -6310,80 +6261,9 @@ def _rod_builder_assembles_topology_and_constitutive_data(test, device):
     test.assertEqual(caught.filename, __file__)
 
 
-def _joint_rod_api_deprecates_cable_names(test, device):
-    """Verify deprecated cable joint names forward to the rod API."""
-    test.assertEqual(newton.JointType.ROD.value, 7)
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", DeprecationWarning)
-        names = dir(newton.JointType)
-        members = newton.JointType.__members__
-        test.assertIn("CABLE", names)
-        test.assertIn("ROD", names)
-        test.assertIs(members["CABLE"], members["ROD"])
-
-    with test.assertWarnsRegex(DeprecationWarning, r"JointType\.CABLE.*JointType\.ROD") as caught:
-        deprecated_joint_type = newton.JointType.CABLE
-    test.assertIs(deprecated_joint_type, newton.JointType.ROD)
-    # Caller attribution ensures the example runner exposes in-tree misuse.
-    test.assertEqual(caught.filename, __file__)
-
-    with test.assertWarnsRegex(DeprecationWarning, r"JointType\.CABLE.*JointType\.ROD") as caught:
-        deprecated_by_name = newton.JointType["CABLE"]
-    test.assertIs(deprecated_by_name, newton.JointType.ROD)
-    test.assertEqual(caught.filename, __file__)
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", DeprecationWarning)
-        rod_type = newton.JointType(7)
-        test.assertIs(rod_type, newton.JointType.ROD)
-        test.assertIs(newton.JointType["ROD"], rod_type)
-        test.assertEqual(rod_type.name, "CABLE")
-        test.assertIn("CABLE", repr(rod_type))
-        test.assertEqual([member.name for member in newton.JointType if member.value == 7], ["CABLE"])
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", DeprecationWarning)
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        child = builder.add_link()
-        joint = builder.add_joint_rod(parent=-1, child=child)
-    test.assertEqual(builder.joint_type[joint], newton.JointType.ROD)
-
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    child = builder.add_link()
-    with test.assertWarnsRegex(DeprecationWarning, r"add_joint_cable.*add_joint_rod") as caught:
-        joint = builder.add_joint_cable(parent=-1, child=child)
-    test.assertEqual(builder.joint_type[joint], newton.JointType.ROD)
-    test.assertEqual(caught.filename, __file__)
-
-
 def _cable_positional_argument_migrations(test, device):
-    """Preserve active migrations and enforce completed migrations."""
-    rod_parameters = dict(inspect.signature(newton.ModelBuilder.add_joint_rod).parameters)
-    rod_parameters.pop("rest_rotation")  # the deprecated alias does not grow new parameters
-    test.assertEqual(
-        list(inspect.signature(newton.ModelBuilder.add_joint_cable).parameters.values()),
-        list(rod_parameters.values()),
-    )
-
+    """Enforce completed migrations to keyword-only rod parameters."""
     released_stiffness_args = (11.0, 0.1, 22.0, 0.2, 33.0, 0.3, 44.0, 0.4)
-    expected_ke = [22.0, 22.0, 11.0, 33.0, 33.0, 44.0]
-    expected_kd = [0.2, 0.2, 0.1, 0.3, 0.3, 0.4]
-
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    child = builder.add_link()
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always", DeprecationWarning)
-        joint = builder.add_joint_cable(-1, child, None, None, *released_stiffness_args)
-    test.assertEqual(builder.joint_type[joint], newton.JointType.ROD)
-    test.assertEqual(len(caught), 2)
-    test.assertTrue(all(issubclass(item.category, DeprecationWarning) for item in caught))
-    test.assertTrue(all(item.filename == __file__ for item in caught))
-    warning_messages = [str(item.message) for item in caught]
-    test.assertTrue(any("Passing" in message for message in warning_messages))
-    test.assertTrue(any("add_joint_cable" in message for message in warning_messages))
-    np.testing.assert_allclose(builder.joint_target_ke, expected_ke)
-    np.testing.assert_allclose(builder.joint_target_kd, expected_kd)
 
     points = [wp.vec3(0.0, 0.0, float(i)) for i in range(3)]
     quaternions = [wp.quat_identity(), wp.quat_identity()]
@@ -6769,8 +6649,6 @@ def _split_cable_dahl_twist_is_continuous_across_branch_cut(test, device):
 
 def _split_cable_routes_explicit_shear_to_second_slot(test, device):
     """Explicit shear stiffness/damping must land in the split shear slot."""
-    test.addCleanup(setattr, newton, "use_coord_layout_targets", newton.use_coord_layout_targets)
-    newton.use_coord_layout_targets = True
 
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     body = builder.add_link()
@@ -7682,8 +7560,6 @@ def _quat_between_vectors_robust_antiparallel_kernel(direction: wp.vec3, errors:
 class TestCable(unittest.TestCase):
     def test_semi_implicit_rejects_rod_joints(self):
         """Reject Rod models at SemiImplicit construction."""
-        self.addCleanup(setattr, newton, "use_coord_layout_targets", newton.use_coord_layout_targets)
-        newton.use_coord_layout_targets = True
         builder = newton.ModelBuilder()
         joint = builder.add_joint_rod(-1, builder.add_link())
         builder.add_articulation([joint])
@@ -7775,8 +7651,6 @@ class TestCable(unittest.TestCase):
 
     def test_prepared_rod_rest_geometry(self):
         """Use separate rest frames and lengths for prepared chains and graphs."""
-        self.addCleanup(setattr, newton, "use_coord_layout_targets", newton.use_coord_layout_targets)
-        newton.use_coord_layout_targets = True
         initial_points = np.array([(0.0, 0.0, z) for z in (0.0, 1.0, 3.0, 6.0)])
         rest_points = initial_points * 0.5
         frames = [wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), roll) for roll in (0.0, 0.1, 0.3)]
@@ -7830,62 +7704,51 @@ class TestCable(unittest.TestCase):
 
     def test_cable_omitted_rest_snapshots_initial_rotation(self):
         """Use the authored initial relative rotation when Rod angular rest is omitted."""
-        original_layout = newton.use_coord_layout_targets
-        try:
-            for use_coord_layout in (False, True):
-                with self.subTest(use_coord_layout=use_coord_layout):
-                    newton.use_coord_layout_targets = use_coord_layout
-                    parent_pose = wp.transform(
-                        wp.vec3(-0.3, 0.2, 0.4),
-                        wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, -1.0)), 0.4),
-                    )
-                    child_pose = wp.transform(
-                        wp.vec3(0.5, -0.1, 0.9),
-                        wp.quat_from_axis_angle(wp.normalize(wp.vec3(-1.0, 0.5, 2.0)), -0.3),
-                    )
-                    parent_xform = wp.transform(
-                        wp.vec3(0.1, -0.05, 0.08),
-                        wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.2),
-                    )
-                    child_xform = wp.transform(
-                        wp.vec3(-0.04, 0.07, -0.02),
-                        wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -0.15),
-                    )
+        parent_pose = wp.transform(
+            wp.vec3(-0.3, 0.2, 0.4),
+            wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 2.0, -1.0)), 0.4),
+        )
+        child_pose = wp.transform(
+            wp.vec3(0.5, -0.1, 0.9),
+            wp.quat_from_axis_angle(wp.normalize(wp.vec3(-1.0, 0.5, 2.0)), -0.3),
+        )
+        parent_xform = wp.transform(
+            wp.vec3(0.1, -0.05, 0.08),
+            wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), 0.2),
+        )
+        child_xform = wp.transform(
+            wp.vec3(-0.04, 0.07, -0.02),
+            wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), -0.15),
+        )
 
-                    builder = newton.ModelBuilder()
-                    parent = builder.add_link(xform=parent_pose)
-                    child = builder.add_link(xform=child_pose)
-                    joint = builder.add_joint_rod(
-                        parent,
-                        child,
-                        parent_xform=parent_xform,
-                        child_xform=child_xform,
-                    )
+        builder = newton.ModelBuilder()
+        parent = builder.add_link(xform=parent_pose)
+        child = builder.add_link(xform=child_pose)
+        joint = builder.add_joint_rod(
+            parent,
+            child,
+            parent_xform=parent_xform,
+            child_xform=child_xform,
+        )
 
-                    expected = wp.transform_inverse(parent_pose * parent_xform) * child_pose * child_xform
-                    target_start = builder.joint_q_start[joint]
-                    target_position = wp.vec3(*builder.joint_target_q[target_start : target_start + 3])
-                    if use_coord_layout:
-                        target_rotation = wp.quat(*builder.joint_target_q[target_start + 3 : target_start + 7])
-                    else:
-                        angles = wp.vec3(*builder.joint_target_q[target_start + 3 : target_start + 6])
-                        target_rotation = wp.quat_from_euler(angles, 2, 1, 0)
+        expected = wp.transform_inverse(parent_pose * parent_xform) * child_pose * child_xform
+        target_start = builder.joint_q_start[joint]
+        target_position = wp.vec3(*builder.joint_target_q[target_start : target_start + 3])
+        target_rotation = wp.quat(*builder.joint_target_q[target_start + 3 : target_start + 7])
 
-                    np.testing.assert_allclose(target_position, np.zeros(3), atol=1.0e-6)
-                    self.assertAlmostEqual(
-                        abs(
-                            float(
-                                np.dot(
-                                    np.asarray(target_rotation),
-                                    np.asarray(wp.transform_get_rotation(expected)),
-                                )
-                            )
-                        ),
-                        1.0,
-                        places=5,
+        np.testing.assert_allclose(target_position, np.zeros(3), atol=1.0e-6)
+        self.assertAlmostEqual(
+            abs(
+                float(
+                    np.dot(
+                        np.asarray(target_rotation),
+                        np.asarray(wp.transform_get_rotation(expected)),
                     )
-        finally:
-            newton.use_coord_layout_targets = original_layout
+                )
+            ),
+            1.0,
+            places=5,
+        )
 
     def test_cable_builder_validation(self):
         """Reject malformed generic layouts and invalid explicit rest rotations."""
@@ -8221,12 +8084,6 @@ add_function_test(
     TestCable,
     "test_rod_builder_assembles_topology_and_constitutive_data",
     _rod_builder_assembles_topology_and_constitutive_data,
-    devices=None,
-)
-add_function_test(
-    TestCable,
-    "test_joint_rod_api_deprecates_cable_names",
-    _joint_rod_api_deprecates_cable_names,
     devices=None,
 )
 add_function_test(

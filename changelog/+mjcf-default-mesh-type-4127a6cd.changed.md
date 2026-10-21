@@ -1,0 +1,1 @@
+Honor the MJCF default sphere type when a geom references a mesh without specifying or inheriting a type. Fit the sphere to the mesh, matching MuJoCo; specify `type="mesh"` on the geom or in its defaults to retain mesh-collider behavior.

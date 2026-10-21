@@ -32,6 +32,7 @@ import warp as wp
 import newton
 
 from ..core.types import Axis, override
+from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..utils.mesh import compute_vertex_normals
 
 try:
@@ -1030,6 +1031,7 @@ void main() {
             warnings.warn(
                 f"ViewerRTX: {len(unbound)} of {model.body_count} bodies have no prim at their label in the "
                 f"borrowed stage and are not rendered, e.g. {unbound[:3]}",
+                NewtonWarning,
                 stacklevel=3,
             )
         if not paths:
@@ -1079,6 +1081,7 @@ void main() {
             warnings.warn(
                 "ViewerRTX: body poses in the model and the borrowed stage differ by more than one rigid "
                 "transform; rendering bodies at their model poses",
+                NewtonWarning,
                 stacklevel=4,
             )
             return None
@@ -1370,14 +1373,11 @@ void main() {
 
         if model is not None:
             try:
-                from ..geometry import raycast as _raycast_module  # noqa: PLC0415
-
-                wp.load_module(module=_raycast_module, device=model.device)
-                wp.load_module(module="newton._src.viewer.kernels", device=model.device)
+                self.picking._load_kernels()
             except Exception as exc:
                 warnings.warn(
                     f"ViewerRTX: Failed to precompile Warp kernels for device {model.device}: {exc}",
-                    category=RuntimeWarning,
+                    category=NewtonWarning,
                     stacklevel=2,
                 )
 
@@ -1776,7 +1776,7 @@ void main() {
                 except Exception as exc:
                     warnings.warn(
                         f"ViewerRTX: error dispatching window events: {exc}",
-                        category=RuntimeWarning,
+                        category=NewtonWarning,
                         stacklevel=2,
                     )
                     self._should_close = True
@@ -2893,7 +2893,7 @@ void main() {
         warnings.warn(
             "ViewerRTX.save_screenshot() is deprecated in Newton 1.7; "
             "use get_frame().numpy() and an image library such as Pillow to save the image instead.",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         from PIL import Image

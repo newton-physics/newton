@@ -412,10 +412,6 @@ than the control law nominally asks for. The trade-off is between stability at
 large timesteps with the implicit mode, and fidelity to the requested gains at
 small timesteps with the explicit mode.
 
-The predicted state accounts only for the actuator's own impulse. Gravity, any
-other applied force, other actuators driving the same articulation, and joint
-drive applied without the actuator are all absent from it.
-
 With an :class:`~newton.actuators.InputProcessorBacklash`, the drive reads the
 link side of the backlash joint, but the predicted state still uses the
 response of the actuated joint alone. While the backlash gap is open, the
@@ -440,6 +436,70 @@ is refreshed once per step at the current pose:
    sim_control.joint_f.zero_()
    actuator.step(sim_state, sim_control, state_a, state_b, dt=0.01)
    solver.step(sim_state, next_sim_state, sim_control, contacts, dt=0.01)
+
+By default the predicted state accounts only for the actuator's own impulse.
+Gravity, Coriolis forces and every other force the step applies are absent
+from it. The drive still pushes back once those forces have moved the joint,
+but it cannot anticipate them. For a single joint under a constant load ``g``
+with ``kd = kp dt``, this leaves a steady error of ``g / kp + 2 dt^2 A g``: the
+first part shrinks as the gain grows, the second part does not. Pass the forces
+as a *bias force* to include them in the prediction. The bias force uses the
+sign convention of the manipulator equation ``tau = M qdd + C qd + g``: it is
+``C qd + g``, indexed like ``joint_qd``, and the step itself applies its
+negative. The predicted end-of-step velocity
+then becomes ``qd + A (p - dt bias_force)`` instead of ``qd + A p``, where
+``A`` is the inverse mass matrix (see below) and ``p`` the actuator's impulse.
+
+:func:`~newton.eval_inverse_dynamics_passive` returns the two parts,
+``gravity_force`` ``g(q)`` and ``coriolis_force`` ``C(q, qd) qd``, so the bias
+force is their sum. The function reads ``body_q``, which must match
+``joint_q``; call :func:`~newton.eval_fk` first if it may not.
+
+.. code-block:: python
+
+   @wp.kernel
+   def bias_force_kernel(
+       gravity_force: wp.array[float],
+       coriolis_force: wp.array[float],
+       bias_force: wp.array[float],
+   ):
+       i = wp.tid()
+       bias_force[i] = gravity_force[i] + coriolis_force[i]
+
+
+   dt = 0.01
+   n = model.joint_dof_count
+   gravity_force = wp.zeros(n, dtype=float, device=model.device)
+   coriolis_force = wp.zeros(n, dtype=float, device=model.device)
+   bias_force = wp.zeros(n, dtype=float, device=model.device)
+
+   # Simulation loop
+   response.refresh(sim_state)
+   newton.eval_inverse_dynamics_passive(
+       model, sim_state, gravity_force=gravity_force, coriolis_force=coriolis_force
+   )
+   wp.launch(
+       bias_force_kernel,
+       dim=n,
+       inputs=[gravity_force, coriolis_force],
+       outputs=[bias_force],
+       device=model.device,
+   )
+   sim_control.joint_f.zero_()
+   actuator.step(sim_state, sim_control, state_a, state_b, dt=dt, bias_force=bias_force)
+   solver.step(sim_state, next_sim_state, sim_control, contacts, dt=dt)
+
+These are the forces at the start of the step. A solver that holds them
+constant over the step, such as :class:`~newton.solvers.SolverMuJoCo` with its
+default ``implicitfast`` integrator, applies the same values, so the
+prediction matches its step up to the approximations of the response described
+below. This bias force does not include contacts, joint limits, joint damping,
+other actuators, or joint force applied without the actuator, such as other
+writes to ``joint_f``. Contact and limit forces depend on the actuator's own
+effort and cannot be computed before it.
+:func:`~newton.eval_inverse_dynamics_passive` allocates scratch memory on every
+call, so capturing it in a CUDA graph needs the device's memory pool. The
+explicit effort mode ignores the bias force.
 
 In this mode :meth:`Actuator.step <newton.actuators.Actuator.step>` evaluates
 the joint force for each actuated DOF. A force on one DOF changes the velocity
@@ -471,7 +531,9 @@ exception of loop closure effects. To this end,
 <newton.actuators.JointSpaceResponse.refresh_from_solve>` takes a callable that
 computes ``x = M^-1 y``. The response recovers the matrix one column at a time,
 by passing unit vectors through that callable. MuJoCo is currently the only
-Newton solver that provides one.
+Newton solver that provides one. MuJoCo's free and ball joints use different
+coordinates from Newton's, so pass the state as well; the response then
+converts them at that pose.
 
 .. code-block:: python
 
@@ -480,7 +542,7 @@ Newton solver that provides one.
        mujoco_warp.solve_m(solver.mjw_model, solver.mjw_data, x, y)
 
    # Simulation loop, in place of response.refresh(sim_state)
-   response.refresh_from_solve(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof)
+   response.refresh_from_solve(solve_inverse, dof_map=solver.mjc_dof_to_newton_dof, state=sim_state)
 
 Both refresh paths launch only kernels, so the actuator, the solver step and the
 response update can be captured in one CUDA graph.

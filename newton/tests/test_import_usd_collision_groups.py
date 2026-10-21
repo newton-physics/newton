@@ -48,20 +48,15 @@ class TestImportUsdCollisionGroups(unittest.TestCase):
         expected_filtered = {
             tuple(sorted((shape_ids[name_a], shape_ids[name_b]))) for name_a, name_b in expected_filtered
         }
-        filtered_pairs = set(builder.shape_collision_filter_pairs)
+        model = builder.finalize(device="cpu")
+        contact_pairs = {tuple(pair) for pair in model.shape_contact_pairs.numpy()}
         for name_a, shape_a in shape_ids.items():
             for name_b, shape_b in shape_ids.items():
                 if shape_a >= shape_b:
                     continue
                 pair = (shape_a, shape_b)
-                collision_enabled = (
-                    builder._test_group_pair(
-                        builder.shape_collision_group[shape_a], builder.shape_collision_group[shape_b]
-                    )
-                    and pair not in filtered_pairs
-                )
                 self.assertEqual(
-                    collision_enabled,
+                    pair in contact_pairs,
                     pair not in expected_filtered,
                     f"collision mismatch for {name_a}-{name_b}",
                 )
@@ -113,13 +108,9 @@ class TestImportUsdCollisionGroups(unittest.TestCase):
                 builder.add_usd(stage)
 
                 self.assertEqual(builder.shape_collision_group, [default_collision_group] * len(shapes))
-                for shape_a in range(builder.shape_count):
-                    for shape_b in range(shape_a + 1, builder.shape_count):
-                        self.assertFalse(
-                            builder._test_group_pair(
-                                builder.shape_collision_group[shape_a], builder.shape_collision_group[shape_b]
-                            )
-                        )
+                model = builder.finalize(device="cpu")
+                self.assertEqual(model.shape_contact_pair_count, 0)
+                self.assertEqual(len(model.shape_contact_pairs), 0)
 
     def test_normal_and_inverted_filtering(self):
         """Preserve self, cross-group, and inverted collision filtering."""

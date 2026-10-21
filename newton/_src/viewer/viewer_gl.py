@@ -18,6 +18,7 @@ import warp as wp
 import newton as nt
 
 from ..core.types import Axis, override
+from ..exceptions import NewtonDeprecationWarning
 from ..utils.deprecation import deprecate_nonkeyword_arguments
 from ..utils.render import copy_rgb_frame_uint8
 from .camera import Camera
@@ -676,13 +677,9 @@ class ViewerGL(ViewerBase):
         self.picking.visible_worlds_mask = self._visible_worlds_mask
         self.wind = Wind(model)
 
-        # Precompile picking/raycast kernels to avoid JIT delay on first pick
         if model is not None:
             try:
-                from ..geometry import raycast as _raycast_module  # noqa: PLC0415
-
-                wp.load_module(module=_raycast_module, device=model.device)
-                wp.load_module(module="newton._src.viewer.kernels", device=model.device)
+                self.picking._load_kernels()
             except Exception:
                 pass
 
@@ -2126,7 +2123,7 @@ class ViewerGL(ViewerBase):
                 raise TypeError("Specify only one of `output` and `target_image`")
             warnings.warn(
                 "ViewerGL.get_frame(target_image=...) is deprecated as of Newton 1.7; use output=... instead.",
-                DeprecationWarning,
+                NewtonDeprecationWarning,
                 stacklevel=3,
             )
             output = target_image

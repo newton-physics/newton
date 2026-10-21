@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 import warp as wp
 
+from ..exceptions import NewtonDeprecationWarning
 from .clamping.base import ClampingBase
 from .drives.base import DriveBase
 from .effort_mode_explicit import _EffortModeExplicit
@@ -243,7 +244,7 @@ class Actuator:
             if controller_state is not _DEPRECATED_UNSET:
                 if drive_state is not _DEPRECATED_UNSET:
                     raise TypeError("Specify only one of 'drive_state' and deprecated 'controller_state'.")
-                warnings.warn(_CONTROLLER_STATE_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+                warnings.warn(_CONTROLLER_STATE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
                 drive_state = controller_state
             if delay_state is not None:
                 if input_processor_states is not None:
@@ -284,12 +285,12 @@ class Actuator:
             .. deprecated:: 1.6
                 Use :attr:`drive_state` instead.
             """
-            warnings.warn(_CONTROLLER_STATE_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            warnings.warn(_CONTROLLER_STATE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
             return self.drive_state
 
         @controller_state.setter
         def controller_state(self, value: DriveBase.State | None) -> None:
-            warnings.warn(_CONTROLLER_STATE_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            warnings.warn(_CONTROLLER_STATE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
             self.drive_state = value
 
         def reset(self, mask: wp.array[wp.bool] | None = None) -> None:
@@ -374,11 +375,8 @@ class Actuator:
                 *indices* when position and velocity arrays have different
                 layouts (e.g. floating-base or ball-joint articulations).
             target_pos_indices: Indices into ``control.joint_target_q``.
-                Defaults to *pos_indices* when
-                :attr:`newton.use_coord_layout_targets` is ``True`` (coord
-                layout), otherwise to *indices* (legacy DOF layout). The flag is
-                read once here, so toggling ``newton.use_coord_layout_targets``
-                after construction does not change ``target_pos_indices``.
+                Defaults to *pos_indices*. Override for custom target buffers
+                with a different index mapping.
             effort_indices: DOF indices into effort output arrays. Defaults to
                 *indices*. Differs from *indices* for coupled transmissions
                 or tendon-driven joints.
@@ -402,7 +400,7 @@ class Actuator:
         if controller is not _DEPRECATED_UNSET:
             if drive is not None:
                 raise TypeError("Specify only one of 'drive' and deprecated 'controller'.")
-            warnings.warn(_CONTROLLER_KEYWORD_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            warnings.warn(_CONTROLLER_KEYWORD_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
             drive = controller
         if drive is None:
             raise TypeError("Actuator() missing required argument: 'drive'")
@@ -413,12 +411,7 @@ class Actuator:
 
         self.indices = indices
         self.pos_indices = pos_indices if pos_indices is not None else indices
-        if target_pos_indices is not None:
-            self.target_pos_indices = target_pos_indices
-        else:
-            import newton  # noqa: PLC0415
-
-            self.target_pos_indices = self.pos_indices if newton.use_coord_layout_targets else indices
+        self.target_pos_indices = target_pos_indices if target_pos_indices is not None else self.pos_indices
         self.effort_indices = effort_indices if effort_indices is not None else indices
         if self.pos_indices.shape != indices.shape:
             raise ValueError(f"pos_indices shape {self.pos_indices.shape} must match indices shape {indices.shape}")
@@ -539,12 +532,12 @@ class Actuator:
         .. deprecated:: 1.6
             Use :attr:`drive` instead.
         """
-        warnings.warn(_CONTROLLER_ATTRIBUTE_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_CONTROLLER_ATTRIBUTE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         return self.drive
 
     @controller.setter
     def controller(self, value: DriveBase) -> None:
-        warnings.warn(_CONTROLLER_ATTRIBUTE_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_CONTROLLER_ATTRIBUTE_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         self.drive = value
 
     @property
@@ -676,6 +669,8 @@ class Actuator:
         current_act_state: Actuator.State | None = None,
         next_act_state: Actuator.State | None = None,
         dt: float | None = None,
+        *,
+        bias_force: wp.array[float] | None = None,
     ) -> None:
         """Execute one control step.
 
@@ -703,6 +698,20 @@ class Actuator:
             current_act_state: Current composed state (None if stateless).
             next_act_state: Next composed state (None if stateless).
             dt: Timestep [s].
+            bias_force: Optional per-DOF bias force ``C qd + g`` of the
+                manipulator equation ``tau = M qdd + bias_force``, indexed like
+                ``joint_qd`` [N or N·m, depending on joint type]: the force the
+                joints need to hold still against Coriolis and gravity. The
+                step itself applies ``-bias_force``. For example
+                ``gravity_force + coriolis_force`` from
+                :func:`~newton.eval_inverse_dynamics_passive`. Used only in
+                implicit mode, where the predicted end-of-step velocity becomes
+                ``qd + A (p - dt bias_force)``. Explicit mode ignores it.
+                ``None`` (default) leaves the prediction ``qd + A p``.
+                For free and distance joints the entries are a wrench at the
+                child CoM in the world frame, like ``joint_f``. The step
+                rotates it into the joint's parent frame, the frame of ``A``,
+                using ``sim_state.body_q``.
         """
         if self.is_stateful() and (current_act_state is None or next_act_state is None):
             raise ValueError(
@@ -773,6 +782,7 @@ class Actuator:
             drive_state,
             dt,
             custom_inputs,
+            bias_force,
         )
 
         # --- 4. Scatter-add to output ---

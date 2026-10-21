@@ -710,5 +710,57 @@ add_function_test(
 )
 
 
+def test_crossed_plank_sliver_contact(test, device, *, split=False):
+    """Collapse the sliver left by crossed planks to a line contact.
+
+    The poses come from a resting Kapla arena: the upper plank overlaps the
+    lower one only in a submillimeter strip. Four near-coincident points on
+    that strip destabilized the arena's stacks; two points span the line.
+    """
+    half_extents = (0.004, 0.04995, 0.0125)
+    poses = (
+        wp.transform(wp.vec3(3.999465227, 0.065413751, 0.025), wp.quat(0.0, 0.0, -0.700978637, 0.713182271)),
+        wp.transform(wp.vec3(3.944724798, 0.100316644, 0.05), wp.quat(0.0, 0.0, 0.012709575, 0.999919295)),
+    )
+    builder = newton.ModelBuilder()
+    cfg = newton.ModelBuilder.ShapeConfig(gap=0.01)
+    builder.add_shape_box(-1, xform=poses[0], hx=half_extents[0], hy=half_extents[1], hz=half_extents[2], cfg=cfg)
+    body = builder.add_body(xform=poses[1])
+    builder.add_shape_box(body, hx=half_extents[0], hy=half_extents[1], hz=half_extents[2], cfg=cfg)
+    model = builder.finalize(device)
+    pipeline = newton.CollisionPipeline(model)
+    test.assertEqual(pipeline.narrow_phase.split_gjk_mpr, split)
+    contacts = pipeline.contacts()
+    pipeline.collide(model.state(), contacts)
+    count = int(contacts.rigid_contact_count.numpy()[0])
+    test.assertEqual(count, 2)
+    points = contacts.rigid_contact_point1.numpy()[:count]
+    test.assertGreater(float(np.linalg.norm(points[1] - points[0])), 1.0e-3)
+
+
+add_function_test(
+    TestBoxContactNormal,
+    "test_crossed_plank_sliver_contact",
+    test_crossed_plank_sliver_contact,
+    devices=get_test_devices(),
+)
+
+
+def test_crossed_plank_sliver_contact_split(test, device):
+    """Collapse crossed-plank slivers through the split CUDA kernels."""
+    if not device.is_cuda:
+        test.skipTest("Split collision kernels run only on CUDA")
+    with patch("newton._src.sim.collide._SPLIT_GJK_MPR_LEAN_PAIR_COUNT_THRESHOLD", 0):
+        test_crossed_plank_sliver_contact(test, device, split=True)
+
+
+add_function_test(
+    TestBoxContactNormal,
+    "test_crossed_plank_sliver_contact_split",
+    test_crossed_plank_sliver_contact_split,
+    devices=get_test_devices(),
+)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

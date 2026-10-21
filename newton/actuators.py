@@ -43,6 +43,7 @@ from ._src.actuators import (
     reset_battery_supply,
     update_battery_supply,
 )
+from ._src.exceptions import NewtonDeprecationWarning
 
 __all__ = [
     "Actuator",
@@ -110,7 +111,7 @@ def __getattr__(name: str):
     version = __deprecated_symbols__[name].split()[2].rstrip(";")
     warnings.warn(
         f"newton.actuators.{name} is deprecated in Newton {version}; use newton.actuators.{replacement} instead.",
-        DeprecationWarning,
+        NewtonDeprecationWarning,
         stacklevel=2,
     )
     return value
