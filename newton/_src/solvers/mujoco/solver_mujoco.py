@@ -8604,18 +8604,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self.mjc_actuator_to_newton_ball_jnt = None
             self.mjc_actuator_to_newton_actuator_idx = None
 
-        try:
-            self.mj_model = spec.compile()
-        except ValueError as error:
-            # MuJoCo decides whether a rigidly attached group of bodies has
-            # enough inertia; only translate its error into Newton terms.
-            if "mass and inertia of moving bodies" not in str(error):
-                raise
-            raise ValueError(
-                "SolverMuJoCo cannot simulate a body with joint DOFs and no mass or inertia, including kinematic "
-                "roots: MuJoCo requires them of movable bodies or of the bodies rigidly attached to them. Give the "
-                f"body mass (mass and inertia, or shapes with density) or attach it with a fixed joint. MuJoCo: {error}"
-            ) from error
+        self.mj_model = spec.compile()
         self.mj_data = mujoco.MjData(self.mj_model)
 
         # Build MuJoCo qpos/qvel start index arrays for coordinate conversion kernels.

@@ -9775,7 +9775,7 @@ class TestMuJoCoSolverZeroMassBody(unittest.TestCase):
         self.assertIsNotNone(solver.mj_model)
 
     def test_exported_mass_matches_newton(self):
-        """MuJoCo compiles Newton's masses, including zero, instead of re-deriving them from geoms."""
+        """Export Newton's masses, including zero, instead of letting MuJoCo re-derive them from geoms."""
         builder = newton.ModelBuilder()
         massless_cfg = newton.ModelBuilder.ShapeConfig(density=0.0)
         # Fixed root whose only shape has no density.
@@ -9805,17 +9805,6 @@ class TestMuJoCoSolverZeroMassBody(unittest.TestCase):
                     solver.step(state_0, state_1, control, None, 0.002)
                     state_0, state_1 = state_1, state_0
                 self.assertTrue(np.all(np.isfinite(state_0.body_q.numpy())))
-
-    def test_massless_movable_body_raises(self):
-        """A movable body with no mass cannot be simulated by MuJoCo, even when it has geometry."""
-        for is_kinematic in (False, True):
-            with self.subTest(is_kinematic=is_kinematic):
-                builder = newton.ModelBuilder()
-                body = builder.add_body(is_kinematic=is_kinematic)
-                builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1, cfg=newton.ModelBuilder.ShapeConfig(density=0.0))
-                model = builder.finalize()
-                with self.assertRaisesRegex(ValueError, "no mass or inertia"):
-                    SolverMuJoCo(model, disable_contacts=True)
 
 
 class TestMuJoCoSolverQpos0(unittest.TestCase):
