@@ -10,7 +10,7 @@ import newton
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
 
-def _build_model(device):
+def _build_model(device, *, mimic=False):
     """Interleave 2-DOF and 10-DOF articulations so each size group is non-contiguous in the model."""
     builder = newton.ModelBuilder()
     for i in range(4):
@@ -30,6 +30,8 @@ def _build_model(device):
                 joints.append(builder.add_joint_revolute(parent, child, parent_xform=xform, axis=axis))
             parent = child
         builder.add_articulation(joints)
+        if mimic and i % 2 == 0:
+            builder.set_joint_mimic(joints[1], joints[0], coeffs=(0.0, -1.5))
     builder.joint_armature = [0.01] * builder.joint_dof_count
     model = builder.finalize(device=device, requires_grad=True)
     model.joint_qd.assign(np.random.default_rng(42).uniform(-1.0, 1.0, model.joint_dof_count).astype(np.float32))
@@ -61,12 +63,14 @@ def _simulate(model, **solver_kwargs):
 
 def test_tile_gemm_mixed_articulation_sizes(test, device):
     """Match the non-tile path in forward and backward when articulations differ in size."""
-    model = _build_model(device)
-    expected_qd, expected_grad = _simulate(model)
-    test.assertGreater(np.abs(expected_grad).max(), 0.0)
-    qd, grad = _simulate(model, use_tile_gemm=True)
-    np.testing.assert_allclose(qd, expected_qd, rtol=1e-4, atol=1e-5)
-    np.testing.assert_allclose(grad, expected_grad, rtol=1e-3, atol=1e-4)
+    for mimic in (False, True):
+        with test.subTest(mimic=mimic):
+            model = _build_model(device, mimic=mimic)
+            expected_qd, expected_grad = _simulate(model)
+            test.assertGreater(np.abs(expected_grad).max(), 0.0)
+            qd, grad = _simulate(model, use_tile_gemm=True)
+            np.testing.assert_allclose(qd, expected_qd, rtol=1e-4, atol=1e-5)
+            np.testing.assert_allclose(grad, expected_grad, rtol=1e-3, atol=1e-4)
 
 
 class TestFeatherstoneTileGemm(unittest.TestCase):

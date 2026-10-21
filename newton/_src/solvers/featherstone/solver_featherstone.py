@@ -200,6 +200,18 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     f"Follower joint {follower} belongs to articulation {articulations[follower]}; "
                     f"reference joint {reference} belongs to articulation {articulations[reference]}."
                 )
+            # Invert the fixed mimic topology, including each independent joint
+            # as its own source. Keep source order stable for deterministic sums.
+            destinations = np.where(mimic_joints >= 0, mimic_joints, np.arange(model.joint_count))
+            source_joints = np.argsort(destinations, kind="stable")
+            source_start = np.concatenate(([0], np.cumsum(np.bincount(destinations, minlength=model.joint_count))))
+            self._mimic_source_start = wp.array(source_start, dtype=int, device=model.device)
+            self._mimic_source_joint = wp.array(source_joints, dtype=int, device=model.device)
+            self._mimic_dof_joint = wp.array(
+                np.repeat(np.arange(model.joint_count), np.diff(model.joint_qd_start.numpy())),
+                dtype=int,
+                device=model.device,
+            )
         effective_deterministic = deterministic if deterministic is not None else wp.config.deterministic
         if model.joint_count > 0:
             self._set_module_options(
@@ -925,25 +937,27 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                             solve_H = self.H
                             solve_armature = self.joint_armature_effective
                             if self._has_joint_mimics:
-                                self.H_mimic.zero_()
-                                wp.launch(
-                                    reduce_mimic_inertia,
-                                    dim=model.articulation_count,
-                                    inputs=[
-                                        model.articulation_start,
-                                        model.articulation_end,
-                                        self.articulation_H_start,
-                                        self.articulation_H_rows,
-                                        self.articulation_dof_start,
-                                        model.joint_qd_start,
-                                        model.joint_mimic_joint,
-                                        model.joint_mimic_coeffs,
-                                        self.joint_armature_effective,
-                                        self.H,
-                                    ],
-                                    outputs=[self.H_mimic],
-                                    device=model.device,
-                                )
+                                for (_, dof_count), articulations in self._group_to_art.items():
+                                    wp.launch(
+                                        reduce_mimic_inertia,
+                                        dim=(articulations.size, dof_count),
+                                        inputs=[
+                                            articulations,
+                                            self.articulation_H_start,
+                                            self.articulation_H_rows,
+                                            self.articulation_dof_start,
+                                            model.joint_qd_start,
+                                            model.joint_mimic_joint,
+                                            model.joint_mimic_coeffs,
+                                            self._mimic_source_start,
+                                            self._mimic_source_joint,
+                                            self._mimic_dof_joint,
+                                            self.joint_armature_effective,
+                                            self.H,
+                                        ],
+                                        outputs=[self.H_mimic],
+                                        device=model.device,
+                                    )
                                 solve_H = self.H_mimic
                                 solve_armature = self.joint_armature_zero
 
