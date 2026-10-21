@@ -291,7 +291,6 @@ class ImplicitMPMScratchpad:
 
     def __init__(self):
         self.grid = None
-        self.gimp_cells = None
         self.particle_cells = None
         self.contact_pic = None
         self.collision_pic = None
@@ -712,9 +711,9 @@ class ImplicitMPMScratchpad:
             self.color_indices = fem.borrow_temporary(temporary_store, shape=(2, color_block_capacity), dtype=int)
             self.color_offsets = fem.borrow_temporary(temporary_store, shape=max_colors + 1, dtype=int)
 
-        if self.gimp_cells is not None and self.contact_pic is not None:
+        if self.contact_pic is not None:
             self.gimp_particle_contact_nodes = fem.borrow_temporary(
-                temporary_store, shape=self.gimp_cells.shape[0], dtype=int
+                temporary_store, shape=self.particle_cells.shape[0], dtype=int
             )
 
     def release_temporaries(self):
@@ -738,8 +737,6 @@ class ImplicitMPMScratchpad:
             self.color_indices.release()
             self.color_offsets.release()
 
-        if self.gimp_cells is not None:
-            self.gimp_cells.release()
         if self.gimp_particle_contact_nodes is not None:
             self.gimp_particle_contact_nodes.release()
         if self.gimp_domain_corners is not None:
@@ -2969,7 +2966,6 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     temporary_store=self.temporary_store,
                     use_domain_element_indices=use_domain_element_indices,
                 )
-                self._scratchpad.gimp_cells = particle_locations[0]
                 self._scratchpad.particle_cells = particle_locations[0]
                 if self.collider_basis[:3] == "pic":
                     self._scratchpad.contact_pic = _PicQuadrature(
@@ -4129,7 +4125,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     fields={"tau": scratch.sym_strain_test},
                     values={
                         "inv_cell_volume": inv_cell_volume,
-                        "gimp_cells": scratch.gimp_cells,
+                        "gimp_cells": scratch.particle_cells,
                         "point_stress": point_stress,
                         "point_valid": point_valid,
                         "point_centers": point_centers,
@@ -4317,7 +4313,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     at=pic,
                     fields={"stress": scratch.stress_field},
                     values={
-                        "gimp_cells": scratch.gimp_cells,
+                        "gimp_cells": scratch.particle_cells,
                         "point_stress": point_stress,
                         "point_valid": point_valid,
                         "point_centers": point_centers,

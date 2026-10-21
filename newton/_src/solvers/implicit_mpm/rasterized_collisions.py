@@ -109,8 +109,8 @@ class Collider:
 
 
 @wp.func
-def _triangle_distance_sq_and_pseudonormal(q: wp.vec3, e1: wp.vec3, e2: wp.vec3, eps_sq: float):
-    """Return squared distance to triangle (0, e1, e2) and its weighted pseudonormal.
+def _triangle_pseudonormal(q: wp.vec3, e1: wp.vec3, e2: wp.vec3, eps_sq: float):
+    """Return the weighted pseudonormal of triangle (0, e1, e2) at its closest point to ``q``.
 
     Reuse the projection coordinates for vertex/edge classification. Degenerate
     faces and faces beyond the adaptive neighborhood contribute a zero normal.
@@ -124,7 +124,7 @@ def _triangle_distance_sq_and_pseudonormal(q: wp.vec3, e1: wp.vec3, e2: wp.vec3,
     normal_sq = wp.length_sq(normal)
     edge_scale = wp.max(wp.max(e1_sq, e2_sq), e3_sq)
     if normal_sq <= (_SLIVER_NORMAL_RATIO * edge_scale) * (_SLIVER_NORMAL_RATIO * edge_scale):
-        return float(_INFINITY), wp.vec3(0.0)
+        return wp.vec3(0.0)
 
     # Keep vertex neighborhoods disjoint, even on faces smaller than the search radius.
     eps_sq = wp.min(
@@ -164,10 +164,8 @@ def _triangle_distance_sq_and_pseudonormal(q: wp.vec3, e1: wp.vec3, e2: wp.vec3,
             s = vb * denom
             t = vc * denom
             closest = s * e1 + t * e2
-    distance_sq = wp.length_sq(q - closest)
-
-    if distance_sq >= eps_sq:
-        return distance_sq, wp.vec3(0.0)
+    if wp.length_sq(q - closest) >= eps_sq:
+        return wp.vec3(0.0)
 
     normal_length = wp.sqrt(normal_sq)
     # Divide all weights by pi; only vertex weights need angles.
@@ -188,7 +186,7 @@ def _triangle_distance_sq_and_pseudonormal(q: wp.vec3, e1: wp.vec3, e2: wp.vec3,
             or u * u * normal_sq < eps_sq * e3_sq
         ):
             weight = 1.0
-    return distance_sq, normal * (weight / normal_length)
+    return normal * (weight / normal_length)
 
 
 @wp.func
@@ -226,7 +224,7 @@ def get_average_face_normal(
         V1 = points[vidx[face_index * 3 + 1]]
         V2 = points[vidx[face_index * 3 + 2]]
 
-        _distance_sq, weighted_normal = _triangle_distance_sq_and_pseudonormal(point - V0, V1 - V0, V2 - V0, eps_sq)
+        weighted_normal = _triangle_pseudonormal(point - V0, V1 - V0, V2 - V0, eps_sq)
         face_normal += weighted_normal
         weight_sq_sum += wp.length_sq(weighted_normal)
 

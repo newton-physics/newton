@@ -1632,24 +1632,27 @@ class _SubgridContactSolver(_ContactSolver):
             record_cmd=True,
         )
 
-        self.solve_collider_launch = wp.launch(
-            kernel=solve_subgrid_friction,
-            dim=self.collision.collider_impulse.shape[0],
-            inputs=[
-                self.momentum.velocity,
-                self.collision.collider_mat.offsets,
-                self.collision.collider_mat.columns,
-                self.collision.collider_mat.values,
-                self.collision.collider_friction,
-                self.collision.collider_adhesion,
-                self.collision.collider_normals,
-                self.collider_delassus_diagonal,
-                self.collision.collider_velocities,
-                self.collision.collider_impulse,
-                self.delta_impulse,
-            ],
-            record_cmd=True,
-        )
+        # Colored contacts are solved inside the strain color sweep.
+        self.solve_collider_launch = None
+        if self.collision.colored_cell_offsets is None:
+            self.solve_collider_launch = wp.launch(
+                kernel=solve_subgrid_friction,
+                dim=self.collision.collider_impulse.shape[0],
+                inputs=[
+                    self.momentum.velocity,
+                    self.collision.collider_mat.offsets,
+                    self.collision.collider_mat.columns,
+                    self.collision.collider_mat.values,
+                    self.collision.collider_friction,
+                    self.collision.collider_adhesion,
+                    self.collision.collider_normals,
+                    self.collider_delassus_diagonal,
+                    self.collision.collider_velocities,
+                    self.collision.collider_impulse,
+                    self.delta_impulse,
+                ],
+                record_cmd=True,
+            )
 
     def apply_initial_guess(self):
         wp.launch(
@@ -1667,7 +1670,7 @@ class _SubgridContactSolver(_ContactSolver):
         self.apply_rigidity_operator()
 
     def solve(self):
-        if self.collision.colored_cell_offsets is not None:
+        if self.solve_collider_launch is None:
             return
         self.solve_collider_launch.launch()
         self.apply_collider_impulse_launch.launch()

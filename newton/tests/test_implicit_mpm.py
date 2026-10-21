@@ -18,7 +18,7 @@ from newton._src.solvers.implicit_mpm.implicit_mpm_solver_kernels import collisi
 from newton._src.solvers.implicit_mpm.rasterized_collisions import (
     _ALL_COLLIDER_WORLDS,
     Collider,
-    _triangle_distance_sq_and_pseudonormal,
+    _triangle_pseudonormal,
     collision_sdf,
     get_average_face_normal,
     rasterize_collider_kernel,
@@ -2443,21 +2443,13 @@ basic_cuda_devices = get_cuda_test_devices(mode="basic")
 
 
 @wp.kernel
-def _query_triangle_pseudonormal(
-    positions: wp.array[wp.vec3],
-    distances: wp.array[float],
-    normals: wp.array[wp.vec3],
-):
+def _query_triangle_pseudonormal(positions: wp.array[wp.vec3], normals: wp.array[wp.vec3]):
     i = wp.tid()
-    distance, normal = _triangle_distance_sq_and_pseudonormal(
-        positions[i], wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 1.0, 0.0), 1.0e-6
-    )
-    distances[i] = distance
-    normals[i] = normal
+    normals[i] = _triangle_pseudonormal(positions[i], wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 1.0, 0.0), 1.0e-6)
 
 
-def test_collision_triangle_distance_and_normal(test, device):
-    """Check fused triangle distances and weights for every closest-feature region."""
+def test_collision_triangle_pseudonormal(test, device):
+    """Check triangle pseudonormal weights for every closest-feature region and beyond the radius."""
     positions = (
         (0.2, 0.2, 0.0005),
         (0.5, -0.0004, 0.0003),
@@ -2469,17 +2461,13 @@ def test_collision_triangle_distance_and_normal(test, device):
         (0.5, 0.0004, 0.0003),
         (0.2, 0.2, 0.002),
     )
-    distances = wp.empty(len(positions), dtype=float, device=device)
     normals = wp.empty(len(positions), dtype=wp.vec3, device=device)
     wp.launch(
         _query_triangle_pseudonormal,
         dim=len(positions),
         inputs=[wp.array(positions, dtype=wp.vec3, device=device)],
-        outputs=[distances, normals],
+        outputs=[normals],
         device=device,
-    )
-    np.testing.assert_allclose(
-        distances.numpy(), (2.5e-7, 2.5e-7, 2.5e-7, 2.5e-7, 2.5e-7, 3.4e-7, 1.6e-7, 9.0e-8, 4.0e-6), atol=5.0e-11
     )
     expected = np.zeros((len(positions), 3))
     expected[:, 2] = (2.0, 1.0, 0.5, 0.25, 0.25, 1.0, 0.5, 1.0, 0.0)
@@ -3210,8 +3198,8 @@ add_function_test(
 
 add_function_test(
     TestImplicitMPM,
-    "test_collision_triangle_distance_and_normal",
-    test_collision_triangle_distance_and_normal,
+    "test_collision_triangle_pseudonormal",
+    test_collision_triangle_pseudonormal,
     devices=devices,
 )
 add_function_test(
