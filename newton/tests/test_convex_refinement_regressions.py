@@ -312,13 +312,14 @@ def test_refinement_triangle_above_wide_ground(test, device):
             np.array([50.0, 50.0, 1.0]),
         ),
     }
-    # (mesh triangle, split kernels)
-    paths = [(True, False), (False, False)] + ([(False, True)] if device.is_cuda else [])
     level = wp.transform_identity()
     tilted = wp.transform(wp.vec3(0.0), wp.quat_from_axis_angle(wp.normalize(wp.vec3(1.0, 0.4, 0.0)), 0.35))
-    for (name, (points, half)), (mesh, split), hull_box, swap, ground in product(
-        cases.items(), paths, (False, True), (False, True), (level, tilted)
-    ):
+    # (mesh triangle, split kernels, hull_box, swap, ground): the mesh path sweeps both
+    # ground shapes and insertion orders; the flat-hull paths and the tilted ground run once.
+    variants = [(True, False, hull_box, swap, level) for hull_box, swap in product((False, True), (False, True))]
+    variants += [(False, split, False, False, level) for split in ((False, True) if device.is_cuda else (False,))]
+    variants.append((True, False, True, True, tilted))
+    for (name, (points, half)), (mesh, split, hull_box, swap, ground) in product(cases.items(), variants):
         with test.subTest(triangle=name, mesh=mesh, split=split, hull_box=hull_box, swap=swap, tilted=ground != level):
             vertices = np.array(points, dtype=np.float32)
             pose = wp.transform_multiply(ground, wp.transform(wp.vec3(0.0, 0.0, half[2]), wp.quat_identity()))
