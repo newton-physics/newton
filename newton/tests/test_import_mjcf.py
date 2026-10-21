@@ -1723,6 +1723,59 @@ class TestMjcfSlideCoordinateScale(unittest.TestCase):
         self.assertAlmostEqual(builder.custom_attributes["mujoco:dof_springref"].values[0], 0.3)
 
 
+class TestImportMjcfMeshFileCache(unittest.TestCase):
+    """A mesh file referenced by several geoms is parsed once per import."""
+
+    _OBJ_TRIANGLE = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n"
+
+    _MJCF = """\
+<mujoco>
+  <asset>
+    <mesh name="m" file="mesh.obj"/>
+    <mesh name="m_big" file="mesh.obj" scale="2 2 2"/>
+  </asset>
+  <worldbody>
+    <body name="a"><freejoint/><geom type="mesh" mesh="m"/><geom type="mesh" mesh="m_big"/></body>
+    <body name="b" pos="1 0 0"><freejoint/><geom type="mesh" mesh="m"/></body>
+    <body name="c" pos="2 0 0"><freejoint/><geom type="mesh" mesh="m"/></body>
+  </worldbody>
+</mujoco>"""
+
+    def test_mesh_file_loaded_once_per_load_args(self):
+        """Verify that each mesh file loads once per distinct set of load arguments."""
+        import newton._src.utils.import_mjcf as import_mjcf  # noqa: PLC0415
+
+        calls = []
+        original = import_mjcf.load_meshes_from_file
+
+        def counting_load(filename, **kwargs):
+            calls.append((os.path.basename(os.fspath(filename)), tuple(np.asarray(kwargs["scale"]).tolist())))
+            return original(filename, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with open(os.path.join(tmpdir, "mesh.obj"), "w") as f:
+                f.write(self._OBJ_TRIANGLE)
+            mjcf_path = os.path.join(tmpdir, "test.xml")
+            with open(mjcf_path, "w") as f:
+                f.write(self._MJCF)
+            import_mjcf.load_meshes_from_file = counting_load
+            try:
+                builder = newton.ModelBuilder()
+                builder.add_mjcf(mjcf_path, parse_meshes=True)
+            finally:
+                import_mjcf.load_meshes_from_file = original
+
+        # three geoms share the unscaled asset, one uses the scaled asset
+        self.assertEqual(sorted(calls), [("mesh.obj", (1.0, 1.0, 1.0)), ("mesh.obj", (2.0, 2.0, 2.0))])
+
+        meshes = [src for src in builder.shape_source if src is not None]
+        self.assertEqual(len(meshes), 4)
+        # every shape owns its mesh, so edits on one shape do not reach the others
+        self.assertEqual(len({id(m) for m in meshes}), 4)
+        extents = sorted(float(np.ptp(np.asarray(m.vertices))) for m in meshes)
+        np.testing.assert_allclose(extents, [1.0, 1.0, 1.0, 2.0], atol=1e-6)
+
+
 class TestImportMjcfMeshScale(unittest.TestCase):
     """Tests for MJCF mesh scale resolution from default classes."""
 

@@ -812,6 +812,10 @@ def parse_mjcf(
                 "elevation": elevation_data,
             }
 
+    # meshes loaded from files, keyed by file and load arguments, so a mesh asset
+    # referenced by several geoms (e.g. visual and collision, or mirrored links) is parsed once
+    mesh_file_cache: dict[tuple, list[Mesh]] = {}
+
     def load_mesh_asset(
         mesh_name: str,
         scaling: np.ndarray,
@@ -824,13 +828,29 @@ def parse_mjcf(
             refpos = mesh_asset["refpos"]
             refquat = mesh_asset["refquat"]
             has_ref_pose = not (np.all(refpos == 0.0) and np.array_equal(refquat, (1.0, 0.0, 0.0, 0.0)))
-            meshes = load_meshes_from_file(
-                mesh_asset["file"],
-                scale=(1.0, 1.0, 1.0) if has_ref_pose else scaling,
-                maxhullvert=maxhullvert,
-                override_color=override_color,
-                override_texture=override_texture,
-            )
+            file_scale = (1.0, 1.0, 1.0) if has_ref_pose else scaling
+            cache_key = None
+            if override_texture is None or isinstance(override_texture, str):
+                cache_key = (
+                    os.fspath(mesh_asset["file"]),
+                    tuple(float(v) for v in np.asarray(file_scale, dtype=np.float32).reshape(-1)),
+                    maxhullvert,
+                    None if override_color is None else tuple(float(v) for v in override_color),
+                    override_texture,
+                )
+            cached = mesh_file_cache.get(cache_key) if cache_key is not None else None
+            if cached is None:
+                cached = load_meshes_from_file(
+                    mesh_asset["file"],
+                    scale=file_scale,
+                    maxhullvert=maxhullvert,
+                    override_color=override_color,
+                    override_texture=override_texture,
+                )
+                if cache_key is not None:
+                    mesh_file_cache[cache_key] = cached
+            # hand out copies so per geom edits (e.g. dropping a texture) do not leak between shapes
+            meshes = [mesh.copy() for mesh in cached]
             if not has_ref_pose:
                 return meshes
 
