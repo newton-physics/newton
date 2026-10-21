@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Regression tests for the example-browser switch/reset args plumbing.
+"""Regression tests for browser arguments, failure recovery, and display choices.
 
 The companion :mod:`newton.tests.test_example_browser` script runs every
 registered example through the browser using a real GL viewer; it is a
@@ -15,6 +15,7 @@ import types
 import unittest
 import weakref
 from collections.abc import Callable
+from contextlib import nullcontext
 from unittest.mock import patch
 
 import warp as wp
@@ -37,6 +38,9 @@ class _StubViewer:
 
     def clear_model(self):
         self.cleared += 1
+
+    def _preserve_display_options(self, *, switching=False):
+        return nullcontext()
 
 
 class _StubExample:
@@ -123,7 +127,11 @@ class TestExampleBrowserReset(unittest.TestCase):
                 viewer.show_joints = True
                 viewer.camera = types.SimpleNamespace(fov=40.0, near=0.01, far=1000.0)
                 viewer.renderer = types.SimpleNamespace(draw_wireframe=True, joint_scale=2.0)
+                viewer.renderer.wireframe_line_width = 1.0
+                viewer.camera_speed = 4.0
                 viewer.vsync = False
+                viewer._paused = False
+                viewer.show_ui = False
 
         class OtherScene(_StubExample):
             def __init__(self, viewer: ViewerNull, args: argparse.Namespace) -> None:
@@ -134,7 +142,11 @@ class TestExampleBrowserReset(unittest.TestCase):
                 viewer.show_hydro_contact_surface = True
                 viewer.camera = types.SimpleNamespace(fov=90.0, near=0.1, far=100.0)
                 viewer.renderer = types.SimpleNamespace(draw_wireframe=False, joint_scale=4.0)
+                viewer.renderer.wireframe_line_width = 2.0
+                viewer.camera_speed = 0.2
                 viewer.vsync = True
+                viewer._paused = True
+                viewer.show_ui = True
 
         with wp.ScopedDevice("cpu"):
             viewer = ViewerNull(num_frames=1)
@@ -146,7 +158,9 @@ class TestExampleBrowserReset(unittest.TestCase):
             viewer.contact_mode_eps_force = 0.2
             viewer.contact_force_scale *= 2.0
             viewer.camera.fov = 55.0
+            viewer.camera_speed = 0.75
             viewer.renderer.joint_scale = 3.0
+            viewer.renderer.wireframe_line_width = 3.0
             viewer._display_options_user.update(
                 show_contacts=True,
                 show_visual=False,
@@ -155,6 +169,7 @@ class TestExampleBrowserReset(unittest.TestCase):
                 contact_mode_eps_force=0.2,
                 contact_force_scale=2.0,
                 joint_scale=3.0,
+                wireframe_line_width=3.0,
             )
             original_force_scale = viewer.contact_force_scale
             viewer.layer.visible = False
@@ -163,6 +178,9 @@ class TestExampleBrowserReset(unittest.TestCase):
             self.assertFalse(viewer.layer.visible)
             self.assertAlmostEqual(viewer.contact_force_scale, original_force_scale)
             self.assertEqual(viewer.camera.fov, 55.0)
+            self.assertEqual(viewer.camera_speed, 0.75)
+            with self.subTest(operation="reset", option="wireframe_line_width"):
+                self.assertEqual(viewer.renderer.wireframe_line_width, 3.0)
             self.assertTrue(viewer.show_joints)
 
             browser.switch_target = "test.other"
@@ -183,7 +201,13 @@ class TestExampleBrowserReset(unittest.TestCase):
             self.assertFalse(viewer.renderer.draw_wireframe)
             self.assertEqual(viewer.renderer.joint_scale, 3.0)
             self.assertEqual(viewer.camera.fov, 90.0)
+            with self.subTest(operation="switch", option="camera_speed"):
+                self.assertEqual(viewer.camera_speed, 0.2)
+            with self.subTest(operation="switch", option="wireframe_line_width"):
+                self.assertEqual(viewer.renderer.wireframe_line_width, 3.0)
             self.assertTrue(viewer.vsync)
+            self.assertTrue(viewer._paused)
+            self.assertTrue(viewer.show_ui)
             # A previous scene's default must not hide loose particles.
             self.assertTrue(viewer.show_particles)
             viewer.show_particles = False
@@ -199,12 +223,15 @@ class TestExampleBrowserReset(unittest.TestCase):
             # Explicit choices still win when they equal the old example's default.
             viewer.show_joints = False
             viewer._display_options_user["show_joints"] = False
+            viewer._display_options_user.update(_paused=True, show_ui=True)
             viewer.activate("unused")
             viewer.show_joints = True
             browser.switch_target = "test.scene"
             with patch("newton.examples.importlib.import_module", return_value=types.SimpleNamespace(Example=Scene)):
                 browser.switch(example_class)
             self.assertFalse(viewer.show_joints)
+            self.assertTrue(viewer._paused)
+            self.assertTrue(viewer.show_ui)
 
     def test_load_failures_clear_partial_scenes_and_allow_retry(self) -> None:
         """Recover from parser exits and partial constructors on switch and reset."""

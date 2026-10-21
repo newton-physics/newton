@@ -424,10 +424,12 @@ class ViewerGui:
 
         if symbol == pyglet.window.key.SPACE:
             self._viewer._paused = not self._viewer._paused
+            self._viewer._display_options_user["_paused"] = self._viewer._paused
         elif symbol == pyglet.window.key.PERIOD and getattr(self._viewer, "_paused", False):
             self._viewer._step_requested = True
         elif symbol == pyglet.window.key.H:
             self.show_ui = not self.show_ui
+            self._viewer._display_options_user["show_ui"] = self.show_ui
         elif symbol == pyglet.window.key.F:
             self.frame_camera_on_model()
         elif symbol == pyglet.window.key.ESCAPE and close_fn is not None:
@@ -804,6 +806,8 @@ class ViewerGui:
             # Run controls — shown once a model is loaded
             if viewer.model is not None:
                 _changed, viewer._paused = imgui.checkbox("Pause", viewer._paused)
+                if _changed:
+                    viewer._display_options_user["_paused"] = viewer._paused
                 imgui.same_line()
                 imgui.begin_disabled(not viewer._paused)
                 if imgui.button("Step"):
@@ -935,9 +939,11 @@ class ViewerGui:
                         if _changed:
                             viewer._display_options_user["sdf_margin_mode"] = viewer.sdf_margin_mode
                         if viewer.sdf_margin_mode != SDFMarginMode.OFF and renderer is not None:
-                            _, renderer.wireframe_line_width = imgui.slider_float(
+                            _changed, renderer.wireframe_line_width = imgui.slider_float(
                                 "Wireframe Width (px)", renderer.wireframe_line_width, 0.5, 5.0
                             )
+                            if _changed:
+                                viewer._display_options_user["wireframe_line_width"] = renderer.wireframe_line_width
                     _changed, viewer.show_visual = imgui.checkbox("Show Visual", viewer.show_visual)
                     if _changed:
                         viewer._display_options_user["show_visual"] = viewer.show_visual

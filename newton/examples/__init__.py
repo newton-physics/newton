@@ -12,18 +12,14 @@ import sys
 import time
 import warnings
 from collections import defaultdict
-from collections.abc import Callable, Iterator
-from contextlib import contextmanager
-from typing import TYPE_CHECKING, Any
+from collections.abc import Callable
+from typing import Any
 
 import numpy as np
 import warp as wp
 
 import newton
 from newton.tests.unittest_utils import find_nan_members
-
-if TYPE_CHECKING:
-    from newton.viewer import ViewerBase
 
 _DEPRECATED_WARP_CONFIG_KEYS = {"quiet", "verbose"}
 logger = logging.getLogger(__name__)
@@ -347,98 +343,6 @@ def _coupled_view_state(example, name: str):
     return solver.entry_state(name)
 
 
-@contextmanager
-def _preserve_display_options(viewer: "ViewerBase", *, switching: bool = False) -> Iterator[None]:
-    """Restore reset state, or explicit display choices when entering a new example."""
-    user_options = getattr(viewer, "_display_options_user", {})
-    option_names = {
-        "visible",
-        "sdf_margin_mode",
-        "contact_mode_eps_force",
-        "contact_mode_eps_velocity",
-        "contact_viz_scale",
-        "gaussians_max_points",
-    }
-    saved = {
-        layer_id: {
-            name: value for name, value in vars(layer).items() if name.startswith("show_") or name in option_names
-        }
-        for layer_id, layer in getattr(viewer, "layers", {}).items()
-    }
-    force_gains = {
-        layer_id: layer.contact_force_scale / layer._contact_force_scale_default
-        for layer_id, layer in getattr(viewer, "layers", {}).items()
-    }
-    active_id = getattr(getattr(viewer, "layer", None), "layer_id", None)
-    defaults = {name: value for name, value in saved.get(active_id, {}).items() if name != "visible"}
-    globals_saved = {
-        name: user_options.get(name, getattr(viewer, name)) if switching else getattr(viewer, name)
-        for name in ("show_ui", "vsync", "_paused", "camera_speed")
-        if hasattr(viewer, name) and (not switching or name != "vsync" or name in user_options)
-    }
-    camera = getattr(viewer, "camera", None)
-    # Projection and framing belong to the new scene; reset keeps the current view.
-    camera_saved = {
-        name: getattr(camera, name) for name in ("fov", "near", "far") if not switching and hasattr(camera, name)
-    }
-    renderer = getattr(viewer, "renderer", None)
-    set_wireframe = getattr(viewer, "_set_wireframe", None)
-    wireframe = user_options.get("wireframe") if switching else getattr(viewer, "_wireframe", None)
-    render_saved = {
-        name: copy.deepcopy(user_options[name] if switching else getattr(renderer, name))
-        for name in (
-            "draw_sky",
-            "draw_shadows",
-            "draw_wireframe",
-            "draw_edges",
-            "_light_color",
-            "sky_upper",
-            "sky_lower",
-            "arrow_scale",
-            "joint_scale",
-            "com_scale",
-        )
-        if hasattr(renderer, name) and (not switching or name in user_options)
-    }
-    try:
-        yield
-    finally:
-        for layer_id, layer in getattr(viewer, "layers", {}).items():
-            if switching:
-                options = {
-                    name: value
-                    for name, value in user_options.items()
-                    if (name.startswith("show_") or name in option_names) and hasattr(layer, name)
-                }
-                if "contact_force_scale" in user_options:
-                    options["contact_force_scale"] = (
-                        layer._contact_force_scale_default * user_options["contact_force_scale"]
-                    )
-            else:
-                options = dict(saved.get(layer_id, defaults))
-                options["contact_force_scale"] = layer._contact_force_scale_default * force_gains.get(
-                    layer_id, force_gains.get(active_id, 1.0)
-                )
-            for name, value in options.items():
-                setattr(layer, name, value)
-                if layer is viewer.layer and name != "visible":
-                    setattr(viewer, name, value)
-            layer.model_changed = True
-            if layer is viewer.layer:
-                viewer.model_changed = True
-        for name, value in globals_saved.items():
-            setattr(viewer, name, value)
-        camera = getattr(viewer, "camera", None)
-        for name, value in camera_saved.items():
-            if hasattr(camera, name):
-                setattr(camera, name, value)
-        renderer = getattr(viewer, "renderer", None)
-        for name, value in render_saved.items():
-            setattr(renderer, name, value)
-        if set_wireframe is not None and wireframe is not None:
-            set_wireframe(wireframe)
-
-
 class _ExampleBrowser:
     """Manages the example browser UI and switching/reset logic for the run loop."""
 
@@ -558,7 +462,7 @@ class _ExampleBrowser:
         self.load_error = self.failed_target = None
         try:
             self._show_splash(f"Loading {module_path.rsplit('.', 1)[-1]}...")
-            with _preserve_display_options(self.viewer, switching=True):
+            with self.viewer._preserve_display_options(switching=True):
                 self._clear_viewer_scene()
                 try:
                     mod = importlib.import_module(module_path)
@@ -586,7 +490,7 @@ class _ExampleBrowser:
         self.load_error = self.failed_target = None
         try:
             self._show_splash("Resetting...")
-            with _preserve_display_options(self.viewer):
+            with self.viewer._preserve_display_options():
                 self._clear_viewer_scene()
                 try:
                     if self._initial_args is not None:
@@ -727,7 +631,7 @@ def run(example, args):
             if browser is None:
                 raise
             example = None
-            with _preserve_display_options(viewer):
+            with viewer._preserve_display_options():
                 browser.report_error(error, example_class.__module__, phase="run")
 
         _throttle_render_fps(frame_start_time, render_fps)

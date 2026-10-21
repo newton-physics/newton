@@ -260,6 +260,25 @@ class TestViewerViserInteraction(unittest.TestCase):
             self.wait_for(lambda: self.viewer._wireframe)
             self.viewer.picking_enabled = False
             self.assertFalse(self.viewer._picking_click_callbacks)
+            self.viewer.set_camera(wp.vec3(8.0, 9.0, 4.0), pitch=-10.0, yaw=30.0)
+            camera_request = tuple(value.copy() for value in self.viewer._camera_request)
+            self.viewer._set_camera_request(*camera_request, fov=65.0)
+            # Browser navigation is client-local and does not update the cached
+            # programmatic request. Preserve both across reset.
+            client = next(iter(self.server.get_clients().values()))
+            self.send(
+                "ViewerCameraMessage",
+                wxyz=(1.0, 0.0, 0.0, 0.0),
+                position=(2.0, 3.0, 8.0),
+                look_at=(2.0, 3.0, 0.0),
+                up_direction=(0.0, 1.0, 0.0),
+                fov=1.1,
+                near=0.12,
+                far=77.0,
+                image_height=800,
+                image_width=1000,
+            )
+            self.wait_for(lambda: np.allclose(client.camera.position, (2.0, 3.0, 8.0)))
             del example
             example = browser.reset(example_class)
             self.assertIsNotNone(example)
@@ -269,6 +288,18 @@ class TestViewerViserInteraction(unittest.TestCase):
             self.assertTrue(self.viewer.show_contacts)
             self.assertTrue(self.viewer.show_particles)
             self.assertIn("show_particles", self.viewer._display_options_user)
+            with self.subTest(camera="programmatic"):
+                for actual, expected in zip(self.viewer._camera_request, camera_request, strict=True):
+                    np.testing.assert_allclose(actual, expected)
+                self.assertAlmostEqual(self.viewer._camera_fov_radians, np.deg2rad(65.0))
+                self.assertEqual((self.viewer._camera_pitch, self.viewer._camera_yaw), (-10.0, 30.0))
+            with self.subTest(camera="client"):
+                np.testing.assert_allclose(client.camera.position, (2.0, 3.0, 8.0))
+                np.testing.assert_allclose(client.camera.look_at, (2.0, 3.0, 0.0))
+                np.testing.assert_allclose(client.camera.up_direction, (0.0, 1.0, 0.0))
+                self.assertAlmostEqual(client.camera.fov, 1.1)
+                self.assertAlmostEqual(client.camera.near, 0.12)
+                self.assertAlmostEqual(client.camera.far, 77.0)
 
             # A failed native browser selection must show the error and retry
             # that selection, rather than resetting the previously loaded class.
@@ -282,6 +313,7 @@ class TestViewerViserInteraction(unittest.TestCase):
                     viewer.set_model(model)
                     viewer.show_contacts = False
                     viewer._set_wireframe(False)
+                    viewer.set_camera(wp.vec3(-2.0, 1.0, 3.0), pitch=-20.0, yaw=-60.0)
                     if self.fail:
                         raise SystemExit(2)
 
@@ -308,6 +340,8 @@ class TestViewerViserInteraction(unittest.TestCase):
                 self.assertIsNone(browser.load_error)
                 self.assertTrue(self.viewer.show_contacts)
                 self.assertTrue(self.viewer._wireframe)
+                np.testing.assert_allclose(client.camera.position, (-2.0, 1.0, 3.0))
+                self.assertAlmostEqual(client.camera.fov, np.deg2rad(45.0))
                 example = None
                 self.assertIsNotNone(browser.reset(SelectedExample))
                 self.assertTrue(self.viewer._wireframe)
