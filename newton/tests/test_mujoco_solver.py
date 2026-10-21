@@ -2251,8 +2251,13 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
         expected = (model.body_flags.numpy()[target_body] & int(BodyFlags.KINEMATIC)) != 0
         eq_active = solver.mjw_data.eq_active.numpy()[:, solver.kinematic_target_eq.numpy()]
         np.testing.assert_array_equal(eq_active, expected)
+        gravcomp = solver.mjw_model.body_gravcomp.numpy()[:, solver.kinematic_target_body.numpy()]
+        np.testing.assert_array_equal(gravcomp, expected.astype(np.float32))
         if solver.use_mujoco_cpu:
             np.testing.assert_array_equal(solver.mj_data.eq_active[solver.kinematic_target_eq.numpy()], expected[0])
+            np.testing.assert_array_equal(
+                solver.mj_model.body_gravcomp[solver.kinematic_target_body.numpy()], expected[0].astype(float)
+            )
 
     def test_floating_kinematic_body_exports_mocap_weld(self):
         builder = newton.ModelBuilder()
@@ -2394,9 +2399,14 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
             solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
 
     @staticmethod
-    def _build_kinematic_root(kind: str, *, gravity: float = 0.0):
-        builder = newton.ModelBuilder(gravity=(0.0, 0.0, gravity))
-        body = builder.add_link(xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()), is_kinematic=True)
+    def _build_kinematic_root(kind: str, *, start_dynamic: bool = False):
+        builder = newton.ModelBuilder()
+        SolverMuJoCo.register_custom_attributes(builder)
+        body = builder.add_link(
+            xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()),
+            is_kinematic=not start_dynamic,
+            custom_attributes={"mujoco:kinematic_switchable": start_dynamic},
+        )
         builder.add_shape_box(
             body,
             xform=wp.transform((0.2, 0.0, 0.0), wp.quat_identity()),
@@ -2452,15 +2462,18 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
         return q, qd
 
     def test_kinematic_roots_track_between_state_pushes(self):
-        """MuJoCo keeps each kinematic root joint type on its prescribed path when Newton skips state pushes."""
+        """MuJoCo keeps each kinematic root joint type on its prescribed path under gravity between state pushes."""
         dt = 0.002
         for kind in ("free", "revolute", "prismatic", "ball", "d6"):
-            for use_mujoco_cpu in (False, True):
-                with self.subTest(kind=kind, use_mujoco_cpu=use_mujoco_cpu):
-                    model, body = self._build_kinematic_root(kind)
+            for use_mujoco_cpu, start_dynamic in itertools.product((False, True), (False, True)):
+                with self.subTest(kind=kind, use_mujoco_cpu=use_mujoco_cpu, start_dynamic=start_dynamic):
+                    model, body = self._build_kinematic_root(kind, start_dynamic=start_dynamic)
                     solver = SolverMuJoCo(
                         model, use_mujoco_cpu=use_mujoco_cpu, update_data_interval=5, disable_contacts=True
                     )
+                    if start_dynamic:
+                        model.body_flags.fill_(int(BodyFlags.KINEMATIC))
+                        solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
                     mjc_body = int(np.flatnonzero(solver.mjc_body_to_newton.numpy()[0] == body)[0])
                     state_0, state_1, control = model.state(), model.state(), model.control()
                     for i in range(40):

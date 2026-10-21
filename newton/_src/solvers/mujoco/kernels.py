@@ -2320,20 +2320,31 @@ def update_dof_armature_kernel(
 
 
 @wp.kernel
-def update_kinematic_weld_active_kernel(
+def update_kinematic_root_state_kernel(
     target_jnt: wp.array2d[wp.int32],
     target_eq: wp.array[wp.int32],
+    target_mjc_body: wp.array[wp.int32],
     joint_child: wp.array[wp.int32],
     body_flags: wp.array[wp.int32],
+    body_gravcomp: wp.array[float],
     # outputs
     eq_active: wp.array2d[wp.bool],
+    body_gravcomp_out: wp.array2d[float],
 ):
-    """Activate each kinematic-target weld exactly when its root body is kinematic."""
+    """Weld kinematic roots to their targets and cancel their weight; restore authored state otherwise."""
     world, target = wp.tid()
     j = target_jnt[world, target]
     if j < 0:
         return
-    eq_active[world, target_eq[target]] = (body_flags[joint_child[j]] & BodyFlags.KINEMATIC) != 0
+    body = joint_child[j]
+    kinematic = (body_flags[body] & BodyFlags.KINEMATIC) != 0
+    eq_active[world, target_eq[target]] = kinematic
+    gravcomp = float(0.0)
+    if kinematic:
+        gravcomp = 1.0
+    elif body_gravcomp:
+        gravcomp = body_gravcomp[body]
+    body_gravcomp_out[world, target_mjc_body[target]] = gravcomp
 
 
 @wp.kernel

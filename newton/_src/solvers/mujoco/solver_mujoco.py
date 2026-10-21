@@ -119,7 +119,7 @@ from .kernels import (
     update_joint_limit_solref_mode_kernel,
     update_joint_mimic_eq_data_kernel,
     update_joint_transforms_kernel,
-    update_kinematic_weld_active_kernel,
+    update_kinematic_root_state_kernel,
     update_mimic_eq_data_and_active_kernel,
     update_mocap_transforms_kernel,
     update_model_properties_kernel,
@@ -4495,6 +4495,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """MuJoCo mocap index of each kinematic target. Shape [ntarget], dtype int32."""
         self.kinematic_target_eq: wp.array[wp.int32] | None = None
         """MuJoCo weld equality holding each kinematic root to its target. Shape [ntarget], dtype int32."""
+        self.kinematic_target_body: wp.array[wp.int32] | None = None
+        """MuJoCo body of each kinematic root with a target. Shape [ntarget], dtype int32."""
         self._kinematic_needs_target: np.ndarray | None = None
         self._jnt_kinematic_mocap: wp.array[wp.int32] | None = None
         self.mjc_actuator_ctrl_source: wp.array[wp.int32] | None = None
@@ -5628,7 +5630,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self._update_joint_properties()
         if flags & ModelFlags.BODY_PROPERTIES:
             wp.copy(self._notify_body_flags, self.model.body_flags)
-            self._update_kinematic_weld_active()
+        if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
+            # Inertial updates rewrite gravcomp, so reapply the kinematic override after them.
+            self._update_kinematic_root_state()
         if update_inertia:
             wp.copy(self._notify_joint_armature, self.model.joint_armature)
             self._update_dof_armature()
@@ -5684,8 +5688,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mj_model.body_iquat[:] = self.mjw_model.body_iquat.numpy()[0]
             if update_inertia:
                 self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
-            if flags & ModelFlags.BODY_PROPERTIES and self.kinematic_target_eq is not None:
-                self.mj_data.eq_active[:] = self.mjw_data.eq_active.numpy()[0]
+            if flags & (ModelFlags.BODY_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES):
+                if self.kinematic_target_eq is not None:
+                    self.mj_data.eq_active[:] = self.mjw_data.eq_active.numpy()[0]
+                    self.mj_model.body_gravcomp[:] = self.mjw_model.body_gravcomp.numpy()[0]
             if update_force and self.mjc_actuator_ctrl_source is not None:
                 # Direct actuators may retain unresolved dampratio values in MJWarp.
                 # Only joint-target rows are owned by the DOF force notification.
@@ -8665,10 +8671,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # MuJoCo has no prescribed DOFs; its idiom is a weld to a mocap target.
         # Only roots kinematic or marked switchable at conversion get one.
         kinematic_target_names = []
+        kinematic_target_root_names = []
         kinematic_target_eq_ids = []
         for _, root_body, is_kinematic in kinematic_target_roots:
+            # Massless, so gravcomp only makes native MuJoCo compile ngravcomp > 0;
+            # it skips gravity compensation entirely otherwise.
             target = spec.worldbody.add_body(
-                name=f"{root_body.name}_kinematic_target", pos=root_body.pos, quat=root_body.quat, mocap=True
+                name=f"{root_body.name}_kinematic_target",
+                pos=root_body.pos,
+                quat=root_body.quat,
+                mocap=True,
+                gravcomp=1.0,
             )
             eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
             eq.type = mujoco.mjtEq.mjEQ_WELD
@@ -8679,6 +8692,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             eq.solref = KINEMATIC_WELD_SOLREF
             eq.solimp = KINEMATIC_WELD_SOLIMP
             kinematic_target_names.append(target.name)
+            kinematic_target_root_names.append(root_body.name)
             kinematic_target_eq_ids.append(eq.id)
 
         self.mj_model = spec.compile()
@@ -8904,6 +8918,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     [int(self.mj_model.body(name).mocapid[0]) for name in kinematic_target_names], dtype=wp.int32
                 )
                 self.kinematic_target_eq = wp.array(kinematic_target_eq_ids, dtype=wp.int32)
+                self.kinematic_target_body = wp.array(
+                    [self.mj_model.body(name).id for name in kinematic_target_root_names], dtype=wp.int32
+                )
                 jnt_kinematic_mocap = np.full(n_template_joints, -1, dtype=np.int32)
                 jnt_kinematic_mocap[template_jnt] = self.kinematic_target_mocap.numpy()
                 self._jnt_kinematic_mocap = wp.array(jnt_kinematic_mocap, dtype=wp.int32)
@@ -9512,8 +9529,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             device=self.model.device,
         )
 
-    def _update_kinematic_weld_active(self):
-        """Enable the mocap-target weld of every root whose body is kinematic."""
+    def _update_kinematic_root_state(self):
+        """Weld kinematic roots to their mocap targets and compensate their gravity."""
         if not self.model.device.is_capturing:
             kinematic = (self._notify_body_flags.numpy() & int(BodyFlags.KINEMATIC)) != 0
             if self.kinematic_target_jnt is not None:
@@ -9528,16 +9545,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 )
         if self.kinematic_target_eq is None:
             return
+        mujoco_attrs = getattr(self.model, "mujoco", None)
+        gravcomp = getattr(mujoco_attrs, "gravcomp", None) if mujoco_attrs is not None else None
         wp.launch(
-            update_kinematic_weld_active_kernel,
+            update_kinematic_root_state_kernel,
             dim=self.kinematic_target_jnt.shape,
             inputs=[
                 self.kinematic_target_jnt,
                 self.kinematic_target_eq,
+                self.kinematic_target_body,
                 self.model.joint_child,
                 self._notify_body_flags,
+                gravcomp,
             ],
-            outputs=[self.mjw_data.eq_active],
+            outputs=[self.mjw_data.eq_active, self.mjw_model.body_gravcomp],
             device=self.model.device,
         )
 

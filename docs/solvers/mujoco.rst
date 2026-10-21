@@ -1124,7 +1124,11 @@ by joint type:
   gets a mocap target body and a weld equality to it. Every step the
   target is moved to the prescribed pose, led by the weld's
   damping-to-stiffness ratio so the weld does not drag the body toward
-  rest. Targets follow :attr:`~newton.State.joint_q` and
+  rest. While a root is kinematic its MuJoCo ``body_gravcomp`` is
+  ``1`` so the weld does not have to carry the body's own weight; the
+  authored ``mujoco:gravcomp`` returns when it becomes dynamic. Loads
+  from contacts and dynamic descendants still act through the weld.
+  Targets follow :attr:`~newton.State.joint_q` and
   :attr:`~newton.State.joint_qd` on every step, including steps where
   ``update_data_interval`` skips pushing the rest of the state. The weld is active exactly while the body is kinematic, so
   :attr:`~newton.Model.body_flags` can switch these roots between
