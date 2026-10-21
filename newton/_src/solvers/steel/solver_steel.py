@@ -19,7 +19,7 @@ from ...core.types import override
 from ...exceptions import NewtonWarning
 from ...geometry.flags import ShapeFlags
 from ...sim import BodyFlags, Contacts, Control, JointType, Model, ModelBuilder, ModelFlags, State, StateFlags
-from ...sim.articulation import eval_fk, eval_jacobian
+from ...sim.articulation import eval_fk, eval_jacobian, eval_mass_matrix
 from ..coupled.interface import CouplingInterface
 from ..solver import SolverBase
 from . import contact_compliance as _contact_compliance
@@ -3142,22 +3142,14 @@ class SolverSteel(SolverBase, CouplingInterface):
 
         state = model.state()
         eval_fk(model, model.joint_q, model.joint_qd, state)
-        jacobian = eval_jacobian(model, state).numpy()
+        jacobian_device = eval_jacobian(model, state)
+        jacobian = jacobian_device.numpy()
+        mass_matrix = eval_mass_matrix(model, state, J=jacobian_device).numpy().astype(np.float64)
         joint_articulation = model.joint_articulation.numpy()
         joint_qd_start = model.joint_qd_start.numpy()
-        # The solve's armature: kinematic DOFs carry a large one.
-        armature = self._joint_armature_device.numpy()
-        x, y, z, w = state.body_q.numpy()[:, 3:7].astype(np.float64).T
-        rotation = np.stack(
-            [
-                np.stack([1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)], axis=-1),
-                np.stack([2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)], axis=-1),
-                np.stack([2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)], axis=-1),
-            ],
-            axis=1,
-        )
-        body_mass = model.body_mass.numpy()
-        body_inertia = model.body_inertia.numpy()
+        # The solve's armature replaces the authored one: kinematic DOFs carry a large one.
+        armature_delta = self._joint_armature_device.numpy().astype(np.float64) - model.joint_armature.numpy()
+        body_q = state.body_q.numpy().astype(np.float64)
 
         inverse_mass_matrix: dict[int, np.ndarray] = {}
         weights = []
@@ -3170,21 +3162,17 @@ class SolverSteel(SolverBase, CouplingInterface):
             if dof_count == 0:
                 continue
             if art not in inverse_mass_matrix:
-                # H = sum over tree links of J^T M J, with COM-referenced world-frame spatial inertia.
-                h = np.diag(armature[dof_start : dof_start + dof_count]).astype(np.float64)
-                for tree_joint in range(first_joint, int(tree_end[art])):
-                    child = int(joint_child[tree_joint])
-                    link_rows = 6 * (tree_joint - first_joint)
-                    link_jacobian = jacobian[art, link_rows : link_rows + 6, :dof_count].astype(np.float64)
-                    spatial = np.zeros((6, 6))
-                    spatial[:3, :3] = body_mass[child] * np.eye(3)
-                    spatial[3:, 3:] = rotation[child] @ body_inertia[child] @ rotation[child].T
-                    h += link_jacobian.T @ spatial @ link_jacobian
+                h = mass_matrix[art, :dof_count, :dof_count] + np.diag(
+                    armature_delta[dof_start : dof_start + dof_count]
+                )
                 inverse_mass_matrix[art] = np.linalg.inv(h)
             h_inv = inverse_mass_matrix[art]
             link = 6 * (joint - first_joint)
             linear, angular = jacobian[art, link : link + 3, :dof_count], jacobian[art, link + 3 : link + 6, :dof_count]
-            lever = rotation[body[row]] @ local_pos[row]
+            # World-frame lever: rotate the body-frame offset by the body orientation (x, y, z, w).
+            axis, w = body_q[body[row], 3:6], body_q[body[row], 6]
+            twice_cross = 2.0 * np.cross(axis, local_pos[row])
+            lever = local_pos[row] + w * twice_cross + np.cross(axis, twice_cross)
             px, py, pz = lever
             point = linear - np.array([[0.0, -pz, py], [pz, 0.0, -px], [-py, px, 0.0]]) @ angular
             # A point Jacobian of float32 residue size means the joints cannot translate the point.
