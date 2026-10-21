@@ -937,27 +937,26 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                             solve_H = self.H
                             solve_armature = self.joint_armature_effective
                             if self._has_joint_mimics:
-                                for (_, dof_count), articulations in self._group_to_art.items():
-                                    wp.launch(
-                                        reduce_mimic_inertia,
-                                        dim=(articulations.size, dof_count),
-                                        inputs=[
-                                            articulations,
-                                            self.articulation_H_start,
-                                            self.articulation_H_rows,
-                                            self.articulation_dof_start,
-                                            model.joint_qd_start,
-                                            model.joint_mimic_joint,
-                                            model.joint_mimic_coeffs,
-                                            self._mimic_source_start,
-                                            self._mimic_source_joint,
-                                            self._mimic_dof_joint,
-                                            self.joint_armature_effective,
-                                            self.H,
-                                        ],
-                                        outputs=[self.H_mimic],
-                                        device=model.device,
-                                    )
+                                wp.launch(
+                                    reduce_mimic_inertia,
+                                    dim=model.joint_dof_count,
+                                    inputs=[
+                                        model.joint_articulation,
+                                        self.articulation_H_start,
+                                        self.articulation_H_rows,
+                                        self.articulation_dof_start,
+                                        model.joint_qd_start,
+                                        model.joint_mimic_joint,
+                                        model.joint_mimic_coeffs,
+                                        self._mimic_source_start,
+                                        self._mimic_source_joint,
+                                        self._mimic_dof_joint,
+                                        self.joint_armature_effective,
+                                        self.H,
+                                    ],
+                                    outputs=[self.H_mimic],
+                                    device=model.device,
+                                )
                                 solve_H = self.H_mimic
                                 solve_armature = self.joint_armature_zero
 
@@ -992,16 +991,16 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                     solve_tau = state_aug.joint_tau
                     if self._has_joint_mimics:
                         solve_H = self.H_mimic
-                        state_aug.joint_tau_mimic.zero_()
                         wp.launch(
                             reduce_mimic_forces,
-                            dim=model.articulation_count,
+                            dim=model.joint_dof_count,
                             inputs=[
-                                model.articulation_start,
-                                model.articulation_end,
+                                model.joint_articulation,
                                 model.joint_qd_start,
-                                model.joint_mimic_joint,
                                 model.joint_mimic_coeffs,
+                                self._mimic_source_start,
+                                self._mimic_source_joint,
+                                self._mimic_dof_joint,
                                 state_aug.joint_tau,
                             ],
                             outputs=[state_aug.joint_tau_mimic],

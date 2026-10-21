@@ -67,7 +67,7 @@ def zero_kinematic_body_forces(
 
 @wp.kernel
 def reduce_mimic_inertia(
-    articulation_indices: wp.array[int],
+    joint_articulation: wp.array[int],
     articulation_H_start: wp.array[int],
     articulation_H_rows: wp.array[int],
     articulation_dof_start: wp.array[int],
@@ -82,13 +82,16 @@ def reduce_mimic_inertia(
     H_reduced: wp.array[float],
 ):
     """Reduce a Featherstone inertia matrix to its independent coordinates."""
-    group_index, row = wp.tid()
-    articulation = articulation_indices[group_index]
-    matrix_start = articulation_H_start[articulation]
+    dof = wp.tid()
+    row_joint = dof_joint[dof]
+    articulation = joint_articulation[row_joint]
+    if articulation < 0:
+        return
     matrix_rows = articulation_H_rows[articulation]
+    matrix_start = articulation_H_start[articulation]
     dof_start = articulation_dof_start[articulation]
-    row_joint = dof_joint[dof_start + row]
-    row_axis = dof_start + row - joint_qd_start[row_joint]
+    row = dof - dof_start
+    row_axis = dof - joint_qd_start[row_joint]
     row_start = mimic_source_start[row_joint]
     row_end = mimic_source_start[row_joint + 1]
     # Gather T^T (H + armature) T in source-joint order. Each output
@@ -132,34 +135,30 @@ def reduce_mimic_inertia(
 
 @wp.kernel
 def reduce_mimic_forces(
-    articulation_start: wp.array[int],
-    articulation_end: wp.array[int],
+    joint_articulation: wp.array[int],
     joint_qd_start: wp.array[int],
-    joint_mimic_joint: wp.array[int],
     joint_mimic_coeffs: wp.array[wp.vec2],
+    mimic_source_start: wp.array[int],
+    mimic_source_joint: wp.array[int],
+    dof_joint: wp.array[int],
     joint_tau: wp.array[float],
     joint_tau_reduced: wp.array[float],
 ):
     """Transfer follower generalized forces to their independent references."""
-    articulation = wp.tid()
-    joint_start = articulation_start[articulation]
-    joint_end = articulation_end[articulation]
-
-    for joint in range(joint_start, joint_end):
-        reference = joint_mimic_joint[joint]
+    dof = wp.tid()
+    joint = dof_joint[dof]
+    if joint_articulation[joint] < 0:
+        joint_tau_reduced[dof] = 0.0
+        return
+    axis = dof - joint_qd_start[joint]
+    total = float(0.0)
+    for i in range(mimic_source_start[joint], mimic_source_start[joint + 1]):
+        source = mimic_source_joint[i]
         multiplier = float(1.0)
-        destination_start = joint_qd_start[joint]
-        if reference >= 0:
-            multiplier = joint_mimic_coeffs[joint][1]
-            destination_start = joint_qd_start[reference]
-
-        dof_count = joint_qd_start[joint + 1] - joint_qd_start[joint]
-        for axis in range(dof_count):
-            wp.atomic_add(
-                joint_tau_reduced,
-                destination_start + axis,
-                multiplier * joint_tau[joint_qd_start[joint] + axis],
-            )
+        if source != joint:
+            multiplier = joint_mimic_coeffs[source][1]
+        total += multiplier * joint_tau[joint_qd_start[source] + axis]
+    joint_tau_reduced[dof] = total
 
 
 @wp.kernel
