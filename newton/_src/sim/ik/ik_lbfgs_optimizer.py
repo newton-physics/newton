@@ -281,8 +281,9 @@ class IKOptimizerLBFGS:
         self.line_search_alphas = wp.array(line_search_alphas, dtype=wp.float32, device=device)
 
         self.candidate_q = wp.zeros((self.n_batch, self.n_line_search, self.n_coords), dtype=wp.float32, device=device)
+        # Keep adjoints separate so tape.zero() cannot erase line-search residuals.
         self.candidate_residuals = wp.zeros(
-            (self.n_batch, self.n_line_search, self.n_residuals), dtype=wp.float32, device=device
+            (self.n_batch, self.n_line_search, self.n_residuals), dtype=wp.float32, requires_grad=grad, device=device
         )
         if self.n_line_search > 0:
             self.candidate_problem_idx = wp.zeros((self.n_batch, self.n_line_search), dtype=wp.int32, device=device)
