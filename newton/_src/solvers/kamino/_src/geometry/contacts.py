@@ -1085,6 +1085,9 @@ def make_convert_contacts_newton_to_kamino(
         # Retrieve the shape and body indices for this contact
         sid_0 = newton_shape0[cid]
         sid_1 = newton_shape1[cid]
+        # Skip contacts that a coupling filter disabled with negative shape indices
+        if sid_0 < 0 or sid_1 < 0:
+            return
         bid_0 = shape_body[sid_0]
         bid_1 = shape_body[sid_1]
         wid_0 = shape_world[sid_0]
