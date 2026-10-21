@@ -52,7 +52,7 @@ class TestBodyVariants(unittest.TestCase):
         np.testing.assert_array_equal(model.body_variant.numpy(), [1, 1])
         self.assertEqual(model.shape_label[1], "object/a/shape_0")
         # Per world: fixed capsule, cube, two spheres.
-        np.testing.assert_array_equal(model._shape_active.numpy(), [1, 0, 1, 1, 1, 0, 1, 1])
+        np.testing.assert_array_equal(model.shape_active.numpy(), [1, 0, 1, 1, 1, 0, 1, 1])
         self.assertEqual(model.body_shapes[1], [4, 5, 6, 7])
 
         # The fixed mass at z = 1 combines with the spheres' mass centered at the origin.
@@ -80,8 +80,8 @@ class TestBodyVariants(unittest.TestCase):
         # Body 1 reselects its current variant and body 2's index is out of range: neither world changed.
         np.testing.assert_array_equal(world_mask.numpy(), [True, False, False, False])
         np.testing.assert_array_equal(model.body_variant.numpy(), [1, 0, 0])
-        np.testing.assert_array_equal(model._shape_active.numpy()[:3], [False, True, True])
-        np.testing.assert_array_equal(model._shape_active.numpy()[3:9], [True, False, False] * 2)
+        np.testing.assert_array_equal(model.shape_active.numpy()[:3], [False, True, True])
+        np.testing.assert_array_equal(model.shape_active.numpy()[3:9], [True, False, False] * 2)
         self.assertLess(model.body_mass.numpy()[0], initial_mass[0])
         np.testing.assert_allclose(model.body_mass.numpy()[1:], initial_mass[1:])
 

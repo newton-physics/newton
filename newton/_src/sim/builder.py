@@ -15600,6 +15600,7 @@ class ModelBuilder:
         m.body_variant_start = wp.array(variant_start, dtype=wp.int32, device=device)
         m.body_variant = wp.full(self.body_count, -1, dtype=wp.int32, device=device)
         m.body_variant_count = int(variant_start[-1])
+        m.shape_active = wp.ones(m.shape_count, dtype=wp.bool, device=device)
         if not self._body_variants:
             return
 
@@ -15649,7 +15650,6 @@ class ModelBuilder:
         m._body_variant_mass = wp.array(masses, dtype=wp.float32, device=device)
         m._body_variant_com = wp.array(coms, dtype=wp.vec3, device=device)
         m._body_variant_inertia = wp.array(inertias, dtype=wp.mat33, device=device)
-        m._shape_active = wp.ones(m.shape_count, dtype=wp.bool, device=device)
         m.select_body_variants(wp.array(initial, dtype=wp.int32, device=device))
 
     def _iter_validated_shape_collision_filter_pairs(self, pairs):

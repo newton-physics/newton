@@ -2135,9 +2135,9 @@ class CollisionPipeline:
             self.broad_phase_shape_pairs = wp.zeros(self.shape_pairs_max, dtype=wp.vec2i, device=device)
             self.geom_data = wp.zeros(shape_count, dtype=wp.vec4, device=device)
             self.geom_transform = wp.zeros(shape_count, dtype=wp.transform, device=device)
-            # Updated in place by Model.select_body_variants().
-            shape_active = getattr(model, "_shape_active", None)
-            self._shape_active = wp.empty(0, dtype=wp.bool, device=device) if shape_active is None else shape_active
+            # Updated in place by Model.select_body_variants(); skipped for models without variants.
+            has_variants = getattr(model, "body_variant_count", 0) > 0
+            self._shape_active = model.shape_active if has_variants else wp.empty(0, dtype=wp.bool, device=device)
             if self._speculative_enabled:
                 self._shape_linear_velocity = wp.zeros(shape_count, dtype=wp.vec3, device=device)
                 self._shape_angular_velocity = wp.zeros(shape_count, dtype=wp.vec3, device=device)

@@ -426,7 +426,8 @@ synchronization and returns the :class:`~newton.ModelFlags` to pass to solvers a
 
    ['cube', 'ball', 'cube', 'ball'] [0 1]
 
-Inactive variant shapes are skipped by :class:`~newton.CollisionPipeline` and by viewers that
+:attr:`~newton.Model.shape_active` reports which shapes are currently part of the simulated
+geometry. Inactive variant shapes are skipped by :class:`~newton.CollisionPipeline` and by viewers that
 support :meth:`~newton.viewer.ViewerBase.notify_model_changed` (``ViewerGL``, ``ViewerViser``, and
 ``ViewerNull``). Current limitations:
 

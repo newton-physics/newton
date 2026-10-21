@@ -2771,7 +2771,7 @@ class ViewerBase(ABC):
             }
         candidates = self._shape_candidates
         candidate_counts = [batch._candidate_count for batch in batches]
-        self._shape_active_host = self.model._shape_active.numpy() if self.model._shape_active is not None else None
+        self._shape_active_host = self.model.shape_active.numpy() if self.model.body_variant_count > 0 else None
         if self._shape_active_host is not None:
             keep = self._shape_active_host[candidates["model_shapes"]]
             counts = np.add.reduceat(keep, np.cumsum([0, *candidate_counts[:-1]])) if keep.size else []

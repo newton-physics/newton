@@ -457,7 +457,7 @@ class Model:
         "shape_collision_aabb_upper": AttributeSpec(AttributeFrequency.SHAPE),
         "_shape_interior_point": AttributeSpec(AttributeFrequency.SHAPE),
         "_shape_voxel_resolution": AttributeSpec(AttributeFrequency.SHAPE),
-        "_shape_active": AttributeSpec(AttributeFrequency.SHAPE),
+        "shape_active": AttributeSpec(AttributeFrequency.SHAPE),
         "shape_world_start": AttributeSpec(
             AttributeFrequency.SHAPE,
             compaction_policy="world_start",
@@ -1187,10 +1187,15 @@ class Model:
         """Body center of mass [m] with each variant selected, shape [body_variant_count, 3], float."""
         self._body_variant_inertia: wp.array[wp.mat33] | None = None
         """Body inertia [kg·m²] about the COM with each variant selected, shape [body_variant_count, 3, 3], float."""
-        self._shape_active: wp.array[wp.bool] | None = None
-        """Whether each shape belongs to the geometry currently selected for its body, shape [shape_count], bool.
+        self.shape_active: wp.array[wp.bool] | None = None
+        """Whether each shape is part of the simulated and rendered geometry, shape [shape_count], bool.
 
-        ``None`` when the model has no body variants, in which case every shape is active.
+        Shapes of body variants that are not selected are inactive; all other shapes are always
+        active. Read-only: :meth:`select_body_variants` updates it.
+
+        .. experimental::
+
+            Body shape variants may change without a deprecation period.
         """
 
         self.joint_q: wp.array[wp.float32] | None = None
@@ -2221,7 +2226,7 @@ class Model:
             ],
             outputs=[
                 self.body_variant,
-                self._shape_active,
+                self.shape_active,
                 self.body_mass,
                 self.body_inv_mass,
                 self.body_com,
