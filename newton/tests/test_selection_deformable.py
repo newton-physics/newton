@@ -179,7 +179,7 @@ class TestDeformableFamilyViews(unittest.TestCase):
         np.testing.assert_array_equal(view.worlds_device.numpy(), [0, 1])
         self.assertEqual(view.get_body_transforms(model).shape, (2, 3))
         for kind in ("particle", newton.Model.AttributeFrequency.PARTICLE):
-            with self.assertRaisesRegex(AttributeError, "record body, joint elements, not 'particle'"):
+            with self.assertRaisesRegex(ValueError, "record body, joint elements, not 'particle'"):
                 view.ranges(kind)
 
         for view_type, family, ranges in (
@@ -363,8 +363,13 @@ class TestDeformableSelection(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Varying particle counts.*ranges"):
             view.set_particle_positions(model.state(), wp.zeros((2, 4), dtype=wp.vec3))
         view = DeformableSurfaceView(model, "/World/ClothA")
-        with self.assertRaisesRegex(AttributeError, "record particle, triangle, edge elements, not 'body'"):
-            view.ranges("body")
+        for accessor in (view.element_count, view.ranges, view.starts):
+            with self.subTest(accessor=accessor.__name__):
+                for kind in ("body", newton.Model.AttributeFrequency.BODY):
+                    with self.assertRaisesRegex(ValueError, "record particle, triangle, edge elements, not 'body'"):
+                        accessor(kind)
+                with self.assertRaisesRegex(TypeError, "kind must be"):
+                    accessor(None)
         with self.assertRaises(ValueError):
             view.set_particle_positions(model.state(), wp.zeros((2, 4), dtype=wp.vec3))
 

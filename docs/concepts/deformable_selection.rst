@@ -17,6 +17,7 @@ model and read or update their state. The class selects the geometric family:
 
 .. code-block:: python
 
+    import newton
     from newton.selection import (
         DeformableCurveView,
         DeformableSurfaceView,
@@ -48,8 +49,8 @@ and a soft volume can share a label without sharing a selection:
     cloths = DeformableSurfaceView(model, "object")
     volumes = DeformableVolumeView(model, "object")
 
-    cloths.ranges("triangle")      # Only the selected surfaces' triangles.
-    volumes.ranges("tetrahedron")  # Only the selected volumes' tetrahedra.
+    cloths.ranges(newton.Model.AttributeFrequency.TRIANGLE)
+    volumes.ranges(newton.Model.AttributeFrequency.TETRAHEDRON)
 
 Currently, curve views expose rod body transforms and velocities, with body and
 joint ranges. Surface and volume views share particle methods: positions,
@@ -277,19 +278,29 @@ belong to one selected deformable object?
 .. code-block:: python
 
     deformable_object_index = 2  # "cable_1"
-    body_start, body_end = cables.ranges("body")[deformable_object_index]
-    joint_start, joint_end = cables.ranges("joint")[deformable_object_index]
+    body_start, body_end = cables.ranges(newton.Model.AttributeFrequency.BODY)[deformable_object_index]
+    joint_start, joint_end = cables.ranges(newton.Model.AttributeFrequency.JOINT)[deformable_object_index]
 
 ``ranges(kind)`` returns each deformable object's ``[start, end)`` range into the simulation
 arrays. For example, ``body_start`` and ``body_end`` above refer to the model's
 body arrays, not selected deformable object indices. There can be gaps between different
 cables' body ranges even though their selected deformable object indices are consecutive.
 ``starts(kind)`` returns device-side starts; treat this array as read-only.
-``element_count(kind)`` returns the common element count, or ``None`` when the
-sizes differ. ``particle_count`` on surface and volume views and ``body_count``
-on curve views report the corresponding per-object counts. Raw ranges remain
-available when the selected deformable objects have different sizes.
-``kind`` is a :class:`~newton.Model.AttributeFrequency` member or its lowercase name.
+``element_count(kind)`` is the general count query. It returns the common count
+per selected deformable object, or ``None`` when sizes differ. ``particle_count``
+and ``body_count`` are convenience properties for the corresponding state
+elements. Raw ranges remain available when sizes differ.
+
+Use a :class:`~newton.Model.AttributeFrequency` member for ``kind``. Its lowercase
+name is also accepted as a convenience:
+
+.. code-block:: python
+
+    kind = newton.Model.AttributeFrequency.PARTICLE
+    cloths.element_count(kind)  # Particles per selected cloth, or None.
+    cloths.particle_count      # The same count through the convenience property.
+    cloths.ranges(kind)        # Each cloth's [start, end) particle range.
+    cloths.ranges("particle")  # Equivalent string form.
 
 For cable root joints and later attachments, see :ref:`deformable-objects-curve-joints`.
 For changes to the ranges after collapse, see :ref:`deformable-objects-collapse`.

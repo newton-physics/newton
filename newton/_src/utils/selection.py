@@ -2872,6 +2872,8 @@ class _DeformableViewBase:
         ``particle``/``triangle``/``edge`` ranges, and tetrahedral volumes record
         ``particle``/``tetrahedron`` ranges. Batched reads and writes require a
         common count; :meth:`ranges` remains available when counts differ.
+        ``particle_count`` and ``body_count`` are convenience properties for
+        this query on their corresponding state element kinds.
 
         Args:
             kind: Element kind recorded by every selected deformable object: a
@@ -2882,7 +2884,8 @@ class _DeformableViewBase:
             Common number of elements per selected deformable object, or ``None``.
 
         Raises:
-            AttributeError: If the selected deformable objects do not all record ``kind``.
+            TypeError: If ``kind`` is not an AttributeFrequency member or a string.
+            ValueError: If the selected deformable objects do not record ``kind``.
         """
         return self._counts[self._validate_kind(kind)]
 
@@ -2910,7 +2913,8 @@ class _DeformableViewBase:
             One ``[start, end)`` range per selected deformable object.
 
         Raises:
-            AttributeError: If the selected deformable objects do not all record ``kind``.
+            TypeError: If ``kind`` is not an AttributeFrequency member or a string.
+            ValueError: If the selected deformable objects do not record ``kind``.
         """
         kind = self._validate_kind(kind)
         return list(self._ranges[kind])
@@ -2933,7 +2937,8 @@ class _DeformableViewBase:
             Device array containing one start index per selected deformable object.
 
         Raises:
-            AttributeError: If the selected deformable objects do not all record ``kind``.
+            TypeError: If ``kind`` is not an AttributeFrequency member or a string.
+            ValueError: If the selected deformable objects do not record ``kind``.
         """
         kind = self._validate_kind(kind)
         return self._starts[kind]
@@ -2944,8 +2949,10 @@ class _DeformableViewBase:
         """Return the element kind as the lowercase name used by the view's range tables."""
         if isinstance(kind, AttributeFrequency):
             kind = kind.name.lower()
+        elif not isinstance(kind, str):
+            raise TypeError("kind must be a Model.AttributeFrequency member or its lowercase name")
         if kind not in self._kinds:
-            raise AttributeError(
+            raise ValueError(
                 f"Selected {self.family} deformable objects record {', '.join(self._kinds)} elements, not {kind!r}"
             )
         return kind
@@ -3243,7 +3250,6 @@ class _DeformableParticleView(_DeformableViewBase):
             Particle positions with shape ``(count, particle_count)``.
 
         Raises:
-            AttributeError: If the selected deformable objects do not all record particles.
             ValueError: If particle counts differ or the source array's rank,
                 dtype, device, or length is incompatible with the selection.
         """
@@ -3273,7 +3279,6 @@ class _DeformableParticleView(_DeformableViewBase):
                 selected deformable object. None updates the whole selection.
 
         Raises:
-            AttributeError: If the selected objects do not record particles.
             ValueError: If element counts, array shapes/dtypes/devices, mask,
                 target capacity, or non-overlap requirements are not satisfied.
             RuntimeError: If host values or a host mask are passed during CUDA capture.
@@ -3293,7 +3298,6 @@ class _DeformableParticleView(_DeformableViewBase):
             Particle velocities with shape ``(count, particle_count)``.
 
         Raises:
-            AttributeError: If the selected deformable objects do not all record particles.
             ValueError: If particle counts differ or the source array's rank,
                 dtype, device, or length is incompatible with the selection.
         """
@@ -3323,7 +3327,6 @@ class _DeformableParticleView(_DeformableViewBase):
                 selected deformable object. None updates the whole selection.
 
         Raises:
-            AttributeError: If the selected objects do not record particles.
             ValueError: If element counts, array shapes/dtypes/devices, mask,
                 target capacity, or non-overlap requirements are not satisfied.
             RuntimeError: If host values or a host mask are passed during CUDA capture.
@@ -3355,7 +3358,6 @@ class _DeformableBodyView(_DeformableViewBase):
             Body transforms with shape ``(count, body_count)``.
 
         Raises:
-            AttributeError: If the selected deformable objects do not all record bodies.
             ValueError: If body counts differ or the source array's rank,
                 dtype, device, or length is incompatible with the selection.
         """
@@ -3385,7 +3387,6 @@ class _DeformableBodyView(_DeformableViewBase):
                 selected deformable object. None updates the whole selection.
 
         Raises:
-            AttributeError: If the selected objects do not record bodies.
             ValueError: If element counts, array shapes/dtypes/devices, mask,
                 target capacity, or non-overlap requirements are not satisfied.
             RuntimeError: If host values or a host mask are passed during CUDA capture.
@@ -3408,7 +3409,6 @@ class _DeformableBodyView(_DeformableViewBase):
             Body velocities with shape ``(count, body_count)``.
 
         Raises:
-            AttributeError: If the selected deformable objects do not all record bodies.
             ValueError: If body counts differ or the source array's rank,
                 dtype, device, or length is incompatible with the selection.
         """
@@ -3438,7 +3438,6 @@ class _DeformableBodyView(_DeformableViewBase):
                 selected deformable object. None updates the whole selection.
 
         Raises:
-            AttributeError: If the selected objects do not record bodies.
             ValueError: If element counts, array shapes/dtypes/devices, mask,
                 target capacity, or non-overlap requirements are not satisfied.
             RuntimeError: If host values or a host mask are passed during CUDA capture.
