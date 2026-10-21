@@ -2719,7 +2719,8 @@ class TestDriveBAM(unittest.TestCase):
         two actuators. The template has one battery for both, and
         ``replicate`` gives each world its own. Each step, both drives read
         the voltage left by the previous step's total draw, and a reset
-        restores the nominal voltage of the masked world only.
+        restores the nominal voltage of the masked world only. The knee also
+        writes its effort to ``motor_effort``, which ``replicate`` keeps.
         """
         kp, kt, resistance, max_pwm, target, dt = 0.5, 0.6, 2.0, 0.9, 1.0, 0.01
         nominal_voltage, sag_gain, min_voltage = 5.0, 0.5, 4.4
@@ -2749,6 +2750,7 @@ class TestDriveBAM(unittest.TestCase):
             DriveBAM,
             index=template.joint_qd_start[knee],
             input_processors=[(InputProcessorBacklash, {"backlash_joint": "backlash"})],
+            control_computed_output_attr="motor_effort",
             **bam,
         )
         template.add_actuator(DriveBAM, index=template.joint_qd_start[ankle], **bam)
@@ -2787,6 +2789,8 @@ class TestDriveBAM(unittest.TestCase):
             effort = control.joint_f.numpy()
             np.testing.assert_allclose(effort[knees], kt * current["knee"], rtol=1e-5)
             np.testing.assert_allclose(effort[ankles], kt * current["ankle"], rtol=1e-5)
+            np.testing.assert_allclose(control.motor_effort.numpy()[knees], effort[knees])
+            control.motor_effort.zero_()
             update_battery_supply(model, control)
             drawn = sum(np.abs(kt * current[servo]) for servo in duty)
         sagged = np.array(sagged[1:])

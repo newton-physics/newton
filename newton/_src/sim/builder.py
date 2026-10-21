@@ -5666,6 +5666,7 @@ class ModelBuilder:
                     input_processor_classes=sub_entry.input_processor_classes,
                     input_processor_shared_kwargs=sub_entry.input_processor_shared_kwargs,
                     input_processor_args=[],
+                    control_computed_output_attr=sub_entry.control_computed_output_attr,
                 ),
             )
             entry.indices.extend(idx + joint_dof_offset for idx in sub_entry.indices)
