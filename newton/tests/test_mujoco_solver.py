@@ -3527,6 +3527,51 @@ class TestMuJoCoSolverGeomProperties(unittest.TestCase):
         solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
         check_bounds([sizes[0], tuple(0.5 * np.array(sizes[1]))])
 
+    def test_heterogeneous_worlds_keep_geom_aabb_batched(self):
+        """Per-world mesh assets must not collapse geom_aabb to one row when the rows happen to be equal:
+        the kernel writes world-specific primitive bounds into it, so it needs one row per world."""
+        import mujoco
+
+        vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], dtype=np.float32)
+        indices = np.array([0, 1, 2, 0, 1, 3, 0, 2, 3, 1, 2, 3], dtype=np.int32)
+        # The same tetrahedron with its vertices listed in another order: a distinct mesh asset
+        # (so the worlds count as heterogeneous and per-world mesh bounds are installed) whose
+        # compiled bounds are identical to the first one's.
+        permutation = np.array([3, 2, 1, 0])
+        meshes = [Mesh(vertices, indices), Mesh(vertices[permutation], np.argsort(permutation)[indices])]
+        half_extents = [(0.1, 0.2, 0.3), (0.2, 0.4, 0.6)]
+
+        builder = newton.ModelBuilder()
+        for i, (hx, hy, hz) in enumerate(half_extents):
+            world = newton.ModelBuilder()
+            body = world.add_link(mass=1.0, com=wp.vec3(0.0), inertia=wp.mat33(np.eye(3)))
+            world.add_shape_box(body=body, hx=hx, hy=hy, hz=hz)
+            world.add_shape_mesh(body=body, mesh=meshes[i], xform=wp.transform((0.0, 2.0, 0.0), wp.quat_identity()))
+            world.add_articulation([world.add_joint_free(body)])
+            builder.add_world(world, xform=wp.transform((4.0 * i, 0.0, 0.0), wp.quat_identity()))
+        model = builder.finalize()
+
+        solver = SolverMuJoCo(model, separate_worlds=True, iterations=1, disable_contacts=True)
+
+        self.assertEqual(solver.mjw_model.nmesh, 2)
+        self.assertEqual(solver.mjw_model.geom_aabb.shape[0], 2)
+        self.assertEqual(solver.mjw_model.geom_rbound.shape[0], 2)
+
+        mapping = solver.mjc_geom_to_newton_shape.numpy()
+        geom_type = [int(t) for t in solver.mj_model.geom_type]
+        box_geom = next(g for g, t in enumerate(geom_type) if t == int(mujoco.mjtGeom.mjGEOM_BOX))
+        aabb = solver.mjw_model.geom_aabb.numpy()
+        for world_idx, extents in enumerate(half_extents):
+            assert_np_equal(aabb[world_idx, box_geom, 1], np.array(extents), tol=1e-6)
+
+        scale = model.shape_scale.numpy()
+        scale[mapping[1, box_geom]] *= 0.5
+        model.shape_scale.assign(scale)
+        solver.notify_model_changed(ModelFlags.SHAPE_PROPERTIES)
+        aabb = solver.mjw_model.geom_aabb.numpy()
+        assert_np_equal(aabb[0, box_geom, 1], np.array(half_extents[0]), tol=1e-6)
+        assert_np_equal(aabb[1, box_geom, 1], 0.5 * np.array(half_extents[1]), tol=1e-6)
+
 
 class TestMuJoCoSolverEqualityConstraintProperties(unittest.TestCase):
     def test_connect_reference_anchors_use_free_joint_coordinates(self):

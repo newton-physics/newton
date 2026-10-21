@@ -9181,8 +9181,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         rbound[missing] = 0.0
         if np.all(dataid == dataid[:1]):
             dataid = dataid[:1]
-        if np.all(aabb == aabb[:1]):
-            aabb = aabb[:1]
+        # geom_aabb stays one row per world: update_geom_properties_kernel writes
+        # world-specific primitive bounds into it, like geom_size and geom_rbound.
         self.mjw_model.geom_dataid = wp.array(dataid, dtype=wp.int32, device=self.model.device)
         self.mjw_model.geom_size = wp.array(size, dtype=wp.vec3, device=self.model.device)
         self.mjw_model.geom_aabb = wp.array(aabb, dtype=wp.vec3, device=self.model.device)
