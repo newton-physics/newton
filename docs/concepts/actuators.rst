@@ -617,6 +617,8 @@ Battery
 
 * :meth:`~newton.ModelBuilder.add_battery` adds a supply shared by the
   actuators of the given joints, by index or label, in the current world.
+  Actuators in different groups, e.g. with and without a backlash processor,
+  can share one battery.
   The battery parameters live on the :class:`~newton.Model` as
   ``model.actuator.battery_*``, so :meth:`~newton.ModelBuilder.replicate`
   copies them into every world, and ``model.actuator.battery_world`` maps

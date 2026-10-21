@@ -586,7 +586,7 @@ class Actuator:
                 The implicit solve is not differentiable.
 
         Warns:
-            UserWarning: The actuator has an :class:`~newton.actuators.InputProcessorBacklash`.
+            NewtonWarning: The actuator has an :class:`~newton.actuators.InputProcessorBacklash`.
                 The solve uses the motor-side response only, so it is inaccurate
                 while the backlash gap is open.
         """
