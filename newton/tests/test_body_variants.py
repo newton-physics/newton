@@ -111,6 +111,14 @@ class TestBodyVariants(unittest.TestCase):
         with self.assertRaises(NotImplementedError):
             builder.collapse_fixed_joints()
 
+        # Variant shapes join the body's world even outside its world context.
+        scene = newton.ModelBuilder()
+        scene.begin_world()
+        body = scene.add_body()
+        scene.end_world()
+        scene.add_body_variants(body, [_variant("cube")])
+        self.assertEqual(scene.shape_world, [0])
+
     def test_viewer_renders_selected_variant(self):
         model = _scene(2).finalize(device="cpu")
         viewer = newton.viewer.ViewerNull()

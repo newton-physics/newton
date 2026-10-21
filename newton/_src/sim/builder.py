@@ -5783,7 +5783,7 @@ class ModelBuilder:
                 for name in shape_attributes:
                     getattr(self, name).append(getattr(variant, name)[source_shape])
                 self.shape_body[shape] = body
-                self.shape_world[shape] = self.current_world
+                self.shape_world[shape] = self.body_world[body]
                 self.shape_label[shape] = f"{self.body_label[body]}/{label}/{variant.shape_label[source_shape]}"
                 self.body_shapes[body].append(shape)
                 if self.shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES:
