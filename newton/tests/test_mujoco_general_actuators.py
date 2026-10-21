@@ -718,7 +718,7 @@ class TestMuJoCoActuators(unittest.TestCase):
         model.mujoco.ctrl_type.fill_(SolverMuJoCo.CtrlType.GENERAL)
         for name in ("actuator_damping", "actuator_dampingpoly", "actuator_armature", "actuator_ctrlspec"):
             attribute = getattr(model.mujoco, name)
-            original = attribute.numpy()
+            original = attribute.numpy().copy()
             changed = original.copy()
             changed[1] += 1
             attribute.assign(changed)

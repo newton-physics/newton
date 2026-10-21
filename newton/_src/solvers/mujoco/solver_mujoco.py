@@ -5762,18 +5762,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mj_model.jnt_margin[:] = self.mjw_model.jnt_margin.numpy()[0]
                 self.mj_model.jnt_range[:] = self.mjw_model.jnt_range.numpy()[0]
                 self.mj_model.jnt_actfrcrange[:] = self.mjw_model.jnt_actfrcrange.numpy()[0]
-            if flags & ModelFlags.ACTUATOR_PROPERTIES:
+            if flags & ModelFlags.ACTUATOR_PROPERTIES and self.mjc_actuator_ctrl_source is not None:
+                self.mj_model.actuator_ctrlrange[:] = self.mjw_model.actuator_ctrlrange.numpy()[0]
+                # Preserve joint-target damping already resolved by native MuJoCo.
+                ctrl_direct = self.mjc_actuator_ctrl_source.numpy() == SolverMuJoCo.CtrlSource.CTRL_DIRECT
                 for name in (
                     "actuator_gainprm",
                     "actuator_biasprm",
                     "actuator_dynprm",
-                    "actuator_ctrlrange",
                     "actuator_forcerange",
                     "actuator_actrange",
                     "actuator_gear",
                     "actuator_cranklength",
                 ):
-                    getattr(self.mj_model, name)[:] = getattr(self.mjw_model, name).numpy()[0]
+                    getattr(self.mj_model, name)[ctrl_direct] = getattr(self.mjw_model, name).numpy()[0, ctrl_direct]
             if need_const_fixed or need_const_0:
                 self._set_const_0_with_physical_meaninertia()
             if need_solref_update:
