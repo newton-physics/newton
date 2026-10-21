@@ -453,7 +453,7 @@ Implementation details differ by coordinate formulation:
 kinematic roots with a weld to a target that tracks the prescribed motion. This has user-visible consequences:
 
 - Switching a root between kinematic and dynamic at runtime requires opting the root in before the solver is
-  created, through the ``mujoco:kinematic_switchable`` body attribute or ``kinematic_switchable_roots=True``.
+  created, through the ``mujoco:kinematic_switchable`` body attribute.
   Roots that are kinematic when the solver is created are opted in automatically.
 - Kinematic roots keep their real mass, so contacts on a light kinematic body under a heavy load are softer than an
   infinite-mass collider's.

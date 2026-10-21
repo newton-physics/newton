@@ -4323,7 +4323,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         skip_visual_only_geoms: bool = True,
         deterministic: wp.DeterministicMode | None = None,
         strict_capacity: bool = False,
-        kinematic_switchable_roots: bool = False,
     ):
         """
         Solver options (e.g., ``impratio``) follow this resolution priority:
@@ -4407,12 +4406,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 via a ``wp.printf`` message; to detect it in Python without a
                 GPU sync, request ``ObservableKind.OVERFLOW`` via
                 :meth:`observables` and check the bitmask after each step.
-            kinematic_switchable_roots: If ``True``, every movable root body can
-                be switched to kinematic at runtime through
-                :attr:`~newton.Model.body_flags`. Otherwise only roots that are
-                kinematic or have ``mujoco:kinematic_switchable`` set at
-                construction can. Each switchable root adds a mocap body and an
-                inactive weld to the MuJoCo model.
         """
         super().__init__(model)
         if use_speculative_contacts and (use_mujoco_contacts or use_mujoco_cpu):
@@ -4473,7 +4466,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._initial_model_sync = True
         self._deterministic = deterministic if deterministic is not None else wp.config.deterministic
         self._strict_capacity = strict_capacity
-        self._kinematic_switchable_roots = kinematic_switchable_roots
         self._deterministic_max_records = 0
         if not use_mujoco_cpu:
             # MJWarp's step pipeline spans several modules (forward dynamics,
@@ -7873,23 +7865,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Add articulation joints and standalone dynamic roots.
         joints_with_bodies = np.concatenate((joint_order, joints_dynamic_roots))
         kinematic_target_roots = []
-        # MJWarp worlds share one topology, so a root kinematic in any world needs a target.
+        # MJWarp worlds share one topology, so a root kinematic or opted in in any world needs a target.
         template_bodies = model.body_count // model.world_count
-        needs_target = (body_flags & int(BodyFlags.KINEMATIC)) != 0
-        if self._kinematic_switchable_roots:
-            needs_target[:] = True
-        elif body_kinematic_switchable is not None:
-            needs_target |= body_kinematic_switchable.astype(bool)
-            movable_root_bodies = joint_child[(joint_parent == -1) & (joint_dof_dim[:, 0] + joint_dof_dim[:, 1] > 0)]
-            ignored = np.setdiff1d(np.flatnonzero(body_kinematic_switchable), movable_root_bodies)
-            if ignored.size:
-                warnings.warn(
-                    f"mujoco:kinematic_switchable is ignored on bodies "
-                    f"{[model.body_label[b] for b in ignored[:5]]}: only root bodies with joint DOFs can be "
-                    "switched to kinematic.",
-                    NewtonWarning,
-                    stacklevel=_external_warning_stacklevel(),
-                )
 
         def any_world(mask: np.ndarray) -> np.ndarray:
             return mask[: template_bodies * model.world_count].reshape(model.world_count, -1).any(axis=0)
@@ -7900,15 +7877,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         massless = (body_mass <= MJ_MINVAL) | (np.linalg.eigvalsh(body_inertia).min(axis=1) <= MJ_MINVAL)
         body_massless = any_world(massless)
         body_kinematic = any_world((body_flags & int(BodyFlags.KINEMATIC)) != 0)
-        body_needs_target = any_world(needs_target) & ~body_massless
-        unswitchable = np.flatnonzero(any_world(needs_target) & body_massless & ~body_kinematic)
-        if unswitchable.size:
-            warnings.warn(
-                f"Bodies {[model.body_label[b] for b in unswitchable[:5]]} cannot be switched to kinematic: "
-                "SolverMuJoCo holds kinematic roots with a weld, which needs positive mass and inertia.",
-                NewtonWarning,
-                stacklevel=_external_warning_stacklevel(),
-            )
+        body_switchable = np.zeros(template_bodies, dtype=bool)
+        if body_kinematic_switchable is not None:
+            body_switchable = any_world(body_kinematic_switchable.astype(bool))
+            movable_root = np.zeros(model.body_count, dtype=bool)
+            movable_root[joint_child[(joint_parent == -1) & (joint_dof_dim[:, 0] + joint_dof_dim[:, 1] > 0)]] = True
+            ignored = np.flatnonzero(body_switchable & ~(any_world(movable_root) & ~body_massless))
+            if ignored.size:
+                warnings.warn(
+                    f"mujoco:kinematic_switchable is ignored on bodies {[model.body_label[b] for b in ignored[:5]]}: "
+                    "only root bodies with joint DOFs, mass, and inertia can be switched to kinematic.",
+                    NewtonWarning,
+                    stacklevel=_external_warning_stacklevel(),
+                )
+        body_needs_target = (body_kinematic | body_switchable) & ~body_massless
         kinematic_mocap_root_joints = []
         for j in joints_with_bodies:
             parent = int(joint_parent[j])
@@ -9628,8 +9610,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     )
                 raise ValueError(
                     f"Body {self.model.body_label[body]!r} cannot be switched to kinematic: SolverMuJoCo prepares "
-                    "kinematic roots when it is created. Set the body's mujoco:kinematic_switchable attribute, or "
-                    "pass kinematic_switchable_roots=True, before creating the solver."
+                    "kinematic roots when it is created. Set the body's mujoco:kinematic_switchable attribute "
+                    "before creating the solver."
                 )
         if self.kinematic_target_eq is None:
             return

@@ -1182,13 +1182,9 @@ MuJoCo cannot add bodies or constraints to a compiled model, and all MuJoCo
 Warp worlds share one model, so the weld of every root that may become
 kinematic must exist when the solver is created. Roots that are kinematic in
 any world at that point get one automatically. To start a root dynamic and
-make it kinematic later, opt it in before creating the solver:
-
-- per body, with the ``mujoco:kinematic_switchable`` body attribute;
-- for every movable root, with ``kinematic_switchable_roots=True``.
-
-:attr:`~newton.Model.body_flags` can then switch these roots in either
-direction, per world, followed by
+make it kinematic later, opt it in with the ``mujoco:kinematic_switchable``
+body attribute before creating the solver. :attr:`~newton.Model.body_flags`
+can then switch these roots in either direction, per world, followed by
 ``notify_model_changed(ModelFlags.BODY_PROPERTIES)``:
 
 .. testcode:: mujoco-kinematic-switchable
@@ -1218,9 +1214,7 @@ or on ``model.mujoco.kinematic_switchable`` before creating the solver.
 
 Each opted-in root adds a mocap body and an inactive weld to the exported
 MuJoCo model, and the default ``njmax`` reserves the six constraint rows each
-inactive weld needs once its root turns kinematic. Opting in every root with
-``kinematic_switchable_roots=True`` costs little simulation time, but the
-reserved rows grow with the number of free bodies.
+inactive weld needs once its root turns kinematic.
 
 Errors and warnings
 ~~~~~~~~~~~~~~~~~~~
