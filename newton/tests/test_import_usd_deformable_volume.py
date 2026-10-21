@@ -17,6 +17,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.utils.import_usd_deformable_utils import _BUILDER_STOCK_PARTICLE_RADIUS
 from newton.tests._usd_deformable_test_utils import (
     _apply_deformable_body_api,
     _author_deformable_element_array,
@@ -345,8 +346,6 @@ class TestUSDDeformableVolume(unittest.TestCase):
         """Verify that a user-set ModelBuilder.default_particle_radius triggers one summary
         warning per add_usd() call with a migration recipe, while the half-default-thickness
         fallback still applies."""
-        from newton._src.utils.import_usd_deformable_utils import _BUILDER_STOCK_PARTICLE_RADIUS
-
         # The stock-default constant must track ModelBuilder's default, so the warning never
         # fires on the stock value or misses a real override.
         self.assertEqual(newton.ModelBuilder().default_particle_radius, _BUILDER_STOCK_PARTICLE_RADIUS)
