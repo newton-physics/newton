@@ -612,7 +612,7 @@ def pointer_as_key(obj, format_type: str = "json", cache: ArrayCache | None = No
                 "is_solid": x.is_solid,
                 "has_inertia": x.has_inertia,
                 "maxhullvert": x.maxhullvert,
-                "color": x.color,
+                "color": None if x.color is None else [float(x.color[0]), float(x.color[1]), float(x.color[2])],
                 "opacity": x.opacity,
                 "mass": x.mass,
                 "com": [float(x.com[0]), float(x.com[1]), float(x.com[2])],
