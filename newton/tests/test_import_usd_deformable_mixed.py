@@ -171,6 +171,11 @@ class TestUSDDeformableMixed(unittest.TestCase):
         volume_tet, _ = group_range(builder, "soft", "/World/Volume", "tet")
         self.assertAlmostEqual(builder.tet_materials[volume_tet][0], 3846.153846153846, delta=0.02)
 
+        # The volume contact-radius fallback follows the stage length unit as well.
+        volume_p0, volume_p1 = group_range(builder, "soft", "/World/Volume", "particle")
+        for i in range(volume_p0, volume_p1):
+            self.assertAlmostEqual(builder.particle_radius[i], 0.05, places=6)
+
     def test_mixed_scene_imports_and_finalizes(self):
         """Verify that a mixed scene imports and finalizes every family in one pass.
 
