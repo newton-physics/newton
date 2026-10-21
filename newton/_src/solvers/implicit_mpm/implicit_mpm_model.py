@@ -388,13 +388,25 @@ class ImplicitMPMModel:
         proxy_mask = (material_flags & proxy_flag) != 0
         material_flags[proxy_mask] &= ~active_flag
 
-        self.particle_flags = wp.array(transfer_flags, dtype=wp.int32, device=model.device)
-        self.material_particle_flags = wp.array(material_flags, dtype=wp.int32, device=model.device)
+        # Keep allocations referenced by captured solver steps alive across material updates.
+        with wp.ScopedDevice(model.device):
+            self.particle_flags = _reuse_or_allocate(
+                getattr(self, "particle_flags", None), model.particle_count, dtype=wp.int32
+            )
+            self.material_particle_flags = _reuse_or_allocate(
+                getattr(self, "material_particle_flags", None), model.particle_count, dtype=wp.int32
+            )
+        self.particle_flags.assign(transfer_flags)
+        self.material_particle_flags.assign(material_flags)
 
         material_active = (material_flags & active_flag) != 0
         material_particle_volume = self.particle_volume.numpy().copy()
         material_particle_volume[~material_active] = 0.0
-        self.material_particle_volume = wp.array(material_particle_volume, dtype=float, device=model.device)
+        with wp.ScopedDevice(model.device):
+            self.material_particle_volume = _reuse_or_allocate(
+                getattr(self, "material_particle_volume", None), model.particle_count
+            )
+        self.material_particle_volume.assign(material_particle_volume)
 
         if np.any(material_active):
             self.min_young_modulus = float(np.min(self.material_parameters.young_modulus.numpy()[material_active]))
