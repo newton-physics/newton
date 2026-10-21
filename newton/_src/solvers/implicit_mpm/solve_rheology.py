@@ -40,6 +40,7 @@ from .rheology_solver_kernels import (
     build_flat_color_offsets,
     build_flat_offsets,
     build_strain_to_batch,
+    commit_batched_stress,
     compute_batch_base_offsets,
     compute_delassus_diagonal,
     compute_vel_node_multiplicity,
@@ -795,13 +796,16 @@ class _RheologySolver:
         self._reordered_vals_y.release()
         self._reordered_vals_z.release()
 
-    def _gs_launch_dimensions(self, colors_per_batch=1):
+    def _gs_launch_dimensions(self, colors_per_batch=1, row_count=None):
         block_count = self.device.sm_count * 2 if self.device.is_cuda else 1
         block_dim = 64
         if self.device.is_cuda:
-            capacity = self.rheology.color_blocks.shape[1]
-            if self.rheology.strain_nodes_per_cell > 0:
-                capacity = math.ceil(capacity / self.rheology.strain_nodes_per_cell)
+            if row_count is not None:
+                capacity = row_count
+            else:
+                capacity = self.rheology.color_blocks.shape[1]
+                if self.rheology.strain_nodes_per_cell > 0:
+                    capacity = math.ceil(capacity / self.rheology.strain_nodes_per_cell)
             groups = math.ceil(self.color_count / colors_per_batch)
             threads = max(1, math.ceil(capacity / (groups * block_count)))
             block_dim = min(64, 1 << (threads - 1).bit_length())
@@ -1060,7 +1064,9 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
 
         # ── Launch config ────────────────────────────────────────────────
 
-        color_launch_dim, color_block_dim, color_block_count = self._gs_launch_dimensions(self.colors_per_batch)
+        color_launch_dim, color_block_dim, color_block_count = self._gs_launch_dimensions(
+            self.colors_per_batch, row_count=n_total
+        )
 
         # (apply_stress_launch is set up after the per-batch transposed matrices)
 
@@ -1073,6 +1079,27 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
             colors_per_batch=self.colors_per_batch,
             batched=True,
         )
+        self._commit_launches = []
+        if self.rheology.compliance_mat.nnz > 0:
+            for bi in range(self.n_batches):
+                self._commit_launches.append(
+                    wp.launch(
+                        kernel=commit_batched_stress,
+                        dim=color_launch_dim,
+                        inputs=[
+                            bi,
+                            color_launch_dim,
+                            self._flat_color_offsets,
+                            self.colors_per_batch,
+                            self._flat_constraint_ids,
+                            self.delta_stress,
+                        ],
+                        outputs=[self.rheology.stress],
+                        block_dim=color_block_dim,
+                        max_blocks=color_block_count,
+                        record_cmd=True,
+                    )
+                )
         # ── Precompute per-batch transposed matrices (all on device) ─
 
         n_vel = self.momentum.velocity.shape[0]
@@ -1191,6 +1218,8 @@ class _BatchedGaussSeidelSolver(_RheologySolver):
         for bi in range(self.n_batches):
             self._solve_launch.set_param_at_index(0, bi)
             self._solve_launch.launch()
+            if self._commit_launches:
+                self._commit_launches[bi].launch()
             self._scatter_launches[bi].launch()
 
     def release(self):

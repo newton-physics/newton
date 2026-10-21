@@ -1131,7 +1131,8 @@ def make_solve_strain_rows(
             ds = wp.static(make_solve_local_stress(has_viscosity, has_dilatancy, has_rotation))(
                 tau_i, tau, yield_params, strain_node_volume, diagonal, rotation, stress
             )
-            if wp.static(not batched):
+            # Batched compliant solves read frozen stresses and commit them in a separate kernel.
+            if wp.static(not (batched and has_compliance_mat)):
                 stress[tau_i] += ds
             delta[tau_i] = ds
             if wp.static(not batched):
@@ -1147,12 +1148,6 @@ def make_solve_strain_rows(
                         cache.vz[k] += cache.inverse_mass[k] * dv[2]
                     else:
                         velocity[node] += inv_mass[node] * dv
-
-        if wp.static(batched):
-            # Batched mode reads frozen stress as well as frozen velocity.
-            for row in range(beg, end):
-                tau_i = _strain_row_node(rows, row)
-                stress[tau_i] += delta[tau_i]
 
         if wp.static(cache_cell_velocity):
             for k in range(8):
@@ -1238,9 +1233,14 @@ def make_gs_solve_kernel(
             first_color = color * colors_per_batch
             last_color = wp.min(first_color + colors_per_batch, color_offsets.shape[0] - 1)
         first, last = int(color_offsets[first_color]), int(color_offsets[last_color])
+        if wp.static(batched):
+            # Batched rows read frozen velocities, so each thread solves a single row.
+            first, last = int(rows.block_offsets[first]), int(rows.block_offsets[last])
         for block in range(first + wp.tid(), last, launch_dim):
             beg, end = int(0), int(0)
-            if wp.static(soa):
+            if wp.static(batched):
+                beg, end = block, block + 1
+            elif wp.static(soa):
                 beg, end = int(rows.block_offsets[block]), int(rows.block_offsets[block + 1])
             else:
                 beg, end = int(color_blocks[0, block]), int(color_blocks[1, block])
@@ -1483,6 +1483,24 @@ def fill_batch_transpose(
         batch_columns[out] = tau_i
         batch_values[out] = transposed_strain_mat_values[b]
         batch_write_cursors[bi, u_i] = out + 1
+
+
+@wp.kernel
+def commit_batched_stress(
+    batch_index: int,
+    launch_dim: int,
+    flat_color_offsets: wp.array[int],
+    colors_per_batch: int,
+    flat_constraint_ids: wp.array[int],
+    delta_stress: wp.array[vec6],
+    stress: wp.array[vec6],
+):
+    """Add one batch's stress deltas once all its rows have read the frozen stresses."""
+    batch_beg = flat_color_offsets[batch_index * colors_per_batch]
+    batch_end = flat_color_offsets[wp.min((batch_index + 1) * colors_per_batch, flat_color_offsets.shape[0] - 1)]
+    for fi in range(batch_beg + wp.tid(), batch_end, launch_dim):
+        tau_i = flat_constraint_ids[fi]
+        stress[tau_i] += delta_stress[tau_i]
 
 
 @wp.kernel
