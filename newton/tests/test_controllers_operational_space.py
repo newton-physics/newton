@@ -316,6 +316,7 @@ def test_jacobian_tool_shift_matches_twist(test, device):
             model.body_com,
             tool_body_arr,
             coordinate_change_body_from_tool_arr,
+            wp.array([0], dtype=wp.int32, device=device),  # frame_robot_idx: one frame, robot 0
             wp.array([0], dtype=wp.int32, device=device),  # robot_articulation: one robot, articulation 0
             wp.array([1], dtype=wp.int32, device=device),  # robot_link_idx: tool_body is link 1 (the 2nd joint's child)
             wp.array(
@@ -352,6 +353,7 @@ def test_jacobian_tool_shift_remaps_non_prefix_dof_subset(test, device):
     coordinate_change_body_from_tool_arr = wp.array(
         [coordinate_change_body_from_tool], dtype=wp.transform, device=device
     )
+    frame_robot_idx_arr = wp.array([0], dtype=wp.int32, device=device)
     robot_articulation_arr = wp.array([0], dtype=wp.int32, device=device)
     robot_link_idx_arr = wp.array([6], dtype=wp.int32, device=device)  # tool_body is link 6 (the 7th joint's child)
 
@@ -368,6 +370,7 @@ def test_jacobian_tool_shift_remaps_non_prefix_dof_subset(test, device):
             model.body_com,
             tool_body_arr,
             coordinate_change_body_from_tool_arr,
+            frame_robot_idx_arr,
             robot_articulation_arr,
             robot_link_idx_arr,
             wp.array([np.arange(full_dof_count, dtype=np.int32)], dtype=wp.int32, device=device),
@@ -392,6 +395,7 @@ def test_jacobian_tool_shift_remaps_non_prefix_dof_subset(test, device):
             model.body_com,
             tool_body_arr,
             coordinate_change_body_from_tool_arr,
+            frame_robot_idx_arr,
             robot_articulation_arr,
             robot_link_idx_arr,
             articulation_dof_idx_of_padded_dof_idx,
@@ -446,6 +450,7 @@ def test_jacobian_tool_shift_matches_finite_difference(test, device):
             model.body_com,
             wp.array([tool_body], dtype=wp.int32, device=device),
             wp.array([coordinate_change_body_from_tool], dtype=wp.transform, device=device),
+            wp.array([0], dtype=wp.int32, device=device),  # frame_robot_idx: one frame, robot 0
             wp.array([0], dtype=wp.int32, device=device),  # robot_articulation: one robot, articulation 0
             wp.array([1], dtype=wp.int32, device=device),  # robot_link_idx: tool_body is link 1 (the 2nd joint's child)
             wp.array(
@@ -549,6 +554,7 @@ def test_null_space_projector_zeroes_task_response_only_when_dynamically_consist
             model.body_com,
             tool_body_arr,
             coordinate_change_body_from_tool_arr,
+            wp.array([0], dtype=wp.int32, device=device),  # frame_robot_idx: one frame, robot 0
             wp.array([0], dtype=wp.int32, device=device),
             wp.array([6], dtype=wp.int32, device=device),  # tool_body is link 6 (the 7th joint's child)
             wp.array(
@@ -630,7 +636,7 @@ def test_null_space_projector_zeroes_task_response_only_when_dynamically_consist
         wp.launch(
             _null_space_projector_kernel,
             dim=(1, max_dofs, max_dofs),
-            inputs=[jacobian_tool_world, jacobian_pinv_transpose, dof_count],
+            inputs=[jacobian_tool_world, jacobian_pinv_transpose, task_dim, dof_count],
             outputs=[null_space_projector],
             device=device,
         )
@@ -2371,6 +2377,7 @@ class TestControllerOperationalSpace(unittest.TestCase):
                 model.body_com,
                 wp.array([tool_body], dtype=wp.int32, device=device),
                 wp.array([coordinate_change_body_from_tool], dtype=wp.transform, device=device),
+                wp.array([0], dtype=wp.int32, device=device),  # frame_robot_idx: one frame, robot 0
                 wp.array([0], dtype=wp.int32, device=device),  # robot_articulation: one robot, articulation 0
                 wp.array([1], dtype=wp.int32, device=device),  # robot_link_idx: tool_body is link 1
                 wp.array(
