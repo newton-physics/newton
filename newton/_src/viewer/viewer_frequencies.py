@@ -3,15 +3,25 @@
 
 """Metadata-backed custom objects, with lazy explorer rows and bounded pages."""
 
+from __future__ import annotations
+
 from collections import defaultdict
+from typing import TYPE_CHECKING
 
 import numpy as np
 import warp as wp
 
 from ..sim.model import Model
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Sequence
+    from typing import Any
 
-def attribute_value(model, name):
+    from newton._src.viewer.viewer_types import TreeKey
+    from newton._src.viewer.viewer_workspace import ModelTree
+
+
+def attribute_value(model: Model, name: str) -> Any:
     """Resolve a registered attribute without assuming a solver namespace."""
     if ":" in name:
         namespace, name = name.split(":", 1)
@@ -24,7 +34,7 @@ class FrequencyCatalog:
 
     page_size = 128
 
-    def __init__(self, model):
+    def __init__(self, model: Model) -> None:
         self.model = model
         self.counts = {name: count for name, count in model.custom_frequency_counts.items() if count > 0}
         self.worlds = {}
@@ -77,31 +87,39 @@ class FrequencyCatalog:
                 self.buckets[int(worlds[first])].append((frequency, int(owners[first]), indices))
 
     @staticmethod
-    def key(frequency, index):
+    def key(frequency: str, index: int) -> TreeKey:
         return "custom:" + frequency, int(index)
 
     @staticmethod
-    def frequency(key):
+    def frequency(key: TreeKey) -> str | None:
         return key[0].removeprefix("custom:") if key[0].startswith("custom:") else None
 
-    def world_for(self, key):
+    def world_for(self, key: TreeKey) -> int:
         return int(self.worlds[self.frequency(key)][key[1]])
 
-    def label(self, frequency, index):
+    def label(self, frequency: str, index: int) -> str:
         labels = self.labels[frequency]
         if isinstance(labels, (list, tuple, np.ndarray)) and index < len(labels):
             label = labels[index]
             if isinstance(label, str) and label.strip():
                 return label
-        return f"{frequency.split(':')[-1].replace('_', ' ').capitalize()} {index}"
+        return f"{frequency.rsplit(':', maxsplit=1)[-1].replace('_', ' ').capitalize()} {index}"
 
-    def add_world(self, tree, world):
+    def add_world(self, tree: ModelTree, world: int) -> None:
         for frequency, owner, indices in self.buckets.get(world, ()):
             parent = ("articulation", owner) if owner >= 0 else ("root", world)
             key = self._group(tree, parent, frequency, indices, world, f"{frequency} · {len(indices):,}")
             self.owner_groups[(frequency, world, owner)] = key
 
-    def _group(self, tree, parent, frequency, indices, world, label):
+    def _group(
+        self,
+        tree: ModelTree,
+        parent: TreeKey,
+        frequency: str,
+        indices: Sequence[int] | np.ndarray,
+        world: int,
+        label: str,
+    ) -> TreeKey:
         key = ("frequency", len(self.groups))
         self.groups[key] = frequency, indices
         tree.labels[key] = label
@@ -110,7 +128,7 @@ class FrequencyCatalog:
         tree.children[parent].append(key)
         return key
 
-    def expand(self, tree, key):
+    def expand(self, tree: ModelTree, key: TreeKey) -> None:
         if key not in self.groups or tree.children.get(key):
             return
         frequency, indices = self.groups[key]
@@ -130,7 +148,7 @@ class FrequencyCatalog:
                 tree.parents[child] = key
                 tree.children[key].append(child)
 
-    def reveal(self, tree, key):
+    def reveal(self, tree: ModelTree, key: TreeKey) -> None:
         frequency, index = self.frequency(key), key[1]
         world = self.world_for(key)
         tree.ensure_world(world)
@@ -145,7 +163,7 @@ class FrequencyCatalog:
                 if self.groups[child][1][0] <= index <= self.groups[child][1][-1]
             )
 
-    def search(self, query):
+    def search(self, query: str) -> Iterator[tuple[TreeKey, str]]:
         for frequency, count in self.counts.items():
             match_frequency = query in frequency.casefold()
             for index in range(count):

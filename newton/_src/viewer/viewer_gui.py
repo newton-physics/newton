@@ -18,7 +18,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 from time import perf_counter
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 
@@ -28,6 +28,10 @@ from newton.selection import ArticulationView
 from ..core.types import Axis
 from .gl.gui import UI
 from .transform import transform_assign, transform_assign_matrix, transform_to_matrix
+
+if TYPE_CHECKING:
+    from numpy.typing import ArrayLike
+
 
 # Width of the left sidebar in logical (96-DPI) pixels.
 _SIDEBAR_WIDTH_PX = 300.0
@@ -134,8 +138,8 @@ class ViewerGui:
         ):
             return True
         workspace = getattr(self, "workspace", None)
-        documents = getattr(workspace, "documents", None)
-        if self.show_ui and documents is not None and documents.viewport_hovered:
+        dockspace = getattr(workspace, "dockspace", None)
+        if self.show_ui and dockspace is not None and dockspace.viewport_hovered:
             return False
         return bool(self.ui.io.want_capture_mouse)
 
@@ -153,34 +157,34 @@ class ViewerGui:
         self._viewer.gizmo_is_using = False
         self._release_camera_keys()
 
-    def _release_camera_keys(self):
+    def _release_camera_keys(self) -> None:
         """Drop momentary navigation on focus loss without releasing a pinned follow."""
         self._frame_key_down = False
         self._follow_held = False
         self._cam_vel.fill(0.0)
 
     @property
-    def following_selection(self):
+    def following_selection(self) -> bool:
         return getattr(self, "_follow_held", False) or getattr(self, "_follow_latched", False)
 
-    def stop_following_selection(self):
+    def stop_following_selection(self) -> None:
         """A changed selection or scene must not inherit another object's follow mode."""
         self._follow_held = self._follow_latched = False
         self._follow_center = None
 
-    def _start_follow_selection(self):
+    def _start_follow_selection(self) -> bool:
         bounds = self.workspace.selection_bounds(include_contacts=False)
         self._follow_center = bounds.mean(axis=0) if bounds is not None else None
         return self._follow_center is not None
 
-    def toggle_follow_selection(self):
+    def toggle_follow_selection(self) -> None:
         if getattr(self, "_follow_latched", False):
             self.stop_following_selection()
         elif self.workspace is not None and self.workspace.can_follow_selection:
             self.frame_camera_on_model(contacts=False)
             self._follow_latched = self._start_follow_selection()
 
-    def update_camera_follow(self, is_key_down):
+    def update_camera_follow(self, is_key_down: Callable[[int], bool]) -> None:
         """Transport the orbit pivot with the displayed selection, without refitting it."""
         if getattr(self, "_frame_key_down", False):
             from pyglet.window import key
@@ -242,7 +246,7 @@ class ViewerGui:
             return True
         return io.want_text_input and not self._numeric_text_input_active()
 
-    def _filter_gui_key_press(self, symbol, modifiers):
+    def _filter_gui_key_press(self, symbol: int, modifiers: int) -> bool:
         """Prevent Space from both toggling playback and activating a focused widget."""
         from pyglet.window import key
 
@@ -332,7 +336,7 @@ class ViewerGui:
         if hasattr(self._viewer, "_camera_dirty"):
             self._viewer._camera_dirty = True
 
-    def frame_camera_on_model(self, *, selection=True, contacts=True):
+    def frame_camera_on_model(self, *, selection: bool = True, contacts: bool = True):
         """Frame the selection, or all visible objects when nothing is selected."""
         viewer = self._viewer
         if viewer.is_rendering_paused():
@@ -434,7 +438,7 @@ class ViewerGui:
         if hasattr(viewer, "_camera_dirty"):
             viewer._camera_dirty = True
 
-    def _frame_contact(self, points):
+    def _frame_contact(self, points: ArrayLike) -> None:
         """Frame contact witnesses tightly, keeping both beyond the near plane."""
         viewer, camera = self._viewer, self._viewer.camera
         points = np.asarray(points, dtype=float)
@@ -656,7 +660,7 @@ class ViewerGui:
         ):
             self.update_picking_from_screen(x, y, to_framebuffer_coords)
 
-    def close_console(self):
+    def close_console(self) -> None:
         """Release logging routes on window close, including close events outside run()."""
         if self.console_capture is not None:
             self.console_capture.close()
@@ -706,7 +710,7 @@ class ViewerGui:
             self.close_console()
             close_fn()
 
-    def handle_key_release(self, symbol: int):
+    def handle_key_release(self, symbol: int) -> None:
         from pyglet.window import key
 
         if symbol == key.F:
@@ -826,7 +830,7 @@ class ViewerGui:
             return
         if viewer.is_rendering_paused() or self._loading_splash_active:
             return
-        if self.workspace_enabled and self.workspace is not None and not self.workspace.documents.viewport_visible:
+        if self.workspace_enabled and self.workspace is not None and not self.workspace.dockspace.viewport_visible:
             return
         if not hasattr(viewer, "_gizmo_log") or not viewer._gizmo_log:
             self._gizmo_active.clear()
@@ -852,7 +856,7 @@ class ViewerGui:
             # ImGuizmo's default full-window layer lies behind docked documents.
             # Use the viewport for both draw order and hover ownership.
             imgui = self.ui.imgui
-            window = imgui.internal.find_window_by_name(self.workspace.documents.viewport_name)
+            window = imgui.internal.find_window_by_name(self.workspace.dockspace.viewport_name)
             giz.set_alternative_window(window)
             draw_list = window.draw_list
             giz.set_drawlist(draw_list)

@@ -3,10 +3,12 @@
 
 """Metadata-driven, bounded property inspection for the local workspace."""
 
+from __future__ import annotations
+
 from collections import defaultdict
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
 import warp as wp
@@ -19,11 +21,22 @@ from ..sim.state import State
 from .viewer_frequencies import FrequencyCatalog
 from .viewer_widgets import PropertyEdit
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Sequence
+    from typing import Any
+
+    from numpy.typing import ArrayLike
+
+    from newton import Control
+    from newton._src.viewer.viewer_types import TreeKey
+    from newton._src.viewer.viewer_workspace import ViewerWorkspace
+
+
 Frequency = Model.AttributeFrequency
 Assignment = Model.AttributeAssignment
 
 
-def resolve_attribute(owner, name):
+def resolve_attribute(owner: object, name: str) -> tuple[object | None, str, Any]:
     """Resolve the registry's namespace:name notation without flattening namespaces."""
     if ":" in name:
         namespace, name = name.split(":", 1)
@@ -31,7 +44,9 @@ def resolve_attribute(owner, name):
     return owner, name, getattr(owner, name, None)
 
 
-def component_attributes(model, owner, component):
+def component_attributes(
+    model: Model, owner: object, component: Model.AttributeAssignment
+) -> Iterator[tuple[str, Model.AttributeSpec, object, str, Any]]:
     """Use registered frequencies and actual component storage, including optional arrays."""
     for name, spec in model._iter_attribute_specs():
         if name.startswith("_") or spec.compaction_policy in ("world_start", "color_groups", "passthrough"):
@@ -50,7 +65,9 @@ def component_attributes(model, owner, component):
         yield name, spec, parent, attribute, value
 
 
-def joint_editor_options(attr, lower=None, upper=None):
+def joint_editor_options(
+    attr: str, lower: float | None = None, upper: float | None = None
+) -> dict[str, float | bool | tuple[float, float] | None]:
     """Keep simulation limits while using a human-sized drag for very wide ranges."""
     speed = 0.001 if attr in ("joint_q", "joint_target_q") else 0.01 if attr in ("joint_qd", "joint_target_qd") else 0.1
     bounds = (
@@ -64,7 +81,7 @@ def joint_editor_options(attr, lower=None, upper=None):
     return {"speed": speed, "bounds": bounds, "slider": slider}
 
 
-def attribute_summary(name, spec, array, component):
+def attribute_summary(name: str, spec: Model.AttributeSpec, array: Any, component: Model.AttributeAssignment) -> str:
     """Describe full storage using host metadata only, without reading array values."""
     frequency = spec.frequency.name if isinstance(spec.frequency, Frequency) else str(spec.frequency)
     lines = [f"{component.name.title()}.{name.replace(':', '.')}"]
@@ -90,7 +107,7 @@ def attribute_summary(name, spec, array, component):
     return "\n".join(lines)
 
 
-def frequency_row_label(frequency, index):
+def frequency_row_label(frequency: Model.AttributeFrequency | str, index: int) -> str:
     """Name a storage row by its registered domain and zero-based array index."""
     name = frequency.name if isinstance(frequency, Frequency) else frequency or "element"
     return f"{name.replace('_', ' ').lower()} {index}"
@@ -98,9 +115,9 @@ def frequency_row_label(frequency, index):
 
 @dataclass
 class PropertyDomain:
-    model: object
-    frequency: object
-    indices: object
+    model: Model
+    frequency: Model.AttributeFrequency | str
+    indices: Sequence[int] | np.ndarray
     # JOINT_COORD and JOINT_DOF rows are indexed by joint, not scalar coordinate.
     joints: bool = False
 
@@ -108,7 +125,7 @@ class PropertyDomain:
 class PropertyInspector:
     """Discover fields once per selection; transfer only displayed rows from the GPU."""
 
-    kinds: ClassVar[dict] = {
+    kinds: ClassVar[dict[str, Model.AttributeFrequency]] = {
         "joint": Frequency.JOINT,
         "body": Frequency.BODY,
         "shape": Frequency.SHAPE,
@@ -120,23 +137,56 @@ class PropertyInspector:
         "spring": Frequency.SPRING,
     }
 
-    def __init__(self, workspace):
+    def __init__(self, workspace: ViewerWorkspace) -> None:
         self.workspace = workspace
         self.context_key = None
-        self.domains = []
+        self.domains: list[PropertyDomain] = []
         self.component = Assignment.STATE
 
-    def _contexts(self):
+    def _contexts(self) -> None:
         ws = self.workspace
-        key = (id(ws.model), ws.selected)
+        selection = frozenset(getattr(ws, "selection", ()) or (ws.selected or ("scene", 0),))
+        key = (id(ws.model), selection)
         if self.context_key == key:
             return
         self.context_key = key
-        self.domains = []
-        model = ws.model
-        kind, index = ws.selected or ("scene", 0)
+        domains = [
+            domain
+            for selected in sorted(selection, key=lambda item: (item[0], repr(item[1])))
+            for domain in self._selection_domains(selected)
+        ]
+        if len(selection) == 1:
+            # Preserve lazy ranges for whole worlds and large deformables.
+            self.domains = domains
+            return
+        merged: dict[tuple[int, Model.AttributeFrequency | str, bool], list[PropertyDomain]] = defaultdict(list)
+        for domain in domains:
+            key = (id(domain.model), domain.frequency, domain.joints)
+            merged[key].append(domain)
+        self.domains = [
+            PropertyDomain(
+                group[0].model,
+                group[0].frequency,
+                sorted({int(index) for domain in group for index in domain.indices}),
+                joints=group[0].joints,
+            )
+            for group in merged.values()
+        ]
 
-        def add(frequency, indices, *, source=model, joints=False):
+    def _selection_domains(self, selected: TreeKey) -> list[PropertyDomain]:
+        """Resolve one object into registered row domains, including related vertices and DOFs."""
+        ws = self.workspace
+        domains: list[PropertyDomain] = []
+        model = ws.model
+        kind, index = selected
+
+        def add(
+            frequency: Model.AttributeFrequency | str,
+            indices: Sequence[int] | np.ndarray,
+            *,
+            source: Model = model,
+            joints: bool = False,
+        ) -> None:
             if joints and len(indices):
                 first, last = int(indices[0]), int(indices[-1])
                 offsets = "joint_q_start" if frequency == Frequency.JOINT_COORD else "joint_qd_start"
@@ -144,7 +194,7 @@ class PropertyInspector:
                 indices = np.asarray(indices, dtype=int)
                 indices = indices[spans[indices - first + 1] > spans[indices - first]]
             if len(indices):
-                self.domains.append(PropertyDomain(source, frequency, indices, joints=joints))
+                domains.append(PropertyDomain(source, frequency, indices, joints=joints))
 
         if kind in self.kinds:
             if kind == "particle":
@@ -153,7 +203,7 @@ class PropertyInspector:
             else:
                 add(self.kinds[kind], [index])
                 if kind in ("tri", "tet"):
-                    particles, _, _ = ws.tree.deformables.elements(ws.selected)
+                    particles, _, _ = ws.tree.deformables.elements(selected)
                     add(Frequency.PARTICLE, particles)
             if kind in ("joint", "articulation"):
                 joints = [index]
@@ -170,15 +220,15 @@ class PropertyInspector:
         elif (frequency := FrequencyCatalog.frequency((kind, index))) is not None:
             add(frequency, [index])
         elif kind == "frequency":
-            frequency, indices = ws.tree.custom.groups[ws.selected]
+            frequency, indices = ws.tree.custom.groups[selected]
             add(frequency, indices)
         elif kind.startswith("attribute:"):
             add(Frequency[kind.split(":", 1)[1]], [index])
         elif kind == "reference_group":
-            frequency = ws.tree.meta[ws.selected]["frequency"]
-            add(frequency, [child[1] for child in ws.tree.children[ws.selected]])
+            frequency = ws.tree.meta[selected]["frequency"]
+            add(frequency, [child[1] for child in ws.tree.children[selected]])
         elif kind in ("surface", "volume", "particle_set", "elements"):
-            particles, triangles, tets = ws.tree.deformables.elements(ws.selected)
+            particles, triangles, tets = ws.tree.deformables.elements(selected)
             for source in ws.tree.deformables.sources:
                 if isinstance(particles, range) and particles.step == 1:
                     local = range(
@@ -191,7 +241,7 @@ class PropertyInspector:
                 add(Frequency.PARTICLE, local, source=source.model)
             add(Frequency.TRIANGLE, triangles)
             add(Frequency.TETRAHEDRON, tets)
-        else:
+        elif kind in ("scene", "root", "group"):
             add(Frequency.ONCE, [0])
             if kind == "root" and index >= 0:
                 add(Frequency.WORLD, [index])
@@ -199,8 +249,9 @@ class PropertyInspector:
                 add(Frequency.WORLD, range(model.world_count))
             for frequency, count in model.custom_frequency_counts.items():
                 add(frequency, range(count))
+        return domains
 
-    def _owner(self, domain, component):
+    def _owner(self, domain: PropertyDomain, component: Model.AttributeAssignment) -> Model | State | Control | None:
         ws = self.workspace
         if component == Assignment.MODEL:
             return domain.model
@@ -212,7 +263,7 @@ class PropertyInspector:
             return getattr(ws.viewer, "_last_state", None) or ws.live_state()
         return next((s.state for s in ws.tree.deformables.sources if s.model is domain.model), None)
 
-    def draw(self):
+    def draw(self) -> None:
         ws, ui, w = self.workspace, self.workspace.gui.ui.imgui, self.workspace.widgets
         self._contexts()
         components = {
@@ -225,7 +276,10 @@ class PropertyInspector:
             if groups or (component == Assignment.MODEL and self._counts())
         ]
         contact_owner = (
-            ws.selected is not None and ws.selected[0] in ("shape", "body") and ws.collision.root in ws.tree.labels
+            len(ws.selection) == 1
+            and ws.selected is not None
+            and ws.selected[0] in ("shape", "body")
+            and ws.collision.root in ws.tree.labels
         )
         ws.collision.contacts_tab = False
         if contact_owner:
@@ -259,7 +313,7 @@ class PropertyInspector:
                     ws._undo = None
             ui.end_disabled()
 
-    def _counts(self):
+    def _counts(self) -> dict[str, int]:
         ws = self.workspace
         if ws.selected and ws.selected[0] not in ("root", "group"):
             return {}
@@ -269,7 +323,9 @@ class PropertyInspector:
             if getattr(ws.model, name, 0)
         }
 
-    def _collect(self, component):
+    def _collect(
+        self, component: Model.AttributeAssignment
+    ) -> dict[str | None, list[tuple[PropertyDomain, str, Model.AttributeSpec, object, str, Any]]]:
         """Determine populated groups from metadata and storage, without reading live arrays."""
         groups = defaultdict(list)
         attributes = {}
@@ -300,10 +356,15 @@ class PropertyInspector:
                 groups[namespace].append((domain, name, spec, parent, attr, value))
         return groups
 
-    def _component(self, component, groups=None):
+    def _component(
+        self,
+        component: Model.AttributeAssignment,
+        groups: dict[str | None, list[tuple[PropertyDomain, str, Model.AttributeSpec, object, str, Any]]] | None = None,
+    ) -> None:
         ws, w, ui = self.workspace, self.workspace.widgets, self.workspace.gui.ui.imgui
         groups = self._collect(component) if groups is None else groups
-        if component == Assignment.MODEL and ws.selected and ws.selected[0] == "shape":
+        single_shape = len(ws.selection) == 1 and ws.selected and ws.selected[0] == "shape"
+        if component == Assignment.MODEL and single_shape:
             ws.tree.resources.shape_summary(ws, ws.selected[1])
         if component == Assignment.CONTROL:
             editable = ws.can_edit_control()
@@ -362,11 +423,17 @@ class PropertyInspector:
                         self._fields(groups[namespace], component, flat=True)
                         ui.end_tab_item()
                 ui.end_tab_bar()
-        if component == Assignment.MODEL and ws.selected and ws.selected[0] == "shape":
+        if component == Assignment.MODEL and single_shape:
             ws._shape_solver_properties(ws.selected[1])
         ui.pop_id()
 
-    def _fields(self, fields, component, *, flat=False):
+    def _fields(
+        self,
+        fields: Sequence[tuple[PropertyDomain, str, Model.AttributeSpec, object, str, Any]],
+        component: Model.AttributeAssignment,
+        *,
+        flat: bool = False,
+    ) -> None:
         w, ui = self.workspace.widgets, self.workspace.gui.ui.imgui
         # Attribute groups keep large articulations and meshes bounded and useful:
         # q for all joints together, then qd for all joints, with stable row labels.
@@ -388,7 +455,16 @@ class PropertyInspector:
                     self._field(domain, name, spec, owner, attr, array, int(domain.indices[0]), component)
             ui.pop_id()
 
-    def _prefetch(self, domain, spec, owner, attr, array, indices, component):
+    def _prefetch(
+        self,
+        domain: PropertyDomain,
+        spec: Model.AttributeSpec,
+        owner: object,
+        attr: str,
+        array: Any,
+        indices: Sequence[int] | np.ndarray,
+        component: Model.AttributeAssignment,
+    ) -> None:
         """Read a compact visible page once instead of synchronizing once per field."""
         if not isinstance(array, wp.array) or len(indices) < 2:
             return
@@ -417,7 +493,7 @@ class PropertyInspector:
         for _, offset, count in rows:
             cache[(id(source), attr, offset, count)] = values[offset - start : offset - start + count]
 
-    def _page(self, indices):
+    def _page(self, indices: Sequence[int] | np.ndarray) -> Sequence[int] | np.ndarray:
         ui, w = self.workspace.gui.ui.imgui, self.workspace.widgets
         size = 16
         if len(indices) <= size:
@@ -439,7 +515,19 @@ class PropertyInspector:
         w.label(f"/ {pages} · {len(indices):,} rows", muted=True)
         return indices[page * size : (page + 1) * size]
 
-    def _field(self, domain, name, spec, owner, attr, array, index, component, *, nested=False):
+    def _field(
+        self,
+        domain: PropertyDomain,
+        name: str,
+        spec: Model.AttributeSpec,
+        owner: object,
+        attr: str,
+        array: Any,
+        index: int,
+        component: Model.AttributeAssignment,
+        *,
+        nested: bool = False,
+    ) -> None:
         ws, w, ui = self.workspace, self.workspace.widgets, self.workspace.gui.ui.imgui
         model = domain.model
         start, count = index * spec.row_width, spec.row_width
@@ -530,7 +618,7 @@ class PropertyInspector:
                 ws._drag_undo = None
         ui.pop_id()
 
-    def reference_target(self, model, frequency, index):
+    def reference_target(self, model: Model, frequency: Model.AttributeFrequency | str, index: int) -> TreeKey | None:
         """Resolve an index to an explorer selection without changing selection."""
         ws = self.workspace
         if frequency in (Frequency.JOINT_COORD, Frequency.JOINT_DOF):
@@ -553,7 +641,9 @@ class PropertyInspector:
                 return kind, index
         return "attribute:" + frequency.name, index
 
-    def reference_label(self, model, frequency, index, target):
+    def reference_label(
+        self, model: Model, frequency: Model.AttributeFrequency | str, index: int, target: TreeKey
+    ) -> str:
         """Read host labels without materializing the referenced world or page."""
         tree = self.workspace.tree
         if isinstance(frequency, str):
@@ -564,12 +654,14 @@ class PropertyInspector:
             return labels[index]
         return tree.labels.get(target, frequency_row_label(frequency, index))
 
-    def _references(self, label, values, spec, domain, start, reason):
+    def _references(
+        self, label: str, values: ArrayLike, spec: Model.AttributeSpec, domain: PropertyDomain, start: int, reason: str
+    ) -> None:
         ws, w, ui = self.workspace, self.workspace.widgets, self.workspace.gui.ui.imgui
         values = np.asarray(values)
         flat = values.reshape(-1)
 
-        def row(label, value):
+        def row(label: str, value: int) -> None:
             if spec.references in (Frequency.JOINT_COORD, Frequency.JOINT_DOF):
                 w.number(label, int(value), integer=True, reason=reason)
                 return
@@ -594,7 +686,18 @@ class PropertyInspector:
                     row(frequency_row_label(frequency, start + index if frequency is not None else index), flat[index])
                     ui.pop_id()
 
-    def _typed(self, label, values, dtype, editable, reason, attr, *, frequency=None, start=0):
+    def _typed(
+        self,
+        label: str,
+        values: ArrayLike,
+        dtype: Any,
+        editable: bool,
+        reason: str,
+        attr: str,
+        *,
+        frequency: Model.AttributeFrequency | str | None = None,
+        start: int = 0,
+    ) -> PropertyEdit:
         w, ui = self.workspace.widgets, self.workspace.gui.ui.imgui
         values = np.asarray(values)
         args = {"editable": editable, "reason": reason}
@@ -671,7 +774,17 @@ class PropertyInspector:
         )
         return w.array(label, flat, integer=integer, labels=labels, **args)
 
-    def _joint_widget(self, label, values, model, joint, kind, attr, editable, reason):
+    def _joint_widget(
+        self,
+        label: str,
+        values: ArrayLike,
+        model: Model,
+        joint: int,
+        kind: JointType,
+        attr: str,
+        editable: bool,
+        reason: str,
+    ) -> PropertyEdit:
         ws, w = self.workspace, self.workspace.widgets
         values = values.reshape(-1)
         coord = attr in ("joint_q", "joint_target_q")

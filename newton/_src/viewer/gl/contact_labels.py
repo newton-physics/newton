@@ -3,14 +3,32 @@
 
 """Small contact numbers anchored in scene depth, using the existing font backend."""
 
+from __future__ import annotations
+
 import ctypes
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from .shaders import ShaderGL, arr_pointer
 
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator, Sequence
+    from types import ModuleType
 
-def _layout_labels(labels, matrix, size, measure, *, scale=1.0):
+    from numpy.typing import ArrayLike
+
+    from newton._src.viewer.gl.opengl import RendererGL
+
+
+def _layout_labels(
+    labels: Sequence[tuple[ArrayLike, str, bool]],
+    matrix: np.ndarray,
+    size: np.ndarray,
+    measure: Callable[[str], tuple[float, float]],
+    *,
+    scale: float = 1.0,
+) -> list[tuple[np.ndarray, str, bool, np.ndarray]]:
     """Place all visible numbers, coalescing only overlapping witnesses of one contact.
 
     Inputs are cached host witnesses. A screen-space grid bounds overlap queries;
@@ -19,7 +37,7 @@ def _layout_labels(labels, matrix, size, measure, *, scale=1.0):
     occupied = {}
     result = []
 
-    def cells(rect):
+    def cells(rect: tuple[float, float, float, float]) -> Iterator[tuple[int, int]]:
         x0, y0, x1, y1 = (int(np.floor(value / 8)) for value in rect)
         return ((x, y) for x in range(x0, x1 + 1) for y in range(y0, y1 + 1))
 
@@ -64,7 +82,7 @@ def _layout_labels(labels, matrix, size, measure, *, scale=1.0):
 
 
 class ContactLabels(ShaderGL):
-    def __init__(self, gl):
+    def __init__(self, gl: ModuleType) -> None:
         import pyglet.font
         from pyglet.graphics.shader import Shader, ShaderProgram
 
@@ -155,7 +173,7 @@ class ContactLabels(ShaderGL):
         self.layout = ()
         self.count = 0
 
-    def render(self, renderer, labels):
+    def render(self, renderer: RendererGL, labels: Sequence[tuple[ArrayLike, str, bool]]) -> None:
         gl = self._gl
         gl.glBindVertexArray(self.vao)
         _, _, width, height = renderer._get_scene_viewport()
@@ -167,7 +185,7 @@ class ContactLabels(ShaderGL):
             self.labels = labels
             self.layout_key = layout_key
 
-            def measure(text):
+            def measure(text: str) -> tuple[float, float]:
                 return (
                     sum(self.glyphs[char].advance for char in text) * self._font_scale,
                     (self.font.ascent - self.font.descent) * self._font_scale,
@@ -220,7 +238,7 @@ class ContactLabels(ShaderGL):
             gl.glDisable(gl.GL_BLEND)
         gl.glBindVertexArray(0)
 
-    def destroy(self):
+    def destroy(self) -> None:
         self._gl.glDeleteSamplers(1, self.sampler)
         self._gl.glDeleteBuffers(1, self.vbo)
         self._gl.glDeleteVertexArrays(1, self.vao)

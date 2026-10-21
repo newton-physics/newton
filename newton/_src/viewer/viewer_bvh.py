@@ -3,8 +3,11 @@
 
 """Inspect live acceleration structures with on-demand model BVH refitting."""
 
+from __future__ import annotations
+
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 import warp as wp
@@ -13,13 +16,23 @@ from ..geometry.tri_mesh_collision import TriMeshCollisionDetector
 from ..geometry.types import GeoType
 from ..sim.collide import CollisionPipeline
 
+if TYPE_CHECKING:
+    from collections.abc import Hashable
+    from typing import Any
+
+    from newton import Model, State
+    from newton._src.viewer.viewer_types import TreeKey, ViewerExample
+    from newton._src.viewer.viewer_workspace import ModelTree, ViewerWorkspace
+    from newton.viewer import ViewerBase
+
+
 logger = logging.getLogger(__name__)
 
 
 @wp.kernel
 def _query_bounds(
     resource: wp.uint64, mesh: bool, group: int, query_count: int, indices: wp.array[int], count: wp.array[int]
-):
+) -> None:
     query_index = wp.tid()
     # When detail is limited, give each world its own traversal and quota so
     # early worlds cannot consume the entire budget. Missing groups stay empty.
@@ -64,7 +77,7 @@ def _bounds_lines(
     layer: wp.transform,
     starts: wp.array[wp.vec3],
     ends: wp.array[wp.vec3],
-):
+) -> None:
     slot, edge = wp.tid()
     line = slot * 12 + edge
     starts[line] = wp.vec3(0.0)
@@ -130,7 +143,7 @@ def _frame_bounds(
     offsets: wp.array[wp.vec3],
     layer: wp.transform,
     bounds: wp.array2d[float],
-):
+) -> None:
     item = wp.tid()
     if group >= 0 and groups[item] != group:
         return
@@ -182,7 +195,7 @@ class BvhResource:
     local: bool = False
     index: int | None = None
 
-    def get(self):
+    def get(self) -> wp.Bvh | wp.Mesh | None:
         value = getattr(self.owner, self.attribute, None)
         if self.index is not None:
             value = value[self.index] if value is not None and self.index < len(value) else None
@@ -196,7 +209,7 @@ class BvhResources:
     meshes = ("bvh_collection", "meshes")
     page_size = 128
 
-    def __init__(self, model, example=None):
+    def __init__(self, model: Model, example: ViewerExample | None = None) -> None:
         self.model, self.example = model, example
         self.entries = {}
         self._mesh_ids = None
@@ -216,11 +229,11 @@ class BvhResources:
         self.error = ""
 
     @staticmethod
-    def handles(key):
+    def handles(key: TreeKey) -> bool:
         return key is not None and (key[0].startswith("bvh") or key[0] == "shape_bvh")
 
     @staticmethod
-    def _node(tree, key, label, parent=None, *, world=-1):
+    def _node(tree: ModelTree, key: TreeKey, label: str, parent: TreeKey | None = None, *, world: int = -1) -> bool:
         fresh = key not in tree.labels
         tree.labels[key] = label
         tree.meta[key] = {"world": world}
@@ -230,7 +243,7 @@ class BvhResources:
                 tree.children[parent].append(key)
         return fresh
 
-    def attach(self, tree):
+    def attach(self, tree: ModelTree) -> None:
         if not (
             self.model.bvh_shapes
             or self.model.bvh_particles
@@ -253,12 +266,12 @@ class BvhResources:
         if count:
             self._node(tree, self.meshes, f"Mesh BVHs · {count:,}", self.root)
 
-    def _mesh(self, index):
+    def _mesh(self, index: int) -> BvhResource:
         count = len(self.model._mesh_keep_alive)
         attr, local = ("_mesh_keep_alive", index) if index < count else ("heightfield_meshes", index - count)
         return BvhResource(self.model, attr, "Triangle raycasts and collision narrowphase", local=True, index=local)
 
-    def expand(self, tree, key):
+    def expand(self, tree: ModelTree, key: TreeKey) -> None:
         if key == self.root:
             self.attach(tree)
             self._discover(tree)
@@ -282,7 +295,7 @@ class BvhResources:
                     self.entries[node] = self._mesh(start)
                     self._node(tree, node, f"Mesh BVH {start}", key)
 
-    def _discover(self, tree):
+    def _discover(self, tree: ModelTree) -> None:
         # Inspect known owners, never recursively traverse a model's object graph.
         seen = set()
         for owner in (self.example, self.model, getattr(self.example, "solver", None)):
@@ -315,7 +328,7 @@ class BvhResources:
                 self.entries[key] = BvhResource(source, "bvh", "Gaussian raycasts", local=True)
                 self._node(tree, key, f"Gaussian BVH · Shape {shape}", self.root)
 
-    def _add_detector(self, tree, detector, name):
+    def _add_detector(self, tree: ModelTree, detector: object, name: str) -> None:
         group = ("bvh_collection", ("collision", name))
         self._node(tree, group, name.lstrip("_") + " · Self-collision", self.root)
         for attr, label in (("bvh_tris", "Triangle bounds"), ("bvh_edges", "Edge bounds")):
@@ -324,7 +337,7 @@ class BvhResources:
                 self.entries[node] = BvhResource(detector, attr, "Soft self-collision")
                 self._node(tree, node, label, group)
 
-    def add_shape(self, tree, shape):
+    def add_shape(self, tree: ModelTree, shape: int) -> None:
         if self.model.shape_source[shape] is None:
             return
         if self._mesh_ids is None:
@@ -350,7 +363,7 @@ class BvhResources:
                 world=tree.world_for(("shape", shape)),
             )
 
-    def reveal(self, tree, key):
+    def reveal(self, tree: ModelTree, key: TreeKey) -> None:
         if key[0] == "shape_bvh":
             tree.ensure_world(tree.world_for(("shape", key[1])))
             self.add_shape(tree, key[1])
@@ -364,7 +377,7 @@ class BvhResources:
         else:
             self.expand(tree, self.root)
 
-    def _shape(self, ws, key, entry, resource):
+    def _shape(self, ws: ViewerWorkspace, key: TreeKey, entry: BvhResource, resource: wp.Bvh | wp.Mesh) -> int:
         if not entry.local:
             return -1
         if key[0] in ("shape_bvh", "bvh_gaussian"):
@@ -381,7 +394,7 @@ class BvhResources:
         )
         return int(owners[min(self._instances[key], len(owners) - 1)])
 
-    def draw(self, ws):
+    def draw(self, ws: ViewerWorkspace) -> None:
         w, ui, key = ws.widgets, ws.gui.ui.imgui, ws.selected
         if key not in self.entries:
             if w.button("Refresh", small=True):
@@ -463,7 +476,7 @@ class BvhResources:
                 elif entry.local and shape < 0:
                     ui.text_wrapped("No shape instance is available for this local-space BVH.")
 
-    def overlay(self, ws):
+    def overlay(self, ws: ViewerWorkspace) -> None:
         try:
             self._update_overlay(ws)
         except Exception as error:
@@ -472,20 +485,20 @@ class BvhResources:
             self.close(ws.viewer)
             logger.exception("Failed to visualize BVH bounds")
 
-    def _group(self, entry, resource):
+    def _group(self, entry: BvhResource, resource: wp.Bvh | wp.Mesh) -> int:
         if entry.local or resource.groups is None or self.scope == 1:
             return -1
         return self.model.world_count if self.scope == 2 else self.world
 
     @staticmethod
-    def _state(ws):
+    def _state(ws: ViewerWorkspace) -> State | None:
         return (
             getattr(ws.viewer, "_last_state", None)
             or getattr(ws.example, "state_0", None)
             or getattr(ws.example, "state", None)
         )
 
-    def _refit(self, resource, state):
+    def _refit(self, resource: wp.Bvh | wp.Mesh, state: State | None) -> None:
         # Most examples never query these model BVHs after finalization. Keep
         # the selected one current, but do not alter solver-owned structures.
         if state is not None:
@@ -494,7 +507,7 @@ class BvhResources:
             elif resource is self.model.bvh_particles:
                 self.model.bvh_refit_particles(state)
 
-    def _refit_signature(self, resource, state):
+    def _refit_signature(self, resource: wp.Bvh | wp.Mesh, state: State | None) -> tuple[Hashable, ...]:
         if state is None:
             return ()
         model = self.model
@@ -513,7 +526,14 @@ class BvhResources:
             return ()
         return (model.world_count, *(value.ptr if isinstance(value, wp.array) else value for value in values))
 
-    def _geometry_args(self, ws, resource, shape, empty_vec, empty_int):
+    def _geometry_args(
+        self,
+        ws: ViewerWorkspace,
+        resource: wp.Bvh | wp.Mesh,
+        shape: int,
+        empty_vec: wp.array[wp.vec3],
+        empty_int: wp.array[int],
+    ) -> list[Any]:
         viewer, model = ws.viewer, self.model
         mesh = isinstance(resource, wp.Mesh)
         state = self._state(ws)
@@ -534,7 +554,7 @@ class BvhResources:
             viewer.layer.xform,
         ]
 
-    def bounds(self, ws):
+    def bounds(self, ws: ViewerWorkspace) -> np.ndarray | None:
         """Reduce the full selected BVH on demand, reading back only six floats."""
         entry = self.entries.get(ws.selected)
         if entry is None or not ws._at_live_frame():
@@ -575,7 +595,7 @@ class BvhResources:
         result = bounds.numpy()
         return result if np.isfinite(result).all() and (result[1] >= result[0]).all() else None
 
-    def _update_overlay(self, ws):
+    def _update_overlay(self, ws: ViewerWorkspace) -> None:
         # A single batch is hidden immediately on deselection or history playback.
         if self._line_name in ws.viewer.lines:
             ws.viewer.lines[self._line_name].hidden = True
@@ -628,7 +648,7 @@ class BvhResources:
             self._refit_signature(resource, state),
         )
 
-        def launch():
+        def launch() -> None:
             self._refit(resource, state)
             sizes.zero_()
             wp.launch(
@@ -667,7 +687,7 @@ class BvhResources:
         viewer.log_lines(self._line_name, starts, ends, colors)
         self.error = ""
 
-    def close(self, viewer):
+    def close(self, viewer: ViewerBase) -> None:
         previous = viewer.lines.pop(self._line_name, None)
         if previous is not None:
             previous.destroy()

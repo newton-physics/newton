@@ -1,9 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import numpy as np
 
 from ..core.types import Vec3
+
+if TYPE_CHECKING:
+    import warp as wp
 
 
 class Camera:
@@ -65,7 +73,7 @@ class Camera:
         self.pivot = self.pos + self.get_front() * self.DEFAULT_PIVOT_DISTANCE
         self._navigation_filter = None
 
-    def _move_fraction(self, target, *, reference=0.0):
+    def _move_fraction(self, target: wp.vec3, *, reference: float = 0.0) -> float:
         if self._navigation_filter is None or self._length(target - self.pos) < 1.0e-12:
             return 1.0
         return self._navigation_filter(self.pos, target, reference=reference)

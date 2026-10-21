@@ -1,6 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from numpy.typing import ArrayLike
+
 import unittest
 
 import numpy as np
@@ -11,7 +19,7 @@ from newton.tests.test_viewer_get_frame import _make_headless_viewer_gl_or_skip
 
 
 class TestViewerGLShadows(unittest.TestCase):
-    def test_small_box_shadow_reaches_sloping_receiver(self):
+    def test_small_box_shadow_reaches_sloping_receiver(self) -> None:
         """Keep a centimeter-scale shadow attached without shadowing the bare ramp."""
         viewer = _make_headless_viewer_gl_or_skip(self, width=512, height=384)
         self.addCleanup(viewer.close)
@@ -23,7 +31,7 @@ class TestViewerGLShadows(unittest.TestCase):
             with self.subTest(slope=slope):
                 rotation = wp.quat_from_axis_angle(wp.vec3(1.0, 0.0, 0.0), float(np.deg2rad(slope)))
 
-                def rotate(point, rotation=rotation):
+                def rotate(point: ArrayLike, rotation: wp.quat = rotation) -> wp.vec3:
                     return wp.quat_rotate(rotation, wp.vec3(point))
 
                 builder = newton.ModelBuilder(up_axis=newton.Axis.Z)
@@ -52,7 +60,7 @@ class TestViewerGLShadows(unittest.TestCase):
                 viewer.camera.near = 0.005
                 viewer.camera.look_at((0.0, 0.0, 0.0))
 
-                def sample_patch(frame, xmin, xmax, ymin, ymax):
+                def sample_patch(frame: np.ndarray, xmin: float, xmax: float, ymin: float, ymax: float) -> np.ndarray:
                     points = np.array(
                         [
                             (*rotate((x, y, 0.0)), 1.0)

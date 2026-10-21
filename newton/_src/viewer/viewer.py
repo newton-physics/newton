@@ -756,7 +756,7 @@ class ViewerBase(ABC):
             return self.model.world_count
         return len(self._visible_worlds)
 
-    def set_visible_worlds(self, worlds: Sequence[int] | None) -> None:
+    def set_visible_worlds(self, worlds: Sequence[int] | None, *, reflow: bool = True) -> None:
         """Set which worlds are rendered.
 
         Only shapes, joints, contacts, and other visualization elements
@@ -768,6 +768,9 @@ class ViewerBase(ABC):
 
         Args:
             worlds: Sequence of world indices to render, or ``None`` for all.
+            reflow: Recompute a compact layout for visible worlds. If False,
+                retain every world's existing offset, including hidden worlds,
+                so visibility changes do not move the scene.
 
         Raises:
             RuntimeError: If the model has not been set yet.
@@ -802,10 +805,11 @@ class ViewerBase(ABC):
         self._triangle_opacity_change_flag = None
 
         self._populate_shapes()
-        if self._user_spacing is not None:
-            self.set_world_offsets(self._user_spacing)
-        else:
-            self._auto_compute_world_offsets()
+        if reflow:
+            if self._user_spacing is not None:
+                self.set_world_offsets(self._user_spacing)
+            else:
+                self._auto_compute_world_offsets()
         self.model_changed = True
 
     def _build_visible_worlds_mask(self) -> None:
@@ -2569,6 +2573,8 @@ class ViewerBase(ABC):
         # loop over shapes
         for s in range(shape_count):
             # skip shapes from non-visible worlds
+            if not self._should_render_world(int(shape_world[s])):
+                continue
 
             geo_type = shape_geo_type[s]
             geo_scale = [float(v) for v in shape_geo_scale[s]]
@@ -2786,6 +2792,8 @@ class ViewerBase(ABC):
 
         for s in range(shape_count):
             # skip shapes from non-visible worlds
+            if not self._should_render_world(int(shape_world[s])):
+                continue
 
             # Only process collision shapes with texture SDFs
             is_collision_shape = shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)

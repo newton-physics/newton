@@ -3,10 +3,19 @@
 
 """Persistent viewport controls for the local simulator workspace."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import numpy as np
 
 from ..geometry.flags import ShapeFlags
 from ..geometry.types import GeoType
+
+if TYPE_CHECKING:
+    from numpy.typing import ArrayLike
+
+    from newton._src.viewer.viewer_workspace import ViewerWorkspace
 
 
 class ViewportControls:
@@ -17,7 +26,7 @@ class ViewportControls:
         ("wire", "mesh", "Wireframe"),
     )
 
-    def __init__(self, workspace):
+    def __init__(self, workspace: ViewerWorkspace) -> None:
         from .viewer_orientation import OrientationGizmo  # noqa: PLC0415
 
         self.workspace = workspace
@@ -34,12 +43,14 @@ class ViewportControls:
         self.adaptive_detail = True
         self.margin_mode = 0
         self.surface_grid = True
+        self.joint_gizmo_scale: float = 1.0
+        self.joint_gizmo_auto_size: bool = True
         self._model = None
         self._inspection_model = None
         self._roles_key = None
         self._roles = ()
 
-    def set_mode(self, mode):
+    def set_mode(self, mode: str) -> None:
         self.mode = mode
         viewer = self.workspace.viewer
         viewer.show_visual = mode in ("visual", "xray", "wire")
@@ -47,7 +58,7 @@ class ViewportControls:
         viewer.renderer.draw_wireframe = mode == "wire"
         viewer.renderer._physics_xray = mode == "xray"
 
-    def sync(self):
+    def sync(self) -> None:
         viewer = self.workspace.viewer
         if viewer.model is not self._model:
             self._model = viewer.model
@@ -120,7 +131,7 @@ class ViewportControls:
                 obj._physics_static = static
                 obj._surface_grid = grid
 
-    def camera_view(self, direction):
+    def camera_view(self, direction: ArrayLike) -> None:
         camera = self.workspace.viewer.camera
         direction = np.asarray(direction, dtype=float)
         direction /= max(np.linalg.norm(direction), 1e-12)
@@ -132,7 +143,7 @@ class ViewportControls:
         camera.pos = type(camera.pos)(*(np.asarray(pivot) + direction * distance))
         camera.look_at(pivot)
 
-    def draw(self):
+    def draw(self) -> None:
         workspace = self.workspace
         self.orientation.draw()
         ui, widgets, viewer = workspace.gui.ui.imgui, workspace.widgets, workspace.viewer
@@ -214,13 +225,13 @@ class ViewportControls:
                 ui.pop_style_var()
         ui.end()
 
-    def prepare_popup(self, *, width=360):
+    def prepare_popup(self, *, width: float = 360) -> None:
         ui, s = self.workspace.gui.ui.imgui, self.workspace.widgets.scale
         width = min(width * s, ui.get_io().display_size.x - 24 * s)
         ui.set_next_window_size_constraints(ui.ImVec2(width, 0), ui.ImVec2(width, ui.get_io().display_size.y - 24 * s))
         ui.push_style_var(ui.StyleVar_.window_padding, ui.ImVec2(10 * s, 10 * s))
 
-    def _camera_menu(self):
+    def _camera_menu(self) -> None:
         workspace = self.workspace
         ui, widgets, camera = workspace.gui.ui.imgui, workspace.widgets, workspace.viewer.camera
         if widgets.button("Frame selection" if workspace.selected else "Frame scene", ui.ImVec2(-1, 0)):
@@ -239,7 +250,7 @@ class ViewportControls:
         if edit.changed:
             camera.translate(type(camera.pos)(*edit.value) - camera.pos)
 
-    def _guides_menu(self):
+    def _guides_menu(self) -> None:
         workspace = self.workspace
         ui, viewer = workspace.gui.ui.imgui, workspace.viewer
         for title, properties in (
@@ -279,13 +290,14 @@ class ViewportControls:
             self.margin_mode = edit.value
             viewer.sdf_margin_mode = viewer.SDFMarginMode(edit.value)
 
-    def _render_menu(self):
+    def _render_menu(self) -> None:
         workspace = self.workspace
         ui = workspace.gui.ui.imgui
         if ui.begin_tab_bar("##viewer_settings"):
             for label, draw in (
                 ("Rendering", self._rendering_settings),
                 ("Contacts", self._contact_settings),
+                ("Joints", self._joint_settings),
                 ("Camera", self._camera_settings),
             ):
                 if workspace.widgets.tab_item(label)[0]:
@@ -293,12 +305,34 @@ class ViewportControls:
                     ui.end_tab_item()
             ui.end_tab_bar()
 
-    def _contact_settings(self):
+    def _joint_settings(self) -> None:
+        workspace = self.workspace
+        ui, widgets = workspace.gui.ui.imgui, workspace.widgets
+        ui.separator_text("Selection gizmos")
+        edit = widgets.number("Scale", self.joint_gizmo_scale, editable=True, speed=0.01, bounds=(0.25, 4.0), unit="x")
+        if edit.changed:
+            self.joint_gizmo_scale = edit.value
+        _, self.joint_gizmo_auto_size = ui.checkbox("Size with links", self.joint_gizmo_auto_size)
+        if ui.is_item_hovered():
+            ui.set_tooltip(
+                "Use the typical connected-link length for one shared size across the selection.\n"
+                "Gizmos stay readable when zoomed out and stop growing at close range."
+            )
+
+    def _contact_settings(self) -> None:
         workspace = self.workspace
         ui, viewer, widgets = workspace.gui.ui.imgui, workspace.viewer, workspace.widgets
         renderer = viewer.renderer
 
-        def number(label, owner, name, *, bounds, speed=0.01, unit=""):
+        def number(
+            label: str,
+            owner: object,
+            name: str,
+            *,
+            bounds: tuple[float, float] | None,
+            speed: float = 0.01,
+            unit: str = "",
+        ) -> None:
             edit = widgets.number(label, getattr(owner, name), editable=True, speed=speed, bounds=bounds, unit=unit)
             if edit.changed:
                 setattr(owner, name, edit.value)
@@ -347,7 +381,7 @@ class ViewportControls:
                 number("Speed", viewer, "contact_mode_eps_velocity", bounds=(0, 10), speed=0.0001, unit="m/s")
         ui.end_disabled()
 
-    def _camera_settings(self):
+    def _camera_settings(self) -> None:
         workspace = self.workspace
         ui, viewer, widgets = workspace.gui.ui.imgui, workspace.viewer, workspace.widgets
         camera = viewer.camera
@@ -392,7 +426,7 @@ class ViewportControls:
         if edit.changed:
             camera.far = edit.value
 
-    def _rendering_settings(self):
+    def _rendering_settings(self) -> None:
         workspace = self.workspace
         ui, viewer = workspace.gui.ui.imgui, workspace.viewer
         ui.separator_text("X-ray · Collision")

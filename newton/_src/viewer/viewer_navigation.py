@@ -3,14 +3,21 @@
 
 """On-demand camera speed adjustment near selected surfaces."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import warp as wp
 
 from ..geometry.kernels import sdf_box, sdf_capsule, sdf_cone, sdf_cylinder
 from ..geometry.types import GeoType
 
+if TYPE_CHECKING:
+    from newton._src.viewer.viewer_workspace import ViewerWorkspace
+
 
 @wp.func
-def _distance(p: wp.vec3, kind: int, scale: wp.vec3, mesh: wp.uint64, lower: wp.vec3, upper: wp.vec3):
+def _distance(p: wp.vec3, kind: int, scale: wp.vec3, mesh: wp.uint64, lower: wp.vec3, upper: wp.vec3) -> float:
     if kind == GeoType.SPHERE:
         return wp.length(p) - scale[0]
     if kind == GeoType.BOX:
@@ -59,7 +66,7 @@ def _selection_distance(
     layer: wp.transform,
     start: wp.vec3,
     result: wp.array[float],
-):
+) -> None:
     shape = indices[wp.tid()]
     pose = local[shape]
     if parents[shape] >= 0:
@@ -76,7 +83,7 @@ def _selection_distance(
 
 
 @wp.kernel
-def _surface_distance(mesh: wp.uint64, start: wp.vec3, result: wp.array[float]):
+def _surface_distance(mesh: wp.uint64, start: wp.vec3, result: wp.array[float]) -> None:
     distance = _distance(start, int(GeoType.MESH), wp.vec3(1.0), mesh, wp.vec3(0.0), wp.vec3(0.0))
     wp.atomic_min(result, 0, wp.abs(distance))
 
@@ -88,7 +95,7 @@ def _particle_distance(
     radii: wp.array[float],
     start: wp.vec3,
     result: wp.array[float],
-):
+) -> None:
     i = wp.tid()
     wp.atomic_min(result, 0, wp.abs(wp.length(start - points[i]) - radii[indices[i]]))
 
@@ -96,11 +103,11 @@ def _particle_distance(
 class SelectionNavigation:
     """Reuse device buffers; read one reduced distance only during navigation."""
 
-    def __init__(self, workspace):
+    def __init__(self, workspace: ViewerWorkspace) -> None:
         self.workspace = workspace
         self.key = None
 
-    def __call__(self, start, end, *, reference=0.0):
+    def __call__(self, start: wp.vec3, end: wp.vec3, *, reference: float = 0.0) -> float:
         ws = self.workspace
         strength = max(0.0, float(ws.viewer.camera_slowdown))
         model, state, shapes = ws.model, ws.viewer._last_state, ws._selection_shapes

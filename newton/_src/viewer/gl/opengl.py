@@ -1,11 +1,15 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+
+from __future__ import annotations
+
 import ctypes
 import logging
 import os
 import sys
 import warnings
+from typing import TYPE_CHECKING
 
 import numpy as np
 import warp as wp
@@ -27,6 +31,10 @@ from .shaders import (
     ShaderSky,
     ShadowShader,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+
 
 logger = logging.getLogger(__name__)
 
@@ -624,7 +632,7 @@ class WireframeShapeGL:
         gl.glBindVertexArray(0)
 
     @classmethod
-    def create_shared(cls, owner: "WireframeShapeGL") -> "WireframeShapeGL":
+    def create_shared(cls, owner: WireframeShapeGL) -> WireframeShapeGL:
         """Create an instance that shares *owner*'s VAO/VBO."""
         obj = cls.__new__(cls)
         obj.vao = owner.vao
@@ -1127,7 +1135,7 @@ class MeshInstancerGL:
             self._instance_offset(0)
         gl.glBindVertexArray(0)
 
-    def _instance_offset(self, start):
+    def _instance_offset(self, start: int) -> None:
         """Select contiguous instance rows without repacking or losing picking IDs."""
         gl = RendererGL.gl
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.instance_transform_buffer)
@@ -1432,7 +1440,7 @@ class RendererGL:
                 # This is a non-fatal error that can be safely ignored
                 pass
 
-    def _get_scene_viewport(self):
+    def _get_scene_viewport(self) -> tuple[int, int, int, int]:
         """Return the visible scene rectangle in framebuffer pixels."""
         return getattr(self, "_workspace_rect", None) or (0, 0, self._screen_width, self._screen_height)
 
@@ -2298,10 +2306,10 @@ class RendererGL:
         objects,
         scene_has_transparency: bool = False,
         *,
-        lines=None,
-        arrows=None,
-        wireframe_shapes=None,
-        contact_disks=None,
+        lines: Sequence[LinesGL] | None = None,
+        arrows: Sequence[LinesGL] | None = None,
+        wireframe_shapes: Sequence[WireframeShapeGL] | None = None,
+        contact_disks: Sequence[MeshInstancerGL] | None = None,
     ) -> bool:
         gl = RendererGL.gl
         msaa_resolved = False
@@ -2488,7 +2496,13 @@ class RendererGL:
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self._frame_fbo)
 
     def _render_blended_transparent_objects(
-        self, transparent_objects, *, shells=(), collisions=(), wires=(), envelopes=None
+        self,
+        transparent_objects,
+        *,
+        shells: Sequence[MeshInstancerGL] = (),
+        collisions: Sequence[MeshInstancerGL] = (),
+        wires: Sequence[MeshInstancerGL] = (),
+        envelopes: Sequence[WireframeShapeGL] | None = None,
     ):
         """Draw transparent objects with source-alpha blending into the active target.
 
@@ -2527,7 +2541,15 @@ class RendererGL:
         gl.glDepthMask(True)
         gl.glDisable(gl.GL_BLEND)
 
-    def _render_transparent_objects(self, transparent_objects, *, shells=(), collisions=(), wires=(), envelopes=None):
+    def _render_transparent_objects(
+        self,
+        transparent_objects,
+        *,
+        shells: Sequence[MeshInstancerGL] = (),
+        collisions: Sequence[MeshInstancerGL] = (),
+        wires: Sequence[MeshInstancerGL] = (),
+        envelopes: Sequence[WireframeShapeGL] | None = None,
+    ):
         gl = RendererGL.gl
         assert self._oit_resolve_shader is not None
 
@@ -2586,7 +2608,7 @@ class RendererGL:
         gl.glDisable(gl.GL_BLEND)
         gl.glEnable(gl.GL_DEPTH_TEST)
 
-    def _render_selected_surfaces(self, *, oit):
+    def _render_selected_surfaces(self, *, oit: bool) -> None:
         meshes = [obj for obj, index in getattr(self, "_selection_instances", ()) if index == -1]
         if not meshes:
             return
@@ -2596,7 +2618,7 @@ class RendererGL:
             self._selection_surface_shader = SelectionSurfaceShader(self.gl)
         self._selection_surface_shader.render(self, meshes, oit=oit)
 
-    def _render_surface_grid(self, *, oit):
+    def _render_surface_grid(self, *, oit: bool) -> None:
         if not self._surface_grid_objects:
             return
         if getattr(self, "_surface_grid_shader", None) is None:
@@ -2605,14 +2627,18 @@ class RendererGL:
             self._surface_grid_shader = SurfaceGridShader(self.gl)
         self._surface_grid_shader.render(self, self._surface_grid_objects, oit=oit)
 
-    def _render_physics_collisions(self, objects, *, opaque, oit=False, visual=False):
+    def _render_physics_collisions(
+        self, objects: Sequence[MeshInstancerGL], *, opaque: bool, oit: bool = False, visual: bool = False
+    ) -> None:
         if getattr(self, "_physics_collision_shader", None) is None:
             from .physics_view import PhysicsSurfaceShader  # noqa: PLC0415
 
             self._physics_collision_shader = PhysicsSurfaceShader(self.gl)
         self._physics_collision_shader.render(self, objects, opaque=opaque, oit=oit, visual=visual)
 
-    def _render_physics_shells(self, objects, *, oit, collision=False, wire_only=False):
+    def _render_physics_shells(
+        self, objects: Sequence[MeshInstancerGL], *, oit: bool, collision: bool = False, wire_only: bool = False
+    ) -> None:
         if not collision and not wire_only:
             self._render_physics_collisions(objects, opaque=False, oit=oit, visual=True)
         if getattr(self, "_physics_shell_shader", None) is None:
@@ -2717,7 +2743,7 @@ class RendererGL:
         gl.glDisable(gl.GL_BLEND)
         check_gl_error()
 
-    def _render_wireframe_shapes(self, wireframe_shapes, *, oit=False, transparent=False):
+    def _render_wireframe_shapes(self, wireframe_shapes, *, oit: bool = False, transparent: bool = False):
         """Render wireframe shapes using the geometry-shader line expansion."""
         gl = RendererGL.gl
         _, _, width, height = self._get_scene_viewport()
@@ -2759,7 +2785,7 @@ class RendererGL:
 
         check_gl_error()
 
-    def _object_has_transparency(self, obj, *, for_shadow=False) -> bool:
+    def _object_has_transparency(self, obj, *, for_shadow: bool = False) -> bool:
         if getattr(self, "_physics_xray", False):
             role = getattr(obj, "_physics_role", None)
             # Proximity is a viewing aid; physical shadows must stay stable as

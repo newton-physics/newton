@@ -8,6 +8,16 @@ the per-helper tests in ``test_viewer_image_logger.py`` cannot reach
 without instantiating ``ImageLogger`` itself.
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing import Any
+
+    from numpy.typing import ArrayLike
+
+
 import contextlib
 import types
 import unittest
@@ -23,7 +33,7 @@ from newton.tests.unittest_utils import patch_sys_module
 class _GLuintArray(list):
     """Stand-in for a ctypes ``GLuint * n`` array: integer-indexable."""
 
-    def __init__(self, size: int, *initial):
+    def __init__(self, size: int, *initial: Any):
         data = list(initial) + [0] * (size - len(initial))
         super().__init__(data)
 
@@ -38,11 +48,11 @@ class _GLuintHolder:
 class _GLTypeFactory:
     """Supports both ``gl.GLuint()`` (holder) and ``gl.GLuint * n`` (array type)."""
 
-    def __call__(self, *args) -> _GLuintHolder:
+    def __call__(self, *args: Any) -> _GLuintHolder:
         return _GLuintHolder(args[0] if args else 0)
 
     def __mul__(self, n: int):
-        def ctor(*values):
+        def ctor(*values: ArrayLike):
             return _GLuintArray(n, *values)
 
         return ctor
@@ -102,19 +112,19 @@ class _FakeGL:
     def glBindTexture(self, target, tex_id):
         self.calls.append(("glBindTexture", (target, tex_id)))
 
-    def glTexParameteri(self, *args):
+    def glTexParameteri(self, *args: Any):
         self.calls.append(("glTexParameteri", args))
 
-    def glTexImage2D(self, *args):
+    def glTexImage2D(self, *args: Any):
         self.calls.append(("glTexImage2D", args))
 
-    def glTexSubImage2D(self, *args):
+    def glTexSubImage2D(self, *args: Any):
         self.calls.append(("glTexSubImage2D", args))
 
     def glBindBuffer(self, target, buf_id):
         self.calls.append(("glBindBuffer", (target, buf_id)))
 
-    def glBufferData(self, *args):
+    def glBufferData(self, *args: Any):
         self.calls.append(("glBufferData", args))
 
     def glDeleteTextures(self, n, arr):
@@ -192,7 +202,7 @@ class TestImageLoggerOrchestration(_ImageLoggerFixture):
         # Force the next glTexSubImage2D (inside _upload_cpu) to blow up.
         original = self.fake_gl.glTexSubImage2D
 
-        def _boom(*args):
+        def _boom(*args: Any):
             raise RuntimeError("simulated GL failure")
 
         self.fake_gl.glTexSubImage2D = _boom
@@ -299,7 +309,7 @@ class TestImageLoggerCleanup(_ImageLoggerFixture):
         """Verify cleanup warnings include GL deletion failures."""
         self.logger.log("cam0", np.zeros((8, 8), dtype=np.uint8))
 
-        def _boom(*args):
+        def _boom(*args: Any):
             raise RuntimeError("simulated driver error")
 
         self.fake_gl.glDeleteTextures = _boom
@@ -352,16 +362,16 @@ class _FakeRenderer:
     def has_exit(self):
         return False
 
-    def render(self, *args):
+    def render(self, *args: Any):
         self.render_calls.append(args)
 
-    def render_texture(self, *args):
+    def render_texture(self, *args: Any):
         self.render_texture_calls.append(args)
 
     def present(self):
         self.present_count += 1
 
-    def _get_scene_viewport(self):
+    def _get_scene_viewport(self) -> tuple[int, int, int, int]:
         return (0, 0, self._screen_width, self._screen_height)
 
 
@@ -637,7 +647,7 @@ class TestViewerGLInitialization(unittest.TestCase):
                 return (640, 480)
 
         class _FakeRenderer:
-            def __init__(self, *args, **kwargs):
+            def __init__(self, *args: Any, **kwargs: Any):
                 self.window = _FakeWindow()
                 self.closed = False
 

@@ -3,9 +3,18 @@
 
 """Depth-aware joint annotations, batched separately from the 2D interface."""
 
+from __future__ import annotations
+
 import ctypes
+from typing import TYPE_CHECKING
 
 from .shaders import ShaderGL
+
+if TYPE_CHECKING:
+    from types import ModuleType
+
+    import numpy as np
+
 
 _VERTEX = """
 #version 330 core
@@ -43,7 +52,7 @@ void main() {
 
 
 class JointGlyphShader(ShaderGL):
-    def __init__(self, gl):
+    def __init__(self, gl: ModuleType) -> None:
         from pyglet.graphics.shader import Shader, ShaderProgram
 
         super().__init__()
@@ -61,7 +70,9 @@ class JointGlyphShader(ShaderGL):
             gl.glEnableVertexAttribArray(attribute)
         gl.glBindVertexArray(0)
 
-    def render(self, vertices, *, oit=False, reference=1.0, depth_equal=False):
+    def render(
+        self, vertices: np.ndarray, *, oit: bool = False, reference: float = 1.0, depth_equal: bool = False
+    ) -> None:
         if not len(vertices):
             return
         gl = self._gl
@@ -78,7 +89,7 @@ class JointGlyphShader(ShaderGL):
             gl.glBindVertexArray(0)
             gl.glDepthFunc(gl.GL_LESS)
 
-    def destroy(self):
+    def destroy(self) -> None:
         self._gl.glDeleteBuffers(1, self.vbo)
         self._gl.glDeleteVertexArrays(1, self.vao)
         self.shader_program.delete()

@@ -3,13 +3,24 @@
 
 """Local timeline presentation shared by the simulator workspace."""
 
+from __future__ import annotations
+
 from bisect import bisect_left
 from itertools import pairwise
 from time import perf_counter
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from .viewer_widgets import PhysicsWidgets
+
+if TYPE_CHECKING:
+    from types import ModuleType
+
+    from numpy.typing import ArrayLike
+
+    from newton._src.viewer.viewer_history import HistoryFrame
+    from newton.viewer import ViewerBase
 
 
 class TimelineTransport:
@@ -33,7 +44,7 @@ class TimelineTransport:
         "show_particle_speed",
     )
 
-    def contact_channels(self):
+    def contact_channels(self) -> list[tuple[str, str, str, int, tuple[float, float, float]]]:
         """Offer only contact families supported by the scene's entities."""
         channels = []
         if self.model.body_count:
@@ -47,14 +58,14 @@ class TimelineTransport:
         return channels
 
     @staticmethod
-    def mean_speed(velocity):
+    def mean_speed(velocity: ArrayLike | None) -> float:
         """Mean linear speed, using velocities already copied for history."""
         if velocity is None or len(velocity) == 0:
             return float("nan")
         linear = np.asarray(velocity)[:, :3]
         return float(np.sqrt(np.einsum("ij,ij->i", linear, linear)).mean(dtype=np.float64))
 
-    def record_plot_frame(self, frame):
+    def record_plot_frame(self, frame: HistoryFrame) -> None:
         # A fixed ring keeps plot work independent of retained state size.
         if not hasattr(self, "_plot_values"):
             self._plot_values = np.empty((self.max_frames + 64, 5), dtype=np.float64)
@@ -68,7 +79,7 @@ class TimelineTransport:
         )
         self._plot_revision = getattr(self, "_plot_revision", 0) + 1
 
-    def plot_samples(self, low, high, bins):
+    def plot_samples(self, low: int, high: int, bins: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """Preserve short contact peaks and average motion within each pixel bin."""
         key = (self.first_frame, low, high, bins, getattr(self, "_plot_revision", 0))
         if getattr(self, "_plot_cache_key", None) != key:
@@ -89,7 +100,7 @@ class TimelineTransport:
             self._plot_cache_key = key
         return self._plot_cache
 
-    def _readout_frame(self, viewer, *, now=None):
+    def _readout_frame(self, viewer: ViewerBase, *, now: float | None = None) -> tuple[int, HistoryFrame]:
         """Sample live numbers at 10 Hz, retaining an actual frame/time pair."""
         now = perf_counter() if now is None else now
         absolute = self.first_frame + self.index
@@ -107,7 +118,9 @@ class TimelineTransport:
             self._readout_time = now
         return self._readout
 
-    def _plot_scales(self, contacts, speed, viewer, *, now=None):
+    def _plot_scales(
+        self, contacts: float, speed: float, viewer: ViewerBase, *, now: float | None = None
+    ) -> tuple[float, float]:
         """Damp live autoscaling without filtering recorded contact or motion data."""
         now = perf_counter() if now is None else now
         targets = np.array((np.log1p(contacts) if self.contact_log else contacts, speed))
@@ -125,10 +138,10 @@ class TimelineTransport:
         contact_scale, speed_scale = self._scale_values
         return (np.expm1(contact_scale) if self.contact_log else contact_scale), speed_scale
 
-    def frame_at_time(self, time):
+    def frame_at_time(self, time: float) -> int:
         return min(len(self.frames) - 1, bisect_left(self.frames, time, key=lambda frame: frame.time))
 
-    def _draw_activity_track(self, ui, viewer):
+    def _draw_activity_track(self, ui: ModuleType, viewer: ViewerBase) -> None:
         scale = viewer.gui.ui.dpi_scale
         width = max(1, ui.get_content_region_avail().x)
         pos = ui.get_cursor_screen_pos()
@@ -140,7 +153,7 @@ class TimelineTransport:
         if hovered or active:
             ui.set_mouse_cursor(ui.MouseCursor_.resize_ew)
 
-        def color(rgba):
+        def color(rgba: ArrayLike) -> int:
             return ui.get_color_u32(ui.ImVec4(*rgba))
 
         corner = min(7 * scale, height / 2)
@@ -281,7 +294,7 @@ class TimelineTransport:
             ui.pop_text_wrap_pos()
             ui.end_tooltip()
 
-    def draw_gui(self, ui, viewer, *, embedded=False):
+    def draw_gui(self, ui: ModuleType, viewer: ViewerBase, *, embedded: bool = False) -> None:
         """Draw a scrub-enabled track beside the editable frame and time."""
         scale = viewer.gui.ui.dpi_scale
         if not embedded:
@@ -323,7 +336,7 @@ class TimelineTransport:
         if not embedded:
             ui.end()
 
-    def _draw_transport(self, ui, viewer, widgets):
+    def _draw_transport(self, ui: ModuleType, viewer: ViewerBase, widgets: PhysicsWidgets) -> None:
         scale = viewer.gui.ui.dpi_scale
         row_y = ui.get_cursor_pos_y()
         ui.push_style_var(ui.StyleVar_.frame_padding, ui.ImVec2(6 * scale, (22 * scale - ui.get_font_size()) / 2))
@@ -395,7 +408,7 @@ class TimelineTransport:
         if getattr(self, "message", ""):
             ui.text_wrapped(self.message)
 
-    def _draw_readouts(self, ui, viewer, widgets):
+    def _draw_readouts(self, ui: ModuleType, viewer: ViewerBase, widgets: PhysicsWidgets) -> None:
         if not self.frames:
             ui.text_disabled("Frame  —")
             ui.text_disabled("Time   —")
@@ -431,11 +444,11 @@ class TimelineTransport:
             viewer._step_requested = False
             self.select(self.frame_at_time(time.value) if time.changed else absolute - self.first_frame)
 
-    def status_items(self):
+    def status_items(self) -> list[tuple[str, str, tuple[float, float, float]]]:
         """Read-only metrics for the selected frame, without device transfers."""
         neutral = (0.82, 0.82, 0.82)
 
-        def count(value):
+        def count(value: int) -> str:
             if value < 10_000:
                 return f"{value:,}"
             for power, suffix in ((12, "T"), (9, "B"), (6, "M"), (3, "k")):

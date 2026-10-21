@@ -1,6 +1,18 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from types import ModuleType
+    from typing import Any
+
+    from newton.viewer import ViewerBase
+
 import ast
 import copy
 import gc
@@ -345,7 +357,7 @@ def _coupled_view_state(example, name: str):
 
 
 @contextmanager
-def _preserve_display_options(viewer, *, switching=False):
+def _preserve_display_options(viewer: ViewerBase, *, switching: bool = False) -> Iterator[None]:
     """Retain user visualization choices while rebuilding an example's layers."""
     option_names = {
         "visible",
@@ -502,7 +514,7 @@ class _ExampleBrowser:
         if hasattr(example, "gui") and hasattr(self.viewer, "register_ui_callback"):
             self.viewer.register_ui_callback(lambda ui, ex=example: ex.gui(ui), position="side")
 
-    def draw_load_error(self, imgui):
+    def draw_load_error(self, imgui: ModuleType) -> None:
         """Keep load failures actionable even when no model was constructed."""
         if self.load_error is None:
             return
@@ -538,7 +550,7 @@ class _ExampleBrowser:
         # Each example starts with picking enabled and may opt out in its constructor.
         self.viewer.picking_enabled = True
 
-    def report_error(self, error, module_path, *, phase, retry_switch=False):
+    def report_error(self, error: BaseException, module_path: str, *, phase: str, retry_switch: bool = False) -> None:
         """Stop the failed example, retaining the browser and a retry action."""
         logger.error("Failed to %s example %s", phase, module_path, exc_info=True)
         self._clear_viewer_scene()
@@ -1134,7 +1146,7 @@ def init(parser=None):
     return viewer, args
 
 
-def create_collision_pipeline(model, args=None, broad_phase=None, **kwargs):
+def create_collision_pipeline(model, args=None, broad_phase=None, **kwargs: Any):
     """Create a collision pipeline, optionally using --broad-phase from args.
 
     Args:

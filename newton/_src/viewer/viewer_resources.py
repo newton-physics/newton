@@ -3,10 +3,25 @@
 
 """Lazy inspection of shared collision SDFs and mesh texture resources."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import numpy as np
 import warp as wp
 
 from .viewer_bvh import BvhResources
+
+if TYPE_CHECKING:
+    from typing import Any
+
+    from newton import Gaussian, Heightfield, Mesh, Model
+    from newton._src.geometry.sdf_texture import TextureSDFData
+    from newton._src.geometry.sdf_utils import SDF
+    from newton._src.viewer.viewer_types import TreeKey, ViewerExample
+    from newton._src.viewer.viewer_workspace import ModelTree, ViewerWorkspace
+
+    from .viewer_widgets import PhysicsWidgets
 
 
 class GeometryResources:
@@ -15,7 +30,7 @@ class GeometryResources:
     root = ("sdf_collection", 0)
     page_size = 128
 
-    def __init__(self, model, example=None):
+    def __init__(self, model: Model, example: ViewerExample | None = None) -> None:
         self.model = model
         self.bvhs = BvhResources(model, example)
         data = model._texture_sdf_data
@@ -26,7 +41,7 @@ class GeometryResources:
         self._users_cache = {}
 
     @staticmethod
-    def handles(key):
+    def handles(key: TreeKey) -> bool:
         return BvhResources.handles(key) or (
             key is not None
             and key[0]
@@ -43,10 +58,10 @@ class GeometryResources:
         )
 
     @staticmethod
-    def shape_owner(key):
+    def shape_owner(key: TreeKey) -> int | None:
         return key[1] if key[0] in ("shape_sdf", "mesh_sdf", "shape_texture", "shape_bvh") else None
 
-    def shape_sdf(self, index):
+    def shape_sdf(self, index: int) -> int:
         array = self.model._shape_sdf_index
         if array is None or index >= len(array):
             return -1
@@ -56,31 +71,31 @@ class GeometryResources:
             self._shape_pages[page] = array[start : min(start + self.page_size, len(array))].numpy()
         return int(self._shape_pages[page][index % self.page_size])
 
-    def source(self, shape):
+    def source(self, shape: int) -> Mesh | Heightfield | Gaussian | None:
         return self.model.shape_source[shape]
 
     @staticmethod
-    def color_texture_loaded(ws, shape):
+    def color_texture_loaded(ws: ViewerWorkspace, shape: int) -> bool:
         batches = ws.viewer._shape_to_batch
         batch = batches[shape] if batches is not None else None
         obj = ws.viewer.objects.get(batch.name) if batch is not None else None
         return getattr(getattr(obj, "mesh", None), "texture_id", None) is not None
 
-    def attach(self, tree):
+    def attach(self, tree: ModelTree) -> None:
         self.bvhs.attach(tree)
         if self.count:
             tree.roots.append(self.root)
             tree.labels[self.root] = f"SDFs · {self.count:,}"
             tree.meta[self.root] = {"world": -1}
 
-    def _node(self, tree, parent, key, label, *, world=-1):
+    def _node(self, tree: ModelTree, parent: TreeKey, key: TreeKey, label: str, *, world: int = -1) -> None:
         if key not in tree.parents:
             tree.children[parent].append(key)
         tree.parents[key] = parent
         tree.labels[key] = label
         tree.meta[key] = {"world": world}
 
-    def add_shape(self, tree, shape):
+    def add_shape(self, tree: ModelTree, shape: int) -> None:
         self.bvhs.add_shape(tree, shape)
         parent = ("shape", shape)
         source, index = self.source(shape), self.shape_sdf(shape)
@@ -92,7 +107,7 @@ class GeometryResources:
         if getattr(source, "texture", None) is not None:
             self._node(tree, parent, ("shape_texture", shape), "Color texture · 2D", world=world)
 
-    def has_children(self, tree, key):
+    def has_children(self, tree: ModelTree, key: TreeKey) -> bool:
         if self.bvhs.handles(key):
             return key[0] in ("bvh_collection", "bvh_page") or bool(tree.children.get(key))
         if key[0] == "shape":
@@ -103,7 +118,7 @@ class GeometryResources:
             self.expand(tree, key)
         return bool(tree.children.get(key))
 
-    def textures(self, index):
+    def textures(self, index: int) -> tuple[wp.Texture3D | None, wp.Texture3D | None, wp.array[int] | None]:
         model = self.model
         return (
             model._texture_sdf_coarse_textures[index] if index < len(model._texture_sdf_coarse_textures) else None,
@@ -113,7 +128,7 @@ class GeometryResources:
             else None,
         )
 
-    def expand(self, tree, key):
+    def expand(self, tree: ModelTree, key: TreeKey) -> None:
         if self.bvhs.handles(key):
             self.bvhs.expand(tree, key)
             return
@@ -139,7 +154,7 @@ class GeometryResources:
             if slots is not None:
                 self._node(tree, key, ("sdf_slots", key[1]), "Subgrid indirection")
 
-    def reveal(self, tree, key):
+    def reveal(self, tree: ModelTree, key: TreeKey) -> None:
         if self.bvhs.handles(key):
             self.bvhs.reveal(tree, key)
             return
@@ -166,20 +181,20 @@ class GeometryResources:
             )
         self.expand(tree, ("sdf", index))
 
-    def row(self, index):
+    def row(self, index: int) -> np.void:
         if index not in self._rows:
             self._rows[index] = self.model._texture_sdf_data[index : index + 1].numpy()[0]
         return self._rows[index]
 
     @staticmethod
-    def sdf_storage(sdf):
+    def sdf_storage(sdf: SDF | None) -> str:
         if sdf is None:
             return "Not built"
         if sdf.is_empty():
             return "Empty"
         return "3D textures" if sdf.texture_data is not None else "NanoVDB volumes"
 
-    def shape_summary(self, ws, shape):
+    def shape_summary(self, ws: ViewerWorkspace, shape: int) -> None:
         w, source, index = ws.widgets, self.source(shape), self.shape_sdf(shape)
         with w.group("Geometry resources") as opened:
             if not opened:
@@ -199,7 +214,7 @@ class GeometryResources:
             w.text_value("Color texture", f"{status} · 2D image" if texture is not None else "None")
 
     @staticmethod
-    def _texture_metadata(w, texture):
+    def _texture_metadata(w: PhysicsWidgets, texture: wp.Texture3D | None) -> None:
         if texture is None:
             w.text_value("Status", "Not built")
             return
@@ -220,15 +235,15 @@ class GeometryResources:
         w.text_value("Texel payload", f"{size / 1048576:.3f} MiB")
 
     @staticmethod
-    def _array_metadata(w, array):
+    def _array_metadata(w: PhysicsWidgets, array: wp.array[Any] | None) -> None:
         w.text_value("Dimensions", " x ".join(str(n) for n in array.shape))
         w.text_value("Dtype", wp.types.type_repr(array.dtype))
         w.text_value("Device", str(array.device))
         w.text_value("Storage", f"{array.size * wp.types.type_size_in_bytes(array.dtype) / 1048576:.3f} MiB")
 
     @staticmethod
-    def _sdf_metadata(w, data):
-        def field(name):
+    def _sdf_metadata(w: PhysicsWidgets, data: np.void | TextureSDFData) -> None:
+        def field(name: str) -> Any:
             return data[name] if isinstance(data, np.void) else getattr(data, name)
 
         with w.group("Sampling") as opened:
@@ -248,7 +263,7 @@ class GeometryResources:
                 w.number("Minimum", float(field("subgrids_min_sdf_value")), unit="m")
                 w.number("Range", float(field("subgrids_sdf_value_range")), unit="m")
 
-    def _users(self, ws, index):
+    def _users(self, ws: ViewerWorkspace, index: int) -> None:
         with ws.widgets.group("Used by shapes", default_open=False) as opened:
             if not opened:
                 return
@@ -268,7 +283,7 @@ class GeometryResources:
                 if ws.widgets.reference(f"Shape {shape}", shape, target=label, caption=caption):
                     ws.navigate(key)
 
-    def draw(self, ws):
+    def draw(self, ws: ViewerWorkspace) -> None:
         if self.bvhs.handles(ws.selected):
             self.bvhs.draw(ws)
             return

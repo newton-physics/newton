@@ -6,10 +6,13 @@ from __future__ import annotations
 import collections
 import ctypes
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import warp as wp
+
+if TYPE_CHECKING:
+    from .gl.gui import UI
 
 
 class PlotLogger:
@@ -183,7 +186,7 @@ class PlotLogger:
         finally:
             imgui.end()
 
-    def draw_content(self, ui) -> None:
+    def draw_content(self, ui: UI) -> None:
         """Render plots in the current window using its available width."""
         imgui, s = ui.imgui, ui.dpi_scale
         scalar_arrays = self._scalar_arrays

@@ -1,12 +1,24 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Projected, constant-size joint annotations for the local workspace."""
+"""Depth-aware joint annotations with a shared, readable size for each selection."""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 import numpy as np
 import warp as wp
 
 from ..sim.enums import JointType
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from typing import Any
+
+    from numpy.typing import ArrayLike
+
+    from newton._src.viewer.viewer_workspace import ViewerWorkspace
 
 
 @wp.kernel
@@ -26,7 +38,7 @@ def _sample_joint_frames(
     offsets: wp.array[wp.vec3],
     layer: wp.transform,
     output: wp.array2d[float],
-):
+) -> None:
     i = wp.tid()
     joint = indices[i]
     parent = local_parents[joint]
@@ -64,16 +76,22 @@ def _sample_joint_frames(
             output[i, 3 + axis * 3 + column] = parent_rotation[axis, column]
             output[i, 15 + axis * 3 + column] = child_rotation[axis, column]
     output[i, 24] = value
+    # Estimate link length from local anchors, ignoring world-space root offsets.
+    # Piggyback on the existing selected-joint readback instead of fetching meshes.
+    length = wp.length(wp.transform_get_translation(local_children[joint]))
+    if parents[joint] >= 0:
+        length = wp.max(length, wp.length(wp.transform_get_translation(local_parents[joint])))
+    output[i, 25] = length
 
 
 class JointSelectionGroup:
     """Draw a selected subtree with one bounded device transfer per frame."""
 
-    def __init__(self, workspace, indices):
+    def __init__(self, workspace: ViewerWorkspace, indices: Sequence[int] | np.ndarray) -> None:
         self.joints = tuple(JointSelection(workspace, index) for index in sorted(indices))
         device = workspace.model.device
         self.indices = wp.array([joint.index for joint in self.joints], dtype=int, device=device)
-        self.frames = wp.empty((len(self.joints), 25), dtype=float, device=device)
+        self.frames = wp.empty((len(self.joints), 26), dtype=float, device=device)
         self.empty_offsets = wp.empty(0, dtype=wp.vec3, device=device)
         self._cached_frames = None
         self._cached_view = None
@@ -85,7 +103,7 @@ class JointSelectionGroup:
             [(joint.lower[0], joint.upper[0]) if joint.limited else (np.nan, np.nan) for joint in self.joints]
         )
 
-    def draw(self, workspace, *, compact=False):
+    def draw(self, workspace: ViewerWorkspace, *, compact: bool = False) -> None:
         viewer, state = workspace.viewer, workspace.viewer._last_state
         if (
             state is None
@@ -121,6 +139,7 @@ class JointSelectionGroup:
         draw_list = _JointDrawList(workspace)
         frames = self.frames.numpy()
         visible = tuple(viewer._should_render_world(joint.world) for joint in self.joints)
+        controls = workspace.viewport_controls
         view_key = (
             tuple(draw_list.view.flat),
             tuple(draw_list.projection.flat),
@@ -129,11 +148,24 @@ class JointSelectionGroup:
             draw_list.scale,
             compact,
             visible,
+            controls.joint_gizmo_scale,
+            controls.joint_gizmo_auto_size,
         )
         if view_key == self._cached_view and np.array_equal(frames, self._cached_frames):
             viewer.renderer._joint_triangles = self._cached_triangles
             return
         finite = np.isfinite(frames).all(axis=1)
+        base_radius = 28.0 if compact else 48.0
+        radius = base_radius
+        if controls.joint_gizmo_auto_size:
+            depths = -((frames[:, :3] - draw_list.camera) @ draw_list.view[2, :3])
+            sized = finite & visible & (frames[:, 25] > 0) & (depths > draw_list.near)
+            if np.any(sized):
+                link_pixels = frames[sized, 25] / (depths[sized] * draw_list.radius_per_depth)
+                radius = float(np.clip(0.25 * np.median(link_pixels), base_radius, base_radius * 2))
+        # Use the same projected radius for every selected joint, including
+        # selections spanning differently sized links or multiple worlds.
+        draw_list.radius_pixels = radius * controls.joint_gizmo_scale
         for i, (joint, frame) in enumerate(zip(self.joints, frames, strict=True)):
             if not finite[i] or joint.child < 0 or not visible[i]:
                 continue
@@ -148,7 +180,7 @@ class JointSelectionGroup:
         self._cached_view, self._cached_frames = view_key, frames
         self._cached_triangles = viewer.renderer._joint_triangles
 
-    def _draw_compact(self, draw, frames, visible):
+    def _draw_compact(self, draw: _JointDrawList, frames: np.ndarray, visible: np.ndarray) -> None:
         """Batch articulation glyphs by primitive and joint type."""
         origins = frames[:, :3]
         screen, valid = draw.project(origins)
@@ -163,16 +195,25 @@ class JointSelectionGroup:
         child = frames[ids, 12:15]
         rotation = frames[ids, 3:12].reshape(-1, 3, 3)
         child_rotation = frames[ids, 15:24].reshape(-1, 3, 3)
-        radius = -((origin - draw.camera) @ draw.view[2, :3]) * draw.radius_per_depth * 12
+        radius = -((origin - draw.camera) @ draw.view[2, :3]) * draw.radius_per_depth * draw.radius_pixels
         kinds, enabled = self._kinds[ids], self._enabled[ids]
         reference, current, neutral = JointSelection.reference, JointSelection.current, JointSelection.neutral
 
-        def colors(rgb, alpha=1, mask=slice(None)):
+        def colors(rgb: ArrayLike, alpha: float = 1, mask: slice | np.ndarray = slice(None)) -> np.ndarray:
             rgba = np.empty((len(enabled[mask]), 4))
             rgba[:, :3], rgba[:, 3] = rgb, enabled[mask] * alpha
             return rgba
 
-        def lines(points, rgb, thickness=1.5, alpha=1, *, mask=slice(None), halo=True, arrow=False):
+        def lines(
+            points: ArrayLike,
+            rgb: ArrayLike,
+            thickness: float = 1.5,
+            alpha: float = 1,
+            *,
+            mask: slice | np.ndarray = slice(None),
+            halo: bool = True,
+            arrow: bool = False,
+        ) -> None:
             background = colors((0.025, 0.035, 0.05), 0.60, mask) if halo else None
             draw.lines(points, colors(rgb, alpha, mask), thickness, halo=background, arrow=arrow)
 
@@ -213,7 +254,7 @@ class JointSelectionGroup:
             u, v, axis = (basis[:, :, i] for i in range(3))
             o, r, value = origin[revolute], radius[revolute], frames[ids[revolute], 24]
 
-            def arc(a):
+            def arc(a: np.ndarray) -> np.ndarray:
                 return o[:, None, :] + r[:, None, None] * (
                     np.cos(a)[..., None] * u[:, None, :] + np.sin(a)[..., None] * v[:, None, :]
                 )
@@ -267,9 +308,9 @@ class JointSelectionGroup:
 
 
 class _JointDrawList:
-    """Build constant-size glyph triangles with their original scene depth."""
+    """Build glyph triangles in logical screen pixels with their original scene depth."""
 
-    def __init__(self, workspace):
+    def __init__(self, workspace: ViewerWorkspace) -> None:
         self.renderer, self.scale = workspace.viewer.renderer, workspace.widgets.scale
         self.rect = workspace.rect
         camera = workspace.viewer.camera
@@ -278,11 +319,12 @@ class _JointDrawList:
         self.camera = np.asarray(camera.pos)
         self.near = camera.near
         self.radius_per_depth = 2 * np.tan(np.radians(camera.fov) / 2) * self.scale / max(1, self.rect[3])
+        self.radius_pixels: float = 48.0
         self.points = []
         self.operations = []
         self.count = 0
 
-    def project(self, points):
+    def project(self, points: ArrayLike) -> tuple[np.ndarray, np.ndarray]:
         x, y, width, height = self.rect
         local = (np.atleast_2d(points) - self.camera) @ self.view[:3, :3].T
         clip = local @ self.projection[:, :3].T + self.projection[:, 3]
@@ -293,17 +335,19 @@ class _JointDrawList:
         screen += (x + width / 2, y + height / 2)
         return screen, valid
 
-    def color(self, rgb, alpha=1):
+    def color(self, rgb: ArrayLike, alpha: float = 1) -> tuple[float, float, float, float]:
         return (*rgb, alpha)
 
-    def add(self, kind, points, *args):
+    def add(self, kind: str, points: ArrayLike, *args: Any) -> None:
         points = np.atleast_2d(points)
         end = self.count + len(points)
         self.operations.append((kind, self.count, end, args))
         self.points.append(points)
         self.count = end
 
-    def lines(self, points, colors, thickness, *, halo=True, arrow=False):
+    def lines(
+        self, points: ArrayLike, colors: np.ndarray, thickness: float, *, halo: bool = True, arrow: bool = False
+    ) -> None:
         """Queue equally sized polylines in one operation."""
         if halo is True:
             halo = np.broadcast_to((0.025, 0.035, 0.05, 0.60), colors.shape).copy()
@@ -312,10 +356,10 @@ class _JointDrawList:
             halo = None
         self.add("lines", points.reshape(-1, 3), points.shape[1], colors, thickness, halo, arrow)
 
-    def markers(self, points, colors, backgrounds, *, square=False):
+    def markers(self, points: ArrayLike, colors: np.ndarray, backgrounds: np.ndarray, *, square: bool = False) -> None:
         self.add("markers", points, colors, backgrounds, square)
 
-    def flush(self):
+    def flush(self) -> None:
         if not self.points:
             return
         screen, valid = self.project(np.concatenate(self.points))
@@ -324,7 +368,7 @@ class _JointDrawList:
         strokes = []
         polygons = []
 
-        def polygon(points, indices, color):
+        def polygon(points: ArrayLike, indices: Sequence[int] | np.ndarray, color: int) -> None:
             points = np.asarray(points)
             if not len(points):
                 return
@@ -340,16 +384,39 @@ class _JointDrawList:
                 )
             )
 
-        def stroke(indices, color, thickness):
-            if len(indices) > 1:
-                indices = np.asarray(indices)
-                strokes.append(
-                    (
-                        np.column_stack((indices[:-1], indices[1:])),
-                        np.broadcast_to(color, (len(indices) - 1, 4)),
-                        np.full(len(indices) - 1, thickness),
-                    )
-                )
+        def stroke(paths: ArrayLike, color: ArrayLike, thickness: float, halo: ArrayLike | None = None) -> None:
+            paths = np.atleast_2d(paths)
+            if paths.shape[1] < 2:
+                return
+            points = screen[paths]
+            delta = np.diff(points, axis=1)
+            length = np.linalg.norm(delta, axis=2, keepdims=True)
+            normal = delta[..., ::-1] * (-1, 1) / np.maximum(length, 1e-9)
+            incoming = np.concatenate((normal[:, :1], normal), axis=1)
+            outgoing = np.concatenate((normal, normal[:, -1:]), axis=1)
+            closed = np.linalg.norm(points[:, 0] - points[:, -1], axis=1) < 1e-6
+            incoming[closed, 0] = normal[closed, -1]
+            outgoing[closed, -1] = normal[closed, 0]
+            # Shared miter joins keep neighboring segments and the outline from
+            # crossing into the colored stroke, even for small projected arcs.
+            miter = incoming + outgoing
+            miter /= np.maximum(np.linalg.norm(miter, axis=2, keepdims=True), 1e-9)
+            miter /= np.maximum(np.sum(miter * outgoing, axis=2, keepdims=True), 0.25)
+            indices = np.stack((paths[:, :-1], paths[:, 1:]), axis=2).reshape(-1, 2)
+            a, b = miter[:, :-1].reshape(-1, 2), miter[:, 1:].reshape(-1, 2)
+            count, size = paths.shape
+            rgba = np.repeat(np.broadcast_to(color, (count, 4)), size - 1, axis=0)
+            half_width = thickness * self.scale * 0.5
+            offsets = np.stack((a, -a, -b, b), axis=1) * half_width
+            strokes.append((indices, rgba, offsets))
+            if halo is not None:
+                # Draw only the border, not a wider coplanar copy of the entire
+                # stroke. The transparent pass must never darken its own core.
+                background = np.repeat(np.broadcast_to(halo, (count, 4)), size - 1, axis=0)
+                outer = half_width + self.scale
+                for sign in (-1, 1):
+                    offsets = np.stack((a * outer, a * half_width, b * half_width, b * outer), axis=1)
+                    strokes.append((indices, background, offsets * sign))
 
         angles = np.linspace(0, 2 * np.pi, 17)[:-1]
         circle = np.column_stack((np.cos(angles), np.sin(angles)))
@@ -357,12 +424,7 @@ class _JointDrawList:
             if kind == "lines":
                 size, colors, thickness, halo, arrow = args
                 paths = np.arange(start, end).reshape(-1, size)
-                indices = np.stack((paths[:, :-1], paths[:, 1:]), axis=2).reshape(-1, 2)
-                rgba = np.repeat(colors, size - 1, axis=0)
-                if halo is not None:
-                    background = np.repeat(halo, size - 1, axis=0)
-                    strokes.append((indices, background, np.full(len(indices), thickness + 2)))
-                strokes.append((indices, rgba, np.full(len(indices), thickness)))
+                stroke(paths, colors, thickness, halo)
                 if arrow:
                     tips, tails = paths[:, -1], paths[:, -2]
                     delta = screen[tips] - screen[tails]
@@ -401,9 +463,7 @@ class _JointDrawList:
             elif kind in ("stroke", "arrow"):
                 color, thickness, halo = args
                 indices = list(range(start, end))
-                if halo:
-                    stroke(indices, halo, thickness + 2)
-                stroke(indices, color, thickness)
+                stroke(indices, color, thickness, halo if halo else None)
                 if kind == "arrow" and valid[end - 2 : end].all():
                     tip, tail = screen[end - 1], screen[end - 2]
                     delta = tip - tail
@@ -451,14 +511,13 @@ class _JointDrawList:
             indices = np.concatenate([indices for indices, _, _ in strokes])
             a, b = indices.T
             colors = np.concatenate([color for _, color, _ in strokes])
-            widths = np.concatenate([thickness for _, _, thickness in strokes])
+            offsets = np.concatenate([offsets for _, _, offsets in strokes])
             delta = screen[b] - screen[a]
             lengths = np.linalg.norm(delta, axis=1)
             keep = valid[a] & valid[b] & (lengths > 0.01)
-            a, b, delta, lengths = a[keep], b[keep], delta[keep], lengths[keep]
-            colors, widths = colors[keep], widths[keep]
-            side = delta[:, ::-1] * (-1, 1) / lengths[:, None] * widths[:, None] * self.scale * 0.5
-            points = np.stack((screen[a] + side, screen[a] - side, screen[b] - side, screen[b] + side), axis=1)
+            a, b = a[keep], b[keep]
+            colors, offsets = colors[keep], offsets[keep]
+            points = screen[np.column_stack((a, a, b, b))] + offsets
             clip = self.clip[np.column_stack((a, a, b, b))].copy()
             clip[..., :2] = ((points - (x, y)) / (width, height) * 2 - 1) * (1, -1) * clip[..., 3:4]
             vertices = np.concatenate((clip, np.broadcast_to(colors[:, None, :], (*clip.shape[:2], 4))), axis=2)
@@ -480,7 +539,7 @@ class JointSelection:
     neutral = (0.76, 0.82, 0.89)
     axis_colors = ((0.94, 0.38, 0.38), (0.43, 0.85, 0.53), (0.39, 0.64, 1.0))
 
-    def __init__(self, workspace, index):
+    def __init__(self, workspace: ViewerWorkspace, index: int) -> None:
         model = workspace.model
         self.index = index
         self.kind = JointType(int(workspace.read(model, "joint_type", index)[0]))
@@ -502,7 +561,7 @@ class JointSelection:
         self.circle = np.column_stack((np.cos(angles), np.sin(angles)))
 
     @property
-    def limited(self):
+    def limited(self) -> bool:
         return bool(
             len(self.lower)
             and np.isfinite(self.lower[0])
@@ -512,7 +571,7 @@ class JointSelection:
             and abs(self.upper[0]) < 1e6
         )
 
-    def draw(self, workspace, *, draw_list, compact=False):
+    def draw(self, workspace: ViewerWorkspace, *, draw_list: _JointDrawList, compact: bool = False) -> None:
         viewer = workspace.viewer
         if viewer.is_rendering_paused() or viewer._layer_force_hidden():
             return
@@ -524,25 +583,27 @@ class JointSelection:
         if not valid[0] or not (x <= center[0] <= x + width and y <= center[1] <= y + height):
             return
         depth = -float(draw_list.view[:3, :3][2] @ (origin - draw_list.camera))
-        radius = depth * draw_list.radius_per_depth * (12 if compact else 42)
+        radius = depth * draw_list.radius_per_depth * draw_list.radius_pixels
 
-        def color(rgb, alpha=1):
+        def color(rgb: ArrayLike, alpha: float = 1) -> tuple[float, float, float, float]:
             return draw_list.color(rgb, alpha if self.enabled else alpha * 0.45)
 
-        def stroke(points, rgb, thickness=1.5, alpha=1, halo=True):
+        def stroke(
+            points: ArrayLike, rgb: ArrayLike, thickness: float = 1.5, alpha: float = 1, halo: bool = True
+        ) -> None:
             draw_list.add(
                 "stroke", points, color(rgb, alpha), thickness, color((0.025, 0.035, 0.05), 0.60) if halo else 0
             )
 
-        def arrow(a, b, rgb, thickness=1.7):
+        def arrow(a: float, b: float, rgb: ArrayLike, thickness: float = 1.7) -> None:
             draw_list.add("arrow", [a, b], color(rgb), thickness, color((0.025, 0.035, 0.05), 0.60))
 
-        def marker(position, rgb, square=False):
+        def marker(position: ArrayLike, rgb: ArrayLike, square: bool = False) -> None:
             draw_list.add(
                 "marker", position, color(rgb), color((0.025, 0.035, 0.05)), scale * (0.5 if compact else 1), square
             )
 
-        def arc(u, v, start, end, size=1):
+        def arc(u: np.ndarray, v: np.ndarray, start: float, end: float, size: float = 1) -> np.ndarray:
             if compact and start == 0 and end == 2 * np.pi:
                 return origin + radius * size * (self.circle[:, :1] * u + self.circle[:, 1:] * v)
             segments = 40 if compact else 72
@@ -555,7 +616,7 @@ class JointSelection:
                 stroke([origin + a * (child - origin), origin + (a + 1 / 12) * (child - origin)], self.neutral, 1, 0.6)
         if self.kind == JointType.REVOLUTE:
             u, v, axis = (rotation @ self.axis_basis).T
-            stroke(arc(u, v, 0, 2 * np.pi), self.reference if compact else self.neutral, 1, 0.55, halo=not compact)
+            stroke(arc(u, v, 0, 2 * np.pi), self.reference if compact else self.neutral, 1, 0.55, halo=False)
             if self.limited and not compact:
                 lo, hi = float(self.lower[0]), float(self.upper[0])
                 stroke(arc(u, v, lo, lo + min(hi - lo, 2 * np.pi), 1.1), self.reference, 1.5 if compact else 4, 0.35)

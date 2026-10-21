@@ -14,6 +14,7 @@ import newton
 import newton.viewer
 from newton._src.viewer.gl.opengl import RendererGL
 from newton._src.viewer.viewer_gl import ViewerGL
+from newton._src.viewer.viewer_joint_selection import _JointDrawList
 
 
 def _viewer_gl_unavailable_error_types(test: unittest.TestCase) -> tuple[type[BaseException], ...]:
@@ -179,6 +180,54 @@ class _FakeGL:
 
 
 class TestViewerGLGetFrame(unittest.TestCase):
+    def test_joint_stroke_outline_preserves_arc_color_and_occlusion(self) -> None:
+        """Keep tilted angle arcs clear at different zooms without drawing through geometry."""
+        with wp.ScopedDevice("cpu"):
+            viewer = _make_headless_viewer_gl_or_skip(self, width=400, height=300)
+        self.addCleanup(viewer.close)
+        renderer = viewer.renderer
+        renderer.draw_sky = renderer.draw_shadows = renderer.draw_grid = False
+        renderer.sky_upper = (0.13, 0.13, 0.13)
+        # Supply viewport metrics without starting an ImGui event loop. Both
+        # triangulation and opaque/transparent rasterization use the real GL path.
+        workspace = SimpleNamespace(viewer=viewer, widgets=SimpleNamespace(scale=1.0), rect=(0, 0, 400, 300))
+        angles = np.linspace(0, np.pi * 1.6, 65)
+        circle = np.column_stack((np.cos(angles), np.sin(angles), np.zeros_like(angles)))
+        for distance in (3.0, 30.0, 300.0):
+            viewer.set_camera(wp.vec3(distance, -distance, distance), pitch=0.0, yaw=0.0)
+            viewer.camera.look_at((0.0, 0.0, 0.0))
+            for radius_pixels, thickness, alpha in ((42, 3.0, 1.0), (12, 1.5, 0.45)):
+                with self.subTest(distance=distance, radius=radius_pixels, alpha=alpha):
+                    frames = []
+                    for halo in (False, True):
+                        draw = _JointDrawList(workspace)
+                        radius = np.linalg.norm(np.asarray(viewer.camera.pos)) * draw.radius_per_depth * radius_pixels
+                        draw.lines(
+                            (circle * radius)[None, ...], np.array([[1.0, 0.6, 0.2, alpha]]), thickness, halo=halo
+                        )
+                        draw.flush()
+                        renderer.render(viewer.camera, {})
+                        frames.append(viewer.get_frame().numpy().copy())
+                    core = frames[0][..., 0] >= int(frames[0][..., 0].max()) - 2
+                    self.assertGreater(np.count_nonzero(core), 10)
+                    error = np.abs(frames[1][core].astype(int) - frames[0][core].astype(int))
+                    self.assertLessEqual(int(error.max()), 2, "the outline painted over the arc")
+
+        # Move a real box in front of the diagnostic. Its depth must still hide
+        # the arc and its border; fixing self-overlap must not make an overlay.
+        builder = newton.ModelBuilder()
+        builder.add_shape_box(-1, xform=wp.transform((150.0, -150.0, 150.0), wp.quat_identity()), hx=70, hy=70, hz=70)
+        model = builder.finalize(device="cpu")
+        viewer.set_model(model)
+        viewer.log_state(model.state())
+        triangles = renderer._joint_triangles
+        renderer._joint_triangles = None
+        renderer.render(viewer.camera, viewer.objects)
+        scene = viewer.get_frame().numpy().copy()
+        renderer._joint_triangles = triangles
+        renderer.render(viewer.camera, viewer.objects)
+        np.testing.assert_array_equal(viewer.get_frame().numpy(), scene)
+
     def test_backend_error_types_do_not_force_window_import(self):
         """Verify backend error discovery does not import pyglet.window."""
         try:
@@ -254,7 +303,9 @@ class TestViewerGLGetFrame(unittest.TestCase):
             end = eye - 0.5 * forward + 0.2 * right
             clipped = start + (end - start) * ((2 - 0.100001) / 2.5)
 
-            def draw_segment(a, b, *, arrows=False):
+            def draw_segment(
+                a: tuple[float, float, float], b: tuple[float, float, float], *, arrows: bool = False
+            ) -> np.ndarray:
                 begins = wp.array([a], dtype=wp.vec3, device="cpu")
                 ends = wp.array([b], dtype=wp.vec3, device="cpu")
                 viewer.begin_frame(1.0)

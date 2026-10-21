@@ -7,6 +7,7 @@ import numpy as np
 import warp as wp
 
 import newton
+from newton._src.viewer.viewer_workspace import ModelTree, ViewerWorkspace
 from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
 from newton.viewer import ViewerNull
 
@@ -60,8 +61,8 @@ class TestViewerVisibleWorlds(unittest.TestCase):
         viewer.set_visible_worlds(None)
         self.assertEqual(sum(len(b.scales) for b in viewer._shape_instances.values()), 4)
 
-    def test_runtime_switching(self):
-        """Visible worlds can be changed between frames."""
+    def test_runtime_switching(self) -> None:
+        """Change visible worlds without moving the explorer's remaining worlds."""
         model = _build_multi_world_model(4)
         state = model.state()
         viewer = ViewerNull(num_frames=10)
@@ -83,6 +84,26 @@ class TestViewerVisibleWorlds(unittest.TestCase):
         viewer.set_visible_worlds([0])
         total = sum(len(b.scales) for b in viewer._shape_instances.values())
         self.assertEqual(total, 1)
+
+        # Explorer toggles only hide instances: keep the original world layout,
+        # including through an empty selection and a different restoration order.
+        viewer.set_visible_worlds(None)
+        offsets = viewer.world_offsets
+        positions = offsets.numpy() + np.array((0.0, 0.0, 1.0))
+        workspace = ViewerWorkspace.__new__(ViewerWorkspace)
+        workspace.viewer, workspace.model = viewer, model
+        workspace.tree = ModelTree(model)
+        workspace._visibility_cache = {}
+        visible = set(range(model.world_count))
+        for world in (0, 2, 1, 3, 3, 1, 2, 0):
+            visible.symmetric_difference_update((world,))
+            workspace.toggle_visibility(("root", world))
+            self.assertIs(viewer.world_offsets, offsets)
+            rendered = []
+            for shapes in viewer._shape_instances.values():
+                shapes.update(state, world_offsets=viewer.world_offsets, layer_xform=viewer.layer.xform)
+                rendered.extend(map(tuple, shapes.world_xforms.numpy()[:, :3]))
+            self.assertEqual(sorted(rendered), sorted(map(tuple, positions[sorted(visible)])))
 
     def test_compact_world_offsets(self):
         """Visible worlds get compact grid positions."""

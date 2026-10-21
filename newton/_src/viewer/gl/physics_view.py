@@ -3,6 +3,10 @@
 
 """Camera-adaptive collision surfaces and visual shells for physics inspection."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 import numpy as np
 
 from .shaders import (
@@ -13,8 +17,14 @@ from .shaders import (
     shape_vertex_shader,
 )
 
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from types import ModuleType
 
-def _proximity_vertex(source):
+    from newton._src.viewer.gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
+
+
+def _proximity_vertex(source: str) -> str:
     # Evaluate once per vertex from the existing instance transform. No per-frame
     # host transforms, camera-dependent batches or extra instance buffers.
     source = source.replace(
@@ -52,7 +62,7 @@ def _proximity_vertex(source):
     )
 
 
-def _mesh_metrics(mesh):
+def _mesh_metrics(mesh: MeshGL) -> tuple[np.ndarray, np.ndarray]:
     if not hasattr(mesh, "_physics_metrics"):
         points = mesh._points.numpy() if mesh._points is not None else np.empty((0, 3))
         lower, upper = (points.min(axis=0), points.max(axis=0)) if len(points) else (-np.ones(3), np.ones(3))
@@ -61,7 +71,7 @@ def _mesh_metrics(mesh):
     return mesh._physics_metrics
 
 
-def _render_inspection_object(obj, pass_draws):
+def _render_inspection_object(obj: MeshInstancerGL, pass_draws: str) -> None:
     """Use prepared instance ranges when available, preserving the ordinary draws."""
     draws = getattr(obj, pass_draws, None)
     if draws is None:
@@ -79,7 +89,7 @@ class PhysicsSurfaceShader(ShaderShape):
     """Fade inspection surfaces while retaining spatially precise shadows."""
 
     @staticmethod
-    def _shader_sources(enable_transparency):
+    def _shader_sources(enable_transparency: bool) -> tuple[str, str]:
         vertex, fragment = ShaderShape._shader_sources(enable_transparency)
         vertex = _proximity_vertex(vertex)
         fragment = (
@@ -146,7 +156,7 @@ class PhysicsSurfaceShader(ShaderShape):
         )
         return vertex, fragment
 
-    def __init__(self, gl):
+    def __init__(self, gl: ModuleType) -> None:
         super().__init__(gl, enable_transparency=True)
         self.locations = {
             name: self._get_uniform_location(name)
@@ -166,7 +176,15 @@ class PhysicsSurfaceShader(ShaderShape):
             )
         }
 
-    def render(self, renderer, objects, *, opaque, oit=False, visual=False):
+    def render(
+        self,
+        renderer: RendererGL,
+        objects: Sequence[MeshInstancerGL],
+        *,
+        opaque: bool,
+        oit: bool = False,
+        visual: bool = False,
+    ) -> None:
         gl, loc = self._gl, self.locations
         renderer._update_shape_shader(self)
         self.set_oit_enabled(oit)
@@ -206,7 +224,7 @@ class PhysicsSurfaceShader(ShaderShape):
 class PhysicsContactShader(ShaderGL):
     """Filled loaded contacts and hollow candidate rings, bounded in screen size."""
 
-    def __init__(self, gl):
+    def __init__(self, gl: ModuleType) -> None:
         from pyglet.graphics.shader import Shader, ShaderProgram
 
         super().__init__()
@@ -301,7 +319,7 @@ class PhysicsContactShader(ShaderGL):
             )
         }
 
-    def render(self, renderer, objects):
+    def render(self, renderer: RendererGL, objects: Sequence[MeshInstancerGL | LinesGL]) -> None:
         gl, loc = self._gl, self.locations
         if self._quad is None:
             import warp as wp  # noqa: PLC0415
@@ -341,7 +359,7 @@ class PhysicsContactShader(ShaderGL):
                     obj._bind_mesh_buffers()
             gl.glDisable(gl.GL_BLEND)
 
-    def destroy(self):
+    def destroy(self) -> None:
         if self._quad is not None:
             self._quad.destroy()
         self.shader_program.delete()
@@ -455,7 +473,7 @@ void main() {
 class PhysicsShellShader(ShaderGL):
     """Draw the filtered wire overlay; filled shells use PhysicsSurfaceShader."""
 
-    def __init__(self, gl):
+    def __init__(self, gl: ModuleType) -> None:
         import re  # noqa: PLC0415
 
         from pyglet.graphics.shader import Shader, ShaderProgram
@@ -493,7 +511,15 @@ class PhysicsShellShader(ShaderGL):
             )
         }
 
-    def render(self, renderer, objects, *, oit, collision=False, wire_only=False):
+    def render(
+        self,
+        renderer: RendererGL,
+        objects: Sequence[MeshInstancerGL],
+        *,
+        oit: bool,
+        collision: bool = False,
+        wire_only: bool = False,
+    ) -> None:
         edges = getattr(renderer, "_xray_collision_edges" if collision else "_xray_edges", True)
         soft_edges = getattr(renderer, "_xray_deformable_edges", True) and any(
             getattr(obj, "_physics_role", None) == "deformable" for _, obj in objects
@@ -501,7 +527,15 @@ class PhysicsShellShader(ShaderGL):
         if edges or wire_only or soft_edges:
             self._render_pass(renderer, objects, oit=oit, collision=collision, wire_only=wire_only)
 
-    def _render_pass(self, renderer, objects, *, oit, collision, wire_only=False):
+    def _render_pass(
+        self,
+        renderer: RendererGL,
+        objects: Sequence[MeshInstancerGL],
+        *,
+        oit: bool,
+        collision: bool,
+        wire_only: bool = False,
+    ) -> None:
         gl, loc = self._gl, self.locations
         with self:
             gl.glUniformMatrix4fv(loc["view"], 1, gl.GL_FALSE, arr_pointer(renderer._view_matrix))

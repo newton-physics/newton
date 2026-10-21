@@ -9,6 +9,15 @@ manual smoke test and does not contain any auto-discovered ``TestCase``
 classes.
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from newton._src.viewer.viewer_types import ViewerExample
+    from newton.viewer import ViewerBase
+
+
 import types
 import unittest
 from unittest.mock import patch
@@ -63,7 +72,7 @@ class _OtherStubExample:
 
 
 class TestExampleBrowserReset(unittest.TestCase):
-    def test_runtime_failures_keep_browser_running(self):
+    def test_runtime_failures_keep_browser_running(self) -> None:
         for stage, error in (
             ("bind", RuntimeError("history failed")),
             ("step", RuntimeError("solver failed")),
@@ -73,7 +82,7 @@ class TestExampleBrowserReset(unittest.TestCase):
             with self.subTest(stage=stage, error=type(error).__name__):
                 self._assert_runtime_failure_recovers(stage, error)
 
-    def _assert_runtime_failure_recovers(self, stage, error):
+    def _assert_runtime_failure_recovers(self, stage: str, error: BaseException) -> None:
         viewer = _StubViewer()
         viewer._paused = False
         viewer._step_requested = True
@@ -86,22 +95,22 @@ class TestExampleBrowserReset(unittest.TestCase):
         browser = _ExampleBrowser(viewer)
 
         class GoodExample(_StubExample):
-            def step(self):
+            def step(self) -> None:
                 pass
 
-            def render(self):
+            def render(self) -> None:
                 self.viewer.end_frame()
 
         class FailedExample(GoodExample):
-            def step(self):
+            def step(self) -> None:
                 if stage == "step":
                     raise error
 
-            def render(self):
+            def render(self) -> None:
                 if stage == "render":
                     raise error
 
-        def bind(example):
+        def bind(example: ViewerExample | None) -> None:
             if stage == "bind" and isinstance(example, FailedExample):
                 raise error
 
@@ -112,7 +121,7 @@ class TestExampleBrowserReset(unittest.TestCase):
             render_example=lambda: viewer.gui._workspace_example.render(),  # noqa: PLW0108
         )
 
-        def is_running():
+        def is_running() -> bool:
             viewer.polls += 1
             if viewer.polls == 3:
                 browser.switch_target = "fake.recovered"
@@ -137,13 +146,13 @@ class TestExampleBrowserReset(unittest.TestCase):
         self.assertEqual(len(logs.records), 1)
         self.assertIsNotNone(logs.records[0].exc_info)
 
-    def test_constructor_exit_keeps_browser_running(self):
+    def test_constructor_exit_keeps_browser_running(self) -> None:
         viewer = _StubViewer()
         browser = _ExampleBrowser(viewer)
         browser.switch_target = "fake.exiting"
 
         class ExitingExample(_StubExample):
-            def __init__(self, viewer, args):
+            def __init__(self, viewer: ViewerBase, args: argparse.Namespace) -> None:
                 raise SystemExit(2)
 
         with (
@@ -160,11 +169,11 @@ class TestExampleBrowserReset(unittest.TestCase):
             self.assertIsNone(browser.reset(ExitingExample))
         self.assertIn("SystemExit: 2", browser.load_error)
 
-    def test_reset_preserves_layer_display_options(self):
+    def test_reset_preserves_layer_display_options(self) -> None:
         """Preserve presentation choices on reset and across differently named layers."""
 
         class LayeredExample(_StubExample):
-            def __init__(self, viewer, args):
+            def __init__(self, viewer: ViewerBase, args: argparse.Namespace) -> None:
                 super().__init__(viewer, args)
                 viewer.activate("comparison")
                 viewer.show_contacts = False
@@ -208,7 +217,7 @@ class TestExampleBrowserReset(unittest.TestCase):
         viewer.camera = types.SimpleNamespace(fov=55.0, near=0.002, far=1500.0, pos="previous scene")
 
         class SwitchedExample(_StubExample):
-            def __init__(self, viewer, args):
+            def __init__(self, viewer: ViewerBase, args: argparse.Namespace) -> None:
                 super().__init__(viewer, args)
                 viewer.activate("new scene")
                 viewer.show_contacts, viewer.show_visual = False, True
@@ -258,7 +267,7 @@ class TestExampleBrowserReset(unittest.TestCase):
         # Switching from mesh vertices (off by default) to sand must not
         # mistake the old example's default for a user's visibility choice.
         class ParticleExample(_StubExample):
-            def __init__(self, viewer, args):
+            def __init__(self, viewer: ViewerBase, args: argparse.Namespace) -> None:
                 super().__init__(viewer, args)
                 viewer.show_particles = True
 
@@ -346,14 +355,14 @@ class TestExampleBrowserReset(unittest.TestCase):
         self.assertEqual(reset_example.args.world_count, 7)
         self.assertEqual(browser.current_module, "fake.module.path")
 
-    def test_failed_switch_clears_partial_scene_and_reports_error(self):
+    def test_failed_switch_clears_partial_scene_and_reports_error(self) -> None:
         viewer = _StubViewer()
         browser = _ExampleBrowser(viewer)
         browser.current_module = "previous.example"
         browser.switch_target = "fake.module.path"
 
         class FailedExample(_StubExample):
-            def __init__(self, viewer, args):
+            def __init__(self, viewer: ViewerBase, args: argparse.Namespace) -> None:
                 raise RuntimeError("asset missing")
 
         failed_module = types.SimpleNamespace(Example=FailedExample)

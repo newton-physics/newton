@@ -3,19 +3,32 @@
 
 """Compact, typed property controls and resolution-independent vector icons."""
 
+from __future__ import annotations
+
 from collections import OrderedDict
 from contextlib import contextmanager
 from dataclasses import dataclass
 from math import cos, pi, sin
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 import numpy as np
 import warp as wp
 
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+    from enum import IntEnum
+    from types import ModuleType
+    from typing import Any
+
+    from imgui_bundle import imgui
+    from numpy.typing import ArrayLike
+
+    from newton._src.viewer.viewer_gui import ViewerGui
+
 
 @dataclass
 class PropertyEdit:
-    value: object
+    value: Any
     changed: bool = False
     activated: bool = False
     finished: bool = False
@@ -27,7 +40,7 @@ class PhysicsWidgets:
     accent = (0.96, 0.61, 0.32, 1)
     muted = (0.65, 0.65, 0.65, 1)
     axes = ((0.87, 0.39, 0.38, 1), (0.44, 0.75, 0.47, 1), (0.38, 0.62, 0.91, 1), (0.71, 0.60, 0.88, 1))
-    explorer_colors: ClassVar[dict] = {
+    explorer_colors: ClassVar[dict[str, tuple[float, float, float, float]]] = {
         "root": (0.74, 0.74, 0.74, 1),
         "group": (0.74, 0.74, 0.74, 1),
         "elements": (0.68, 0.68, 0.68, 1),
@@ -47,13 +60,13 @@ class PhysicsWidgets:
         "texture": (0.76, 0.57, 0.82, 1),
     }
 
-    def __init__(self, gui):
+    def __init__(self, gui: ViewerGui) -> None:
         self.gui = gui
-        self._text_centers = {}
-        self._property_summary = None
+        self._text_centers: dict[tuple[int, float, str], float] = {}
+        self._property_summary: Callable[[], str] | None = None
 
     @contextmanager
-    def property_tooltip(self, summary):
+    def property_tooltip(self, summary: Callable[[], str] | None) -> Iterator[None]:
         """Attach lazy storage metadata to property labels and group headers."""
         previous = self._property_summary
         self._property_summary = summary
@@ -62,7 +75,7 @@ class PhysicsWidgets:
         finally:
             self._property_summary = previous
 
-    def _tooltip(self, detail=""):
+    def _tooltip(self, detail: str = "") -> None:
         """Keep editor help alongside attribute metadata, including disabled fields."""
         ui = self.ui
         if not ui.is_item_hovered(ui.HoveredFlags_.delay_normal | ui.HoveredFlags_.allow_when_disabled):
@@ -73,17 +86,17 @@ class PhysicsWidgets:
             ui.set_tooltip(text)
 
     @property
-    def ui(self):
+    def ui(self) -> ModuleType:
         return self.gui.ui.imgui
 
     @property
-    def scale(self):
+    def scale(self) -> float:
         return self.gui.ui.dpi_scale
 
-    def color(self, rgba):
+    def color(self, rgba: ArrayLike) -> int:
         return self.ui.get_color_u32(self.ui.ImVec4(*rgba))
 
-    def text_top(self, y, height, *, numeric=False):
+    def text_top(self, y: float, height: float, *, numeric: bool = False) -> int:
         """Center visible glyphs instead of the font's unequal ascent/descent box."""
         ui = self.ui
         sample = "0123456789.-" if numeric else "Xx0123456789"
@@ -95,7 +108,7 @@ class PhysicsWidgets:
             self._text_centers[key] = (min(g.y0 for g in glyphs) + max(g.y1 for g in glyphs)) / 2 if glyphs else 0
         return round(y + height / 2 - self._text_centers[key])
 
-    def label(self, text, *, height=None, width=None, muted=False):
+    def label(self, text: str, *, height: float | None = None, width: float | None = None, muted: bool = False) -> None:
         ui = self.ui
         pos = ui.get_cursor_screen_pos()
         height = ui.get_frame_height() if height is None else height
@@ -107,10 +120,10 @@ class PhysicsWidgets:
         )
         ui.dummy(ui.ImVec2(width, height))
 
-    def button(self, label, size=None, *, small=False):
+    def button(self, label: str, size: imgui.ImVec2 | None = None, *, small: bool = False) -> bool:
         return self.ui.small_button(label) if small else self.ui.button(label, size or self.ui.ImVec2(0, 0))
 
-    def tab_item(self, label, *, flags=0, accent=False):
+    def tab_item(self, label: str, *, flags: int = 0, accent: bool = False) -> tuple[bool, bool | None]:
         ui = self.ui
         if not accent:
             return ui.begin_tab_item(label, flags=flags)
@@ -123,7 +136,17 @@ class PhysicsWidgets:
         finally:
             ui.pop_style_color(4)
 
-    def icon(self, name, position, size=16, *, active=False, dim=False, tint=None, solid=False):
+    def icon(
+        self,
+        name: str,
+        position: imgui.ImVec2 | tuple[float, float],
+        size: float = 16,
+        *,
+        active: bool = False,
+        dim: bool = False,
+        tint: Sequence[float] | None = None,
+        solid: bool = False,
+    ) -> None:
         """Draw vector icons without an icon font, asset loading, or textures."""
         ui = self.ui
         draw = ui.get_window_draw_list()
@@ -134,23 +157,23 @@ class PhysicsWidgets:
         color = self.color(rgba)
         width = max(1, self.scale * (1.5 if solid else 1.15))
 
-        def point(a, b):
+        def point(a: float, b: float) -> imgui.ImVec2:
             return ui.ImVec2(round(x + a * size) + 0.5, round(y + b * size) + 0.5)
 
-        def lines(points, closed=False):
+        def lines(points: ArrayLike, closed: bool = False) -> None:
             for a, b in zip(points, (*points[1:], points[0]) if closed else points[1:], strict=False):
                 draw.add_line(point(*a), point(*b), color, width)
 
-        def circle(a, b, radius, fill=False):
+        def circle(a: float, b: float, radius: float, fill: bool = False) -> None:
             if fill:
                 draw.add_circle_filled(point(a, b), radius * size, color, 16)
             else:
                 draw.add_circle(point(a, b), radius * size, color, 16, width)
 
-        def shade(factor):
+        def shade(factor: float) -> int:
             return self.color((*(channel * factor for channel in rgba[:3]), rgba[3]))
 
-        def polygon(points, factor=1):
+        def polygon(points: ArrayLike, factor: float = 1) -> None:
             draw.add_convex_poly_filled([point(*p) for p in points], shade(factor))
 
         if solid and name == "folder":
@@ -458,18 +481,18 @@ class PhysicsWidgets:
 
     def icon_button(
         self,
-        key,
-        icon,
-        tooltip,
+        key: str,
+        icon: str,
+        tooltip: str,
         *,
-        active=False,
-        enabled=True,
-        size=24,
-        label="",
-        prominent=False,
-        show_lock=True,
-        flat=False,
-    ):
+        active: bool = False,
+        enabled: bool = True,
+        size: float = 24,
+        label: str = "",
+        prominent: bool = False,
+        show_lock: bool = True,
+        flat: bool = False,
+    ) -> bool:
         ui, s = self.ui, self.scale
         pos = ui.get_cursor_screen_pos()
         button_width = size + (14 if prominent else 0)
@@ -519,7 +542,16 @@ class PhysicsWidgets:
             ui.set_tooltip(tooltip)
         return clicked and enabled
 
-    def _fixed_label(self, text, width, *, color=None, locked=False, reason="", unit=""):
+    def _fixed_label(
+        self,
+        text: str,
+        width: float,
+        *,
+        color: Sequence[float] | None = None,
+        locked: bool = False,
+        reason: str = "",
+        unit: str = "",
+    ) -> None:
         ui, scale = self.ui, self.scale
         pos = ui.get_cursor_screen_pos()
         height = ui.get_frame_height()
@@ -547,7 +579,7 @@ class PhysicsWidgets:
             self._tooltip("\n".join(details))
 
     @contextmanager
-    def group(self, label, *, default_open=True):
+    def group(self, label: str, *, default_open: bool = True) -> Iterator[bool]:
         """A flat, softly rounded card with a disclosure header and inset fields."""
         ui, scale = self.ui, self.scale
         ui.push_style_var(ui.StyleVar_.child_rounding, 5 * scale)
@@ -577,7 +609,7 @@ class PhysicsWidgets:
             ui.pop_style_var(4)
 
     @contextmanager
-    def disclosure(self, label, *, default_open=True):
+    def disclosure(self, label: str, *, default_open: bool = True) -> Iterator[bool]:
         """Group paged attributes without adding another panel or inset."""
         ui = self.ui
         font = getattr(self.gui.ui, "heading_font", None)
@@ -592,7 +624,7 @@ class PhysicsWidgets:
         yield opened
 
     @contextmanager
-    def compound(self, label, *, editable=False, reason=""):
+    def compound(self, label: str, *, editable: bool = False, reason: str = "") -> Iterator[None]:
         """Give a compound attribute a weighted heading and inset child rows."""
         ui = self.ui
         font = getattr(self.gui.ui, "heading_font", None)
@@ -610,7 +642,16 @@ class PhysicsWidgets:
         finally:
             ui.unindent(indent)
 
-    def _label(self, label, editable, unit="", reason="", *, inline=False, width=None):
+    def _label(
+        self,
+        label: str,
+        editable: bool,
+        unit: str = "",
+        reason: str = "",
+        *,
+        inline: bool = False,
+        width: float | None = None,
+    ) -> None:
         ui, s = self.ui, self.scale
         if not label or label.startswith("##"):
             return
@@ -631,7 +672,7 @@ class PhysicsWidgets:
             ui.dummy(ui.ImVec2(13 * s, ui.get_text_line_height()))
             self._tooltip(reason or "Read only")
 
-    def text_value(self, label, value, *, reason=""):
+    def text_value(self, label: str, value: Any, *, reason: str = "") -> None:
         """Render read-only text with explicit missing and empty-string values."""
         missing = value is None
         empty = isinstance(value, str) and not value
@@ -653,7 +694,7 @@ class PhysicsWidgets:
             ui.pop_style_color()
         self._tooltip(reason)
 
-    def boolean(self, label, value, *, editable=False, reason=""):
+    def boolean(self, label: str, value: bool, *, editable: bool = False, reason: str = "") -> PropertyEdit:
         """Show explicit boolean values; reserve checkbox controls for editable fields."""
         if not editable:
             self.text_value(label, bool(value), reason=reason)
@@ -672,20 +713,20 @@ class PhysicsWidgets:
 
     def number(
         self,
-        label,
-        value,
+        label: str,
+        value: float | int,
         *,
-        editable=False,
-        integer=False,
-        speed=0.01,
-        bounds=None,
-        unit="",
-        reason="",
-        width=None,
-        label_width=None,
-        format_spec=None,
-        slider=False,
-    ):
+        editable: bool = False,
+        integer: bool = False,
+        speed: float = 0.01,
+        bounds: tuple[float, float] | None = None,
+        unit: str = "",
+        reason: str = "",
+        width: float | None = None,
+        label_width: float | None = None,
+        format_spec: str | None = None,
+        slider: bool = False,
+    ) -> PropertyEdit:
         ui = self.ui
         self._label(label, editable, unit, reason, inline=True, width=label_width)
         if width is not None:
@@ -776,7 +817,9 @@ class PhysicsWidgets:
         ui.pop_id()
         return edit
 
-    def reference(self, label, value, *, target=None, caption=None, reason=""):
+    def reference(
+        self, label: str, value: int, *, target: str | None = None, caption: str | None = None, reason: str = ""
+    ) -> bool:
         """Pair a compact index with a wider, named navigation button."""
         ui, scale = self.ui, self.scale
         available = ui.get_content_region_avail().x
@@ -839,19 +882,19 @@ class PhysicsWidgets:
 
     def array(
         self,
-        label,
-        value,
+        label: str,
+        value: ArrayLike,
         *,
-        editable=False,
-        unit="",
-        labels=None,
-        component_units=None,
-        speed=0.01,
-        reason="",
-        integer=False,
-        bounds=None,
-        header=True,
-    ):
+        editable: bool = False,
+        unit: str = "",
+        labels: Sequence[str] | None = None,
+        component_units: Sequence[str] | None = None,
+        speed: float = 0.01,
+        reason: str = "",
+        integer: bool = False,
+        bounds: tuple[float, float] | None = None,
+        header: bool = True,
+    ) -> PropertyEdit:
         """Use a stable grid and bound rendering work for arrays of any length."""
         ui, scale = self.ui, self.scale
         values = np.asarray(value).reshape(-1)
@@ -923,7 +966,18 @@ class PhysicsWidgets:
         ui.pop_id()
         return result
 
-    def vector(self, label, value, *, editable=False, unit="", labels=None, speed=0.01, reason="", header=True):
+    def vector(
+        self,
+        label: str,
+        value: ArrayLike,
+        *,
+        editable: bool = False,
+        unit: str = "",
+        labels: Sequence[str] | None = None,
+        speed: float = 0.01,
+        reason: str = "",
+        header: bool = True,
+    ) -> PropertyEdit:
         values = np.asarray(value, dtype=np.float32).reshape(-1)
         if labels is None and len(values) <= 4:
             labels = tuple("XYZW"[: len(values)])
@@ -931,10 +985,10 @@ class PhysicsWidgets:
             label, values, editable=editable, unit=unit, labels=labels, speed=speed, reason=reason, header=header
         )
 
-    def vec2(self, label, value, **kwargs):
+    def vec2(self, label: str, value: ArrayLike, **kwargs: Any) -> PropertyEdit:
         return self.vector(label, np.asarray(value).reshape(2), **kwargs)
 
-    def vec3(self, label, value, **kwargs):
+    def vec3(self, label: str, value: ArrayLike, **kwargs: Any) -> PropertyEdit:
         return self.vector(label, np.asarray(value).reshape(3), **kwargs)
 
     rotation_modes = (
@@ -950,7 +1004,7 @@ class PhysicsWidgets:
     )
 
     @staticmethod
-    def rotation_values(value, mode, degrees=True):
+    def rotation_values(value: ArrayLike, mode: str, degrees: bool = True) -> np.ndarray:
         """Convert display values only; the simulation continues to store XYZW."""
         q = np.asarray(value, dtype=np.float64)
         if mode == "Quaternion":
@@ -974,7 +1028,7 @@ class PhysicsWidgets:
         return np.r_[axis, angle] if mode == "Axis angle" else axis * angle
 
     @staticmethod
-    def rotation_quaternion(values, mode, degrees=True):
+    def rotation_quaternion(values: ArrayLike, mode: str, degrees: bool = True) -> np.ndarray:
         values = np.asarray(values, dtype=np.float64)
         if not np.isfinite(values).all():
             raise ValueError("Enter finite rotation values.")
@@ -998,7 +1052,7 @@ class PhysicsWidgets:
             raise ValueError("Quaternion must have nonzero length.")
         return (q / length).astype(np.float32)
 
-    def quat(self, label, value, *, editable=False, reason=""):
+    def quat(self, label: str, value: ArrayLike, *, editable: bool = False, reason: str = "") -> PropertyEdit:
         ui, scale = self.ui, self.scale
         original = np.asarray(value, dtype=np.float32).reshape(4)
         cache = getattr(self.gui, "_physics_rotations", None)
@@ -1084,7 +1138,7 @@ class PhysicsWidgets:
             ui.text_wrapped(state["error"])
         return result
 
-    def transform(self, label, value, *, editable=False, reason=""):
+    def transform(self, label: str, value: ArrayLike, *, editable: bool = False, reason: str = "") -> PropertyEdit:
         value = np.asarray(value).reshape(7)
         self._label(label, editable, reason=reason)
         self.ui.push_id(label)
@@ -1098,7 +1152,16 @@ class PhysicsWidgets:
             p.finished or q.finished,
         )
 
-    def spatial_vector(self, label, value, *, editable=False, force=False, position=False, reason=""):
+    def spatial_vector(
+        self,
+        label: str,
+        value: ArrayLike,
+        *,
+        editable: bool = False,
+        force: bool = False,
+        position: bool = False,
+        reason: str = "",
+    ) -> PropertyEdit:
         value = np.asarray(value).reshape(6)
         self._label(label, editable, reason=reason)
         self.ui.push_id(label)
@@ -1124,7 +1187,9 @@ class PhysicsWidgets:
             a.finished or b.finished,
         )
 
-    def matrix3(self, label, value, *, unit="", editable=False, reason=""):
+    def matrix3(
+        self, label: str, value: ArrayLike, *, unit: str = "", editable: bool = False, reason: str = ""
+    ) -> PropertyEdit:
         values = np.asarray(value).reshape(3, 3).copy()
         self._label(label, editable, unit, reason)
         result = PropertyEdit(values)
@@ -1140,7 +1205,7 @@ class PhysicsWidgets:
         self.ui.pop_id()
         return result
 
-    def axis(self, label, value, *, editable=False, reason=""):
+    def axis(self, label: str, value: int | ArrayLike, *, editable: bool = False, reason: str = "") -> PropertyEdit:
         ui = self.ui
         self._label(label, editable, reason=reason, inline=True)
         ui.push_id(label)
@@ -1159,7 +1224,9 @@ class PhysicsWidgets:
         ui.pop_id()
         return result
 
-    def choice(self, label, value, choices, *, editable=False, reason=""):
+    def choice(
+        self, label: str, value: int, choices: Mapping[int, str], *, editable: bool = False, reason: str = ""
+    ) -> PropertyEdit:
         ui = self.ui
         self._label(label, editable, reason=reason, inline=True)
         values, names = list(choices), list(choices.values())
@@ -1172,7 +1239,9 @@ class PhysicsWidgets:
         ui.end_disabled()
         return PropertyEdit(values[index], changed and editable, changed, changed)
 
-    def enum(self, label, value, options, *, editable=False, reason=""):
+    def enum(
+        self, label: str, value: int, options: Iterable[IntEnum], *, editable: bool = False, reason: str = ""
+    ) -> PropertyEdit:
         return self.choice(
             label,
             int(value),

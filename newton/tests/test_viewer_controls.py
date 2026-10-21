@@ -1,6 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    pass
+
 import inspect
 import unittest
 from contextlib import nullcontext
@@ -31,7 +39,7 @@ from newton._src.viewer.viewer_workspace import ModelTree, ViewerWorkspace
 from newton.tests.unittest_utils import patch_sys_module
 
 
-def _make_gl_state(paused: bool = False, step_requested: bool = False) -> "ViewerGL":
+def _make_gl_state(paused: bool = False, step_requested: bool = False) -> ViewerGL:
     # Lightweight stand-in with just the fields ViewerGL.should_step() needs.
     return SimpleNamespace(_paused=paused, _step_requested=step_requested)  # type: ignore[return-value]
 
@@ -119,7 +127,7 @@ class TestViewerCameraSpeed(unittest.TestCase):
 
 
 class TestViewerShapeProperties(unittest.TestCase):
-    def test_geometry_resource_tree_and_lazy_metadata(self):
+    def test_geometry_resource_tree_and_lazy_metadata(self) -> None:
         """Inspect shared resources lazily and distinguish their shape instances."""
         builder = newton.ModelBuilder()
         mesh = newton.Mesh.create_box(1, 1, 1)
@@ -233,7 +241,7 @@ class TestViewerShapeProperties(unittest.TestCase):
             )
         captions, navigated = {}, []
 
-        def reference(_label, value, *, target, caption):
+        def reference(_label: str, value: int, *, target: str | None, caption: str) -> bool:
             self.assertEqual(target, model.shape_label[value])
             captions[value] = caption
             return value == 3
@@ -301,7 +309,7 @@ class TestViewerShapeProperties(unittest.TestCase):
         self.assertEqual(inspected, [workspace.tree, workspace.tree])
         self.assertEqual(attached, inspected)
 
-    def test_mujoco_contact_properties_with_both_contact_pipelines(self):
+    def test_mujoco_contact_properties_with_both_contact_pipelines(self) -> None:
         """Inspect mapped shapes across worlds without requiring an external-contact inverse map."""
         values = {}
         workspace = ViewerWorkspace.__new__(ViewerWorkspace)
@@ -359,7 +367,7 @@ class TestViewerShapeProperties(unittest.TestCase):
 class TestViewerGLShouldStep(unittest.TestCase):
     """ViewerGL.should_step() state machine: running, paused, and single-step."""
 
-    def test_gui_popup_owns_viewer_shortcuts(self):
+    def test_gui_popup_owns_viewer_shortcuts(self) -> None:
         """Keep popup keys from closing or changing the simulation without keyboard capture."""
         viewer = SimpleNamespace(_paused=False, _step_requested=False, show_ui=True)
         gui = ViewerGui.__new__(ViewerGui)
@@ -458,7 +466,7 @@ class TestViewerGLShouldStep(unittest.TestCase):
         self.assertFalse(ViewerGL.should_step(v))
 
 
-def _make_gl_running_state(headless: bool, num_frames: int | None, frame_count: int = 0) -> "ViewerGL":
+def _make_gl_running_state(headless: bool, num_frames: int | None, frame_count: int = 0) -> ViewerGL:
     # Stand-in carrying only the fields ViewerGL.is_running()/end_frame() read,
     # so the frame budget can be exercised without a GL context.
     return SimpleNamespace(  # type: ignore[return-value]
@@ -570,7 +578,55 @@ class TestViewerGLNumFramesValidation(unittest.TestCase):
 
 
 class TestViewerProperties(unittest.TestCase):
-    def test_history_without_top_level_example_model(self):
+    def test_element_selection_property_domains(self) -> None:
+        builder = newton.ModelBuilder()
+        for point in ((0, 0, 0), (1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 1)):
+            builder.add_particle(wp.vec3(*point), wp.vec3(0), 1.0)
+        builder.add_triangle(0, 1, 2)
+        builder.add_triangle(1, 4, 2)
+        builder.add_tetrahedron(0, 1, 2, 3)
+        builder.add_tetrahedron(1, 4, 2, 3)
+        model = builder.finalize(device="cpu")
+        ws = ViewerWorkspace.__new__(ViewerWorkspace)
+        ws.model, ws.tree = model, ModelTree(model)
+        ws._cache, ws._live_cache = {}, {}
+        inspector = PropertyInspector(ws)
+        for kind, frequency in (("tri", Frequency.TRIANGLE), ("tet", Frequency.TETRAHEDRON)):
+            ws.selected = (kind, 1)
+            ws.selection = {(kind, 0), (kind, 1)}
+            inspector._contexts()
+            domains = {d.frequency: list(d.indices) for d in inspector.domains}
+            self.assertEqual(domains[frequency], [0, 1])
+            self.assertEqual(domains[Frequency.PARTICLE], [0, 1, 2, 4] if kind == "tri" else [0, 1, 2, 3, 4])
+            # Changing membership while retaining the active item invalidates the cache.
+            ws.selection.remove((kind, 0))
+            inspector._contexts()
+            domain = next(d for d in inspector.domains if d.frequency == frequency)
+            self.assertEqual(list(domain.indices), [1])
+
+    def test_camera_sensor_history_clock(self) -> None:
+        from newton.examples.sensors.example_sensor_camera import Example  # noqa: PLC0415
+
+        example = Example.__new__(Example)
+        example.model = newton.ModelBuilder().finalize(device="cpu")
+        example.state = example.model.state()
+        example.viewer = Mock()
+        example.sim_time, example.frame_dt = 0.0, 0.005
+        example.dof_home = example.dof_radius = None
+        example.render_sensors = Mock(return_value=False)
+        history = WorkspaceHistory(example)
+        history.capture()
+        with patch("warp.launch"), patch("newton.eval_fk"):
+            for _ in range(2):
+                example.step()
+                history.capture()
+                example.render()
+        self.assertEqual([frame.time for frame in history.frames], [0.0, 0.005, 0.01])
+        self.assertEqual(history.index, 2)
+        self.assertEqual(history.dt, example.frame_dt)
+        self.assertEqual([call.args[0] for call in example.viewer.begin_frame.call_args_list], [0.005, 0.01])
+
+    def test_history_without_top_level_example_model(self) -> None:
         builder = newton.ModelBuilder()
         builder.add_custom_attribute(
             newton.ModelBuilder.CustomAttribute(
@@ -609,7 +665,7 @@ class TestViewerProperties(unittest.TestCase):
         example.render.assert_called_once_with()
         self.assertIs(example.state_0, live_state)
 
-    def test_sparse_properties_and_joint_editor_ranges(self):
+    def test_sparse_properties_and_joint_editor_ranges(self) -> None:
         builder = newton.ModelBuilder()
         body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         shape = builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1)
@@ -676,7 +732,7 @@ class TestViewerProperties(unittest.TestCase):
             self.assertIsNone(inspector.reference_target(model, frequency, invalid))
         self.assertIsNone(inspector.reference_target(model, Frequency.SHAPE, model.shape_count))
 
-    def test_frequency_discovery_and_live_joint_edits(self):
+    def test_frequency_discovery_and_live_joint_edits(self) -> None:
         builder = newton.ModelBuilder()
         joints = []
         for parent in (-1, 0, 1, 0):
@@ -793,7 +849,7 @@ class TestViewerProperties(unittest.TestCase):
 
 
 class TestCollisionInspector(unittest.TestCase):
-    def test_paused_collision_inspection(self):
+    def test_paused_collision_inspection(self) -> None:
         """Inspect all broadphases lazily and preserve contact attribute row domains."""
         frequency, assignment = newton.Model.AttributeFrequency, newton.Model.AttributeAssignment
         builder = newton.ModelBuilder()
@@ -920,6 +976,50 @@ class TestCollisionInspector(unittest.TestCase):
                 inspector.contacts_tab = True
                 inspector.overlays()
                 self.assertEqual(len(viewer.renderer._contact_labels), len(inspector.shape_contacts(0)))
+                # Live labels follow current witnesses without expanding the
+                # inspector or retaining a transient selected contact slot.
+                expected = np.asarray(inspector.points(("contact", 0)))
+                viewer.is_paused = lambda: False
+                inspector.overlays()
+                self.assertEqual(len(viewer.renderer._contact_labels), 1)
+                np.testing.assert_allclose(viewer.renderer._contact_labels[0][0], expected)
+                self.assertIsNone(viewer.renderer._contact_selection)
+                poses = state.body_q.numpy()
+                poses[:, 2] += 0.25
+                state.body_q.assign(poses)
+                viewer.time += 1
+                inspector.overlays()
+                np.testing.assert_allclose(viewer.renderer._contact_labels[0][0], expected + np.array([0, 0, 0.25]))
+                buffers = inspector._live_labels
+                counters = contacts.contact_counters.numpy().copy()
+                live_counters = counters.copy()
+                live_counters[1] = 1
+                contacts.contact_counters.assign(live_counters)
+                contacts.soft_contact_shape.fill_(0)
+                contacts.soft_contact_body_pos.fill_(wp.vec3(0.1, 0.2, 0.3))
+                ws.selected = inspector.list_owner = ("body", 0)
+                viewer.time += 1
+                inspector.overlays()
+                labels = viewer.renderer._contact_labels
+                self.assertEqual([label[1] for label in labels], ["1", "2"])
+                np.testing.assert_allclose(labels[1][0], [[0.1, 0.2, 0.55]], atol=1e-6)
+                self.assertIs(inspector._live_labels, buffers)
+                contacts.contact_counters.zero_()
+                viewer.time += 1
+                inspector.overlays()
+                self.assertEqual(viewer.renderer._contact_labels, ())
+                contacts.contact_counters.assign(counters)
+                ws.selected = inspector.list_owner = ("shape", 0)
+                inspector.contacts_tab = False
+                with patch.object(inspector, "_live_overlays") as live:
+                    inspector.overlays()
+                    live.assert_not_called()
+                self.assertEqual(viewer.renderer._contact_labels, ())
+                poses[:, 2] -= 0.25
+                state.body_q.assign(poses)
+                viewer.is_paused = lambda: True
+                inspector.contacts_tab = True
+                inspector.sync()
                 ws.selected = None
                 inspector.overlays()
                 self.assertIsNone(viewer.renderer._contact_selection)
@@ -1026,7 +1126,7 @@ class TestCollisionInspector(unittest.TestCase):
 
         from newton._src.viewer.gl.contact_labels import _layout_labels  # noqa: PLC0415
 
-        def measure(text):
+        def measure(text: str) -> tuple[int, int]:
             return 8 * len(text), 16
 
         viewport = np.array((640, 480))

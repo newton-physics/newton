@@ -101,7 +101,7 @@ class TestComputeVertexNormals(unittest.TestCase):
 
 
 class TestPrimitiveMeshes(unittest.TestCase):
-    def test_capsule_topology(self):
+    def test_capsule_topology(self) -> None:
         """Verify closed, outward capsule faces and shared cylinder equators."""
         for axis in newton.Axis:
             for segments in (3, 7, 32):

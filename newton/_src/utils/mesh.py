@@ -1588,7 +1588,7 @@ def create_mesh_capsule(
 
     x_dir, y_dir, z_dir = ((1, 2, 0), (0, 1, 2), (2, 0, 1))[up_axis]
 
-    def add_vertex(x, y, z, offset):
+    def add_vertex(x: float, y: float, z: float, offset: float) -> None:
         normal = np.array((x, y, z), dtype=np.float32)[[x_dir, y_dir, z_dir]]
         pos = radius * normal
         pos[up_axis] += offset

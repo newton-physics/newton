@@ -52,7 +52,7 @@ _TRANSPARENT_INSTANCER_SUFFIX = "/__transparent__"
 
 
 @wp.kernel
-def _capsule_render_scales(scales: wp.array[wp.vec3], out_scales: wp.array[wp.vec3]):
+def _capsule_render_scales(scales: wp.array[wp.vec3], out_scales: wp.array[wp.vec3]) -> None:
     tid = wp.tid()
     scale = scales[tid]
     # Keep the axial basis nonzero for the zero-length (sphere) case.
@@ -82,7 +82,7 @@ def _update_shape_colors(
     slots: wp.array[int],
     packed: wp.array[wp.vec3],
     flags: wp.array[int],
-):
+) -> None:
     index = wp.tid()
     if colors:
         color = colors[slots[index]]
@@ -761,7 +761,7 @@ class ViewerGL(ViewerBase):
         self._shape_opacity_update_flags = wp.zeros(3, dtype=wp.int32, device=device)
         self._shape_opacity_update_flags_host = wp.empty(3, dtype=wp.int32, device="cpu", pinned=device.is_cuda)
 
-    def _populate_sdf_isomesh_instances(self):
+    def _populate_sdf_isomesh_instances(self) -> None:
         super()._populate_sdf_isomesh_instances()
         from .gl.mesh_lod import SdfMeshLOD  # noqa: PLC0415
 
@@ -872,8 +872,8 @@ class ViewerGL(ViewerBase):
         self.model_changed = True
 
     @override
-    def set_visible_worlds(self, worlds: Sequence[int] | None) -> None:
-        super().set_visible_worlds(worlds)
+    def set_visible_worlds(self, worlds: Sequence[int] | None, *, reflow: bool = True) -> None:
+        super().set_visible_worlds(worlds, reflow=reflow)
         self._rebuild_gl_shape_caches()
         if hasattr(self, "picking") and self.picking is not None:
             self.picking.visible_worlds_mask = self._visible_worlds_mask
@@ -1154,7 +1154,7 @@ class ViewerGL(ViewerBase):
         if isinstance(transparent_instancer, MeshInstancerGL):
             transparent_instancer.hidden = True
 
-    def _get_capsule_mesh(self):
+    def _get_capsule_mesh(self) -> str:
         """Share one closed prototype across all capsule sizes in this layer."""
         name = self._qualify("/geometry/_capsule_instancer/mesh")
         if name not in self.objects:
@@ -1447,7 +1447,7 @@ class ViewerGL(ViewerBase):
         self._wireframe_vbo_owners.clear()
 
     @override
-    def _log_triangles(self, state: nt.State):
+    def _log_triangles(self, state: nt.State) -> None:
         if not self.model.particle_count:
             return
         from .viewer_deformables import DeformableDisplay  # noqa: PLC0415
@@ -1764,7 +1764,7 @@ class ViewerGL(ViewerBase):
         """
         self._plot_logger.log_scalar(self._qualify(name), value, clear=clear, smoothing=smoothing)
 
-    def _prepare_shape_transforms(self, state):
+    def _prepare_shape_transforms(self, state: nt.State) -> None:
         inputs = [
             self.model.shape_transform,
             self.model.shape_body,
@@ -2049,7 +2049,7 @@ class ViewerGL(ViewerBase):
             self.gui.update_camera_follow(self.renderer.is_key_down)
 
         workspace = getattr(self.gui, "workspace", None)
-        viewport_visible = not self.show_ui or workspace is None or workspace.documents.viewport_visible
+        viewport_visible = not self.show_ui or workspace is None or workspace.dockspace.viewport_visible
         if not viewport_visible:
             # Inactive viewport tabs do not need scene or shadow rasterization.
             self.renderer.render_texture(None)

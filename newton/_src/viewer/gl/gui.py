@@ -6,6 +6,13 @@ from __future__ import annotations
 import logging
 import os
 from time import perf_counter
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from imgui_bundle import imgui
+
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +107,7 @@ class UI:
         self.impl.on_mouse_scroll = on_mouse_scroll
         backend_key_press = self.impl.on_key_press
 
-        def on_key_press(symbol, modifiers):
+        def on_key_press(symbol: int, modifiers: int) -> bool | None:
             from pyglet import event
             from pyglet.window import key
 
@@ -507,7 +514,7 @@ class UI:
         self.imgui.internal.error_recovery_store_state(self._frame_recovery_state)
         self.giz.begin_frame()
 
-    def _recover_state(self, state):
+    def _recover_state(self, state: imgui.internal.ErrorRecoveryState) -> None:
         """Unwind an interrupted UI callback without obscuring its exception."""
         ui = self.imgui
         io = ui.get_io()
@@ -525,14 +532,14 @@ class UI:
             for option, value in zip(options, saved, strict=True):
                 setattr(io, option, value)
 
-    def abort_frame(self):
+    def abort_frame(self) -> None:
         """Release unfinished windows and stacks before the next viewer frame."""
         if self._frame_recovery_state is not None:
             self._recover_state(self._frame_recovery_state)
             self.imgui.end_frame()
             self._frame_recovery_state = None
 
-    def draw_section(self, name, callback):
+    def draw_section(self, name: str, callback: Callable[[], None]) -> None:
         """Isolate Python UI failures and restore ImGui stacks before continuing."""
         ui = self.imgui
         if name not in self.section_errors:

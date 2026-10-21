@@ -1,6 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing import Any
+
 import math
 import unittest
 from types import SimpleNamespace
@@ -25,7 +33,7 @@ def _assert_vec_close(test, actual, expected, tol=1.0e-6):
 
 
 class TestViewerCameraOrbit(unittest.TestCase):
-    def test_follow_selection_hold_toggle_and_orbit(self):
+    def test_follow_selection_hold_toggle_and_orbit(self) -> None:
         from pyglet.window import key, mouse
 
         camera = Camera(pos=(0, -5, 3))
@@ -38,7 +46,7 @@ class TestViewerCameraOrbit(unittest.TestCase):
         center = np.zeros(3)
         bounds_calls = []
 
-        def bounds(**_kwargs):
+        def bounds(**_kwargs: Any) -> np.ndarray:
             bounds_calls.append(True)
             return center + np.array(((-1, -1, -1), (1, 1, 1)))
 
@@ -96,7 +104,7 @@ class TestViewerCameraOrbit(unittest.TestCase):
         gui.update_camera_follow(lambda _: False)
         self.assertFalse(gui.following_selection)
 
-    def test_follow_bounds_reuse_and_displayed_state(self):
+    def test_follow_bounds_reuse_and_displayed_state(self) -> None:
         """Track only the selected world, with persistent reduction buffers."""
         builder = newton.ModelBuilder()
         body = builder.add_body()
@@ -160,7 +168,7 @@ class TestViewerCameraOrbit(unittest.TestCase):
         self.assertLess(camera.pivot_distance, 0.01)
         self.assertGreater(camera.pivot_distance - 0.002, camera.near)
 
-    def test_frame_contact_separation_and_near_plane(self):
+    def test_frame_contact_separation_and_near_plane(self) -> None:
         """Expose contact gaps without clipping witnesses or displacing the orbit pivot."""
         for near in (0.0001, 0.01):
             for gap in (0.0, 0.001, 0.08):
@@ -198,7 +206,7 @@ class TestViewerCameraOrbit(unittest.TestCase):
                         _assert_vec_close(self, camera.pivot, (0, 0, 0))
                         np.testing.assert_array_equal(gui._cam_vel, np.zeros(3))
 
-    def test_selection_navigation_clearance(self):
+    def test_selection_navigation_clearance(self) -> None:
         """Slow near selected surfaces while allowing crossing, escape and orbit."""
         builder = newton.ModelBuilder()
         builder.add_shape_box(-1, hx=1.0, hy=1.0, hz=1.0)

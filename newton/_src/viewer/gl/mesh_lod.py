@@ -3,16 +3,23 @@
 
 """Screen-space display detail for densely sampled SDF surfaces."""
 
+from __future__ import annotations
+
 from itertools import pairwise
+from typing import TYPE_CHECKING
 from weakref import proxy
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from newton._src.viewer.gl.opengl import MeshGL, MeshInstancerGL, RendererGL
+    from newton.viewer import ViewerBase, ViewerGL
 
 
 class SdfMeshLOD:
     """Cache sampled display meshes; the collision SDF always stays unchanged."""
 
-    def __init__(self, viewer, batch):
+    def __init__(self, viewer: ViewerGL, batch: ViewerBase.ShapeInstances) -> None:
         self.viewer = proxy(viewer)
         self.model = viewer.model
         self.layer = viewer.layer
@@ -26,7 +33,7 @@ class SdfMeshLOD:
         self.strides = np.array([s for s in (1, 2, 4, 8) if size % s == 0])
         self.meshes = {0: viewer.objects[batch.mesh]}
 
-    def mesh(self, level):
+    def mesh(self, level: int) -> MeshGL:
         if level not in self.meshes:
             from ...geometry.sdf_texture import compute_isomesh_from_texture_sdf  # noqa: PLC0415
             from ...geometry.types import GeoType  # noqa: PLC0415
@@ -59,7 +66,7 @@ class SdfMeshLOD:
                     viewer._load_layer_state(original_layer)
         return self.meshes[level]
 
-    def _visible(self, matrix, centers, axes):
+    def _visible(self, matrix: np.ndarray, centers: np.ndarray, axes: np.ndarray) -> np.ndarray:
         """Conservatively test transformed SDF boxes against all six clip planes."""
         planes = np.concatenate((matrix[3] + matrix[:3], matrix[3] - matrix[:3]))
         distance = centers @ planes[:, :3].T + planes[:, 3]
@@ -68,7 +75,7 @@ class SdfMeshLOD:
         allowance = 1e-6 * np.linalg.norm(planes[:, :3], axis=1)
         return np.all(distance + extent >= -allowance, axis=1)
 
-    def _draws(self, levels, visible):
+    def _draws(self, levels: np.ndarray, visible: np.ndarray) -> tuple[tuple[MeshGL, int, int], ...]:
         levels = np.where(visible, levels, -1)
         boundaries = np.r_[0, np.flatnonzero(np.diff(levels)) + 1, len(levels)]
         return tuple(
@@ -77,7 +84,7 @@ class SdfMeshLOD:
             if end > start and levels[start] >= 0
         )
 
-    def shadow_draws(self, renderer, obj):
+    def shadow_draws(self, renderer: RendererGL, obj: MeshInstancerGL) -> tuple[tuple[MeshGL, int, int], ...]:
         """Retain offscreen casters that intersect the light's own frustum."""
         centers, axes = obj._lod_bounds
         matrix = renderer._light_space_matrix.reshape(4, 4).T
@@ -91,7 +98,7 @@ class SdfMeshLOD:
             levels[resolved] = np.maximum(levels[resolved], level)
         return self._draws(levels, self._visible(matrix, centers, axes))
 
-    def prepare(self, renderer, obj):
+    def prepare(self, renderer: RendererGL, obj: MeshInstancerGL) -> None:
         # Reuse the matrices already staged for GL. This adds no per-frame
         # device readback on the host-upload path, and only small transforms
         # when explicit CUDA/GL interoperability is enabled.
@@ -129,7 +136,15 @@ class SdfMeshLOD:
         if getattr(renderer, "_physics_xray", False):
             self._prepare_xray(renderer, obj, transforms, levels, visible, view)
 
-    def _prepare_xray(self, renderer, obj, transforms, levels, visible, view):
+    def _prepare_xray(
+        self,
+        renderer: RendererGL,
+        obj: MeshInstancerGL,
+        transforms: np.ndarray,
+        levels: np.ndarray,
+        visible: np.ndarray,
+        view: np.ndarray,
+    ) -> None:
         """Skip entire instance ranges whose fragments the inspection shaders reject."""
         from .physics_view import _mesh_metrics  # noqa: PLC0415
 

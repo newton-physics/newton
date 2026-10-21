@@ -1,9 +1,17 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+
+from __future__ import annotations
+
 import ctypes
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    pass
+
 
 capsule_vertex_transform = """
 // Constant per draw. Capsule instances encode (radius, radius, radius + half-height)
@@ -724,7 +732,7 @@ class ShaderShape(ShaderGL):
                 self._gl.glUniform1i(self.loc_oit_enabled, 1)
 
     @staticmethod
-    def _shader_sources(enable_transparency):
+    def _shader_sources(enable_transparency: bool) -> tuple[str, str]:
         vertex, fragment = shape_vertex_shader, shape_fragment_shader
         if enable_transparency:
             vertex = _with_shader_define(vertex, "ENABLE_TRANSPARENCY")

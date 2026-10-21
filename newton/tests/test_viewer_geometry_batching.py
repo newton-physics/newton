@@ -1,6 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing import Any
+
 import inspect
 import unittest
 from types import SimpleNamespace
@@ -59,7 +67,7 @@ class _ViewerGeometryBatchingProbe(ViewerNull):
             ]
             batch.scales = wp.array(scales, dtype=wp.vec3, device=self.device)
 
-    def log_instances(self, *_args, **_kwargs):
+    def log_instances(self, *_args: Any, **_kwargs: Any):
         self.log_instances_calls += 1
 
     def log_capsules(self, name, mesh, xforms, scales, colors, materials, hidden=False, opacities=None):
@@ -76,7 +84,7 @@ class _ViewerMeshProbe(ViewerNull):
         super().__init__(num_frames=1)
         self.points = None
 
-    def log_mesh(self, _name, points, _indices, *args, **kwargs):
+    def log_mesh(self, _name, points, _indices, *args: Any, **kwargs: Any):
         """Capture generated mesh points."""
         self.points = points.numpy()
 
@@ -105,7 +113,7 @@ class _ViewerLegacyMeshSignatureProbe(ViewerNull):
 
 
 class TestViewerGeometryBatching(unittest.TestCase):
-    def test_sdf_display_culling_preserves_intersections_and_shadow_casters(self):
+    def test_sdf_display_culling_preserves_intersections_and_shadow_casters(self) -> None:
         """Cull offscreen SDF instances without dropping boundary geometry or shadows."""
         lod = SdfMeshLOD.__new__(SdfMeshLOD)
         lod.half = np.array((0.2, 0.3, 0.4))

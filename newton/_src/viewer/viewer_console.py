@@ -3,15 +3,24 @@
 
 """Bounded logging capture and a virtualized console for the local viewer."""
 
+from __future__ import annotations
+
 import logging
 import re
 import time
 import warnings
 from collections import deque
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from ..exceptions import NewtonDeprecationWarning, NewtonWarning
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from typing import TextIO
+
+    from newton._src.viewer.viewer_workspace import ViewerWorkspace
+
 
 _ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 _LEVELS = ((10, "Debug"), (20, "Info"), (30, "Warning"), (40, "Error"), (50, "Critical"))
@@ -29,16 +38,16 @@ class ConsoleEntry:
     lines: tuple[str, ...]
     search: str
 
-    def text(self):
+    def text(self) -> str:
         return f"{self.timestamp} {self.severity:<8} {self.source}: {self.message}"
 
 
 class ConsoleBuffer(logging.Handler):
     """Capture text on producer threads without touching ImGui or retaining tracebacks."""
 
-    def __init__(self, *, capacity=4000, max_characters=4 * 1024 * 1024, max_lines=20000):
+    def __init__(self, *, capacity: int = 4000, max_characters: int = 4 * 1024 * 1024, max_lines: int = 20000) -> None:
         super().__init__(logging.DEBUG)
-        self.entries = deque()
+        self.entries: deque[ConsoleEntry] = deque()
         self.capacity = capacity
         self.max_characters = max_characters
         self.max_lines = max_lines
@@ -46,7 +55,7 @@ class ConsoleBuffer(logging.Handler):
         self.warning_sequence = 0
         self.setFormatter(logging.Formatter("%(message)s"))
 
-    def emit(self, record):
+    def emit(self, record: logging.LogRecord) -> None:
         try:
             # Format exceptions now; retaining LogRecords would retain entire simulation frames.
             message = _ANSI.sub("", self.format(record)).replace("\r\n", "\n").replace("\r", "\n")
@@ -89,14 +98,14 @@ class ConsoleBuffer(logging.Handler):
         except Exception:
             self.handleError(record)
 
-    def snapshot(self):
+    def snapshot(self) -> tuple[int, tuple[ConsoleEntry, ...], int]:
         self.acquire()
         try:
             return self.revision, tuple(self.entries), self.discarded
         finally:
             self.release()
 
-    def clear(self):
+    def clear(self) -> None:
         self.acquire()
         try:
             self.entries.clear()
@@ -110,13 +119,13 @@ class ConsoleBuffer(logging.Handler):
 class ConsoleCapture:
     """Own the GUI sink and scoped Newton warning routing across viewer lifetimes."""
 
-    _active: ClassVar[set] = set()
-    _previous_warning = None
-    _warning_hook = None
-    _previous_level = None
-    _owned_level = None
+    _active: ClassVar[set[ConsoleCapture]] = set()
+    _previous_warning: ClassVar[Callable[..., None] | None] = None
+    _warning_hook: ClassVar[Callable[..., None] | None] = None
+    _previous_level: ClassVar[int | None] = None
+    _owned_level: ClassVar[int | None] = None
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.buffer = ConsoleBuffer()
         self.logger = logging.getLogger("newton")
         self.closed = False
@@ -131,8 +140,15 @@ class ConsoleCapture:
         self.logger.addHandler(self.buffer)
 
     @classmethod
-    def _make_warning_hook(cls, previous):
-        def showwarning(message, category, filename, lineno, file=None, line=None):
+    def _make_warning_hook(cls, previous: Callable[..., None]) -> Callable[..., None]:
+        def showwarning(
+            message: Warning | str,
+            category: type[Warning],
+            filename: str,
+            lineno: int,
+            file: TextIO | None = None,
+            line: str | None = None,
+        ) -> None:
             # Python has already applied its warning filters before reaching this hook.
             if (
                 cls._active
@@ -151,14 +167,14 @@ class ConsoleCapture:
 
         return showwarning
 
-    def request_level(self, level):
+    def request_level(self, level: int) -> None:
         # Display filtering never discards already captured records. Enable extra
         # verbosity only when the user explicitly asks to see it.
         if self.logger.getEffectiveLevel() > level:
             self.logger.setLevel(level)
             type(self)._owned_level = level
 
-    def close(self):
+    def close(self) -> None:
         if self.closed:
             return
         self.closed = True
@@ -178,7 +194,7 @@ class ConsoleCapture:
 class ViewerConsole:
     """Present a log drawer without scanning or laying out hidden rows every frame."""
 
-    def __init__(self, capture):
+    def __init__(self, capture: ConsoleCapture) -> None:
         self.capture = capture
         self.open = False
         self.level = logging.INFO
@@ -198,7 +214,7 @@ class ViewerConsole:
         self._last_warning = 0
         self._rects = {}
 
-    def poll_warnings(self):
+    def poll_warnings(self) -> bool:
         """Open once per new warning, on the UI thread and without scanning history."""
         sequence = self.capture.buffer.warning_sequence
         if sequence <= self._last_warning:
@@ -213,7 +229,7 @@ class ViewerConsole:
         self.open = True
         return True
 
-    def refresh(self, *, force=False):
+    def refresh(self, *, force: bool = False) -> None:
         now = time.perf_counter()
         buffer = self.capture.buffer
         key = (buffer.revision, self.level, self.search)
@@ -231,7 +247,7 @@ class ViewerConsole:
         self._refresh_time = now
 
     @staticmethod
-    def color(level):
+    def color(level: int) -> tuple[float, float, float, float]:
         if level >= logging.ERROR:
             return (1.0, 0.43, 0.43, 1.0)
         if level >= logging.WARNING:
@@ -240,12 +256,12 @@ class ViewerConsole:
             return (0.85, 0.85, 0.85, 1.0)
         return (0.58, 0.58, 0.58, 1.0)
 
-    def toggle(self):
+    def toggle(self) -> None:
         self.open = not self.open
         if self.open:
             self._scroll_to_end = self.follow
 
-    def status_button(self, workspace):
+    def status_button(self, workspace: ViewerWorkspace) -> None:
         ui, widgets = workspace.gui.ui.imgui, workspace.widgets
         s = widgets.scale
         # Fit the status row itself, independently of the window padding or
@@ -277,14 +293,14 @@ class ViewerConsole:
             ui.set_tooltip(f"Show or hide console (Ctrl+`)\n{unread:,} unread log entries.")
         ui.same_line(pos.x - ui.get_window_pos().x + width + 18 * s)
 
-    def draw(self, workspace):
+    def draw(self, workspace: ViewerWorkspace) -> None:
         ui, s = workspace.gui.ui.imgui, workspace.widgets.scale
         self.refresh()
         self._last_seen = self.capture.buffer.sequence
         # One compact toolbar with a stable baseline at every DPI.
         row_y = ui.get_cursor_pos_y()
 
-        def next_control():
+        def next_control() -> None:
             ui.same_line(spacing=6 * s)
             ui.set_cursor_pos_y(row_y)
 

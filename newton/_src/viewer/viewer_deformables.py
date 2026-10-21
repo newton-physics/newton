@@ -3,7 +3,10 @@
 
 """Lazy deformable topology and selected geometry for the local inspector."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 import warp as wp
@@ -11,6 +14,15 @@ import warp as wp
 from ..geometry.flags import ParticleFlags
 from ..sim.model import Model
 from ..sim.state import State
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Sequence
+
+    from numpy.typing import ArrayLike
+
+    from newton._src.viewer.viewer_types import TreeKey, ViewerExample
+    from newton._src.viewer.viewer_workspace import ModelTree, ViewerWorkspace
+    from newton.viewer import ViewerBase
 
 
 @dataclass
@@ -26,7 +38,7 @@ class DeformableObject:
 class ParticleSource:
     """Identify particles by model, independent of the rigid model being drawn."""
 
-    def __init__(self, model, offset):
+    def __init__(self, model: Model, offset: int) -> None:
         self.model = model
         self.offset = offset
         self.end = offset + model.particle_count
@@ -35,7 +47,7 @@ class ParticleSource:
         self.hidden = True
         self.visibility_key = None
 
-    def ranges(self, world):
+    def ranges(self, world: int) -> list[tuple[int, int]]:
         starts = self.starts
         pairs = (
             ((0, starts[0]), (starts[-2], starts[-1]))
@@ -46,7 +58,7 @@ class ParticleSource:
         )
         return [(int(a), int(b)) for a, b in pairs if b > a]
 
-    def world_for(self, index):
+    def world_for(self, index: int) -> int:
         world = int(np.searchsorted(self.starts, index, side="right")) - 1
         return world if 0 <= world < self.model.world_count else -1
 
@@ -59,7 +71,7 @@ def gather_display_particles(
     offsets: wp.array[wp.vec3],
     layer: wp.transform,
     output: wp.array[wp.vec3],
-):
+) -> None:
     i = wp.tid()
     particle = indices[i]
     point = positions[particle]
@@ -70,7 +82,7 @@ def gather_display_particles(
 
 
 @wp.kernel
-def particle_bounds(points: wp.array[wp.vec3], bounds: wp.array2d[float]):
+def particle_bounds(points: wp.array[wp.vec3], bounds: wp.array2d[float]) -> None:
     point = points[wp.tid()]
     for axis in range(3):
         wp.atomic_min(bounds, 0, axis, point[axis])
@@ -78,7 +90,7 @@ def particle_bounds(points: wp.array[wp.vec3], bounds: wp.array2d[float]):
 
 
 @wp.kernel
-def _visible_particle_bounds(points: wp.array[wp.vec3], radii: wp.array[float], bounds: wp.array2d[float]):
+def _visible_particle_bounds(points: wp.array[wp.vec3], radii: wp.array[float], bounds: wp.array2d[float]) -> None:
     i = wp.tid()
     if radii[i] > 0.0:
         for axis in range(3):
@@ -87,7 +99,7 @@ def _visible_particle_bounds(points: wp.array[wp.vec3], radii: wp.array[float], 
 
 
 @wp.kernel
-def _gather_markers(indices: wp.array[int], points: wp.array[wp.vec3], output: wp.array[wp.vec3]):
+def _gather_markers(indices: wp.array[int], points: wp.array[wp.vec3], output: wp.array[wp.vec3]) -> None:
     i = wp.tid()
     output[i] = points[indices[i]]
 
@@ -103,7 +115,7 @@ def _display_all_particles(
     visible: wp.array[int],
     points: wp.array[wp.vec3],
     display_radii: wp.array[float],
-):
+) -> None:
     i = wp.tid()
     point = positions[i]
     world = worlds[i]
@@ -115,7 +127,7 @@ def _display_all_particles(
 
 
 @wp.kernel
-def _particle_mask(radii: wp.array[float], mask: wp.array[int]):
+def _particle_mask(radii: wp.array[float], mask: wp.array[int]) -> None:
     i = wp.tid()
     mask[i] = int(radii[i] > 0.0)
 
@@ -128,7 +140,7 @@ def _compact_display_particles(
     offsets: wp.array[int],
     compact_points: wp.array[wp.vec3],
     compact_radii: wp.array[float],
-):
+) -> None:
     i = wp.tid()
     if mask[i] != 0:
         slot = offsets[i] - 1
@@ -137,7 +149,9 @@ def _compact_display_particles(
 
 
 @wp.func
-def _display_position(index: int, positions: wp.array[wp.vec3], worlds: wp.array[int], offsets: wp.array[wp.vec3]):
+def _display_position(
+    index: int, positions: wp.array[wp.vec3], worlds: wp.array[int], offsets: wp.array[wp.vec3]
+) -> wp.vec3:
     point = positions[index]
     world = worlds[index]
     if world >= 0 and world < offsets.shape[0]:
@@ -162,7 +176,7 @@ def _pick_deformable(
     pixel_radius: float,
     distances: wp.array[float],
     nearest: wp.array[float],
-):
+) -> None:
     i = wp.tid()
     particle = i
     if not particles:
@@ -200,7 +214,7 @@ def _pick_deformable(
 
 
 @wp.kernel
-def _pick_index(distances: wp.array[float], nearest: wp.array[float], index: wp.array[int]):
+def _pick_index(distances: wp.array[float], nearest: wp.array[float], index: wp.array[int]) -> None:
     i = wp.tid()
     if distances[i] == nearest[0] and distances[i] < 1.0e10:
         wp.atomic_min(index, 0, i)
@@ -211,7 +225,7 @@ class DeformableCatalog:
 
     page_size = 256
 
-    def __init__(self, model, example=None):
+    def __init__(self, model: Model, example: ViewerExample | None = None) -> None:
         self.model = model
         self.example = example
         self.sources = [ParticleSource(model, 0)]
@@ -239,14 +253,14 @@ class DeformableCatalog:
         self._materials = {}
         self._element_order = {}
 
-    def source(self, particle):
+    def source(self, particle: int) -> ParticleSource:
         return next(source for source in self.sources if source.offset <= particle < source.end)
 
-    def world_for(self, particle):
+    def world_for(self, particle: int) -> int:
         source = self.source(particle)
         return source.world_for(particle - source.offset)
 
-    def external_bounds(self):
+    def external_bounds(self) -> np.ndarray:
         bounds = wp.array([[1e30] * 3, [-1e30] * 3], dtype=float, device=self.model.device)
         for source in self.sources[1:]:
             if source.points is not None and not source.hidden:
@@ -259,7 +273,9 @@ class DeformableCatalog:
                 )
         return bounds.numpy()
 
-    def logged_points(self, workspace, points, radii, hidden):
+    def logged_points(
+        self, workspace: ViewerWorkspace, points: wp.array[wp.vec3] | None, radii: wp.array[float] | None, hidden: bool
+    ) -> tuple[wp.array[wp.vec3] | None, wp.array[float] | None, bool]:
         source = next((source for source in self.sources[1:] if radii is source.model.particle_radius), None)
         if source is None or len(points) != source.model.particle_count:
             return points, radii, hidden
@@ -316,7 +332,7 @@ class DeformableCatalog:
             )
         return source.display_points, source.display_radii, source.hidden
 
-    def topology(self, kind):
+    def topology(self, kind: str) -> np.ndarray:
         if kind not in self._topology:
             adjacency = self.model.soft_mesh_adjacency
             name = "indices" if kind == "tri" else "tet_indices"
@@ -327,7 +343,7 @@ class DeformableCatalog:
             self._topology[kind] = np.asarray(host, dtype=np.int32).reshape(-1, 3 if kind == "tri" else 4)
         return self._topology[kind]
 
-    def elements_in_range(self, kind, start, end):
+    def elements_in_range(self, kind: str, start: int, end: int) -> np.ndarray:
         # One index for the scene avoids scanning every world's elements each
         # time another world or volume is expanded.
         if kind not in self._element_order:
@@ -338,7 +354,7 @@ class DeformableCatalog:
         a, b = np.searchsorted(first, (start, end))
         return np.sort(order[a:b])
 
-    def add_world(self, tree, world):
+    def add_world(self, tree: ModelTree, world: int) -> None:
         if world in self._loaded:
             return
         self._loaded.add(world)
@@ -391,7 +407,7 @@ class DeformableCatalog:
             if len(particles):
                 self._add(tree, root, DeformableObject("particle_set", "Particles", world, particles, (), ()))
 
-    def _add(self, tree, folder, obj):
+    def _add(self, tree: ModelTree, folder: TreeKey, obj: DeformableObject) -> None:
         key = (obj.kind, len(self.objects))
         self.objects.append(obj)
         tree.labels[key] = obj.label
@@ -411,7 +427,7 @@ class DeformableCatalog:
                 tree.parents[group] = key
                 tree.children[key].append(group)
 
-    def expand(self, tree, key):
+    def expand(self, tree: ModelTree, key: TreeKey) -> None:
         if key not in self.groups or tree.children.get(key):
             return
         kind, indices, owner = self.groups[key]
@@ -433,7 +449,7 @@ class DeformableCatalog:
                 tree.children[key].append(child)
                 tree.parents[child] = key
 
-    def owner(self, tree, particle):
+    def owner(self, tree: ModelTree, particle: int) -> TreeKey | None:
         world = tree.world_for(("particle", particle))
         tree.ensure_world(world)
         for i, obj in enumerate(self.objects):
@@ -441,7 +457,7 @@ class DeformableCatalog:
                 return obj.kind, i
         return None
 
-    def reveal(self, tree, key):
+    def reveal(self, tree: ModelTree, key: TreeKey) -> None:
         kind, index = key
         particle = index if kind == "particle" else int(self.topology(kind)[index, 0])
         owner = self.owner(tree, particle)
@@ -458,7 +474,16 @@ class DeformableCatalog:
                     break
             return
 
-    def pick(self, workspace, origin, direction, *, particles, limit, triangle=False):
+    def pick(
+        self,
+        workspace: ViewerWorkspace,
+        origin: ArrayLike,
+        direction: ArrayLike,
+        *,
+        particles: bool,
+        limit: float,
+        triangle: bool = False,
+    ) -> TreeKey | None:
         viewer = workspace.viewer
         result = None
         # All sources compete with the rigid hit and each other in depth.
@@ -493,7 +518,18 @@ class DeformableCatalog:
                 result = ("tri", hit) if triangle else self.owner(workspace.tree, int(self.topology("tri")[hit, 0]))
         return result
 
-    def _pick_source(self, workspace, model, positions, display, origin, direction, *, particles, limit):
+    def _pick_source(
+        self,
+        workspace: ViewerWorkspace,
+        model: Model,
+        positions: wp.array[wp.vec3],
+        display: DeformableDisplay | ParticleSource,
+        origin: ArrayLike,
+        direction: ArrayLike,
+        *,
+        particles: bool,
+        limit: float,
+    ) -> tuple[int | None, float]:
         viewer = workspace.viewer
         count = model.particle_count if particles else model.tri_count
         if not count or (not particles and not viewer.show_triangles):
@@ -532,7 +568,9 @@ class DeformableCatalog:
             return None, limit
         return hit, float(nearest.numpy()[0])
 
-    def elements(self, key):
+    def elements(
+        self, key: TreeKey
+    ) -> tuple[Sequence[int] | np.ndarray, Sequence[int] | np.ndarray, Sequence[int] | np.ndarray]:
         kind, index = key
         if kind in ("surface", "volume", "particle_set"):
             obj = self.objects[index]
@@ -551,7 +589,7 @@ class DeformableCatalog:
             )
         return (), (), ()
 
-    def visible(self, tree, key):
+    def visible(self, tree: ModelTree, key: TreeKey) -> bool:
         if key[0] in ("surface", "volume", "particle_set"):
             return key not in self.hidden
         owner = tree.meta.get(key, {}).get("owner")
@@ -559,7 +597,7 @@ class DeformableCatalog:
             owner = self.groups[key][2]
         return owner not in self.hidden
 
-    def selection(self, keys):
+    def selection(self, keys: Iterable[TreeKey]) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         particles, triangles, tetrahedra, markers = [], [], [], []
         for key in keys:
             p, tri, tet = self.elements(key)
@@ -574,7 +612,7 @@ class DeformableCatalog:
                 markers.extend(p)
         return tuple(np.unique(v).astype(np.int32) for v in (particles, triangles, tetrahedra, markers))
 
-    def properties(self, workspace, key):
+    def properties(self, workspace: ViewerWorkspace, key: TreeKey) -> None:
         w, ui, model = workspace.widgets, workspace.gui.ui.imgui, self.model
         kind, index = key
         particles, triangles, tets = self.elements(key)
@@ -652,7 +690,7 @@ class DeformableCatalog:
 class DeformableSelection:
     """Upload only selected vertices; share the regular depth-tested outline."""
 
-    def __init__(self, workspace, keys):
+    def __init__(self, workspace: ViewerWorkspace, keys: Sequence[TreeKey]) -> None:
         from .gl.opengl import MeshGL  # noqa: PLC0415
 
         self.viewer, self.catalog = workspace.viewer, workspace.tree.deformables
@@ -696,7 +734,7 @@ class DeformableSelection:
         self.marker_points = wp.empty(len(self.markers), dtype=wp.vec3, device=device)
         self.marker_colors = wp.full(len(self.markers), wp.vec3(1.0, 0.43, 0.07), device=device)
 
-    def close(self):
+    def close(self) -> None:
         if self.mesh is not None:
             renderer = self.viewer.renderer
             renderer._selection_instances = tuple(
@@ -705,7 +743,7 @@ class DeformableSelection:
             self.mesh.destroy()
             self.mesh = None
 
-    def update(self, workspace):
+    def update(self, workspace: ViewerWorkspace) -> None:
         state, viewer, model = workspace.viewer._last_state, self.viewer, workspace.model
         if state is None or not len(self.particles):
             return
@@ -745,7 +783,7 @@ class DeformableSelection:
                 "/workspace/selected_particles", self.marker_points, radii=radii, colors=self.marker_colors
             )
 
-    def bounds(self):
+    def bounds(self) -> np.ndarray | None:
         if not len(self.particles):
             return None
         bounds = self._bounds
@@ -760,7 +798,7 @@ class DeformableSelection:
 class DeformableDisplay:
     """Apply the same display offsets and visibility to soft and rigid worlds."""
 
-    def __init__(self, viewer):
+    def __init__(self, viewer: ViewerBase) -> None:
         self.model = viewer.model
         self.points = wp.empty(self.model.particle_count, dtype=wp.vec3, device=viewer.device)
         self.radii = wp.empty(self.model.particle_count, dtype=float, device=viewer.device)
@@ -773,7 +811,7 @@ class DeformableDisplay:
         self.groups = []
         self.visible = wp.ones(self.model.particle_count, dtype=int, device=viewer.device)
 
-    def update(self, viewer, state):
+    def update(self, viewer: ViewerBase, state: State) -> list[str]:
         workspace = getattr(viewer.gui, "workspace", None)
         catalog = (
             workspace.tree.deformables
@@ -824,7 +862,7 @@ class DeformableDisplay:
         )
         return stale
 
-    def particle_batch(self):
+    def particle_batch(self) -> tuple[wp.array[wp.vec3], wp.array[float], wp.array[wp.vec3]]:
         # Keep inactive emitter capacity and hidden worlds out of the draw
         # call, matching the regular viewer's compact particle path.
         count, device = len(self.points), self.points.device

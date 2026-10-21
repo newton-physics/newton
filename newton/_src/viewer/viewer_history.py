@@ -3,7 +3,10 @@
 
 """Bounded render-frame history for conventional Newton examples."""
 
+from __future__ import annotations
+
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 import numpy as np
 import warp as wp
@@ -13,8 +16,16 @@ from ..sim.model import Model
 from ..sim.state import State
 from .viewer_timeline import TimelineTransport
 
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from types import ModuleType
+    from typing import Any
 
-def _component_arrays(component, *, model=None):
+    from newton._src.viewer.viewer_types import ViewerExample
+    from newton.solvers import SolverBase
+
+
+def _component_arrays(component: object | None, *, model: Model | None = None) -> dict[str, wp.array[Any]]:
     """Collect component arrays, optionally restricted to declared attributes."""
     if component is None:
         return {}
@@ -40,7 +51,7 @@ def _component_arrays(component, *, model=None):
     return arrays
 
 
-def _restore_component(component, live, fields):
+def _restore_component(component: object, live: object, fields: dict[str, np.ndarray]) -> None:
     for qualified, values in fields.items():
         name = qualified
         target, source = component, live
@@ -66,7 +77,7 @@ def _count_self_contact_pairs(
     edge_offsets: wp.array[int],
     edge_pairs: wp.array[int],
     result: wp.array[int],
-):
+) -> None:
     i = wp.tid()
     if i < vertex_counts.shape[0]:
         wp.atomic_add(result, 0, wp.min(vertex_counts[i], vertex_capacities[i]))
@@ -83,8 +94,8 @@ def _count_self_contact_pairs(
 @dataclass
 class HistoryFrame:
     time: float
-    state: dict
-    contacts: dict
+    state: dict[str, np.ndarray]
+    contacts: dict[str, np.ndarray]
     size: int
     touching: int = 0
     depth_mm: float = 0
@@ -92,12 +103,12 @@ class HistoryFrame:
     particle_speed: float = float("nan")
     soft_shape_contacts: int = 0
     soft_self_contacts: int = 0
-    observables: dict = field(default_factory=dict)
-    particle_states: dict = field(default_factory=dict)
-    control: dict = field(default_factory=dict)
+    observables: dict[str, np.ndarray] = field(default_factory=dict)
+    particle_states: dict[str, dict[str, np.ndarray]] = field(default_factory=dict)
+    control: dict[str, np.ndarray] = field(default_factory=dict)
 
     @property
-    def soft_touching(self):
+    def soft_touching(self) -> int:
         return self.soft_shape_contacts + self.soft_self_contacts
 
 
@@ -109,12 +120,12 @@ class WorkspaceHistory(TimelineTransport):
     contact_fields = ("shape0", "shape1", "point0", "point1", "offset0", "offset1", "normal", "margin0", "margin1")
     soft_contact_fields = ("indices", "particle", "barycentric", "shape", "body_pos", "body_vel", "normal")
 
-    def __init__(self, example):
+    def __init__(self, example: ViewerExample) -> None:
         self.example = example
         # Examples may keep their model inside a simulation object. The viewer
         # owns the model for the displayed layer.
         self.model = example.viewer.model
-        self.frames = []
+        self.frames: list[HistoryFrame] = []
         self.index = 0
         self.first_frame = 0
         self.bytes_used = 0
@@ -131,7 +142,7 @@ class WorkspaceHistory(TimelineTransport):
         self.message = ""
         self.display_state = None
         self.display_control = None
-        self.display_particle_states = {}
+        self.display_particle_states: dict[str, State] = {}
         self.display_contacts = None
         self.display_observables = None
         self._observables_source = None
@@ -139,7 +150,7 @@ class WorkspaceHistory(TimelineTransport):
         self._self_contact_counts = None
         self.dt = float(getattr(example, "frame_dt", 1 / 60))
 
-    def _soft_self_contact_count(self, contacts):
+    def _soft_self_contact_count(self, contacts: Contacts) -> int:
         """Count stored self-contact pairs without copying collision buffers to the CPU."""
         info = getattr(contacts, "soft_self_contact_data", None)
         solver = getattr(self.example, "solver", None)
@@ -170,7 +181,7 @@ class WorkspaceHistory(TimelineTransport):
         return int(self._self_contact_counts.numpy().sum())
 
     @property
-    def replaying(self):
+    def replaying(self) -> bool:
         return bool(self.frames) and (
             self.index < len(self.frames) - 1
             or (
@@ -181,10 +192,10 @@ class WorkspaceHistory(TimelineTransport):
             )
         )
 
-    def select(self, index):
+    def select(self, index: int) -> None:
         self.index = max(0, min(int(index), len(self.frames) - 1))
 
-    def advance(self, steps=1):
+    def advance(self, steps: float = 1) -> None:
         self._playback_fraction += steps * self.playback_speed
         steps = int(self._playback_fraction)
         self._playback_fraction -= steps
@@ -197,7 +208,14 @@ class WorkspaceHistory(TimelineTransport):
         self.select(index)
 
     @staticmethod
-    def _observable_ranges(observables, name, array, rigid_capacity, count, soft_count):
+    def _observable_ranges(
+        observables: SolverBase.Observables,
+        name: str,
+        array: wp.array[Any],
+        rigid_capacity: int,
+        count: int,
+        soft_count: int,
+    ) -> tuple[tuple[int, int], ...]:
         """Retain active contact rows while preserving each observable's row domain."""
         frequency = observables.get_attribute_frequency(name)
         if frequency == Model.AttributeFrequency.CONTACT:
@@ -209,7 +227,7 @@ class WorkspaceHistory(TimelineTransport):
         return ((0, len(array)),)
 
     @staticmethod
-    def _snapshot_observable(array, ranges):
+    def _snapshot_observable(array: wp.array[Any], ranges: Sequence[tuple[int, int]]) -> np.ndarray:
         parts = [array[start : start + n].numpy() for start, n in ranges if n]
         # Warp rejects a zero-length slice starting at the array's end.
         # Preserve an empty array's dtype/shape without copying inactive rows.
@@ -217,7 +235,7 @@ class WorkspaceHistory(TimelineTransport):
             return array[:0].numpy() if len(array) else array.numpy()
         return np.concatenate(parts)
 
-    def capture(self, *, replace=False):
+    def capture(self, *, replace: bool = False) -> None:
         if not self.recording or self._recording_blocked:
             return
         example = self.example
@@ -341,7 +359,7 @@ class WorkspaceHistory(TimelineTransport):
         self.index = len(self.frames) - 1
         self.loaded_index = -1
 
-    def render(self):
+    def render(self) -> None:
         """Substitute display data only for render(), restoring all live references."""
         example = self.example
         if not self.replaying:
@@ -433,7 +451,7 @@ class WorkspaceHistory(TimelineTransport):
             for name, value in saved.items():
                 setattr(example, name, value)
 
-    def draw_recording_control(self, ui):
+    def draw_recording_control(self, ui: ModuleType) -> None:
         changed, enabled = ui.checkbox("Record history", self.recording)
         if changed:
             self.recording = enabled

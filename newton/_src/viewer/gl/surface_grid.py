@@ -3,13 +3,23 @@
 
 """Filtered metric grids on existing plane and box surfaces."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from .shaders import ShaderGL, _with_shader_define, arr_pointer, camera_relative_fragment, shape_vertex_shader
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from types import ModuleType
+
+    from newton._src.viewer.gl.opengl import MeshInstancerGL, RendererGL
 
 
 class SurfaceGridShader(ShaderGL):
     """Blend grid decades using screen derivatives, without subdividing meshes."""
 
-    def __init__(self, gl):
+    def __init__(self, gl: ModuleType) -> None:
         from pyglet.graphics.shader import Shader, ShaderProgram
 
         super().__init__()
@@ -112,7 +122,7 @@ class SurfaceGridShader(ShaderGL):
             )
         }
 
-    def render(self, renderer, objects, *, oit):
+    def render(self, renderer: RendererGL, objects: Sequence[MeshInstancerGL], *, oit: bool) -> None:
         gl, loc = self._gl, self.locations
         with self:
             gl.glUniformMatrix4fv(loc["view"], 1, gl.GL_FALSE, arr_pointer(renderer._view_matrix))
@@ -142,5 +152,5 @@ class SurfaceGridShader(ShaderGL):
                 finally:
                     mesh.backface_culling = cull
 
-    def destroy(self):
+    def destroy(self) -> None:
         self.shader_program.delete()

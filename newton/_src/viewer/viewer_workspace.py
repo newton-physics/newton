@@ -9,6 +9,7 @@ import math
 from collections import Counter, defaultdict
 from time import perf_counter
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 import numpy as np
 import warp as wp
@@ -21,15 +22,27 @@ from ..sim.articulation import eval_fk, eval_ik
 from ..sim.enums import BodyFlags, JointType, ModelFlags
 from ..sim.model import Model
 from ..sim.state import State
-from .viewer_documents import WorkspaceDocuments
+from .viewer_dockspace import ViewerDockspace
 from .viewer_history import WorkspaceHistory, _component_arrays
 from .viewer_widgets import PhysicsWidgets
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from typing import Any
+
+    from numpy.typing import ArrayLike
+
+    from newton._src.viewer.viewer_gui import ViewerGui
+    from newton._src.viewer.viewer_timeline import TimelineTransport
+    from newton._src.viewer.viewer_types import TreeKey, ViewerExample
+
+    from .viewer_collision import CollisionInspector
 
 
 @wp.kernel
 def _set_shape_opacity(
     opacity: wp.array[float], indices: wp.array[int], values: wp.array[float], previous: wp.array[float]
-):
+) -> None:
     i = wp.tid()
     index = indices[i]
     previous[i] = opacity[index]
@@ -47,7 +60,7 @@ def _selection_shape_types(
     show_static: bool,
     show_ground: bool,
     output: wp.array[int],
-):
+) -> None:
     i = wp.tid()
     visible = (
         (show_visual and (flags[i] & ShapeFlags.VISIBLE) != 0)
@@ -72,7 +85,7 @@ def _frame_shape_bounds(
     offsets: wp.array[wp.vec3],
     layer: wp.transform,
     bounds: wp.array2d[float],
-):
+) -> None:
     shape = indices[wp.tid()]
     if types[shape] == int(GeoType.PLANE):
         return
@@ -98,21 +111,21 @@ def _frame_shape_bounds(
 class ModelTree:
     """Show every world, indexing topology only for expanded or inspected worlds."""
 
-    def __init__(self, model, world=0, *, example=None):
+    def __init__(self, model: Model, world: int = 0, *, example: ViewerExample | None = None) -> None:
         self.model = model
-        self.children = defaultdict(list)
-        self.labels = {}
-        self.expanded = set()
-        self.rows = []
+        self.children: defaultdict[TreeKey, list[TreeKey]] = defaultdict(list)
+        self.labels: dict[TreeKey, str] = {}
+        self.expanded: set[TreeKey] = set()
+        self.rows: list[tuple[TreeKey, int]] = []
         self.query = ""
         self.revision = 0
-        self.meta = {}
-        self.parents = {}
-        self.loaded_worlds = set()
-        self._shape_descendants = {}
-        self._joint_descendants = {}
-        self._reference_names = {}
-        self.collision = None
+        self.meta: dict[TreeKey, dict[str, Any]] = {}
+        self.parents: dict[TreeKey, TreeKey] = {}
+        self.loaded_worlds: set[int] = set()
+        self._shape_descendants: dict[TreeKey, list[int]] = {}
+        self._joint_descendants: dict[TreeKey, list[int]] = {}
+        self._reference_names: dict[tuple[str, int], Counter[str]] = {}
+        self.collision: CollisionInspector | None = None
         self.kinds = ("body", "joint", "shape", "articulation")
         from .viewer_deformables import DeformableCatalog  # noqa: PLC0415
         from .viewer_frequencies import FrequencyCatalog  # noqa: PLC0415
@@ -122,7 +135,7 @@ class ModelTree:
         self.custom = FrequencyCatalog(model)
         self.resources = GeometryResources(model, example)
         # These small boundary arrays scale with worlds, not scene objects.
-        self.starts = {}
+        self.starts: dict[str, np.ndarray] = {}
         for kind in (*self.kinds, "particle"):
             starts = getattr(model, kind + "_world_start", None)
             count = getattr(model, kind + "_count", 0)
@@ -158,12 +171,12 @@ class ModelTree:
         self.resources.attach(self)
         self.rebuild()
 
-    def ranges(self, kind, world):
+    def ranges(self, kind: str, world: int) -> list[tuple[int, int]]:
         starts = self.starts[kind]
         pairs = ((0, starts[0]), (starts[-2], starts[-1])) if world < 0 else ((starts[world], starts[world + 1]),)
         return [(int(a), int(b)) for a, b in pairs if b > a]
 
-    def world_for(self, key):
+    def world_for(self, key: TreeKey) -> int:
         kind, index = key
         if "world" in self.meta.get(key, {}):
             return self.meta[key]["world"]
@@ -181,7 +194,7 @@ class ModelTree:
         world = int(np.searchsorted(starts, index, side="right")) - 1
         return world if 0 <= world < self.model.world_count else -1
 
-    def reference_caption(self, key, label):
+    def reference_caption(self, key: TreeKey, label: str) -> str:
         """Keep shortened reference names distinct without loading world topology."""
         kind, index = key
         caption = label.rstrip("/").rsplit("/", 1)[-1]
@@ -204,7 +217,7 @@ class ModelTree:
             caption = f"{owner} · {caption}"
         return caption
 
-    def ensure_world(self, world):
+    def ensure_world(self, world: int) -> None:
         if world in self.loaded_worlds:
             return
         self.loaded_worlds.add(world)
@@ -226,7 +239,7 @@ class ModelTree:
                 self.labels[key] = labels[i] if i < len(labels) and labels[i] else f"{kind} {i}"
                 local_keys.append(key)
 
-        def values(kind, name):
+        def values(kind: str, name: str) -> list[Any]:
             array = getattr(m, f"{kind}_{name}")
             return [value for a, b in self.ranges(kind, world) for value in array[a:b].numpy()]
 
@@ -293,7 +306,7 @@ class ModelTree:
         self.deformables.add_world(self, world)
         self.custom.add_world(self, world)
 
-    def has_children(self, key):
+    def has_children(self, key: TreeKey) -> bool:
         if key[0] == "shape" or self.resources.handles(key):
             return self.resources.has_children(self, key)
         if self.collision is not None and (key == self.collision.root or key in self.collision.groups):
@@ -304,7 +317,7 @@ class ModelTree:
             return True
         return bool(self.children.get(key))
 
-    def reveal_attribute(self, key):
+    def reveal_attribute(self, key: TreeKey) -> None:
         """Keep referenced domains without spatial tree nodes inspectable as rows."""
         if key in self.parents:
             return
@@ -343,7 +356,7 @@ class ModelTree:
         self.meta[key] = {"world": world}
         self.labels[key] = f"{frequency.name.replace('_', ' ').title()} {key[1]}"
 
-    def rebuild(self):
+    def rebuild(self) -> None:
         self.revision += 1
         query = self.query.casefold().strip()
         if query:
@@ -419,7 +432,7 @@ class ModelTree:
                 stack.extend((child, depth + 1) for child in reversed(self.children[key]))
         self.rows = rows
 
-    def toggle(self, key):
+    def toggle(self, key: TreeKey) -> None:
         if key in self.expanded:
             self.expanded.remove(key)
         else:
@@ -433,20 +446,20 @@ class ModelTree:
             self.expanded.add(key)
         self.rebuild()
 
-    def shape_descendants(self, key):
+    def shape_descendants(self, key: TreeKey) -> list[int]:
         return self._descendants(key, "shape", self._shape_descendants)
 
-    def joint_descendants(self, key):
+    def joint_descendants(self, key: TreeKey) -> list[int]:
         return self._descendants(key, "joint", self._joint_descendants)
 
-    def deformable_descendants(self, key):
+    def deformable_descendants(self, key: TreeKey) -> list[TreeKey]:
         world = self.world_for(key)
         self.ensure_world(world)
         if key[0] == "root" or (key[0] == "group" and key[1] % 4 == 3):
             return [(obj.kind, i) for i, obj in enumerate(self.deformables.objects) if obj.world == world]
         return []
 
-    def _descendants(self, key, kind, cache):
+    def _descendants(self, key: TreeKey, kind: str, cache: dict[TreeKey, list[int]]) -> list[int]:
         self.ensure_world(self.world_for(key))
         if key not in cache:
             result, seen, pending = [], set(), [key]
@@ -465,25 +478,25 @@ class ModelTree:
 class ViewerWorkspace:
     """Own UI selection and presentation without taking ownership of simulation."""
 
-    def __init__(self, gui):
+    def __init__(self, gui: ViewerGui) -> None:
         self.gui = gui
         self.widgets = PhysicsWidgets(gui)
         self.viewer = gui._viewer
-        self.example = None
-        self.history = None
-        self.model = None
-        self.tree = None
+        self.example: ViewerExample | None = None
+        self.history: WorkspaceHistory | None = None
+        self.model: Model | None = None
+        self.tree: ModelTree | None = None
         self.world = 0
-        self.selected = None
-        self.selection = set()
-        self._selection_anchor = None
+        self.selected: TreeKey | None = None
+        self.selection: set[TreeKey] = set()
+        self._selection_anchor: TreeKey | None = None
         self._deformable_selection = None
-        self._selection_shapes = ()
+        self._selection_shapes: tuple[int, ...] = ()
         self._frame_bounds_buffers = None
         self._selection_binding_key = None
         self._selection_bindings = ()
         self._joint_selection = None
-        self._selection_joints = ()
+        self._selection_joints: tuple[int, ...] = ()
         self._joint_selections = None
         self.search = ""
         self.example_search = ""
@@ -497,7 +510,7 @@ class ViewerWorkspace:
         self.show_left = True
         self.show_right = True
         self.rect = (0, 0, 1, 1)
-        self.documents = WorkspaceDocuments(self)
+        self.dockspace = ViewerDockspace(self)
         self._cache = {}
         self._live_cache = {}
         self._live_time = 0.0
@@ -534,7 +547,7 @@ class ViewerWorkspace:
         }
         self._active_timeline = None
         self._control_owner = None
-        self._control_initial = {}
+        self._control_initial: dict[str, wp.array[Any]] = {}
         from .viewer_collision import CollisionInspector  # noqa: PLC0415
         from .viewer_console import ViewerConsole  # noqa: PLC0415
         from .viewer_viewport import ViewportControls  # noqa: PLC0415
@@ -543,7 +556,7 @@ class ViewerWorkspace:
         self.viewport_controls = ViewportControls(self)
         self.collision = CollisionInspector(self)
 
-    def save_preferences(self):
+    def save_preferences(self) -> None:
         if self.tree is not None:
             bvhs = self.tree.resources.bvhs
             self._bvh_options = {name: getattr(bvhs, name) for name in ("show_bounds", "limit")}
@@ -552,7 +565,7 @@ class ViewerWorkspace:
                 if hasattr(self._active_timeline, name):
                     self.timeline_options[name] = getattr(self._active_timeline, name)
 
-    def detach_example(self):
+    def detach_example(self) -> None:
         """Keep UI choices while releasing scene-owned state and history."""
         self.save_preferences()
         if self.tree is not None:
@@ -572,7 +585,7 @@ class ViewerWorkspace:
         self._selection_ray = None
         self.select(None)
 
-    def _bind_timeline(self, timeline):
+    def _bind_timeline(self, timeline: TimelineTransport | None) -> None:
         if timeline is not self._active_timeline:
             self.save_preferences()
             self._active_timeline = timeline
@@ -580,7 +593,7 @@ class ViewerWorkspace:
                 if hasattr(timeline, name):
                     setattr(timeline, name, value)
 
-    def bind(self, example):
+    def bind(self, example: ViewerExample | None) -> None:
         if example is not self.example:
             self.save_preferences()
             self._active_timeline = None
@@ -610,13 +623,13 @@ class ViewerWorkspace:
                 timeline = self.history
             self._bind_timeline(timeline)
 
-    def before_step(self):
+    def before_step(self) -> bool:
         if self.history is not None and self.history.replaying:
             self.history.advance(1 if not self.viewer.is_paused() else 1 / self.history.playback_speed)
             return False
         return True
 
-    def render_example(self):
+    def render_example(self) -> None:
         if self.history is None:
             self.example.render()
         else:
@@ -624,7 +637,7 @@ class ViewerWorkspace:
                 self.history.capture()
             self.history.render()
 
-    def _ensure_tree(self):
+    def _ensure_tree(self) -> None:
         """Initialize scene metadata for any consumer, regardless of visible tabs."""
         if self.model is None:
             return
@@ -634,7 +647,7 @@ class ViewerWorkspace:
                 setattr(self.tree.resources.bvhs, name, value)
         self.collision.attach(self.tree)
 
-    def select(self, key, *, toggle=False, extend=False):
+    def select(self, key: TreeKey | None, *, toggle: bool = False, extend: bool = False) -> None:
         if key is not None:
             self._ensure_tree()
         self.gui.stop_following_selection()
@@ -724,14 +737,14 @@ class ViewerWorkspace:
         self.message = ""
         self._live_time = 0
 
-    def _camera_motion(self, start, end, **kwargs):
+    def _camera_motion(self, start: wp.vec3, end: wp.vec3, **kwargs: Any) -> float:
         if self._navigation is None:
             from .viewer_navigation import SelectionNavigation  # noqa: PLC0415
 
             self._navigation = SelectionNavigation(self)
         return self._navigation(start, end, **kwargs)
 
-    def navigate(self, key):
+    def navigate(self, key: TreeKey) -> None:
         """Select a linked object and reveal its hierarchy in the explorer."""
         self.select(key)
         tree = self.tree
@@ -745,7 +758,7 @@ class ViewerWorkspace:
         self._reveal_selection = self._focus_scene = self._focus_properties = True
 
     @property
-    def can_follow_selection(self):
+    def can_follow_selection(self) -> bool:
         """Only spatial selections have a persistent identity across simulation steps."""
         return self.selected is not None and self.selected[0] in (
             "body",
@@ -763,7 +776,7 @@ class ViewerWorkspace:
             "tet",
         )
 
-    def selection_bounds(self, *, include_contacts=True, sync_selection=True):
+    def selection_bounds(self, *, include_contacts: bool = True, sync_selection: bool = True) -> np.ndarray | None:
         """Bound the selected geometry in the displayed state, on demand."""
         state, model, key = self.viewer._last_state, self.model, self.selected
         if key is None or model is None or state is None:
@@ -836,7 +849,7 @@ class ViewerWorkspace:
             return np.array((center - 0.05, center + 0.05))
         return None
 
-    def read(self, owner, name, start, count=1, *, live=False):
+    def read(self, owner: object, name: str, start: int, count: int = 1, *, live: bool = False) -> np.ndarray:
         """Read a selected slice, never the entire state or replicated worlds."""
         array = getattr(owner, name, None)
         if array is None or count <= 0:
@@ -852,7 +865,7 @@ class ViewerWorkspace:
             )
         return cache[key]
 
-    def _sync_selection_outline(self):
+    def _sync_selection_outline(self) -> None:
         viewer = self.viewer
         batches = viewer._shape_to_batch
         sdf_batches = viewer._sdf_isomesh_instances
@@ -918,7 +931,15 @@ class ViewerWorkspace:
                 self._camera_motion if self._selection_shapes or self._deformable_selection else None
             )
 
-    def select_from_screen(self, x, y, to_framebuffer_coords, *, shape=False, toggle=False):
+    def select_from_screen(
+        self,
+        x: float,
+        y: float,
+        to_framebuffer_coords: Callable[[float, float], tuple[float, float]],
+        *,
+        shape: bool = False,
+        toggle: bool = False,
+    ) -> None:
         """Select visible geometry without activating force picking or changing physics."""
         viewer, model = self.viewer, self.viewer.model
         state = viewer._last_state
@@ -1030,7 +1051,7 @@ class ViewerWorkspace:
         self._reveal_selection = self._focus_scene = self._focus_properties = True
         self.show_right = True
 
-    def _window(self, name, x, y, w, h, *, flags=0):
+    def _window(self, name: str, x: float, y: float, w: float, h: float, *, flags: int = 0) -> bool:
         ui = self.gui.ui.imgui
         ui.set_next_window_pos(ui.ImVec2(x, y))
         ui.set_next_window_size(ui.ImVec2(max(w, 1), max(h, 1)))
@@ -1043,7 +1064,7 @@ class ViewerWorkspace:
         )
         return ui.begin(name, flags=flags)[0]
 
-    def draw(self):
+    def draw(self) -> None:
         started = perf_counter()
         ui = self.gui.ui.imgui
         self.console.poll_warnings()
@@ -1068,8 +1089,8 @@ class ViewerWorkspace:
             self._console_pixels = target
         console_h = round(min(self._console_pixels, panel_h * 0.65))
         view_h = max(40, panel_h - console_h)
-        document_rect = (int(left), int(top), int(max(1, w - left - right)), int(view_h))
-        self.rect = self.documents.draw(document_rect)
+        dockspace_rect = (int(left), int(top), int(max(1, w - left - right)), int(view_h))
+        self.rect = self.dockspace.draw(dockspace_rect)
         renderer = self.viewer.renderer
         scale_x, scale_y = renderer._screen_width / max(1, w), renderer._screen_height / max(1, h)
         x, y, width, height = self.rect
@@ -1156,13 +1177,13 @@ class ViewerWorkspace:
             380,
         )
         self._sync_selection_outline()
-        if self.documents.viewport_visible:
+        if self.dockspace.viewport_visible:
             self.viewport_controls.draw()
             self.collision.overlays()
-        if self.tree is not None and self.documents.viewport_visible:
+        if self.tree is not None and self.dockspace.viewport_visible:
             self.tree.resources.bvhs.overlay(self)
         self.viewer.renderer._joint_triangles = None
-        if self._selection_joints and self.documents.viewport_visible:
+        if self._selection_joints and self.dockspace.viewport_visible:
             if self._joint_selections is None:
                 from .viewer_joint_selection import JointSelectionGroup  # noqa: PLC0415
 
@@ -1172,7 +1193,7 @@ class ViewerWorkspace:
             self._joint_selections.draw(self, compact=len(self.selection) > 1 or self.selected[0] != "joint")
         self.draw_ms = 0.9 * self.draw_ms + 0.1 * ((perf_counter() - started) * 1000)
 
-    def _status(self, timeline):
+    def _status(self, timeline: TimelineTransport | None) -> None:
         """Sample live metrics at 5 Hz and reserve stable slots for their values."""
         ui, scale, model = self.gui.ui.imgui, self.widgets.scale, self.model
         self.console.status_button(self)
@@ -1218,7 +1239,7 @@ class ViewerWorkspace:
             "UI": "999.9 ms",
         }
 
-        def centered_text(x, text, color, *, numeric=False):
+        def centered_text(x: float, text: str, color: int, *, numeric: bool = False) -> None:
             # Different font families have different internal top padding.
             # Align visible glyphs, bypassing ImGui's previous-item baseline.
             # Fixed digit metrics keep changing values at a stable height.
@@ -1230,7 +1251,7 @@ class ViewerWorkspace:
                 text_centers[key] = (min(g.y0 for g in glyphs) + max(g.y1 for g in glyphs)) * 0.5 if glyphs else 0
             draw.add_text(ui.ImVec2(x, round(center_y - text_centers[key])), color, text)
 
-        def value_width(label, value):
+        def value_width(label: str, value: ArrayLike) -> float:
             if label == "Scene":
                 return ui.calc_text_size(value).x
             if font:
@@ -1240,7 +1261,7 @@ class ViewerWorkspace:
                 ui.pop_font()
             return width
 
-        def metric(x, label, value, rgb):
+        def metric(x: float, label: str, value: ArrayLike, rgb: ArrayLike) -> float:
             centered_text(x, label, ui.get_color_u32(ui.Col_.text_disabled))
             value_x = x + ui.calc_text_size(label).x + 6 * scale
             width = value_width(label, value)
@@ -1302,7 +1323,18 @@ class ViewerWorkspace:
         for label, value, rgb in perf:
             perf_x = metric(perf_x, label, value, rgb)
 
-    def _splitter(self, name, x, y, w, h, attribute, direction, minimum, maximum):
+    def _splitter(
+        self,
+        name: str,
+        x: float,
+        y: float,
+        w: float,
+        h: float,
+        attribute: str,
+        direction: float,
+        minimum: float,
+        maximum: float,
+    ) -> None:
         ui = self.gui.ui.imgui
         ui.push_style_var(ui.StyleVar_.window_padding, ui.ImVec2(0, 0))
         ui.push_style_var(ui.StyleVar_.window_min_size, ui.ImVec2(1, 1))
@@ -1322,7 +1354,7 @@ class ViewerWorkspace:
         ui.pop_style_color()
         ui.pop_style_var(3)
 
-    def _header(self):
+    def _header(self) -> None:
         ui = self.gui.ui.imgui
         if self.widgets.icon_button("##explorer", "tree", "Explorer", active=self.show_left, size=22):
             self.show_left = not self.show_left
@@ -1343,9 +1375,9 @@ class ViewerWorkspace:
         if self.widgets.icon_button("##reset_layout", "grid", "Reset panel layout", size=22):
             self.left_width, self.right_width, self.timeline_height = 280, 350, WorkspaceHistory.default_height
             self.show_left = self.show_right = True
-            self.documents.reset()
+            self.dockspace.reset()
         ui.same_line()
-        self.documents.menu()
+        self.dockspace.menu()
         reset = getattr(self.viewer, "_reset_callback", None)
         if reset:
             ui.same_line()
@@ -1376,7 +1408,7 @@ class ViewerWorkspace:
         draw.pop_clip_rect()
         ui.pop_font()
 
-    def _transport(self):
+    def _transport(self) -> None:
         ui = self.gui.ui.imgui
         if self.widgets.icon_button(
             "##workspace_play",
@@ -1397,7 +1429,7 @@ class ViewerWorkspace:
             if self.widgets.button("Restart"):
                 reset()
 
-    def _explorer(self):
+    def _explorer(self) -> None:
         ui = self.gui.ui.imgui
         if not ui.begin_tab_bar("##explorer_tabs"):
             return
@@ -1438,7 +1470,7 @@ class ViewerWorkspace:
             ui.end_tab_item()
         ui.end_tab_bar()
 
-    def _scene_tree(self):
+    def _scene_tree(self) -> None:
         ui = self.gui.ui.imgui
         m = self.model
         if m is None:
@@ -1521,7 +1553,7 @@ class ViewerWorkspace:
             self._tree_scroll_x = 0.0
             self._tree_scroll_pending = 0.0
 
-    def _tree_row(self, key, depth):
+    def _tree_row(self, key: TreeKey, depth: int) -> None:
         ui, widgets, tree = self.gui.ui.imgui, self.widgets, self.tree
         kind, index = key
         resource = tree.resources.handles(key)
@@ -1667,7 +1699,7 @@ class ViewerWorkspace:
         self._flag_buttons(key, compact=True)
         ui.pop_id()
 
-    def _tree_type_name(self, key):
+    def _tree_type_name(self, key: TreeKey) -> str:
         """Describe the object represented by an icon, independently of its label."""
         kind, index = key
         if kind in ("shape", "joint"):
@@ -1737,7 +1769,7 @@ class ViewerWorkspace:
             "bvh_gaussian": "Gaussian BVH",
         }.get(kind, kind.replace("_", " ").capitalize())
 
-    def object_visible(self, key):
+    def object_visible(self, key: TreeKey) -> bool:
         world = self.tree.world_for(key)
         if key[0] == "root" and world >= 0:
             return self.viewer._should_render_world(world)
@@ -1750,7 +1782,7 @@ class ViewerWorkspace:
             ) or any(item not in self.tree.deformables.hidden for item in self.tree.deformable_descendants(key))
         return self._visibility_cache[key]
 
-    def toggle_visibility(self, key):
+    def toggle_visibility(self, key: TreeKey) -> None:
         world = self.tree.world_for(key)
         if world >= 0 and (key[0] == "root" or not self.viewer._should_render_world(world)):
             visible = (
@@ -1762,7 +1794,9 @@ class ViewerWorkspace:
                 visible.remove(world)
             else:
                 visible.add(world)
-            self.viewer.set_visible_worlds(None if len(visible) == self.model.world_count else sorted(visible))
+            self.viewer.set_visible_worlds(
+                None if len(visible) == self.model.world_count else sorted(visible), reflow=False
+            )
             self._visibility_cache.clear()
             return
         shapes = self.tree.shape_descendants(key)
@@ -1800,7 +1834,7 @@ class ViewerWorkspace:
         self._visibility_cache.clear()
         self.viewer.model_changed = True
 
-    def _flag_buttons(self, key, *, compact=False):
+    def _flag_buttons(self, key: TreeKey, *, compact: bool = False) -> None:
         ui, widgets = self.gui.ui.imgui, self.widgets
         kind, index = key
         flags = int(self.tree.meta.get(key, {}).get("flags", 0))
@@ -1849,7 +1883,7 @@ class ViewerWorkspace:
             ):
                 self.set_flag(kind, index, int(flag))
 
-    def _at_live_frame(self):
+    def _at_live_frame(self) -> bool:
         timeline = getattr(self.example, "timeline", self.history)
         return not (
             timeline is not None
@@ -1858,13 +1892,13 @@ class ViewerWorkspace:
             )
         )
 
-    def can_edit_state(self):
+    def can_edit_state(self) -> bool:
         return self.viewer.is_paused() and self._at_live_frame()
 
-    def can_edit_control(self):
+    def can_edit_control(self) -> bool:
         return self._at_live_frame()
 
-    def _capture_control_initial(self):
+    def _capture_control_initial(self) -> None:
         """Keep one device-side baseline per example's Control, before GUI edits."""
         # History temporarily substitutes display_control during rendering.
         # Its values must never replace the live example's reset baseline.
@@ -1877,7 +1911,7 @@ class ViewerWorkspace:
                 name: wp.clone(array, requires_grad=False) for name, array in _component_arrays(control).items()
             }
 
-    def reset_control(self, *, zero=False):
+    def reset_control(self, *, zero: bool = False) -> bool:
         """Reset the complete live Control in place, preserving CUDA graph bindings."""
         if not self.can_edit_control():
             self.message = "Return to the live frame to reset Control inputs."
@@ -1913,7 +1947,7 @@ class ViewerWorkspace:
         self.message = ""
         return True
 
-    def is_control_owner(self, owner):
+    def is_control_owner(self, owner: object) -> bool:
         """Recognize the live Control and its registered namespace containers."""
         control = getattr(self.example, "control", None)
         return control is not None and (
@@ -1921,7 +1955,7 @@ class ViewerWorkspace:
             or any(owner is value for value in vars(control).values() if isinstance(value, Model.AttributeNamespace))
         )
 
-    def set_flag(self, kind, index, flag):
+    def set_flag(self, kind: str, index: int, flag: int) -> None:
         array = getattr(self.model, kind + "_flags")
         previous = int(array[index : index + 1].numpy()[0])
         value = flag if kind == "body" else previous ^ flag
@@ -1943,7 +1977,7 @@ class ViewerWorkspace:
         self._cache.clear()
         self._live_cache.clear()
 
-    def _inspector(self):
+    def _inspector(self) -> None:
         ui = self.gui.ui.imgui
         if ui.begin_tab_bar("##inspector_tabs"):
             if self.widgets.tab_item(
@@ -1969,7 +2003,7 @@ class ViewerWorkspace:
                 ui.end_tab_item()
             ui.end_tab_bar()
 
-    def _environment(self):
+    def _environment(self) -> None:
         """Keep scene forces accessible independently of the current selection."""
         w, m = self.widgets, self.model
         if m is None:
@@ -2012,7 +2046,7 @@ class ViewerWorkspace:
                 if edit.changed and np.isfinite(edit.value).all():
                     wind.direction = edit.value.tolist()
 
-    def _breadcrumbs(self):
+    def _breadcrumbs(self) -> None:
         ui, tree, scale = self.gui.ui.imgui, self.tree, self.widgets.scale
         chain, seen, key = [], set(), self.selected
         while key is not None and key not in seen:
@@ -2030,7 +2064,7 @@ class ViewerWorkspace:
         gap = 18 * scale
         max_label = min(120 * scale, max(30 * scale, (available - 40 * scale - 2 * gap) / 2))
 
-        def label(key):
+        def label(key: TreeKey) -> str:
             name = tree.labels[key].rstrip("/").rsplit("/", 1)[-1]
             if ui.calc_text_size(name).x <= max_label:
                 return name
@@ -2043,7 +2077,7 @@ class ViewerWorkspace:
                     high = middle - 1
             return name[:low] + "…"
 
-        def navigate(key):
+        def navigate(key: TreeKey) -> None:
             self.navigate(key)
 
         labels = [label(key) for key in chain]
@@ -2088,7 +2122,7 @@ class ViewerWorkspace:
                 self.gui.toggle_follow_selection()
         ui.spacing()
 
-    def _properties(self):
+    def _properties(self) -> None:
         ui, w, m = self.gui.ui.imgui, self.widgets, self.model
         if m is None:
             return
@@ -2102,10 +2136,12 @@ class ViewerWorkspace:
                         )
                     if w.icon_button("##frame_selection", "focus", "Frame selection (F)"):
                         self.gui.frame_camera_on_model()
+        active_only = self.collision.handles(self.selected) or self.tree.resources.handles(self.selected)
+        if len(self.selection) > 1 and active_only:
             ui.text_disabled("Active item")
-        if self.selected is not None:
+        if self.selected is not None and (len(self.selection) <= 1 or active_only):
             self._breadcrumbs()
-        if self.selected and self.selected[0] in ("body", "shape"):
+        if len(self.selection) == 1 and self.selected and self.selected[0] in ("body", "shape"):
             self._flag_buttons(self.selected)
         if not hasattr(self, "property_inspector"):
             from .viewer_properties import PropertyInspector  # noqa: PLC0415
@@ -2123,7 +2159,7 @@ class ViewerWorkspace:
             ui.separator()
             ui.text_wrapped(self.message)
 
-    def _solver_properties(self):
+    def _solver_properties(self) -> None:
         ui, w = self.gui.ui.imgui, self.widgets
         solver = getattr(self.example, "solver", None)
         if solver is None:
@@ -2178,7 +2214,7 @@ class ViewerWorkspace:
                             reason=reason,
                         )
 
-    def _shape_solver_properties(self, index):
+    def _shape_solver_properties(self, index: int) -> None:
         w = self.widgets
         solver = getattr(self.example, "solver", None)
         model = getattr(solver, "mjw_model", None)
@@ -2220,10 +2256,10 @@ class ViewerWorkspace:
                     reason="Effective solver values for this geometry; configured by the example.",
                 )
 
-    def live_state(self):
+    def live_state(self) -> State | None:
         return getattr(self.example, "state_0", getattr(self.example, "state", None))
 
-    def joint_display_state(self):
+    def joint_display_state(self) -> State | SimpleNamespace | None:
         """Recover reduced coordinates for maximal-coordinate solvers on demand."""
         state = self.live_state()
         shown = getattr(self.viewer, "_last_state", None)
@@ -2260,7 +2296,7 @@ class ViewerWorkspace:
             self._live_cache["ik"] = True
         return self._kinematic_state
 
-    def _joint_edit_mask(self, joint):
+    def _joint_edit_mask(self, joint: int) -> tuple[wp.array[bool] | None, wp.array[int] | None]:
         """Select the edited joint and its descendants, leaving sibling branches untouched."""
         key = ("edit_branch", joint)
         if key not in self._cache:
@@ -2286,7 +2322,16 @@ class ViewerWorkspace:
             self._cache[key] = mask, indices
         return self._cache[key]
 
-    def apply_edit(self, owner, attr, start, values, *, joint_index=None, save_undo=True):
+    def apply_edit(
+        self,
+        owner: object,
+        attr: str,
+        start: int,
+        values: ArrayLike,
+        *,
+        joint_index: int | None = None,
+        save_undo: bool = True,
+    ) -> bool:
         """Update live storage in place; never branch simulation from display history."""
         control = self.is_control_owner(owner)
         if not (self.can_edit_control() if control else self.can_edit_state()):

@@ -3,15 +3,24 @@
 
 """Lazy, depth-tested selection silhouettes using the existing instance buffers."""
 
+from __future__ import annotations
+
 import ctypes
+from typing import TYPE_CHECKING
 
 from .shaders import ShaderGL, arr_pointer, capsule_vertex_transform, frame_vertex_shader, str_buffer
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from types import ModuleType
+
+    from newton._src.viewer.gl.opengl import MeshGL, MeshInstancerGL, RendererGL
 
 
 class SelectionSurfaceShader(ShaderGL):
     """Tint selected faces and draw their individual edges in the transparency pass."""
 
-    def __init__(self, gl):
+    def __init__(self, gl: ModuleType) -> None:
         from pyglet.graphics.shader import Shader, ShaderProgram
 
         super().__init__()
@@ -103,10 +112,10 @@ class SelectionSurfaceShader(ShaderGL):
             )
         }
 
-    def destroy(self):
+    def destroy(self) -> None:
         self.shader_program.delete()
 
-    def render(self, renderer, meshes, *, oit):
+    def render(self, renderer: RendererGL, meshes: Sequence[MeshGL], *, oit: bool) -> None:
         gl, loc = self._gl, self.locations
         with self:
             gl.glUniformMatrix4fv(loc["view"], 1, gl.GL_FALSE, arr_pointer(renderer._view_matrix))
@@ -196,7 +205,7 @@ void main() {
 class SelectionOutline:
     """Render a union mask of selected shapes, then composite its outside edge."""
 
-    def __init__(self, gl):
+    def __init__(self, gl: ModuleType) -> None:
         from pyglet.graphics.shader import Shader, ShaderProgram
 
         self.gl = gl
@@ -215,7 +224,7 @@ class SelectionOutline:
         gl.glGenVertexArrays(1, self.vao)
         self.size = None
 
-    def destroy(self):
+    def destroy(self) -> None:
         gl = self.gl
         gl.glDeleteFramebuffers(1, self.fbo)
         gl.glDeleteTextures(1, self.texture)
@@ -223,7 +232,7 @@ class SelectionOutline:
         self.mask_shader.delete()
         self.outline_shader.delete()
 
-    def _resize(self, renderer):
+    def _resize(self, renderer: RendererGL) -> None:
         gl = self.gl
         size = (renderer._screen_width, renderer._screen_height)
         gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, self.fbo)
@@ -243,7 +252,7 @@ class SelectionOutline:
         if gl.glCheckFramebufferStatus(gl.GL_FRAMEBUFFER) != gl.GL_FRAMEBUFFER_COMPLETE:
             raise RuntimeError("Selection framebuffer is incomplete")
 
-    def render(self, renderer, instances):
+    def render(self, renderer: RendererGL, instances: Sequence[tuple[MeshInstancerGL | MeshGL, int]]) -> None:
         gl = self.gl
         self._resize(renderer)
         gl.glDrawBuffer(gl.GL_COLOR_ATTACHMENT0)

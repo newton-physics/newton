@@ -1,18 +1,25 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Dockable viewport and logged output documents inside the simulator window."""
+"""Dockable viewport, images, and plots inside the simulator window."""
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 
-class WorkspaceDocuments:
-    """Keep document placement independent of example and logger lifetimes."""
+if TYPE_CHECKING:
+    from types import ModuleType
+
+    from newton._src.viewer.viewer_workspace import ViewerWorkspace
+
+
+class ViewerDockspace:
+    """Keep panel placement independent of example and logger lifetimes."""
 
     viewport_name = "Viewport###workspace_viewport"
     plots_name = "Plots###workspace_plots"
 
-    def __init__(self, workspace):
+    def __init__(self, workspace: ViewerWorkspace) -> None:
         self.workspace = workspace
         self.viewport_visible = True
         self.viewport_hovered = False
@@ -26,11 +33,11 @@ class WorkspaceDocuments:
         self._class = None
         self._focus = None
 
-    def reset(self):
+    def reset(self) -> None:
         self._reset = True
 
-    def menu(self):
-        """Reopen closed documents without waiting for another logging call."""
+    def menu(self) -> None:
+        """Reopen closed panels without waiting for another logging call."""
         ws = self.workspace
         ui = ws.gui.ui.imgui
         if ws.widgets.icon_button("##documents", "documents", "Viewport, images and plots", size=22):
@@ -45,11 +52,11 @@ class WorkspaceDocuments:
                     if opened:
                         self._focus = name
             ui.separator()
-            if ui.menu_item("Reset document layout", "", False)[0]:
+            if ui.menu_item("Reset panel layout", "", False)[0]:
                 self.reset()
             ui.end_popup()
 
-    def _place_output(self, ui, name):
+    def _place_output(self, ui: ModuleType, name: str) -> None:
         if name in self._placed:
             return
         node = ui.internal.dock_builder_get_node(self._output_node) if self._output_node else None
@@ -74,7 +81,7 @@ class WorkspaceDocuments:
         ui.internal.dock_builder_finish(self._root)
         self._placed.add(name)
 
-    def draw(self, rect):
+    def draw(self, rect: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
         ws = self.workspace
         ui, scale = ws.gui.ui.imgui, ws.widgets.scale
         images, plots = ws.viewer._image_logger, ws.viewer._plot_logger
@@ -174,5 +181,5 @@ class WorkspaceDocuments:
         return self.viewport_rect if self.viewport_visible else (0, 0, 1, 1)
 
     @staticmethod
-    def image_name(name):
+    def image_name(name: str) -> str:
         return f"{name.replace('##', '# #')}###workspace_image/{name}"

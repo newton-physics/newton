@@ -17,12 +17,16 @@ import sys
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import warp as wp
 
 from ..exceptions import NewtonWarning
+
+if TYPE_CHECKING:
+    from .gl.gui import UI
+
 
 _ACCEPTED_C = (1, 3, 4)
 _TILE_SPACING_PX: float = 2.0
@@ -477,7 +481,7 @@ class ImageLogger:
             # reflects reality and the window can be re-opened via the dropdown.
             self._selected = None
 
-    def draw_content(self, ui, name: str) -> None:
+    def draw_content(self, ui: UI, name: str) -> None:
         """Draw an image atlas inside the current window without copying pixels."""
         entry = self._images.get(name)
         if entry is None or entry.n == 0 or entry.tex_id == 0:

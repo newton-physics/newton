@@ -3,16 +3,25 @@
 
 """Small, scene-independent orientation cube for the local workspace."""
 
+from __future__ import annotations
+
 from itertools import pairwise
 from time import perf_counter
+from typing import TYPE_CHECKING
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from imgui_bundle import imgui
+    from numpy.typing import ArrayLike
+
+    from newton._src.viewer.viewer_viewport import ViewportControls
 
 
 class OrientationGizmo:
     _half_extent = 19.5
 
-    def __init__(self, controls):
+    def __init__(self, controls: ViewportControls) -> None:
         self.controls = controls
         self.corner = "bottom_left"
         self._press = None
@@ -23,7 +32,7 @@ class OrientationGizmo:
         self._fade_time = perf_counter()
         self.rect = (0, 0, 0, 0)
 
-    def snap(self, direction):
+    def snap(self, direction: ArrayLike) -> None:
         camera = self.controls.workspace.viewer.camera
         start = camera.yaw, camera.pitch
         position, pivot = camera.pos, camera.pivot
@@ -33,7 +42,7 @@ class OrientationGizmo:
         camera.yaw, camera.pitch = start
         self._animation = perf_counter(), start, target
 
-    def _animate(self):
+    def _animate(self) -> None:
         if self._animation is None:
             return
         start_time, start, target = self._animation
@@ -46,7 +55,7 @@ class OrientationGizmo:
         if t == 1.0:
             self._animation = None
 
-    def draw(self):
+    def draw(self) -> None:
         self._animate()
         workspace = self.controls.workspace
         ui, camera, s = workspace.gui.ui.imgui, workspace.viewer.camera, workspace.widgets.scale
@@ -102,20 +111,20 @@ class OrientationGizmo:
         self._opacity += (target_opacity - self._opacity) * -np.expm1(-(now - self._fade_time) / 0.10)
         self._fade_time = now
 
-        def color(r, g, b, a=1):
+        def color(r: float, g: float, b: float, a: float = 1) -> int:
             return ui.get_color_u32(ui.ImVec4(r, g, b, a * self._opacity))
 
-        def point(xy):
+        def point(xy: ArrayLike) -> imgui.ImVec2:
             return ui.ImVec2(float(xy[0]), float(xy[1]))
 
         center = np.array((x + width * 0.5, y + 56 * s))
         right, up, toward = map(np.asarray, (camera.get_right(), camera.get_up(), -camera.get_front()))
         basis = np.array((right, -up))
 
-        def project(vertices):
+        def project(vertices: ArrayLike) -> np.ndarray:
             return center + np.asarray(vertices) @ basis.T * (self._half_extent * s)
 
-        def fill(polygon, shade):
+        def fill(polygon: ArrayLike, shade: float) -> None:
             signed_area = sum(
                 a[0] * b[1] - b[0] * a[1] for a, b in zip(polygon, np.roll(polygon, -1, axis=0), strict=True)
             )
