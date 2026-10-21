@@ -24,6 +24,7 @@ for debugging/introspection.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from typing import Any
 
@@ -213,8 +214,8 @@ class LLTBlockedRCMSolver(DirectSolver[wp.float32, wp.int32]):
         self._rcm_max_bfs_iters = rcm_max_bfs_iters
         self._reuse_permutation = reuse_permutation
         self._parallel_factorization = parallel_factorization
-        if failed_pivot_shift < 0.0:
-            raise ValueError(f"failed_pivot_shift must be non-negative, got {failed_pivot_shift}.")
+        if failed_pivot_shift < 0.0 or not math.isfinite(failed_pivot_shift):
+            raise ValueError(f"failed_pivot_shift must be non-negative and finite, got {failed_pivot_shift}.")
         self._failed_pivot_shift = failed_pivot_shift
         self._capacity_stride = capacity_stride
 

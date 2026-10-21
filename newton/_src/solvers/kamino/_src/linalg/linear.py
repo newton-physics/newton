@@ -13,6 +13,7 @@ intra-system parallelism may be exploited.
 
 from __future__ import annotations
 
+import math
 from abc import ABC, abstractmethod
 from typing import Any, Generic
 
@@ -585,10 +586,10 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
         solve_block_size: int = 32,
         solve_block_dim: int = 128,
         factorize_block_dim: int = 128,
-        failed_pivot_shift: float = 0.0,
         atol: float | None = None,
         rtol: float | None = None,
         ftol: float | None = None,
+        failed_pivot_shift: float = 0.0,
         dtype: type[ScalarType] = wp.float32,  # type: ignore[assignment]
         device: wp.DeviceLike | None = None,
         **kwargs: dict[str, Any],
@@ -612,14 +613,14 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
                 the triangular-solve kernels.
             factorize_block_dim: Number of threads per CUDA block used to
                 launch the factorization kernel.
+            atol: Absolute solve tolerance.
+            rtol: Relative solve tolerance.
+            ftol: Factorization tolerance.
             failed_pivot_shift: Diagonal shift added to blocks whose
                 factorization produced a non-finite pivot before they are
                 refactorized once. The shift is removed from the matrix again
                 afterwards, up to round-off. Zero disables the retry. Must be
                 non-negative. Defaults to ``0.0``.
-            atol: Absolute solve tolerance.
-            rtol: Relative solve tolerance.
-            ftol: Factorization tolerance.
             dtype: Scalar data type.
             device: Device on which to allocate and run the solver.
             **kwargs: Additional arguments forwarded to :class:`DirectSolver`.
@@ -631,8 +632,8 @@ class LLTBlockedSolver(DirectSolver[ScalarType, IndexType]):
         """A flat array containing the intermediate results for the solve operation."""
         self._retry_dim: wp.array[wp.int32] | None = None
         """The dimension of each block to refactorize after a failed pivot, zero for the others."""
-        if failed_pivot_shift < 0.0:
-            raise ValueError(f"failed_pivot_shift must be non-negative, got {failed_pivot_shift}.")
+        if failed_pivot_shift < 0.0 or not math.isfinite(failed_pivot_shift):
+            raise ValueError(f"failed_pivot_shift must be non-negative and finite, got {failed_pivot_shift}.")
         self._failed_pivot_shift: float = failed_pivot_shift
 
         self._factorize_block_size: int = factorize_block_size
