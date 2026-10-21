@@ -5,17 +5,13 @@
 from __future__ import annotations
 
 import ctypes
-from typing import TYPE_CHECKING
 
 import numpy as np
-
-if TYPE_CHECKING:
-    pass
-
 
 capsule_vertex_transform = """
 // Constant per draw. Capsule instances encode (radius, radius, radius + half-height)
 // in their transform scale; ordinary meshes retain the usual affine transform.
+// The capsule prototype has unit radius and unit half-height along Z.
 layout (location = 10) in float aCapsule;
 
 vec3 mesh_position(vec3 position, mat4 transform)
@@ -31,6 +27,7 @@ vec3 mesh_position(vec3 position, mat4 transform)
 vec3 mesh_normal(vec3 normal, mat4 transform)
 {
     if (aCapsule > 0.5)
+        // Cancel axial inverse scaling: the caps scale uniformly with the radius.
         normal.z *= length(transform[2].xyz) / max(length(transform[0].xyz), 1e-20);
     return normal;
 }

@@ -417,11 +417,14 @@ class Mesh:
         compute_uvs: bool = True,
         compute_inertia: bool = True,
     ) -> "Mesh":
-        """Create a watertight capsule mesh with shared cap and cylinder vertices.
+        """Create a capsule mesh with shared equators and pole vertices.
+
+        Positive-radius meshes are watertight. A zero radius produces degenerate
+        geometry for compatibility with zero-size shapes.
 
         Args:
-            radius [m]: Positive radius of the capsule hemispheres and cylindrical body.
-            half_height [m]: Nonnegative half-height of the cylindrical section; zero creates a sphere.
+            radius [m]: Nonnegative radius of the capsule hemispheres and cylindrical body.
+            half_height [m]: Nonnegative half-height of the cylindrical section. Zero creates a sphere.
             up_axis: Long axis as a ``newton.Axis`` value.
             segments: Tessellation resolution for both caps and body, at least 3.
             compute_normals: If ``True``, generate per-vertex normals.
@@ -430,6 +433,9 @@ class Mesh:
 
         Returns:
             A capsule mesh.
+
+        Raises:
+            ValueError: If the dimensions, segment count, or up axis are invalid.
         """
         from ..utils.mesh import create_mesh_capsule  # noqa: PLC0415
 

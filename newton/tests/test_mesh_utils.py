@@ -105,10 +105,10 @@ class TestPrimitiveMeshes(unittest.TestCase):
         """Verify closed, outward capsule faces and shared cylinder equators."""
         for axis in newton.Axis:
             for segments in (3, 7, 32):
-                for height in (0.0, 0.1, 2.0):
-                    with self.subTest(axis=axis, segments=segments, half_height=height):
+                for half_height in (0.0, 0.1, 2.0):
+                    with self.subTest(axis=axis, segments=segments, half_height=half_height):
                         mesh = newton.Mesh.create_capsule(
-                            0.4, height, up_axis=axis, segments=segments, compute_inertia=False
+                            0.4, half_height, up_axis=axis, segments=segments, compute_inertia=False
                         )
                         points, faces = mesh.vertices, mesh.indices.reshape(-1, 3)
                         self.assertGreaterEqual(faces.min(), 0)
@@ -126,14 +126,31 @@ class TestPrimitiveMeshes(unittest.TestCase):
                         directions = np.where(edges[:, 0] < edges[:, 1], 1, -1)
                         np.testing.assert_array_equal(np.bincount(inverse, weights=directions), 0)
                         self.assertEqual(len(points) - len(unique) + len(faces), 2)
-                        # Every vertex lies on the analytic capsule; both equators
-                        # must be full-radius rings shared by the caps and body.
+
                         radial = points.copy()
-                        radial[:, int(axis)] -= np.clip(radial[:, int(axis)], -height, height)
-                        np.testing.assert_allclose(np.linalg.norm(radial, axis=1), 0.4, atol=1e-6)
-                        for end in (-height, height):
-                            equator = points[np.isclose(points[:, int(axis)], end)]
-                            self.assertEqual(len(equator), segments)
+                        radial[:, int(axis)] -= np.clip(radial[:, int(axis)], -half_height, half_height)
+                        np.testing.assert_allclose(np.linalg.norm(radial, axis=1), 0.4, atol=1e-7)
+                        np.testing.assert_allclose(mesh.normals, radial / 0.4, atol=1e-6)
+                        self.assertEqual(mesh.uvs.shape, (len(points), 2))
+                        self.assertTrue(np.all((mesh.uvs >= 0) & (mesh.uvs <= 1)))
+                        for end in (-half_height, half_height):
+                            self.assertEqual(np.count_nonzero(points[:, int(axis)] == end), segments)
+
+        mesh = newton.Mesh.create_capsule(0.4, 0.1, compute_normals=False, compute_uvs=False, compute_inertia=False)
+        self.assertIsNone(mesh.normals)
+        self.assertIsNone(mesh.uvs)
+
+        # Zero-radius shapes remain accepted as degenerate lines or points.
+        for half_height in (0.0, 0.1):
+            with self.subTest(radius=0.0, half_height=half_height):
+                mesh = newton.Mesh.create_capsule(0.0, half_height, segments=3, compute_inertia=False)
+                np.testing.assert_array_equal(mesh.vertices[:, [0, 2]], 0.0)
+                self.assertAlmostEqual(float(np.max(mesh.vertices[:, 1])), half_height)
+                self.assertAlmostEqual(float(np.min(mesh.vertices[:, 1])), -half_height)
+                self.assertTrue(np.all(np.isfinite(mesh.normals)))
+                self.assertTrue(np.all(np.isfinite(mesh.uvs)))
+                self.assertGreaterEqual(mesh.indices.min(), 0)
+                self.assertLess(mesh.indices.max(), len(mesh.vertices))
 
 
 if __name__ == "__main__":

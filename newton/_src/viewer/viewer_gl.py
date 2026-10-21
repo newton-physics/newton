@@ -64,7 +64,7 @@ def _capsule_build_body_scales(
     shape_scale: wp.array[wp.vec3],
     shape_indices: wp.array[wp.int32],
     out_scales: wp.array[wp.vec3],
-):
+) -> None:
     # model.shape_scale stores capsule params as (radius, half_height, _unused).
     # ViewerGL instances scale meshes with a full (x, y, z) vector, so we expand to
     # (radius, radius, half_height) for the capsule instance parameters.
@@ -739,16 +739,18 @@ class ViewerGL(ViewerBase):
 
             shapes.world_xforms = all_world_xforms[offset : offset + n]
             mesh_path = self._get_capsule_mesh() if shapes.geo_type == nt.GeoType.CAPSULE else shapes.mesh
-            if shapes.name not in self.objects:
-                if mesh_path in self.objects and isinstance(self.objects[mesh_path], MeshGL):
-                    instancer = MeshInstancerGL(
-                        max(n, 1),
-                        self.objects[mesh_path],
-                        enable_cuda_interop=self._cuda_interop_enabled(self.CudaInterop.INSTANCES),
-                    )
-                    # Ground planes opt out of the wireframe edge overlay.
-                    instancer.draw_edge = shapes.geo_type != nt.GeoType.PLANE
-                    self.objects[shapes.name] = instancer
+            mesh = self.objects.get(mesh_path)
+            instancer = self.objects.get(shapes.name)
+            # A visibility change can reuse this batch name for another geometry.
+            if isinstance(mesh, MeshGL) and (instancer is None or instancer.mesh is not mesh):
+                instancer = MeshInstancerGL(
+                    max(n, 1),
+                    mesh,
+                    enable_cuda_interop=self._cuda_interop_enabled(self.CudaInterop.INSTANCES),
+                )
+                # Ground planes opt out of the wireframe edge overlay.
+                instancer.draw_edge = shapes.geo_type != nt.GeoType.PLANE
+                self.objects[shapes.name] = instancer
 
         self._packed_write_indices = wp.array(write_np, dtype=int, device=device)
         self._packed_world_xforms = all_world_xforms
@@ -1024,7 +1026,7 @@ class ViewerGL(ViewerBase):
         transform_count = len(xforms) if xforms is not None else 0
         resized = False
 
-        if instancer is None:
+        if instancer is None or instancer.mesh is not mesh:
             capacity = max(transform_count, 1)
             instancer = MeshInstancerGL(
                 capacity,
@@ -1154,6 +1156,7 @@ class ViewerGL(ViewerBase):
         """Share one closed prototype across all capsule sizes in this layer."""
         name = self._qualify("/geometry/_capsule_instancer/mesh")
         if name not in self.objects:
+            # Match the unit radius/half-height assumed by gl.shaders.capsule_vertex_transform.
             self.log_geo(name, nt.GeoType.CAPSULE, (1.0, 1.0), 0.0, True, hidden=True)
             self.objects[name]._capsule_instancing = True
         return name
@@ -1169,13 +1172,24 @@ class ViewerGL(ViewerBase):
         materials: wp.array[wp.vec4] | None,
         hidden: bool = False,
         opacities: wp.array[wp.float32] | None = None,
-    ):
+    ) -> None:
         """Render continuous capsule surfaces, batching arbitrary radii and lengths.
 
         The shared prototype comes from :meth:`newton.Mesh.create_capsule`.
         Instance scales are ``(radius, radius, half_height)``; the shader scales
         the hemispheres uniformly and translates them to the cylinder ends.
         The supplied mesh path is unused in this specialized backend.
+
+        Args:
+            name: Unique name for the capsule batch within the active layer.
+            mesh: Capsule prototype path, unused by this backend.
+            xforms: Per-instance transforms, or ``None`` to clear visible instances.
+            scales: Per-instance capsule dimensions [m] as ``(radius, radius, half_height)``.
+                Supply these with visible transforms; ``None`` uses unit-radius spheres.
+            colors: Per-instance RGB colors, or ``None`` to keep existing colors.
+            materials: Per-instance material parameters, or ``None`` to keep existing materials.
+            hidden: Whether to hide the batch without updating existing instance buffers.
+            opacities: Per-instance display opacities in ``[0, 1]``, or ``None`` to keep existing values.
         """
         render_scales = None
         if not hidden and scales is not None:

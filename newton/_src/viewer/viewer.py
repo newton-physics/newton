@@ -203,8 +203,14 @@ class ViewerBase(ABC):
         globals_saved = {
             name: user_options.get(name, getattr(self, name)) if switching else getattr(self, name)
             for name in (
-                "show_ui", "vsync", "_paused", "camera_speed", "camera_slowdown",
-                "show_contact_pairs", "show_contact_lines", "show_contact_labels",
+                "show_ui",
+                "vsync",
+                "_paused",
+                "camera_speed",
+                "camera_slowdown",
+                "show_contact_pairs",
+                "show_contact_lines",
+                "show_contact_labels",
             )
             if hasattr(self, name) and (not switching or name in user_options)
         }
@@ -1259,7 +1265,7 @@ class ViewerBase(ABC):
             materials = shapes.materials if self.model_changed else None
 
             # Capsules may be rendered via a specialized path by the concrete viewer/backend
-            # (e.g., instanced cylinder body + instanced sphere end caps for better batching).
+            # (e.g., deforming a shared capsule prototype to batch different dimensions).
             # The base implementation of log_capsules() falls back to log_instances().
             if shapes.geo_type == newton.GeoType.CAPSULE:
                 self.log_capsules(

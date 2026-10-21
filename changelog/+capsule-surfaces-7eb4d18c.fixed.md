@@ -1,1 +1,1 @@
-Render capsules as continuous surfaces in ViewerGL while preserving batching across different sizes, and fix capsule mesh topology to share cap and cylinder equators without duplicate pole vertices or degenerate faces.
+Fix capsule mesh topology and render continuous capsule surfaces in `ViewerGL` without overlapping sphere and cylinder interiors, while preserving instancing across different radii and lengths.

@@ -1589,8 +1589,8 @@ def create_mesh_capsule(
         raise ValueError("up_axis must be between 0 and 2")
     if segments < 3:
         raise ValueError("segments must be at least 3")
-    if radius <= 0.0 or half_height < 0.0:
-        raise ValueError("radius must be positive and half_height must be nonnegative")
+    if radius < 0.0 or half_height < 0.0:
+        raise ValueError("radius and half_height must be nonnegative")
 
     x_dir, y_dir, z_dir = ((1, 2, 0), (0, 1, 2), (2, 0, 1))[up_axis]
 
