@@ -6821,7 +6821,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if magnetic is not None:
             spec.option.magnetic = np.array(magnetic)
 
-        spec.compiler.inertiafromgeom = mujoco.mjtInertiaFromGeom.mjINERTIAFROMGEOM_AUTO
         if mujoco_attrs and hasattr(mujoco_attrs, "autolimits"):
             spec.compiler.autolimits = bool(mujoco_attrs.autolimits.numpy()[0])
 
