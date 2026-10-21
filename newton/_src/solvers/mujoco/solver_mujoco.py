@@ -7766,9 +7766,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
             inertia = body_inertia[child]
             mass = body_mass[child]
-            # MuJoCo requires positive-definite inertia. For zero-mass bodies
-            # (sensor frames, reference links), omit mass and inertia entirely
-            # and let MuJoCo handle them natively.
+            # Always pass Newton's inertial: without one MuJoCo re-derives mass
+            # from the geoms at its own default density.
             body_kwargs = {"name": name, "pos": tf.p, "quat": quat_to_mjc(tf.q), "mocap": mocap}
             # The compact simple-body qM layout cannot hold runtime COM or inertia-frame edits.
             body_kwargs["simple"] = 0
@@ -7790,7 +7789,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         inertia[0, 2],
                         inertia[1, 2],
                     ]
-                body_kwargs["explicitinertial"] = True
+            else:
+                # MuJoCo rejects a zero fullinertia but accepts a zero diagonal.
+                body_kwargs["mass"] = 0.0
+                body_kwargs["inertia"] = [0.0, 0.0, 0.0]
+            body_kwargs["explicitinertial"] = True
             body = mj_bodies[body_mapping[parent]].add_body(**body_kwargs)
             mj_bodies.append(body)
             return body, parent, child, child_is_kinematic, j_type, child_xform
@@ -8601,7 +8604,18 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self.mjc_actuator_to_newton_ball_jnt = None
             self.mjc_actuator_to_newton_actuator_idx = None
 
-        self.mj_model = spec.compile()
+        try:
+            self.mj_model = spec.compile()
+        except ValueError as error:
+            # MuJoCo decides whether a rigidly attached group of bodies has
+            # enough inertia; only translate its error into Newton terms.
+            if "mass and inertia of moving bodies" not in str(error):
+                raise
+            raise ValueError(
+                "SolverMuJoCo cannot simulate a body with joint DOFs and no mass or inertia, including kinematic "
+                "roots: MuJoCo requires them of movable bodies or of the bodies rigidly attached to them. Give the "
+                f"body mass (mass and inertia, or shapes with density) or attach it with a fixed joint. MuJoCo: {error}"
+            ) from error
         self.mj_data = mujoco.MjData(self.mj_model)
 
         # Build MuJoCo qpos/qvel start index arrays for coordinate conversion kernels.

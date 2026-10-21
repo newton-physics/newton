@@ -9774,6 +9774,49 @@ class TestMuJoCoSolverZeroMassBody(unittest.TestCase):
         solver = SolverMuJoCo(model)
         self.assertIsNotNone(solver.mj_model)
 
+    def test_exported_mass_matches_newton(self):
+        """MuJoCo compiles Newton's masses, including zero, instead of re-deriving them from geoms."""
+        builder = newton.ModelBuilder()
+        massless_cfg = newton.ModelBuilder.ShapeConfig(density=0.0)
+        # Fixed root whose only shape has no density.
+        fixed = builder.add_link(xform=wp.transform((1.0, 0.0, 1.0), wp.quat_identity()))
+        builder.add_shape_box(fixed, hx=0.1, hy=0.1, hz=0.1, cfg=massless_cfg)
+        builder.add_articulation([builder.add_joint_fixed(-1, fixed)])
+        # Massless movable dummy carried by a welded child with mass (URDF base-link pattern).
+        dummy = builder.add_link()
+        builder.add_shape_box(dummy, hx=0.05, hy=0.05, hz=0.05, cfg=massless_cfg)
+        link = builder.add_link()
+        builder.add_shape_box(link, hx=0.1, hy=0.1, hz=0.1)
+        builder.add_articulation([builder.add_joint_free(dummy), builder.add_joint_fixed(dummy, link)])
+        model = builder.finalize()
+
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+                mjc_body_to_newton = solver.mjc_body_to_newton.numpy()[0]
+                mapped = mjc_body_to_newton >= 0
+                newton_mass = model.body_mass.numpy()[mjc_body_to_newton[mapped]]
+                np.testing.assert_allclose(solver.mj_model.body_mass[mapped], newton_mass, rtol=1.0e-6)
+                self.assertEqual(float(newton_mass[mjc_body_to_newton[mapped] == fixed][0]), 0.0)
+                self.assertEqual(float(newton_mass[mjc_body_to_newton[mapped] == dummy][0]), 0.0)
+
+                state_0, state_1, control = model.state(), model.state(), model.control()
+                for _ in range(10):
+                    solver.step(state_0, state_1, control, None, 0.002)
+                    state_0, state_1 = state_1, state_0
+                self.assertTrue(np.all(np.isfinite(state_0.body_q.numpy())))
+
+    def test_massless_movable_body_raises(self):
+        """A movable body with no mass cannot be simulated by MuJoCo, even when it has geometry."""
+        for is_kinematic in (False, True):
+            with self.subTest(is_kinematic=is_kinematic):
+                builder = newton.ModelBuilder()
+                body = builder.add_body(is_kinematic=is_kinematic)
+                builder.add_shape_box(body, hx=0.1, hy=0.1, hz=0.1, cfg=newton.ModelBuilder.ShapeConfig(density=0.0))
+                model = builder.finalize()
+                with self.assertRaisesRegex(ValueError, "no mass or inertia"):
+                    SolverMuJoCo(model, disable_contacts=True)
+
 
 class TestMuJoCoSolverQpos0(unittest.TestCase):
     """Tests for qpos0, qpos_spring, ref/springref coordinate conversion, and FK correctness."""
