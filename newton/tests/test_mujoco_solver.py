@@ -1281,7 +1281,7 @@ class TestMuJoCoSolverGraphCapture(unittest.TestCase):
                 model.mujoco.actuator_gainprm.assign(gainprm)
                 wp.capture_launch(capture.graph)
 
-                kinematic_eq = solver.kinematic_target_eq.numpy()
+                kinematic_eq = solver._kinematic_target_eq.numpy()
                 np.testing.assert_allclose(solver.mjw_model.dof_armature.numpy(), 0.25)
                 np.testing.assert_array_equal(
                     solver.mjw_data.eq_active.numpy()[:, kinematic_eq], [[True, True], [False, False]]
@@ -2247,13 +2247,13 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
             model.joint_armature.numpy()[mjc_dof_to_newton_dof[mapped]],
         )
 
-        self.assertIsNotNone(solver.kinematic_target_jnt)
-        target_body = model.joint_child.numpy()[solver.kinematic_target_jnt.numpy()]
+        self.assertIsNotNone(solver._kinematic_target_jnt)
+        target_body = model.joint_child.numpy()[solver._kinematic_target_jnt.numpy()]
         expected = (model.body_flags.numpy()[target_body] & int(BodyFlags.KINEMATIC)) != 0
-        eq_active = solver.mjw_data.eq_active.numpy()[:, solver.kinematic_target_eq.numpy()]
+        eq_active = solver.mjw_data.eq_active.numpy()[:, solver._kinematic_target_eq.numpy()]
         np.testing.assert_array_equal(eq_active, expected)
         if solver.use_mujoco_cpu:
-            np.testing.assert_array_equal(solver.mj_data.eq_active[solver.kinematic_target_eq.numpy()], expected[0])
+            np.testing.assert_array_equal(solver.mj_data.eq_active[solver._kinematic_target_eq.numpy()], expected[0])
 
     def test_floating_kinematic_body_exports_mocap_weld(self):
         builder = newton.ModelBuilder()
@@ -2289,7 +2289,7 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
         solver = SolverMuJoCo(model, iterations=1, disable_contacts=True)
         self.assertEqual(solver.mj_model.nmocap, 0)
         self.assertEqual(solver.mj_model.neq, 0)
-        self.assertIsNone(solver.kinematic_target_eq)
+        self.assertIsNone(solver._kinematic_target_eq)
 
     def test_kinematic_root_does_not_affect_meaninertia(self):
         for use_mujoco_cpu in (False, True):
@@ -2535,7 +2535,7 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
             solver.step(state_0, state_1, control, None, dt)
             with wp.ScopedCapture() as capture:
                 solver.step(state_0, state_1, control, None, dt)
-            mocap = int(solver.kinematic_target_mocap.numpy()[0])
+            mocap = int(solver._kinematic_target_mocap.numpy()[0])
             for x in (0.1, 0.25):
                 state_0.joint_q.fill_(x)
                 state_0.joint_qd.fill_(0.5)
@@ -11277,7 +11277,7 @@ class TestActuatorDampratioMultiWorldRuntime(unittest.TestCase):
                 np.testing.assert_allclose(solver.mj_model.actuator_biasprm[:, 2], -expected, rtol=1e-5)
                 # Kinematic roots keep their authored armature and are held by a weld instead.
                 np.testing.assert_allclose(solver.mjw_model.dof_armature.numpy(), 0.3)
-                self.assertTrue(np.all(solver.mjw_data.eq_active.numpy()[:, solver.kinematic_target_eq.numpy()]))
+                self.assertTrue(np.all(solver.mjw_data.eq_active.numpy()[:, solver._kinematic_target_eq.numpy()]))
 
                 model.body_flags.fill_(int(BodyFlags.DYNAMIC))
                 solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)

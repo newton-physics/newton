@@ -11,7 +11,7 @@ import warp as wp
 
 from ...core.types import vec5
 from ...sim import BodyFlags, JointTargetMode, JointType
-from ...sim.articulation import eval_joint_motion
+from ...sim.articulation import com_twist_to_origin_twist, eval_joint_child_state, eval_joint_motion
 from ...sim.contacts import contact_surface_point, contact_surface_separation
 from .constants import (
     DEFAULT_LIMIT_SOLREF_DAMPRATIO,
@@ -928,25 +928,22 @@ def convert_mj_coords_to_warp_kernel(
 @wp.func
 def kinematic_root_target(
     jtype: int,
+    child: int,
     X_pj: wp.transform,
     X_cj: wp.transform,
     X_j: wp.transform,
     v_j: wp.spatial_vector,
-    body_com: wp.vec3,
+    body_qd: wp.array[wp.spatial_vector],
+    body_com: wp.array[wp.vec3],
     lookahead: float,
 ):
     """World pose of a root body under prescribed joint motion, advanced by ``lookahead`` seconds."""
-    X_wcj = X_pj * X_j
-    X_wc = X_wcj * wp.transform_inverse(X_cj)
-    lin = wp.quat_rotate(X_pj.q, wp.spatial_top(v_j))
-    ang = wp.quat_rotate(X_pj.q, wp.spatial_bottom(v_j))
-    if jtype == JointType.FREE or jtype == JointType.DISTANCE or jtype == JointType.ROD:
-        # Free-joint linear velocity refers to the COM; shift it to the body origin.
-        v_origin = lin - wp.cross(ang, wp.quat_rotate(X_wc.q, body_com))
-    else:
-        v_origin = lin + wp.cross(ang, X_wc.p - X_wcj.p)
-    q = X_wc.q + wp.quat(ang * (0.5 * lookahead), 0.0) * X_wc.q
-    return wp.transform(X_wc.p + v_origin * lookahead, wp.normalize(q))
+    X_wc, v_com = eval_joint_child_state(
+        jtype, -1, child, wp.transform_identity(), X_pj, X_cj, X_j, v_j, body_qd, body_com
+    )
+    v = com_twist_to_origin_twist(v_com, X_wc, body_com[child])
+    q = X_wc.q + wp.quat(wp.spatial_bottom(v) * (0.5 * lookahead), 0.0) * X_wc.q
+    return wp.transform(X_wc.p + wp.spatial_top(v) * lookahead, wp.normalize(q))
 
 
 @wp.kernel
@@ -971,6 +968,7 @@ def convert_warp_coords_to_mj_kernel(
     jnt_mocap_lead: wp.array[wp.bool],
     kinematic_lookahead: float,
     write_state: bool,
+    root_parent_qd: wp.array[wp.spatial_vector],
     # outputs
     qpos: wp.array2d[wp.float32],
     qvel: wp.array2d[wp.float32],
@@ -1011,11 +1009,13 @@ def convert_warp_coords_to_mj_kernel(
             )
             target = kinematic_root_target(
                 joint_type[joint_id],
+                joint_child[joint_id],
                 joint_X_p[joint_id],
                 joint_X_c[joint_id],
                 X_j,
                 v_j,
-                body_com[joint_child[joint_id]],
+                root_parent_qd,
+                body_com,
                 lookahead,
             )
             mocap_pos[worldid, mocap] = target.p

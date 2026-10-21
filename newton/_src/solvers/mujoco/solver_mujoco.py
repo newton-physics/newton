@@ -4496,12 +4496,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Mapping from Newton DOF index to child body index. Shape [joint_dof_count], dtype int32."""
         self.mjc_mocap_to_newton_jnt: wp.array2d[wp.int32] | None = None
         """Mapping from MuJoCo [world, mocap] to Newton joint index. Shape [nworld, nmocap], dtype int32."""
-        self.kinematic_target_jnt: wp.array2d[wp.int32] | None = None
-        """Newton root joint driven by each kinematic mocap target. Shape [nworld, ntarget], dtype int32."""
-        self.kinematic_target_mocap: wp.array[wp.int32] | None = None
-        """MuJoCo mocap index of each kinematic target. Shape [ntarget], dtype int32."""
-        self.kinematic_target_eq: wp.array[wp.int32] | None = None
-        """MuJoCo weld equality holding each kinematic root to its target. Shape [ntarget], dtype int32."""
+        # Per kinematic weld target: Newton root joint [nworld, ntarget], MuJoCo mocap and weld equality [ntarget].
+        self._kinematic_target_jnt: wp.array2d[wp.int32] | None = None
+        self._kinematic_target_mocap: wp.array[wp.int32] | None = None
+        self._kinematic_target_eq: wp.array[wp.int32] | None = None
         self._kinematic_needs_target: np.ndarray | None = None
         self._jnt_mocap: wp.array[wp.int32] | None = None
         self._jnt_mocap_lead: wp.array[wp.bool] | None = None
@@ -5693,7 +5691,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.mj_model.body_iquat[:] = self.mjw_model.body_iquat.numpy()[0]
             if update_inertia:
                 self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
-            if flags & ModelFlags.BODY_PROPERTIES and self.kinematic_target_eq is not None:
+            if flags & ModelFlags.BODY_PROPERTIES and self._kinematic_target_eq is not None:
                 self.mj_data.eq_active[:] = self.mjw_data.eq_active.numpy()[0]
             if update_force and self.mjc_actuator_ctrl_source is not None:
                 # Direct actuators may retain unresolved dampratio values in MJWarp.
@@ -6057,7 +6055,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         mjw_data = getattr(self, "mjw_data", None)
         jnt_mocap = self._jnt_mocap if mjw_data is not None else None
         lookahead = 0.0
-        if self.kinematic_target_eq is not None and mjw_data is not None and dt > 0.0:
+        if self._kinematic_target_eq is not None and mjw_data is not None and dt > 0.0:
             lookahead = self._update_kinematic_weld_solref(dt)
         sleep_redirect = is_mjwarp and self.enable_sleeping and write_state
         wp.launch(
@@ -6084,6 +6082,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._jnt_mocap_lead,
                 lookahead,
                 write_state,
+                None,  # roots have no parent velocity
             ],
             outputs=[
                 self._sleep_qpos if sleep_redirect else qpos,
@@ -8952,14 +8951,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._kinematic_needs_target[roots] = False
             if kinematic_target_roots:
                 template_jnt = np.array([j for j, _, _ in kinematic_target_roots], dtype=np.int32) % joints_per_world
-                self.kinematic_target_jnt = wp.array(
+                self._kinematic_target_jnt = wp.array(
                     self._tile_world_mapping(template_jnt, nworld, joints_per_world), dtype=wp.int32
                 )
-                self.kinematic_target_mocap = wp.array(
+                self._kinematic_target_mocap = wp.array(
                     [int(self.mj_model.body(name).mocapid[0]) for name in kinematic_target_names], dtype=wp.int32
                 )
-                self.kinematic_target_eq = wp.array(kinematic_target_eq_ids, dtype=wp.int32)
-                jnt_mocap[template_jnt] = self.kinematic_target_mocap.numpy()
+                self._kinematic_target_eq = wp.array(kinematic_target_eq_ids, dtype=wp.int32)
+                jnt_mocap[template_jnt] = self._kinematic_target_mocap.numpy()
                 jnt_mocap_lead[template_jnt] = True
             if np.any(jnt_mocap >= 0):
                 self._jnt_mocap = wp.array(jnt_mocap, dtype=wp.int32)
@@ -9589,8 +9588,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Weld kinematic roots to their mocap targets and release the others."""
         if not self.model.device.is_capturing:
             kinematic = (self._notify_body_flags.numpy() & int(BodyFlags.KINEMATIC)) != 0
-            if self.kinematic_target_jnt is not None:
-                targeted = self.model.joint_child.numpy()[self.kinematic_target_jnt.numpy().ravel()]
+            if self._kinematic_target_jnt is not None:
+                targeted = self.model.joint_child.numpy()[self._kinematic_target_jnt.numpy().ravel()]
                 kinematic[targeted] = False
             mocap_roots = self._kinematic_mocap_root_bodies
             dynamic_mocap_root = np.flatnonzero(~kinematic & mocap_roots) if mocap_roots is not None else []
@@ -9613,14 +9612,14 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     "kinematic roots when it is created. Set the body's mujoco:kinematic_switchable attribute "
                     "before creating the solver."
                 )
-        if self.kinematic_target_eq is None:
+        if self._kinematic_target_eq is None:
             return
         wp.launch(
             update_kinematic_weld_active_kernel,
-            dim=self.kinematic_target_jnt.shape,
+            dim=self._kinematic_target_jnt.shape,
             inputs=[
-                self.kinematic_target_jnt,
-                self.kinematic_target_eq,
+                self._kinematic_target_jnt,
+                self._kinematic_target_eq,
                 self.model.joint_child,
                 self._notify_body_flags,
             ],
@@ -9642,13 +9641,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             solref = wp.vec2(timeconst, KINEMATIC_WELD_DAMPRATIO)
             wp.launch(
                 update_kinematic_weld_solref_kernel,
-                dim=(self.mjw_model.eq_solref.shape[0], self.kinematic_target_eq.shape[0]),
-                inputs=[self.kinematic_target_eq, solref],
+                dim=(self.mjw_model.eq_solref.shape[0], self._kinematic_target_eq.shape[0]),
+                inputs=[self._kinematic_target_eq, solref],
                 outputs=[self.mjw_model.eq_solref],
                 device=self.model.device,
             )
             if self.use_mujoco_cpu:
-                self.mj_model.eq_solref[self.kinematic_target_eq.numpy()] = (timeconst, KINEMATIC_WELD_DAMPRATIO)
+                self.mj_model.eq_solref[self._kinematic_target_eq.numpy()] = (timeconst, KINEMATIC_WELD_DAMPRATIO)
         lookahead = 2.0 * timeconst * KINEMATIC_WELD_DAMPRATIO**2
         if rk4:
             lookahead += 0.5 * dt
