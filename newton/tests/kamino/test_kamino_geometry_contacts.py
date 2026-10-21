@@ -1490,6 +1490,8 @@ class TestGeometryContactConversions(NewtonTestCase):
           model count consistent with the capacity.
         - Missing ``remap`` array on the existing-contacts path raises a
           clear ``ValueError`` when ``convert_forces=True``.
+        - Contacts that a coupling filter disabled with negative shape
+          indices are skipped.
         """
         expect_contact_capacity_warning(self)
         # 1) No-collision scene -> 0 Kamino contacts.
@@ -1559,6 +1561,21 @@ class TestGeometryContactConversions(NewtonTestCase):
                 clear_output=False,
                 convert_forces=True,
             )
+
+        # 4) Contacts disabled like SolverCoupledProxy's filter, with shape index -s - 2, are skipped.
+        disabled = nc // 2
+        shape0 = contacts.rigid_contact_shape0.numpy()
+        shape0[:disabled] = -shape0[:disabled] - 2
+        contacts.rigid_contact_shape0.assign(shape0)
+        kamino_filtered = ContactsKamino(
+            capacity=contacts.rigid_contact_max,
+            device=self.default_device,
+            remappable=True,
+        )
+        convert_contacts_newton_to_kamino(model, state, contacts, kamino_filtered)
+        num_kept = int(kamino_filtered.model_active_contacts.numpy()[0])
+        self.assertEqual(num_kept, nc - disabled)
+        self.assertEqual(sorted(kamino_filtered.remap.numpy()[:num_kept].tolist()), list(range(disabled, nc)))
 
     def test_09_multi_world_per_world_capacity_not_starved(self):
         """Preserve capacity for later worlds when earlier worlds are saturated.

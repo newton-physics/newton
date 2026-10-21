@@ -77,7 +77,7 @@ class TestSolverKaminoLOXContacts(unittest.TestCase):
             dynamics_solver="lox", use_collision_detector=internal, compute_solution_metrics=compute_solution_metrics
         )
         config.lox.max_iterations = 50
-        config.lox.projection_iterations = 5
+        config.lox.projection_sweeps_per_iteration = 5
         for name, value in _PROJECTION_SCHEDULES[method].items():
             setattr(config.lox, name, value)
         config.lox.position_tolerance = 1.0e-7

@@ -1119,6 +1119,10 @@ class LOXSolverConfig:
     It solves its own primal problem, so ``sparse_dynamics`` and the linear solver and
     preconditioning settings of :class:`ConstrainedDynamicsConfig` only affect the dual
     problem of the optional solution metrics, and it always warm-starts from its containers.
+    LOX bounds joint drift with :attr:`joint_max_correction`, :attr:`position_tolerance` and
+    :attr:`rotation_tolerance`, so it ignores :attr:`ConstraintStabilizationConfig.alpha`.
+    ``SolverKamino.Config.collect_solver_info`` collects the PADMM and DVI iteration logs; LOX
+    reports its iterations and residuals through ``SolverKamino.status``.
     """
 
     max_iterations: int = 16
@@ -1151,7 +1155,7 @@ class LOXSolverConfig:
     remain prescribed, and the bodies welded to them move rigidly with them.
     """
 
-    projection_iterations: int = 5
+    projection_sweeps_per_iteration: int = 5
     """Primary unilateral projection sweeps per splitting iteration.
 
     One colored Gauss--Seidel iteration visits every unilateral color; after
@@ -1306,7 +1310,7 @@ class LOXSolverConfig:
     """Enable coupled sliding, torsional, and rolling friction.
 
     Uses shape ``mu_torsional`` and ``mu_rolling`` coefficients [m], mixed between the two
-    shapes like the sliding friction for Newton contacts, and averaged for Kamino's own pipelines.
+    shapes like the sliding friction for Newton contacts, and averaged for Kamino's unified pipeline.
     All friction components share one elliptic friction budget. Zero angular coefficients
     retain the 3D path.
     """
@@ -1392,7 +1396,7 @@ class LOXSolverConfig:
 
         iteration_fields = {
             "max_iterations": self.max_iterations,
-            "projection_iterations": self.projection_iterations,
+            "projection_sweeps_per_iteration": self.projection_sweeps_per_iteration,
         }
         for name, value in iteration_fields.items():
             if not isinstance(value, int) or isinstance(value, bool) or value < 1:

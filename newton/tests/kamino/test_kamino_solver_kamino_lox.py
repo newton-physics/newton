@@ -442,7 +442,7 @@ class _LOXTestCase(unittest.TestCase):
             compute_solution_metrics=compute_solution_metrics,
             lox=kamino_config.LOXSolverConfig(
                 max_iterations=25,
-                projection_iterations=5,
+                projection_sweeps_per_iteration=5,
             ),
         )
 

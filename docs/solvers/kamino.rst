@@ -125,6 +125,12 @@ LOX keeps speculative contacts, whose shapes are still separated, and lets each
 close its gap within the step. It ignores
 ``config.dynamics.cull_speculative_contacts``.
 
+LOX bounds joint drift with ``config.lox.joint_max_correction``,
+``config.lox.position_tolerance`` and ``config.lox.rotation_tolerance``, so it
+ignores ``config.constraints.alpha``. ``config.collect_solver_info`` collects the
+PADMM and DVI iteration logs; LOX reports its iterations and residuals through
+:attr:`~newton.solvers.SolverKamino.status`.
+
 LOX solves its own primal problem, so ``sparse_dynamics``,
 ``config.dynamics.linear_solver_type``, ``config.dynamics.linear_solver_kwargs``
 and ``config.dynamics.preconditioning`` only affect the dual problem of the
@@ -172,7 +178,8 @@ Enable these features through ``config.lox`` after selecting
 * ``contact_spatial_friction=True`` accounts for the shape ``mu_torsional`` and
   ``mu_rolling`` coefficients, both in metres. Sliding, torsion, and rolling
   share one elliptic friction budget. Contacts with zero angular coefficients
-  retain the classical 3D contact solve.
+  retain the classical 3D contact solve. Kamino's primitive collision pipeline
+  provides no angular coefficients.
 
 Inspecting terminal status
 --------------------------

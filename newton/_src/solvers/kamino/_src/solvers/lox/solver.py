@@ -784,7 +784,7 @@ class LOXSolver:
         if not self._problem.system.dynamic_bodies:
             return
         self._projection.project(
-            self._config.projection_iterations,
+            self._config.projection_sweeps_per_iteration,
             self._config.projection_anderson_recycle,
             self._data.state.world_active,
             self._data.state.world_failed,
