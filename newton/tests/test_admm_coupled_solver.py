@@ -1041,7 +1041,8 @@ class TestAdmmModelJointInterface(unittest.TestCase):
             "joint_friction",
         ):
             np.testing.assert_array_equal(getattr(view, name).numpy(), getattr(reference, name).numpy(), err_msg=name)
-        np.testing.assert_array_equal(view.test.dof_gain.numpy(), np.zeros(6, dtype=np.float32))
+        # Custom attributes take their registered default, like a builder-created FREE joint.
+        np.testing.assert_array_equal(view.test.dof_gain.numpy(), np.full(6, 2.5, dtype=np.float32))
 
         # Step from the authored body poses; forward kinematics of the
         # identity-frame ball joint would place both bodies at the origin.
@@ -1056,6 +1057,59 @@ class TestAdmmModelJointInterface(unittest.TestCase):
         self.assertLess(abs(body_q[child, 0] - body_q[parent, 0]), 0.05 * initial_gap)
         self.assertLess(body_q[child, 0], 0.25)
         self.assertGreater(body_q[parent, 0], 0.05)
+
+    def test_split_articulation_proximal_dofs_follow_view_articulations(self):
+        """Map each body to the DOFs of its view articulation, including synthesized FREE roots.
+
+        The chain A-B-C-D alternates entries, so the ``outer`` view holds A's
+        FREE root in one articulation and C's synthesized FREE root with the
+        C-D revolute in another. D moves with C's FREE DOFs, not A's.
+        """
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        inertia = wp.mat33(np.eye(3) * 0.01)
+        a, b, c, d = (
+            builder.add_link(
+                xform=wp.transform(wp.vec3(0.3 * i, 0.0, 0.0), wp.quat_identity()), mass=1.0, inertia=inertia
+            )
+            for i in range(4)
+        )
+        half = wp.transform(wp.vec3(0.15, 0.0, 0.0), wp.quat_identity())
+        half_back = wp.transform(wp.vec3(-0.15, 0.0, 0.0), wp.quat_identity())
+        root = builder.add_joint_free(a)
+        ab = builder.add_joint_ball(a, b, parent_xform=half, child_xform=half_back)
+        bc = builder.add_joint_ball(b, c, parent_xform=half, child_xform=half_back)
+        cd = builder.add_joint_revolute(c, d, axis=(0.0, 1.0, 0.0), parent_xform=half, child_xform=half_back)
+        builder.add_articulation([root, ab, bc, cd])
+        model = builder.finalize(device="cpu")
+
+        solver = SolverCoupledADMM(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(name="outer", solver=SolverFeatherstone, bodies=[a, c, d], joints=[root, cd]),
+                SolverCoupled.Entry(name="middle", solver=SolverFeatherstone, bodies=[b]),
+            ],
+            coupling=SolverCoupledADMM.Config(iterations=4, rho=40.0, gamma=0.5, joint_proximal_bodies=False),
+        )
+
+        entry = solver._entries["outer"]
+        buf = solver._admm_buffers["outer"]
+        starts = buf.body_joint_qd_start.numpy()
+        counts = buf.body_joint_qd_count.numpy()
+        indices = buf.body_joint_qd_indices.numpy()
+        body_dofs = {
+            int(body): indices[starts[local] : starts[local] + counts[local]].tolist()
+            for local, body in enumerate(entry.body_local_to_global.numpy())
+        }
+        # View DOFs: A's FREE root 0-5, C's synthesized FREE root 6-11, C-D revolute 12.
+        self.assertEqual(body_dofs[a], list(range(6)))
+        self.assertEqual(body_dofs[c], list(range(6, 13)))
+        self.assertEqual(body_dofs[d], list(range(6, 13)))
+
+        state_0, state_1 = model.state(), model.state()
+        for _ in range(4):
+            solver.step(state_0, state_1, None, None, 1.0 / 120.0)
+            state_0, state_1 = state_1, state_0
+        self.assertTrue(np.all(np.isfinite(state_0.body_q.numpy())))
 
     def test_joint_proxy_shape_collisions_disabled_after_shape_compaction(self):
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
