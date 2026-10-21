@@ -673,6 +673,7 @@ class ViewerBase(ABC):
         layer._slot_to_shape: np.ndarray | None = None
         layer._slot_to_shape_wp: wp.array | None = None
         layer._shape_to_batch: list[ViewerBase.ShapeInstances | None] | None = None
+        layer._shape_candidates: dict[str, np.ndarray] | None = None
         layer._shape_transparent_mask: np.ndarray | None = None
         layer._shape_batches_have_transparency: bool = False
 
