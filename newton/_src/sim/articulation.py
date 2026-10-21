@@ -426,6 +426,7 @@ def eval_single_articulation_fk(
     for i in range(joint_start, joint_end):
         if joint_mask:
             if not joint_mask[i]:
+                # Descendants read the preserved parent pose and velocity from state.
                 continue
         articulation = joint_articulation[i]
         if articulation == -1:
@@ -563,7 +564,7 @@ def eval_fk(
     body_flag_filter: int = BodyFlags.ALL,
     *,
     joint_mask: wp.array[bool] | None = None,
-):
+) -> None:
     """
     Evaluates the model's forward kinematics given the joint coordinates and updates the state's body information (:attr:`State.body_q` and :attr:`State.body_qd`).
 
@@ -584,10 +585,16 @@ def eval_fk(
         body_flag_filter: Body flag filter controlling which bodies are written to in ``state.body_q`` and
             ``state.body_qd``. Default updates both dynamic and kinematic bodies. Bodies that do not
             match the filter retain their existing values; they are not zeroed or invalidated.
-        joint_mask: Optional per-joint write mask, shape [joint_count], bool. Only enabled joints
-            update their child bodies, using the current state of their parents. Include descendants
-            in the mask to propagate an edited joint through a branch. May be combined with either
-            articulation filter. Masked evaluation uses the serial-per-articulation kernel.
+        joint_mask: Optional bool array on ``model.device``, shape [joint_count]. Only enabled joints
+            update their child bodies; disabled joints preserve the existing body pose and velocity.
+            Enabled joints use their parents' current state, whether preserved or updated by this call.
+            Descendants are not enabled automatically: include them to propagate an edit through a branch.
+            Intersects with ``mask`` or ``indices`` and ``body_flag_filter``. Masked evaluation uses
+            the serial-per-articulation kernel, including on CUDA, and supports autodiff and graph capture.
+
+    Raises:
+        ValueError: If both articulation filters are supplied, or ``joint_mask`` has the wrong dtype,
+            shape, or device.
     """
     # Validate inputs
     if mask is not None and indices is not None:
