@@ -729,7 +729,7 @@ class ViewerGL(ViewerBase):
 
         for key, shapes in self._shape_instances.items():
             n = shapes.xforms.shape[0] if isinstance(shapes.xforms, wp.array) else len(shapes.xforms)
-            if n == 0:
+            if n == 0 and shapes.name not in self.objects:
                 continue
             if shapes.geo_type == nt.GeoType.CAPSULE:
                 capsule_keys.add(key)
@@ -760,7 +760,7 @@ class ViewerGL(ViewerBase):
                 if shapes.name not in self.objects:
                     if shapes.mesh in self.objects and isinstance(self.objects[shapes.mesh], MeshGL):
                         instancer = MeshInstancerGL(
-                            max(n, 1),
+                            max(shapes.candidate_count, 1),
                             self.objects[shapes.mesh],
                             enable_cuda_interop=self._cuda_interop_enabled(self.CudaInterop.INSTANCES),
                         )
@@ -880,10 +880,9 @@ class ViewerGL(ViewerBase):
 
     @override
     def notify_model_changed(self, flags: int) -> None:
+        super().notify_model_changed(flags)
         if self.model is not None and flags & nt.ModelFlags.SHAPE_GEOMETRY:
-            # Regrouping may reuse batch names for other meshes, so rebuild every shape instancer.
-            self._rebuild_shape_batches_for_opacity_groups()
-        super().notify_model_changed(flags & ~nt.ModelFlags.SHAPE_GEOMETRY)
+            self._rebuild_gl_shape_caches()
 
     @override
     def set_visible_worlds(self, worlds: Sequence[int] | None) -> None:
@@ -1902,7 +1901,11 @@ class ViewerGL(ViewerBase):
 
             layer_hidden = self._layer_force_hidden()
             for key, shapes, offset, count in self._packed_groups:
-                visible = self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type) and not layer_hidden
+                visible = (
+                    self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type)
+                    and not layer_hidden
+                    and count > 0
+                )
                 colors = shapes.colors if self.model_changed or shapes.colors_changed else None
                 opacities = (
                     shapes.opacities

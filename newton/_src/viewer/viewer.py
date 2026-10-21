@@ -786,8 +786,8 @@ class ViewerBase(ABC):
 
         The viewer refreshes the cached data affected by ``flags``. It currently
         handles :attr:`ModelFlags.SHAPE_GEOMETRY <newton.ModelFlags.SHAPE_GEOMETRY>`, such as
-        a body variant selection by :meth:`~newton.Model.select_body_variants`, by regrouping
-        the rendered shapes while keeping their compiled geometry. Other flags are ignored
+        a body variant selection by :meth:`~newton.Model.select_body_variants`, by filtering
+        the rendered instances of each shape batch without regrouping or recompiling geometry. Other flags are ignored
         because the viewer reads the corresponding data every frame or does not render it.
 
         .. experimental::
@@ -799,7 +799,7 @@ class ViewerBase(ABC):
         """
         if self.model is None or not flags & newton.ModelFlags.SHAPE_GEOMETRY:
             return
-        self._rebuild_shapes()
+        self._select_shape_instances()
         self.model_changed = True
 
     def _rebuild_shapes(self) -> None:
@@ -1153,7 +1153,11 @@ class ViewerBase(ABC):
 
         # compute shape transforms and render
         for shapes in self._shape_instances.values():
-            visible = self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type) and not layer_hidden
+            visible = (
+                self._should_show_shape(shapes.flags, shapes.static, shapes.geo_type)
+                and not layer_hidden
+                and len(shapes.model_shapes) > 0
+            )
 
             if visible:
                 shapes.update(state, world_offsets=self.world_offsets, layer_xform=self.layer.xform)
@@ -2304,6 +2308,25 @@ class ViewerBase(ABC):
             self.worlds.append(world)
             self.model_shapes.append(shape_index)
 
+        def freeze_candidates(self):
+            """Store the instances added so far as the candidates that :meth:`select` filters."""
+            self._candidates = {
+                "parents": np.asarray(self.parents, dtype=np.int32),
+                "xforms": np.asarray(self.xforms, dtype=np.float32).reshape(-1, 7),
+                "scales": np.asarray(self.scales, dtype=np.float32).reshape(-1, 3),
+                "colors": np.asarray(self.colors, dtype=np.float32).reshape(-1, 3),
+                "opacities": np.asarray(self.opacities, dtype=np.float32),
+                "materials": np.asarray(self.materials, dtype=np.float32).reshape(-1, 4),
+                "worlds": np.asarray(self.worlds, dtype=np.int32),
+                "model_shapes": np.asarray(self.model_shapes, dtype=np.int32),
+            }
+            self.model_shapes = self._candidates["model_shapes"]
+
+        @property
+        def candidate_count(self) -> int:
+            """Number of candidate instances, active or not."""
+            return len(self._candidates["model_shapes"])
+
         def finalize(
             self,
             shape_colors: wp.array[wp.vec3] | None = None,
@@ -2538,15 +2561,11 @@ class ViewerBase(ABC):
         shape_sdf_index = self._shape_sdf_index_host
         shape_count = len(shape_body)
         shape_transparent_mask = np.zeros(shape_count, dtype=bool)
-        shape_active = self.model._shape_active.numpy() if self.model._shape_active is not None else None
 
         # loop over shapes
         for s in range(shape_count):
             # skip shapes from non-visible worlds
             if not self._should_render_world(shape_world[s]):
-                continue
-            # skip body-variant shapes that are not selected
-            if shape_active is not None and not shape_active[s]:
                 continue
 
             geo_type = shape_geo_type[s]
@@ -2698,49 +2717,85 @@ class ViewerBase(ABC):
                 world=shape_world[s],
             )
 
-        # each shape instance object (batch) is associated with one slice
-        batches = list(self._shape_instances.values())
-        offsets = np.cumsum(np.array([0, *[len(b.scales) for b in batches]], dtype=np.int32)).tolist()
-        total_instances = int(offsets[-1])
-
-        # Allocate single contiguous color buffer and copy initial per-batch colors
-        if total_instances:
-            self.model_shape_color = wp.zeros(total_instances, dtype=wp.vec3, device=self.device)
-            self.model_shape_opacity = wp.zeros(total_instances, dtype=wp.float32, device=self.device)
-
-        for b_idx, batch in enumerate(batches):
-            if total_instances:
-                color_array = self.model_shape_color[offsets[b_idx] : offsets[b_idx + 1]]
-                opacity_array = self.model_shape_opacity[offsets[b_idx] : offsets[b_idx + 1]]
-                color_array.assign(wp.array(batch.colors, dtype=wp.vec3, device=self.device))
-                opacity_array.assign(wp.array(batch.opacities, dtype=wp.float32, device=self.device))
-                batch.finalize(shape_colors=color_array, shape_opacities=opacity_array)
-            else:
-                batch.finalize()
-
-        shape_to_slot = np.full(shape_count, -1, dtype=np.int32)
-        for b_idx, batch in enumerate(batches):
-            start = offsets[b_idx]
-            for local_idx, s_idx in enumerate(batch.model_shapes):
-                shape_to_slot[s_idx] = start + local_idx
-        self._shape_to_slot = shape_to_slot
-        slot_to_shape = np.empty(total_instances, dtype=np.int32)
-        for s_idx, slot in enumerate(shape_to_slot):
-            if slot >= 0:
-                slot_to_shape[slot] = s_idx
-        self._slot_to_shape = slot_to_shape
-        self._slot_to_shape_wp = (
-            wp.array(slot_to_shape, dtype=wp.int32, device=self.device) if total_instances else None
-        )
         self._shape_transparent_mask = shape_transparent_mask
         self._shape_batches_have_transparency = bool(np.any(shape_transparent_mask))
 
         # Build shape -> batch reference mapping for change signalling
         shape_to_batch: list[ViewerBase.ShapeInstances | None] = [None] * shape_count
-        for batch in batches:
+        for batch in self._shape_instances.values():
+            batch.freeze_candidates()
             for s_idx in batch.model_shapes:
                 shape_to_batch[s_idx] = batch
         self._shape_to_batch = shape_to_batch
+        self._shape_candidates = None
+        self._select_shape_instances()
+
+    def _select_shape_instances(self) -> None:
+        """Upload the active candidate instances of every batch and rebuild the slot maps.
+
+        Batches keep every candidate shape, including inactive body-variant shapes, so a
+        variant selection only filters the candidates without regrouping or recompiling geometry.
+        All batches are filtered together and uploaded with one transfer per attribute; each
+        batch views its slice of the packed arrays.
+        """
+        batches = list(self._shape_instances.values())
+        if not batches:
+            self.model_shape_color = None
+            self.model_shape_opacity = None
+            self._shape_to_slot = np.full(len(self._shape_to_batch), -1, dtype=np.int32)
+            self._slot_to_shape = np.empty(0, dtype=np.int32)
+            self._slot_to_shape_wp = None
+            return
+        if self._shape_candidates is None:
+            self._shape_candidates = {
+                name: np.concatenate([batch._candidates[name] for batch in batches]) for name in batches[0]._candidates
+            }
+        candidates = self._shape_candidates
+        candidate_counts = [batch.candidate_count for batch in batches]
+        if self.model._shape_active is not None:
+            keep = self.model._shape_active.numpy()[candidates["model_shapes"]]
+            counts = np.add.reduceat(keep, np.cumsum([0, *candidate_counts[:-1]])) if keep.size else []
+            candidates = {name: values[keep] for name, values in candidates.items()}
+        else:
+            counts = candidate_counts
+        offsets = np.cumsum([0, *counts]).tolist()
+        total_instances = int(offsets[-1])
+
+        def upload(name, dtype):
+            return wp.array(candidates[name], dtype=dtype, device=self.device)
+
+        empty = {
+            name: wp.empty(0, dtype=dtype, device=self.device)
+            for name, dtype in (("int", int), ("transform", wp.transform), ("vec3", wp.vec3), ("vec4", wp.vec4))
+        }
+        empty["float32"] = wp.empty(0, dtype=wp.float32, device=self.device)
+        packed = {
+            "parents": (upload("parents", int), "int"),
+            "xforms": (upload("xforms", wp.transform), "transform"),
+            "scales": (upload("scales", wp.vec3), "vec3"),
+            "colors": (upload("colors", wp.vec3), "vec3"),
+            "opacities": (upload("opacities", wp.float32), "float32"),
+            "materials": (upload("materials", wp.vec4), "vec4"),
+            "worlds": (upload("worlds", int), "int"),
+            "world_xforms": (wp.zeros(total_instances, dtype=wp.transform, device=self.device), "transform"),
+        }
+        self.model_shape_color = packed["colors"][0] if total_instances else None
+        self.model_shape_opacity = packed["opacities"][0] if total_instances else None
+
+        for b_idx, batch in enumerate(batches):
+            lo, hi = offsets[b_idx], offsets[b_idx + 1]
+            for name, (values, kind) in packed.items():
+                setattr(batch, name, values[lo:hi] if hi > lo else empty[kind])
+            batch.model_shapes = candidates["model_shapes"][lo:hi]
+
+        slot_to_shape = candidates["model_shapes"].astype(np.int32)
+        shape_to_slot = np.full(len(self._shape_to_batch), -1, dtype=np.int32)
+        shape_to_slot[slot_to_shape] = np.arange(total_instances, dtype=np.int32)
+        self._shape_to_slot = shape_to_slot
+        self._slot_to_shape = slot_to_shape
+        self._slot_to_shape_wp = (
+            wp.array(slot_to_shape, dtype=wp.int32, device=self.device) if total_instances else None
+        )
 
         # Note: SDF isomesh instances are populated lazily when show_collision is True
         # to avoid GPU memory allocation until actually needed for visualization
