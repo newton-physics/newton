@@ -45,6 +45,9 @@ Supported hook signatures are:
     def coupling_notify_iteration_restarts(enabled) -> None: ...
 
 
+    def coupling_effective_mass_model_flags() -> int: ...
+
+
     def coupling_supports_inertial_property_refresh() -> bool: ...
 
 
@@ -96,7 +99,7 @@ from typing import TYPE_CHECKING
 import warp as wp
 
 from ...geometry import ParticleFlags
-from ...sim import BodyFlags, StateFlags
+from ...sim import BodyFlags, ModelFlags, StateFlags
 from .proxy_utils import (
     filter_proxy_rigid_contacts_kernel,
     harvest_proxy_momentum_forces_kernel,
@@ -252,15 +255,22 @@ class CouplingInterface:
     def coupling_notify_iteration_restarts(self, enabled: bool) -> None:
         """Declare whether the coupler may restart a step's solve.
 
-        Called once after the entry solvers are constructed, before any other hook. With ``enabled``
-        false, ``iteration_restart`` is only passed with ``dt=0`` during a reset, so a solver can skip
-        saving the state a restart restores. A solver may reject unsupported coupled options here.
+        Called once after the entry solvers are constructed, before any other hook, so it is also where a
+        solver rejects coupled options it does not support. With ``enabled`` false, ``iteration_restart``
+        is only passed with ``dt=0`` during a reset, so a solver can skip saving the state a restart restores.
 
         Args:
             enabled: Whether ``coupling_notify_input_state_update`` may receive ``iteration_restart=True``
                 between steps.
         """
         del enabled
+
+    def coupling_effective_mass_model_flags(self) -> int:
+        """Return the :class:`~newton.ModelFlags` whose notification changes this solver's effective masses.
+
+        Proxy and ADMM couplers evaluate effective masses again on the host after these notifications.
+        """
+        return int(ModelFlags.BODY_INERTIAL_PROPERTIES)
 
     def coupling_supports_inertial_property_refresh(self) -> bool:
         """Return whether inertial property refresh is safe during graph capture.

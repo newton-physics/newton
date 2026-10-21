@@ -1,0 +1,1 @@
+Add `CouplingInterface.coupling_effective_mass_model_flags()`, which names the `ModelFlags` after which `SolverCoupledProxy` and `SolverCoupledADMM` evaluate a solver's effective masses again. The default keeps `BODY_INERTIAL_PROPERTIES`.

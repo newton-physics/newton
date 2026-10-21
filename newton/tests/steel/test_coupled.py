@@ -122,9 +122,10 @@ def _coupled(model, boxes, rigid_factory=_steel, *, iterations=1, mode="lagged",
 class _Rollout:
     """Owns a solver, a double-buffered state and the outer contact buffer."""
 
-    def __init__(self, model, solver):
+    def __init__(self, model, solver, dt=DT):
         self.model = model
         self.solver = solver
+        self.dt = dt
         self.state_0 = model.state()
         self.state_1 = model.state()
         self.control = model.control()
@@ -137,7 +138,7 @@ class _Rollout:
     def step(self):
         self.pipeline.collide(self.state_0, self.contacts)
         self.state_0.clear_forces()
-        self.solver.step(self.state_0, self.state_1, self.control, self.contacts, DT)
+        self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.dt)
         self.state_0, self.state_1 = self.state_1, self.state_0
 
     def run(self, steps):
@@ -179,8 +180,8 @@ def test_iteration_restart_preserves_patch_history(test, device):
         test.assertEqual(float(np.abs(feedback).max()), 0.0, f"iterations={iterations}")
 
 
-def test_restarts_keep_mass_matrix_cadence(test, device):
-    """Refresh a lagged mass matrix on the coupled-step cadence, however often the coupler repeats a step or substeps."""
+def test_coupled_mass_matrix_cadence(test, device):
+    """Count entry substeps for the mass-matrix cadence, and reject a lagged matrix under iteration restarts."""
 
     def build(cloth):
         builder = newton.ModelBuilder()
@@ -220,27 +221,30 @@ def test_restarts_keep_mass_matrix_cadence(test, device):
             builder.color()
         return builder.finalize(device=device)
 
-    def steel(view):
-        return _steel(view, update_mass_matrix_interval=5)
+    def steel(interval):
+        return lambda view: _steel(view, update_mass_matrix_interval=interval)
 
-    reference_model = build(cloth=False)
-    reference_q = _Rollout(reference_model, steel(reference_model)).run(60)
-    eager_model = build(cloth=False)
-    eager_q = _Rollout(eager_model, _steel(eager_model)).run(60)
+    standalone = {}
+    for interval, substeps in ((1, 1), (5, 1), (1, 3), (5, 3)):
+        model = build(cloth=False)
+        rollout = _Rollout(model, steel(interval)(model), dt=DT / substeps)
+        standalone[interval, substeps] = rollout.run(60 * substeps)[substeps - 1 :: substeps]
     # The lagged matrix changes the swing, so the cadence is observable.
-    test.assertGreater(float(np.abs(reference_q - eager_q).max()), 1.0e-4)
-    for iterations in (1, 3):
+    test.assertGreater(float(np.abs(standalone[5, 1] - standalone[1, 1]).max()), 1.0e-4)
+    # Entry substeps count as Steel steps, so a coupled run follows standalone Steel at the substep dt.
+    for interval, iterations, substeps in ((1, 3, 3), (5, 1, 1), (5, 1, 3)):
         model = build(cloth=True)
-        coupled_q = _Rollout(model, _coupled(model, None, steel, iterations=iterations)).run(60)
-        np.testing.assert_allclose(coupled_q, reference_q, atol=1.0e-6, err_msg=f"iterations={iterations}")
-    # With substeps the matrix is rebuilt at the first substep of a due coupled step, also when repeated.
-    substepped = {}
-    for iterations in (1, 3):
-        model = build(cloth=True)
-        substepped[iterations] = _Rollout(model, _coupled(model, None, steel, iterations=iterations, substeps=3)).run(
-            60
+        coupled = _coupled(model, None, steel(interval), iterations=iterations, substeps=substeps)
+        np.testing.assert_allclose(
+            _Rollout(model, coupled).run(60),
+            standalone[interval, substeps],
+            atol=1.0e-6,
+            err_msg=f"interval={interval} iterations={iterations} substeps={substeps}",
         )
-    np.testing.assert_allclose(substepped[3], substepped[1], atol=1.0e-6, err_msg="substeps=3")
+    # A restarted solve would reuse a matrix that a later substep of the first solve rebuilt.
+    model = build(cloth=True)
+    with test.assertRaisesRegex(NotImplementedError, "update_mass_matrix_interval"):
+        _coupled(model, None, steel(5), iterations=3)
 
 
 def test_contact_feedback_is_consumed_exactly(test, device):
@@ -892,10 +896,10 @@ def test_effective_mass_ignores_loop_closures(test, device):
 
 
 def test_unsupported_roles_raise(test, device):
-    """Reject owning particles and acting as a proxy destination."""
+    """Reject owning particles at construction and acting as a proxy destination on the first step."""
     model, _ = _build_box_cloth(device)
-    with test.assertRaises(NotImplementedError):
-        solver = SolverCoupled(
+    with test.assertRaisesRegex(NotImplementedError, "particles"):
+        SolverCoupled(
             model=model,
             entries=[
                 SolverCoupled.Entry(
@@ -907,7 +911,6 @@ def test_unsupported_roles_raise(test, device):
                 ),
             ],
         )
-        _Rollout(model, solver).step()
 
     builder = newton.ModelBuilder()
     builder.add_ground_plane()
@@ -917,23 +920,24 @@ def test_unsupported_roles_raise(test, device):
     builder.add_shape_box(soft_box, hx=0.1, hy=0.1, hz=0.1)
     builder.color()
     model = builder.finalize(device=device)
-    with test.assertRaises(NotImplementedError):
-        solver = SolverCoupledProxy(
-            model=model,
-            entries=[
-                SolverCoupledProxy.Entry(
-                    name="vbd",
-                    solver=lambda v: SolverVBD(model=v, iterations=4, rigid_compliant_alm=True),
-                    bodies=[soft_box],
-                    joints=[1],
-                ),
-                SolverCoupledProxy.Entry(name="rigid", solver=_steel, bodies=[rigid_box], joints=[0]),
-            ],
-            coupling=SolverCoupledProxy.Config(
-                proxies=[SolverCoupledProxy.Proxy(source="vbd", destination="rigid", bodies=[soft_box])]
+    solver = SolverCoupledProxy(
+        model=model,
+        entries=[
+            SolverCoupledProxy.Entry(
+                name="vbd",
+                solver=lambda v: SolverVBD(model=v, iterations=4, rigid_compliant_alm=True),
+                bodies=[soft_box],
+                joints=[1],
             ),
-        )
-        _Rollout(model, solver).step()
+            SolverCoupledProxy.Entry(name="rigid", solver=_steel, bodies=[rigid_box], joints=[0]),
+        ],
+        coupling=SolverCoupledProxy.Config(
+            proxies=[SolverCoupledProxy.Proxy(source="vbd", destination="rigid", bodies=[soft_box])]
+        ),
+    )
+    rollout = _Rollout(model, solver)
+    with test.assertRaisesRegex(NotImplementedError, "proxy coupling destination"):
+        rollout.step()
 
 
 def _build_split_arm(device, *, base: bool, world_count: int = 2):
@@ -1017,7 +1021,7 @@ class TestCoupledSolverSteel(unittest.TestCase):
 for _name, _func in (
     ("test_iteration_restart_preserves_patch_history", test_iteration_restart_preserves_patch_history),
     ("test_in_place_restart_refreshes_kinematics", test_in_place_restart_refreshes_kinematics),
-    ("test_restarts_keep_mass_matrix_cadence", test_restarts_keep_mass_matrix_cadence),
+    ("test_coupled_mass_matrix_cadence", test_coupled_mass_matrix_cadence),
     ("test_contact_feedback_is_consumed_exactly", test_contact_feedback_is_consumed_exactly),
     ("test_box_lands_on_cloth_like_mujoco", test_box_lands_on_cloth_like_mujoco),
     ("test_worlds_are_isolated", test_worlds_are_isolated),

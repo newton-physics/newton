@@ -351,6 +351,27 @@ class _StepCountingCopySolver(SolverBase, CouplingInterface):
             wp.copy(state_out.particle_qd, state_in.particle_qd)
 
 
+class _EffectiveMassCountingSolver(_StepCountingCopySolver):
+    """Copy solver that counts effective-mass evaluations and names its own refresh flags."""
+
+    refresh_flags = int(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+
+    def __init__(self, model):
+        super().__init__(model)
+        self.effective_mass_evals = 0
+
+    def coupling_effective_mass_model_flags(self) -> int:
+        return self.refresh_flags
+
+    def coupling_eval_effective_mass_block(self, *args, **kwargs):
+        self.effective_mass_evals += 1
+        super().coupling_eval_effective_mass_block(*args, **kwargs)
+
+
+class _JointEffectiveMassCountingSolver(_EffectiveMassCountingSolver):
+    refresh_flags = int(newton.ModelFlags.JOINT_PROPERTIES)
+
+
 class _BodyObservableCopySolver(_StepCountingCopySolver):
     """Copy solver that fills body-indexed solver observables."""
 
@@ -3452,6 +3473,37 @@ class TestSolverCoupledBodyProxyInertia(unittest.TestCase):
 
         mapping = coupled._proxy_mappings[0]
         _assert_proxy_reset_buffers(self, model, coupled, mapping, model.body_world)
+
+    def test_effective_mass_refresh_follows_source_flags(self):
+        """Evaluate proxy effective masses again only after a notification that an entry names."""
+        for source, refreshing in (
+            (_EffectiveMassCountingSolver, newton.ModelFlags.BODY_INERTIAL_PROPERTIES),
+            (_JointEffectiveMassCountingSolver, newton.ModelFlags.JOINT_PROPERTIES),
+        ):
+            builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+            body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+            model = builder.finalize(device="cpu")
+            coupled = SolverCoupledProxy(
+                model=model,
+                entries=[
+                    SolverCoupled.Entry(name="src", solver=source, bodies=[body]),
+                    SolverCoupled.Entry(name="dst", solver=_StepCountingCopySolver),
+                ],
+                coupling=SolverCoupledProxy.Config(
+                    proxies=[SolverCoupledProxy.Proxy(source="src", destination="dst", bodies=[body])]
+                ),
+            )
+            solver = _StepCountingCopySolver.instances["src"]
+            for flag in (
+                newton.ModelFlags.JOINT_PROPERTIES,
+                newton.ModelFlags.JOINT_DOF_PROPERTIES,
+                newton.ModelFlags.BODY_PROPERTIES,
+                newton.ModelFlags.BODY_INERTIAL_PROPERTIES,
+            ):
+                before = solver.effective_mass_evals
+                coupled.notify_model_changed(flag)
+                expected = 1 if flag in (refreshing, newton.ModelFlags.BODY_INERTIAL_PROPERTIES) else 0
+                self.assertEqual(solver.effective_mass_evals - before, expected, msg=f"{source.__name__} {flag!r}")
 
     def test_body_proxy_aitken_relaxation_converges_affine_fixed_point(self):
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))

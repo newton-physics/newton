@@ -2602,13 +2602,10 @@ class SolverCoupled(SolverBase, CouplingInterface):
 
     def _effective_mass_refresh_flags(self) -> int:
         """Return the model flags after which entry effective masses are evaluated again."""
-        return int(
-            ModelFlags.JOINT_PROPERTIES
-            | ModelFlags.JOINT_DOF_PROPERTIES
-            | ModelFlags.BODY_PROPERTIES
-            | ModelFlags.BODY_INERTIAL_PROPERTIES
-            | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
-        )
+        flags = int(ModelFlags.BODY_INERTIAL_PROPERTIES)
+        for entry in self._entries.values():
+            flags |= int(entry.solver.coupling_effective_mass_model_flags())
+        return flags
 
     def _gravity_acceleration_refresh_flags(self) -> int:
         return int(ModelFlags.MODEL_PROPERTIES | ModelFlags.BODY_INERTIAL_PROPERTIES)
