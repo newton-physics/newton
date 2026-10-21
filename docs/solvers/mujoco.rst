@@ -1124,6 +1124,12 @@ by joint type:
   ``mjData.mocap_pos`` and ``mjData.mocap_quat`` instead. A D6 root
   with all axes locked (e.g. imported from a generic USD
   ``PhysicsJoint``) is treated the same way.
+- **Kinematic roots without mass or inertia** also become mocap bodies
+  without MuJoCo joints, posed from :attr:`~newton.State.joint_q` every
+  step. MuJoCo requires mass of movable bodies, so such a root can never
+  be dynamic. Mocap bodies have zero velocity in MuJoCo: contact friction
+  against the root and its dynamic descendants do not see its motion.
+  Give the body mass if that coupling matters.
 - **World-attached shapes that are not part of an articulation**
   remain ordinary static MuJoCo geometry rather than mocap bodies.
 
@@ -1183,13 +1189,12 @@ Errors and warnings
 ~~~~~~~~~~~~~~~~~~~
 
 - Making a root without a target, or any non-root body, kinematic raises
-  :class:`ValueError`. The check runs on eager notifications; inside CUDA
-  graph capture such a body is not detected and stays dynamic in MuJoCo.
-- A kinematic root without positive mass and inertia raises
-  :class:`ValueError` at solver construction: MuJoCo requires them of
-  every movable body.
+  :class:`ValueError`, as does making a massless kinematic root dynamic.
+  These checks run on eager notifications; inside CUDA graph capture an
+  invalid flag is not detected.
 - ``mujoco:kinematic_switchable`` on a body that is not a root with joint
-  DOFs is ignored with a :class:`~newton.exceptions.NewtonWarning`.
+  DOFs, or on a root without mass or inertia, is ignored with a
+  :class:`~newton.exceptions.NewtonWarning`.
 - An explicit ``njmax`` too small for the welds of switchable roots
   issues a :class:`~newton.exceptions.NewtonWarning`; constraints may
   overflow once those roots turn kinematic.

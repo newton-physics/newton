@@ -2570,18 +2570,74 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                     solver.mjw_data.mocap_pos.numpy()[0, mocap], (x + 0.5 * 4.0 * dt, 0.0, 1.0), atol=1.0e-6
                 )
 
-    def test_massless_kinematic_root_raises(self):
-        """MuJoCo rejects movable bodies without mass; kinematic roots must not slip past that check."""
+    @staticmethod
+    def _mocap_pose(solver: SolverMuJoCo, mocap: int) -> tuple[np.ndarray, np.ndarray]:
+        if solver.use_mujoco_cpu:
+            return solver.mj_data.mocap_pos[mocap], solver.mj_data.mocap_quat[mocap]
+        return solver.mjw_data.mocap_pos.numpy()[0, mocap], solver.mjw_data.mocap_quat.numpy()[0, mocap]
+
+    def test_massless_kinematic_root_is_mocap(self):
+        """A massless kinematic root cannot be welded, so it is driven as a mocap body like a fixed root."""
         for use_mujoco_cpu in (False, True):
             with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
                 builder = newton.ModelBuilder()
-                platform = builder.add_body(is_kinematic=True, mass=0.0)
-                builder.add_shape_box(
-                    platform, hx=1.0, hy=1.0, hz=0.05, cfg=newton.ModelBuilder.ShapeConfig(density=0.0)
-                )
+                root = builder.add_link(is_kinematic=True)
+                child = builder.add_link()
+                builder.add_shape_capsule(child, radius=0.03, half_height=0.1)
+                parent_xform = wp.transform((0.0, 0.0, 1.0), wp.quat_identity())
+                joints = [
+                    builder.add_joint_revolute(-1, root, parent_xform=parent_xform, axis=newton.Axis.Z),
+                    builder.add_joint_revolute(
+                        root, child, parent_xform=wp.transform((0.3, 0.0, 0.0), wp.quat_identity()), axis=newton.Axis.Y
+                    ),
+                ]
+                builder.add_articulation(joints)
                 model = builder.finalize()
-                with self.assertRaisesRegex(ValueError, "no mass or inertia"):
-                    SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+                self.assertEqual(solver.mj_model.nmocap, 1)
+                self.assertEqual(solver.mj_model.njnt, 1)
+                self.assertEqual(solver.mj_model.neq, 0)
+
+                state_0, state_1, control = model.state(), model.state(), model.control()
+                dt, w = 0.002, 2.0
+                for i in range(100):
+                    q = state_0.joint_q.numpy()
+                    qd = state_0.joint_qd.numpy()
+                    q[0], qd[0] = w * i * dt, w
+                    state_0.joint_q.assign(q)
+                    state_0.joint_qd.assign(qd)
+                    solver.step(state_0, state_1, control, None, dt)
+                    state_0, state_1 = state_1, state_0
+                angle = w * 99 * dt
+                self.assertAlmostEqual(float(state_0.joint_q.numpy()[0]), angle, places=5)
+                pos, quat = self._mocap_pose(solver, 0)
+                np.testing.assert_allclose(pos, (0.0, 0.0, 1.0), atol=1.0e-6)
+                np.testing.assert_allclose(abs(quat[3]), np.sin(0.5 * angle), atol=1.0e-5)
+                np.testing.assert_allclose(
+                    state_0.body_q.numpy()[child, :2], (0.3 * np.cos(angle), 0.3 * np.sin(angle)), atol=1.0e-4
+                )
+
+                model.body_flags.fill_(int(BodyFlags.DYNAMIC))
+                with self.assertRaisesRegex(ValueError, "cannot be dynamic"):
+                    solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
+
+    def test_fixed_root_mocap_follows_joint_frames(self):
+        """Editing a fixed root's joint frames moves its MuJoCo mocap body on both backends."""
+        for use_mujoco_cpu in (False, True):
+            with self.subTest(use_mujoco_cpu=use_mujoco_cpu):
+                builder = newton.ModelBuilder()
+                base = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+                builder.add_articulation([builder.add_joint_fixed(-1, base)])
+                model = builder.finalize()
+                solver = SolverMuJoCo(model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True)
+                self.assertEqual(solver.mj_model.nmocap, 1)
+
+                parent_xform = wp.transform((0.5, -0.2, 1.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.3))
+                model.joint_X_p.assign([parent_xform])
+                solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES)
+                pos, quat = self._mocap_pose(solver, 0)
+                np.testing.assert_allclose(pos, parent_xform.p, atol=1.0e-6)
+                np.testing.assert_allclose(quat, [parent_xform.q[3], *parent_xform.q[:3]], atol=1.0e-6)
 
     def test_switchable_roots_reserve_weld_rows(self):
         """njmax leaves room for the welds of roots that start dynamic, or warns when it cannot."""

@@ -125,7 +125,6 @@ from .kernels import (
     update_kinematic_root_state_kernel,
     update_kinematic_weld_solref_kernel,
     update_mimic_eq_data_and_active_kernel,
-    update_mocap_transforms_kernel,
     update_model_properties_kernel,
     update_pair_properties_kernel,
     update_site_properties_kernel,
@@ -4502,7 +4501,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self.kinematic_target_body: wp.array[wp.int32] | None = None
         """MuJoCo body of each kinematic root with a target. Shape [ntarget], dtype int32."""
         self._kinematic_needs_target: np.ndarray | None = None
-        self._jnt_kinematic_mocap: wp.array[wp.int32] | None = None
+        self._jnt_mocap: wp.array[wp.int32] | None = None
+        self._jnt_mocap_lead: wp.array[wp.bool] | None = None
+        self._kinematic_mocap_root_bodies: np.ndarray | None = None
         self._kinematic_weld_dt: float | None = None
         self.mjc_actuator_ctrl_source: wp.array[wp.int32] | None = None
         """Control source for each MuJoCo actuator.
@@ -4960,7 +4961,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if self.use_mujoco_cpu:
             self._apply_mjc_control(self.model, state_in, control, self.mj_data)
             push_state = self.update_data_interval > 0 and self._step % self.update_data_interval == 0
-            if push_state or self._jnt_kinematic_mocap is not None:
+            if push_state or self._jnt_mocap is not None:
                 # XXX updating the mujoco state at every step may introduce numerical instability
                 self._update_mjc_data(self.mj_data, self.model, state_in, dt=dt, write_state=push_state)
             self.mj_model.opt.timestep = dt
@@ -4985,7 +4986,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self._enable_rne_postconstraint(state_out, observables)
                 self._apply_mjc_control(self.model, state_in, control, self.mjw_data)
                 push_state = self.update_data_interval > 0 and self._step % self.update_data_interval == 0
-                if push_state or self._jnt_kinematic_mocap is not None:
+                if push_state or self._jnt_mocap is not None:
                     self._update_mjc_data(self.mjw_data, self.model, state_in, dt=dt, write_state=push_state)
                 self.mjw_model.opt.timestep.fill_(dt)
                 if not self.mjw_model.opt.run_collision_detection:
@@ -5893,7 +5894,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             xfrc = mj_data.xfrc_applied
             nworld = mj_data.nworld
         else:
-            effective_dof_count = model.joint_dof_count - self._total_loop_joint_dofs
+            effective_dof_count = model.joint_dof_count - self._total_unmapped_joint_dofs
             single_world_template = len(mj_data.qfrc_applied) < effective_dof_count
             ctrl = wp.zeros((1, len(mj_data.ctrl)), dtype=wp.float32, device=model.device)
             qfrc = wp.zeros((1, len(mj_data.qfrc_applied)), dtype=wp.float32, device=model.device)
@@ -6018,7 +6019,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         dt: float = 0.0,
         write_state: bool = True,
     ):
-        """Push Newton joint state to MuJoCo and place kinematic-root mocap targets.
+        """Push Newton joint state to MuJoCo and pose the mocap bodies driven by Newton joints.
 
         Args:
             dt: Step size the targets lead the prescribed pose by; ``0`` places
@@ -6034,7 +6035,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             nworld = mj_data.nworld
         else:
             # we have an MjData object from Mujoco
-            effective_coord_count = model.joint_coord_count - self._total_loop_joint_coords
+            effective_coord_count = model.joint_coord_count - self._total_unmapped_joint_coords
             single_world_template = len(mj_data.qpos) < effective_coord_count
             expected_qpos = (
                 effective_coord_count // model.world_count if single_world_template else effective_coord_count
@@ -6057,9 +6058,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         mujoco_attrs = getattr(model, "mujoco", None)
         dof_ref = getattr(mujoco_attrs, "dof_ref", None) if mujoco_attrs is not None else None
         mjw_data = getattr(self, "mjw_data", None)
-        jnt_kinematic_mocap = self._jnt_kinematic_mocap if mjw_data is not None else None
+        jnt_mocap = self._jnt_mocap if mjw_data is not None else None
         lookahead = 0.0
-        if jnt_kinematic_mocap is not None and dt > 0.0:
+        if self.kinematic_target_eq is not None and mjw_data is not None and dt > 0.0:
             lookahead = self._update_kinematic_weld_solref(dt)
         sleep_redirect = is_mjwarp and self.enable_sleeping and write_state
         wp.launch(
@@ -6082,20 +6083,21 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 dof_ref,
                 self.mj_q_start,
                 self.mj_qd_start,
-                jnt_kinematic_mocap,
+                jnt_mocap,
+                self._jnt_mocap_lead,
                 lookahead,
                 write_state,
             ],
             outputs=[
                 self._sleep_qpos if sleep_redirect else qpos,
                 qvel,
-                mjw_data.mocap_pos if jnt_kinematic_mocap is not None else None,
-                mjw_data.mocap_quat if jnt_kinematic_mocap is not None else None,
+                mjw_data.mocap_pos if jnt_mocap is not None else None,
+                mjw_data.mocap_quat if jnt_mocap is not None else None,
             ],
             device=model.device,
         )
 
-        if not is_mjwarp and jnt_kinematic_mocap is not None:
+        if not is_mjwarp and jnt_mocap is not None:
             mj_data.mocap_pos[:] = mjw_data.mocap_pos.numpy()[0]
             mj_data.mocap_quat[:] = mjw_data.mocap_quat.numpy()[0]
         if not write_state:
@@ -6247,7 +6249,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             nworld = mj_data.nworld
         else:
             # we have an MjData object from Mujoco
-            effective_coord_count = model.joint_coord_count - self._total_loop_joint_coords
+            effective_coord_count = model.joint_coord_count - self._total_unmapped_joint_coords
             single_world_template = len(mj_data.qpos) < effective_coord_count
             qpos = wp.array([mj_data.qpos], dtype=wp.float32, device=model.device)
             qvel = wp.array([mj_data.qvel], dtype=wp.float32, device=model.device)
@@ -7195,8 +7197,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 stacklevel=2,
             )
 
-        # Count the total joint coordinates and DOFs that belong to loop joints
-        # across all worlds (not added to MuJoCo as joints). When
+        # Count the total joint coordinates and DOFs without MuJoCo joints across
+        # all worlds: loop joints here, massless kinematic roots once exported. When
         # separate_worlds=True, joints_loop is per-template so we multiply by
         # world_count; otherwise it already spans all worlds.
         joint_q_start_np = model.joint_q_start.numpy()
@@ -7207,11 +7209,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             loop_coord_count += int(joint_q_start_np[j + 1]) - int(joint_q_start_np[j])
             loop_dof_count += int(joint_qd_start_np[j + 1]) - int(joint_qd_start_np[j])
         if separate_worlds:
-            self._total_loop_joint_coords = loop_coord_count * model.world_count
-            self._total_loop_joint_dofs = loop_dof_count * model.world_count
+            self._total_unmapped_joint_coords = loop_coord_count * model.world_count
+            self._total_unmapped_joint_dofs = loop_dof_count * model.world_count
         else:
-            self._total_loop_joint_coords = loop_coord_count
-            self._total_loop_joint_dofs = loop_dof_count
+            self._total_unmapped_joint_coords = loop_coord_count
+            self._total_unmapped_joint_dofs = loop_dof_count
 
         selected_shapes_set = set(selected_shapes)
         mujoco_attrs = getattr(model, "mujoco", None)
@@ -7878,9 +7880,26 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     NewtonWarning,
                     stacklevel=_external_warning_stacklevel(),
                 )
-        body_needs_target = (
-            needs_target[: template_bodies * model.world_count].reshape(model.world_count, -1).any(axis=0)
-        )
+
+        def any_world(mask: np.ndarray) -> np.ndarray:
+            return mask[: template_bodies * model.world_count].reshape(model.world_count, -1).any(axis=0)
+
+        # MuJoCo rejects movable bodies without mass and inertia. A massless body
+        # can never be dynamic, so a massless kinematic root is driven like a
+        # fixed root: as a mocap body without DOFs.
+        massless = (body_mass <= MJ_MINVAL) | (np.linalg.eigvalsh(body_inertia).min(axis=1) <= MJ_MINVAL)
+        body_massless = any_world(massless)
+        body_kinematic = any_world((body_flags & int(BodyFlags.KINEMATIC)) != 0)
+        body_needs_target = any_world(needs_target) & ~body_massless
+        unswitchable = np.flatnonzero(any_world(needs_target) & body_massless & ~body_kinematic)
+        if unswitchable.size:
+            warnings.warn(
+                f"Bodies {[model.body_label[b] for b in unswitchable[:5]]} cannot be switched to kinematic: "
+                "SolverMuJoCo holds kinematic roots with a weld, which needs positive mass and inertia.",
+                NewtonWarning,
+                stacklevel=_external_warning_stacklevel(),
+            )
+        kinematic_mocap_root_joints = []
         for j in joints_with_bodies:
             parent = int(joint_parent[j])
             j_type = int(joint_type[j])
@@ -7892,9 +7911,20 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             is_fixed_root = parent == -1 and (
                 j_type == JointType.FIXED or (j_type == JointType.D6 and joint_dof_dim[j][0] + joint_dof_dim[j][1] == 0)
             )
-            body, parent, child, child_is_kinematic, j_type, child_xform = add_body_from_joint(
-                int(j), mocap=is_fixed_root
+            template_child = int(joint_child[j]) % template_bodies
+            is_kinematic_mocap_root = (
+                parent == -1 and not is_fixed_root and body_kinematic[template_child] and body_massless[template_child]
             )
+            body, parent, child, child_is_kinematic, j_type, child_xform = add_body_from_joint(
+                int(j), mocap=is_fixed_root or is_kinematic_mocap_root
+            )
+            if is_kinematic_mocap_root:
+                kinematic_mocap_root_joints.append(int(j))
+                worlds = model.world_count if separate_worlds else 1
+                self._total_unmapped_joint_coords += worlds * int(joint_q_start_np[j + 1] - joint_q_start_np[j])
+                self._total_unmapped_joint_dofs += worlds * int(joint_qd_start_np[j + 1] - joint_qd_start_np[j])
+                add_geoms(child)
+                continue
             if parent == -1 and not is_fixed_root and body_needs_target[child % template_bodies]:
                 kinematic_target_roots.append((int(j), body, child_is_kinematic))
             joint_pos = child_xform.p
@@ -8681,19 +8711,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             self.mjc_actuator_to_newton_ball_jnt = None
             self.mjc_actuator_to_newton_actuator_idx = None
 
-        # MuJoCo rejects movable bodies without mass and inertia, but only sees
-        # the geom-inferred inertia at compile time; Newton's zero is set later.
-        massless = []
-        for j, _, _ in kinematic_target_roots:
-            child = int(joint_child[j])
-            if body_mass[child] <= MJ_MINVAL or np.linalg.eigvalsh(body_inertia[child]).min() <= MJ_MINVAL:
-                massless.append(model.body_label[child])
-        if massless:
-            raise ValueError(
-                f"Kinematic root bodies {massless[:5]} have no mass or inertia. SolverMuJoCo holds kinematic "
-                "roots with a weld, and MuJoCo requires movable bodies to have positive mass and inertia."
-            )
-
         # MuJoCo has no prescribed DOFs; its idiom is a weld to a mocap target.
         # Only roots kinematic or marked switchable at conversion get one.
         kinematic_target_names = []
@@ -8739,7 +8756,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Validate that all non-loop joints got valid MuJoCo start indices
         for j_template in range(n_template_joints):
             j_idx = selected_joints[j_template]
-            if joint_articulation[j_idx] >= 0:
+            if joint_articulation[j_idx] >= 0 and j_idx not in kinematic_mocap_root_joints:
                 assert mj_q_start_np[j_template] >= 0, (
                     f"Non-loop joint {j_idx} (template {j_template}) has no MuJoCo qpos mapping"
                 )
@@ -8907,9 +8924,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
             # Create mjc_mocap_to_newton_jnt: MuJoCo[world, mocap] -> Newton joint index.
             # These mocap bodies are Newton roots attached to world by a
-            # FIXED or fully-locked D6 joint. Static world shapes are not
+            # FIXED or fully-locked D6 joint, or massless kinematic roots.
+            # Static world shapes and kinematic weld targets are not
             # represented here.
             nmocap = self.mj_model.nmocap
+            # Template joint -> mocap body posed from that joint's state each step.
+            jnt_mocap = np.full(n_template_joints, -1, dtype=np.int32)
+            jnt_mocap_lead = np.zeros(n_template_joints, dtype=bool)
             if nmocap > 0:
                 mocap_to_newton_jnt_template = np.full(nmocap, -1, dtype=np.int32)
                 body_mocapid = self.mj_model.body_mocapid
@@ -8925,6 +8946,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                         if joint_child[j] == newton_body_template:
                             mocap_to_newton_jnt_template[mocap_idx] = j
                             break
+                mapped = mocap_to_newton_jnt_template >= 0
+                jnt_mocap[mocap_to_newton_jnt_template[mapped]] = np.flatnonzero(mapped)
                 mjc_mocap_to_newton_jnt_np = self._tile_world_mapping(
                     mocap_to_newton_jnt_template, nworld, joints_per_world
                 )
@@ -8932,10 +8955,17 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             else:
                 self.mjc_mocap_to_newton_jnt = None
 
-            # Bodies that need a weld target to be kinematic: movable roots and every non-root body.
+            # Bodies that need a weld target to be kinematic: movable roots and every
+            # non-root body. Massless kinematic roots are mocap bodies that cannot be dynamic.
             fixed_roots = (joint_parent == -1) & (joint_dof_dim[:, 0] + joint_dof_dim[:, 1] == 0)
             self._kinematic_needs_target = np.ones(model.body_count, dtype=bool)
             self._kinematic_needs_target[joint_child[fixed_roots]] = False
+            self._kinematic_mocap_root_bodies = np.zeros(model.body_count, dtype=bool)
+            if kinematic_mocap_root_joints:
+                template_root = joint_child[kinematic_mocap_root_joints] % bodies_per_world
+                roots = (np.arange(nworld)[:, None] * bodies_per_world + template_root[None, :]).ravel()
+                self._kinematic_mocap_root_bodies[roots] = True
+                self._kinematic_needs_target[roots] = False
             if kinematic_target_roots:
                 template_jnt = np.array([j for j, _, _ in kinematic_target_roots], dtype=np.int32) % joints_per_world
                 self.kinematic_target_jnt = wp.array(
@@ -8948,9 +8978,11 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 self.kinematic_target_body = wp.array(
                     [self.mj_model.body(name).id for name in kinematic_target_root_names], dtype=wp.int32
                 )
-                jnt_kinematic_mocap = np.full(n_template_joints, -1, dtype=np.int32)
-                jnt_kinematic_mocap[template_jnt] = self.kinematic_target_mocap.numpy()
-                self._jnt_kinematic_mocap = wp.array(jnt_kinematic_mocap, dtype=wp.int32)
+                jnt_mocap[template_jnt] = self.kinematic_target_mocap.numpy()
+                jnt_mocap_lead[template_jnt] = True
+            if np.any(jnt_mocap >= 0):
+                self._jnt_mocap = wp.array(jnt_mocap, dtype=wp.int32)
+                self._jnt_mocap_lead = wp.array(jnt_mocap_lead, dtype=wp.bool)
 
             # Create mjc_jnt_to_newton_jnt: MuJoCo[world, joint] -> Newton joint index
             # selected_joints[idx] is the Newton template joint index
@@ -9578,6 +9610,13 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if self.kinematic_target_jnt is not None:
                 targeted = self.model.joint_child.numpy()[self.kinematic_target_jnt.numpy().ravel()]
                 kinematic[targeted] = False
+            mocap_roots = self._kinematic_mocap_root_bodies
+            dynamic_mocap_root = np.flatnonzero(~kinematic & mocap_roots) if mocap_roots is not None else []
+            if len(dynamic_mocap_root):
+                raise ValueError(
+                    f"Body {self.model.body_label[dynamic_mocap_root[0]]!r} cannot be dynamic: it has no mass or "
+                    "inertia, which MuJoCo requires of movable bodies."
+                )
             invalid = np.flatnonzero(kinematic & self._kinematic_needs_target)
             if invalid.size:
                 raise ValueError(
@@ -9782,24 +9821,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if self.model.joint_count == 0:
             return
 
-        # Update mocap body transforms first (fixed-root bodies have no MuJoCo joints).
-        if self.mjc_mocap_to_newton_jnt is not None and self.mjc_mocap_to_newton_jnt.shape[1] > 0:
-            nworld = self.mjc_mocap_to_newton_jnt.shape[0]
-            nmocap = self.mjc_mocap_to_newton_jnt.shape[1]
-            wp.launch(
-                update_mocap_transforms_kernel,
-                dim=(nworld, nmocap),
-                inputs=[
-                    self.mjc_mocap_to_newton_jnt,
-                    self.model.joint_X_p,
-                    self.model.joint_X_c,
-                ],
-                outputs=[
-                    self.mjw_data.mocap_pos,
-                    self.mjw_data.mocap_quat,
-                ],
-                device=self.model.device,
-            )
+        # Pose mocap roots from the new joint frames; they have no MuJoCo joints.
+        if self._jnt_mocap is not None:
+            data = self.mj_data if self.use_mujoco_cpu else self.mjw_data
+            self._update_mjc_data(data, self.model, write_state=False)
 
         # Update joint positions, joint axes, and relative body transforms
         # Iterates over MuJoCo joints [world, jnt]

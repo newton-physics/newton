@@ -816,20 +816,13 @@ def convert_mj_coords_to_warp_kernel(
     worldid, jntid = wp.tid()
 
     joint_id = joints_per_world * worldid + jntid
-
-    # Skip loop joints — they have no MuJoCo qpos/qvel entries
-    q_i = mj_q_start[jntid]
-    if q_i < 0:
-        return
-
-    qd_i = mj_qd_start[jntid]
-    type = joint_type[joint_id]
     wq_i = joint_q_start[joint_id]
     wqd_i = joint_qd_start[joint_id]
     child = joint_child[joint_id]
 
+    # Previous joint states pass through for kinematic bodies, including mocap
+    # roots that have no MuJoCo coordinates.
     if (body_flags[child] & BodyFlags.KINEMATIC) != 0:
-        # Previous joint states pass through for kinematic bodies
         wq_end = joint_q_start[joint_id + 1]
         for i in range(wq_i, wq_end):
             joint_q[i] = joint_q_in[i]
@@ -838,6 +831,14 @@ def convert_mj_coords_to_warp_kernel(
         for i in range(wqd_i, wqd_end):
             joint_qd[i] = joint_qd_in[i]
         return
+
+    # Skip loop joints — they have no MuJoCo qpos/qvel entries
+    q_i = mj_q_start[jntid]
+    if q_i < 0:
+        return
+
+    qd_i = mj_qd_start[jntid]
+    type = joint_type[joint_id]
 
     if type == JointType.FREE:
         # MuJoCo qpos[0:7] holds the body's world pose. Recover Newton's
@@ -962,7 +963,8 @@ def convert_warp_coords_to_mj_kernel(
     dof_ref: wp.array[wp.float32],
     mj_q_start: wp.array[wp.int32],
     mj_qd_start: wp.array[wp.int32],
-    jnt_kinematic_mocap: wp.array[wp.int32],
+    jnt_mocap: wp.array[wp.int32],
+    jnt_mocap_lead: wp.array[wp.bool],
     kinematic_lookahead: float,
     write_state: bool,
     # outputs
@@ -971,12 +973,14 @@ def convert_warp_coords_to_mj_kernel(
     mocap_pos: wp.array2d[wp.vec3],
     mocap_quat: wp.array2d[wp.quat],
 ):
-    """Push Newton joint coordinates to MuJoCo and place kinematic-root mocap targets.
+    """Push Newton joint coordinates to MuJoCo and pose the mocap bodies driven by Newton joints.
 
-    ``jnt_kinematic_mocap`` maps template joints to the mocap target welded to
-    their child (``-1`` if none). Targets lead the prescribed pose by
-    ``kinematic_lookahead`` so the weld's spring cancels its damping against
-    the mocap's zero velocity. With ``write_state`` False only targets are written.
+    ``jnt_mocap`` maps template joints to the mocap body posed from their child:
+    the child itself for fixed and massless kinematic roots, or the weld target
+    of a kinematic root (``-1`` if none). Weld targets (``jnt_mocap_lead``) lead
+    the prescribed pose by ``kinematic_lookahead`` so the weld's spring cancels
+    its damping against the mocap's zero velocity. With ``write_state`` False
+    only mocap poses are written.
     """
     worldid, jntid = wp.tid()
 
@@ -985,9 +989,12 @@ def convert_warp_coords_to_mj_kernel(
 
     joint_id = joints_per_world * worldid + jntid
 
-    if jnt_kinematic_mocap:
-        mocap = jnt_kinematic_mocap[jntid]
+    if jnt_mocap:
+        mocap = jnt_mocap[jntid]
         if mocap >= 0:
+            lookahead = float(0.0)
+            if jnt_mocap_lead[jntid]:
+                lookahead = kinematic_lookahead
             X_j, v_j = eval_joint_motion(
                 joint_type[joint_id],
                 joint_q_start[joint_id],
@@ -1005,7 +1012,7 @@ def convert_warp_coords_to_mj_kernel(
                 X_j,
                 v_j,
                 body_com[joint_child[joint_id]],
-                kinematic_lookahead,
+                lookahead,
             )
             mocap_pos[worldid, mocap] = target.p
             mocap_quat[worldid, mocap] = quat_xyzw_to_wxyz(target.q)
@@ -2433,33 +2440,6 @@ def update_jnt_reference_kernel(
         ref = dof_ref[dof]
     delta = ref - qpos0[world, jnt_qposadr[jnt]]
     jnt_range[world, jnt] = jnt_range[world, jnt] + wp.vec2(delta, delta)
-
-
-@wp.kernel
-def update_mocap_transforms_kernel(
-    mjc_mocap_to_newton_jnt: wp.array2d[wp.int32],
-    newton_joint_X_p: wp.array[wp.transform],
-    newton_joint_X_c: wp.array[wp.transform],
-    # outputs
-    mocap_pos: wp.array2d[wp.vec3],
-    mocap_quat: wp.array2d[wp.quat],
-):
-    """Update MuJoCo mocap body transforms from Newton joint data.
-
-    Iterates over MuJoCo mocap bodies [world, mocap_idx]. Each mocap body maps
-    to a fixed Newton joint and is updated from ``joint_X_p * inv(joint_X_c)``.
-    """
-    world, mocap_idx = wp.tid()
-    newton_jnt = mjc_mocap_to_newton_jnt[world, mocap_idx]
-    if newton_jnt < 0:
-        return
-
-    parent_xform = newton_joint_X_p[newton_jnt]
-    child_xform = newton_joint_X_c[newton_jnt]
-    tf = parent_xform * wp.transform_inverse(child_xform)
-
-    mocap_pos[world, mocap_idx] = tf.p
-    mocap_quat[world, mocap_idx] = quat_xyzw_to_wxyz(tf.q)
 
 
 @wp.kernel
