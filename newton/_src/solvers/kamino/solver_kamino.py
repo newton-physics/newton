@@ -1285,6 +1285,8 @@ class SolverKamino(SolverBase, CouplingInterface):
             | ModelFlags.ACTUATOR_PROPERTIES
             | ModelFlags.CONSTRAINT_PROPERTIES
             | ModelFlags.TENDON_PROPERTIES
+            # Body variants require Newton contacts, so Kamino caches no geometry to refresh.
+            | ModelFlags.SHAPE_GEOMETRY
         )
         unsupported = int(flags) & ~int(handled)
         if unsupported:
