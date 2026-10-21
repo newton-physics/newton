@@ -1,0 +1,1 @@
+Remove the deprecated `JointType.CABLE` alias and its compatibility metaclass. Eliminates overhead on joint type member lookups. Use `JointType.ROD` instead; its integer value remains `7`, and its canonical enum name is now `"ROD"`. Remove the deprecated `ModelBuilder.add_joint_cable()` alias; use `ModelBuilder.add_joint_rod()` instead.

@@ -63,7 +63,7 @@ from ..geometry.utils import RemeshingMethod, compute_inertia_obb, remesh_convex
 from ..math import quat_between_vectors_robust
 from ..usd.schema_resolver import SchemaResolver
 from ..utils import compute_world_offsets
-from ..utils.deprecation import RemovedAttribute, deprecate_nonkeyword_arguments
+from ..utils.deprecation import RemovedAttribute
 from ..utils.mesh import MeshAdjacency, split_mesh_components
 from .enums import (
     BodyFlags,
@@ -6636,58 +6636,6 @@ class ModelBuilder:
         self.joint_target_q[q_start : q_start + 3] = [0.0, 0.0, 0.0]
         self.joint_target_q[q_start + 3 : q_start + 7] = list(rest_rotation_value)
         return joint_id
-
-    @deprecate_nonkeyword_arguments
-    def add_joint_cable(
-        self,
-        parent: int,
-        child: int,
-        *,
-        parent_xform: Transform | None = None,
-        child_xform: Transform | None = None,
-        stretch_stiffness: float | None = None,
-        stretch_damping: float | None = None,
-        shear_stiffness: float | None = None,
-        shear_damping: float | None = None,
-        bend_stiffness: float | None = None,
-        bend_damping: float | None = None,
-        twist_stiffness: float | None = None,
-        twist_damping: float | None = None,
-        label: str | None = None,
-        collision_filter_parent: bool | None = None,
-        enabled: bool = True,
-        custom_attributes: dict[str, Any] | None = None,
-        **kwargs,
-    ) -> int:
-        """Deprecated alias for :meth:`add_joint_rod`.
-
-        .. deprecated:: 1.6
-            Use :meth:`add_joint_rod` instead.
-        """
-        warnings.warn(
-            "ModelBuilder.add_joint_cable() is deprecated in Newton 1.6; use add_joint_rod() instead.",
-            NewtonDeprecationWarning,
-            stacklevel=_external_warning_stacklevel(),
-        )
-        return self.add_joint_rod(
-            parent=parent,
-            child=child,
-            parent_xform=parent_xform,
-            child_xform=child_xform,
-            stretch_stiffness=stretch_stiffness,
-            stretch_damping=stretch_damping,
-            shear_stiffness=shear_stiffness,
-            shear_damping=shear_damping,
-            bend_stiffness=bend_stiffness,
-            bend_damping=bend_damping,
-            twist_stiffness=twist_stiffness,
-            twist_damping=twist_damping,
-            label=label,
-            collision_filter_parent=collision_filter_parent,
-            enabled=enabled,
-            custom_attributes=custom_attributes,
-            **kwargs,
-        )
 
     def add_tendon(
         self, route: Sequence[TendonGuide], *, label: str | None = None, custom_attributes: dict[str, Any] | None = None
