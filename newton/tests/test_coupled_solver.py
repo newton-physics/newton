@@ -1111,6 +1111,27 @@ add_function_test(
 )
 
 
+def test_coupled_model_keeps_reduced_rod(test, device):
+    """Keep and rebase all current rod parts after builder collapse reduces the record."""
+    builder = newton.ModelBuilder()
+    builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    _add_test_anchored_cable(builder)
+    builder.collapse_fixed_joints()
+    builder.color()
+    model = builder.finalize(device=device)
+    coupled = SolverCoupled(
+        model,
+        entries=[SolverCoupled.Entry(name="rod", solver=SolverVBD, bodies=[1], joints=[1])],
+    )
+    compact = coupled.view("rod")
+    test.assertEqual(compact.curve_label, ["anchored_curve"])
+    for kind in ("body", "joint"):
+        np.testing.assert_array_equal(getattr(model, f"curve_{kind}_start").numpy(), [1])
+        np.testing.assert_array_equal(getattr(model, f"curve_{kind}_end").numpy(), [2])
+        np.testing.assert_array_equal(getattr(compact, f"curve_{kind}_start").numpy(), [0])
+        np.testing.assert_array_equal(getattr(compact, f"curve_{kind}_end").numpy(), [1])
+
+
 class TestSolverCoupledBasic(unittest.TestCase):
     """Test SolverCoupled with two SemiImplicit solvers (simplest case)."""
 
@@ -2487,28 +2508,6 @@ class TestSolverCoupledBasic(unittest.TestCase):
         np.testing.assert_array_equal(view.curve_joint_end.numpy(), [0])
         np.testing.assert_array_equal(model.curve_joint_start.numpy(), [1, 1])
 
-    def test_coupled_model_keeps_reduced_rod(self):
-        """Keep and rebase all current rod parts after builder collapse reduces the record."""
-        builder = newton.ModelBuilder()
-        builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-        _add_test_anchored_cable(builder)
-        builder.collapse_fixed_joints()
-        builder.color()
-        for device in get_test_devices():
-            with self.subTest(device=device):
-                model = builder.finalize(device=device)
-                coupled = SolverCoupled(
-                    model,
-                    entries=[SolverCoupled.Entry(name="rod", solver=SolverVBD, bodies=[1], joints=[1])],
-                )
-                compact = coupled.view("rod")
-                self.assertEqual(compact.curve_label, ["anchored_curve"])
-                for kind in ("body", "joint"):
-                    np.testing.assert_array_equal(getattr(model, f"curve_{kind}_start").numpy(), [1])
-                    np.testing.assert_array_equal(getattr(model, f"curve_{kind}_end").numpy(), [2])
-                    np.testing.assert_array_equal(getattr(compact, f"curve_{kind}_start").numpy(), [0])
-                    np.testing.assert_array_equal(getattr(compact, f"curve_{kind}_end").numpy(), [1])
-
     def test_coupled_model_rebases_complete_deformable_objects(self):
         """Expose only complete curves and remap their ranges in a compact solver model."""
         builder = newton.ModelBuilder()
@@ -2566,6 +2565,14 @@ class TestSolverCoupledBasic(unittest.TestCase):
         np.testing.assert_array_equal(particles.volume_particle_start.numpy(), [4])
         self.assertEqual(model.curve_label, ["hidden", "selected"])
         np.testing.assert_array_equal(model.curve_body_start.numpy(), [0, 3])
+
+
+add_function_test(
+    TestSolverCoupledBasic,
+    "test_coupled_model_keeps_reduced_rod",
+    test_coupled_model_keeps_reduced_rod,
+    devices=get_test_devices(),
+)
 
 
 class TestSolverMuJoCoCouplingHooks(unittest.TestCase):

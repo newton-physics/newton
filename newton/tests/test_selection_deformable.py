@@ -25,7 +25,7 @@ from newton.tests._usd_deformable_test_utils import (
     _bind_deformable_material,
     _deformable_stage,
 )
-from newton.tests.unittest_utils import USD_AVAILABLE, get_test_devices
+from newton.tests.unittest_utils import USD_AVAILABLE, add_function_test, get_cuda_test_devices, get_test_devices
 
 _CABLE_PTS = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
 _MIXED_ASSET = os.path.join(os.path.dirname(__file__), "assets", "deformables_mixed.usda")
@@ -602,72 +602,130 @@ class TestDeformableBuilderObjects(unittest.TestCase):
             view.get_body_transforms(model.state())
 
 
+def test_reduced_rod_masked_writes_in_mixed_worlds(test, device):
+    """Reset one reduced rod without changing other worlds, rigid bodies, cloth, or volume."""
+
+    def reset(view, target, positions, velocities, mask):
+        view.set_body_transforms(target, positions, mask=mask)
+        view.set_body_velocities(target, velocities, mask=mask)
+
+    prototype = newton.ModelBuilder()
+    _add_test_articulation(prototype)
+    _add_test_anchored_cable(prototype, label="cable")
+    _add_test_cloth(prototype)
+    _add_test_soft_body(prototype)
+    prototype.collapse_fixed_joints()
+    builder = newton.ModelBuilder()
+    builder.replicate(prototype, 2)
+    model = builder.finalize(device=device)
+    state = model.state()
+    cable = DeformableCurveView(model, "cable")
+    articulation = ArticulationView(model, prototype.articulation_label[1])
+    cloth = DeformableSurfaceView(model, "cloth")
+    volume = DeformableVolumeView(model, "soft")
+    before = {name: getattr(state, name).numpy().copy() for name in ("body_q", "body_qd", "particle_q", "particle_qd")}
+    positions = cable.get_body_transforms(state).numpy().copy()
+    positions[:, :, 2] += 1.0
+    velocities = np.full_like(cable.get_body_velocities(state).numpy(), 2.0)
+    positions_wp = wp.array(positions, dtype=wp.transform, device=device)
+    velocities_wp = wp.array(velocities, dtype=wp.spatial_vector, device=device)
+    mask = wp.array([False, True], dtype=wp.bool, device=device)
+
+    # Warm kernels without changing the state under test.
+    reset(cable, model.state(), positions_wp, velocities_wp, mask)
+    if device.is_cuda:
+        with wp.ScopedMempool(device, enable=False):
+            with wp.ScopedCapture(device) as capture:
+                reset(cable, state, positions_wp, velocities_wp, mask)
+        for _ in range(2):
+            wp.capture_launch(capture.graph)
+    else:
+        reset(cable, state, positions_wp, velocities_wp, mask)
+
+    expected_q = before["body_q"].copy()
+    expected_qd = before["body_qd"].copy()
+    expected_q[3:4] = positions[1]
+    expected_qd[3:4] = velocities[1]
+    np.testing.assert_array_equal(state.body_q.numpy(), expected_q)
+    np.testing.assert_array_equal(state.body_qd.numpy(), expected_qd)
+    for name in ("particle_q", "particle_qd"):
+        np.testing.assert_array_equal(getattr(state, name).numpy(), before[name])
+    np.testing.assert_array_equal(
+        articulation.get_link_transforms(state).numpy().reshape(2, 1, 7),
+        cable.get_body_transforms(state).numpy(),
+    )
+    np.testing.assert_array_equal(
+        articulation.get_link_velocities(state).numpy().reshape(2, 1, 6),
+        cable.get_body_velocities(state).numpy(),
+    )
+    test.assertEqual(cloth.get_particle_positions(state).shape, (2, 4))
+    test.assertEqual(volume.get_particle_positions(state).shape, (2, 4))
+
+
+def test_sparse_rigid_and_uneven_deformable_masks(test, device):
+    """Reset world 2 through sparse robot and uneven deformable selections."""
+    world_0 = newton.ModelBuilder()
+    _add_test_articulation(world_0)
+    _add_test_cable(world_0)
+    _add_test_cloth(world_0)
+    world_1 = newton.ModelBuilder()
+    _add_test_articulation(world_1)
+    world_1.articulation_label[0] = "other"
+    _add_test_soft_body(world_1)
+    world_2 = newton.ModelBuilder()
+    _add_test_articulation(world_2)
+    for _ in range(2):
+        _add_test_cable(world_2)
+    for _ in range(2):
+        _add_test_cloth(world_2)
+    _add_test_soft_body(world_2)
+    scene = newton.ModelBuilder()
+    scene.add_world(world_0)
+    scene.add_world(world_1)
+    scene.add_world(world_2)
+
+    model = scene.finalize(device=device)
+    state = model.state()
+    rigid = ArticulationView(model, "robot", homogeneous=False)
+    all_rigid = ArticulationView(model, ["robot", "other"], homogeneous=False)
+    cable = DeformableCurveView(model, "cable")
+    cloth = DeformableSurfaceView(model, "cloth")
+    soft = DeformableVolumeView(model, "soft")
+
+    np.testing.assert_array_equal(rigid.world_ids.numpy(), [0, 2])
+    test.assertEqual((rigid.world_count, rigid.count_per_world), (2, 1))
+    values = wp.ones_like(rigid.get_dof_velocities(state))
+    mask_worlds = wp.array([False, True], dtype=bool, device=device)
+    rigid.set_dof_velocities(state, values, mask=mask_worlds)
+    expected_rigid = np.zeros((3, 1, 6), dtype=np.float32)
+    expected_rigid[2] = 1.0
+    np.testing.assert_array_equal(all_rigid.get_dof_velocities(state).numpy(), expected_rigid)
+
+    expected = {name: getattr(state, name).numpy().copy() for name in ("body_qd", "particle_qd", "joint_qd")}
+    for view, kind, name, worlds, boundaries, setter in (
+        (cable, "body", "body_qd", [0, 2, 2], [0, 1, 1, 3], cable.set_body_velocities),
+        (cloth, "particle", "particle_qd", [0, 2, 2], [0, 1, 1, 3], cloth.set_particle_velocities),
+        (soft, "particle", "particle_qd", [1, 2], [0, 0, 1, 2], soft.set_particle_velocities),
+    ):
+        with test.subTest(family=view.family):
+            test.assertIsNone(view.count_per_world)
+            test.assertEqual(view.worlds, worlds)
+            np.testing.assert_array_equal(view.worlds_device.numpy(), worlds)
+            np.testing.assert_array_equal(view.deformable_object_boundaries.numpy(), boundaries)
+            array = getattr(state, name)
+            shape = (view.count, view.element_count(kind), *expected[name].shape[1:])
+            values = wp.array(np.full(shape, 2.0, dtype=np.float32), dtype=array.dtype, device=device)
+            mask = wp.array([world == 2 for world in worlds], dtype=bool, device=device)
+            setter(state, values, mask=mask)
+            for world, (start, end) in zip(worlds, view.ranges(kind), strict=True):
+                if world == 2:
+                    expected[name][start:end] = 2.0
+            for field, expected_values in expected.items():
+                np.testing.assert_array_equal(getattr(state, field).numpy(), expected_values)
+
+
 class TestDeformableAndArticulationViews(unittest.TestCase):
     """Rigid and deformable selections sharing finalized mixed models."""
-
-    def test_reduced_rod_masked_writes_in_mixed_worlds(self):
-        """Reset one reduced rod without changing other worlds, rigid bodies, cloth, or volume."""
-
-        def reset(view, target, positions, velocities, mask):
-            view.set_body_transforms(target, positions, mask=mask)
-            view.set_body_velocities(target, velocities, mask=mask)
-
-        prototype = newton.ModelBuilder()
-        _add_test_articulation(prototype)
-        _add_test_anchored_cable(prototype, label="cable")
-        _add_test_cloth(prototype)
-        _add_test_soft_body(prototype)
-        prototype.collapse_fixed_joints()
-        builder = newton.ModelBuilder()
-        builder.replicate(prototype, 2)
-        for device in get_test_devices():
-            with self.subTest(device=device):
-                model = builder.finalize(device=device)
-                state = model.state()
-                cable = DeformableCurveView(model, "cable")
-                articulation = ArticulationView(model, prototype.articulation_label[1])
-                cloth = DeformableSurfaceView(model, "cloth")
-                volume = DeformableVolumeView(model, "soft")
-                before = {
-                    name: getattr(state, name).numpy().copy()
-                    for name in ("body_q", "body_qd", "particle_q", "particle_qd")
-                }
-                positions = cable.get_body_transforms(state).numpy().copy()
-                positions[:, :, 2] += 1.0
-                velocities = np.full_like(cable.get_body_velocities(state).numpy(), 2.0)
-                positions_wp = wp.array(positions, dtype=wp.transform, device=device)
-                velocities_wp = wp.array(velocities, dtype=wp.spatial_vector, device=device)
-                mask = wp.array([False, True], dtype=wp.bool, device=device)
-
-                # Warm kernels without changing the state under test.
-                reset(cable, model.state(), positions_wp, velocities_wp, mask)
-                if device.is_cuda:
-                    with wp.ScopedMempool(device, enable=False):
-                        with wp.ScopedCapture(device) as capture:
-                            reset(cable, state, positions_wp, velocities_wp, mask)
-                    for _ in range(2):
-                        wp.capture_launch(capture.graph)
-                else:
-                    reset(cable, state, positions_wp, velocities_wp, mask)
-
-                expected_q = before["body_q"].copy()
-                expected_qd = before["body_qd"].copy()
-                expected_q[3:4] = positions[1]
-                expected_qd[3:4] = velocities[1]
-                np.testing.assert_array_equal(state.body_q.numpy(), expected_q)
-                np.testing.assert_array_equal(state.body_qd.numpy(), expected_qd)
-                for name in ("particle_q", "particle_qd"):
-                    np.testing.assert_array_equal(getattr(state, name).numpy(), before[name])
-                np.testing.assert_array_equal(
-                    articulation.get_link_transforms(state).numpy().reshape(2, 1, 7),
-                    cable.get_body_transforms(state).numpy(),
-                )
-                np.testing.assert_array_equal(
-                    articulation.get_link_velocities(state).numpy().reshape(2, 1, 6),
-                    cable.get_body_velocities(state).numpy(),
-                )
-                self.assertEqual(cloth.get_particle_positions(state).shape, (2, 4))
-                self.assertEqual(volume.get_particle_positions(state).shape, (2, 4))
 
     def test_rigid_cable_cloth_and_volume_survive_unrelated_collapse(self):
         """All selection families coexist after an unrelated fixed joint collapses."""
@@ -767,71 +825,6 @@ class TestDeformableAndArticulationViews(unittest.TestCase):
         np.testing.assert_allclose(rigid.get_root_transforms(state).numpy(), rigid_values, atol=1e-6)
         np.testing.assert_array_equal(cloth.get_particle_positions(state).numpy(), cloth_values)
 
-    def test_sparse_rigid_and_uneven_deformable_masks(self):
-        """Reset world 2 through sparse robot and uneven deformable selections."""
-        world_0 = newton.ModelBuilder()
-        _add_test_articulation(world_0)
-        _add_test_cable(world_0)
-        _add_test_cloth(world_0)
-        world_1 = newton.ModelBuilder()
-        _add_test_articulation(world_1)
-        world_1.articulation_label[0] = "other"
-        _add_test_soft_body(world_1)
-        world_2 = newton.ModelBuilder()
-        _add_test_articulation(world_2)
-        for _ in range(2):
-            _add_test_cable(world_2)
-        for _ in range(2):
-            _add_test_cloth(world_2)
-        _add_test_soft_body(world_2)
-        scene = newton.ModelBuilder()
-        scene.add_world(world_0)
-        scene.add_world(world_1)
-        scene.add_world(world_2)
-
-        for device in get_test_devices():
-            with self.subTest(device=device):
-                model = scene.finalize(device=device)
-                state = model.state()
-                rigid = ArticulationView(model, "robot", homogeneous=False)
-                all_rigid = ArticulationView(model, ["robot", "other"], homogeneous=False)
-                cable = DeformableCurveView(model, "cable")
-                cloth = DeformableSurfaceView(model, "cloth")
-                soft = DeformableVolumeView(model, "soft")
-
-                np.testing.assert_array_equal(rigid.world_ids.numpy(), [0, 2])
-                self.assertEqual((rigid.world_count, rigid.count_per_world), (2, 1))
-                values = wp.ones_like(rigid.get_dof_velocities(state))
-                mask_worlds = wp.array([False, True], dtype=bool, device=device)
-                rigid.set_dof_velocities(state, values, mask=mask_worlds)
-                expected_rigid = np.zeros((3, 1, 6), dtype=np.float32)
-                expected_rigid[2] = 1.0
-                np.testing.assert_array_equal(all_rigid.get_dof_velocities(state).numpy(), expected_rigid)
-
-                expected = {
-                    name: getattr(state, name).numpy().copy() for name in ("body_qd", "particle_qd", "joint_qd")
-                }
-                for view, kind, name, worlds, boundaries, setter in (
-                    (cable, "body", "body_qd", [0, 2, 2], [0, 1, 1, 3], cable.set_body_velocities),
-                    (cloth, "particle", "particle_qd", [0, 2, 2], [0, 1, 1, 3], cloth.set_particle_velocities),
-                    (soft, "particle", "particle_qd", [1, 2], [0, 0, 1, 2], soft.set_particle_velocities),
-                ):
-                    with self.subTest(family=view.family):
-                        self.assertIsNone(view.count_per_world)
-                        self.assertEqual(view.worlds, worlds)
-                        np.testing.assert_array_equal(view.worlds_device.numpy(), worlds)
-                        np.testing.assert_array_equal(view.deformable_object_boundaries.numpy(), boundaries)
-                        array = getattr(state, name)
-                        shape = (view.count, view.element_count(kind), *expected[name].shape[1:])
-                        values = wp.array(np.full(shape, 2.0, dtype=np.float32), dtype=array.dtype, device=device)
-                        mask = wp.array([world == 2 for world in worlds], dtype=bool, device=device)
-                        setter(state, values, mask=mask)
-                        for world, (start, end) in zip(worlds, view.ranges(kind), strict=True):
-                            if world == 2:
-                                expected[name][start:end] = 2.0
-                        for field, expected_values in expected.items():
-                            np.testing.assert_array_equal(getattr(state, field).numpy(), expected_values)
-
     def test_rigid_view_coexists_with_reduced_curve_object(self):
         """Keep an unrelated rigid view valid alongside a partially collapsed rod."""
         builder = newton.ModelBuilder()
@@ -847,253 +840,303 @@ class TestDeformableAndArticulationViews(unittest.TestCase):
         self.assertEqual(cable.ranges("body"), [(1, 2)])
 
 
-class TestDeformableStateReads(unittest.TestCase):
-    """Read regular and irregular state and property layouts, including captured gathers."""
+for _test in (
+    test_reduced_rod_masked_writes_in_mixed_worlds,
+    test_sparse_rigid_and_uneven_deformable_masks,
+):
+    add_function_test(TestDeformableAndArticulationViews, _test.__name__, _test, devices=get_test_devices())
 
-    def test_particle_property_snapshots(self):
-        """Read selected Model properties without changing saved snapshots."""
-        for device in get_test_devices():
-            for irregular in (False, True):
-                model = _particle_property_model(device, irregular=irregular)
-                for view_type, label, row, flags in (
-                    (DeformableSurfaceView, "cloth", [0.0, 1.0, 0.5, 0.25], [0, 1, 0, 1]),
-                    (DeformableVolumeView, "soft", [0.125, 0.0625, 0.03125, 0.015625], [1, 0, 1, 0]),
-                ):
-                    with self.subTest(device=device, irregular=irregular, family=label):
-                        view = view_type(model, label)
-                        inverse_masses = np.array(row, dtype=np.float32)[None, :] / np.array([1, 2, 4])[:, None]
-                        for getter, source, expected in (
-                            (view.get_particle_inv_masses, model.particle_inv_mass, inverse_masses),
-                            (view.get_particle_flags, model.particle_flags, np.tile(flags, (3, 1))),
-                        ):
-                            with self.subTest(getter=getter.__name__):
-                                original = wp.clone(source)
-                                values = getter(model)
-                                self.assertEqual(values.shape, view.get_particle_positions(model).shape)
-                                self.assertEqual(values.shape, (3, 4))
-                                self.assertIs(values.dtype, source.dtype)
-                                np.testing.assert_array_equal(values.numpy(), expected)
-                                saved = wp.clone(values)
-                                source.zero_()
-                                self.assertIs(getter(model), values)
-                                np.testing.assert_array_equal(values.numpy(), np.zeros((3, 4)))
-                                np.testing.assert_array_equal(saved.numpy(), expected)
-                                wp.copy(source, original)
-                                with self.assertRaises(AttributeError):
-                                    getter(model.state())
 
-    def test_particle_property_gradients(self):
-        """Propagate inverse-mass gradients only to the selected family's particles."""
-        for device in get_test_devices():
-            for irregular in (False, True):
-                model = _particle_property_model(device, irregular=irregular, requires_grad=True)
-                for view_type, label, offset in (
-                    (DeformableSurfaceView, "cloth", 0),
-                    (DeformableVolumeView, "soft", 4),
-                ):
-                    with self.subTest(device=device, irregular=irregular, family=label):
-                        view = view_type(model, label)
-                        loss = wp.zeros(1, device=device, requires_grad=True)
-                        with wp.Tape() as tape:
-                            values = view.get_particle_inv_masses(model)
-                            wp.launch(_sum_particle_properties, dim=values.shape, inputs=[values, loss], device=device)
-                        tape.backward(loss)
-                        expected = np.zeros(model.particle_count)
-                        for start in (0, 9, 19) if irregular else (0, 8, 16):
-                            expected[start + offset : start + offset + 4] = 1.0
-                        np.testing.assert_array_equal(model.particle_inv_mass.grad.numpy(), expected)
-                        self.assertFalse(view.get_particle_flags(model).requires_grad)
-                        tape.zero()
-
-    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA graph capture")
-    def test_particle_property_capture(self):
-        """Capture warmed Model reads and observe property changes on replay without allocations."""
-        device = wp.get_device("cuda:0")
-        for irregular in (False, True):
-            model = _particle_property_model(device, irregular=irregular)
-            for view_type, label in ((DeformableSurfaceView, "cloth"), (DeformableVolumeView, "soft")):
+def test_particle_property_snapshots(test, device):
+    """Read selected Model properties without changing saved snapshots."""
+    for irregular in (False, True):
+        model = _particle_property_model(device, irregular=irregular)
+        for view_type, label, row, flags in (
+            (DeformableSurfaceView, "cloth", [0.0, 1.0, 0.5, 0.25], [0, 1, 0, 1]),
+            (DeformableVolumeView, "soft", [0.125, 0.0625, 0.03125, 0.015625], [1, 0, 1, 0]),
+        ):
+            with test.subTest(device=device, irregular=irregular, family=label):
                 view = view_type(model, label)
-                for getter, source in (
-                    (view.get_particle_inv_masses, model.particle_inv_mass),
-                    (view.get_particle_flags, model.particle_flags),
+                inverse_masses = np.array(row, dtype=np.float32)[None, :] / np.array([1, 2, 4])[:, None]
+                for getter, source, expected in (
+                    (view.get_particle_inv_masses, model.particle_inv_mass, inverse_masses),
+                    (view.get_particle_flags, model.particle_flags, np.tile(flags, (3, 1))),
                 ):
-                    with self.subTest(irregular=irregular, family=label, getter=getter.__name__):
+                    with test.subTest(getter=getter.__name__):
                         original = wp.clone(source)
-                        result = getter(model)
-                        output = wp.clone(result)
-                        expected = output.numpy().copy()
-                        with wp.ScopedMempool(device, enable=False):
-                            with wp.ScopedCapture(device) as capture:
-                                wp.copy(output, getter(model))
-                        wp.capture_launch(capture.graph)
-                        np.testing.assert_array_equal(output.numpy(), expected)
+                        values = getter(model)
+                        test.assertEqual(values.shape, view.get_particle_positions(model).shape)
+                        test.assertEqual(values.shape, (3, 4))
+                        test.assertIs(values.dtype, source.dtype)
+                        np.testing.assert_array_equal(values.numpy(), expected)
+                        saved = wp.clone(values)
                         source.zero_()
-                        wp.capture_launch(capture.graph)
-                        np.testing.assert_array_equal(output.numpy(), np.zeros((3, 4)))
-                        self.assertIs(getter(model), result)
+                        test.assertIs(getter(model), values)
+                        np.testing.assert_array_equal(values.numpy(), np.zeros((3, 4)))
+                        np.testing.assert_array_equal(saved.numpy(), expected)
                         wp.copy(source, original)
+                        with test.assertRaises(AttributeError):
+                            getter(model.state())
 
-    def test_getters_release_discarded_states(self):
-        """Release discarded state arrays and getter buffers while keeping the view usable."""
-        for device in get_test_devices():
-            for make_model, pattern in ((_replicated_model, "/World/*"), (_irregular_model, "selected_*")):
-                model = make_model(device=device)
-                for getter, _setter, attribute in _state_accessors(model, pattern=pattern):
-                    with self.subTest(device=device, pattern=pattern, getter=getter.__name__):
-                        refs = []
-                        for _ in range(3):
-                            state = model.state(requires_grad=True)
-                            result = getter(state)
-                            expected = result.numpy().copy()
-                            refs.extend(weakref.ref(obj) for obj in (state, getattr(state, attribute), result))
-                            state_ref = weakref.ref(state)
-                            del state
-                            self.assertIsNone(state_ref())
-                            np.testing.assert_array_equal(result.numpy(), expected)
-                            del result
-                        self.assertTrue(all(ref() is None for ref in refs))
-                        live_state = model.state()
-                        self.assertTrue(np.isfinite(getter(live_state).numpy()).all())
 
-    def test_getters_follow_replaced_arrays(self):
-        """Keep alternating states separate and release replaced arrays after callers drop their views."""
-        for device in get_test_devices():
-            for make_model, pattern in ((_replicated_model, "/World/*"), (_irregular_model, "selected_*")):
-                model = make_model(device=device)
-                for getter, _setter, attribute in _state_accessors(model, pattern=pattern):
-                    with self.subTest(device=device, pattern=pattern, getter=getter.__name__):
-                        states = [model.state(requires_grad=True) for _ in range(2)]
-                        for value, state in enumerate(states, 1):
-                            array = getattr(state, attribute)
-                            array.assign(np.full_like(array.numpy(), value))
-                        buffers = [getter(state) for state in states]
-                        for value, (state, buffer) in enumerate(zip(states, buffers, strict=True), 1):
-                            self.assertIs(getter(state), buffer)
-                            np.testing.assert_array_equal(buffer.numpy(), np.full_like(buffer.numpy(), value))
+def test_particle_property_gradients(test, device):
+    """Propagate inverse-mass gradients only to the selected family's particles."""
+    for irregular in (False, True):
+        model = _particle_property_model(device, irregular=irregular, requires_grad=True)
+        for view_type, label, offset in (
+            (DeformableSurfaceView, "cloth", 0),
+            (DeformableVolumeView, "soft", 4),
+        ):
+            with test.subTest(device=device, irregular=irregular, family=label):
+                view = view_type(model, label)
+                loss = wp.zeros(1, device=device, requires_grad=True)
+                with wp.Tape() as tape:
+                    values = view.get_particle_inv_masses(model)
+                    wp.launch(_sum_particle_properties, dim=values.shape, inputs=[values, loss], device=device)
+                tape.backward(loss)
+                expected = np.zeros(model.particle_count)
+                for start in (0, 9, 19) if irregular else (0, 8, 16):
+                    expected[start + offset : start + offset + 4] = 1.0
+                np.testing.assert_array_equal(model.particle_inv_mass.grad.numpy(), expected)
+                test.assertFalse(view.get_particle_flags(model).requires_grad)
+                tape.zero()
 
-                        old_array = weakref.ref(getattr(states[0], attribute))
-                        setattr(states[0], attribute, wp.zeros_like(getattr(states[0], attribute)))
-                        result = getter(states[0])
-                        np.testing.assert_array_equal(result.numpy(), np.zeros_like(result.numpy()))
-                        self.assertIs(getter(states[1]), buffers[1])
-                        np.testing.assert_array_equal(buffers[0].numpy(), np.ones_like(buffers[0].numpy()))
-                        del buffers[0]
-                        self.assertIsNone(old_array())
 
-    def test_getter_gradients(self):
-        """Follow initial, newly enabled, and replaced source gradient buffers."""
-        for device in get_test_devices():
-            for make_model, pattern in ((_replicated_model, "/World/*"), (_irregular_model, "selected_*")):
-                model = make_model(device=device)
-                for getter, _setter, attribute in _state_accessors(model, pattern=pattern):
-                    for setup in ("initial", "enabled", "replaced"):
-                        with self.subTest(device=device, pattern=pattern, getter=getter.__name__, setup=setup):
-                            state = model.state(requires_grad=setup != "enabled")
-                            source = getattr(state, attribute)
-                            getter(state)
-                            if setup == "enabled":
-                                source.requires_grad = True
-                            elif setup == "replaced":
-                                old_grad = weakref.ref(source.grad)
-                                source.grad = wp.zeros_like(source, requires_grad=False)
-                            loss = wp.zeros(1, device=device, requires_grad=True)
-                            with wp.Tape() as tape:
-                                values = getter(state)
-                                wp.launch(_sum_first_component, dim=values.shape, inputs=[values, loss], device=device)
-                            tape.backward(loss)
+def test_particle_property_capture(test, device):
+    """Capture warmed Model reads and observe property changes on replay without allocations."""
+    for irregular in (False, True):
+        model = _particle_property_model(device, irregular=irregular)
+        for view_type, label in ((DeformableSurfaceView, "cloth"), (DeformableVolumeView, "soft")):
+            view = view_type(model, label)
+            for getter, source in (
+                (view.get_particle_inv_masses, model.particle_inv_mass),
+                (view.get_particle_flags, model.particle_flags),
+            ):
+                with test.subTest(irregular=irregular, family=label, getter=getter.__name__):
+                    original = wp.clone(source)
+                    result = getter(model)
+                    output = wp.clone(result)
+                    expected = output.numpy().copy()
+                    with wp.ScopedMempool(device, enable=False):
+                        with wp.ScopedCapture(device) as capture:
+                            wp.copy(output, getter(model))
+                    wp.capture_launch(capture.graph)
+                    np.testing.assert_array_equal(output.numpy(), expected)
+                    source.zero_()
+                    wp.capture_launch(capture.graph)
+                    np.testing.assert_array_equal(output.numpy(), np.zeros((3, 4)))
+                    test.assertIs(getter(model), result)
+                    wp.copy(source, original)
 
-                            expected = np.zeros_like(source.numpy())
-                            expected[:, 0] = 1.0
-                            if make_model is _irregular_model:
-                                # The fixture leaves unrelated particles/bodies between the selected objects.
-                                gaps = [4, 9, 10] if attribute.startswith("particle") else [3, 7, 8]
-                                expected[gaps, 0] = 0.0
-                            np.testing.assert_array_equal(source.grad.numpy(), expected)
-                            source.grad.zero_()
-                            self.assertIs(getter(state), values)
-                            if setup == "replaced":
-                                self.assertIsNone(old_grad())
-                            source.requires_grad = False
-                            self.assertFalse(getter(state).requires_grad)
 
-    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA graph capture")
-    def test_getter_gradients_cuda_graph(self):
-        """Replay getter gradients with warmed buffers and a fixed configuration."""
-
-        def evaluate(getter, state, loss):
-            with wp.Tape() as tape:
-                result = getter(state)
-                wp.launch(_sum_first_component, dim=result.shape, inputs=[result, loss], device=loss.device)
-            tape.backward(loss)
-            return result, tape
-
-        device = wp.get_device("cuda:0")
-        for make_model, pattern in ((_replicated_model, "/World/*"), (_irregular_model, "selected_*")):
-            model = make_model(device=device)
-            for getter, _setter, attribute in _state_accessors(model, pattern=pattern):
-                with self.subTest(pattern=pattern, getter=getter.__name__):
+def test_getters_release_discarded_states(test, device):
+    """Release discarded state arrays and getter buffers while keeping the view usable."""
+    for make_model, pattern in ((_replicated_model, "/World/*"), (_irregular_model, "selected_*")):
+        model = make_model(device=device)
+        for getter, _setter, attribute in _state_accessors(model, pattern=pattern):
+            with test.subTest(device=device, pattern=pattern, getter=getter.__name__):
+                refs = []
+                for _ in range(3):
                     state = model.state(requires_grad=True)
-                    getter(state)
-                    setattr(state, attribute, wp.clone(getattr(state, attribute), requires_grad=True))
+                    result = getter(state)
+                    expected = result.numpy().copy()
+                    refs.extend(weakref.ref(obj) for obj in (state, getattr(state, attribute), result))
+                    state_ref = weakref.ref(state)
+                    del state
+                    test.assertIsNone(state_ref())
+                    np.testing.assert_array_equal(result.numpy(), expected)
+                    del result
+                test.assertTrue(all(ref() is None for ref in refs))
+                live_state = model.state()
+                test.assertTrue(np.isfinite(getter(live_state).numpy()).all())
+
+
+def test_getters_follow_replaced_arrays(test, device):
+    """Keep alternating states separate and release replaced arrays after callers drop their views."""
+    for make_model, pattern in ((_replicated_model, "/World/*"), (_irregular_model, "selected_*")):
+        model = make_model(device=device)
+        for getter, _setter, attribute in _state_accessors(model, pattern=pattern):
+            with test.subTest(device=device, pattern=pattern, getter=getter.__name__):
+                states = [model.state(requires_grad=True) for _ in range(2)]
+                for value, state in enumerate(states, 1):
+                    array = getattr(state, attribute)
+                    array.assign(np.full_like(array.numpy(), value))
+                buffers = [getter(state) for state in states]
+                for value, (state, buffer) in enumerate(zip(states, buffers, strict=True), 1):
+                    test.assertIs(getter(state), buffer)
+                    np.testing.assert_array_equal(buffer.numpy(), np.full_like(buffer.numpy(), value))
+
+                old_array = weakref.ref(getattr(states[0], attribute))
+                setattr(states[0], attribute, wp.zeros_like(getattr(states[0], attribute)))
+                result = getter(states[0])
+                np.testing.assert_array_equal(result.numpy(), np.zeros_like(result.numpy()))
+                test.assertIs(getter(states[1]), buffers[1])
+                np.testing.assert_array_equal(buffers[0].numpy(), np.ones_like(buffers[0].numpy()))
+                del buffers[0]
+                test.assertIsNone(old_array())
+
+
+def test_getter_gradients(test, device):
+    """Follow initial, newly enabled, and replaced source gradient buffers."""
+    for make_model, pattern in ((_replicated_model, "/World/*"), (_irregular_model, "selected_*")):
+        model = make_model(device=device)
+        for getter, _setter, attribute in _state_accessors(model, pattern=pattern):
+            for setup in ("initial", "enabled", "replaced"):
+                with test.subTest(device=device, pattern=pattern, getter=getter.__name__, setup=setup):
+                    state = model.state(requires_grad=setup != "enabled")
                     source = getattr(state, attribute)
+                    getter(state)
+                    if setup == "enabled":
+                        source.requires_grad = True
+                    elif setup == "replaced":
+                        old_grad = weakref.ref(source.grad)
+                        source.grad = wp.zeros_like(source, requires_grad=False)
                     loss = wp.zeros(1, device=device, requires_grad=True)
-                    values, tape = evaluate(getter, state, loss)  # Warm the getter and backward kernels.
+                    with wp.Tape() as tape:
+                        values = getter(state)
+                        wp.launch(_sum_first_component, dim=values.shape, inputs=[values, loss], device=device)
+                    tape.backward(loss)
+
                     expected = np.zeros_like(source.numpy())
                     expected[:, 0] = 1.0
                     if make_model is _irregular_model:
+                        # The fixture leaves unrelated particles/bodies between the selected objects.
                         gaps = [4, 9, 10] if attribute.startswith("particle") else [3, 7, 8]
                         expected[gaps, 0] = 0.0
-                    with wp.ScopedMempool(device, enable=False):
-                        with wp.ScopedCapture(device) as capture:
-                            tape.zero()
-                            loss.zero_()
-                            captured, _ = evaluate(getter, state, loss)
-                    self.assertIs(captured, values)
-                    for _ in range(2):
-                        wp.capture_launch(capture.graph)
-                        np.testing.assert_array_equal(source.grad.numpy(), expected)
+                    np.testing.assert_array_equal(source.grad.numpy(), expected)
+                    source.grad.zero_()
+                    test.assertIs(getter(state), values)
+                    if setup == "replaced":
+                        test.assertIsNone(old_grad())
+                    source.requires_grad = False
+                    test.assertFalse(getter(state).requires_grad)
 
-    def test_irregular_getters_reject_short_state_arrays(self):
-        """Check capacity before gathering irregular ranges, including after a cached read."""
-        for device in get_test_devices():
-            model = _irregular_model(device=device)
-            for getter, _setter, attribute in _state_accessors(model, pattern="selected_*"):
-                with self.subTest(device=device, getter=getter.__name__):
-                    state = model.state()
-                    original = getattr(state, attribute)
-                    getter(state)
-                    # Keep the full allocation alive so a missing guard cannot read freed memory.
-                    setattr(state, attribute, original[:-1])
-                    with self.assertRaisesRegex(ValueError, "at least"):
-                        getter(state)
 
-    def test_batched_state_round_trips(self):
-        """Read and write all particle and body state types on CPU and CUDA."""
-        for device in get_test_devices():
-            model = _replicated_model(3, device=device)
-            for getter, setter, attribute in _state_accessors(model):
-                with self.subTest(device=device, attribute=attribute):
-                    view = getter.__self__
-                    self.assertEqual((view.count, view.count_per_world), (3, 1))
-                    self.assertEqual(view.worlds, [0, 1, 2])
-                    state = model.state()
-                    target = getattr(state, attribute)
-                    before = target.numpy().copy()
-                    values = getter(state)
-                    self.assertEqual(values.shape, (3, 4 if attribute.startswith("particle") else 3))
-                    self.assertEqual(values.device, model.device)
-                    changed = values.numpy().copy()
-                    if attribute.endswith("qd"):
-                        changed += np.arange(1, 4)[:, None, None]
-                    else:
-                        changed[..., 0] += np.arange(1, 4)[:, None]
-                    np.testing.assert_array_equal(target.numpy(), before)
-                    dtype = target.dtype
-                    if attribute == "particle_q":
-                        # Equivalent vec3 inputs must pass Newton's dtype validation.
-                        dtype = wp.types.vector(length=3, dtype=wp.float32)
-                    setter(state, wp.array(changed, dtype=dtype, device=device))
-                    np.testing.assert_allclose(getter(state).numpy(), changed, atol=1e-6)
+def test_getter_gradients_cuda_graph(test, device):
+    """Replay getter gradients with warmed buffers and a fixed configuration."""
+
+    def evaluate(getter, state, loss):
+        with wp.Tape() as tape:
+            result = getter(state)
+            wp.launch(_sum_first_component, dim=result.shape, inputs=[result, loss], device=loss.device)
+        tape.backward(loss)
+        return result, tape
+
+    for make_model, pattern in ((_replicated_model, "/World/*"), (_irregular_model, "selected_*")):
+        model = make_model(device=device)
+        for getter, _setter, attribute in _state_accessors(model, pattern=pattern):
+            with test.subTest(pattern=pattern, getter=getter.__name__):
+                state = model.state(requires_grad=True)
+                getter(state)
+                setattr(state, attribute, wp.clone(getattr(state, attribute), requires_grad=True))
+                source = getattr(state, attribute)
+                loss = wp.zeros(1, device=device, requires_grad=True)
+                values, tape = evaluate(getter, state, loss)  # Warm the getter and backward kernels.
+                expected = np.zeros_like(source.numpy())
+                expected[:, 0] = 1.0
+                if make_model is _irregular_model:
+                    gaps = [4, 9, 10] if attribute.startswith("particle") else [3, 7, 8]
+                    expected[gaps, 0] = 0.0
+                with wp.ScopedMempool(device, enable=False):
+                    with wp.ScopedCapture(device) as capture:
+                        tape.zero()
+                        loss.zero_()
+                        captured, _ = evaluate(getter, state, loss)
+                test.assertIs(captured, values)
+                for _ in range(2):
+                    wp.capture_launch(capture.graph)
+                    np.testing.assert_array_equal(source.grad.numpy(), expected)
+
+
+def test_irregular_getters_reject_short_state_arrays(test, device):
+    """Check capacity before gathering irregular ranges, including after a cached read."""
+    model = _irregular_model(device=device)
+    for getter, _setter, attribute in _state_accessors(model, pattern="selected_*"):
+        with test.subTest(device=device, getter=getter.__name__):
+            state = model.state()
+            original = getattr(state, attribute)
+            getter(state)
+            # Keep the full allocation alive so a missing guard cannot read freed memory.
+            setattr(state, attribute, original[:-1])
+            with test.assertRaisesRegex(ValueError, "at least"):
+                getter(state)
+
+
+def test_batched_state_round_trips(test, device):
+    """Read and write all particle and body state types on CPU and CUDA."""
+    model = _replicated_model(3, device=device)
+    for getter, setter, attribute in _state_accessors(model):
+        with test.subTest(device=device, attribute=attribute):
+            view = getter.__self__
+            test.assertEqual((view.count, view.count_per_world), (3, 1))
+            test.assertEqual(view.worlds, [0, 1, 2])
+            state = model.state()
+            target = getattr(state, attribute)
+            before = target.numpy().copy()
+            values = getter(state)
+            test.assertEqual(values.shape, (3, 4 if attribute.startswith("particle") else 3))
+            test.assertEqual(values.device, model.device)
+            changed = values.numpy().copy()
+            if attribute.endswith("qd"):
+                changed += np.arange(1, 4)[:, None, None]
+            else:
+                changed[..., 0] += np.arange(1, 4)[:, None]
+            np.testing.assert_array_equal(target.numpy(), before)
+            dtype = target.dtype
+            if attribute == "particle_q":
+                # Equivalent vec3 inputs must pass Newton's dtype validation.
+                dtype = wp.types.vector(length=3, dtype=wp.float32)
+            setter(state, wp.array(changed, dtype=dtype, device=device))
+            np.testing.assert_allclose(getter(state).numpy(), changed, atol=1e-6)
+
+
+def test_irregular_getter_cold_capture_keeps_buffers_separate(test, device):
+    """Read eagerly before replaying independent first-use getter captures."""
+    if not wp.is_mempool_enabled(device):
+        test.skipTest("CUDA graph capture of allocations requires the mempool")
+    model = _irregular_model(device=device)
+    state = model.state()
+    warm_view = DeformableSurfaceView(model, "selected_cloth_*")
+    expected = warm_view.get_particle_positions(state).numpy().copy()
+    view = DeformableSurfaceView(model, "selected_cloth_*")
+
+    with wp.ScopedCapture(device) as first:
+        first_result = view.get_particle_positions(state)
+    with wp.ScopedCapture(device) as second:
+        second_result = view.get_particle_positions(state)
+    # Independent graphs must not borrow storage allocated by an unreplayed graph.
+    test.assertIsNot(first_result, second_result)
+
+    eager_result = view.get_particle_positions(state)
+    np.testing.assert_array_equal(eager_result.numpy(), expected)
+    for capture, result, offset in ((second, second_result, 1.0), (first, first_result, 2.0)):
+        values = expected + offset
+        view.set_particle_positions(state, wp.array(values, dtype=wp.vec3, device=device))
+        wp.capture_launch(capture.graph)
+        np.testing.assert_array_equal(result.numpy(), values)
+        np.testing.assert_array_equal(view.get_particle_positions(state).numpy(), values)
+
+
+def test_irregular_getters_capture_all_state_dtypes(test, device):
+    """Internally staged vec3, transform, and spatial-vector reads replay in a CUDA graph."""
+    model = _irregular_model(device=device)
+    state = model.state()
+    for getter, setter, _attribute in _state_accessors(model, pattern="selected_*"):
+        with test.subTest(getter=getter.__name__):
+            result = getter(state)  # warm up and allocate indexed staging
+            with wp.ScopedCapture(device) as capture:
+                captured_result = getter(state)
+            test.assertIs(result, captured_result)
+
+            expected = result.numpy().copy()
+            expected[..., 0] += 0.25
+            setter(state, wp.array(expected, dtype=result.dtype, device=device))
+            wp.capture_launch(capture.graph)
+            np.testing.assert_allclose(result.numpy(), expected, atol=1.0e-6)
+
+
+class TestDeformableStateReads(unittest.TestCase):
+    """Read regular and irregular state and property layouts, including captured gathers."""
 
     def test_regular_getter_returns_a_live_state_view(self):
         """A regular selection aliases state data like an ArticulationView getter."""
@@ -1123,352 +1166,417 @@ class TestDeformableStateReads(unittest.TestCase):
         self.assertIs(first, second)
         np.testing.assert_allclose(first.numpy(), moved, atol=1.0e-6)
 
-    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA graph capture")
-    def test_irregular_getter_cold_capture_keeps_buffers_separate(self):
-        """Read eagerly before replaying independent first-use getter captures."""
-        device = wp.get_device("cuda:0")
-        if not wp.is_mempool_enabled(device):
-            self.skipTest("CUDA graph capture of allocations requires the mempool")
-        model = _irregular_model(device=device)
+
+for _test in (
+    test_particle_property_snapshots,
+    test_particle_property_gradients,
+    test_getters_release_discarded_states,
+    test_getters_follow_replaced_arrays,
+    test_getter_gradients,
+    test_irregular_getters_reject_short_state_arrays,
+    test_batched_state_round_trips,
+):
+    add_function_test(TestDeformableStateReads, _test.__name__, _test, devices=get_test_devices())
+
+
+for _test in (
+    test_particle_property_capture,
+    test_getter_gradients_cuda_graph,
+    test_irregular_getter_cold_capture_keeps_buffers_separate,
+    test_irregular_getters_capture_all_state_dtypes,
+):
+    add_function_test(TestDeformableStateReads, _test.__name__, _test, devices=get_cuda_test_devices())
+
+
+def test_state_arrays_validate_before_access(test, device):
+    """Reject invalid arrays in getters and setters without accessing their memory."""
+    devices = get_test_devices()
+    model = _replicated_model(3, device=device)
+    for getter, setter, attribute in _state_accessors(model):
         state = model.state()
-        warm_view = DeformableSurfaceView(model, "selected_cloth_*")
-        expected = warm_view.get_particle_positions(state).numpy().copy()
-        view = DeformableSurfaceView(model, "selected_cloth_*")
+        original = getattr(state, attribute)
+        values = wp.clone(getter(state))
+        before = original.numpy().copy()
+        invalid = [
+            ("missing", None),
+            ("not_warp", before),
+            ("rank", original.reshape((1, original.size))),
+            ("dtype", wp.zeros(original.size, dtype=wp.float32, device=device)),
+            ("short", original[:-1]),
+        ]
+        invalid.extend(
+            ("device", wp.zeros(original.size, dtype=original.dtype, device=other))
+            for other in devices
+            if other != device
+        )
+        for name, array in invalid:
+            with test.subTest(device=device, attribute=attribute, array=name):
+                setattr(state, attribute, array)
+                # Inspect no returned alias: it may be unsafe without the guard.
+                with test.assertRaisesRegex(ValueError, "state array"):
+                    getter(state)
+                # An all-false mask keeps the regression safe without the guard.
+                with test.assertRaisesRegex(ValueError, "state array"):
+                    setter(state, values, mask=[False] * 3)
+                np.testing.assert_array_equal(original.numpy(), before)
 
-        with wp.ScopedCapture(device) as first:
-            first_result = view.get_particle_positions(state)
-        with wp.ScopedCapture(device) as second:
-            second_result = view.get_particle_positions(state)
-        # Independent graphs must not borrow storage allocated by an unreplayed graph.
-        self.assertIsNot(first_result, second_result)
 
-        eager_result = view.get_particle_positions(state)
-        np.testing.assert_array_equal(eager_result.numpy(), expected)
-        for capture, result, offset in ((second, second_result, 1.0), (first, first_result, 2.0)):
-            values = expected + offset
-            view.set_particle_positions(state, wp.array(values, dtype=wp.vec3, device=device))
+def test_model_and_state_access_accepts_strided_storage(test, device):
+    """Read and write padded, strided storage without changing gaps or masked rows."""
+    for make_model, pattern in ((_replicated_model, "/World/*"), (_irregular_model, "selected_*")):
+        model = make_model(device=device)
+        for getter, setter, attribute in _state_accessors(model, pattern=pattern):
+            for use_model in (False, True):
+                with test.subTest(device=device, getter=getter.__name__, pattern=pattern, model=use_model):
+                    state_untouched = model.state()
+                    untouched = getattr(state_untouched, attribute).numpy().copy()
+                    target = model if use_model else model.state()
+                    original = getattr(target, attribute)
+                    before = original.numpy().copy()
+                    batched = getter(target).numpy().copy()
+                    host = np.full((2 * (len(before) + 2), before.shape[-1]), -17.0, dtype=np.float32)
+                    host[: 2 * len(before) : 2] = before
+                    backing = wp.array(host, dtype=original.dtype, device=device)
+                    setattr(target, attribute, backing[::2])
+                    np.testing.assert_array_equal(getter(target).numpy(), batched)
+
+                    values = batched.copy()
+                    values[..., 0] += 1.0
+                    setter(target, wp.array(values, dtype=original.dtype, device=device), mask=[True, False, True])
+                    expected = host.copy()
+                    view = getter.__self__
+                    kind = "particle" if attribute.startswith("particle") else "body"
+                    for row, (start, end) in enumerate(view.ranges(kind)):
+                        if row != 1:
+                            expected[2 * start : 2 * end : 2] = values[row]
+                    np.testing.assert_array_equal(backing.numpy(), expected)
+                    np.testing.assert_array_equal(getattr(state_untouched, attribute).numpy(), untouched)
+                    setattr(target, attribute, original)
+
+
+def test_state_capacity_only_covers_selected_ranges(test, device):
+    """Accept arrays smaller than the model when the selected elements still fit."""
+    model = _irregular_model(device=device)
+    for getter, setter, attribute in _state_accessors(model, pattern="selected_*_0"):
+        with test.subTest(device=device, getter=getter.__name__):
+            state = model.state()
+            values = wp.clone(getter(state))
+            values.fill_(2.0)
+            original = getattr(state, attribute)
+            before = original.numpy().copy()
+            required = values.shape[1]
+            setattr(state, attribute, original[:required])
+            setter(state, values)
+            np.testing.assert_array_equal(getter(state).numpy(), values.numpy())
+            expected = before.copy()
+            expected[:required] = 2.0
+            np.testing.assert_array_equal(original.numpy(), expected)
+
+
+def test_host_values_validate_before_writing(test, device):
+    """Reject missing or malformed host values without changing any rows, regardless of the mask."""
+    model = _replicated_model(5, device=device)
+    for getter, setter, attribute in _state_accessors(model):
+        state = model.state()
+        target = getattr(state, attribute)
+        initial = wp.clone(target)
+        before = target.numpy().copy()
+        host = getter(state).numpy().copy()
+        invalid = (
+            ("missing", None),
+            ("wrong_count", host[:-1]),
+            ("wrong_components", host[..., :-1]),
+            ("empty", []),
+            ("ragged", [host[0].tolist(), host[1, :-1].tolist()]),
+            ("not_numeric", np.full(host.shape, "invalid")),
+            ("invalid_elements", np.full(host.shape, object())),
+        )
+        for name, values in invalid:
+            for mask in (None, [True, False, True, False, True], [False] * 5):
+                with test.subTest(device=device, setter=setter.__name__, values=name, mask=mask):
+                    wp.copy(target, initial)
+                    with test.assertRaisesRegex(ValueError, "values"):
+                        setter(state, values, mask=mask)
+                    np.testing.assert_array_equal(target.numpy(), before)
+
+
+def test_indices_replace_mask_without_reordering_values(test, device):
+    """Convert unsorted and repeated object indices into matching-row resets."""
+    model = _replicated_model(4, device=device)
+    cloth = DeformableSurfaceView(model, "/World/Cloth")
+    backing = wp.ones(8, dtype=wp.bool, device=device)
+    mask = backing[::2]
+    cloth.set_mask_from_indices(mask, [2, np.int64(0), 2])
+    np.testing.assert_array_equal(backing.numpy(), [True, True, False, True, True, True, False, True])
+    state = model.state()
+    before = state.particle_q.numpy().copy()
+    defaults = cloth.get_particle_positions(model).numpy().copy()
+    defaults[:, :, 2] += np.array([10, 20, 30, 40])[:, None]
+    cloth.set_particle_positions(state, defaults, mask=mask)
+    expected = before.copy()
+    expected[:4] = defaults[0]
+    expected[8:12] = defaults[2]
+    np.testing.assert_array_equal(state.particle_q.numpy(), expected)
+    cloth.set_mask_from_indices(mask, [])
+    np.testing.assert_array_equal(backing.numpy(), [False, True] * 4)
+
+
+def test_mask_conversion_validates_without_mutation(test, device):
+    """Reject invalid host indices and array layouts before replacing a mask."""
+    model = _replicated_model(3, device=device)
+    view = DeformableSurfaceView(model, "/World/Cloth")
+    mask = wp.array([True, False, True], dtype=wp.bool, device=device)
+    for indices, error in (
+        ([-0.2], TypeError),
+        ([1.9], TypeError),
+        (["1"], TypeError),
+        ([True], TypeError),
+        ([np.bool_(False)], TypeError),
+        (None, TypeError),
+        ([-1], ValueError),
+        ([3], ValueError),
+        ([0, 3], ValueError),
+        (wp.zeros((1, 3), dtype=wp.int32, device=device), ValueError),
+        (wp.zeros(1, dtype=wp.int64, device=device), ValueError),
+    ):
+        with test.subTest(device=device, indices=indices):
+            with test.assertRaises(error):
+                view.set_mask_from_indices(mask, indices)
+            np.testing.assert_array_equal(mask.numpy(), [True, False, True])
+    other = "cpu" if device.is_cuda else "cuda:0"
+    if wp.is_cuda_available():
+        with test.assertRaisesRegex(ValueError, "device"):
+            view.set_mask_from_indices(mask, wp.zeros(1, dtype=wp.int32, device=other))
+        np.testing.assert_array_equal(mask.numpy(), [True, False, True])
+
+    for output in (None, [True] * 3):
+        with test.assertRaisesRegex(TypeError, "caller-owned"):
+            view.set_mask_from_indices(output, [0])
+    for dtype, shape in ((wp.int32, (3,)), (wp.bool, (1, 3)), (wp.bool, (2,))):
+        output = wp.ones(shape, dtype=dtype, device=device)
+        before = output.numpy().copy()
+        with test.assertRaisesRegex(ValueError, "mask"):
+            view.set_mask_from_indices(output, [0])
+        np.testing.assert_array_equal(output.numpy(), before)
+    overlapping = wp.array(ptr=mask.ptr, shape=(3,), strides=(0,), dtype=wp.bool, device=device)
+    with test.assertRaisesRegex(ValueError, "overlap"):
+        view.set_mask_from_indices(overlapping, [0])
+    np.testing.assert_array_equal(mask.numpy(), [True, False, True])
+
+
+def test_mask_conversion_uses_view_rows_in_uneven_and_global_scenes(test, device):
+    """Keep object membership independent of model-world partition sizes."""
+    for global_only in (False, True):
+        builder = newton.ModelBuilder()
+        for count in (1, 0, 2):
+            if not global_only:
+                builder.begin_world()
+            if count == 0:
+                builder.add_particle(wp.vec3(0.0), wp.vec3(0.0), 1.0)
+            for _ in range(count):
+                _add_test_cable(builder)
+            if not global_only:
+                builder.end_world()
+        model = builder.finalize(device=device)
+        cables = DeformableCurveView(model, "cable")
+        test.assertEqual(cables.worlds, [-1, -1, -1] if global_only else [0, 2, 2])
+        mask = wp.zeros(3, dtype=wp.bool, device=device)
+        indices = range(1, 3) if global_only else range(*cables.deformable_object_ranges()[2])
+        cables.set_mask_from_indices(mask, indices)
+        np.testing.assert_array_equal(mask.numpy(), [False, True, True])
+
+
+def test_conversion_and_reset_replay_changing_membership(test, device):
+    """Replay duplicate and padded device selectors without retaining old selections."""
+    model = _replicated_model(3, device=device)
+    for getter, setter, attribute in _state_accessors(model):
+        view = setter.__self__
+        state = model.state()
+        initial = getter(state).numpy().copy()
+        defaults = initial.copy()
+        defaults[..., 0] += 10.0
+        values = wp.array(defaults, dtype=getattr(state, attribute).dtype, device=device)
+        indices = wp.array([2, 0, 2, -1], dtype=wp.int32, device=device)
+        mask = wp.zeros(3, dtype=wp.bool, device=device)
+        view.set_mask_from_indices(mask, indices)
+        setter(state, values, mask=mask)
+        with wp.ScopedMempool(device, enable=False):
+            with wp.ScopedCapture(device) as capture:
+                view.set_mask_from_indices(mask, indices)
+                setter(state, values, mask=mask)
+        for selected, expected_mask in (
+            ([2, 0, 2, -1], [True, False, True]),
+            ([1, -1, 3, 1], [False, True, False]),
+            ([-1, 3, -1, 99], [False] * 3),
+        ):
+            setter(state, initial)
+            indices.assign(np.array(selected, dtype=np.int32))
             wp.capture_launch(capture.graph)
-            np.testing.assert_array_equal(result.numpy(), values)
-            np.testing.assert_array_equal(view.get_particle_positions(state).numpy(), values)
+            expected = initial.copy()
+            expected[expected_mask] = defaults[expected_mask]
+            np.testing.assert_array_equal(mask.numpy(), expected_mask)
+            np.testing.assert_array_equal(getter(state).numpy(), expected)
 
-    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA graph capture")
-    def test_irregular_getters_capture_all_state_dtypes(self):
-        """Internally staged vec3, transform, and spatial-vector reads replay in a CUDA graph."""
-        device = wp.get_device("cuda:0")
-        model = _irregular_model(device=device)
+
+def test_conversion_rejects_host_indices_during_capture(test, device):
+    """Leave a caller-owned mask intact when host conversion is attempted in capture."""
+    view = DeformableSurfaceView(_replicated_model(3, device=device), "/World/Cloth")
+    mask = wp.ones(3, dtype=wp.bool, device=device)
+    for pooled in (False, True):
+        for indices in ([0], []):
+            with wp.ScopedMempool(device, enable=pooled):
+                with wp.ScopedCapture(device):
+                    with test.assertRaisesRegex(RuntimeError, "before CUDA capture"):
+                        view.set_mask_from_indices(mask, indices)
+            np.testing.assert_array_equal(mask.numpy(), [True] * 3)
+
+
+def test_masked_writes_keep_full_buffer_row_order(test, device):
+    """Copy matching full-buffer rows and preserve every unselected row."""
+    model = _replicated_model(4, device=device)
+    for getter, setter, attribute in _state_accessors(model):
         state = model.state()
-        for getter, setter, _attribute in _state_accessors(model, pattern="selected_*"):
-            with self.subTest(getter=getter.__name__):
-                result = getter(state)  # warm up and allocate indexed staging
-                with wp.ScopedCapture(device) as capture:
-                    captured_result = getter(state)
-                self.assertIs(result, captured_result)
+        target = getattr(state, attribute)
+        initial = wp.clone(target)
+        before = getter(state).numpy().copy()
+        defaults = before.copy()
+        for i in range(4):
+            defaults[i, ..., 0] += 10.0 + i
+        values = wp.array(defaults, dtype=target.dtype, device=device)
+        strided = np.stack((defaults, defaults), axis=-1)[..., 0]
+        host_inputs = (
+            ("full", defaults),
+            ("list", defaults.tolist()),
+            ("float64", defaults.astype(np.float64)),
+            ("strided", strided),
+            ("flat", defaults.reshape(-1)),
+            ("flat_list", defaults.reshape(-1).tolist()),
+            ("rows", defaults.reshape(-1, defaults.shape[-1])),
+            ("fortran", np.asfortranarray(defaults.reshape(defaults.shape[-1], -1))),
+        )
+        for selection in (None, [True, False, True, False], [False] * 4):
+            with test.subTest(device=device, setter=setter.__name__, selection=selection):
+                wp.copy(target, initial)
+                expected = before.copy()
+                chosen = np.ones(4, dtype=bool) if selection is None else selection
+                expected[chosen] = defaults[chosen]
 
-                expected = result.numpy().copy()
-                expected[..., 0] += 0.25
-                setter(state, wp.array(expected, dtype=result.dtype, device=device))
-                wp.capture_launch(capture.graph)
-                np.testing.assert_allclose(result.numpy(), expected, atol=1.0e-6)
+                # Every second entry belongs to the mask. Other entries are sentinels.
+                backing_np = np.ones(8, dtype=bool)
+                backing_np[::2] = chosen
+                backing = wp.array(backing_np, dtype=wp.bool, device=device)
+                mask = None if selection is None else backing[::2]
+                setter(state, values, mask=mask)
+                np.testing.assert_array_equal(getter(state).numpy(), expected)
+                np.testing.assert_array_equal(values.numpy(), defaults)
+                np.testing.assert_array_equal(backing.numpy(), backing_np)
+
+                # Host inputs follow the same mapping outside capture.
+                for name, host_values in host_inputs:
+                    with test.subTest(host_layout=name):
+                        # An earlier successful write must not hide a later no-op.
+                        wp.copy(target, initial)
+                        setter(state, host_values, mask=selection)
+                        np.testing.assert_array_equal(getter(state).numpy(), expected)
+
+
+def test_separate_masked_writes_preserve_gradients(test, device):
+    """Keep both writes' gradients when one view updates separate states."""
+
+    def differentiate(setter, states, values, masks, seeds, selectors):
+        with wp.Tape() as tape:
+            for i, (state, value, mask) in enumerate(zip(states, values, masks, strict=True)):
+                if selectors is not None:
+                    setter.__self__.set_mask_from_indices(mask, selectors[i])
+                setter(state, value, mask=mask)
+        tape.backward(grads=seeds)
+        return tape
+
+    model = _replicated_model(3, device=device)
+    for convert_indices in (False, True):
+        for getter, setter, attribute in _state_accessors(model):
+            with test.subTest(device=device, setter=setter.__name__, convert_indices=convert_indices):
+                states = [model.state(requires_grad=True) for _ in range(2)]
+                targets = [getattr(state, attribute) for state in states]
+                values = [
+                    wp.array(getter(state).numpy(), dtype=target.dtype, device=device, requires_grad=True)
+                    for state, target in zip(states, targets, strict=True)
+                ]
+                masks_np = ([True, False, True], [False, True, True])
+                masks = [wp.array(mask, dtype=wp.bool, device=device) for mask in masks_np]
+                selectors = (
+                    [wp.array(rows, dtype=wp.int32, device=device) for rows in ([2, 0, 2], [1, 2, 1])]
+                    if convert_indices
+                    else None
+                )
+                seeds = {target: wp.full_like(target, i + 1) for i, target in enumerate(targets)}
+                expected = [
+                    np.broadcast_to((i + 1) * np.array(mask)[:, None, None], value.numpy().shape)
+                    for i, (mask, value) in enumerate(zip(masks_np, values, strict=True))
+                ]
+                tape = differentiate(setter, states, values, masks, seeds, selectors)
+                for value, gradient in zip(values, expected, strict=True):
+                    np.testing.assert_array_equal(value.grad.numpy(), gradient)
+
+                if device.is_cuda:
+                    tape.zero()
+                    with wp.ScopedCapture(device) as capture:
+                        tape = differentiate(setter, states, values, masks, seeds, selectors)
+                    for _ in range(2):
+                        tape.zero()
+                        wp.capture_launch(capture.graph)
+                        for value, gradient in zip(values, expected, strict=True):
+                            np.testing.assert_array_equal(value.grad.numpy(), gradient)
+
+
+def test_masked_setters_capture_without_allocations(test, device):
+    """Replay all setter types with changing masks and gradient-enabled values."""
+    model = _replicated_model(3, device=device)
+    for getter, setter, attribute in _state_accessors(model):
+        for use_mask in (False, True):
+            with test.subTest(setter=setter.__name__, use_mask=use_mask):
+                state = model.state(requires_grad=True)
+                initial = getter(state).numpy().copy()
+                values = wp.array(initial, dtype=getattr(state, attribute).dtype, device=device, requires_grad=True)
+                mask = wp.zeros(3, dtype=wp.bool, device=device) if use_mask else None
+                setter(state, values, mask=mask)
+                # No active tape: requires_grad alone must not trigger hidden storage.
+                with wp.ScopedMempool(device, enable=False):
+                    with wp.ScopedCapture(device) as capture:
+                        setter(state, values, mask=mask)
+                expected = initial.copy()
+                for step, chosen in enumerate(([True, False, True], [False] * 3, [True] * 3)):
+                    next_values = initial.copy()
+                    next_values[..., 0] += step + 1
+                    values.assign(next_values)
+                    if mask is not None:
+                        mask.assign(np.array(chosen, dtype=bool))
+                    wp.capture_launch(capture.graph)
+                    rows = chosen if use_mask else [True] * 3
+                    expected[rows] = next_values[rows]
+                    np.testing.assert_array_equal(getter(state).numpy(), expected)
+
+
+def test_host_inputs_rejected_during_capture(test, device):
+    """Reject host conversions independently of CUDA memory-pool settings."""
+    model = _replicated_model(3, device=device)
+    for getter, setter, attribute in _state_accessors(model):
+        state = model.state()
+        values = wp.clone(getter(state))
+        host_values = values.numpy()
+        before = getattr(state, attribute).numpy().copy()
+        for pooled in (False, True):
+            for value, mask in ((host_values, None), (values, [False] * 3), ([], None), (values, []), (None, None)):
+                with test.subTest(setter=setter.__name__, pooled=pooled):
+                    with wp.ScopedMempool(device, enable=pooled):
+                        with wp.ScopedCapture(device):
+                            with test.assertRaisesRegex(RuntimeError, "before CUDA capture"):
+                                setter(state, value, mask=mask)
+                    np.testing.assert_array_equal(getattr(state, attribute).numpy(), before)
 
 
 class TestDeformableStateWrites(unittest.TestCase):
     """Validate masked writes, capture, and gradients through public setters."""
-
-    def test_state_arrays_validate_before_access(self):
-        """Reject invalid arrays in getters and setters without accessing their memory."""
-        devices = get_test_devices()
-        for device in devices:
-            model = _replicated_model(3, device=device)
-            for getter, setter, attribute in _state_accessors(model):
-                state = model.state()
-                original = getattr(state, attribute)
-                values = wp.clone(getter(state))
-                before = original.numpy().copy()
-                invalid = [
-                    ("missing", None),
-                    ("not_warp", before),
-                    ("rank", original.reshape((1, original.size))),
-                    ("dtype", wp.zeros(original.size, dtype=wp.float32, device=device)),
-                    ("short", original[:-1]),
-                ]
-                invalid.extend(
-                    ("device", wp.zeros(original.size, dtype=original.dtype, device=other))
-                    for other in devices
-                    if other != device
-                )
-                for name, array in invalid:
-                    with self.subTest(device=device, attribute=attribute, array=name):
-                        setattr(state, attribute, array)
-                        # Inspect no returned alias: it may be unsafe without the guard.
-                        with self.assertRaisesRegex(ValueError, "state array"):
-                            getter(state)
-                        # An all-false mask keeps the regression safe without the guard.
-                        with self.assertRaisesRegex(ValueError, "state array"):
-                            setter(state, values, mask=[False] * 3)
-                        np.testing.assert_array_equal(original.numpy(), before)
-
-    def test_model_and_state_access_accepts_strided_storage(self):
-        """Read and write padded, strided storage without changing gaps or masked rows."""
-        for device in get_test_devices():
-            for make_model, pattern in ((_replicated_model, "/World/*"), (_irregular_model, "selected_*")):
-                model = make_model(device=device)
-                for getter, setter, attribute in _state_accessors(model, pattern=pattern):
-                    for use_model in (False, True):
-                        with self.subTest(device=device, getter=getter.__name__, pattern=pattern, model=use_model):
-                            state_untouched = model.state()
-                            untouched = getattr(state_untouched, attribute).numpy().copy()
-                            target = model if use_model else model.state()
-                            original = getattr(target, attribute)
-                            before = original.numpy().copy()
-                            batched = getter(target).numpy().copy()
-                            host = np.full((2 * (len(before) + 2), before.shape[-1]), -17.0, dtype=np.float32)
-                            host[: 2 * len(before) : 2] = before
-                            backing = wp.array(host, dtype=original.dtype, device=device)
-                            setattr(target, attribute, backing[::2])
-                            np.testing.assert_array_equal(getter(target).numpy(), batched)
-
-                            values = batched.copy()
-                            values[..., 0] += 1.0
-                            setter(
-                                target, wp.array(values, dtype=original.dtype, device=device), mask=[True, False, True]
-                            )
-                            expected = host.copy()
-                            view = getter.__self__
-                            kind = "particle" if attribute.startswith("particle") else "body"
-                            for row, (start, end) in enumerate(view.ranges(kind)):
-                                if row != 1:
-                                    expected[2 * start : 2 * end : 2] = values[row]
-                            np.testing.assert_array_equal(backing.numpy(), expected)
-                            np.testing.assert_array_equal(getattr(state_untouched, attribute).numpy(), untouched)
-                            setattr(target, attribute, original)
-
-    def test_state_capacity_only_covers_selected_ranges(self):
-        """Accept arrays smaller than the model when the selected elements still fit."""
-        for device in get_test_devices():
-            model = _irregular_model(device=device)
-            for getter, setter, attribute in _state_accessors(model, pattern="selected_*_0"):
-                with self.subTest(device=device, getter=getter.__name__):
-                    state = model.state()
-                    values = wp.clone(getter(state))
-                    values.fill_(2.0)
-                    original = getattr(state, attribute)
-                    before = original.numpy().copy()
-                    required = values.shape[1]
-                    setattr(state, attribute, original[:required])
-                    setter(state, values)
-                    np.testing.assert_array_equal(getter(state).numpy(), values.numpy())
-                    expected = before.copy()
-                    expected[:required] = 2.0
-                    np.testing.assert_array_equal(original.numpy(), expected)
-
-    def test_host_values_validate_before_writing(self):
-        """Reject missing or malformed host values without changing any rows, regardless of the mask."""
-        for device in get_test_devices():
-            model = _replicated_model(5, device=device)
-            for getter, setter, attribute in _state_accessors(model):
-                state = model.state()
-                target = getattr(state, attribute)
-                initial = wp.clone(target)
-                before = target.numpy().copy()
-                host = getter(state).numpy().copy()
-                invalid = (
-                    ("missing", None),
-                    ("wrong_count", host[:-1]),
-                    ("wrong_components", host[..., :-1]),
-                    ("empty", []),
-                    ("ragged", [host[0].tolist(), host[1, :-1].tolist()]),
-                    ("not_numeric", np.full(host.shape, "invalid")),
-                    ("invalid_elements", np.full(host.shape, object())),
-                )
-                for name, values in invalid:
-                    for mask in (None, [True, False, True, False, True], [False] * 5):
-                        with self.subTest(device=device, setter=setter.__name__, values=name, mask=mask):
-                            wp.copy(target, initial)
-                            with self.assertRaisesRegex(ValueError, "values"):
-                                setter(state, values, mask=mask)
-                            np.testing.assert_array_equal(target.numpy(), before)
-
-    def test_indices_replace_mask_without_reordering_values(self):
-        """Convert unsorted and repeated object indices into matching-row resets."""
-        for device in get_test_devices():
-            model = _replicated_model(4, device=device)
-            cloth = DeformableSurfaceView(model, "/World/Cloth")
-            backing = wp.ones(8, dtype=wp.bool, device=device)
-            mask = backing[::2]
-            cloth.set_mask_from_indices(mask, [2, np.int64(0), 2])
-            np.testing.assert_array_equal(backing.numpy(), [True, True, False, True, True, True, False, True])
-            state = model.state()
-            before = state.particle_q.numpy().copy()
-            defaults = cloth.get_particle_positions(model).numpy().copy()
-            defaults[:, :, 2] += np.array([10, 20, 30, 40])[:, None]
-            cloth.set_particle_positions(state, defaults, mask=mask)
-            expected = before.copy()
-            expected[:4] = defaults[0]
-            expected[8:12] = defaults[2]
-            np.testing.assert_array_equal(state.particle_q.numpy(), expected)
-            cloth.set_mask_from_indices(mask, [])
-            np.testing.assert_array_equal(backing.numpy(), [False, True] * 4)
-
-    def test_mask_conversion_validates_without_mutation(self):
-        """Reject invalid host indices and array layouts before replacing a mask."""
-        for device in get_test_devices():
-            model = _replicated_model(3, device=device)
-            view = DeformableSurfaceView(model, "/World/Cloth")
-            mask = wp.array([True, False, True], dtype=wp.bool, device=device)
-            for indices, error in (
-                ([-0.2], TypeError),
-                ([1.9], TypeError),
-                (["1"], TypeError),
-                ([True], TypeError),
-                ([np.bool_(False)], TypeError),
-                (None, TypeError),
-                ([-1], ValueError),
-                ([3], ValueError),
-                ([0, 3], ValueError),
-                (wp.zeros((1, 3), dtype=wp.int32, device=device), ValueError),
-                (wp.zeros(1, dtype=wp.int64, device=device), ValueError),
-            ):
-                with self.subTest(device=device, indices=indices):
-                    with self.assertRaises(error):
-                        view.set_mask_from_indices(mask, indices)
-                    np.testing.assert_array_equal(mask.numpy(), [True, False, True])
-            other = "cpu" if device.is_cuda else "cuda:0"
-            if wp.is_cuda_available():
-                with self.assertRaisesRegex(ValueError, "device"):
-                    view.set_mask_from_indices(mask, wp.zeros(1, dtype=wp.int32, device=other))
-                np.testing.assert_array_equal(mask.numpy(), [True, False, True])
-
-            for output in (None, [True] * 3):
-                with self.assertRaisesRegex(TypeError, "caller-owned"):
-                    view.set_mask_from_indices(output, [0])
-            for dtype, shape in ((wp.int32, (3,)), (wp.bool, (1, 3)), (wp.bool, (2,))):
-                output = wp.ones(shape, dtype=dtype, device=device)
-                before = output.numpy().copy()
-                with self.assertRaisesRegex(ValueError, "mask"):
-                    view.set_mask_from_indices(output, [0])
-                np.testing.assert_array_equal(output.numpy(), before)
-            overlapping = wp.array(ptr=mask.ptr, shape=(3,), strides=(0,), dtype=wp.bool, device=device)
-            with self.assertRaisesRegex(ValueError, "overlap"):
-                view.set_mask_from_indices(overlapping, [0])
-            np.testing.assert_array_equal(mask.numpy(), [True, False, True])
-
-    def test_mask_conversion_uses_view_rows_in_uneven_and_global_scenes(self):
-        """Keep object membership independent of model-world partition sizes."""
-        for device in get_test_devices():
-            for global_only in (False, True):
-                builder = newton.ModelBuilder()
-                for count in (1, 0, 2):
-                    if not global_only:
-                        builder.begin_world()
-                    if count == 0:
-                        builder.add_particle(wp.vec3(0.0), wp.vec3(0.0), 1.0)
-                    for _ in range(count):
-                        _add_test_cable(builder)
-                    if not global_only:
-                        builder.end_world()
-                model = builder.finalize(device=device)
-                cables = DeformableCurveView(model, "cable")
-                self.assertEqual(cables.worlds, [-1, -1, -1] if global_only else [0, 2, 2])
-                mask = wp.zeros(3, dtype=wp.bool, device=device)
-                indices = range(1, 3) if global_only else range(*cables.deformable_object_ranges()[2])
-                cables.set_mask_from_indices(mask, indices)
-                np.testing.assert_array_equal(mask.numpy(), [False, True, True])
-
-    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA graph capture")
-    def test_conversion_and_reset_replay_changing_membership(self):
-        """Replay duplicate and padded device selectors without retaining old selections."""
-        device = wp.get_device("cuda:0")
-        model = _replicated_model(3, device=device)
-        for getter, setter, attribute in _state_accessors(model):
-            view = setter.__self__
-            state = model.state()
-            initial = getter(state).numpy().copy()
-            defaults = initial.copy()
-            defaults[..., 0] += 10.0
-            values = wp.array(defaults, dtype=getattr(state, attribute).dtype, device=device)
-            indices = wp.array([2, 0, 2, -1], dtype=wp.int32, device=device)
-            mask = wp.zeros(3, dtype=wp.bool, device=device)
-            view.set_mask_from_indices(mask, indices)
-            setter(state, values, mask=mask)
-            with wp.ScopedMempool(device, enable=False):
-                with wp.ScopedCapture(device) as capture:
-                    view.set_mask_from_indices(mask, indices)
-                    setter(state, values, mask=mask)
-            for selected, expected_mask in (
-                ([2, 0, 2, -1], [True, False, True]),
-                ([1, -1, 3, 1], [False, True, False]),
-                ([-1, 3, -1, 99], [False] * 3),
-            ):
-                setter(state, initial)
-                indices.assign(np.array(selected, dtype=np.int32))
-                wp.capture_launch(capture.graph)
-                expected = initial.copy()
-                expected[expected_mask] = defaults[expected_mask]
-                np.testing.assert_array_equal(mask.numpy(), expected_mask)
-                np.testing.assert_array_equal(getter(state).numpy(), expected)
-
-    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA graph capture")
-    def test_conversion_rejects_host_indices_during_capture(self):
-        """Leave a caller-owned mask intact when host conversion is attempted in capture."""
-        device = wp.get_device("cuda:0")
-        view = DeformableSurfaceView(_replicated_model(3, device=device), "/World/Cloth")
-        mask = wp.ones(3, dtype=wp.bool, device=device)
-        for pooled in (False, True):
-            for indices in ([0], []):
-                with wp.ScopedMempool(device, enable=pooled):
-                    with wp.ScopedCapture(device):
-                        with self.assertRaisesRegex(RuntimeError, "before CUDA capture"):
-                            view.set_mask_from_indices(mask, indices)
-                np.testing.assert_array_equal(mask.numpy(), [True] * 3)
-
-    def test_masked_writes_keep_full_buffer_row_order(self):
-        """Copy matching full-buffer rows and preserve every unselected row."""
-        for device in get_test_devices():
-            model = _replicated_model(4, device=device)
-            for getter, setter, attribute in _state_accessors(model):
-                state = model.state()
-                target = getattr(state, attribute)
-                initial = wp.clone(target)
-                before = getter(state).numpy().copy()
-                defaults = before.copy()
-                for i in range(4):
-                    defaults[i, ..., 0] += 10.0 + i
-                values = wp.array(defaults, dtype=target.dtype, device=device)
-                strided = np.stack((defaults, defaults), axis=-1)[..., 0]
-                host_inputs = (
-                    ("full", defaults),
-                    ("list", defaults.tolist()),
-                    ("float64", defaults.astype(np.float64)),
-                    ("strided", strided),
-                    ("flat", defaults.reshape(-1)),
-                    ("flat_list", defaults.reshape(-1).tolist()),
-                    ("rows", defaults.reshape(-1, defaults.shape[-1])),
-                    ("fortran", np.asfortranarray(defaults.reshape(defaults.shape[-1], -1))),
-                )
-                for selection in (None, [True, False, True, False], [False] * 4):
-                    with self.subTest(device=device, setter=setter.__name__, selection=selection):
-                        wp.copy(target, initial)
-                        expected = before.copy()
-                        chosen = np.ones(4, dtype=bool) if selection is None else selection
-                        expected[chosen] = defaults[chosen]
-
-                        # Every second entry belongs to the mask. Other entries are sentinels.
-                        backing_np = np.ones(8, dtype=bool)
-                        backing_np[::2] = chosen
-                        backing = wp.array(backing_np, dtype=wp.bool, device=device)
-                        mask = None if selection is None else backing[::2]
-                        setter(state, values, mask=mask)
-                        np.testing.assert_array_equal(getter(state).numpy(), expected)
-                        np.testing.assert_array_equal(values.numpy(), defaults)
-                        np.testing.assert_array_equal(backing.numpy(), backing_np)
-
-                        # Host inputs follow the same mapping outside capture.
-                        for name, host_values in host_inputs:
-                            with self.subTest(host_layout=name):
-                                # An earlier successful write must not hide a later no-op.
-                                wp.copy(target, initial)
-                                setter(state, host_values, mask=selection)
-                                np.testing.assert_array_equal(getter(state).numpy(), expected)
 
     def test_masks_validate_before_writing(self):
         """Reject malformed masks without changing the destination."""
@@ -1519,158 +1627,124 @@ class TestDeformableStateWrites(unittest.TestCase):
                 setter(state, live)
             setter(state, wp.clone(live))
 
-    def test_separate_masked_writes_preserve_gradients(self):
-        """Keep both writes' gradients when one view updates separate states."""
 
-        def differentiate(setter, states, values, masks, seeds, selectors):
-            with wp.Tape() as tape:
-                for i, (state, value, mask) in enumerate(zip(states, values, masks, strict=True)):
-                    if selectors is not None:
-                        setter.__self__.set_mask_from_indices(mask, selectors[i])
-                    setter(state, value, mask=mask)
-            tape.backward(grads=seeds)
-            return tape
+for _test in (
+    test_state_arrays_validate_before_access,
+    test_model_and_state_access_accepts_strided_storage,
+    test_state_capacity_only_covers_selected_ranges,
+    test_host_values_validate_before_writing,
+    test_indices_replace_mask_without_reordering_values,
+    test_mask_conversion_validates_without_mutation,
+    test_mask_conversion_uses_view_rows_in_uneven_and_global_scenes,
+    test_masked_writes_keep_full_buffer_row_order,
+    test_separate_masked_writes_preserve_gradients,
+):
+    add_function_test(TestDeformableStateWrites, _test.__name__, _test, devices=get_test_devices())
 
-        for device in get_test_devices():
-            model = _replicated_model(3, device=device)
-            for convert_indices in (False, True):
-                for getter, setter, attribute in _state_accessors(model):
-                    with self.subTest(device=device, setter=setter.__name__, convert_indices=convert_indices):
-                        states = [model.state(requires_grad=True) for _ in range(2)]
-                        targets = [getattr(state, attribute) for state in states]
-                        values = [
-                            wp.array(getter(state).numpy(), dtype=target.dtype, device=device, requires_grad=True)
-                            for state, target in zip(states, targets, strict=True)
-                        ]
-                        masks_np = ([True, False, True], [False, True, True])
-                        masks = [wp.array(mask, dtype=wp.bool, device=device) for mask in masks_np]
-                        selectors = (
-                            [wp.array(rows, dtype=wp.int32, device=device) for rows in ([2, 0, 2], [1, 2, 1])]
-                            if convert_indices
-                            else None
-                        )
-                        seeds = {target: wp.full_like(target, i + 1) for i, target in enumerate(targets)}
-                        expected = [
-                            np.broadcast_to((i + 1) * np.array(mask)[:, None, None], value.numpy().shape)
-                            for i, (mask, value) in enumerate(zip(masks_np, values, strict=True))
-                        ]
-                        tape = differentiate(setter, states, values, masks, seeds, selectors)
-                        for value, gradient in zip(values, expected, strict=True):
-                            np.testing.assert_array_equal(value.grad.numpy(), gradient)
 
-                        if device.is_cuda:
-                            tape.zero()
-                            with wp.ScopedCapture(device) as capture:
-                                tape = differentiate(setter, states, values, masks, seeds, selectors)
-                            for _ in range(2):
-                                tape.zero()
-                                wp.capture_launch(capture.graph)
-                                for value, gradient in zip(values, expected, strict=True):
-                                    np.testing.assert_array_equal(value.grad.numpy(), gradient)
+for _test in (
+    test_conversion_and_reset_replay_changing_membership,
+    test_conversion_rejects_host_indices_during_capture,
+    test_masked_setters_capture_without_allocations,
+    test_host_inputs_rejected_during_capture,
+):
+    add_function_test(TestDeformableStateWrites, _test.__name__, _test, devices=get_cuda_test_devices())
 
-    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA graph capture")
-    def test_masked_setters_capture_without_allocations(self):
-        """Replay all setter types with changing masks and gradient-enabled values."""
-        device = wp.get_device("cuda:0")
-        model = _replicated_model(3, device=device)
-        for getter, setter, attribute in _state_accessors(model):
-            for use_mask in (False, True):
-                with self.subTest(setter=setter.__name__, use_mask=use_mask):
-                    state = model.state(requires_grad=True)
-                    initial = getter(state).numpy().copy()
-                    values = wp.array(initial, dtype=getattr(state, attribute).dtype, device=device, requires_grad=True)
-                    mask = wp.zeros(3, dtype=wp.bool, device=device) if use_mask else None
-                    setter(state, values, mask=mask)
-                    # No active tape: requires_grad alone must not trigger hidden storage.
-                    with wp.ScopedMempool(device, enable=False):
-                        with wp.ScopedCapture(device) as capture:
-                            setter(state, values, mask=mask)
-                    expected = initial.copy()
-                    for step, chosen in enumerate(([True, False, True], [False] * 3, [True] * 3)):
-                        next_values = initial.copy()
-                        next_values[..., 0] += step + 1
-                        values.assign(next_values)
-                        if mask is not None:
-                            mask.assign(np.array(chosen, dtype=bool))
-                        wp.capture_launch(capture.graph)
-                        rows = chosen if use_mask else [True] * 3
-                        expected[rows] = next_values[rows]
-                        np.testing.assert_array_equal(getter(state).numpy(), expected)
 
-    @unittest.skipUnless(wp.is_cuda_available(), "Requires CUDA graph capture")
-    def test_host_inputs_rejected_during_capture(self):
-        """Reject host conversions independently of CUDA memory-pool settings."""
-        device = wp.get_device("cuda:0")
-        model = _replicated_model(3, device=device)
-        for getter, setter, attribute in _state_accessors(model):
-            state = model.state()
-            values = wp.clone(getter(state))
-            host_values = values.numpy()
-            before = getattr(state, attribute).numpy().copy()
-            for pooled in (False, True):
-                for value, mask in ((host_values, None), (values, [False] * 3), ([], None), (values, []), (None, None)):
-                    with self.subTest(setter=setter.__name__, pooled=pooled):
-                        with wp.ScopedMempool(device, enable=pooled):
-                            with wp.ScopedCapture(device):
-                                with self.assertRaisesRegex(RuntimeError, "before CUDA capture"):
-                                    setter(state, value, mask=mask)
-                        np.testing.assert_array_equal(getattr(state, attribute).numpy(), before)
+def test_partial_resets_update_both_active_states(test, device):
+    """Preserve matching rows and untouched assets across changing reset sets."""
+    prototype = newton.ModelBuilder()
+    _add_test_cloth(prototype, label="cloth_left")
+    _add_test_cloth(prototype, label="cloth_right")
+    builder = newton.ModelBuilder()
+    builder.replicate(prototype, 4)
+    model = builder.finalize(device=device)
+    for captured in (False, True) if device.is_cuda else (False,):
+        with test.subTest(device=device, captured=captured):
+            cloths = DeformableSurfaceView(model, "cloth_left")
+            test.assertEqual(cloths.worlds, list(range(model.world_count)))
+            test.assertEqual(cloths.ranges("particle"), [(0, 4), (8, 12), (16, 20), (24, 28)])
+            states = [model.state(), model.state()]
+            positions_np = cloths.get_particle_positions(model).numpy().copy()
+            velocities_np = cloths.get_particle_velocities(model).numpy().copy()
+            positions_np[:, :, 2] += np.array([10, 20, 30, 40])[:, None]
+            velocities_np[:, :, 0] = np.array([1, 2, 3, 4])[:, None]
+            positions_default = wp.array(positions_np, dtype=wp.vec3, device=device)
+            velocities_default = wp.array(velocities_np, dtype=wp.vec3, device=device)
+            indices_world = wp.array([2, 0], dtype=wp.int32, device=device)
+            mask_cloths = wp.zeros(cloths.count, dtype=wp.bool, device=device)
+
+            reset_args = (cloths, states, indices_world, mask_cloths, positions_default, velocities_default)
+            _reset_cloths(*reset_args)
+            if captured:
+                with wp.ScopedCapture(device) as capture:
+                    _reset_cloths(*reset_args)
+
+            for step, (indices, selected) in enumerate((([2, 0], [0, 2]), ([1, -1], [1]), ([3, 2], [2, 3]))):
+                # Fresh values expose stale mask bits that a second identical reset would hide.
+                before = []
+                for i, state in enumerate(states):
+                    state.particle_q.fill_(100 + 10 * step + i)
+                    state.particle_qd.fill_(-100 - 10 * step - i)
+                    before.append((state.particle_q.numpy().copy(), state.particle_qd.numpy().copy()))
+                indices_world.assign(np.array(indices, dtype=np.int32))
+                if captured:
+                    wp.capture_launch(capture.graph)
+                else:
+                    _reset_cloths(*reset_args)
+                for state, (positions, velocities) in zip(states, before, strict=True):
+                    # Each world holds four left-cloth particles, then four right-cloth particles.
+                    positions.reshape(4, 8, 3)[selected, :4] = positions_np[selected]
+                    velocities.reshape(4, 8, 3)[selected, :4] = velocities_np[selected]
+                    np.testing.assert_array_equal(state.particle_q.numpy(), positions)
+                    np.testing.assert_array_equal(state.particle_qd.numpy(), velocities)
+                np.testing.assert_array_equal(positions_default.numpy(), positions_np)
+                np.testing.assert_array_equal(velocities_default.numpy(), velocities_np)
+                states.reverse()
 
 
 class TestDeformableResets(unittest.TestCase):
     """Reset one asset in selected worlds without disturbing other state."""
 
-    def test_partial_resets_update_both_active_states(self):
-        """Preserve matching rows and untouched assets across changing reset sets."""
-        prototype = newton.ModelBuilder()
-        _add_test_cloth(prototype, label="cloth_left")
-        _add_test_cloth(prototype, label="cloth_right")
-        builder = newton.ModelBuilder()
-        builder.replicate(prototype, 4)
-        for device in get_test_devices():
-            model = builder.finalize(device=device)
-            for captured in (False, True) if device.is_cuda else (False,):
-                with self.subTest(device=device, captured=captured):
-                    cloths = DeformableSurfaceView(model, "cloth_left")
-                    self.assertEqual(cloths.worlds, list(range(model.world_count)))
-                    self.assertEqual(cloths.ranges("particle"), [(0, 4), (8, 12), (16, 20), (24, 28)])
-                    states = [model.state(), model.state()]
-                    positions_np = cloths.get_particle_positions(model).numpy().copy()
-                    velocities_np = cloths.get_particle_velocities(model).numpy().copy()
-                    positions_np[:, :, 2] += np.array([10, 20, 30, 40])[:, None]
-                    velocities_np[:, :, 0] = np.array([1, 2, 3, 4])[:, None]
-                    positions_default = wp.array(positions_np, dtype=wp.vec3, device=device)
-                    velocities_default = wp.array(velocities_np, dtype=wp.vec3, device=device)
-                    indices_world = wp.array([2, 0], dtype=wp.int32, device=device)
-                    mask_cloths = wp.zeros(cloths.count, dtype=wp.bool, device=device)
 
-                    reset_args = (cloths, states, indices_world, mask_cloths, positions_default, velocities_default)
-                    _reset_cloths(*reset_args)
-                    if captured:
-                        with wp.ScopedCapture(device) as capture:
-                            _reset_cloths(*reset_args)
+add_function_test(
+    TestDeformableResets,
+    "test_partial_resets_update_both_active_states",
+    test_partial_resets_update_both_active_states,
+    devices=get_test_devices(),
+)
 
-                    for step, (indices, selected) in enumerate((([2, 0], [0, 2]), ([1, -1], [1]), ([3, 2], [2, 3]))):
-                        # Fresh values expose stale mask bits that a second identical reset would hide.
-                        before = []
-                        for i, state in enumerate(states):
-                            state.particle_q.fill_(100 + 10 * step + i)
-                            state.particle_qd.fill_(-100 - 10 * step - i)
-                            before.append((state.particle_q.numpy().copy(), state.particle_qd.numpy().copy()))
-                        indices_world.assign(np.array(indices, dtype=np.int32))
-                        if captured:
-                            wp.capture_launch(capture.graph)
-                        else:
-                            _reset_cloths(*reset_args)
-                        for state, (positions, velocities) in zip(states, before, strict=True):
-                            # Each world holds four left-cloth particles, then four right-cloth particles.
-                            positions.reshape(4, 8, 3)[selected, :4] = positions_np[selected]
-                            velocities.reshape(4, 8, 3)[selected, :4] = velocities_np[selected]
-                            np.testing.assert_array_equal(state.particle_q.numpy(), positions)
-                            np.testing.assert_array_equal(state.particle_qd.numpy(), velocities)
-                        np.testing.assert_array_equal(positions_default.numpy(), positions_np)
-                        np.testing.assert_array_equal(velocities_default.numpy(), velocities_np)
-                        states.reverse()
+
+def test_compact_cable_requires_its_generated_root(test, device):
+    """Keep a complete USD cable, but omit its identity when the root is not selected."""
+    stage = _deformable_stage()
+    _add_cable_curve(stage, "/World/Cable", _CABLE_PTS)
+    builder = newton.ModelBuilder()
+    builder.add_rod(rod=newton.Rod(_CABLE_PTS, radius=0.01), label="background", body_frame_origin="com")
+    result = builder.add_usd(stage, return_deformable_results=True)
+    bodies, rod_joints = result["path_cable_map"]["/World/Cable"]
+    test.assertEqual(rod_joints, [4, 5])
+    builder.color()
+    model = builder.finalize(device=device)
+    cable = DeformableCurveView(model, "/World/Cable")
+    test.assertEqual(cable.ranges("joint"), [(3, 6)])
+    for include_root in (False, True):
+        with test.subTest(device=device, include_root=include_root):
+            joints = list(range(3, 6)) if include_root else rod_joints
+            coupled = SolverCoupled(
+                model,
+                entries=[SolverCoupled.Entry(name="cable", solver=SolverVBD, bodies=bodies, joints=joints)],
+            )
+            compact = coupled.view("cable")
+            test.assertEqual(compact.body_count, 3)
+            test.assertEqual(compact.joint_count, len(joints))
+            test.assertEqual(compact.curve_count, int(include_root))
+            test.assertEqual(compact.curve_label, ["/World/Cable"] if include_root else [])
+            if include_root:
+                selected = DeformableCurveView(compact, "/World/Cable")
+                test.assertEqual(selected.ranges("body"), [(0, 3)])
+                test.assertEqual(selected.ranges("joint"), [(0, 3)])
+            test.assertEqual(cable.ranges("joint"), [(3, 6)])
 
 
 @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
@@ -1767,38 +1841,6 @@ class TestUSDDeformableObjects(unittest.TestCase):
                     view.ranges("joint"),
                     [(root + w * source.joint_count, root + 3 + w * source.joint_count) for w in range(2)],
                 )
-
-    def test_compact_cable_requires_its_generated_root(self):
-        """Keep a complete USD cable, but omit its identity when the root is not selected."""
-        stage = _deformable_stage()
-        _add_cable_curve(stage, "/World/Cable", _CABLE_PTS)
-        builder = newton.ModelBuilder()
-        builder.add_rod(rod=newton.Rod(_CABLE_PTS, radius=0.01), label="background", body_frame_origin="com")
-        result = builder.add_usd(stage, return_deformable_results=True)
-        bodies, rod_joints = result["path_cable_map"]["/World/Cable"]
-        self.assertEqual(rod_joints, [4, 5])
-        builder.color()
-        for device in get_test_devices():
-            model = builder.finalize(device=device)
-            cable = DeformableCurveView(model, "/World/Cable")
-            self.assertEqual(cable.ranges("joint"), [(3, 6)])
-            for include_root in (False, True):
-                with self.subTest(device=device, include_root=include_root):
-                    joints = list(range(3, 6)) if include_root else rod_joints
-                    coupled = SolverCoupled(
-                        model,
-                        entries=[SolverCoupled.Entry(name="cable", solver=SolverVBD, bodies=bodies, joints=joints)],
-                    )
-                    compact = coupled.view("cable")
-                    self.assertEqual(compact.body_count, 3)
-                    self.assertEqual(compact.joint_count, len(joints))
-                    self.assertEqual(compact.curve_count, int(include_root))
-                    self.assertEqual(compact.curve_label, ["/World/Cable"] if include_root else [])
-                    if include_root:
-                        selected = DeformableCurveView(compact, "/World/Cable")
-                        self.assertEqual(selected.ranges("body"), [(0, 3)])
-                        self.assertEqual(selected.ranges("joint"), [(0, 3)])
-                    self.assertEqual(cable.ranges("joint"), [(3, 6)])
 
     def test_heterogeneous_worlds_resolve_with_world_tags(self):
         """Worlds holding different deformables each resolve with the right world tag."""
@@ -1939,6 +1981,7 @@ class TestUSDDeformableObjects(unittest.TestCase):
                 ]
                 joint_ranges = [(5 * i, 5 * i + 5) for i in range(copies)]
                 worlds = [-1] if cloning == "none" else [0, 1]
+                # Share USD parsing and cloning setup across the device checks.
                 for device in get_test_devices():
                     with self.subTest(collapse=collapse, cloning=cloning, device=device):
                         model = scene.finalize(device=device)
@@ -1967,6 +2010,14 @@ class TestUSDDeformableObjects(unittest.TestCase):
                         other_path = next(path for path in result["path_cable_map"] if path != graph_label)
                         with self.assertRaises(KeyError):
                             DeformableCurveView(model, other_path)
+
+
+add_function_test(
+    TestUSDDeformableObjects,
+    "test_compact_cable_requires_its_generated_root",
+    test_compact_cable_requires_its_generated_root,
+    devices=get_test_devices(),
+)
 
 
 if __name__ == "__main__":

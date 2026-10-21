@@ -11,7 +11,55 @@ import warp as wp
 import newton
 from newton.exceptions import NewtonWarning
 from newton.tests._deformable_test_utils import _add_curve, _add_surface, _add_volume
-from newton.tests.unittest_utils import get_test_devices
+from newton.tests.unittest_utils import add_function_test, get_test_devices
+
+
+def test_empty_model_has_empty_public_deformable_arrays(test, device):
+    """Inspect an empty model without placeholder objects or missing arrays."""
+    model = newton.ModelBuilder().finalize(device=device)
+    for family, kinds in (
+        ("curve", ("body", "joint")),
+        ("surface", ("particle", "tri", "edge")),
+        ("volume", ("particle", "tet")),
+    ):
+        with test.subTest(device=device, family=family):
+            test.assertEqual(getattr(model, f"{family}_count"), 0)
+            test.assertEqual(getattr(model, f"{family}_label"), [])
+            names = [f"{family}_world"]
+            names.extend(f"{family}_{kind}_{end}" for kind in kinds for end in ("start", "end"))
+            for name in names:
+                array = getattr(model, name)
+                test.assertEqual((array.shape, array.dtype, array.device), ((0,), wp.int32, model.device))
+
+
+def test_mixed_model_exposes_deformable_ranges(test, device):
+    """Inspect each family without including unrelated rigid bodies or particles."""
+    builder = newton.ModelBuilder()
+    builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
+    builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0)
+    _add_curve(builder, label="cable")
+    _add_surface(builder, label="cloth")
+    _add_volume(builder, label="toy")
+    model = builder.finalize(device=device)
+
+    for family, label in (("curve", "cable"), ("surface", "cloth"), ("volume", "toy")):
+        test.assertEqual(getattr(model, f"{family}_count"), 1)
+        test.assertEqual(getattr(model, f"{family}_label"), [label])
+        np.testing.assert_array_equal(getattr(model, f"{family}_world").numpy(), [-1])
+
+    for name, expected in (
+        ("curve_body", (1, 4)),
+        ("curve_joint", (1, 4)),
+        ("surface_particle", (1, 5)),
+        ("surface_tri", (0, 2)),
+        ("surface_edge", (0, 5)),
+        ("volume_particle", (5, 9)),
+        ("volume_tet", (0, 1)),
+    ):
+        for suffix, endpoint in zip(("start", "end"), expected, strict=True):
+            array = getattr(model, f"{name}_{suffix}")
+            test.assertEqual(array.device, model.device)
+            np.testing.assert_array_equal(array.numpy(), [endpoint])
 
 
 class TestModelDeformableObjects(unittest.TestCase):
@@ -502,24 +550,6 @@ class TestModelDeformableObjects(unittest.TestCase):
         self.assertEqual(model.attribute_specs["curve_pair"].references, newton.Model.AttributeFrequency.CURVE)
         self.assertEqual(model.attribute_specs["custom_curve_pair"].references, "curve")
 
-    def test_empty_model_has_empty_public_deformable_arrays(self):
-        """Inspect an empty model without placeholder objects or missing arrays."""
-        for device in get_test_devices():
-            model = newton.ModelBuilder().finalize(device=device)
-            for family, kinds in (
-                ("curve", ("body", "joint")),
-                ("surface", ("particle", "tri", "edge")),
-                ("volume", ("particle", "tet")),
-            ):
-                with self.subTest(device=device, family=family):
-                    self.assertEqual(getattr(model, f"{family}_count"), 0)
-                    self.assertEqual(getattr(model, f"{family}_label"), [])
-                    names = [f"{family}_world"]
-                    names.extend(f"{family}_{kind}_{end}" for kind in kinds for end in ("start", "end"))
-                    for name in names:
-                        array = getattr(model, name)
-                        self.assertEqual((array.shape, array.dtype, array.device), ((0,), wp.int32, model.device))
-
     def test_model_identities_are_independent_builder_snapshots(self):
         """Copy edited builder labels and keep previously finalized models unchanged."""
         builder = newton.ModelBuilder()
@@ -592,36 +622,12 @@ class TestModelDeformableObjects(unittest.TestCase):
         self.assertEqual(model.volume_label, ["global_toy"])
         np.testing.assert_array_equal(model.volume_world.numpy(), [-1])
 
-    def test_mixed_model_exposes_deformable_ranges(self):
-        """Inspect each family without including unrelated rigid bodies or particles."""
-        for device in get_test_devices():
-            with self.subTest(device=device):
-                builder = newton.ModelBuilder()
-                builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
-                builder.add_particle(pos=(0.0, 0.0, 0.0), vel=(0.0, 0.0, 0.0), mass=1.0)
-                _add_curve(builder, label="cable")
-                _add_surface(builder, label="cloth")
-                _add_volume(builder, label="toy")
-                model = builder.finalize(device=device)
 
-                for family, label in (("curve", "cable"), ("surface", "cloth"), ("volume", "toy")):
-                    self.assertEqual(getattr(model, f"{family}_count"), 1)
-                    self.assertEqual(getattr(model, f"{family}_label"), [label])
-                    np.testing.assert_array_equal(getattr(model, f"{family}_world").numpy(), [-1])
-
-                for name, expected in (
-                    ("curve_body", (1, 4)),
-                    ("curve_joint", (1, 4)),
-                    ("surface_particle", (1, 5)),
-                    ("surface_tri", (0, 2)),
-                    ("surface_edge", (0, 5)),
-                    ("volume_particle", (5, 9)),
-                    ("volume_tet", (0, 1)),
-                ):
-                    for suffix, endpoint in zip(("start", "end"), expected, strict=True):
-                        array = getattr(model, f"{name}_{suffix}")
-                        self.assertEqual(array.device, model.device)
-                        np.testing.assert_array_equal(array.numpy(), [endpoint])
+for _test in (
+    test_empty_model_has_empty_public_deformable_arrays,
+    test_mixed_model_exposes_deformable_ranges,
+):
+    add_function_test(TestModelDeformableObjects, _test.__name__, _test, devices=get_test_devices())
 
 
 if __name__ == "__main__":
