@@ -756,7 +756,7 @@ class ViewerGL(ViewerBase):
                 if shapes.name not in self.objects:
                     if shapes.mesh in self.objects and isinstance(self.objects[shapes.mesh], MeshGL):
                         instancer = MeshInstancerGL(
-                            max(shapes.candidate_count, 1),
+                            max(shapes._candidate_count, 1),
                             self.objects[shapes.mesh],
                             enable_cuda_interop=self._cuda_interop_enabled(self.CudaInterop.INSTANCES),
                         )
@@ -842,7 +842,8 @@ class ViewerGL(ViewerBase):
         current_mask = np.zeros_like(self._shape_transparent_mask, dtype=bool)
         rendered_shapes = self._shape_to_slot >= 0
         current_mask[rendered_shapes] = opacities[rendered_shapes] < OPAQUE_OPACITY_THRESHOLD
-        return bool(np.any(current_mask != self._shape_transparent_mask))
+        # Inactive body-variant shapes are not rendered and must not count as changed.
+        return bool(np.any(current_mask[rendered_shapes] != self._shape_transparent_mask[rendered_shapes]))
 
     def _rebuild_shape_batches_for_opacity_groups(self):
         """Rebuild shape batches after opacity changes move shapes between render passes."""
@@ -875,7 +876,7 @@ class ViewerGL(ViewerBase):
         self.model_changed = True
 
     @override
-    def notify_model_changed(self, flags: int) -> None:
+    def notify_model_changed(self, flags: nt.ModelFlags | int) -> None:
         super().notify_model_changed(flags)
         if self.model is not None and flags & nt.ModelFlags.SHAPE_GEOMETRY:
             self._rebuild_gl_shape_caches()

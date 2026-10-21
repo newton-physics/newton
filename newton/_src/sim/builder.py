@@ -544,12 +544,12 @@ def _combine_inertial_properties(
 class _BodyVariants:
     """Shape variants declared on one body by :meth:`ModelBuilder.add_body_variants`."""
 
-    sources: tuple[ModelBuilder, ...]
-    """Single-body builders that define each variant's inertial properties."""
+    inertial_properties: tuple[tuple[float, tuple[float, ...], tuple[float, ...]], ...]
+    """Mass, center of mass, and flattened inertia of each variant's body at declaration."""
     labels: tuple[str, ...]
     """Variant labels."""
     shape_offsets: tuple[int, ...]
-    """Shape index boundaries, length ``len(sources) + 1``; variant ``k`` owns shapes
+    """Shape index boundaries, length ``len(labels) + 1``; variant ``k`` owns shapes
     ``[shape_offsets[k], shape_offsets[k + 1])``."""
     initial: int
     """Variant selected when the model is finalized."""
@@ -5730,7 +5730,9 @@ class ModelBuilder:
         their mass is combined with the variant's.
 
         Variant shapes are expressed in the variant body's frame, which is mapped onto ``body``'s
-        frame; the variant body's pose, joints, and other entities are ignored. Variants are
+        frame; the variant body's pose, joints, and other entities are ignored, as are shape custom
+        attributes that reference other entities. The variants' shapes and inertial properties are
+        copied at declaration, so later edits to the variant builders have no effect. Variants are
         replicated with the body by :meth:`add_builder` and :meth:`replicate`, so each world selects
         its variant independently with :meth:`Model.select_body_variants
         <newton.Model.select_body_variants>`.
@@ -5760,12 +5762,19 @@ class ModelBuilder:
         if not variants:
             raise ValueError("add_body_variants() requires at least one variant.")
         for variant in variants:
+            if variant is self or variant._body_variants:
+                raise ValueError("Variant builders must not be this builder or contain body variants themselves.")
             if variant.body_count != 1:
                 raise ValueError(f"Each variant builder must contain exactly one body, got {variant.body_count}.")
             if variant.body_shapes.get(-1):
                 raise ValueError("Variant builders must not contain shapes that are not attached to their body.")
             if variant.up_axis != self.up_axis:
                 raise ValueError("Variant builders must use the same up axis as this builder.")
+            if any(
+                variant.shape_type[s] in (GeoType.PLANE, GeoType.HFIELD, GeoType.GAUSSIAN)
+                for s in variant.body_shapes.get(0, ())
+            ):
+                raise ValueError("Variant shapes must not be planes, heightfields, or Gaussians.")
         labels = tuple(variant.body_label[0] for variant in variants) if labels is None else tuple(labels)
         if len(labels) != len(variants):
             raise ValueError(f"Expected {len(variants)} labels, got {len(labels)}.")
@@ -5794,12 +5803,22 @@ class ModelBuilder:
                         continue
                     value = attribute.values.get(source_shape) if attribute.values else None
                     if value is None:
+                        value = attribute.default
+                    if value is None:
                         continue
                     if key not in self.custom_attributes:
                         self.add_custom_attribute(replace(attribute, values=None))
                     self._process_custom_attributes(shape, {key: value}, Model.AttributeFrequency.SHAPE)
             shape_offsets.append(self.shape_count)
-        self._body_variants[body] = _BodyVariants(variants, labels, tuple(shape_offsets), initial)
+        inertial_properties = tuple(
+            (
+                float(variant.body_mass[0]),
+                tuple(float(x) for x in variant.body_com[0]),
+                tuple(float(x) for x in np.asarray(variant.body_inertia[0]).flatten()),
+            )
+            for variant in variants
+        )
+        self._body_variants[body] = _BodyVariants(inertial_properties, labels, tuple(shape_offsets), initial)
 
     # region joints
 
@@ -15576,7 +15595,7 @@ class ModelBuilder:
         device = m.device
         variant_counts = np.zeros(self.body_count, dtype=np.int32)
         for body, body_variants in self._body_variants.items():
-            variant_counts[body] = len(body_variants.sources)
+            variant_counts[body] = len(body_variants.labels)
         variant_start = np.concatenate(([0], np.cumsum(variant_counts))).astype(np.int32)
         m.body_variant_start = wp.array(variant_start, dtype=wp.int32, device=device)
         m.body_variant = wp.full(self.body_count, -1, dtype=wp.int32, device=device)
@@ -15599,17 +15618,17 @@ class ModelBuilder:
                 np.asarray(self.body_inertia[body], dtype=np.float64).reshape(3, 3),
             )
             base_key = (base[0], base[1].tobytes(), base[2].tobytes())
-            for k, source in enumerate(body_variants.sources):
+            for k, (variant_mass, variant_com, variant_inertia) in enumerate(body_variants.inertial_properties):
                 m.body_variant_label.append(body_variants.labels[k])
                 shape_ranges.append(body_variants.shape_offsets[k : k + 2])
-                key = (id(source), base_key)
+                key = (body_variants.inertial_properties[k], base_key)
                 if key not in inertial_cache:
                     mass, com, inertia = _combine_inertial_properties(
                         base,
                         (
-                            float(source.body_mass[0]),
-                            np.asarray(source.body_com[0], dtype=np.float64),
-                            np.asarray(source.body_inertia[0], dtype=np.float64).reshape(3, 3),
+                            variant_mass,
+                            np.asarray(variant_com, dtype=np.float64),
+                            np.asarray(variant_inertia, dtype=np.float64).reshape(3, 3),
                         ),
                     )
                     mass, inertia, _ = verify_and_correct_inertia(

@@ -674,6 +674,7 @@ class ViewerBase(ABC):
         layer._slot_to_shape_wp: wp.array | None = None
         layer._shape_to_batch: list[ViewerBase.ShapeInstances | None] | None = None
         layer._shape_candidates: dict[str, np.ndarray] | None = None
+        layer._shape_active_host: np.ndarray | None = None
         layer._shape_transparent_mask: np.ndarray | None = None
         layer._shape_batches_have_transparency: bool = False
 
@@ -782,7 +783,7 @@ class ViewerBase(ABC):
             self._auto_compute_world_offsets()
         self.model_changed = True
 
-    def notify_model_changed(self, flags: int) -> None:
+    def notify_model_changed(self, flags: newton.ModelFlags | int) -> None:
         """Notify the viewer that parts of its :class:`~newton.Model` were modified.
 
         The viewer refreshes the cached data affected by ``flags``. It currently
@@ -801,6 +802,16 @@ class ViewerBase(ABC):
         if self.model is None or not flags & newton.ModelFlags.SHAPE_GEOMETRY:
             return
         self._select_shape_instances()
+        if self._sdf_isomesh_populated:
+            for batch in self._sdf_isomesh_instances.values():
+                batch._select(self._shape_active_host)
+        # Margin wireframes are cached per shape; hide them before they are rebuilt for the active shapes.
+        for mode, edges in self._sdf_margin_edge_caches.items():
+            for s in edges:
+                self.log_wireframe_shape(
+                    self._qualify(f"/model/sdf_margin_wf/{mode.value}/{s}"), None, None, hidden=True
+                )
+        self._sdf_margin_edge_caches.clear()
         self.model_changed = True
 
     def _rebuild_shapes(self) -> None:
@@ -1292,7 +1303,7 @@ class ViewerBase(ABC):
         layer_hidden = self._layer_force_hidden()
 
         for shapes in self._sdf_isomesh_instances.values():
-            visible = self.show_collision and not layer_hidden
+            visible = self.show_collision and not layer_hidden and len(shapes.model_shapes) > 0
             if visible:
                 shapes.update(state, world_offsets=self.world_offsets, layer_xform=self.layer.xform)
             send_appearance = self.model_changed or sdf_isomesh_just_populated
@@ -2309,8 +2320,8 @@ class ViewerBase(ABC):
             self.worlds.append(world)
             self.model_shapes.append(shape_index)
 
-        def freeze_candidates(self):
-            """Store the instances added so far as the candidates that :meth:`select` filters."""
+        def _freeze_candidates(self):
+            """Store the instances added so far as candidates for body-variant filtering."""
             self._candidates = {
                 "parents": np.asarray(self.parents, dtype=np.int32),
                 "xforms": np.asarray(self.xforms, dtype=np.float32).reshape(-1, 7),
@@ -2324,9 +2335,16 @@ class ViewerBase(ABC):
             self.model_shapes = self._candidates["model_shapes"]
 
         @property
-        def candidate_count(self) -> int:
+        def _candidate_count(self) -> int:
             """Number of candidate instances, active or not."""
             return len(self._candidates["model_shapes"])
+
+        def _select(self, shape_active: np.ndarray | None):
+            """Keep the candidates whose shapes are active and allocate their arrays."""
+            keep = slice(None) if shape_active is None else shape_active[self._candidates["model_shapes"]]
+            for name, values in self._candidates.items():
+                setattr(self, name, values[keep])
+            self.finalize()
 
         def finalize(
             self,
@@ -2724,7 +2742,7 @@ class ViewerBase(ABC):
         # Build shape -> batch reference mapping for change signalling
         shape_to_batch: list[ViewerBase.ShapeInstances | None] = [None] * shape_count
         for batch in self._shape_instances.values():
-            batch.freeze_candidates()
+            batch._freeze_candidates()
             for s_idx in batch.model_shapes:
                 shape_to_batch[s_idx] = batch
         self._shape_to_batch = shape_to_batch
@@ -2752,9 +2770,10 @@ class ViewerBase(ABC):
                 name: np.concatenate([batch._candidates[name] for batch in batches]) for name in batches[0]._candidates
             }
         candidates = self._shape_candidates
-        candidate_counts = [batch.candidate_count for batch in batches]
-        if self.model._shape_active is not None:
-            keep = self.model._shape_active.numpy()[candidates["model_shapes"]]
+        candidate_counts = [batch._candidate_count for batch in batches]
+        self._shape_active_host = self.model._shape_active.numpy() if self.model._shape_active is not None else None
+        if self._shape_active_host is not None:
+            keep = self._shape_active_host[candidates["model_shapes"]]
             counts = np.add.reduceat(keep, np.cumsum([0, *candidate_counts[:-1]])) if keep.size else []
             candidates = {name: values[keep] for name, values in candidates.items()}
         else:
@@ -2900,9 +2919,10 @@ class ViewerBase(ABC):
                 world=shape_world[s],
             )
 
-        # Finalize all SDF isomesh batches
+        # Finalize all SDF isomesh batches, keeping inactive body-variant shapes as candidates
         for batch in self._sdf_isomesh_instances.values():
-            batch.finalize()
+            batch._freeze_candidates()
+            batch._select(self._shape_active_host)
 
     def _log_inertia_boxes(self, state: newton.State):
         """Render inertia boxes as wireframe lines."""
@@ -3072,10 +3092,13 @@ class ViewerBase(ABC):
         scale_np = self.model.shape_scale.numpy()
         shape_count = len(shape_body)
 
+        shape_active = self._shape_active_host
         for s in range(shape_count):
             if not self._should_render_world(shape_world[s]):
                 continue
             if not (shape_flags[s] & int(newton.ShapeFlags.COLLIDE_SHAPES)):
+                continue
+            if shape_active is not None and not shape_active[s]:
                 continue
 
             offset_mesh = self._compute_shape_offset_mesh(s, mode, margin_np, gap_np, type_np, scale_np)

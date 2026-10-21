@@ -2257,9 +2257,16 @@ class CollisionPipeline:
         model._validate_contact_capacity(rigid_contact_max, soft_contact_max)
 
         self.requires_grad = requires_grad
-        if requires_grad and self._shape_active.shape[0] > 0 and model.particle_count > 0:
-            # Differentiable soft contacts do not cull shapes by their AABBs.
-            raise NotImplementedError("Soft contacts with requires_grad=True do not support body shape variants.")
+        if (
+            (requires_grad or enable_rigid_soft_full_surface_contact)
+            and self._shape_active.shape[0] > 0
+            and model.particle_count > 0
+        ):
+            # Differentiable and full-surface soft contacts do not cull shapes by their AABBs.
+            raise NotImplementedError(
+                "Soft contacts with requires_grad=True or enable_rigid_soft_full_surface_contact=True "
+                "do not support body shape variants."
+            )
         self.deterministic = deterministic
         per_contact_props = self.narrow_phase.hydroelastic_sdf is not None
         if deterministic:

@@ -1170,11 +1170,15 @@ class Model:
         """Start index of each body's variants in :attr:`body_variant_label`, shape [body_count + 1], int.
 
         Body ``b`` has ``body_variant_start[b + 1] - body_variant_start[b]`` variants.
+
+        .. experimental::
+
+            Body shape variants may change without a deprecation period.
         """
         self.body_variant_label: list[str] = []
-        """Labels of all body shape variants, shape [body_variant_count], str."""
+        """Labels of all body shape variants, shape [body_variant_count], str. Experimental, see :attr:`body_variant`."""
         self.body_variant_count: int = 0
-        """Total number of body shape variants over all bodies."""
+        """Total number of body shape variants over all bodies. Experimental, see :attr:`body_variant`."""
         self._body_variant_shape_range: wp.array[wp.vec2i] | None = None
         """Shape index range ``[start, end)`` of each variant, shape [body_variant_count, 2], int."""
         self._body_variant_mass: wp.array[wp.float32] | None = None
@@ -2180,6 +2184,8 @@ class Model:
             world_mask: Optional boolean mask of shape ``(world_count + 1,)`` in the
                 :meth:`~newton.solvers.SolverBase.reset` layout. Entries of worlds whose selection
                 changed are set to ``True``; other entries are left unchanged.
+
+        Each body may appear at most once per call.
 
         Returns:
             The :class:`~newton.ModelFlags` bit-mask to pass to ``notify_model_changed``.

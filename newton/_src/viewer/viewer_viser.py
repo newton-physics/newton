@@ -654,7 +654,7 @@ class ViewerViser(ViewerBase):
             self._reset_camera_to_default(up_axis)
 
     @override
-    def notify_model_changed(self, flags: int) -> None:
+    def notify_model_changed(self, flags: newton.ModelFlags | int) -> None:
         if self.model is None or not flags & newton.ModelFlags.SHAPE_GEOMETRY:
             return
         super().notify_model_changed(flags)
