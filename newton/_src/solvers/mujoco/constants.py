@@ -17,8 +17,17 @@ DEFAULT_LIMIT_SOLREF_TIMECONST = DEFAULT_LIMIT_SOLREF[0]
 HINGE_CONNECT_HALF_SPAN = 0.05
 """Distance [m] along the hinge axis from a revolute loop joint's anchor to each of its two CONNECT points."""
 
-KINEMATIC_WELD_SOLREF = (1.0e-6, 1.0)
-"""Weld solref holding kinematic roots to their mocap targets; REFSAFE clamps the time constant to ``2 * dt``."""
+KINEMATIC_WELD_TIMECONST_STEPS = 2.0
+"""Kinematic weld time constant in timesteps; the stiffest MuJoCo's REFSAFE allows."""
+
+KINEMATIC_WELD_TIMECONST_STEPS_RK4 = 8.0
+"""Kinematic weld time constant in timesteps under RK4, whose intermediate stages destabilize stiffer welds."""
+
+KINEMATIC_WELD_DAMPRATIO = 1.0
+"""Kinematic weld damping ratio."""
+
+KINEMATIC_MIN_ARMATURE = 1.0
+"""Armature given to massless kinematic-root DOFs so MuJoCo can weld them."""
 
 KINEMATIC_WELD_SOLIMP = (0.99, 0.99, 0.001, 0.5, 2.0)
 """Constant-impedance weld solimp, so the target look-ahead cancels the weld damping exactly."""

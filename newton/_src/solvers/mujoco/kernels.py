@@ -2308,15 +2308,31 @@ def update_dof_force_properties_kernel(
 def update_dof_armature_kernel(
     mjc_dof_to_newton_dof: wp.array2d[wp.int32],
     joint_armature: wp.array[float],
+    dof_armature_min: wp.array[float],
     # outputs
     dof_armature: wp.array2d[float],
 ):
-    """Update MuJoCo dof_armature from Newton joint_armature."""
+    """Update MuJoCo dof_armature from Newton joint_armature, floored per template DOF."""
     world, mjc_dof = wp.tid()
     newton_dof = mjc_dof_to_newton_dof[world, mjc_dof]
     if newton_dof < 0:
         return
-    dof_armature[world, mjc_dof] = joint_armature[newton_dof]
+    armature = joint_armature[newton_dof]
+    if dof_armature_min:
+        armature = wp.max(armature, dof_armature_min[mjc_dof])
+    dof_armature[world, mjc_dof] = armature
+
+
+@wp.kernel
+def update_kinematic_weld_solref_kernel(
+    target_eq: wp.array[wp.int32],
+    solref: wp.vec2,
+    # outputs
+    eq_solref: wp.array2d[wp.vec2],
+):
+    """Set the solref of every kinematic-target weld."""
+    world, target = wp.tid()
+    eq_solref[world, target_eq[target]] = solref
 
 
 @wp.kernel
