@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from contextlib import nullcontext
 from enum import IntEnum
 from typing import TYPE_CHECKING, ClassVar
 
@@ -537,7 +538,7 @@ class PropertyInspector:
             else "Pause at the live frame to edit."
         )
         if component == Assignment.MODEL:
-            reason = "Model definition; changing this may require rebuilding the solver."
+            reason = ""
         elif component == Assignment.STATE and joint is None and spec.assignment != Assignment.STATE:
             reason = "Solver state. Edit joint coordinates to change articulated body motion."
         if spec.references is not None and component != Assignment.MODEL:
@@ -688,8 +689,11 @@ class PropertyInspector:
             ui.pop_id()
             return result
         if values.dtype.names:
-            for field in values.dtype.names:
-                self._typed(f"{label}.{field}", values[field], None, False, "Structured attribute; read only.", field)
+            ui.push_id(label)
+            with w.compound(label, reason=reason):
+                for field in values.dtype.names:
+                    self._typed(field, values[field], None, False, "", field)
+            ui.pop_id()
             return PropertyEdit(values)
         if values.dtype.kind in "OUS":
             if flat.size == 1:
@@ -762,21 +766,22 @@ class PropertyInspector:
             lower = -upper
             limits = len(upper) == len(values)
         result = PropertyEdit(values.copy())
-        if len(values) > 1:
-            w._label(label, editable, reason=reason)
-        for i, value in enumerate(values):
-            editor = joint_editor_options(attr, lower[i], upper[i]) if limits else joint_editor_options(attr)
-            unit = (
-                ("m" if i < linear else "rad")
-                if attr in ("joint_q", "joint_target_q")
-                else ("m/s" if i < linear else "rad/s")
-            )
-            if attr == "joint_f":
-                unit = "N" if i < linear else "N m"
-            component = (f"Linear {i + 1}" if i < linear else f"Angular {i - linear + 1}") if len(values) > 1 else label
-            edit = w.number(component, value, unit=unit, **editor, **args)
-            result.value[i] = edit.value
-            result.changed |= edit.changed
-            result.activated |= edit.activated
-            result.finished |= edit.finished
+        with w.compound(label, **args) if len(values) > 1 else nullcontext():
+            for i, value in enumerate(values):
+                editor = joint_editor_options(attr, lower[i], upper[i]) if limits else joint_editor_options(attr)
+                unit = (
+                    ("m" if i < linear else "rad")
+                    if attr in ("joint_q", "joint_target_q")
+                    else ("m/s" if i < linear else "rad/s")
+                )
+                if attr == "joint_f":
+                    unit = "N" if i < linear else "N m"
+                component = (
+                    (f"Linear {i + 1}" if i < linear else f"Angular {i - linear + 1}") if len(values) > 1 else label
+                )
+                edit = w.number(component, value, unit=unit, **editor, **args)
+                result.value[i] = edit.value
+                result.changed |= edit.changed
+                result.activated |= edit.activated
+                result.finished |= edit.finished
         return result

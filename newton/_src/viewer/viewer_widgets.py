@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from math import cos, pi, sin
 from typing import TYPE_CHECKING, ClassVar
@@ -586,8 +586,8 @@ class PhysicsWidgets:
             details = []
             if ui.calc_text_size(text).x > width - lock_width - unit_width:
                 details.append(text)
-            if locked:
-                details.append(reason or "Read only")
+            if locked and reason:
+                details.append(reason)
             self._tooltip("\n".join(details))
 
     @contextmanager
@@ -636,23 +636,29 @@ class PhysicsWidgets:
         yield opened
 
     @contextmanager
-    def compound(self, label: str, *, editable: bool = False, reason: str = "") -> Iterator[None]:
+    def _child_rows(self) -> Iterator[None]:
+        """Keep a shallow, balanced indent for compound property children."""
+        indent = 12 * self.scale
+        self.ui.indent(indent)
+        try:
+            yield
+        finally:
+            self.ui.unindent(indent)
+
+    @contextmanager
+    def compound(self, label: str, *, editable: bool = False, unit: str = "", reason: str = "") -> Iterator[None]:
         """Give a compound attribute a weighted heading and inset child rows."""
         ui = self.ui
         font = getattr(self.gui.ui, "heading_font", None)
         if font is not None:
             ui.push_font(font, 14.0)
         try:
-            self._label(label, editable, reason=reason)
+            self._label(label, editable, unit, reason)
         finally:
             if font is not None:
                 ui.pop_font()
-        indent = 16 * self.scale
-        ui.indent(indent)
-        try:
+        with self._child_rows():
             yield
-        finally:
-            ui.unindent(indent)
 
     def _label(
         self,
@@ -682,7 +688,7 @@ class PhysicsWidgets:
             pos = ui.get_cursor_screen_pos()
             self.icon("lock", (pos.x, pos.y + 2 * s), 11 * s)
             ui.dummy(ui.ImVec2(13 * s, ui.get_text_line_height()))
-            self._tooltip(reason or "Read only")
+            self._tooltip(reason)
 
     def text_value(self, label: str, value: Any, *, reason: str = "") -> None:
         """Render read-only text with explicit missing and empty-string values."""
@@ -918,72 +924,72 @@ class PhysicsWidgets:
         ui, scale = self.ui, self.scale
         values = np.asarray(value).reshape(-1)
         count = len(values)
-        if header:
-            self._label(label, editable, unit, reason)
-        result = PropertyEdit(values)
-        ui.push_id(label)
-        columns = max(1, min(3, int(ui.get_content_region_avail().x / (92 * scale))))
-        page_size = columns * 8
-        start, stop = 0, count
-        if count > page_size:
-            storage = ui.get_state_storage()
-            key = ui.get_id("##page")
-            pages = (count + page_size - 1) // page_size
-            page = min(pages - 1, storage.get_int(key))
-            if self.icon_button(
-                "##previous_page", "previous", "Previous components", enabled=page > 0, show_lock=False, size=22
-            ):
-                page = max(0, page - 1)
-            ui.same_line()
-            if self.icon_button(
-                "##next_page", "play", "Next components", enabled=page < pages - 1, show_lock=False, size=22
-            ):
-                page = min(pages - 1, page + 1)
-            ui.same_line()
-            edit = self.number(
-                "##page_number", page + 1, editable=True, integer=True, speed=1, bounds=(1, pages), width=65 * scale
-            )
-            if edit.changed:
-                page = edit.value - 1
-            storage.set_int(key, page)
-            start, stop = page * page_size, min(count, (page + 1) * page_size)
-            ui.same_line()
-            self.label(f"{start + 1}-{stop} / {count}", muted=True)
-        ui.push_style_var(ui.StyleVar_.cell_padding, ui.ImVec2(4 * scale, 2 * scale))
-        ui.push_style_var(ui.StyleVar_.frame_padding, ui.ImVec2(4 * scale, ui.get_style().frame_padding.y))
-        if count and ui.begin_table("##components", columns, ui.TableFlags_.sizing_stretch_same):
-            for i in range(start, stop):
-                ui.table_next_column()
-                name = labels[i] if labels is not None else str(i)
-                self._fixed_label(
-                    name,
-                    24 * scale,
-                    color=self.axes["XYZW".index(name[0])] if name and name[0] in "XYZW" else self.muted,
-                )
-                ui.same_line(spacing=4 * scale)
-                ui.push_id(i)
+        heading = header and bool(label) and not label.startswith("##")
+        with self.compound(label, editable=editable, unit=unit, reason=reason) if heading else nullcontext():
+            result = PropertyEdit(values)
+            ui.push_id(label)
+            columns = max(1, min(3, int(ui.get_content_region_avail().x / (92 * scale))))
+            page_size = columns * 8
+            start, stop = 0, count
+            if count > page_size:
+                storage = ui.get_state_storage()
+                key = ui.get_id("##page")
+                pages = (count + page_size - 1) // page_size
+                page = min(pages - 1, storage.get_int(key))
+                if self.icon_button(
+                    "##previous_page", "previous", "Previous components", enabled=page > 0, show_lock=False, size=22
+                ):
+                    page = max(0, page - 1)
+                ui.same_line()
+                if self.icon_button(
+                    "##next_page", "play", "Next components", enabled=page < pages - 1, show_lock=False, size=22
+                ):
+                    page = min(pages - 1, page + 1)
+                ui.same_line()
                 edit = self.number(
-                    "",
-                    values[i],
-                    editable=editable,
-                    integer=integer,
-                    bounds=bounds,
-                    speed=speed,
-                    reason=reason,
-                    unit=component_units[i] if component_units is not None else unit,
+                    "##page_number", page + 1, editable=True, integer=True, speed=1, bounds=(1, pages), width=65 * scale
                 )
                 if edit.changed:
-                    if not result.changed:
-                        result.value = values.copy()
-                    result.value[i] = edit.value
-                result.changed |= edit.changed
-                result.activated |= edit.activated
-                result.finished |= edit.finished
-                ui.pop_id()
-            ui.end_table()
-        ui.pop_style_var(2)
-        ui.pop_id()
-        return result
+                    page = edit.value - 1
+                storage.set_int(key, page)
+                start, stop = page * page_size, min(count, (page + 1) * page_size)
+                ui.same_line()
+                self.label(f"{start + 1}-{stop} / {count}", muted=True)
+            ui.push_style_var(ui.StyleVar_.cell_padding, ui.ImVec2(4 * scale, 2 * scale))
+            ui.push_style_var(ui.StyleVar_.frame_padding, ui.ImVec2(4 * scale, ui.get_style().frame_padding.y))
+            if count and ui.begin_table("##components", columns, ui.TableFlags_.sizing_stretch_same):
+                for i in range(start, stop):
+                    ui.table_next_column()
+                    name = labels[i] if labels is not None else str(i)
+                    self._fixed_label(
+                        name,
+                        24 * scale,
+                        color=self.axes["XYZW".index(name[0])] if name and name[0] in "XYZW" else self.muted,
+                    )
+                    ui.same_line(spacing=4 * scale)
+                    ui.push_id(i)
+                    edit = self.number(
+                        "",
+                        values[i],
+                        editable=editable,
+                        integer=integer,
+                        bounds=bounds,
+                        speed=speed,
+                        reason=reason,
+                        unit=component_units[i] if component_units is not None else unit,
+                    )
+                    if edit.changed:
+                        if not result.changed:
+                            result.value = values.copy()
+                        result.value[i] = edit.value
+                    result.changed |= edit.changed
+                    result.activated |= edit.activated
+                    result.finished |= edit.finished
+                    ui.pop_id()
+                ui.end_table()
+            ui.pop_style_var(2)
+            ui.pop_id()
+            return result
 
     def vector(
         self,
@@ -1143,17 +1149,18 @@ class PhysicsWidgets:
             tuple("XYZW") if mode == "Quaternion" else ("X", "Y", "Z", "A") if mode == "Axis angle" else tuple("XYZ")
         )
         unit = "" if mode == "Quaternion" else "deg" if state["degrees"] else "rad"
-        edit = self.array(
-            label,
-            state["values"],
-            labels=labels,
-            editable=editable,
-            speed=0.01 if mode == "Quaternion" else 0.1 if state["degrees"] else 0.001,
-            reason=reason,
-            unit=unit,
-            component_units=("", "", "", unit) if mode == "Axis angle" else None,
-            header=False,
-        )
+        with self._child_rows():
+            edit = self.array(
+                label,
+                state["values"],
+                labels=labels,
+                editable=editable,
+                speed=0.01 if mode == "Quaternion" else 0.1 if state["degrees"] else 0.001,
+                reason=reason,
+                unit=unit,
+                component_units=("", "", "", unit) if mode == "Axis angle" else None,
+                header=False,
+            )
         result = PropertyEdit(original.copy(), False, edit.activated, edit.finished)
         if edit.changed:
             try:
@@ -1171,11 +1178,12 @@ class PhysicsWidgets:
         return result
 
     def transform(self, label: str, value: ArrayLike, *, editable: bool = False, reason: str = "") -> PropertyEdit:
+        """Group position and quaternion editors beneath their transform attribute."""
         value = np.asarray(value).reshape(7)
-        self._label(label, editable, reason=reason)
         self.ui.push_id(label)
-        p = self.vec3("Position", value[:3], editable=editable, unit="m", speed=0.001, reason=reason)
-        q = self.quat("Rotation", value[3:], editable=editable, reason=reason)
+        with self.compound(label, editable=editable, reason=reason):
+            p = self.vec3("Position", value[:3], editable=editable, unit="m", speed=0.001, reason=reason)
+            q = self.quat("Rotation", value[3:], editable=editable, reason=reason)
         self.ui.pop_id()
         return PropertyEdit(
             np.concatenate((p.value, q.value)),
@@ -1194,23 +1202,24 @@ class PhysicsWidgets:
         position: bool = False,
         reason: str = "",
     ) -> PropertyEdit:
+        """Group the linear and angular parts beneath their spatial-vector attribute."""
         value = np.asarray(value).reshape(6)
-        self._label(label, editable, reason=reason)
         self.ui.push_id(label)
-        a = self.vec3(
-            "Force" if force else "Linear",
-            value[:3],
-            editable=editable,
-            unit="N" if force else "m" if position else "m/s",
-            reason=reason,
-        )
-        b = self.vec3(
-            "Torque" if force else "Angular",
-            value[3:],
-            editable=editable,
-            unit="N m" if force else "rad" if position else "rad/s",
-            reason=reason,
-        )
+        with self.compound(label, editable=editable, reason=reason):
+            a = self.vec3(
+                "Force" if force else "Linear",
+                value[:3],
+                editable=editable,
+                unit="N" if force else "m" if position else "m/s",
+                reason=reason,
+            )
+            b = self.vec3(
+                "Torque" if force else "Angular",
+                value[3:],
+                editable=editable,
+                unit="N m" if force else "rad" if position else "rad/s",
+                reason=reason,
+            )
         self.ui.pop_id()
         return PropertyEdit(
             np.concatenate((a.value, b.value)),
@@ -1223,17 +1232,22 @@ class PhysicsWidgets:
         self, label: str, value: ArrayLike, *, unit: str = "", editable: bool = False, reason: str = ""
     ) -> PropertyEdit:
         values = np.asarray(value).reshape(3, 3).copy()
-        self._label(label, editable, unit, reason)
         result = PropertyEdit(values)
         self.ui.push_id(label)
-        for i, axis in enumerate("XYZ"):
-            edit = self.vector(
-                "##" + axis, values[i], labels=tuple(axis + c for c in "XYZ"), editable=editable, reason=reason
-            )
-            values[i] = edit.value
-            result.changed |= edit.changed
-            result.activated |= edit.activated
-            result.finished |= edit.finished
+        with self.compound(label, editable=editable, unit=unit, reason=reason):
+            for i, axis in enumerate("XYZ"):
+                edit = self.vector(
+                    "##" + axis,
+                    values[i],
+                    labels=tuple(axis + c for c in "XYZ"),
+                    editable=editable,
+                    reason=reason,
+                    header=False,
+                )
+                values[i] = edit.value
+                result.changed |= edit.changed
+                result.activated |= edit.activated
+                result.finished |= edit.finished
         self.ui.pop_id()
         return result
 

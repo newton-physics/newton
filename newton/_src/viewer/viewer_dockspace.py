@@ -20,7 +20,7 @@ class ViewerDockspace:
     change. This object owns panel layout, not images, plots, or GL textures.
     Floating panels stay inside the same native window and GL context.
 
-    The viewport samples the renderer's existing framebuffer. Its logical-pixel
+    The viewport samples the renderer's existing framebuffer. Its ImGui
     content rectangle drives scene rendering, camera projection, and input hit
     testing; it does not request a second scene render or a host image copy.
     """
@@ -93,8 +93,8 @@ class ViewerDockspace:
     def draw(self, rect: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
         """Lay out panels and return the visible viewport rectangle in ImGui pixels.
 
-        Coordinates use a top-left origin. The workspace converts them to GL
-        framebuffer pixels and a bottom-left origin, including DPI scaling. A
+        Coordinates use a top-left origin. The workspace maps them to the GL
+        framebuffer's bottom-left origin using the current display size. A
         hidden viewport returns a minimal rectangle and clears viewport_visible.
         """
         ws = self.workspace
