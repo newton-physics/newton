@@ -96,6 +96,16 @@ notifications arrive. Direct writes through returned Warp arrays are not
 intercepted, so view-local edits should go through the coupled-solver API that
 owns the view.
 
+When an entry's selection forms closed topology, its view is compact: it holds
+only the entry's rows, grouped by world, with local indices. Each world keeps
+the rows the entry selects in that world, so worlds of one view may differ in
+size. Solvers that require identical worlds, such as
+:class:`~newton.solvers.SolverMuJoCo`, therefore need the same selection in
+every world. When an entry owns a body but not the body's incoming
+articulation joint from its parent body, the compact view gives the body a
+FREE joint to the world, like :meth:`~newton.ModelBuilder.add_joint_free`, so
+reduced-coordinate solvers move it as the root of its own articulation.
+
 Coupling Hooks
 --------------
 
