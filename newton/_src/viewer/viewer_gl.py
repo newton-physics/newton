@@ -2564,9 +2564,11 @@ class ViewerGL(ViewerBase):
     def _ui_populate_rendering_panel(self, imgui):
         """Render GL-specific items inside the Rendering Options panel section."""
         if not self.gui or not self.gui.workspace_enabled:
-            _changed, self.renderer.draw_sky = imgui.checkbox("Sky", self.renderer.draw_sky)
-            _changed, self.renderer.draw_shadows = imgui.checkbox("Shadows", self.renderer.draw_shadows)
-            _changed, self.renderer.draw_wireframe = imgui.checkbox("Wireframe", self.renderer.draw_wireframe)
+            for name, label in (("draw_sky", "Sky"), ("draw_shadows", "Shadows"), ("draw_wireframe", "Wireframe")):
+                changed, value = imgui.checkbox(label, getattr(self.renderer, name))
+                if changed:
+                    setattr(self.renderer, name, value)
+                    self._display_options_user[name] = value
 
         def _edit_color3(label: str, color: tuple[float, float, float]) -> tuple[bool, tuple[float, float, float]]:
             """Normalize color_edit3 input/output across imgui_bundle versions."""
@@ -2579,10 +2581,16 @@ class ViewerGL(ViewerBase):
 
         # Light color
         _changed, self.renderer._light_color = _edit_color3("Light Color", self.renderer._light_color)
+        if _changed:
+            self._display_options_user["_light_color"] = self.renderer._light_color
         # Sky color
         _changed, self.renderer.sky_upper = _edit_color3("Sky Color", self.renderer.sky_upper)
+        if _changed:
+            self._display_options_user["sky_upper"] = self.renderer.sky_upper
         # Ground color
         _changed, self.renderer.sky_lower = _edit_color3("Ground Color", self.renderer.sky_lower)
+        if _changed:
+            self._display_options_user["sky_lower"] = self.renderer.sky_lower
 
     def _ui_populate_layers_panel(self, imgui):
         """Top-level Layers panel — toggle visibility of overlaid solvers/models.

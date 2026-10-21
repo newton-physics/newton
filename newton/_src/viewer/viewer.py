@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import enum
 import hashlib
 import math
@@ -10,7 +11,8 @@ import os
 import sys
 import warnings
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from typing import Any
 
 import numpy as np
@@ -133,6 +135,10 @@ class ViewerBase(ABC):
         self._rendering_paused = False
         self.show_contact_pairs = False
         self.show_contact_lines = True
+        # Built-in display controls record explicit edits for example switching.
+        # Constructor defaults must not become preferences for later examples.
+        # Contact force scale is stored as a gain relative to model calibration.
+        self._display_options_user: dict[str, Any] = {}
 
         # Layer registry. The default layer is always present and has an
         # empty name prefix to keep backward compatibility for code that
@@ -166,6 +172,105 @@ class ViewerBase(ABC):
         active_layer_id = self.__dict__.get("_active_layer_id")
         if layers is not None and active_layer_id in layers:
             setattr(layers[active_layer_id], name, value)
+
+    @contextmanager
+    def _preserve_display_options(self, *, switching: bool = False) -> Iterator[None]:
+        """Restore reset state, or explicit display choices when entering a new example."""
+        user_options = self._display_options_user
+        option_names = {
+            "visible",
+            "sdf_margin_mode",
+            "contact_mode_eps_force",
+            "contact_mode_eps_velocity",
+            "contact_viz_scale",
+            "contact_normal_scale",
+            "gaussians_max_points",
+        }
+        saved = {
+            layer_id: {
+                name: value
+                for name, value in vars(layer).items()
+                if name.startswith("show_") or name in option_names or name in user_options
+            }
+            for layer_id, layer in self.layers.items()
+        }
+        force_gains = {
+            layer_id: layer.contact_force_scale / layer._contact_force_scale_default
+            for layer_id, layer in self.layers.items()
+        }
+        active_id = self.layer.layer_id
+        defaults = {name: value for name, value in saved.get(active_id, {}).items() if name != "visible"}
+        globals_saved = {
+            name: user_options.get(name, getattr(self, name)) if switching else getattr(self, name)
+            for name in (
+                "show_ui", "vsync", "_paused", "camera_speed", "camera_slowdown",
+                "show_contact_pairs", "show_contact_lines", "show_contact_labels",
+            )
+            if hasattr(self, name) and (not switching or name in user_options)
+        }
+        camera = getattr(self, "camera", None)
+        # Keep explicitly edited projection settings, but let a new scene choose
+        # its camera position and orientation.
+        camera_saved = {
+            name: user_options.get(name, getattr(camera, name)) if switching else getattr(camera, name)
+            for name in ("fov", "near", "far")
+            if hasattr(camera, name) and (not switching or name in user_options)
+        }
+        renderer = getattr(self, "renderer", None)
+        # Include recorded names directly so new controls need no switch allowlist.
+        render_saved = {
+            name: copy.deepcopy(user_options[name] if switching else getattr(renderer, name))
+            for name in (
+                "draw_sky",
+                "draw_shadows",
+                "draw_wireframe",
+                "draw_edges",
+                "wireframe_line_width",
+                "_light_color",
+                "sky_upper",
+                "sky_lower",
+                "arrow_scale",
+                "joint_scale",
+                "com_scale",
+                "contact_arrow_scale",
+                "contact_normal_max_pixels",
+                "contact_force_max_pixels",
+                "contact_disk_scale",
+                *user_options,
+            )
+            if hasattr(renderer, name) and (not switching or name in user_options)
+        }
+        try:
+            yield
+        finally:
+            for layer_id, layer in self.layers.items():
+                if switching:
+                    options = {name: value for name, value in user_options.items() if hasattr(layer, name)}
+                    if "contact_force_scale" in user_options:
+                        options["contact_force_scale"] = (
+                            layer._contact_force_scale_default * user_options["contact_force_scale"]
+                        )
+                else:
+                    options = dict(saved.get(layer_id, defaults))
+                    options["contact_force_scale"] = layer._contact_force_scale_default * force_gains.get(
+                        layer_id, force_gains.get(active_id, 1.0)
+                    )
+                for name, value in options.items():
+                    setattr(layer, name, value)
+                    if layer is self.layer and name != "visible":
+                        setattr(self, name, value)
+                layer.model_changed = True
+                if layer is self.layer:
+                    self.model_changed = True
+            for name, value in globals_saved.items():
+                setattr(self, name, value)
+            camera = getattr(self, "camera", None)
+            for name, value in camera_saved.items():
+                if hasattr(camera, name):
+                    setattr(camera, name, value)
+            renderer = getattr(self, "renderer", None)
+            for name, value in render_saved.items():
+                setattr(renderer, name, value)
 
     @staticmethod
     def _snapshot_layer_runtime_fields(layer: Layer) -> frozenset[str]:

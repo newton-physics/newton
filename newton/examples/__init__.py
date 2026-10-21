@@ -7,11 +7,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
     from types import ModuleType
     from typing import Any
-
-    from newton.viewer import ViewerBase
 
 import ast
 import copy
@@ -25,7 +22,6 @@ import time
 import warnings
 from collections import defaultdict
 from collections.abc import Callable
-from contextlib import contextmanager
 
 import numpy as np
 import warp as wp
@@ -356,101 +352,6 @@ def _coupled_view_state(example, name: str):
     return solver.entry_state(name)
 
 
-@contextmanager
-def _preserve_display_options(viewer: ViewerBase, *, switching: bool = False) -> Iterator[None]:
-    """Retain user visualization choices while rebuilding an example's layers."""
-    option_names = {
-        "visible",
-        "sdf_margin_mode",
-        "contact_mode_eps_force",
-        "contact_mode_eps_velocity",
-        "contact_viz_scale",
-        "contact_normal_scale",
-        "gaussians_max_points",
-    }
-    saved = {
-        layer_id: {
-            name: value for name, value in vars(layer).items() if name.startswith("show_") or name in option_names
-        }
-        for layer_id, layer in getattr(viewer, "layers", {}).items()
-    }
-    # Keep the user's gain, not a conversion calibrated for another model's
-    # weight. A small prop's absolute scale makes robot force arrows enormous.
-    force_gains = {
-        layer_id: layer.contact_force_scale / max(layer._contact_force_scale_default, 1e-12)
-        for layer_id, layer in getattr(viewer, "layers", {}).items()
-        if hasattr(layer, "_contact_force_scale_default")
-    }
-    default_force_gain = force_gains.get(getattr(getattr(viewer, "layer", None), "layer_id", ""), 1.0)
-    defaults = saved.get(getattr(getattr(viewer, "layer", None), "layer_id", ""), {})
-    globals_saved = {
-        name: getattr(viewer, name)
-        for name in (
-            "show_ui",
-            "vsync",
-            "_paused",
-            "show_contact_pairs",
-            "show_contact_lines",
-            "show_contact_labels",
-            "camera_speed",
-            "camera_slowdown",
-        )
-        if hasattr(viewer, name)
-    }
-    camera = getattr(viewer, "camera", None)
-    camera_saved = {name: getattr(camera, name) for name in ("fov", "near", "far") if hasattr(camera, name)}
-    renderer = getattr(viewer, "renderer", None)
-    render_saved = {
-        name: copy.deepcopy(getattr(renderer, name))
-        for name in (
-            "draw_sky",
-            "draw_shadows",
-            "draw_wireframe",
-            "_light_color",
-            "sky_upper",
-            "sky_lower",
-            "contact_arrow_scale",
-            "contact_normal_max_pixels",
-            "contact_force_max_pixels",
-            "contact_disk_scale",
-        )
-        if hasattr(renderer, name)
-    }
-    try:
-        yield
-    finally:
-        for layer_id, layer in getattr(viewer, "layers", {}).items():
-            if hasattr(layer, "_contact_force_scale_default"):
-                layer.contact_force_scale = layer._contact_force_scale_default * force_gains.get(
-                    layer_id, default_force_gain
-                )
-                if layer is viewer.layer:
-                    viewer.contact_force_scale = layer.contact_force_scale
-            options = saved.get(layer_id, {name: value for name, value in defaults.items() if name != "visible"})
-            if switching and "show_particles" in options:
-                options = options.copy()
-                choice = getattr(viewer, "_particle_visibility_user", None)
-                if choice is None:
-                    options.pop("show_particles")
-                else:
-                    options["show_particles"] = choice
-            for name, value in options.items():
-                setattr(layer, name, value)
-                if layer is viewer.layer and name != "visible":
-                    setattr(viewer, name, value)
-            layer.model_changed = True
-            if layer is viewer.layer:
-                viewer.model_changed = True
-        for name, value in globals_saved.items():
-            setattr(viewer, name, value)
-        camera = getattr(viewer, "camera", None)
-        for name, value in camera_saved.items():
-            if hasattr(camera, name):
-                setattr(camera, name, value)
-        for name, value in render_saved.items():
-            setattr(renderer, name, value)
-
-
 class _ExampleBrowser:
     """Manages the example browser UI and switching/reset logic for the run loop."""
 
@@ -484,6 +385,8 @@ class _ExampleBrowser:
             )
             if hasattr(viewer, "set_reset_callback"):
                 viewer.set_reset_callback(lambda: setattr(self, "_reset_requested", True))
+            if hasattr(viewer, "register_ui_callback"):
+                viewer.register_ui_callback(self._error_ui, position="panel")
             return
 
         if not hasattr(viewer, "register_ui_callback"):
@@ -509,23 +412,29 @@ class _ExampleBrowser:
         if hasattr(viewer, "set_reset_callback"):
             viewer.set_reset_callback(lambda: setattr(self, "_reset_requested", True))
 
+    def _error_ui(self, ui: Any) -> None:
+        """Show failures and retry through ImGui or the native Viser UI adapter."""
+        if self.load_error is None:
+            return
+        text = getattr(ui, "text_wrapped", ui.text)
+        text(self.load_error)
+        if ui.button("Retry##example_load"):
+            if self.failed_target is not None:
+                self.switch_target = self.failed_target
+            else:
+                self._reset_requested = True
+        ui.separator()
+
     def _register_ui(self, example):
         """Re-register the example's GUI callback (panel callbacks survive clear_model)."""
         if hasattr(example, "gui") and hasattr(self.viewer, "register_ui_callback"):
             self.viewer.register_ui_callback(lambda ui, ex=example: ex.gui(ui), position="side")
 
     def draw_load_error(self, imgui: ModuleType) -> None:
-        """Keep load failures actionable even when no model was constructed."""
-        if self.load_error is None:
-            return
-        imgui.text_colored(imgui.ImVec4(1.0, 0.55, 0.45, 1.0), self.error_title)
-        imgui.text_wrapped(self.load_error)
-        if imgui.button("Retry##example_load"):
-            if self.failed_target is not None:
-                self.switch_target = self.failed_target
-            else:
-                self._reset_requested = True
-        imgui.separator()
+        """Show the browser error inside the workspace without duplicating retry logic."""
+        if self.load_error is not None:
+            imgui.text_colored(imgui.ImVec4(1.0, 0.55, 0.45, 1.0), self.error_title)
+            self._error_ui(imgui)
 
     def _show_splash(self, text):
         # Raise the splash and pump a couple of frames so it actually paints
@@ -549,91 +458,91 @@ class _ExampleBrowser:
             self.viewer.clear_model()
         # Each example starts with picking enabled and may opt out in its constructor.
         self.viewer.picking_enabled = True
+        # Drop callback-owned cycles before a new constructor starts graph capture.
+        gc.collect()
 
     def report_error(self, error: BaseException, module_path: str, *, phase: str, retry_switch: bool = False) -> None:
-        """Stop the failed example, retaining the browser and a retry action."""
-        logger.error("Failed to %s example %s", phase, module_path, exc_info=True)
-        self._clear_viewer_scene()
+        """Discard a failed scene, preserving preferences and an actionable retry."""
+        logger.error("Failed to %s example %s", phase, module_path, exc_info=(type(error), error, error.__traceback__))
         self.current_module = None
         self.failed_target = module_path if retry_switch else None
         self.error_title = "Example stopped" if phase == "run" else f"Could not {phase} example"
         self.load_error = f"{module_path.rsplit('.', 1)[-1]}\n{type(error).__name__}: {error}"
-        if hasattr(self.viewer, "_paused"):
-            self.viewer._paused = True
-        if hasattr(self.viewer, "_step_requested"):
-            self.viewer._step_requested = False
-        self._hide_splash()
+        try:
+            with self.viewer._preserve_display_options():
+                self._clear_viewer_scene()
+        finally:
+            # Set these after preference restoration, which also retains the
+            # user's playback choice on successful switches and resets.
+            if hasattr(self.viewer, "_paused"):
+                self.viewer._paused = True
+            if hasattr(self.viewer, "_step_requested"):
+                self.viewer._step_requested = False
+            self._hide_splash()
 
     def switch(self, example_class):
-        """Switch to the selected example. Returns (new_example, new_class) or (None, example_class)."""
-        module_path, self.switch_target = self.switch_target, None
-        logger.info("Loading example %s", module_path.rsplit(".", 1)[-1])
-        self.load_error = self.failed_target = None
-        self._show_splash(f"Loading {module_path.rsplit('.', 1)[-1].removeprefix('example_')}...")
-        with _preserve_display_options(self.viewer, switching=True):
-            self._clear_viewer_scene()
-            self.current_module = None
-            # Release callbacks, timeline snapshots, and old model resources
-            # before a new example starts CUDA graph capture.
-            gc.collect()
-            camera_revision = getattr(self.viewer, "_camera_revision", 0)
-            try:
-                mod = importlib.import_module(module_path)
-                parser = getattr(mod.Example, "create_parser", create_parser)()
-                new_args = default_args(parser)
-                example = mod.Example(self.viewer, new_args)
-            except (Exception, SystemExit) as e:
-                # Argument parsers and optional backends can raise SystemExit;
-                # selecting an example must not close the hosting application.
-                self.report_error(e, module_path, phase="load", retry_switch=True)
-                return None, example_class
-        # Track the args used to launch the current example so a subsequent
-        # Reset reuses the new example's args, not the originally launched
-        # example's args (different parsers expose different fields).
-        self._initial_args = copy.deepcopy(new_args)
-        self.current_module = module_path
-        gui = getattr(self.viewer, "gui", None)
-        if gui is not None and hasattr(gui, "_frame_camera_pending"):
-            # Examples with an authored camera keep it. Otherwise frame the
-            # new model after its first state has been logged.
-            gui._frame_camera_pending = camera_revision == getattr(self.viewer, "_camera_revision", 0)
-        self._register_ui(example)
-        self._hide_splash()
-        logger.info("Loaded example %s", module_path.rsplit(".", 1)[-1])
-        return example, type(example)
+        """Return the new example and class, or retain the class after a failed load.
 
-    def reset(self, example_class):
-        """Reset the current example by re-creating it. Returns the new example or None.
-
-        The caller must drop its reference to the old example before calling
-        this method.
+        The caller must release its old example before entering this method.
         """
+        module_path, self.switch_target = self.switch_target, None
         self._reset_requested = False
         self.load_error = self.failed_target = None
-        logger.info("Resetting example %s", example_class.__module__.rsplit(".", 1)[-1])
-        self._show_splash(f"Resetting {example_class.__module__.rsplit('.', 1)[-1].removeprefix('example_')}...")
-        module_path = self.current_module
-        with _preserve_display_options(self.viewer):
-            self._clear_viewer_scene()
-            self.current_module = None
-            gc.collect()
+        logger.info("Loading example %s", module_path.rsplit(".", 1)[-1])
+        try:
+            self._show_splash(f"Loading {module_path.rsplit('.', 1)[-1].removeprefix('example_')}...")
             try:
-                if self._initial_args is not None:
-                    # Re-create the example with the user's original CLI args so
-                    # options like --world-count survive a reset; deep-copy so
-                    # the new instance cannot mutate the snapshot.
-                    args = copy.deepcopy(self._initial_args)
-                else:
-                    parser = getattr(example_class, "create_parser", create_parser)()
-                    args = default_args(parser)
-                new_example = example_class(self.viewer, args)
-            except (Exception, SystemExit) as e:
-                self.report_error(e, example_class.__module__, phase="reset")
+                with self.viewer._preserve_display_options(switching=True):
+                    self._clear_viewer_scene()
+                    self.current_module = None
+                    camera_revision = getattr(self.viewer, "_camera_revision", 0)
+                    mod = importlib.import_module(module_path)
+                    parser = getattr(mod.Example, "create_parser", create_parser)()
+                    new_args = default_args(parser)
+                    # Constructors may mutate their argument namespace.
+                    initial_args = copy.deepcopy(new_args)
+                    example = mod.Example(self.viewer, new_args)
+                    self._register_ui(example)
+            except (Exception, SystemExit) as error:
+                self.report_error(error, module_path, phase="load", retry_switch=True)
+                return None, example_class
+            self._initial_args = initial_args
+            self.current_module = module_path
+            gui = getattr(self.viewer, "gui", None)
+            if gui is not None and hasattr(gui, "_frame_camera_pending"):
+                # Retain authored cameras; fit other models after the first state.
+                gui._frame_camera_pending = camera_revision == getattr(self.viewer, "_camera_revision", 0)
+            logger.info("Loaded example %s", module_path.rsplit(".", 1)[-1])
+            return example, type(example)
+        finally:
+            self._hide_splash()
+
+    def reset(self, example_class):
+        """Re-create the example after its caller releases the previous instance."""
+        self._reset_requested = False
+        self.load_error = self.failed_target = None
+        module_path = self.current_module or example_class.__module__
+        logger.info("Resetting example %s", module_path.rsplit(".", 1)[-1])
+        try:
+            self._show_splash(f"Resetting {module_path.rsplit('.', 1)[-1].removeprefix('example_')}...")
+            try:
+                with self.viewer._preserve_display_options():
+                    self._clear_viewer_scene()
+                    self.current_module = None
+                    if self._initial_args is not None:
+                        args = copy.deepcopy(self._initial_args)
+                    else:
+                        parser = getattr(example_class, "create_parser", create_parser)()
+                        args = default_args(parser)
+                    new_example = example_class(self.viewer, args)
+                    self._register_ui(new_example)
+            except (Exception, SystemExit) as error:
+                self.report_error(error, module_path, phase="reset")
                 return None
-        self.current_module = module_path or example_class.__module__
-        self._register_ui(new_example)
-        self._hide_splash()
-        return new_example
+            self.current_module = module_path
+            return new_example
+        finally:
+            self._hide_splash()
 
 
 def _format_fps(fps: float) -> str:
@@ -712,7 +621,15 @@ def run(example, args):
     if perform_test and not test_final:
         raise NotImplementedError("Examples must implement test_final() to run in test mode")
 
-    browser = _ExampleBrowser(viewer, args) if not perform_test else None
+    interactive = (
+        not perform_test
+        and not getattr(args, "headless", False)
+        and not getattr(viewer, "_headless", False)
+        and getattr(args, "benchmark", False) is False
+        and not getattr(viewer, "benchmark", False)
+        and (hasattr(viewer, "register_ui_callback") or hasattr(viewer, "_configure_example_browser"))
+    )
+    browser = _ExampleBrowser(viewer, args) if interactive else None
 
     if hasattr(example, "gui") and hasattr(viewer, "register_ui_callback"):
         viewer.register_ui_callback(lambda ui, ex=example: ex.gui(ui), position="side")
@@ -726,12 +643,8 @@ def run(example, args):
             continue
 
         if browser is not None and browser._reset_requested:
-            # Drop our reference and force cycle collection so the old
-            # example's destructors finish before reset() enters the new
-            # CUDA graph capture; otherwise late texture/array __del__
-            # calls could fire mid-capture and CUDA rejects them.
+            # Scene cleanup releases callbacks and cycles before construction.
             example = None
-            gc.collect()
             example = browser.reset(example_class)
             continue
 
@@ -939,7 +852,7 @@ def add_mujoco_contacts_arg(parser):
 
 def add_kamino_contacts_arg(parser):
     """Add ``--use-kamino-contacts`` argument to *parser*."""
-    import argparse  # noqa: PLC0415  — needed for BooleanOptionalAction
+    import argparse  # noqa: PLC0415  â€” needed for BooleanOptionalAction
 
     parser.add_argument(
         "--use-kamino-contacts",
