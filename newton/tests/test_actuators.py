@@ -12,6 +12,7 @@ import shutil
 import tempfile
 import types
 import unittest
+import warnings
 import zipfile
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
@@ -28,7 +29,6 @@ from newton._src.utils.import_usd import parse_usd
 from newton.actuators import (
     Actuator,
     ActuatorParsed,
-    Battery,
     ClampingBase,
     ClampingDCMotor,
     ClampingMaxEffort,
@@ -45,6 +45,8 @@ from newton.actuators import (
     InputProcessorDelay,
     JointSpaceResponse,
     parse_actuator_prim,
+    reset_battery_supply,
+    update_battery_supply,
 )
 from newton.selection import ArticulationView
 
@@ -2694,11 +2696,13 @@ class TestDriveBAM(unittest.TestCase):
     """BAM servo drive, alone and with a shared battery."""
 
     def test_bam_battery_shared_across_actuator_groups(self):
-        """Servos in different actuator groups sag one shared battery.
+        """Servos in different actuator groups sag one shared battery per world.
 
         The knee has a backlash processor and the ankle has none, so they are
-        two actuators. Each world has one battery for both. Each step, both
-        drives read the voltage left by the previous step's total draw.
+        two actuators. The template has one battery for both, and
+        ``replicate`` gives each world its own. Each step, both drives read
+        the voltage left by the previous step's total draw, and a reset
+        restores the nominal voltage of the masked world only.
         """
         kp, kt, resistance, max_pwm, target, dt = 0.5, 0.6, 2.0, 0.9, 1.0, 0.01
         nominal_voltage, sag_gain, min_voltage = 5.0, 0.5, 4.4
@@ -2710,6 +2714,12 @@ class TestDriveBAM(unittest.TestCase):
         )
         ankle = template.add_joint_revolute(parent=links[1], child=links[2], axis=newton.Axis.Z, label="ankle")
         template.add_articulation([knee, backlash, ankle])
+        template.add_battery(
+            ["knee", ankle],
+            nominal_voltage=nominal_voltage,
+            sag_gain=sag_gain,
+            min_voltage=min_voltage,
+        )
         bam = {
             "kp": kp,
             "kt": kt,
@@ -2732,13 +2742,8 @@ class TestDriveBAM(unittest.TestCase):
 
         dofs = template.joint_dof_count
         knees, backlashes, ankles = ([j, j + dofs] for j in (0, 1, 2))
-        battery = Battery(
-            dof_battery=wp.array([0, -1, 0, 1, -1, 1], dtype=wp.int32),
-            nominal_voltage=wp.full(2, nominal_voltage, dtype=float),
-            sag_gain=wp.full(2, sag_gain, dtype=float),
-            min_voltage=wp.full(2, min_voltage, dtype=float),
-        )
-        q = np.array([0.3, 0.015, -0.1, -0.2, -0.017, 0.4], dtype=np.float32)
+        np.testing.assert_array_equal(model.actuator.joint_dof_battery.numpy(), [0, -1, 0, 1, -1, 1])
+        q = np.array([0.3, 0.015, -0.1, -0.2, -0.017, 1.4], dtype=np.float32)
         state = model.state()
         control = model.control()
         state.joint_q.assign(q)
@@ -2751,21 +2756,186 @@ class TestDriveBAM(unittest.TestCase):
         drawn = np.zeros(2)
         sagged = []
         for _ in range(4):
-            battery.refresh(control)
             control.joint_f.zero_()
             for actuator in model.actuators:
                 actuator.step(state, control, dt=dt)
 
             voltage = np.maximum(nominal_voltage - sag_gain * drawn, min_voltage)
             sagged.append(nominal_voltage - sag_gain * drawn)
-            np.testing.assert_allclose(battery.voltage.numpy(), voltage, rtol=1e-5)
+            supply = control.supply_voltage.numpy()
+            np.testing.assert_allclose(supply[knees], voltage, rtol=1e-5)
+            np.testing.assert_allclose(supply[ankles], voltage, rtol=1e-5)
+            np.testing.assert_array_equal(supply[backlashes], [0.0, 0.0])
             current = {servo: voltage * d / resistance for servo, d in duty.items()}
             effort = control.joint_f.numpy()
             np.testing.assert_allclose(effort[knees], kt * current["knee"], rtol=1e-5)
             np.testing.assert_allclose(effort[ankles], kt * current["ankle"], rtol=1e-5)
+            update_battery_supply(model, control)
             drawn = sum(np.abs(kt * current[servo]) for servo in duty)
         sagged = np.array(sagged[1:])
         self.assertTrue(np.any(sagged > min_voltage) and np.any(sagged < min_voltage))
+
+        reset_battery_supply(model, control, world_mask=wp.array([True, False], dtype=wp.bool))
+        supply = control.supply_voltage.numpy()
+        voltage = np.maximum(nominal_voltage - sag_gain * drawn, min_voltage)
+        np.testing.assert_allclose(supply[[knees[0], ankles[0]]], nominal_voltage)
+        np.testing.assert_allclose(supply[[knees[1], ankles[1]]], voltage[1], rtol=1e-5)
+
+    def test_bam_battery_draws_computed_effort(self):
+        """The battery sums the effort before clamping, and a DOF without a battery uses ``vin``.
+
+        Both servos read the supply from Control, but only the first draws
+        from the battery and writes its effort before clamping to
+        ``motor_effort``. The second keeps the registered default of 0 V and
+        falls back to ``vin``.
+        """
+        kp, kt, resistance, vin, max_pwm, max_effort, dt = 0.5, 0.6, 2.0, 5.0, 0.9, 0.05, 0.01
+        nominal_voltage, sag_gain, min_voltage = 6.0, 0.5, 1.0
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        for computed_output_attr in ("motor_effort", None):
+            link = builder.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA)
+            joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
+            builder.add_articulation([joint])
+            builder.add_actuator(
+                DriveBAM,
+                index=builder.joint_qd_start[joint],
+                clamping=[(ClampingMaxEffort, {"max_effort": max_effort})],
+                control_computed_output_attr=computed_output_attr,
+                kp=kp,
+                kt=kt,
+                resistance=resistance,
+                vin=vin,
+                max_pwm=max_pwm,
+                supply_from_control=True,
+            )
+        builder.add_battery([0], nominal_voltage=nominal_voltage, sag_gain=sag_gain, min_voltage=min_voltage)
+        model = builder.finalize()
+        state = model.state()
+        control = model.control()
+        control.joint_target_q.fill_(1.0)
+        duty = kp * 1.0
+
+        drawn = 0.0
+        for _ in range(3):
+            control.joint_f.zero_()
+            control.motor_effort.zero_()
+            for actuator in model.actuators:
+                actuator.step(state, control, dt=dt)
+
+            voltage = max(nominal_voltage - sag_gain * drawn, min_voltage)
+            np.testing.assert_allclose(control.supply_voltage.numpy(), [voltage, 0.0], rtol=1e-5)
+            update_battery_supply(model, control, effort=control.motor_effort)
+            computed = kt * np.array([voltage, vin]) * duty / resistance
+            np.testing.assert_allclose(control.motor_effort.numpy(), [computed[0], 0.0], rtol=1e-5)
+            np.testing.assert_allclose(control.joint_f.numpy(), np.minimum(computed, max_effort), rtol=1e-5)
+            drawn = computed[0]
+        self.assertGreater(drawn, max_effort)
+
+    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    def test_battery_from_usd(self):
+        """A ``NewtonBattery`` prim adds a battery for its joints, and their BAM servos read its voltage.
+
+        The knee and ankle servos are on the battery and read the supply from
+        Control. The toe servo is not and keeps ``vin``. ``replicate`` gives
+        each world its own battery.
+        """
+        names = ("knee", "ankle", "toe")
+        parents = ("Base", "knee_link", "ankle_link")
+        prims = []
+        for name, parent in zip(names, parents, strict=True):
+            prims.append(f"""
+        def Xform "{name}_link" (prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"])
+        {{
+            float physics:mass = 1.0
+        }}
+        def PhysicsRevoluteJoint "{name}"
+        {{
+            rel physics:body0 = </World/Robot/{parent}>
+            rel physics:body1 = </World/Robot/{name}_link>
+            uniform token physics:axis = "Z"
+        }}
+        def NewtonActuator "{name}_actuator" (prepend apiSchemas = ["NewtonBAMControlAPI"])
+        {{
+            rel newton:targets = </World/Robot/{name}>
+            float newton:kp = 0.5
+            float newton:kt = 0.6
+            float newton:resistance = 2.0
+            float newton:vin = 5.0
+            float newton:maxPwm = 0.9
+        }}""")
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            f"""#usda 1.0
+(
+    upAxis = "Z"
+)
+def Xform "World"
+{{
+    def Xform "Robot" (prepend apiSchemas = ["PhysicsArticulationRootAPI"])
+    {{
+        def Xform "Base" (prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI"])
+        {{
+            float physics:mass = 1.0
+        }}
+        def PhysicsFixedJoint "root"
+        {{
+            rel physics:body1 = </World/Robot/Base>
+        }}{"".join(prims)}
+        def NewtonBattery "battery"
+        {{
+            rel newton:joints = [</World/Robot/knee>, </World/Robot/ankle>]
+            float newton:nominalVoltage = 6.0
+            float newton:sagGain = 0.5
+            float newton:minVoltage = 1.0
+        }}
+    }}
+}}
+"""
+        )
+        template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        path_joint_map = parse_usd(template, stage)["path_joint_map"]
+        builder = newton.ModelBuilder()
+        builder.replicate(template, 2)
+        model = builder.finalize()
+
+        n = template.joint_dof_count
+        dofs = {name: template.joint_qd_start[path_joint_map[f"/World/Robot/{name}"]] for name in names}
+        dof_battery = np.full(2 * n, -1)
+        for world in range(2):
+            dof_battery[[dofs["knee"] + world * n, dofs["ankle"] + world * n]] = world
+        np.testing.assert_array_equal(model.actuator.joint_dof_battery.numpy(), dof_battery)
+        np.testing.assert_allclose(model.actuator.battery_nominal_voltage.numpy(), [6.0, 6.0])
+        np.testing.assert_allclose(model.actuator.battery_sag_gain.numpy(), [0.5, 0.5])
+        np.testing.assert_allclose(model.actuator.battery_min_voltage.numpy(), [1.0, 1.0])
+        np.testing.assert_allclose(model.control().supply_voltage.numpy(), np.where(dof_battery >= 0, 6.0, 0.0))
+        by_supply = {actuator.drive.supply_from_control: actuator for actuator in model.actuators}
+        np.testing.assert_array_equal(
+            np.unique(by_supply[True].indices.numpy() % n), sorted([dofs["knee"], dofs["ankle"]])
+        )
+        np.testing.assert_array_equal(np.unique(by_supply[False].indices.numpy() % n), [dofs["toe"]])
+
+    def test_add_battery_rejects_invalid_input(self):
+        """add_battery rejects bad voltages and joints that are taken, multi-DOF, or in another world."""
+        template = newton.ModelBuilder()
+        link = template.add_link()
+        template.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z, label="knee")
+        builder = newton.ModelBuilder()
+        builder.add_world(template)
+        builder.begin_world()
+        builder.add_builder(template)
+        ball = builder.add_joint_ball(parent=-1, child=builder.add_link())
+        builder.add_battery(["knee"], nominal_voltage=12.0, sag_gain=0.5, min_voltage=9.0)
+
+        cases = {
+            "min_voltage": (["knee"], 12.0, 0.5, 13.0),
+            "sag_gain": (["knee"], 12.0, -0.5, 9.0),
+            "already draws": (["knee"], 12.0, 0.5, 9.0),
+            "single-DOF": ([ball], 12.0, 0.5, 9.0),
+            "belongs to world 0": ([0], 12.0, 0.5, 9.0),
+        }
+        for message, (joints, nominal_voltage, sag_gain, min_voltage) in cases.items():
+            with self.subTest(message), self.assertRaisesRegex(ValueError, message):
+                builder.add_battery(joints, nominal_voltage=nominal_voltage, sag_gain=sag_gain, min_voltage=min_voltage)
 
     def test_bam_current_and_pwm_limits(self):
         """DriveBAM limits the duty cycle by the firmware current limit, then by ``max_pwm``."""
@@ -3047,8 +3217,64 @@ class _OffsetPositions(InputProcessorBase):
         return dataclasses.replace(inputs, positions=self._out, pos_indices=self._slots)
 
 
+class _RemapVelocityIndices(InputProcessorBase):
+    """Test processor that breaks the contract by replacing ``vel_indices``."""
+
+    def finalize(self, device, num_actuators, requires_grad=False):
+        self._slots = wp.array(np.arange(num_actuators, dtype=np.uint32), device=device)
+
+    def process(self, inputs, state, dt):
+        return dataclasses.replace(inputs, vel_indices=self._slots)
+
+
 class TestInputProcessors(unittest.TestCase):
     """Input processors composed through ModelBuilder.add_actuator."""
+
+    def test_processor_must_keep_vel_indices(self):
+        """Actuator.step rejects a processor that replaces ``vel_indices``."""
+        n = 2
+        actuator = Actuator(
+            indices=wp.array([1, 3], dtype=wp.uint32),
+            drive=DrivePD(kp=wp.ones(n, dtype=float), kd=wp.zeros(n, dtype=float)),
+            input_processors=[_RemapVelocityIndices()],
+        )
+        state = types.SimpleNamespace(joint_q=wp.zeros(4, dtype=float), joint_qd=wp.zeros(4, dtype=float))
+        control = types.SimpleNamespace(
+            joint_target_q=wp.zeros(4, dtype=float),
+            joint_target_qd=wp.zeros(4, dtype=float),
+            joint_act=None,
+            joint_f=wp.zeros(4, dtype=float),
+        )
+        with self.assertRaisesRegex(ValueError, "_RemapVelocityIndices.process"):
+            actuator.step(state, control, dt=0.01)
+
+    @unittest.skipUnless(HAS_USD, "pxr not installed")
+    def test_usd_unknown_actuator_schema_warns(self):
+        """An unknown Newton actuator API token warns; registered tokens and their bases do not."""
+        stage = Usd.Stage.CreateInMemory()
+        stage.GetRootLayer().ImportFromString(
+            """#usda 1.0
+def Xform "World"
+{
+    def PhysicsRevoluteJoint "Joint"
+    {
+    }
+    def NewtonActuator "Actuator" (
+        prepend apiSchemas = ["NewtonPDControlAPI", "NewtonMaxEffortClampingAPI", "NewtonActuatorDelayAPI", "NewtonFooAPI"]
+    )
+    {
+        rel newton:targets = </World/Joint>
+    }
+}
+"""
+        )
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            parsed = parse_actuator_prim(stage.GetPrimAtPath("/World/Actuator"))
+        self.assertEqual(parsed.drive_class, DrivePD)
+        messages = [str(w.message) for w in caught if "actuator schema" in str(w.message)]
+        self.assertEqual(len(messages), 1)
+        self.assertIn("NewtonFooAPI", messages[0])
 
     def test_backlash_drive_reads_link_side_joint(self):
         """The drive sees actuated + backlash joint position and the actuated velocity, in every replicated world.

@@ -45,9 +45,10 @@ class InputProcessorBase:
         ``target_vel[target_vel_indices[i]]`` and
         ``feedforward[target_vel_indices[i]]``. A processor that replaces a
         target array with one entry per slot also replaces its index array.
-        A processor that replaces :attr:`positions` or :attr:`velocities`
-        keeps their shape and :attr:`pos_indices` / :attr:`vel_indices`:
-        drives also use those indices for ``joint_qd``-shaped custom inputs.
+        A processor keeps :attr:`vel_indices` and the shape of
+        :attr:`velocities`: drives also use those indices for
+        ``joint_qd``-shaped custom inputs. :meth:`Actuator.step
+        <newton.actuators.Actuator.step>` raises :class:`ValueError` otherwise.
         """
 
         positions: wp.array[float]

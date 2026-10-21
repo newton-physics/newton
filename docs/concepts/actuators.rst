@@ -553,36 +553,52 @@ See the API documentation for each drive's control-law equations.
 Battery
 ^^^^^^^
 
-* :class:`Battery` — supply shared by the actuators of one or more DOFs.  Its
-  voltage sags with the total effort in ``control.joint_f`` on its DOFs, down
-  to a minimum.  Call :meth:`Battery.refresh` once per step, before clearing
-  ``joint_f`` for the next actuator step: it computes the voltage from the
-  previous step's effort and writes it into ``control.supply_voltage``.
-  Drives that read the supply voltage, e.g. :class:`DriveBAM` with
-  ``supply_from_control=True``, declare ``supply_voltage`` as a custom input,
-  so :class:`~newton.ModelBuilder` registers it on :class:`~newton.Control`.
-  ``Battery.dof_battery`` maps each DOF to its battery, or ``-1`` for none;
-  a :class:`DriveBAM` on a DOF without a battery keeps
-  ``supply_from_control=False`` and uses ``vin``.
+* :meth:`~newton.ModelBuilder.add_battery` adds a supply shared by the
+  actuators of the given joints, by index or label, in the current world.
+  The battery parameters live on the :class:`~newton.Model` as
+  ``model.actuator.battery_*``, so :meth:`~newton.ModelBuilder.replicate`
+  copies them into every world, and ``model.actuator.battery_world`` maps
+  each battery to its world, e.g. to randomize the parameters per world.
+* :func:`update_battery_supply` sags each battery's voltage with the total
+  effort on its DOFs, down to a minimum, and writes it into
+  ``control.supply_voltage``.  Call it once per step after the actuators,
+  before clearing the effort; the drives read the voltage on the next step.
+  The effort is ``control.joint_f`` by default, after clamping.  To draw the
+  effort before clamping, as BAM does, pass ``control_computed_output_attr``
+  to :meth:`~newton.ModelBuilder.add_actuator` and that array as *effort*.
+  Actuators accumulate into that array, so zero it before each actuator step
+  like ``joint_f``.
+* :func:`reset_battery_supply` restores the nominal voltage, of all
+  batteries or of the batteries in the worlds of a mask.  Batteries added
+  outside any world are reset only without a mask.
 
-One :class:`Battery` object holds every supply. Below, DOFs 0 and 1 share
-battery 0 and DOF 2 draws from battery 1:
+In USD, a ``NewtonBattery`` prim lists its joints in ``newton:joints`` and
+authors ``newton:nominalVoltage``, ``newton:sagGain`` and
+``newton:minVoltage``; :meth:`~newton.ModelBuilder.add_usd` adds it with
+:meth:`~newton.ModelBuilder.add_battery` and sets ``supply_from_control=True``
+on the :class:`DriveBAM` actuators of those joints.  Drives that read the
+supply voltage, e.g. :class:`DriveBAM` with ``supply_from_control=True``,
+declare ``supply_voltage`` as a custom input.
+A :class:`DriveBAM` on a DOF whose ``supply_voltage`` is not positive, e.g. a
+DOF without a battery, uses ``vin``.
+
+Below, the hip and knee share one battery and the ankle draws from another:
 
 .. testcode:: actuator-battery
 
-   import warp as wp
    import newton
-   from newton.actuators import Battery, DriveBAM
+   from newton.actuators import DriveBAM, update_battery_supply
 
    builder = newton.ModelBuilder()
-   for _ in range(3):
+   for name in ("hip", "knee", "ankle"):
        link = builder.add_link()
        builder.add_shape_box(link, hx=0.1, hy=0.02, hz=0.02)
-       joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
+       joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z, label=name)
        builder.add_articulation([joint])
        builder.add_actuator(
            DriveBAM,
            index=builder.joint_qd_start[joint],
+           control_computed_output_attr="motor_effort",
            kp=5.0,
            kt=0.5,
            resistance=2.0,
@@ -590,14 +606,9 @@ battery 0 and DOF 2 draws from battery 1:
            max_pwm=1.0,
            supply_from_control=True,
        )
+   builder.add_battery(["hip", "knee"], nominal_voltage=12.0, sag_gain=0.5, min_voltage=9.0)
+   builder.add_battery(["ankle"], nominal_voltage=12.0, sag_gain=0.5, min_voltage=9.0)
    model = builder.finalize()
-
-   battery = Battery(
-       dof_battery=wp.array([0, 0, 1], dtype=wp.int32),
-       nominal_voltage=wp.array([12.0, 12.0], dtype=wp.float32),
-       sag_gain=wp.array([0.5, 0.5], dtype=wp.float32),
-       min_voltage=wp.array([9.0, 9.0], dtype=wp.float32),
-   )
 
    solver = newton.solvers.SolverFeatherstone(model)
    state_0, state_1 = model.state(), model.state()
@@ -606,10 +617,11 @@ battery 0 and DOF 2 draws from battery 1:
    dt = 0.01
 
    for _ in range(10):
-       battery.refresh(control)
        control.joint_f.zero_()
+       control.motor_effort.zero_()
        for actuator in model.actuators:
            actuator.step(state_0, control, dt=dt)
+       update_battery_supply(model, control, effort=control.motor_effort)
        solver.step(state_0, state_1, control, None, dt)
        state_0, state_1 = state_1, state_0
 

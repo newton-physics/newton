@@ -499,12 +499,13 @@ class Actuator:
         return _input_container_class("sim_control", fields)()
 
     def register_custom_attributes(self, builder: ModelBuilder) -> None:
-        """Register drive inputs as custom Newton Control attributes.
+        """Register drive inputs and the computed output as custom Newton Control attributes.
 
         :class:`~newton.ModelBuilder` calls this method automatically while
-        finalizing its actuators. Every input declared by the drive is
-        registered as a ``wp.float32`` joint-DOF array on
-        :class:`~newton.Control`. Registration allocates the arrays but does
+        finalizing its actuators. Every input declared by the drive, and
+        :attr:`control_computed_output_attr` when it differs from
+        :attr:`control_output_attr`, is registered as a ``wp.float32``
+        joint-DOF array on :class:`~newton.Control`. Registration allocates the arrays but does
         not populate or clear them; the caller must update their values before
         each actuator evaluation.
 
@@ -517,7 +518,10 @@ class Actuator:
         """
         from ..sim.model import Model  # noqa: PLC0415
 
-        for name in self.drive.custom_inputs:
+        names = list(self.drive.custom_inputs)
+        if self.control_computed_output_attr not in (None, self.control_output_attr):
+            names.append(self.control_computed_output_attr)
+        for name in names:
             builder.add_custom_attribute(
                 builder.CustomAttribute(
                     name=name,
@@ -734,6 +738,8 @@ class Actuator:
         )
         for processor, current, nxt in zip(self.input_processors, current_states, next_states, strict=True):
             processed = processor.process(inputs, current, dt)
+            if processed.vel_indices is not inputs.vel_indices or processed.velocities.shape != inputs.velocities.shape:
+                raise ValueError(f"{type(processor).__name__}.process() must keep vel_indices and the velocities shape")
             if any(processor is legacy for legacy in self._legacy_delay_updates):
                 processor.update_state(
                     inputs.target_pos,

@@ -33,7 +33,8 @@ def _bam_effort_kernel(
 
     supply = vin[i]
     if supply_voltage:
-        supply = supply_voltage[vel_indices[i]]
+        if supply_voltage[vel_indices[i]] > 0.0:
+            supply = supply_voltage[vel_indices[i]]
 
     duty = (target_pos[target_pos_indices[i]] - positions[pos_indices[i]]) * kp[i]
     if max_current[i] > 0.0 and supply > 0.0:
@@ -70,10 +71,10 @@ class DriveBAM(DriveBase):
     The supply voltage is ``vin``. With ``supply_from_control=True`` the
     drive instead reads it per DOF from the ``supply_voltage`` custom input
     on ``sim_control`` (see :attr:`DriveBase.custom_inputs
-    <newton.actuators.DriveBase.custom_inputs>`), which a
-    :class:`~newton.actuators.Battery` writes in :meth:`Battery.refresh
-    <newton.actuators.Battery.refresh>`. Leave it off for DOFs without a
-    battery: the registered ``supply_voltage`` defaults to 0 V.
+    <newton.actuators.DriveBase.custom_inputs>`), which
+    :func:`~newton.actuators.update_battery_supply` writes for the
+    batteries added with :meth:`~newton.ModelBuilder.add_battery`. DOFs whose ``supply_voltage`` is
+    not positive, e.g. DOFs without a battery, use ``vin``.
 
     The torque is not limited beyond the duty cycle and current limits; add
     a :class:`~newton.actuators.ClampingMaxEffort` for a stall-torque bound.
@@ -126,7 +127,8 @@ class DriveBAM(DriveBase):
             max_current: Firmware current limit [A]; 0 disables it. Shape
                 ``(N,)``. ``None`` disables it.
             supply_from_control: Read the supply voltage from the
-                ``supply_voltage`` custom input instead of *vin*.
+                ``supply_voltage`` custom input instead of *vin*, where it
+                is positive.
 
         Raises:
             ValueError: An array shape does not match *kp*, or *kt* or

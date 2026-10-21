@@ -266,6 +266,7 @@ class SchemaNames:
     """Canonical USD tokens from ``newton-usd-schemas``"""
 
     ACTUATOR = "NewtonActuator"
+    BATTERY = "NewtonBattery"
 
     PD_CONTROL = "NewtonPDControlAPI"
     PID_CONTROL = "NewtonPIDControlAPI"
@@ -290,6 +291,12 @@ _SCHEMA_REGISTRY: dict[str, _SchemaEntry] = {
     SchemaNames.POSITION_BASED_CLAMPING: _SchemaEntry(ClampingPositionBased, ComponentKind.CLAMPING),
     SchemaNames.DELAY: _SchemaEntry(InputProcessorDelay, ComponentKind.INPUT_PROCESSOR),
     SchemaNames.BACKLASH: _SchemaEntry(InputProcessorBacklash, ComponentKind.INPUT_PROCESSOR),
+}
+
+_BASE_SCHEMAS = {
+    "NewtonActuatorControlBaseAPI",
+    "NewtonActuatorClampingBaseAPI",
+    "NewtonActuatorInputProcessorBaseAPI",
 }
 
 
@@ -321,6 +328,32 @@ def register_actuator_component(
         component_class=component_class,
         kind=kind,
     )
+
+
+def _parse_battery_prim(prim) -> tuple[list[str], dict[str, float]] | None:
+    """Parse a ``NewtonBattery`` prim into its joint paths and :meth:`~newton.ModelBuilder.add_battery` kwargs.
+
+    Returns ``None`` if the prim is not a ``NewtonBattery``.
+
+    Raises:
+        ValueError: The prim has no ``newton:joints`` targets, or no
+            ``newton:nominalVoltage`` or ``newton:minVoltage``.
+    """
+    if prim.GetTypeName() != SchemaNames.BATTERY:
+        return None
+    joints = _get_relationship_targets(prim, "newton:joints")
+    if not joints:
+        raise ValueError(f"Battery prim '{prim.GetPath()}' has no authored 'newton:joints' relationship")
+    kwargs: dict[str, float] = {}
+    for name in ("nominalVoltage", "sagGain", "minVoltage"):
+        attr = prim.GetAttribute(f"newton:{name}")
+        if attr and attr.HasAuthoredValue():
+            kwargs[_camel_to_snake(name)] = float(attr.Get())
+    kwargs.setdefault("sag_gain", 0.0)
+    missing = {"nominal_voltage", "min_voltage"} - set(kwargs)
+    if missing:
+        raise ValueError(f"Battery prim '{prim.GetPath()}' is missing {', '.join(sorted(missing))}")
+    return joints, kwargs
 
 
 def parse_actuator_prim(prim, *, allow_unsafe_torch_checkpoints: bool = False) -> ActuatorParsed | None:
@@ -392,6 +425,11 @@ def parse_actuator_prim(prim, *, allow_unsafe_torch_checkpoints: bool = False) -
     for schema_name in get_applied_api_schemas(prim):
         entry = _SCHEMA_REGISTRY.get(schema_name)
         if entry is None:
+            if schema_name.startswith("Newton") and schema_name not in _BASE_SCHEMAS:
+                warnings.warn(
+                    f"Actuator prim '{prim.GetPath()}' has unknown actuator schema '{schema_name}'; it is ignored",
+                    stacklevel=2,
+                )
             continue
         detected.append(schema_name)
 

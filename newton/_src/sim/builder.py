@@ -841,7 +841,8 @@ class ModelBuilder:
         """Stores accumulated specs for one group of compatible composed actuators.
 
         Each element in ``indices`` is a single DOF index.  The entry key is
-        ``(drive_class, input_processor_key, clamping_key, drive_shared_key)``
+        ``(drive_class, input_processor_key, clamping_key, drive_shared_key,
+        control_computed_output_attr)``
         where shared params (e.g. ``model_path``, lookup tables) must
         be identical across all actuators in a group.  Per-DOF params such
         as delay step values may differ within a group.
@@ -858,6 +859,7 @@ class ModelBuilder:
         input_processor_classes: tuple = ()  # Tuple of InputProcessorBase subclass types (in order)
         input_processor_shared_kwargs: tuple = ()  # Tuple of dicts: shared kwargs per input processor class
         input_processor_args: list[list[dict[str, Any]]] = field(default_factory=list)  # Per-actuator params
+        control_computed_output_attr: str | None = None  # Control attribute for pre-clamp effort
 
         def __init__(
             self,
@@ -873,6 +875,7 @@ class ModelBuilder:
             input_processor_classes: tuple = (),
             input_processor_shared_kwargs: tuple = (),
             input_processor_args: list[list[dict[str, Any]]] | None = None,
+            control_computed_output_attr: str | None = None,
         ):
             """Initialize an actuator entry.
 
@@ -893,6 +896,7 @@ class ModelBuilder:
             self.input_processor_classes = input_processor_classes
             self.input_processor_shared_kwargs = input_processor_shared_kwargs
             self.input_processor_args = input_processor_args if input_processor_args is not None else []
+            self.control_computed_output_attr = control_computed_output_attr
             if delay_args is _ACTUATOR_ENTRY_DELAY_ARGS_UNSET:
                 return
             warnings.warn(_ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
@@ -3116,6 +3120,7 @@ class ModelBuilder:
         pos_index: int | None = None,
         *,
         input_processors: list[tuple[type[InputProcessorBase], dict[str, Any]]] | None = None,
+        control_computed_output_attr: str | None = None,
         controller_class: type[DriveBase] | object = _DEPRECATED_ACTUATOR_DRIVE_UNSET,
         **kwargs: Any,
     ) -> None:
@@ -3146,6 +3151,14 @@ class ModelBuilder:
                 class's :attr:`~newton.actuators.InputProcessorBase.JOINT_PARAMS`
                 take a joint index or a joint label; ``None`` selects the
                 actuated joint.
+            control_computed_output_attr: Name of a :class:`~newton.Control`
+                attribute that also receives the effort before clamping
+                [N or N·m], e.g. for
+                :func:`~newton.actuators.update_battery_supply`.
+                :meth:`finalize <ModelBuilder.finalize>` registers it as a
+                joint-DOF custom attribute. Actuators accumulate into it, so
+                zero it before each actuator step like ``joint_f``. ``None``
+                skips it.
             controller_class: Deprecated in Newton 1.6; use ``drive_class`` instead.
             **kwargs: Per-DOF drive parameters (e.g. ``kp``, ``kd``).
         """
@@ -3207,7 +3220,7 @@ class ModelBuilder:
                     resolved_proc[f"{name}_indices"] = index
                     resolved_proc[f"{name}_pos_indices"] = pos_index if pos_index is not None else index
                     continue
-                joint = self._resolve_actuator_joint(joint, proc_class, name)
+                joint = self._resolve_actuator_joint(joint, proc_class.__name__, name, world=self.current_world)
                 resolved_proc[f"{name}_indices"] = self.joint_qd_start[joint]
                 resolved_proc[f"{name}_pos_indices"] = self.joint_q_start[joint]
             proc_shared_names = getattr(proc_class, "SHARED_PARAMS", set())
@@ -3220,7 +3233,8 @@ class ModelBuilder:
 
         # --- Build entry key: identifies a group of compatible actuators ---
         # Groups differ when drive class, input processor types/shared-params,
-        # clamping types/shared-params, or drive shared params differ.
+        # clamping types/shared-params, drive shared params, or the computed
+        # output attribute differ.
         def _make_hashable(v: Any) -> Any:
             if isinstance(v, list):
                 return tuple(v)
@@ -3235,7 +3249,7 @@ class ModelBuilder:
             (pc, tuple(sorted((k, _make_hashable(v)) for k, v in shared.items())))
             for pc, shared in zip(input_processor_classes, input_processor_shared_list, strict=True)
         )
-        entry_key = (drive_class, input_processor_key, clamping_key, drive_shared_key)
+        entry_key = (drive_class, input_processor_key, clamping_key, drive_shared_key, control_computed_output_attr)
 
         entry = self.actuator_entries.setdefault(
             entry_key,
@@ -3251,6 +3265,7 @@ class ModelBuilder:
                 input_processor_classes=input_processor_classes,
                 input_processor_shared_kwargs=input_processor_shared_kwargs,
                 input_processor_args=[],
+                control_computed_output_attr=control_computed_output_attr,
             ),
         )
 
@@ -3260,20 +3275,99 @@ class ModelBuilder:
         entry.clamping_args.append(clamping_array_params_list)
         entry.input_processor_args.append(input_processor_array_params_list)
 
-    def _resolve_actuator_joint(self, joint: int | str, component_class: type, name: str) -> int:
-        """Resolve a joint index or joint label to a single-DOF joint index."""
+    def add_battery(
+        self, joints: Sequence[int | str], *, nominal_voltage: float, sag_gain: float, min_voltage: float
+    ) -> int:
+        """Add a battery shared by the actuators of the given joints in the current world.
+
+        Each step, :func:`~newton.actuators.update_battery_supply` sags its
+        voltage with the total effort on the DOFs of *joints* and writes it into
+        ``control.supply_voltage``, and
+        :func:`~newton.actuators.reset_battery_supply` restores the nominal
+        voltage. ``control.supply_voltage`` starts at the nominal voltage.
+        The battery parameters are stored on the :class:`~newton.Model` under
+        the ``actuator`` namespace as ``battery_nominal_voltage``,
+        ``battery_sag_gain``, ``battery_min_voltage`` and ``battery_world``,
+        and the battery of each DOF as ``joint_dof_battery`` (``-1`` for
+        none). :meth:`replicate` copies the batteries into every world.
+        :meth:`add_usd` calls this method for each ``NewtonBattery`` prim.
+
+        Args:
+            joints: Single-DOF joints that draw from the battery, as joint
+                indices or joint labels of the current world, e.g. after
+                :meth:`add_usd`. They must belong to the current world.
+            nominal_voltage: Voltage without load [V].
+            sag_gain: Voltage drop per unit of total effort [V/N or V/(N·m)].
+            min_voltage: Lower bound of the sagged voltage [V], positive and
+                at most *nominal_voltage*.
+
+        Returns:
+            The index of the battery.
+
+        Raises:
+            ValueError: *min_voltage* is not positive or exceeds
+                *nominal_voltage*, *sag_gain* is negative, or a joint does not exist, is
+                not single-DOF, belongs to another world, or already has a
+                battery.
+        """
+        from ..actuators.battery import register_battery_attributes  # noqa: PLC0415
+
+        if not 0.0 < min_voltage <= nominal_voltage:
+            raise ValueError(
+                f"min_voltage must be positive and at most nominal_voltage, got {min_voltage} and {nominal_voltage}"
+            )
+        if sag_gain < 0.0:
+            raise ValueError(f"sag_gain must be non-negative, got {sag_gain}")
+        dof_battery = self.custom_attributes.get("actuator:joint_dof_battery")
+        assigned = (dof_battery.values if dof_battery is not None else None) or {}
+        dofs = []
+        for joint_ref in joints:
+            joint = self._resolve_actuator_joint(joint_ref, "add_battery", "joints", world=self.current_world)
+            label = self.joint_label[joint]
+            if self.joint_world[joint] != self.current_world:
+                raise ValueError(f"add_battery: joint '{label}' belongs to world {self.joint_world[joint]}")
+            dof = self.joint_qd_start[joint]
+            if assigned.get(dof, -1) >= 0:
+                raise ValueError(f"add_battery: joint '{label}' already draws from battery {assigned[dof]}")
+            dofs.append(dof)
+        register_battery_attributes(self)
+        battery = self.add_custom_values(
+            **{
+                "actuator:battery_nominal_voltage": nominal_voltage,
+                "actuator:battery_sag_gain": sag_gain,
+                "actuator:battery_min_voltage": min_voltage,
+            }
+        )["actuator:battery_nominal_voltage"]
+        if dofs:
+            self._process_custom_attributes(
+                dofs,
+                {"actuator:joint_dof_battery": battery, "supply_voltage": nominal_voltage},
+                Model.AttributeFrequency.JOINT_DOF,
+            )
+        return battery
+
+    def _resolve_actuator_joint(self, joint: int | str, owner: str, name: str, world: int | None = None) -> int:
+        """Resolve a joint index or joint label to a single-DOF joint index.
+
+        A label is looked up among the joints of *world*, or among all joints
+        when *world* is ``None``.
+        """
         if isinstance(joint, str):
-            matches = [i for i, label in enumerate(self.joint_label) if label == joint]
+            matches = [
+                i
+                for i, label in enumerate(self.joint_label)
+                if label == joint and (world is None or self.joint_world[i] == world)
+            ]
             if len(matches) != 1:
                 problem = "unknown" if not matches else f"ambiguous ({len(matches)} joints with this)"
-                raise ValueError(f"{component_class.__name__}: '{name}' references {problem} joint label '{joint}'")
+                raise ValueError(f"{owner}: '{name}' references {problem} joint label '{joint}'")
             joint = matches[0]
         if not 0 <= joint < self.joint_count:
-            raise ValueError(f"{component_class.__name__}: '{name}' joint index {joint} is out of range")
+            raise ValueError(f"{owner}: '{name}' joint index {joint} is out of range")
         next_start = self.joint_qd_start[joint + 1] if joint + 1 < self.joint_count else self.joint_dof_count
         if next_start - self.joint_qd_start[joint] != 1:
             raise ValueError(
-                f"{component_class.__name__}: '{name}' must reference a single-DOF joint, "
+                f"{owner}: '{name}' must reference a single-DOF joint, "
                 f"but joint '{self.joint_label[joint]}' has {next_start - self.joint_qd_start[joint]} DOFs"
             )
         return joint
@@ -15499,6 +15593,7 @@ class ModelBuilder:
                     target_pos_indices=target_pos_indices_arg,
                     requires_grad=requires_grad,
                     input_processors=input_processor_objs,
+                    control_computed_output_attr=entry.control_computed_output_attr,
                 )
 
                 actuator.register_custom_attributes(self)

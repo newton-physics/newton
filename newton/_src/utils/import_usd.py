@@ -2790,7 +2790,21 @@ def parse_usd(
 
     # Parse Newton actuator prims from the USD stage.
     from ..actuators.input_processors.base import InputProcessorBase  # noqa: PLC0415
-    from ..actuators.usd_parser import parse_actuator_prim  # noqa: PLC0415
+    from ..actuators.usd_parser import _parse_battery_prim, parse_actuator_prim  # noqa: PLC0415
+
+    batteries = []
+    for prim in Usd.PrimRange(stage.GetPrimAtPath(root_path)):
+        prim_path = str(prim.GetPath())
+        if any(re.match(pattern, prim_path) for pattern in ignore_paths):
+            continue
+        battery = _parse_battery_prim(prim)
+        if battery is None:
+            continue
+        for path in battery[0]:
+            if path not in path_joint_map:
+                raise ValueError(f"Battery prim {prim_path} references '{path}', which is not a known joint")
+        batteries.append(battery)
+    battery_joint_paths = {path for joints, _ in batteries for path in joints}
 
     actuator_count = 0
     add_actuator_params = set(inspect.signature(builder.add_actuator).parameters) - {"kwargs"}
@@ -2851,6 +2865,10 @@ def parse_usd(
                 clamping_specs.append((comp_class, comp_kwargs))
 
         drive_kwargs = {name: value for name, value in parsed.drive_kwargs.items() if name not in add_actuator_params}
+        if target_path in battery_joint_paths and "supply_from_control" in getattr(
+            parsed.drive_class, "SHARED_PARAMS", ()
+        ):
+            drive_kwargs["supply_from_control"] = True
         builder.add_actuator(
             parsed.drive_class,
             index=dof_index,
@@ -2862,6 +2880,8 @@ def parse_usd(
         actuator_count += 1
     if verbose and actuator_count > 0:
         print(f"Added {actuator_count} actuator(s) from USD")
+    for joints, kwargs in batteries:
+        builder.add_battery([path_joint_map[path] for path in joints], **kwargs)
 
     result = {
         "fps": stage.GetFramesPerSecond(),

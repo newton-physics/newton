@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from .actuator import Actuator
-from .battery import Battery
+from .battery import reset_battery_supply, update_battery_supply
 from .clamping import ClampingBase, ClampingDCMotor, ClampingMaxEffort, ClampingPositionBased
 from .drives import DriveBAM, DriveBase, DriveNeuralGRU, DriveNeuralLSTM, DriveNeuralMLP, DrivePD, DrivePID
 from .input_processors import (
@@ -16,7 +16,6 @@ from .usd_parser import ActuatorParsed, ComponentKind, SchemaNames, parse_actuat
 __all__ = [
     "Actuator",
     "ActuatorParsed",
-    "Battery",
     "ClampingBase",
     "ClampingDCMotor",
     "ClampingMaxEffort",
@@ -36,4 +35,6 @@ __all__ = [
     "SchemaNames",
     "parse_actuator_prim",
     "register_actuator_component",
+    "reset_battery_supply",
+    "update_battery_supply",
 ]

@@ -21,7 +21,6 @@ from typing import TYPE_CHECKING
 from ._src.actuators import (
     Actuator,
     ActuatorParsed,
-    Battery,
     ClampingBase,
     ClampingDCMotor,
     ClampingMaxEffort,
@@ -41,12 +40,13 @@ from ._src.actuators import (
     SchemaNames,
     parse_actuator_prim,
     register_actuator_component,
+    reset_battery_supply,
+    update_battery_supply,
 )
 
 __all__ = [
     "Actuator",
     "ActuatorParsed",
-    "Battery",
     "ClampingBase",
     "ClampingDCMotor",
     "ClampingMaxEffort",
@@ -66,6 +66,8 @@ __all__ = [
     "SchemaNames",
     "parse_actuator_prim",
     "register_actuator_component",
+    "reset_battery_supply",
+    "update_battery_supply",
 ]
 
 if TYPE_CHECKING:
