@@ -253,7 +253,7 @@ class TestViewerShapeProperties(unittest.TestCase):
         for label in ("shape_1", "left/geom", "right/geom"):
             template.add_shape_sphere(-1, radius=0.1, label=label)
         replicated = newton.ModelBuilder()
-        replicated.replicate(template, world_count=3)
+        replicated.replicate(template, copy_count=3)
         model = replicated.finalize(device="cpu")
         model._texture_sdf_data = wp.array(entries[:1], dtype=TextureSDFData, device="cpu")
         model._shape_sdf_index.fill_(0)
@@ -337,7 +337,7 @@ class TestViewerShapeProperties(unittest.TestCase):
             parent = body
         template.add_articulation(joints, label="robot")
         scene = newton.ModelBuilder()
-        scene.replicate(template, world_count=3)
+        scene.replicate(template, copy_count=3)
         hierarchy = ModelTree(scene.finalize(device="cpu"))
         self.assertEqual(hierarchy.parents[("articulation", 0)], ("root", 0))
         self.assertNotIn("Articulations", hierarchy.labels.values())

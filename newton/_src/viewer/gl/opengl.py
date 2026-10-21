@@ -2187,10 +2187,12 @@ class RendererGL:
         self._shadow_texture = gl.GLuint()
         gl.glGenTextures(1, self._shadow_texture)
         gl.glBindTexture(gl.GL_TEXTURE_2D, self._shadow_texture)
+        # Receiver-plane corrections need precise depths across the light's large
+        # range; an unsized format lets drivers choose a low-precision depth map.
         gl.glTexImage2D(
             gl.GL_TEXTURE_2D,
             0,
-            gl.GL_DEPTH_COMPONENT,
+            gl.GL_DEPTH_COMPONENT32F,
             self._shadow_width,
             self._shadow_height,
             0,
