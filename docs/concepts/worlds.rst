@@ -381,6 +381,65 @@ updates for world ``0`` therefore continue to affect their global entities.
    Gravity shape: (3,)
 
 
+.. _Body shape variants:
+
+Per-World Body Shape Variants
+-----------------------------
+
+.. experimental::
+
+   Body shape variants may change without a deprecation period.
+
+A body can carry several alternative shape sets, such as the objects of an asset catalog, and
+each world can select a different one at reset. Declare the variants with
+:meth:`~newton.ModelBuilder.add_body_variants`, passing one single-body builder per variant. Each
+variant's shapes and inertial properties replace the body's while the variant is selected; shapes
+added to the body directly are shared by all variants. At runtime,
+:meth:`~newton.Model.select_body_variants` switches the selection on the device without host
+synchronization and returns the :class:`~newton.ModelFlags` to pass to solvers and viewers:
+
+.. testcode::
+
+   import warp as wp
+   import newton
+
+   cube = newton.ModelBuilder()
+   cube.add_shape_box(cube.add_body(label="cube"), hx=0.1, hy=0.1, hz=0.1)
+   ball = newton.ModelBuilder()
+   ball.add_shape_sphere(ball.add_body(label="ball"), radius=0.1)
+
+   env = newton.ModelBuilder()
+   body = env.add_body(label="object")
+   env.add_body_variants(body, [cube, ball])
+
+   scene = newton.ModelBuilder()
+   scene.replicate(env, world_count=2)
+   model = scene.finalize()
+
+   # World 1 switches to the ball; world 0 keeps the cube.
+   flags = model.select_body_variants(wp.array([0, 1], dtype=wp.int32, device=model.device))
+   # solver.notify_model_changed(flags)
+   # viewer.notify_model_changed(flags)
+   print(model.body_variant_label, model.body_variant.numpy())
+
+.. testoutput::
+
+   ['cube', 'ball', 'cube', 'ball'] [0 1]
+
+Inactive variant shapes are skipped by :class:`~newton.CollisionPipeline` and by viewers that
+support :meth:`~newton.viewer.ViewerBase.notify_model_changed` (``ViewerGL``, ``ViewerViser``, and
+``ViewerNull``). Current limitations:
+
+- Every world stores all variant shapes of its body, so memory and collision setup grow with the
+  catalog size.
+- Contacts must come from :class:`~newton.CollisionPipeline`: ``SolverMuJoCo`` requires
+  ``use_mujoco_contacts=False``, ``SolverKamino`` requires ``use_collision_detector=False``, and
+  ``SolverImplicitMPM`` is unsupported.
+- The shape BVH used by sensors and ray casts still contains inactive variant shapes.
+- ``ViewerUSD``, ``ViewerRerun``, ``ViewerFile``, and ``ViewerRTX`` raise
+  :class:`NotImplementedError` when notified of a selection change.
+
+
 .. _World-entity partitioning:
 
 World-Entity GPU Thread Partitioning

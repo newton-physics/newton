@@ -524,6 +524,39 @@ def _build_fk_level_topology(
     return articulation_level_start, level_joint_start, level_joints, level_parent_pos
 
 
+def _combine_inertial_properties(
+    a: tuple[float, np.ndarray, np.ndarray], b: tuple[float, np.ndarray, np.ndarray]
+) -> tuple[float, np.ndarray, np.ndarray]:
+    """Combine two ``(mass, com, inertia about com)`` triples expressed in the same frame."""
+    mass = a[0] + b[0]
+    if mass <= 0.0:
+        return mass, a[1], a[2] + b[2]
+    com = (a[0] * a[1] + b[0] * b[1]) / mass
+    inertia = np.zeros((3, 3))
+    for part_mass, part_com, part_inertia in (a, b):
+        offset = part_com - com
+        inertia += part_inertia + part_mass * (np.dot(offset, offset) * np.eye(3) - np.outer(offset, offset))
+    return mass, com, inertia
+
+
+@dataclass(frozen=True)
+class _BodyVariants:
+    """Shape variants declared on one body by :meth:`ModelBuilder.add_body_variants`."""
+
+    sources: tuple[ModelBuilder, ...]
+    """Single-body builders that define each variant's inertial properties."""
+    labels: tuple[str, ...]
+    """Variant labels."""
+    shape_offsets: tuple[int, ...]
+    """Shape index boundaries, length ``len(sources) + 1``; variant ``k`` owns shapes
+    ``[shape_offsets[k], shape_offsets[k + 1])``."""
+    initial: int
+    """Variant selected when the model is finalized."""
+
+    def shifted(self, shape_offset: int) -> _BodyVariants:
+        return replace(self, shape_offsets=tuple(offset + shape_offset for offset in self.shape_offsets))
+
+
 @dataclass(frozen=True)
 class _ShapeCollisionFilterBlock:
     """Compact replicated collision-filter block."""
@@ -2008,6 +2041,8 @@ class ModelBuilder:
         """Body flags accumulated for :attr:`Model.body_flags`."""
         self.body_shapes: dict[int, list[int]] = {-1: []}
         """Mapping from body index to attached shape indices, finalized into :attr:`Model.body_shapes`."""
+        self._body_variants: dict[int, _BodyVariants] = {}
+        """Shape variants by body index, declared with :meth:`add_body_variants`."""
         self.body_world: list[int] = []
         """World indices accumulated for :attr:`Model.body_world`."""
         self.body_color_groups: list[Any] = []
@@ -3738,6 +3773,8 @@ class ModelBuilder:
                     self.body_shapes[-1].extend(translated_shapes)
                 else:
                     self.body_shapes[body + int(body_start)] = translated_shapes
+            for body, body_variants in builder._body_variants.items():
+                self._body_variants[body + int(body_start)] = body_variants.shifted(int(shape_start))
 
         joint_starts = starts("joint")
         joint_coord_starts = starts("joint_coord")
@@ -5674,6 +5711,95 @@ class ModelBuilder:
 
         return body_id
 
+    def add_body_variants(
+        self,
+        body: int,
+        variants: Sequence[ModelBuilder],
+        *,
+        initial: int = 0,
+        labels: Sequence[str] | None = None,
+    ) -> None:
+        """Declare alternative shape sets for a body, one of which is active at a time.
+
+        Each variant is a builder with exactly one body, such as an asset loaded with
+        :meth:`add_usd` or :meth:`add_mjcf`. Its shapes, colliders and visuals of any type and
+        count, are copied onto ``body``, and its mass, center of mass, and inertia define the body's
+        inertial properties while the variant is selected. Only the shapes of the selected variant
+        collide and are rendered. Shapes added to ``body`` directly are shared by all variants, and
+        their mass is combined with the variant's.
+
+        Variant shapes are expressed in the variant body's frame, which is mapped onto ``body``'s
+        frame; the variant body's pose, joints, and other entities are ignored. Variants are
+        replicated with the body by :meth:`add_builder` and :meth:`replicate`, so each world selects
+        its variant independently with :meth:`Model.select_body_variants
+        <newton.Model.select_body_variants>`.
+
+        .. experimental::
+
+            Body shape variants may change without a deprecation period. Variant shapes are stored
+            as shapes of ``body`` in every world; a later release may share them between worlds.
+
+        Args:
+            body: Index of the body that receives the variants.
+            variants: Single-body builders defining the variants.
+            initial: Index of the variant selected in the finalized model.
+            labels: Variant labels. Defaults to each variant's body label.
+
+        Raises:
+            IndexError: If ``body`` or ``initial`` is out of range.
+            ValueError: If ``body`` already has variants, a variant builder does not contain exactly
+                one body or contains shapes not attached to it, or ``labels`` does not match
+                ``variants``.
+        """
+        if not 0 <= body < self.body_count:
+            raise IndexError(f"Body index {body} out of range [0, {self.body_count}).")
+        if body in self._body_variants:
+            raise ValueError(f"Body {body} already has variants.")
+        variants = tuple(variants)
+        if not variants:
+            raise ValueError("add_body_variants() requires at least one variant.")
+        for variant in variants:
+            if variant.body_count != 1:
+                raise ValueError(f"Each variant builder must contain exactly one body, got {variant.body_count}.")
+            if variant.body_shapes.get(-1):
+                raise ValueError("Variant builders must not contain shapes that are not attached to their body.")
+            if variant.up_axis != self.up_axis:
+                raise ValueError("Variant builders must use the same up axis as this builder.")
+        labels = tuple(variant.body_label[0] for variant in variants) if labels is None else tuple(labels)
+        if len(labels) != len(variants):
+            raise ValueError(f"Expected {len(variants)} labels, got {len(labels)}.")
+        if not 0 <= initial < len(variants):
+            raise IndexError(f"Initial variant {initial} out of range [0, {len(variants)}).")
+
+        shape_attributes = [
+            name
+            for name, spec in self._builder_merge_attribute_specs().items()
+            if spec.frequency == Model.AttributeFrequency.SHAPE and spec.compaction_policy == "generic"
+        ]
+        shape_offsets = [self.shape_count]
+        for variant, label in zip(variants, labels, strict=True):
+            for source_shape in variant.body_shapes.get(0, ()):
+                shape = self.shape_count
+                for name in shape_attributes:
+                    getattr(self, name).append(getattr(variant, name)[source_shape])
+                self.shape_body[shape] = body
+                self.shape_world[shape] = self.current_world
+                self.shape_label[shape] = f"{self.body_label[body]}/{label}/{variant.shape_label[source_shape]}"
+                self.body_shapes[body].append(shape)
+                if self.shape_flags[shape] & ShapeFlags.COLLIDE_SHAPES:
+                    self._add_joint_collision_filter_pairs(shape, body)
+                for key, attribute in variant.custom_attributes.items():
+                    if attribute.frequency != Model.AttributeFrequency.SHAPE or attribute.references is not None:
+                        continue
+                    value = attribute.values.get(source_shape) if attribute.values else None
+                    if value is None:
+                        continue
+                    if key not in self.custom_attributes:
+                        self.add_custom_attribute(replace(attribute, values=None))
+                    self._process_custom_attributes(shape, {key: value}, Model.AttributeFrequency.SHAPE)
+            shape_offsets.append(self.shape_count)
+        self._body_variants[body] = _BodyVariants(variants, labels, tuple(shape_offsets), initial)
+
     # region joints
 
     def add_joint(
@@ -7342,6 +7468,8 @@ class ModelBuilder:
             fixed joint through ``joints_to_keep`` to preserve the complete curve.
             Curve-removal warnings are emitted after collapse completes.
         """
+        if self._body_variants:
+            raise NotImplementedError("collapse_fixed_joints() does not support bodies with shape variants.")
         joints_to_keep = set(joints_to_keep or ())
 
         body_data = {}
@@ -8453,20 +8581,7 @@ class ModelBuilder:
         self.shape_sdf_padding.append(cfg.sdf_padding)
 
         if cfg.has_shape_collision and cfg.collision_filter_parent:
-            for parent_body, joint_idx in self.joint_parents.get(body, ()):
-                if not self.joint_collision_filter_parent[joint_idx]:
-                    continue
-                for parent_shape in self.body_shapes[parent_body]:
-                    if not self.shape_flags[parent_shape] & ShapeFlags.COLLIDE_SHAPES:
-                        continue
-                    self.add_shape_collision_filter_pair(parent_shape, shape)
-            for child_body, joint_idx in self.joint_children.get(body, ()):
-                if not self.joint_collision_filter_parent[joint_idx]:
-                    continue
-                for child_shape in self.body_shapes[child_body]:
-                    if not self.shape_flags[child_shape] & ShapeFlags.COLLIDE_SHAPES:
-                        continue
-                    self.add_shape_collision_filter_pair(shape, child_shape)
+            self._add_joint_collision_filter_pairs(shape, body)
 
         if not is_static and cfg.density > 0.0 and body >= 0 and not self.body_lock_inertia[body]:
             (m, c, inertia) = compute_inertia_shape(type, scale, src, cfg.density, cfg.is_solid, cfg.margin)
@@ -8482,6 +8597,23 @@ class ModelBuilder:
             )
 
         return shape
+
+    def _add_joint_collision_filter_pairs(self, shape: int, body: int) -> None:
+        """Filter a colliding shape against the shapes of bodies joined to ``body``."""
+        for parent_body, joint_idx in self.joint_parents.get(body, ()):
+            if not self.joint_collision_filter_parent[joint_idx]:
+                continue
+            for parent_shape in self.body_shapes[parent_body]:
+                if not self.shape_flags[parent_shape] & ShapeFlags.COLLIDE_SHAPES:
+                    continue
+                self.add_shape_collision_filter_pair(parent_shape, shape)
+        for child_body, joint_idx in self.joint_children.get(body, ()):
+            if not self.joint_collision_filter_parent[joint_idx]:
+                continue
+            for child_shape in self.body_shapes[child_body]:
+                if not self.shape_flags[child_shape] & ShapeFlags.COLLIDE_SHAPES:
+                    continue
+                self.add_shape_collision_filter_pair(shape, child_shape)
 
     def add_shape_plane(
         self,
@@ -15517,6 +15649,7 @@ class ModelBuilder:
                 )
 
             self._finalize_custom_frequency_metadata(m, device)
+            self._finalize_body_variants(m)
 
             m.bvh_build_shapes(
                 m,
@@ -15525,6 +15658,68 @@ class ModelBuilder:
             )
             m.bvh_build_particles(m)
             return m
+
+    def _finalize_body_variants(self, m: Model) -> None:
+        """Build the body variant tables of ``m`` and activate the initial variants."""
+        device = m.device
+        variant_counts = np.zeros(self.body_count, dtype=np.int32)
+        for body, body_variants in self._body_variants.items():
+            variant_counts[body] = len(body_variants.sources)
+        variant_start = np.concatenate(([0], np.cumsum(variant_counts))).astype(np.int32)
+        m.body_variant_start = wp.array(variant_start, dtype=wp.int32, device=device)
+        m.body_variant = wp.full(self.body_count, -1, dtype=wp.int32, device=device)
+        m.body_variant_count = int(variant_start[-1])
+        if not self._body_variants:
+            return
+
+        shape_ranges = []
+        masses = []
+        coms = []
+        inertias = []
+        initial = np.full(self.body_count, -1, dtype=np.int32)
+        inertial_cache = {}
+        for body in sorted(self._body_variants):
+            body_variants = self._body_variants[body]
+            initial[body] = body_variants.initial
+            base = (
+                float(self.body_mass[body]),
+                np.asarray(self.body_com[body], dtype=np.float64),
+                np.asarray(self.body_inertia[body], dtype=np.float64).reshape(3, 3),
+            )
+            base_key = (base[0], base[1].tobytes(), base[2].tobytes())
+            for k, source in enumerate(body_variants.sources):
+                m.body_variant_label.append(body_variants.labels[k])
+                shape_ranges.append(body_variants.shape_offsets[k : k + 2])
+                key = (id(source), base_key)
+                if key not in inertial_cache:
+                    mass, com, inertia = _combine_inertial_properties(
+                        base,
+                        (
+                            float(source.body_mass[0]),
+                            np.asarray(source.body_com[0], dtype=np.float64),
+                            np.asarray(source.body_inertia[0], dtype=np.float64).reshape(3, 3),
+                        ),
+                    )
+                    mass, inertia, _ = verify_and_correct_inertia(
+                        mass,
+                        wp.mat33(*inertia.flatten()),
+                        self.balance_inertia,
+                        self.bound_mass,
+                        self.bound_inertia,
+                        f"{self.body_label[body]}/{body_variants.labels[k]}",
+                    )
+                    inertial_cache[key] = (mass, com, inertia)
+                mass, com, inertia = inertial_cache[key]
+                masses.append(mass)
+                coms.append(com)
+                inertias.append(inertia)
+
+        m._body_variant_shape_range = wp.array(shape_ranges, dtype=wp.vec2i, device=device)
+        m._body_variant_mass = wp.array(masses, dtype=wp.float32, device=device)
+        m._body_variant_com = wp.array(coms, dtype=wp.vec3, device=device)
+        m._body_variant_inertia = wp.array(inertias, dtype=wp.mat33, device=device)
+        m._shape_active = wp.ones(m.shape_count, dtype=wp.bool, device=device)
+        m.select_body_variants(wp.array(initial, dtype=wp.int32, device=device))
 
     def _iter_validated_shape_collision_filter_pairs(self, pairs):
         shape_count = len(self.shape_type)

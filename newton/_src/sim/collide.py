@@ -339,6 +339,9 @@ def _record_reduction_overflow(
     overflow[0] = wp.where(insert_failures[0] > 0 or buffer_overflows[0] > 0, 1, 0)
 
 
+_INACTIVE_AABB_EXTENT = wp.constant(1.0e30)
+
+
 @wp.kernel(enable_backward=False)
 def compute_shape_aabbs(
     body_q: wp.array[wp.transform],
@@ -352,6 +355,7 @@ def compute_shape_aabbs(
     shape_gap: wp.array[float],
     shape_collision_aabb_lower: wp.array[wp.vec3],
     shape_collision_aabb_upper: wp.array[wp.vec3],
+    shape_active: wp.array[wp.bool],
     # Fused counter arrays — zeroed by thread 0 to avoid separate kernel launches.
     contact_counters: wp.array[wp.int32],
     contact_generation: wp.array[wp.int32],
@@ -382,6 +386,12 @@ def compute_shape_aabbs(
             g = g + 1
         contact_generation[0] = g
         broad_phase_pair_count[0] = 0
+
+    # Inactive body-variant shapes get an empty AABB so that no broad phase pairs them.
+    if shape_active.shape[0] > 0 and not shape_active[shape_id]:
+        aabb_lower[shape_id] = wp.vec3(_INACTIVE_AABB_EXTENT)
+        aabb_upper[shape_id] = wp.vec3(-_INACTIVE_AABB_EXTENT)
+        return
 
     rigid_id = shape_body[shape_id]
     geo_type = shape_type[shape_id]
@@ -2125,6 +2135,9 @@ class CollisionPipeline:
             self.broad_phase_shape_pairs = wp.zeros(self.shape_pairs_max, dtype=wp.vec2i, device=device)
             self.geom_data = wp.zeros(shape_count, dtype=wp.vec4, device=device)
             self.geom_transform = wp.zeros(shape_count, dtype=wp.transform, device=device)
+            # Updated in place by Model.select_body_variants().
+            shape_active = getattr(model, "_shape_active", None)
+            self._shape_active = wp.empty(0, dtype=wp.bool, device=device) if shape_active is None else shape_active
             if self._speculative_enabled:
                 self._shape_linear_velocity = wp.zeros(shape_count, dtype=wp.vec3, device=device)
                 self._shape_angular_velocity = wp.zeros(shape_count, dtype=wp.vec3, device=device)
@@ -2244,6 +2257,9 @@ class CollisionPipeline:
         model._validate_contact_capacity(rigid_contact_max, soft_contact_max)
 
         self.requires_grad = requires_grad
+        if requires_grad and self._shape_active.shape[0] > 0 and model.particle_count > 0:
+            # Differentiable soft contacts do not cull shapes by their AABBs.
+            raise NotImplementedError("Soft contacts with requires_grad=True do not support body shape variants.")
         self.deterministic = deterministic
         per_contact_props = self.narrow_phase.hydroelastic_sdf is not None
         if deterministic:
@@ -2742,6 +2758,7 @@ class CollisionPipeline:
                 model.shape_gap,
                 model.shape_collision_aabb_lower,
                 model.shape_collision_aabb_upper,
+                self._shape_active,
                 contacts.contact_counters,
                 contacts.contact_generation,
                 self.broad_phase_pair_count,

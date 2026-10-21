@@ -879,6 +879,13 @@ class ViewerGL(ViewerBase):
         self.model_changed = True
 
     @override
+    def notify_model_changed(self, flags: int) -> None:
+        if self.model is not None and flags & nt.ModelFlags.SHAPE_GEOMETRY:
+            # Regrouping may reuse batch names for other meshes, so rebuild every shape instancer.
+            self._rebuild_shape_batches_for_opacity_groups()
+        super().notify_model_changed(flags & ~nt.ModelFlags.SHAPE_GEOMETRY)
+
+    @override
     def set_visible_worlds(self, worlds: Sequence[int] | None) -> None:
         super().set_visible_worlds(worlds)
         self._rebuild_gl_shape_caches()

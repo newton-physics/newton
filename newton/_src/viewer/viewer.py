@@ -774,8 +774,36 @@ class ViewerBase(ABC):
         else:
             self._visible_worlds = None
         self._build_visible_worlds_mask()
+        self._rebuild_shapes()
+        if self._user_spacing is not None:
+            self.set_world_offsets(self._user_spacing)
+        else:
+            self._auto_compute_world_offsets()
+        self.model_changed = True
 
-        # Clear shape instance batches but preserve geometry cache
+    def notify_model_changed(self, flags: int) -> None:
+        """Notify the viewer that parts of its :class:`~newton.Model` were modified.
+
+        The viewer refreshes the cached data affected by ``flags``. It currently
+        handles :attr:`ModelFlags.SHAPE_GEOMETRY <newton.ModelFlags.SHAPE_GEOMETRY>`, such as
+        a body variant selection by :meth:`~newton.Model.select_body_variants`, by regrouping
+        the rendered shapes while keeping their compiled geometry. Other flags are ignored
+        because the viewer reads the corresponding data every frame or does not render it.
+
+        .. experimental::
+
+            Viewer model-change notification may change without a deprecation period.
+
+        Args:
+            flags: Bit-mask of :class:`~newton.ModelFlags` indicating which model properties changed.
+        """
+        if self.model is None or not flags & newton.ModelFlags.SHAPE_GEOMETRY:
+            return
+        self._rebuild_shapes()
+        self.model_changed = True
+
+    def _rebuild_shapes(self) -> None:
+        """Regroup the model shapes into instance batches, preserving the geometry cache."""
         self._shape_instances = {}
         self._gaussian_instances = []
         self._sdf_isomesh_instances = {}
@@ -795,11 +823,6 @@ class ViewerBase(ABC):
         self._triangle_opacity_change_flag = None
 
         self._populate_shapes()
-        if self._user_spacing is not None:
-            self.set_world_offsets(self._user_spacing)
-        else:
-            self._auto_compute_world_offsets()
-        self.model_changed = True
 
     def _build_visible_worlds_mask(self) -> None:
         """Build a GPU mask array from :attr:`_visible_worlds`."""
@@ -2515,11 +2538,15 @@ class ViewerBase(ABC):
         shape_sdf_index = self._shape_sdf_index_host
         shape_count = len(shape_body)
         shape_transparent_mask = np.zeros(shape_count, dtype=bool)
+        shape_active = self.model._shape_active.numpy() if self.model._shape_active is not None else None
 
         # loop over shapes
         for s in range(shape_count):
             # skip shapes from non-visible worlds
             if not self._should_render_world(shape_world[s]):
+                continue
+            # skip body-variant shapes that are not selected
+            if shape_active is not None and not shape_active[s]:
                 continue
 
             geo_type = shape_geo_type[s]
