@@ -9,8 +9,6 @@ along X (wrapping in YZ).  The cable routes over P1, under P2, over
 P3 with weights on both ends.  The inter-pulley cable segments run
 approximately vertically, along the intersection of adjacent wrapping
 planes.
-
-Command: python -m newton.examples tendon_3d_routing
 """
 
 import numpy as np

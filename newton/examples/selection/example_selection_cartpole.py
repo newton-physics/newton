@@ -8,7 +8,6 @@ ArticulationView. This example spawns multiple cartpole robots and applies
 center-directed cart forces from randomized initial cart and pole states.
 
 To limit the number of worlds to render use the max-worlds argument.
-Command: python -m newton.examples selection_cartpole --world-count 16 --max-worlds 8
 """
 
 from __future__ import annotations

@@ -14,12 +14,6 @@ The sample combines passive revolute pulleys, a closed cable loop, and two
 commanded input pulleys. The input rotations trace a rectangle with the
 beige table marker while the solver resolves cable wrapping and contact
 against the guides.
-
-Run interactively:
-  uv run --extra examples python -m newton.examples.cable.example_cable_cross_slide_table
-
-Run as a test:
-  uv run --extra examples python -m newton.examples.cable.example_cable_cross_slide_table --test --viewer null
 """
 
 from __future__ import annotations

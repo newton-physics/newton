@@ -15,12 +15,6 @@ when the endpoints are twisted:
 Plectoneme formation requires self-contact (the strands press against each
 other), so this uses hard-history contact at the true capsule radius with a
 healthy substep/iteration budget.
-
-Run interactively:
-  uv run --extra examples python -m newton.examples.cable.example_cable_plectoneme
-
-Run as a test:
-  uv run --extra examples python -m newton.examples.cable.example_cable_plectoneme --test --viewer null
 """
 
 import math

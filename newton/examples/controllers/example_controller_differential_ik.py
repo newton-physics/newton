@@ -29,8 +29,6 @@ itself can't suggest a motion the controller would ignore.
 --ik-method picks the inverse-Jacobian solve (dls, pinv, transpose,
 adaptive_damping, truncated_svd) -- see the create_controller_from_*_method
 functions below, one per DifferentialIKMethod.
-
-Command: python -m newton.examples controller_differential_ik --ik-method adaptive_damping
 """
 
 import numpy as np

@@ -14,8 +14,6 @@ alternative to proxy-body coupling based on linearised ADMM over model
 joints, model attachment annotations, and collision-detected contacts rather
 than proxy bodies. See ``docs/plans/2026-04-23-admm-coupling.tex`` for the
 algorithm.
-
-Command: python -m newton.examples mujoco_vbd_admm_solver
 """
 
 from __future__ import annotations

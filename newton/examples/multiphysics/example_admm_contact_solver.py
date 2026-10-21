@@ -9,9 +9,6 @@ supplies the drawer response through frictionless ADMM contacts.
 
 Pass ``--solver free`` to disable the ADMM contacts and compare against the
 uncoupled baseline.
-
-Command: python -m newton.examples admm_contact_solver
-         python -m newton.examples admm_contact_solver --solver free
 """
 
 from __future__ import annotations

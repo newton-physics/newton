@@ -6,8 +6,6 @@
 A drone and its 4 propellers is simulated with the goal of reaching
 different targets via model-predictive control (MPC) that continuously
 optimizes the control trajectory.
-
-Command: python -m newton.examples diffsim_drone
 """
 
 import os

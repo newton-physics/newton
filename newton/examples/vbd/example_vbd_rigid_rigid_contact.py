@@ -7,8 +7,6 @@ Rigid bodies of all supported shape types (sphere, box, capsule,
 cylinder, cone, mesh bear) are dropped into a static rigid box
 container and settle under gravity.  This exercises pure rigid-rigid
 contact handling in the VBD solver at a small (centimeter) scale.
-
-Command: python -m newton.examples vbd_rigid_rigid_contact
 """
 
 import os

@@ -27,12 +27,6 @@ mechanical torsion law and the joint's local dual rest length:
   twist_stiffness = GJ / h
 
 and verifies that pure endpoint quaternion twist does not bend the cable.
-
-Run interactively:
-  uv run --extra examples python -m newton.examples.vbd.example_cable_torsion_material_mapping
-
-Run as a test:
-  uv run --extra examples python -m newton.examples.vbd.example_cable_torsion_material_mapping --test --viewer null
 """
 
 import math

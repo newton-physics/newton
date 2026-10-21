@@ -1,10 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Example for simulating all basic models as a single heterogeneous multi-world model with SolverKamino.
-
-Command: python -m newton.examples kamino_basic_heterogeneous
-"""
+"""Example for simulating all basic models as a single heterogeneous multi-world model with SolverKamino."""
 
 import argparse
 

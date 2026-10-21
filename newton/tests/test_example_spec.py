@@ -1,8 +1,8 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
+import ast
 import contextlib
-import importlib
 import io
 import json
 import runpy
@@ -14,6 +14,26 @@ from unittest import mock
 
 import newton.examples
 from newton.examples._spec import load_example_spec, render_example_spec
+
+
+def _declared_options(source_path):
+    """Read literal argparse option declarations without importing an example."""
+    options = set()
+    for node in ast.walk(ast.parse(source_path.read_text(encoding="utf-8"))):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr != "add_argument":
+            continue
+        flags = {arg.value for arg in node.args if isinstance(arg, ast.Constant) and isinstance(arg.value, str)}
+        options.update(flag for flag in flags if flag.startswith("-"))
+        for keyword in node.keywords:
+            action = keyword.value
+            if keyword.arg == "action" and (
+                (isinstance(action, ast.Name) and action.id == "BooleanOptionalAction")
+                or (isinstance(action, ast.Attribute) and action.attr == "BooleanOptionalAction")
+            ):
+                options.update("--no-" + flag[2:] for flag in flags if flag.startswith("--"))
+    return options
 
 
 class TestExampleSpec(unittest.TestCase):
@@ -73,8 +93,8 @@ _EXAMPLE_SPEC = {{
         self.assertIn("# `cable_bundle_hysteresis`", output)
         self.assertIn("Demonstrates Dahl friction model for cable bending hysteresis.", output)
         self.assertIn("showing realistic memory effects in cable dynamics.", output)
-        self.assertIn("--test --viewer null", output)
-        self.assertIn("python -m newton.examples cable_bundle_hysteresis --no-dahl", output)
+        self.assertEqual(output.count("python -m newton.examples cable_bundle_hysteresis --no-dahl"), 1)
+        self.assertNotIn("Run interactively:", output)
         self.assertIn("The cables are mostly straight.", output)
 
     def test_renders_json_for_agents(self):
@@ -93,31 +113,14 @@ _EXAMPLE_SPEC = {{
             "python -m newton.examples robot_asroballet --controller lqr",
         )
 
-    def test_prototype_examples_have_valid_specs(self):
-        """Validate the metadata embedded in each prototype example."""
-        examples = Path(__file__).parents[1] / "examples"
-        paths = {
-            "newton.examples.robot.example_robot_omniwheel": examples / "robot" / "example_robot_omniwheel.py",
-            "newton.examples.robot.example_robot_asroballet": examples / "robot" / "example_robot_asroballet.py",
-            "newton.examples.cable.example_cable_bundle_hysteresis": (
-                examples / "cable" / "example_cable_bundle_hysteresis.py"
-            ),
-        }
-
-        for module_path, path in paths.items():
-            with self.subTest(path=path):
-                spec = load_example_spec(path)
-                self.assertIsNotNone(spec)
-
-                module = importlib.import_module(module_path)
-                create_parser = getattr(module.Example, "create_parser", newton.examples.create_parser)
-                parser = create_parser()
-                for run in spec.runs:
-                    parser.parse_args(run.args)
-
     def test_all_examples_have_specs_and_descriptions(self):
-        """Require every registered example to define a spec and general description."""
+        """Require descriptions, valid specs, and declared run options across the registry.
+
+        This static check detects stale option names, including generated negative
+        boolean options; it does not validate argument values or execute examples.
+        """
         examples_directory = Path(newton.examples.get_source_directory())
+        shared_options = _declared_options(examples_directory / "__init__.py")
         errors = []
         for example_name, module_path in newton.examples.get_examples().items():
             relative_module = module_path.removeprefix("newton.examples.")
@@ -131,6 +134,13 @@ _EXAMPLE_SPEC = {{
                 errors.append(f"{example_name}: does not define _EXAMPLE_SPEC")
             elif not spec.description.strip():
                 errors.append(f"{example_name}: does not have a module description")
+            if spec is not None:
+                options = shared_options | _declared_options(source_path)
+                for run in spec.runs:
+                    for argument in run.args:
+                        option = argument.partition("=")[0]
+                        if option.startswith("--") and option not in options:
+                            errors.append(f"{example_name}: run uses undeclared option {option}")
 
         self.assertEqual(errors, [], "Invalid example specifications:\n- " + "\n- ".join(errors))
 

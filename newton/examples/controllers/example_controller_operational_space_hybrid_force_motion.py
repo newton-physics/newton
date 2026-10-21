@@ -27,8 +27,6 @@ Two sets of three sliders (x, y, press force) let you steer each robot's
 commanded task directly; a SensorContact reads back the actual contact
 force each tool exerts on its table, fed into the controller as wrench
 feedback and shown in the GUI alongside the commanded force.
-
-Command: python -m newton.examples controller_operational_space_hybrid_force_motion
 """
 
 from dataclasses import dataclass

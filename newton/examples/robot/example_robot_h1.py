@@ -5,9 +5,6 @@
 
 Shows how to set up a simulation of a H1 articulation
 from a USD file using newton.ModelBuilder.add_usd().
-
-Command: python -m newton.examples robot_h1 --world-count 16
-         python -m newton.examples robot_h1 --solver kamino
 """
 
 import warp as wp

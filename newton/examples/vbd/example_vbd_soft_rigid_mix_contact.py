@@ -7,8 +7,6 @@ A box-shaped cloth bag (open top) is suspended by its top-edge vertices.
 Five rigid bodies (sphere, box, cylinder, cone, and mesh bear) are
 placed inside. After settling, the
 pinned vertices are raised upward, lifting the contents with the bag.
-
-Command: python -m newton.examples vbd_soft_rigid_mix_contact
 """
 
 import os

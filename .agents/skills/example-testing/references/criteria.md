@@ -37,8 +37,8 @@ apply [shared-qa.md](shared-qa.md) on top of scene-specific checks.
 
 ## Older wheels without metadata
 
-An older release, including the original 1.7.0rc1 wheel, may lack `--describe` or
-some current examples. Do not replace the artifact import with the checkout to
+An older release may lack `--describe` or some current examples. Do not replace
+the artifact import with the checkout to
 obtain metadata. Use a separately pinned metadata checkout and read its files
 statically. For example, run this from the wheel workspace, adjusting paths:
 

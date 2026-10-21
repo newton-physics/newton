@@ -4,9 +4,6 @@
 """Example SDF Mesh Collision
 
 Demonstrates nut/bolt mesh collision using hydroelastic contacts.
-
-Command: python -m newton.examples nut_bolt_hydro
-         python -m newton.examples nut_bolt_hydro --solver kamino
 """
 
 import argparse
@@ -22,8 +19,6 @@ import newton.examples
 from newton.geometry import HydroelasticSDF
 
 # Assembly type for the nut and bolt
-
-
 ASSEMBLY_STR = "m20_loose"
 
 ISAACGYM_ENVS_REPO_URL = "https://github.com/isaac-sim/IsaacGymEnvs.git"

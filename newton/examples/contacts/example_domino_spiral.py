@@ -5,8 +5,6 @@
 
 Places dominoes along a spiral and tilts the first one to start a
 contact-driven chain reaction.
-
-Command: python -m newton.examples domino_spiral
 """
 
 from __future__ import annotations

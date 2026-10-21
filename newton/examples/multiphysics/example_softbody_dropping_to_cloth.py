@@ -6,8 +6,6 @@
 This simulation demonstrates a volumetric soft body (tetrahedral grid)
 dropping onto a cloth sheet. The soft body uses Neo-Hookean elasticity
 and deforms on impact with the cloth.
-
-Command: python -m newton.examples.multiphysics.example_softbody_dropping_to_cloth
 """
 
 import numpy as np

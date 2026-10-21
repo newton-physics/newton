@@ -7,8 +7,6 @@ A MuJoCo-driven palm and two prismatic cube fingers grip a VBD soft grid.
 The VBD entry receives the gripper bodies as body proxies and keeps the
 fixed/prismatic joints enabled as proxy joints whose targets track the
 MuJoCo source joint configuration.
-
-Command: python -m newton.examples proxy_joint_gripper
 """
 
 from __future__ import annotations

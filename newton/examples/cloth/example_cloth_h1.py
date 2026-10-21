@@ -8,8 +8,6 @@ for cloth and driven by an IkSolver for robot kinematics.
 
 Demonstrates how to leverage interpolated robot kinematics within the
 collision processing pipeline and feed the results to the cloth solver.
-
-Command: python -m newton.examples cloth_h1
 """
 
 import numpy as np

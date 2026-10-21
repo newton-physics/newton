@@ -15,8 +15,6 @@ with the ground, collecting per-step metrics:
 
 Worlds are deterministic replicates, so per-world values are identical;
 iteration count is reported as a max to surface worst-case solver cost.
-
-Command: python -m newton.examples basic_plotting --world-count 4
 """
 
 import warnings

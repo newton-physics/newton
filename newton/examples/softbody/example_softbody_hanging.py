@@ -6,8 +6,6 @@
 This simulation demonstrates volumetric soft bodies (tetrahedral grids) hanging
 from fixed particles on the left side. Four grids with different damping values
 (1e4 to 1e1) showcase the effect of damping on Neo-Hookean elastic behavior.
-
-Command: uv run -m newton.examples softbody.example_softbody_hanging
 """
 
 import warp as wp

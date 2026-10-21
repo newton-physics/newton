@@ -15,12 +15,6 @@ sufficiently large gradual twist, the straight cable can still develop a
 crown-like centerline wave. The test checks that the open-curve link quantity,
 Lk = Tw + Wr, remains close to the commanded endpoint twist while self-contact
 prevents strand passage.
-
-Run interactively:
-  uv run --extra examples python -m newton.examples.vbd.example_cable_twist_buckling
-
-Run as a test:
-  uv run --extra examples python -m newton.examples.vbd.example_cable_twist_buckling --test --viewer null
 """
 
 import math

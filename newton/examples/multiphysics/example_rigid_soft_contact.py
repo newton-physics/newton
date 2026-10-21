@@ -4,8 +4,6 @@
 """Example Rigid Soft Contact
 
 Shows how to set up a rigid sphere colliding with a soft FEM beam.
-
-Command: uv run -m newton.examples rigid_soft_contact
 """
 
 import numpy as np

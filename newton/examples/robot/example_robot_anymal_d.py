@@ -4,9 +4,6 @@
 """Example Robot Anymal D
 
 Shows how to simulate Anymal D with multiple worlds using MuJoCo or Kamino.
-
-Command: python -m newton.examples robot_anymal_d --world-count 16
-         python -m newton.examples robot_anymal_d --solver kamino
 """
 
 import warp as wp

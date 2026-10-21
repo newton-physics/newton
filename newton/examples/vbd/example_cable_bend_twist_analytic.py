@@ -32,12 +32,6 @@ boundary-value solutions:
 These rows are direct analytic checks for "bend does not create twist" and
 "twist does not create bend" without relying on a continuum EI calibration.
 
-Run interactively:
-  uv run --extra examples python -m newton.examples.vbd.example_cable_bend_twist_analytic
-
-Run as a test:
-  uv run --extra examples python -m newton.examples.vbd.example_cable_bend_twist_analytic --test --viewer null
-
 Verification/report modes:
   --cable-analytic-mode {all,bend,twist,twist_max}   (default: all)
 """

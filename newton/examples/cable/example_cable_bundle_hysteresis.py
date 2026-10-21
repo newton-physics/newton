@@ -8,12 +8,6 @@ Creates a bundle of 7 cables passing through moving obstacles that
 apply cyclic loading (load -> hold -> release). The Dahl model captures
 plastic deformation and hysteresis loops in cable bending behavior,
 showing realistic memory effects in cable dynamics.
-
-Run interactively:
-  uv run --extra examples python -m newton.examples.cable.example_cable_bundle_hysteresis
-
-Run as a test:
-  uv run --extra examples python -m newton.examples.cable.example_cable_bundle_hysteresis --test --viewer null
 """
 
 import numpy as np

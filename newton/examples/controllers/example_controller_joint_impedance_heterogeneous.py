@@ -17,9 +17,6 @@ decoupling computed internally by the controller from the sim model).
 
 The two robots have different DOF counts, exercising the heterogeneous
 per-robot DOF layout and the indexed-view scatter into the sim.
-
-Command: python -m newton.examples controller_joint_impedance_heterogeneous
-         python -m newton.examples controller_joint_impedance_heterogeneous --solver kamino
 """
 
 import math

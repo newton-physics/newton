@@ -18,12 +18,6 @@ Rows at or below the threshold are fixed planar references. Rows above the
 threshold remain dynamic; the sweep verifies that supercritical rings develop
 a visible out-of-plane response, while exact post-buckling branch and
 amplitude are not treated as monotonic calibration targets.
-
-Run interactively:
-  uv run --extra examples python -m newton.examples.vbd.example_cable_michell_threshold
-
-Run as a test:
-  uv run --extra examples python -m newton.examples.vbd.example_cable_michell_threshold --test --viewer null
 """
 
 import math

@@ -5,8 +5,6 @@
 
 This simulation demonstrates a simple cloth hanging behavior. A planar cloth
 mesh is fixed on one side and hangs under gravity, colliding with the ground.
-
-Command: python -m newton.examples cloth_hanging (--solver [semi_implicit, style3d, xpbd, vbd])
 """
 
 import warp as wp

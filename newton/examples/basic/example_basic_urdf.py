@@ -8,9 +8,6 @@ from a URDF using the newton.ModelBuilder().
 Note this example does not include a trained policy.
 
 Users can pick bodies by right-clicking and dragging with the mouse.
-
-Command: python -m newton.examples basic_urdf
-Kamino DVI: python -m newton.examples basic_urdf --solver kamino
 """
 
 import numpy as np

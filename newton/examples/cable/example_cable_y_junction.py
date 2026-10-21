@@ -5,12 +5,6 @@
 
 This example shows how to simulate a Y-junction using `newton.Rod` with
 explicit graph topology and a shared junction node.
-
-Run interactively:
-  uv run --extra examples python -m newton.examples.cable.example_cable_y_junction
-
-Run as a test:
-  uv run --extra examples python -m newton.examples.cable.example_cable_y_junction --test --viewer null
 """
 
 from __future__ import annotations

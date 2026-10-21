@@ -10,9 +10,6 @@ apply a continuous rotation to the fixed root joint in the form
 of the joint parent transform. The solver is updated
 about this change in the joint parent transform by calling
 self.solver.notify_model_changed(ModelFlags.JOINT_PROPERTIES).
-
-Command: python -m newton.examples robot_allegro_hand --world-count 16
-         python -m newton.examples robot_allegro_hand --solver kamino
 """
 
 import numpy as np

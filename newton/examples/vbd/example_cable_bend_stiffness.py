@@ -20,12 +20,6 @@ Other assertions:
   - Deflection decreases monotonically as bend stiffness increases.
   - Tip stays close to its original Y, so the bend load does not leak sideways.
   - Tip X foreshortening remains within a geometric bound.
-
-Run interactively:
-  uv run --extra examples python -m newton.examples.vbd.example_cable_bend_stiffness
-
-Run as a test:
-  uv run --extra examples python -m newton.examples.vbd.example_cable_bend_stiffness --test --viewer null
 """
 
 import numpy as np

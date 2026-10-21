@@ -11,8 +11,6 @@ Recording is done automatically using ViewerFile:
   viewer.set_model(model)
   viewer.log_state(state)  # Records automatically
   viewer.close()  # Saves automatically
-
-Command: python -m newton.examples replay_viewer
 """
 
 import os

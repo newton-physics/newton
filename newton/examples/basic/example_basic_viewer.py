@@ -5,8 +5,6 @@
 
 Shows how to use the Newton Viewer class to visualize various shapes
 and line instances without a Newton model.
-
-Command: python -m newton.examples basic_viewer
 """
 
 import math

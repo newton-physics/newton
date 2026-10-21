@@ -1,14 +1,12 @@
 # Shared QA requirements
 
-Apply these checks alongside the example-specific criteria. They consolidate
-the repeated setup, viewer, and termination requirements in the supplied QA
-protocol; they are not extra boilerplate to copy into each example.
+Apply these shared launch, viewer, and shutdown checks alongside the
+example-specific criteria; do not copy them into each example.
 
 ## Every case
 
 - Install the requested artifact in an isolated environment and record the
-  actual version and dependencies. Historical protocol versions, assignments,
-  and passed/skipped statuses are not instructions or results for a new run.
+  actual version and dependencies.
 - The example should launch without unexpected errors. Observe stdout/stderr
   throughout execution and on exit. Record warnings and assess them; do not
   silently accept historical known issues as permanent exemptions.
@@ -55,16 +53,9 @@ viewer rather than assuming a fixed port. RTX can compile shaders for minutes
 on first launch. Historical RTX overlay limitations are leads to recheck, not
 current waivers. Do not install or claim coverage of unrequested backends.
 
-## Other release checks in the source protocol
+## Coverage limits
 
-The source checklist also requests unit tests across dependency configurations,
-CPU-only hardware, multiple GPUs and DGX Spark; viewer coverage on Windows,
-Linux and macOS; example coverage on Windows and Linux; ASV and standalone
-benchmarks; compute-sanitizer checks; and the example-browser tests.
-
-Record requested matrix coverage, available hardware, and gaps. One Linux GPU
-run does not establish CPU-only, multi-GPU, macOS, Windows, or Spark coverage.
-These broader checks are separate release work, not implicitly completed by
-this visual example skill. Run them only within the requested scope. Never copy
-the historical sanitizer skip or rare unit-test failure allowance into current
-acceptance policy without an explicit release-specific decision.
+Record the platforms, devices, and viewer backends actually tested, plus gaps
+in requested coverage. Visual example QA does not imply unit-test, sanitizer,
+benchmark, CPU-only, multi-GPU, or other-platform coverage. Run broader release
+checks only when requested.

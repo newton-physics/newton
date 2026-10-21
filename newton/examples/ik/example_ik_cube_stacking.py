@@ -6,8 +6,6 @@
 Shows how to set up a simulation of a cube stacking task for multiple
 worlds using inverse kinematics to set joint target position references
 for the Franka Emika Franka Panda robot arm.
-
-Command: python -m newton.examples ik_cube_stacking --world-count 16
 """
 
 import enum

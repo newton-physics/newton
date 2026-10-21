@@ -12,8 +12,6 @@ via Newton's IK solver.
 The simulation runs in centimeter scale for better numerical behavior
 of the VBD solver. A vis_state is used to convert back to meter scale
 for visualization.
-
-Command: python -m newton.examples cloth_franka
 """
 
 from __future__ import annotations

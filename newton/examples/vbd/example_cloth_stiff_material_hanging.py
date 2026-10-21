@@ -5,8 +5,6 @@
 
 This simulation loads the `square_cloth.usd` asset and hangs it from one
 edge under gravity, using the VBD solver with stiff material parameters.
-
-Command: python -m newton.examples cloth_stiff_material_hanging
 """
 
 import os

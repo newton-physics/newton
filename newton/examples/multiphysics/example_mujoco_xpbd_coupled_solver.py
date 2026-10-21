@@ -10,9 +10,6 @@ proxy-body coupling path with momentum-based force harvesting.
 
 Pass ``--solver xpbd`` to run the same scene with a single XPBD solver
 (no coupling) as a reference baseline.
-
-Command: python -m newton.examples mujoco_xpbd_coupled_solver
-         python -m newton.examples mujoco_xpbd_coupled_solver --solver xpbd
 """
 
 from __future__ import annotations

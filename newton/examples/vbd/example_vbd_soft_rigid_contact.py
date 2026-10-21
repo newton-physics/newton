@@ -8,8 +8,6 @@ particle-rigid (soft) contacts can be inspected in isolation.
 The bags are laid out in a row; bodies settle under gravity and are
 then lifted, making it easy to spot which shape type causes
 instability.
-
-Command: python -m newton.examples vbd_soft_rigid_contact
 """
 
 import os

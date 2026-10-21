@@ -5,8 +5,6 @@
 
 Shows how to set up a simulation of a rigid-body cartpole articulation
 from a USD stage using newton.ModelBuilder.add_usd().
-
-Command: python -m newton.examples robot_cartpole --world-count 100
 """
 
 import numpy as np

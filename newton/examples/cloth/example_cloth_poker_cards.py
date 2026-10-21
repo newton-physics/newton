@@ -12,8 +12,6 @@ Standard poker card dimensions:
 - Width: 6.35 cm (2.5 inches) = 0.0635 m
 - Height: 8.89 cm (3.5 inches) = 0.0889 m
 - Resolution: 4x6 cells per card
-
-Command: uv run -m newton.examples cloth_poker_cards
 """
 
 import numpy as np

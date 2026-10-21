@@ -7,8 +7,6 @@ Demonstrates a Franka Panda robot picking up bricks from a table
 and stacking them, using SDF-based mesh collision and the MuJoCo solver.
 The arm is controlled with IK and a finite-state machine that sequences
 approach, grasp, lift, move, place and release for each brick.
-
-Command: python -m newton.examples brick_stacking
 """
 
 import enum
@@ -21,8 +19,6 @@ import newton.examples
 import newton.ik as ik
 
 # Brick dimensions [m]
-
-
 PITCH = 0.008
 BRICK_HEIGHT = 0.0096
 

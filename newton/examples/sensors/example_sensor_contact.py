@@ -9,9 +9,6 @@ The flap has a contact sensor registering the total contact force of
 the objects on top. The plates' sensors register per-counterpart forces
 for the cube and the ball to detect which object touched which plate. Each
 plate will light up when touched by the matching object.
-
-
-Command: python -m newton.examples sensor_contact
 """
 
 import numpy as np

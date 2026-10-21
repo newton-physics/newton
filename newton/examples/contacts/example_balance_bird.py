@@ -5,8 +5,6 @@
 
 Balances a small procedural toy body on a narrow pedestal. The body is
 built from primitive shapes so the example has no external mesh asset.
-
-Command: python -m newton.examples balance_bird
 """
 
 from __future__ import annotations

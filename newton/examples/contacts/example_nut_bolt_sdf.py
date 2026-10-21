@@ -4,9 +4,6 @@
 """Example SDF Mesh Collision
 
 Demonstrates nut/bolt mesh collision using SDF (Signed Distance Field).
-
-Command: python -m newton.examples nut_bolt_sdf
-         python -m newton.examples nut_bolt_sdf --solver kamino
 """
 
 import tempfile
@@ -20,8 +17,6 @@ import newton
 import newton.examples
 
 # Assembly type for the nut and bolt
-
-
 ASSEMBLY_STR = "m20_loose"
 
 ISAACGYM_ENVS_REPO_URL = "https://github.com/isaac-sim/IsaacGymEnvs.git"

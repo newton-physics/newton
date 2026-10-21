@@ -19,8 +19,6 @@ nu = tri_ka / (tri_ka + 2 * tri_ke).
 
 The example validates the Neo-Hookean membrane against the StableNH
 closed-form prediction.
-
-Command: python -m newton.examples cloth_stiff_material_stretch
 """
 
 import numpy as np

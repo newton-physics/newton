@@ -6,8 +6,6 @@
 Fires a fast capsule into a staggered wall of box-shaped bricks. The
 collision scheduler refreshes speculative contacts often enough to prevent
 the projectile from tunneling while preserving a fixed solver substep count.
-
-Command: python -m newton.examples adaptive_collision
 """
 
 from __future__ import annotations

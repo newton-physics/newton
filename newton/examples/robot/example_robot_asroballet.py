@@ -12,8 +12,6 @@ command mode instead of keyboard control. The policy controller is used by
 default; pass "--controller lqr" to use LQR.
 Pass "--virtual-ball-joint" to constrain the ball center to the base using
 the original asRoBallet spherical joint.
-
-Command: python -m newton.examples robot_asroballet
 """
 
 import math

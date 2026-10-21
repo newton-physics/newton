@@ -7,8 +7,6 @@ XPBD point particles fall into an implicit-MPM granular cube through
 SolverCoupledProxy's particle proxy path.  The MPM view treats XPBD particles
 as transfer-active proxy particles: they participate in P2G/G2P momentum
 exchange, but they do not contribute material stress.
-
-Command: python -m newton.examples xpbd_mpm_coupled_solver
 """
 
 from __future__ import annotations

@@ -7,8 +7,6 @@ Use the translation gizmo to move the plug toward the socket.
 Click an axis arrow to slide along one axis, or a plane square
 for two-axis motion. The latch deflects on entry and locks
 the plug once fully inserted.
-
-Command: uv run -m newton.examples contacts_rj45_plug
 """
 
 import dataclasses

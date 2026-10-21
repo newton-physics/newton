@@ -8,8 +8,6 @@ of model structure and state data during simulation.
 
 Recording happens automatically - ViewerFile captures all logged states
 and saves them when the viewer is closed.
-
-Command: python -m newton.examples recording
 """
 
 import numpy as np

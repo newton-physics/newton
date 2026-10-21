@@ -7,8 +7,6 @@ Simplest tendon demonstration: a fixed anchor point with a cable
 attached to a hanging weight.  The tendon acts as a unilateral
 distance constraint — the weight swings freely under gravity like
 a pendulum on a string.
-
-Command: python -m newton.examples tendon_pulley
 """
 
 import numpy as np

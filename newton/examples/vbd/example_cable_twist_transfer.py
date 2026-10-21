@@ -18,12 +18,6 @@ centerline drift.
 The acceptance criteria check Newton's VBD bend/twist split directly: twist
 should remain a tangent-axis mode and should transfer across routed cable
 geometry.
-
-Run interactively:
-  uv run --extra examples python -m newton.examples.vbd.example_cable_twist_transfer
-
-Run as a test:
-  uv run --extra examples python -m newton.examples.vbd.example_cable_twist_transfer --test --viewer null
 """
 
 import math

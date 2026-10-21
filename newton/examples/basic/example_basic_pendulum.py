@@ -5,9 +5,6 @@
 
 Shows how to set up a simulation of a simple double pendulum using the
 newton.ModelBuilder() class.
-
-Command: python -m newton.examples basic_pendulum --solver xpbd
-         python -m newton.examples basic_pendulum --solver kamino
 """
 
 import warp as wp

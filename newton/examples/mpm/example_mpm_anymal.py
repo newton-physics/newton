@@ -4,9 +4,6 @@
 """Example MPM ANYmal
 
 Shows ANYmal C with a pretrained policy coupled with implicit MPM sand.
-
-Example usage (via unified runner):
-  python -m newton.examples mpm_anymal --viewer gl
 """
 
 import sys

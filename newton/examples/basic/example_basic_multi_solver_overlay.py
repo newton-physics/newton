@@ -20,8 +20,6 @@ render-time displacement: it shifts every drawn object in the layer
 without changing the underlying physics state, so passing
 ``wp.transform_identity()`` (or a zero-translation transform) makes the
 layers overlay exactly.
-
-Command: python -m newton.examples basic_multi_solver_overlay
 """
 
 import warnings

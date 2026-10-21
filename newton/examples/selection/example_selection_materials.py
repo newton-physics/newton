@@ -9,9 +9,6 @@ changes their friction coefficients during simulation. The ants alternate
 between forward and backward movement with randomized material properties,
 showcasing how to efficiently modify physics parameters for batches of
 objects using the selection API.
-
-Command: python -m newton.examples selection_materials
-         python -m newton.examples selection_materials --solver kamino
 """
 
 from __future__ import annotations

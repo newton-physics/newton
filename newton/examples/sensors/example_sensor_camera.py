@@ -5,8 +5,6 @@
 
 Shows how to use the SensorCamera class and display its output
 via Viewer.log_image.
-
-Command: python -m newton.examples sensor_camera
 """
 
 import math

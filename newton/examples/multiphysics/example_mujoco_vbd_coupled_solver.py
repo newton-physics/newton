@@ -13,9 +13,6 @@ This example builds rigid/VBD proxy coupling directly through
 
 Pass ``--solver vbd`` to run the same scene with a single VBD solver
 (no coupling) as a reference baseline.
-
-Command: python -m newton.examples mujoco_vbd_coupled_solver
-         python -m newton.examples mujoco_vbd_coupled_solver --solver vbd
 """
 
 from __future__ import annotations

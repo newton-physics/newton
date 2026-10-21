@@ -9,8 +9,6 @@ through the pinhole, descending while the lighter weight ascends.
 
 Unlike a rolling pulley, the pinhole has no radius and no wrap arc.
 The cable simply passes through a single point on the body.
-
-Command: python -m newton.examples tendon_pinhole
 """
 
 import numpy as np

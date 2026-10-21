@@ -7,8 +7,6 @@ A closed four-bar linkage is split across two rigid solvers: two links are
 owned by Kamino and two links are owned by MuJoCo. SolverCoupledADMM detects
 the model revolute joints that connect bodies owned by different solvers and
 turns them into ADMM attachments.
-
-Command: python -m newton.examples kamino_mujoco_admm_solver
 """
 
 from __future__ import annotations

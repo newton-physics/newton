@@ -4,8 +4,6 @@
 """Example for basic DR TestMech system
 
 Shows how to simulate DR TestMech with multiple worlds using SolverKamino.
-
-Command: python -m newton.examples kamino_basic_dr_testmech --world-count 16
 """
 
 import warp as wp

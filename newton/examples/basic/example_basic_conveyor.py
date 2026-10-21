@@ -6,9 +6,6 @@
 Baggage-claim style conveyor built from one rotating belt mesh attached
 to a kinematic root link with a prescribed revolute joint motion. Two
 static annular boundary meshes keep dynamic "bags" on the belt.
-
-Command: uv run -m newton.examples basic_conveyor
-         uv run -m newton.examples basic_conveyor --solver kamino
 """
 
 import math

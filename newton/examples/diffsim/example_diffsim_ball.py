@@ -9,8 +9,6 @@ such that it bounces off the wall and floor in order to hit a target.
 This example uses the built-in wp.Tape() object to compute gradients of
 the distance to target (loss) w.r.t the initial velocity, followed by
 a simple gradient-descent optimization step.
-
-Command: python -m newton.examples diffsim_ball
 """
 
 import numpy as np

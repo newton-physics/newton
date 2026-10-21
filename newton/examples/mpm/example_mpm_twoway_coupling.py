@@ -6,8 +6,6 @@
 A simple scene spawning a dozen rigid shapes above a plane. The shapes
 fall and collide using the MuJoCo solver. Demonstrates basic builder APIs
 and the standard example structure.
-
-Command: python -m newton.examples mpm_twoway_coupling
 """
 
 from __future__ import annotations

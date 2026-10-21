@@ -9,8 +9,6 @@ targets (left/right hands + left/right feet) controlled via viewer.log_gizmo().
 - Uses both IKObjectivePosition and IKObjectiveRotation per end-effector
 - Re-solves IK every frame from the latest gizmo transforms
 - On gizmo release, snaps each target back to the solved link pose
-
-Command: python -m newton.examples ik_h1
 """
 
 import warp as wp

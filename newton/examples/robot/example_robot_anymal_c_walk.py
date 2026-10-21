@@ -6,8 +6,6 @@
 Shows how to simulate ANYmal C using SolverMuJoCo and control it with a
 PhysX-trained policy exported to ONNX and run with Warp-NN.
 The default scene uses a flat ground plane.
-
-Command: python -m newton.examples robot_anymal_c_walk
 """
 
 import numpy as np

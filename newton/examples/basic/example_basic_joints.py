@@ -5,10 +5,6 @@
 
 Shows how to use the ModelBuilder API to programmatically create different
 joint types: BALL, DISTANCE, PRISMATIC, and REVOLUTE.
-
-Command: python -m newton.examples basic_joints --solver xpbd
-         python -m newton.examples basic_joints --solver vbd
-         python -m newton.examples basic_joints --solver kamino
 """
 
 import warp as wp

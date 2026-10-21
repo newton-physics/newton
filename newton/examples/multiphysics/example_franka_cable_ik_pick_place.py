@@ -13,8 +13,6 @@ Cable geometry/material, Franka joint gains, contact parameters and the
 proxy coupling solver settings mirror IsaacLab's franka_cable_env_cfg.
 
 Standalone: depends only on newton + warp (no IsaacLab).
-
-Command: python -m newton.examples franka_cable_ik_pick_place
 """
 
 from __future__ import annotations
@@ -30,8 +28,6 @@ import newton.utils
 from newton.solvers import SolverMuJoCo, SolverVBD
 
 # Initial Franka joint configuration (7 arm + 2 finger).
-
-
 FRANKA_Q = [
     -3.6802115e-03,
     2.3901723e-02,

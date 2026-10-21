@@ -4,9 +4,6 @@
 """Example Selection Multiple Articulations
 
 Shows how to control multiple articulation per world in a single ArticulationView.
-
-Command: python -m newton.examples selection_multiple
-         python -m newton.examples selection_multiple --solver kamino
 """
 
 from __future__ import annotations

@@ -5,10 +5,6 @@
 
 Demonstrates heightfield terrain with objects dropped onto it.
 Supports XPBD, MuJoCo, and Kamino DVI solvers.
-
-Command: uv run -m newton.examples basic_heightfield
-MuJoCo: uv run -m newton.examples basic_heightfield --solver mujoco
-Kamino DVI: uv run -m newton.examples basic_heightfield --solver kamino
 """
 
 import numpy as np

@@ -6,8 +6,6 @@
 A single particle is attached with springs to each point of a cage.
 The objective is to optimize the rest length of the springs in order
 for the particle to be pulled towards a target position.
-
-Command: python -m newton.examples diffsim_spring_cage
 """
 
 import numpy as np

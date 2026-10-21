@@ -6,10 +6,6 @@
 Shows how to programmatically create a variety of
 collision shapes using the newton.ModelBuilder() API.
 Supports XPBD (default), VBD, and Kamino DVI solvers.
-
-Command: python -m newton.examples basic_shapes
-With VBD: python -m newton.examples basic_shapes --solver vbd
-With Kamino DVI: python -m newton.examples basic_shapes --solver kamino
 """
 
 import warp as wp

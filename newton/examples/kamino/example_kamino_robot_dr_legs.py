@@ -4,8 +4,6 @@
 """Example Robot DR Legs
 
 Shows how to simulate DR Legs with multiple worlds using SolverKamino.
-
-Command: python -m newton.examples kamino_robot_dr_legs --world-count 16
 """
 
 import warp as wp

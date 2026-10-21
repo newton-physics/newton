@@ -14,12 +14,6 @@ The bend pair validates visible force/deflection hysteresis and permanent
 set. The twist pair validates torque/twist hysteresis in the split twist
 subspace without the dynamic artifacts of a free moment-driven tip.
 
-Run interactively:
-  uv run --extra examples python -m newton.examples.vbd.example_cable_dahl_hysteresis
-
-Run as a test:
-  uv run --extra examples python -m newton.examples.vbd.example_cable_dahl_hysteresis --test --viewer null
-
 Verification/report modes:
   --cable-dahl-mode {all,bend,twist}   (default: all)
 """

@@ -7,8 +7,6 @@ Models a lead screw by making a prismatic nut joint mimic a revolute screw
 joint. The relationship converts screw rotation to linear travel:
 
     q_nut = pitch / (2 * pi) * q_screw
-
-Command: python -m newton.examples basic_mimic_joint
 """
 
 import math

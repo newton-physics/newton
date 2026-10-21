@@ -6,8 +6,6 @@
 Rigid boxes driven by MuJoCo or Kamino fall into a granular MPM bed.  The rigid bodies
 are exposed to MPM as proxy colliders in the same shared model, and MPM
 grid impulses are harvested back into rigid-body wrenches.
-
-Command: python -m newton.examples mujoco_mpm_coupled_solver
 """
 
 from __future__ import annotations

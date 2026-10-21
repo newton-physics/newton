@@ -10,8 +10,6 @@ avoidance against an interactive sphere obstacle.
 - Adds gizmos for the end-effector target and the obstacle sphere
 - Re-solves IK every frame from the latest gizmo transforms
 - EE target gizmo snaps back to solved TCP pose on release
-
-Command: python -m newton.examples ik_custom
 """
 
 import warp as wp
@@ -21,11 +19,10 @@ import newton.examples
 import newton.ik as ik
 import newton.utils
 
+
 # -------------------------------------------------------------------------
 # Custom collision residuals
 # -------------------------------------------------------------------------
-
-
 @wp.kernel
 def _collision_residuals(
     body_q: wp.array2d[wp.transform],  # (batch_rows, n_bodies)

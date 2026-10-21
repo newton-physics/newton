@@ -12,10 +12,6 @@ Pass ``--solver xpbd`` to run a monolithic XPBD reference, or``--solver vbd``
 to run the same scene with VBD only.
 Those baselines are provided for comparison purposes, it is expected that the
 behavior will differ as they support different features and/or parameters.
-
-Command: python -m newton.examples xpbd_vbd_coupled_solver
-         python -m newton.examples xpbd_vbd_coupled_solver --solver xpbd
-         python -m newton.examples xpbd_vbd_coupled_solver --solver vbd
 """
 
 from __future__ import annotations

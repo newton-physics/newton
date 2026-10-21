@@ -10,12 +10,6 @@ Demonstrates two cables whose initial and structural-rest poses differ:
 
 The initial and rest segment lengths match in both cases, isolating the
 angular material response from initial stretch.
-
-Run interactively:
-  uv run --extra examples python -m newton.examples.cable.example_cable_initial_rest_pose
-
-Run as a test:
-  uv run --extra examples python -m newton.examples.cable.example_cable_initial_rest_pose --test --viewer null
 """
 
 import math

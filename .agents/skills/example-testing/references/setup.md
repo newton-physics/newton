@@ -6,7 +6,7 @@ The reference path needs uv, a Python version supported by the target release,
 Newton's `examples` extra, and a working desktop/OpenGL implementation. The
 bundled desktop helper additionally needs Python `mss` and the `xdotool` binary.
 `mss` is an MIT-licensed QA tooling dependency, not a Newton runtime dependency.
-Use `mss==10.2.0` for the demonstrated Xlib backend. No browser automation,
+Use `mss==10.2.0` for the helper's Xlib backend. No browser automation,
 Pillow, or video encoder is required for single screenshots and input.
 
 On Linux X11, diagnostic tools are `glxinfo` (Ubuntu package `mesa-utils`) and
@@ -27,17 +27,16 @@ helper is X11-specific.
 
 ## Fresh wheel workspace
 
-Choose the release from the user's instruction. These sample values illustrate
-the demonstrated RC; replace them for the requested run. Run outside the source
-checkout to avoid importing local `newton` instead of the wheel. Use a fresh
+Choose the release from the user's instruction and replace the version below.
+Run outside the source checkout to avoid importing local `newton` instead of the
+wheel. Use a fresh
 directory per artifact/run, not a reused environment from another release.
 
 ```bash
-NEWTON_VERSION=1.7.0rc1
+NEWTON_VERSION="X.Y.Z"
 NEWTON_REPO=/absolute/path/to/newton
 NEWTON_SKILL="$NEWTON_REPO/.agents/skills/example-testing"
-NEWTON_RUN="$HOME/newton-qa-$NEWTON_VERSION-$(date -u +%Y%m%dT%H%M%SZ)"
-mkdir "$NEWTON_RUN"
+NEWTON_RUN=$(mktemp -d -t newton-qa-XXXXXXXX)
 cd "$NEWTON_RUN"
 uv init --bare --python 3.12
 uv python pin 3.12
@@ -77,15 +76,10 @@ help and source for additional dependencies/assets and solver options. Do not
 assume `examples` installs every optional viewer/backend. Check actual Warp
 device selection in the log, not merely the launch argument.
 
-In the demonstrated 1.7.0rc1 environment, sandboxed `nvidia-smi` and X11 access
-failed, but permitted execution outside that sandbox exposed a 24 GiB Blackwell
-MIG GPU and the desktop. Follow the agent environment's permission mechanism;
-a sandbox denial is not proof of absent hardware. Do not hard-code that GPU,
-display number, or escalation requirement for other hosts.
-
-The demonstrated desktop used Mesa llvmpipe OpenGL while Warp used CUDA. Record
-both: software-rendered FPS is not GPU rendering performance. A non-AA fallback
-warning did not prevent viewing. First-run kernel compilation took tens of
-seconds; inspect logs before declaring a hang. For the demonstrated GL version,
-windowed `--num-frames` is ignored and the process runs until the viewer closes;
-headless GL honors the frame limit. Recheck behavior for the target version.
+Record both the simulation device and OpenGL renderer: CUDA simulation can run
+with software rendering, whose FPS is not GPU rendering performance. Follow the
+environment's permission mechanism if device or display access is denied; a
+sandbox denial is not proof of absent hardware. First-run kernel compilation
+can delay startup; inspect logs before declaring a hang. Verify the target
+viewer's frame-limit and shutdown behavior rather than assuming a windowed
+viewer will stop after `--num-frames`.

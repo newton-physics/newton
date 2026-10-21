@@ -7,8 +7,6 @@ Inverse kinematics on a Franka FR3 arm targeting the TCP (fr3_hand_tcp).
 - Single IKObjectivePosition + IKObjectiveRotation
 - Gizmo controls the TCP target (with viewer.log_gizmo)
 - On gizmo release, target snaps back to the solved TCP pose
-
-Command: python -m newton.examples ik_franka
 """
 
 import warp as wp

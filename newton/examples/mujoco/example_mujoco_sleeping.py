@@ -8,8 +8,6 @@ islands. The stacks topple toward one another in a shared world, allowing
 their islands to merge. Awake articulations use Newton's display palette,
 with a shared color for every tree in the same constraint island. Sleeping
 islands are gray.
-
-Command: python -m newton.examples mujoco_sleeping
 """
 
 from __future__ import annotations

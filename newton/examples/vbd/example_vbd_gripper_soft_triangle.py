@@ -12,8 +12,6 @@ water-tight soft-FACE pass detects the triangle face crossing the pinch, so
 the grip (and the lift that follows) works only with
 ``enable_rigid_soft_full_surface_contact=True``. With the flag off the
 triangle slips out and falls.
-
-Command: python -m newton.examples vbd_gripper_soft_triangle
 """
 
 from __future__ import annotations

@@ -9,8 +9,6 @@ default. The original VBD cable payload is kept as an alternate mode for A/B
 testing. SolverCoupledADMM detects rigid-rigid contacts between the robot and
 the payload from the model collision pairs, and the same template is
 replicated across many worlds to exercise ADMM contact scaling.
-
-Command: python -m newton.examples mujoco_franka_vbd_cable_admm_solver
 """
 
 from __future__ import annotations

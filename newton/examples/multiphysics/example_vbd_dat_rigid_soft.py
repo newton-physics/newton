@@ -31,8 +31,6 @@ the ``AUTO`` schedule adds. Without graph capture the overhead is about 40 %
 body color, and their host-side launch cost then dominates. All six bodies
 here share one color, so the per-color rigid truncation costs nothing extra;
 scenes with several body colors pay one more truncation pass per color.
-
-Command: python -m newton.examples vbd_dat_rigid_soft
 """
 
 from __future__ import annotations

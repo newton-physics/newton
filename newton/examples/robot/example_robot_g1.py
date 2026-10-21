@@ -5,8 +5,6 @@
 
 Shows how to set up a simulation of a G1 robot articulation
 from a USD stage using newton.ModelBuilder.add_usd().
-
-Command: python -m newton.examples robot_g1 --world-count 16
 """
 
 import warp as wp

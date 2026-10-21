@@ -9,9 +9,6 @@ an attached constant or pivot velocity field. Each step the per-contact
 normal forces are read back from the solver and converted into Coulomb-limited
 tangential body forces, so boxes are carried around the loop, through the
 180-degree turn, up the incline, across the differential pair, and back.
-
-Command: python -m newton.examples basic_conveyor_forces
-         python -m newton.examples basic_conveyor_forces --solver kamino
 """
 
 import math
@@ -23,8 +20,6 @@ import newton
 import newton.examples
 
 # Velocity field types: a constant world-space velocity, or a rotation about a pivot.
-
-
 VELOCITY_FIELD_TYPE_CONSTANT = 0
 VELOCITY_FIELD_TYPE_PIVOT = 1
 

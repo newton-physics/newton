@@ -6,8 +6,6 @@
 A tetrahedral VBD cube falls into an implicit-MPM granular heap.  The soft
 body's surface is exported to MPM as a prescribed-velocity deformable mesh
 collider through the generic particle proxy hooks.
-
-Command: python -m newton.examples vbd_mpm_coupled_solver
 """
 
 from __future__ import annotations

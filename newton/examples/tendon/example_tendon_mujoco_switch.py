@@ -9,8 +9,6 @@ the straight lower-guide-to-endpoint span reaches the middle capstan from the
 inactive side selected by its orientation, the solver activates that rolling
 guide.  When the capsule swings right, the solver skips the middle capstan and
 the tendon wraps only around the lower guide.
-
-Command: python -m newton.examples tendon_mujoco_switch
 """
 
 from __future__ import annotations

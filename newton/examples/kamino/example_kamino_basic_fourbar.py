@@ -4,8 +4,6 @@
 """Example for basic four-bar mechanism
 
 Shows how to simulate a basic four-bar linkage with multiple worlds using SolverKamino.
-
-Command: python -m newton.examples kamino_basic_fourbar --world-count 16
 """
 
 import argparse

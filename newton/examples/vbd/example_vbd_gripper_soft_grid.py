@@ -13,8 +13,6 @@ The legacy per-particle path finds no vertex between the jaws, so the grid is
 gripped (and lifted) only with ``enable_rigid_soft_full_surface_contact=True``
 via the water-tight soft-EDGE pass. With the flag off the grid slips out and
 falls.
-
-Command: python -m newton.examples vbd_gripper_soft_grid
 """
 
 from __future__ import annotations

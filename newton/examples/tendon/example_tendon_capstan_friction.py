@@ -23,8 +23,6 @@ weights keep a fixed orientation and remain on their respective sides.
 With dynamic pulleys, low finite friction spins the pulley only partially.
 The red tab on each pulley marks rim rotation; the frictionless pulley
 should translate the cable without spinning.
-
-Command: python -m newton.examples tendon_capstan_friction
 """
 
 import numpy as np
