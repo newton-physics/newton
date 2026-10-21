@@ -10897,19 +10897,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self.mjw_model.actuator_biasprm.assign(compiled_bias)
         if self.use_mujoco_cpu:
             self.mj_model.actuator_biasprm[:] = compiled_bias[0]
-        # Resolve against physical inertia before restoring synthetic kinematic locking.
-        # The normal notification below then refreshes constants for the locked model.
-        if np.any((self._notify_body_flags.numpy() & int(BodyFlags.KINEMATIC)) != 0):
-            self._update_body_properties(apply_kinematic_armature=False)
-            if self.use_mujoco_cpu:
-                self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
-                self._mujoco.mj_setConst(self.mj_model, self.mj_data)
-            else:
-                with self._scoped_mujoco_warp_execution():
-                    self._mujoco_warp.set_const_0(self.mjw_model, self.mjw_data)
-            self._update_body_properties()
-            if self.use_mujoco_cpu:
-                self.mj_model.dof_armature[:] = self.mjw_model.dof_armature.numpy()[0]
         self.notify_model_changed(ModelFlags.ACTUATOR_PROPERTIES)
         if self.use_mujoco_cpu:
             compiled_bias[0] = self.mj_model.actuator_biasprm

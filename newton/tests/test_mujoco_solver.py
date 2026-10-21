@@ -11275,9 +11275,9 @@ class TestActuatorDampratioMultiWorldRuntime(unittest.TestCase):
                 solver = SolverMuJoCo(model, use_mujoco_cpu=cpu, disable_contacts=True)
                 np.testing.assert_allclose(model.joint_target_kd.numpy(), expected, rtol=1e-5)
                 np.testing.assert_allclose(solver.mj_model.actuator_biasprm[:, 2], -expected, rtol=1e-5)
-                np.testing.assert_allclose(solver.mjw_model.dof_armature.numpy(), KINEMATIC_ARMATURE)
-                if cpu:
-                    np.testing.assert_allclose(solver.mj_model.dof_armature, KINEMATIC_ARMATURE)
+                # Kinematic roots keep their authored armature and are held by a weld instead.
+                np.testing.assert_allclose(solver.mjw_model.dof_armature.numpy(), 0.3)
+                self.assertTrue(np.all(solver.mjw_data.eq_active.numpy()[:, solver.kinematic_target_eq.numpy()]))
 
                 model.body_flags.fill_(int(BodyFlags.DYNAMIC))
                 solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
