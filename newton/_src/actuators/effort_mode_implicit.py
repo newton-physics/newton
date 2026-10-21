@@ -61,11 +61,6 @@ class ImplicitOptions:
     max_iters: int = 8
     """Maximum Newton iterations per articulation group."""
 
-    ls_iterations: int = 8
-    """Maximum step lengths tried per Newton iteration, halving each time, until
-    the residual drops. Each try evaluates the residual once. ``0`` always takes
-    the full Newton step."""
-
     residual_tol: float = 1.0e-5
     """Stop when the residual vector norm falls below this [N·s or N·m·s]."""
 
@@ -81,6 +76,11 @@ class ImplicitOptions:
 
     warm_start: WarmStart = WarmStart.EXPLICIT
     """Initial impulse guess."""
+
+    ls_iterations: int = 8
+    """Maximum step lengths tried per Newton iteration, halving each time, until
+    the residual drops. Each try evaluates the residual once. ``0`` always takes
+    the full Newton step."""
 
 
 # ---------------------------------------------------------------------------
@@ -742,6 +742,8 @@ class _EffortModeImplicit:
         if self._options.fd_epsilon <= 0.0:
             # The Jacobian divides by this, so zero yields NaN.
             raise ValueError(f"fd_epsilon must be positive, got {self._options.fd_epsilon}")
+        if self._options.ls_iterations < 0:
+            raise ValueError(f"ls_iterations must be non-negative, got {self._options.ls_iterations}")
         self._num_actuators = num_actuators
         self._device = device
         if not isinstance(response, JointSpaceResponse):

@@ -3800,7 +3800,7 @@ class TestActuatorImplicit(unittest.TestCase):
             actuator.step(model.state(), model.control())
 
     def test_validation_rejects_bad_options(self):
-        """dt, warm_start and fd_epsilon are validated rather than silently misbehaving."""
+        """dt, warm_start, fd_epsilon and ls_iterations are validated rather than silently misbehaving."""
         device = wp.get_device()
         model = _build_pendulum(device)
         kp = wp.array([100.0], dtype=float, device=device)
@@ -3814,6 +3814,11 @@ class TestActuatorImplicit(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "fd_epsilon"):
             _make_implicit_actuator(
                 model, device, kp=kp, kd=kd, options=newton.actuators.Actuator.ImplicitOptions(fd_epsilon=0.0)
+            )
+
+        with self.assertRaisesRegex(ValueError, "ls_iterations"):
+            _make_implicit_actuator(
+                model, device, kp=kp, kd=kd, options=newton.actuators.Actuator.ImplicitOptions(ls_iterations=-1)
             )
 
         actuator, _ = _make_implicit_actuator(model, device, kp=kp, kd=kd)
@@ -4060,33 +4065,44 @@ class TestActuatorImplicit(unittest.TestCase):
         control = model.control()
         control.joint_target_q.assign(target.astype(np.float32))
         response = JointSpaceResponse(model)
-        actuator = Actuator(
-            indices=wp.array([0, 1], dtype=wp.uint32, device=device),
-            drive=DrivePD(
-                kp=wp.full(2, kp, dtype=float, device=device),
-                kd=wp.full(2, kd, dtype=float, device=device),
-            ),
-            clamping=[
-                ClampingDCMotor(
-                    saturation_effort=wp.full(2, sat, dtype=float, device=device),
-                    velocity_limit=wp.full(2, vel_lim, dtype=float, device=device),
-                    max_motor_effort=wp.full(2, max_e, dtype=float, device=device),
-                )
-            ],
-            control_target_pos_attr="joint_target_q",
-            control_target_vel_attr="joint_target_qd",
-        )
-        actuator.set_effort_mode_implicit(response=response)
-        control.joint_f.zero_()
-        _refresh_and_step(actuator, response, state, control, h)
-
-        effort = control.joint_f.numpy().astype(np.float64)
         response_matrix = _response_at_state(model, state).astype(np.float64)
-        qd_p = qd0 + response_matrix @ (h * effort)
-        q_p = q0 + h * qd_p
-        bounds = np.array([_dc_bounds(sat, vel_lim, max_e, v) for v in qd_p])
-        expected = np.clip(kp * (target - q_p) - kd * qd_p, bounds[:, 0], bounds[:, 1])
+
+        def solve(ls_iterations: int) -> tuple[np.ndarray, np.ndarray]:
+            actuator = Actuator(
+                indices=wp.array([0, 1], dtype=wp.uint32, device=device),
+                drive=DrivePD(
+                    kp=wp.full(2, kp, dtype=float, device=device),
+                    kd=wp.full(2, kd, dtype=float, device=device),
+                ),
+                clamping=[
+                    ClampingDCMotor(
+                        saturation_effort=wp.full(2, sat, dtype=float, device=device),
+                        velocity_limit=wp.full(2, vel_lim, dtype=float, device=device),
+                        max_motor_effort=wp.full(2, max_e, dtype=float, device=device),
+                    )
+                ],
+                control_target_pos_attr="joint_target_q",
+                control_target_vel_attr="joint_target_qd",
+            )
+            actuator.set_effort_mode_implicit(
+                response=response, options=Actuator.ImplicitOptions(ls_iterations=ls_iterations)
+            )
+            control.joint_f.zero_()
+            _refresh_and_step(actuator, response, state, control, h)
+
+            effort = control.joint_f.numpy().astype(np.float64)
+            qd_p = qd0 + response_matrix @ (h * effort)
+            q_p = q0 + h * qd_p
+            bounds = np.array([_dc_bounds(sat, vel_lim, max_e, v) for v in qd_p])
+            expected = np.clip(kp * (target - q_p) - kd * qd_p, bounds[:, 0], bounds[:, 1])
+            return effort, expected
+
+        effort, expected = solve(ls_iterations=8)
         np.testing.assert_allclose(effort, expected, rtol=1e-3, atol=1e-3)
+
+        # Same iteration budget without backtracking: full steps keep jumping between the limits.
+        effort, expected = solve(ls_iterations=0)
+        self.assertGreater(np.max(np.abs(effort - expected)), 1e-2)
 
     def test_small_efforts_still_take_a_newton_step(self):
         """Efforts below the residual tolerance are solved implicitly, not returned as the explicit warm start."""
