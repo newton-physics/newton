@@ -16,6 +16,7 @@ import newton
 from newton.selection import ArticulationView, DeformableCurveView, DeformableSurfaceView, DeformableVolumeView
 from newton.solvers import SolverVBD
 from newton.solvers.experimental.coupled import SolverCoupled
+from newton.tests._deformable_test_utils import _add_curve, _add_surface, _add_test_anchored_cable, _add_volume
 from newton.tests._usd_deformable_test_utils import (
     _add_cable_curve,
     _add_cloth_mesh,
@@ -24,7 +25,6 @@ from newton.tests._usd_deformable_test_utils import (
     _bind_deformable_material,
     _deformable_stage,
 )
-from newton.tests.test_deformable_objects import _add_curve, _add_surface, _add_test_anchored_cable, _add_volume
 from newton.tests.unittest_utils import USD_AVAILABLE, get_test_devices
 
 _CABLE_PTS = [(0.0, 0.0, 1.0), (0.1, 0.0, 1.0), (0.2, 0.0, 1.0), (0.3, 0.0, 1.0)]
