@@ -11,8 +11,6 @@ to that frame; a joint-limit objective keeps the solution valid.
 Command: python -m newton.examples ik_a1
 """
 
-from pathlib import Path
-
 import numpy as np
 import warp as wp
 
@@ -21,7 +19,7 @@ import newton.examples
 import newton.ik as ik
 import newton.utils
 
-A1_ASSET_PATH = Path("usd/a1_bimanual_stand/onerobotics_a1_bimanual_stand.usda")
+A1_ASSET_PATH = "usd/a1_bimanual_stand/onerobotics_a1_bimanual_stand.usda"
 TERMINAL_LINKS = ("Link_l7", "Link_r7")
 TARGET_OFFSETS = np.array([[0.15, -0.06, 0.12], [0.15, 0.06, 0.12]], dtype=np.float32)
 
@@ -126,6 +124,11 @@ class Example:
 
         self.viewer.set_model(self.model)
         self.viewer.set_camera(pos=wp.vec3(2.5, 0.0, 0.5), pitch=-5.0, yaw=180.0)
+        if args.test:
+            object_position = wp.transform_get_translation(self.object_tf) + wp.vec3(0.02, -0.01, 0.01)
+            object_rotation = wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), 0.15)
+            self.object_tf = wp.transform(object_position, object_rotation)
+            self.update_targets_from_object_frame()
         self.capture()
 
     def update_targets_from_object_frame(self):
@@ -185,7 +188,6 @@ class Example:
         if np.max(np.abs(joint_q - self.initial_joint_q)) < 0.05:
             raise ValueError("A1 inverse kinematics did not move either arm")
 
-        newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state)
         body_q = self.state.body_q.numpy()
         actual_positions = np.asarray([body_q[body, :3] for body in self.terminal_bodies])
         position_errors = np.linalg.norm(actual_positions - self.target_positions, axis=1)
@@ -195,7 +197,7 @@ class Example:
         actual_rotations = body_q[self.terminal_bodies, 3:]
         target_rotations = np.asarray(self.target_rotations)
         orientation_alignment = np.abs(np.sum(actual_rotations * target_rotations, axis=1))
-        if np.min(orientation_alignment) < 0.999:
+        if np.min(orientation_alignment) < 0.9999:
             raise ValueError(f"A1 terminal-link orientation alignment is {orientation_alignment}")
 
     @staticmethod

@@ -9,8 +9,6 @@ pre-grasp pose instead of claiming to grasp or transport the object.
 Command: python -m newton.examples robot_x1
 """
 
-from pathlib import Path
-
 import numpy as np
 import warp as wp
 
@@ -51,12 +49,8 @@ def update_x1_velocity_targets(
     wheel_index = wp.tid()
     dof = wheel_dofs[wheel_index]
 
-    target_qd[dof] = 0.0
-    if motion_time[0] < DRIVE_DURATION:
-        if wheel_index == 0:
-            target_qd[dof] = WHEEL_SPEED
-        else:
-            target_qd[dof] = -WHEEL_SPEED
+    speed = WHEEL_SPEED if wheel_index == 0 else -WHEEL_SPEED
+    target_qd[dof] = wp.where(motion_time[0] < DRIVE_DURATION, speed, 0.0)
 
 
 @wp.kernel
@@ -83,7 +77,7 @@ class Example:
         newton.solvers.SolverMuJoCo.register_custom_attributes(builder)
         builder.default_joint_cfg = newton.ModelBuilder.JointDofConfig(limit_ke=1.0e3, limit_kd=1.0e1)
         builder.add_urdf(
-            str(asset_root / Path("urdf/x1.urdf")),
+            str(asset_root / "urdf/x1.urdf"),
             floating=True,
             collapse_fixed_joints=False,
             enable_self_collisions=False,
@@ -100,6 +94,11 @@ class Example:
             joint_indices[short_label] = index
         joint_dofs = {label: builder.joint_qd_start[index] for label, index in joint_indices.items()}
         joint_coordinates = {label: builder.joint_q_start[index] for label, index in joint_indices.items()}
+        controlled_joints = ("t01", "t02", "sj", *(f"r{i}" for i in range(1, 8)), *(f"l{i}" for i in range(1, 8)))
+        required_joints = ("lun_r", "lun_l", *controlled_joints)
+        missing_joints = sorted(set(required_joints) - joint_dofs.keys())
+        if missing_joints:
+            raise ValueError(f"X1 required joints are missing: {missing_joints}")
         wheel_dofs = [joint_dofs["lun_r"], joint_dofs["lun_l"]]
 
         for dof in range(builder.joint_dof_count):
@@ -108,7 +107,6 @@ class Example:
             builder.joint_target_mode[dof] = int(JointTargetMode.VELOCITY)
             builder.joint_target_kd[dof] = 20.0
 
-        controlled_joints = ("t01", "t02", "sj", *(f"r{i}" for i in range(1, 8)), *(f"l{i}" for i in range(1, 8)))
         for label in controlled_joints:
             dof = joint_dofs[label]
             builder.joint_target_mode[dof] = int(JointTargetMode.POSITION)
