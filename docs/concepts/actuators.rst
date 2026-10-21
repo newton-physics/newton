@@ -627,11 +627,10 @@ Battery
   effort on its DOFs, down to a minimum, and writes it into
   ``control.supply_voltage``.  Call it once per step after the actuators,
   before clearing the effort; the drives read the voltage on the next step.
-  The effort is ``control.joint_f`` by default, after clamping.  To draw the
-  effort before clamping, as BAM does, pass ``control_computed_output_attr``
-  to :meth:`~newton.ModelBuilder.add_actuator` and that array as *effort*.
-  Actuators accumulate into that array, so zero it before each actuator step
-  like ``joint_f``.
+  The effort is ``control.joint_f_computed`` by default: the effort before
+  clamping, as BAM uses it, which every actuator built by
+  :class:`~newton.ModelBuilder` accumulates there next to ``joint_f``.  Zero
+  it before each actuator step like ``joint_f``.
 * :func:`reset_battery_supply` restores the nominal voltage, of all
   batteries or of the batteries in the worlds of a mask.  Batteries added
   outside any world are reset only without a mask.
@@ -639,8 +638,8 @@ Battery
 In USD, a ``NewtonBattery`` prim lists its joints in ``newton:joints`` and
 authors ``newton:nominalVoltage``, ``newton:sagGain`` and
 ``newton:minVoltage``; :meth:`~newton.ModelBuilder.add_usd` adds it with
-:meth:`~newton.ModelBuilder.add_battery` and sets ``supply_from_control=True``
-on the :class:`DriveBAM` actuators of those joints.  Drives that read the
+:meth:`~newton.ModelBuilder.add_battery`, and the :class:`DriveBAM` drives of
+those joints get ``supply_from_control=True``.  Drives that read the
 supply voltage, e.g. :class:`DriveBAM` with ``supply_from_control=True``,
 declare ``supply_voltage`` as a custom input.
 A :class:`DriveBAM` on a DOF whose ``supply_voltage`` is not positive, e.g. a
@@ -662,7 +661,6 @@ Below, the hip and knee share one battery and the ankle draws from another:
        builder.add_actuator(
            DriveBAM,
            index=builder.joint_qd_start[joint],
-           control_computed_output_attr="motor_effort",
            kp=5.0,
            kt=0.5,
            resistance=2.0,
@@ -682,10 +680,10 @@ Below, the hip and knee share one battery and the ankle draws from another:
 
    for _ in range(10):
        control.joint_f.zero_()
-       control.motor_effort.zero_()
+       control.joint_f_computed.zero_()
        for actuator in model.actuators:
            actuator.step(state_0, control, dt=dt)
-       update_battery_supply(model, control, effort=control.motor_effort)
+       update_battery_supply(model, control)
        solver.step(state_0, state_1, control, None, dt)
        state_0, state_1 = state_1, state_0
 

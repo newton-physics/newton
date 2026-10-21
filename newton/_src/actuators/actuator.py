@@ -389,7 +389,10 @@ class Actuator:
             control_feedforward_attr: Attribute on sim_control for feedforward effort. None to skip.
             control_output_attr: Attribute on sim_control for clamped output effort.
             control_computed_output_attr: Attribute on sim_control for raw (pre-clamp)
-                effort. None to skip writing computed effort.
+                effort. None to skip writing computed effort; the effort is
+                also skipped while the attribute is missing or unset.
+                :class:`~newton.ModelBuilder` sets it to
+                ``"joint_f_computed"``.
             requires_grad: Allocate intermediate arrays with gradient support
                 for differentiable simulation.
             input_processors: Input processors applied in list order to the
@@ -486,7 +489,8 @@ class Actuator:
             Container whose slots are the required ``sim_control`` attributes.
 
         Note:
-            Leaving the feedforward field unassigned means no feedforward term.
+            Leaving the feedforward field unassigned means no feedforward term,
+            and leaving the computed output field unassigned skips it.
         """
         fields = self._required_attributes.get("sim_control", ())
         return _input_container_class("sim_control", fields)()
@@ -792,7 +796,7 @@ class Actuator:
             self.control_computed_output_attr is not None
             and self.control_computed_output_attr != self.control_output_attr
         ):
-            computed_output = _require_array(sim_control, self.control_computed_output_attr)
+            computed_output = _get_attribute(sim_control, self.control_computed_output_attr, None)
         wp.launch(
             kernel=_scatter_add_kernel,
             dim=self.num_actuators,

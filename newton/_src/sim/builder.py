@@ -885,8 +885,7 @@ class ModelBuilder:
         """Stores accumulated specs for one group of compatible composed actuators.
 
         Each element in ``indices`` is a single DOF index.  The entry key is
-        ``(drive_class, input_processor_key, clamping_key, drive_shared_key,
-        control_computed_output_attr)``
+        ``(drive_class, input_processor_key, clamping_key, drive_shared_key)``
         where shared params (e.g. ``model_path``, lookup tables) must
         be identical across all actuators in a group.  Per-DOF params such
         as delay step values may differ within a group.
@@ -903,7 +902,6 @@ class ModelBuilder:
         input_processor_classes: tuple = ()  # Tuple of InputProcessorBase subclass types (in order)
         input_processor_shared_kwargs: tuple = ()  # Tuple of dicts: shared kwargs per input processor class
         input_processor_args: list[list[dict[str, Any]]] = field(default_factory=list)  # Per-actuator params
-        control_computed_output_attr: str | None = None  # Control attribute for pre-clamp effort
 
         def __init__(
             self,
@@ -919,7 +917,6 @@ class ModelBuilder:
             input_processor_classes: tuple = (),
             input_processor_shared_kwargs: tuple = (),
             input_processor_args: list[list[dict[str, Any]]] | None = None,
-            control_computed_output_attr: str | None = None,
         ):
             """Initialize an actuator entry.
 
@@ -940,7 +937,6 @@ class ModelBuilder:
             self.input_processor_classes = input_processor_classes
             self.input_processor_shared_kwargs = input_processor_shared_kwargs
             self.input_processor_args = input_processor_args if input_processor_args is not None else []
-            self.control_computed_output_attr = control_computed_output_attr
             if delay_args is _ACTUATOR_ENTRY_DELAY_ARGS_UNSET:
                 return
             warnings.warn(_ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
@@ -3168,7 +3164,6 @@ class ModelBuilder:
         pos_index: int | None = None,
         *,
         input_processors: list[tuple[type[InputProcessorBase], dict[str, Any]]] | None = None,
-        control_computed_output_attr: str | None = None,
         controller_class: type[DriveBase] | object = _DEPRECATED_ACTUATOR_DRIVE_UNSET,
         **kwargs: Any,
     ) -> None:
@@ -3199,14 +3194,6 @@ class ModelBuilder:
                 class's :attr:`~newton.actuators.InputProcessorBase.JOINT_PARAMS`
                 take a joint index or a joint label; ``None`` selects the
                 actuated joint.
-            control_computed_output_attr: Name of a :class:`~newton.Control`
-                attribute that also receives the effort before clamping
-                [N or N·m], e.g. for
-                :func:`~newton.actuators.update_battery_supply`.
-                :meth:`finalize <ModelBuilder.finalize>` registers it as a
-                joint-DOF custom attribute. Actuators accumulate into it, so
-                zero it before each actuator step like ``joint_f``. ``None``
-                skips it.
             controller_class: Deprecated in Newton 1.6; use ``drive_class`` instead.
             **kwargs: Per-DOF drive parameters (e.g. ``kp``, ``kd``).
         """
@@ -3282,8 +3269,7 @@ class ModelBuilder:
 
         # --- Build entry key: identifies a group of compatible actuators ---
         # Groups differ when drive class, input processor types/shared-params,
-        # clamping types/shared-params, drive shared params, or the computed
-        # output attribute differ.
+        # clamping types/shared-params, or drive shared params differ.
         def _make_hashable(v: Any) -> Any:
             if isinstance(v, list):
                 return tuple(v)
@@ -3298,7 +3284,7 @@ class ModelBuilder:
             (pc, tuple(sorted((k, _make_hashable(v)) for k, v in shared.items())))
             for pc, shared in zip(input_processor_classes, input_processor_shared_list, strict=True)
         )
-        entry_key = (drive_class, input_processor_key, clamping_key, drive_shared_key, control_computed_output_attr)
+        entry_key = (drive_class, input_processor_key, clamping_key, drive_shared_key)
 
         entry = self.actuator_entries.setdefault(
             entry_key,
@@ -3314,7 +3300,6 @@ class ModelBuilder:
                 input_processor_classes=input_processor_classes,
                 input_processor_shared_kwargs=input_processor_shared_kwargs,
                 input_processor_args=[],
-                control_computed_output_attr=control_computed_output_attr,
             ),
         )
 
@@ -5666,7 +5651,6 @@ class ModelBuilder:
                     input_processor_classes=sub_entry.input_processor_classes,
                     input_processor_shared_kwargs=sub_entry.input_processor_shared_kwargs,
                     input_processor_args=[],
-                    control_computed_output_attr=sub_entry.control_computed_output_attr,
                 ),
             )
             entry.indices.extend(idx + joint_dof_offset for idx in sub_entry.indices)
@@ -15601,7 +15585,7 @@ class ModelBuilder:
                     pos_indices=pos_indices_arg,
                     requires_grad=requires_grad,
                     input_processors=input_processor_objs,
-                    control_computed_output_attr=entry.control_computed_output_attr,
+                    control_computed_output_attr="joint_f_computed",
                 )
 
                 actuator.register_custom_attributes(self)

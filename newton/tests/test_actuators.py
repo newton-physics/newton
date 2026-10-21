@@ -2719,8 +2719,8 @@ class TestDriveBAM(unittest.TestCase):
         two actuators. The template has one battery for both, and
         ``replicate`` gives each world its own. Each step, both drives read
         the voltage left by the previous step's total draw, and a reset
-        restores the nominal voltage of the masked world only. The knee also
-        writes its effort to ``motor_effort``, which ``replicate`` keeps.
+        restores the nominal voltage of the masked world only. Both servos
+        also write their effort to ``joint_f_computed``.
         """
         kp, kt, resistance, max_pwm, target, dt = 0.5, 0.6, 2.0, 0.9, 1.0, 0.01
         nominal_voltage, sag_gain, min_voltage = 5.0, 0.5, 4.4
@@ -2750,7 +2750,6 @@ class TestDriveBAM(unittest.TestCase):
             DriveBAM,
             index=template.joint_qd_start[knee],
             input_processors=[(InputProcessorBacklash, {"backlash_joint": "backlash"})],
-            control_computed_output_attr="motor_effort",
             **bam,
         )
         template.add_actuator(DriveBAM, index=template.joint_qd_start[ankle], **bam)
@@ -2789,9 +2788,9 @@ class TestDriveBAM(unittest.TestCase):
             effort = control.joint_f.numpy()
             np.testing.assert_allclose(effort[knees], kt * current["knee"], rtol=1e-5)
             np.testing.assert_allclose(effort[ankles], kt * current["ankle"], rtol=1e-5)
-            np.testing.assert_allclose(control.motor_effort.numpy()[knees], effort[knees])
-            control.motor_effort.zero_()
+            np.testing.assert_allclose(control.joint_f_computed.numpy(), effort)
             update_battery_supply(model, control)
+            control.joint_f_computed.zero_()
             drawn = sum(np.abs(kt * current[servo]) for servo in duty)
         sagged = np.array(sagged[1:])
         self.assertTrue(np.any(sagged > min_voltage) and np.any(sagged < min_voltage))
@@ -2805,15 +2804,15 @@ class TestDriveBAM(unittest.TestCase):
     def test_bam_battery_draws_computed_effort(self):
         """The battery sums the effort before clamping, and a DOF without a battery uses ``vin``.
 
-        Both servos read the supply from Control, but only the first draws
-        from the battery and writes its effort before clamping to
-        ``motor_effort``. The second keeps the registered default of 0 V and
-        falls back to ``vin``.
+        Both servos read the supply from Control and write their effort before
+        clamping to ``joint_f_computed``, but only the first draws from the
+        battery. The second keeps the registered default of 0 V and falls back
+        to ``vin``.
         """
         kp, kt, resistance, vin, max_pwm, max_effort, dt = 0.5, 0.6, 2.0, 5.0, 0.9, 0.05, 0.01
         nominal_voltage, sag_gain, min_voltage = 6.0, 0.5, 1.0
         builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-        for computed_output_attr in ("motor_effort", None):
+        for _ in range(2):
             link = builder.add_link(mass=1.0, inertia=_POINT_MASS_INERTIA)
             joint = builder.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
             builder.add_articulation([joint])
@@ -2821,7 +2820,6 @@ class TestDriveBAM(unittest.TestCase):
                 DriveBAM,
                 index=builder.joint_qd_start[joint],
                 clamping=[(ClampingMaxEffort, {"max_effort": max_effort})],
-                control_computed_output_attr=computed_output_attr,
                 kp=kp,
                 kt=kt,
                 resistance=resistance,
@@ -2839,15 +2837,15 @@ class TestDriveBAM(unittest.TestCase):
         drawn = 0.0
         for _ in range(3):
             control.joint_f.zero_()
-            control.motor_effort.zero_()
+            control.joint_f_computed.zero_()
             for actuator in model.actuators:
                 actuator.step(state, control, dt=dt)
 
             voltage = max(nominal_voltage - sag_gain * drawn, min_voltage)
             np.testing.assert_allclose(control.supply_voltage.numpy(), [voltage, 0.0], rtol=1e-5)
-            update_battery_supply(model, control, effort=control.motor_effort)
+            update_battery_supply(model, control)
             computed = kt * np.array([voltage, vin]) * duty / resistance
-            np.testing.assert_allclose(control.motor_effort.numpy(), [computed[0], 0.0], rtol=1e-5)
+            np.testing.assert_allclose(control.joint_f_computed.numpy(), computed, rtol=1e-5)
             np.testing.assert_allclose(control.joint_f.numpy(), np.minimum(computed, max_effort), rtol=1e-5)
             drawn = computed[0]
         self.assertGreater(drawn, max_effort)
@@ -2857,8 +2855,8 @@ class TestDriveBAM(unittest.TestCase):
         """A ``NewtonBattery`` prim adds a battery for its joints, and their BAM servos read its voltage.
 
         The knee and ankle servos are on the battery and read the supply from
-        Control. The toe servo is not and keeps ``vin``. ``replicate`` gives
-        each world its own battery.
+        Control. The toe servo is not and keeps ``vin``. ``replicate`` gives each world
+        its own battery.
         """
         names = ("knee", "ankle", "toe")
         parents = ("Base", "knee_link", "ankle_link")

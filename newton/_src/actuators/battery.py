@@ -134,12 +134,10 @@ def update_battery_supply(model: Model, control: Control, *, effort: wp.array[fl
     deterministic.
 
     Call once per step, after the actuators have stepped and before the
-    effort is cleared. The effort is ``control.joint_f`` by default, after
-    clamping. To draw the effort before clamping, pass
-    ``control_computed_output_attr`` to
-    :meth:`~newton.ModelBuilder.add_actuator` and that array as *effort*;
-    actuators accumulate into it, so zero it before each actuator step like
-    ``joint_f``.
+    effort is cleared. The effort is ``control.joint_f_computed`` by
+    default: the effort of the actuators before clamping, which actuators
+    built by :class:`~newton.ModelBuilder` accumulate there. Zero it before
+    each actuator step like ``joint_f``.
 
     The battery parameters are ``model.actuator.battery_nominal_voltage``,
     ``battery_sag_gain`` and ``battery_min_voltage``, indexed by battery;
@@ -154,10 +152,10 @@ def update_battery_supply(model: Model, control: Control, *, effort: wp.array[fl
 
     Args:
         model: Model with batteries.
-        control: Object carrying ``supply_voltage``, and ``joint_f`` when
-            *effort* is ``None``, e.g. :class:`~newton.Control`.
+        control: Object carrying ``supply_voltage``, and ``joint_f_computed``
+            when *effort* is ``None``, e.g. :class:`~newton.Control`.
         effort: Effort drawn from the batteries [N or N·m], shaped like
-            ``joint_qd``. ``None`` reads ``control.joint_f``.
+            ``joint_qd``. ``None`` reads ``control.joint_f_computed``.
 
     Raises:
         ValueError: The model has no batteries, or the effort or
@@ -165,7 +163,7 @@ def update_battery_supply(model: Model, control: Control, *, effort: wp.array[fl
     """
     batteries = _require_batteries(model)
     if effort is None:
-        effort = getattr(control, "joint_f", None)
+        effort = getattr(control, "joint_f_computed", None)
     supply_voltage = _require_dof_array(model, control, SUPPLY_VOLTAGE_ATTR)
     if effort is None or effort.shape != (model.joint_dof_count,):
         shape = None if effort is None else effort.shape

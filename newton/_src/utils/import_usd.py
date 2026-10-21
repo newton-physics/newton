@@ -2909,9 +2909,8 @@ def parse_usd(
                 clamping_specs.append((comp_class, comp_kwargs))
 
         drive_kwargs = {name: value for name, value in parsed.drive_kwargs.items() if name not in add_actuator_params}
-        if target_path in battery_joint_paths and "supply_from_control" in getattr(
-            parsed.drive_class, "SHARED_PARAMS", ()
-        ):
+        on_battery = target_path in battery_joint_paths
+        if on_battery and "supply_from_control" in getattr(parsed.drive_class, "SHARED_PARAMS", ()):
             drive_kwargs["supply_from_control"] = True
         builder.add_actuator(
             parsed.drive_class,
