@@ -72,7 +72,6 @@ def reduce_mimic_inertia(
     articulation_H_rows: wp.array[int],
     articulation_dof_start: wp.array[int],
     joint_qd_start: wp.array[int],
-    joint_mimic_joint: wp.array[int],
     joint_mimic_coeffs: wp.array[wp.vec2],
     mimic_source_start: wp.array[int],
     mimic_source_joint: wp.array[int],
@@ -126,9 +125,9 @@ def reduce_mimic_inertia(
                         value += joint_armature[source_row]
                     total += row_multiplier * column_multiplier * value
 
-        # Unused follower coordinates retain a unit diagonal to keep
-        # the fixed-size solve nonsingular.
-        if row == column and joint_mimic_joint[row_joint] >= 0:
+        # Followers have no sources in the cached topology. Retain their unit
+        # diagonal to keep the fixed-size solve nonsingular.
+        if row == column and row_start == row_end:
             total = 1.0
         H_reduced[matrix_start + row * matrix_rows + column] = total
 

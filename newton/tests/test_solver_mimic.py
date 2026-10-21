@@ -236,6 +236,10 @@ def test_featherstone_mimic_reduction_gradients(test, device):
     tau_seed = rng.standard_normal(6).astype(np.float32)
     tau = wp.array(tau_np, device=device, requires_grad=True)
     reduced_tau = wp.empty(6, device=device, requires_grad=True)
+    # Probe the reduction kernels in isolation: both gathering and follower
+    # padding must use the cached topology, not the model's live array.
+    # Changing topology for a full solver step still requires rebuilding it.
+    model.joint_mimic_joint.fill_(-1)
     with wp.Tape() as tape:
         wp.launch(
             reduce_mimic_inertia,
@@ -246,7 +250,6 @@ def test_featherstone_mimic_reduction_gradients(test, device):
                 solver.articulation_H_rows,
                 solver.articulation_dof_start,
                 model.joint_qd_start,
-                model.joint_mimic_joint,
                 coeffs,
                 solver._mimic_source_start,
                 solver._mimic_source_joint,
@@ -286,6 +289,8 @@ def test_featherstone_mimic_reduction_gradients(test, device):
     derivative = np.zeros((6, 6))
     derivative[2:4, :2] = np.eye(2)
     matrix = h_np + np.diag(armature_np)
+    padding = np.diag([0.0, 0.0, 1.0, 1.0, 0.0, 0.0])
+    np.testing.assert_allclose(output.numpy().reshape(6, 6), transform.T @ matrix @ transform + padding, atol=1.0e-6)
     multiplier_grad = np.sum(seed_np * (derivative.T @ matrix @ transform + transform.T @ matrix @ derivative))
     multiplier_grad += tau_seed @ derivative.T @ tau_np
     expected_coeffs = np.zeros((3, 2))

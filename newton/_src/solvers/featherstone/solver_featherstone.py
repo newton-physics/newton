@@ -946,7 +946,6 @@ class SolverFeatherstone(SolverBase, CouplingInterface):
                                         self.articulation_H_rows,
                                         self.articulation_dof_start,
                                         model.joint_qd_start,
-                                        model.joint_mimic_joint,
                                         model.joint_mimic_coeffs,
                                         self._mimic_source_start,
                                         self._mimic_source_joint,
