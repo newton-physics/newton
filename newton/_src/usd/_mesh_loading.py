@@ -14,10 +14,11 @@ from typing import Any, Literal, overload
 
 import numpy as np
 
+from ..exceptions import NewtonWarning
 from ..geometry import Mesh
 from ..utils.deprecation import deprecate_nonkeyword_arguments
 
-logger = logging.getLogger("newton")
+logger = logging.getLogger(__name__)
 
 try:
     from pxr import Sdf, Usd, UsdGeom, UsdShade
@@ -504,7 +505,7 @@ def get_mesh(
                 # (matching the non-splitting UV path below).
                 uvs_facevarying = uvs is not None and uvs_interpolation == UsdGeom.Tokens.faceVarying
                 if uvs_facevarying and len(uvs) != C:
-                    logger.info(
+                    logger.debug(
                         "Mesh %s: UV primvar length (%d) does not match corner count (%d); dropping UVs.",
                         prim.GetPath(),
                         len(uvs),
@@ -582,7 +583,7 @@ def get_mesh(
         # were converted to per-vertex. Avoid a second split here.
         if uvs_interpolation == UsdGeom.Tokens.faceVarying and not did_split_vertices:
             if len(uvs) != len(indices):
-                logger.info(
+                logger.debug(
                     "Mesh %s: UV primvar length (%d) does not match indices length (%d); dropping UVs.",
                     prim.GetPath(),
                     len(uvs),
@@ -602,6 +603,7 @@ def get_mesh(
                             warnings.warn(
                                 f"Normals length ({len(normals)}) does not match vertices after UV splitting for mesh {prim.GetPath()}; "
                                 "dropping normals.",
+                                NewtonWarning,
                                 stacklevel=2,
                             )
                             normals = None

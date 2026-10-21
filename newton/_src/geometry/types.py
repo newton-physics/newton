@@ -13,6 +13,7 @@ import numpy as np
 import warp as wp
 
 from ..core.types import Axis, Devicelike, Vec2, Vec3, override
+from ..exceptions import NewtonDeprecationWarning, NewtonWarning
 from ..utils.deprecation import deprecate_nonkeyword_arguments
 from ..utils.texture import compute_texture_hash
 
@@ -231,7 +232,7 @@ class Mesh:
         self._validate_indices(self._vertices, self._indices)
         self._normals = np.array(normals, dtype=np.float32).reshape(-1, 3) if normals is not None else None
         self._uvs = np.array(uvs, dtype=np.float32).reshape(-1, 2) if uvs is not None else None
-        self._color: Vec3 | None = None
+        self._color: wp.vec3 | None = None
         self.color = color
         self._opacity: float | None = None
         self.opacity = opacity
@@ -796,6 +797,8 @@ class Mesh:
         """
         Create a copy of this mesh, optionally with new vertices or indices.
 
+        Mesh data is copied independently; the SDF is shared when ``vertices`` and ``indices`` are omitted.
+
         Args:
             vertices: New vertices to use (default: current vertices).
             indices: New indices to use (default: current indices).
@@ -831,9 +834,9 @@ class Mesh:
             texture_transform=self._texture_transform,
         )
         if not recompute_inertia:
-            m.inertia = self.inertia
+            m.inertia = wp.mat33(self.inertia)
             m.mass = self.mass
-            m.com = self.com
+            m.com = wp.vec3(self.com)
             m.has_inertia = self.has_inertia
         # Only carry mesh-topology-derived caches forward when the geometry
         # is unchanged. ``_collision_edges`` indexes the original vertex
@@ -1543,13 +1546,13 @@ class Mesh:
         return self._uvs
 
     @property
-    def color(self) -> Vec3 | None:
+    def color(self) -> wp.vec3 | None:
         """Optional display RGB color with values in [0, 1]."""
         return self._color
 
     @color.setter
     def color(self, value: Vec3 | None):
-        self._color = value
+        self._color = wp.vec3(value) if value is not None else None
 
     @property
     def opacity(self) -> float | None:
@@ -2296,6 +2299,7 @@ class TetMesh:
                 warnings.warn(
                     f"Custom attribute '{name}' with frequency {freq} cannot be saved to meshio format "
                     f"(only PARTICLE and TETRAHEDRON are supported). Skipping.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
 
@@ -2715,12 +2719,12 @@ class Gaussian:
         .. deprecated:: 1.6
             Use the :class:`Data` object returned by :meth:`finalize` instead.
         """
-        warnings.warn(self._WARP_DATA_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(self._WARP_DATA_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         return self._warp_data
 
     @warp_data.setter
     def warp_data(self, value: "Gaussian.Data | None") -> None:
-        warnings.warn(self._WARP_DATA_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(self._WARP_DATA_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         self._warp_data = value
 
     @property
@@ -2730,12 +2734,12 @@ class Gaussian:
         .. deprecated:: 1.6
             Use :attr:`bvh` instead.
         """
-        warnings.warn(self._WARP_BVH_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(self._WARP_BVH_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         return self._warp_bvh
 
     @warp_bvh.setter
     def warp_bvh(self, value: wp.Bvh | None) -> None:
-        warnings.warn(self._WARP_BVH_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(self._WARP_BVH_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         self._warp_bvh = value
 
     def _find_sh_degree(self) -> int:

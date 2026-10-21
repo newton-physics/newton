@@ -6,7 +6,7 @@ import os
 import tempfile
 import unittest
 import warnings
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -16,6 +16,7 @@ import warp as wp
 import newton
 import newton.examples
 from newton._src.geometry.types import GeoType
+from newton._src.utils.import_urdf import _resolve_urdf_uri
 from newton._src.utils.import_urdf import parse_urdf as direct_parse_urdf
 from newton._src.utils.mesh import load_meshes_from_file
 from newton.tests.unittest_utils import assert_np_equal
@@ -484,6 +485,24 @@ class TestImportUrdfBasic(unittest.TestCase):
                 assert_np_equal(builder.shape_transform[0][:], np.array([1.0, 2.0, 3.0, 0.0, 0.0, 0.0, 1.0]))
                 assert builder.shape_source[0].vertices.shape[0] == 8
                 assert builder.shape_source[0].indices.shape[0] == 3 * 12
+
+    def test_empty_mesh_reports_filename(self):
+        """Reject empty geometry before processing colors or material overrides."""
+        files = {
+            "empty.stl": bytes(84),
+            "broken.dae": TEXTURED_DAE.replace(
+                "<init_from>tex-image</init_from>", "<init_from>missing</init_from>"
+            ).encode(),
+        }
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for name, content in files.items():
+                path = Path(tmpdir) / name
+                path.write_bytes(content)
+                for color in (None, (1.0, 0.0, 0.0)):
+                    with self.subTest(file=name, color=color):
+                        with self.assertRaisesRegex(ValueError, "contains no triangles") as error:
+                            load_meshes_from_file(str(path), maxhullvert=0, override_color=color)
+                        self.assertIn(str(path), str(error.exception))
 
     def test_dae_visual_texture_urdf(self):
         """Verify URDF visual meshes preserve Collada texture bindings."""
@@ -1920,6 +1939,14 @@ class TestUrdfUriResolution(unittest.TestCase):
     SIMPLE_URDF = '<robot name="r"><link name="base"><visual><geometry>{geo}</geometry></visual></link></robot>'
     MESH_GEO = '<mesh filename="{filename}"/>'
     SPHERE_GEO = '<sphere radius="0.5"/>'
+    MESH_WITH_UVS = """v 0 0 0
+v 1 0 0
+v 0 1 0
+vt 0 0
+vt 1 0
+vt 0 1
+f 1/1 2/2 3/3
+"""
 
     def setUp(self):
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -1935,6 +1962,96 @@ class TestUrdfUriResolution(unittest.TestCase):
             (pkg / "meshes").mkdir(parents=True)
             (pkg / "meshes" / "link.obj").write_text(MESH_OBJ)
         return pkg
+
+    @unittest.skipUnless(resolve_robotics_uri, "resolve-robotics-uri-py not installed")
+    def test_asset_uri_resolution(self):
+        """Resolve file, package, and model URIs for sources, meshes, and textures."""
+        pkg = self._create_package("robot with spaces")
+        mesh_path = pkg / "meshes" / "link.obj"
+        mesh_path.write_text(self.MESH_WITH_UVS)
+        texture_path = pkg / "meshes" / "texture #1%.png"
+        texture_path.write_bytes(base64.b64decode(TEXTURE_PNG_BASE64))
+        source_path = self.base_path / "inputs" / "nested" / "urdf" / "robot.urdf"
+        source_path.parent.mkdir(parents=True)
+        package_dirs = [str(self.base_path)]
+
+        def uri(path, scheme):
+            return path.as_uri() if scheme == "file" else f"{scheme}://{path.relative_to(self.base_path).as_posix()}"
+
+        for scheme in ("file", "package", "model"):
+            urdf = self.SIMPLE_URDF.format(geo=self.MESH_GEO.format(filename=uri(mesh_path, scheme))).replace(
+                "</visual>", f'<material name="m"><texture filename="{uri(texture_path, scheme)}"/></material></visual>'
+            )
+            source_path.write_text(urdf)
+            for source in (uri(source_path, scheme), str(source_path), urdf):
+                with self.subTest(scheme=scheme, source=source):
+                    builder = newton.ModelBuilder()
+                    builder.add_urdf(source, package_dirs=package_dirs)
+                    self.assertEqual(builder.shape_count, 1)
+                    mesh = builder.shape_source[0]
+                    self.assertTrue(Path(mesh.texture).samefile(texture_path))
+                    np.testing.assert_array_equal(newton.utils.load_texture(mesh.texture)[0, 0, :3], [255, 0, 0])
+        self.assertEqual(package_dirs, [str(self.base_path)])
+
+    @unittest.skipUnless(resolve_robotics_uri, "resolve-robotics-uri-py not installed")
+    def test_file_uri_preserves_symlink_asset_directory(self):
+        """Load relative assets beside a symlinked URDF for both paths and URIs."""
+        source_path = self.base_path / "robot.urdf"
+        source_path.write_text(self.SIMPLE_URDF.format(geo=self.MESH_GEO.format(filename="link.obj")))
+        bundle = self.base_path / "bundle"
+        bundle.mkdir()
+        alias = bundle / "robot.urdf"
+        try:
+            alias.symlink_to(source_path)
+        except OSError as exc:
+            self.skipTest(f"Cannot create symlinks: {exc}")
+        (bundle / "link.obj").write_text(MESH_OBJ)
+        for source in (str(alias), alias.as_uri()):
+            with self.subTest(source=source):
+                builder = newton.ModelBuilder()
+                builder.add_urdf(source)
+                self.assertEqual(builder.shape_count, 1)
+                self.assertEqual(builder.shape_type[0], GeoType.MESH)
+
+    def test_file_uri_rejects_windows_relative_paths(self):
+        """Validate converted Windows paths independently of the host platform."""
+        with (
+            patch("newton._src.utils.import_urdf.url2pathname", lambda path: path.replace("/", "\\")),
+            patch("newton._src.utils.import_urdf.PurePath", PureWindowsPath),
+            self.assertRaisesRegex(ValueError, "file URI"),
+        ):
+            _resolve_urdf_uri("file:///mesh.obj", [])
+
+    def test_invalid_file_uris(self):
+        """Reject remote or malformed file URIs instead of loading local paths."""
+        source_path = self.base_path / "robot.urdf"
+        source_path.write_text(self.SIMPLE_URDF.format(geo=self.SPHERE_GEO))
+        local_uri = source_path.as_uri()
+        for uri in (
+            local_uri.replace("file://", "file://remote.example"),
+            local_uri.replace("file://", "file://user@localhost"),
+            local_uri.replace("file://", "file://localhost:123"),
+            local_uri + "?query",
+            local_uri + "#fragment",
+            "file:relative.obj",
+            "file:////server/share/mesh.obj",
+            "file:///%5Cserver/share/mesh.obj",
+        ):
+            for source in (uri, self.SIMPLE_URDF.format(geo=self.MESH_GEO.format(filename=uri))):
+                with self.subTest(uri=uri, source=source):
+                    with self.assertRaisesRegex(ValueError, "file URI"):
+                        newton.ModelBuilder().add_urdf(source)
+
+    @unittest.skipUnless(resolve_robotics_uri, "resolve-robotics-uri-py not installed")
+    def test_missing_file_uri(self):
+        """Report missing file URI sources and skip missing assets with a warning."""
+        uri = (self.base_path / "missing.obj").as_uri()
+        with self.assertRaises(FileNotFoundError):
+            newton.ModelBuilder().add_urdf(uri)
+        builder = newton.ModelBuilder()
+        with self.assertWarnsRegex(newton.exceptions.NewtonWarning, "Could not resolve URI"):
+            builder.add_urdf(self.SIMPLE_URDF.format(geo=self.MESH_GEO.format(filename=uri)))
+        self.assertEqual(builder.shape_count, 0)
 
     def test_package_uri_mesh_resolution(self):
         """Test package:// URI in mesh filename works with library and fallback."""
@@ -1962,31 +2079,39 @@ class TestUrdfUriResolution(unittest.TestCase):
 
     @unittest.skipUnless(resolve_robotics_uri, "resolve-robotics-uri-py not installed")
     def test_source_uri_resolution(self):
-        """Test package:// URI in source parameter works."""
+        """Resolve package and local file URIs in the source parameter."""
         pkg = self._create_package("my_robot", with_mesh=False)
         urdf = self.SIMPLE_URDF.format(geo=self.SPHERE_GEO)
         (pkg / "urdf" / "robot.urdf").write_text(urdf)
 
         with patch.dict(os.environ, {"ROS_PACKAGE_PATH": str(self.base_path)}):
-            builder = newton.ModelBuilder()
-            builder.add_urdf("package://my_robot/urdf/robot.urdf", up_axis="Z")
-            self.assertEqual(builder.body_count, 1)
+            file_uri = (pkg / "urdf" / "robot.urdf").as_uri()
+            for source in (
+                "package://my_robot/urdf/robot.urdf",
+                file_uri.replace("file://", "file://localhost"),
+                file_uri.replace("file:", "FILE:"),
+            ):
+                with self.subTest(source=source):
+                    builder = newton.ModelBuilder()
+                    builder.add_urdf(source, up_axis="Z")
+                    self.assertEqual(builder.body_count, 1)
 
     def test_uri_requires_library_or_warns(self):
         """Test that missing library raises/warns appropriately."""
         with patch("newton._src.utils.import_urdf.resolve_robotics_uri", None):
             builder = newton.ModelBuilder()
 
-            # Source URI requires library - raises ImportError
-            with self.assertRaises(ImportError) as cm:
-                builder.add_urdf("package://pkg/robot.urdf", up_axis="Z")
-            self.assertIn("resolve-robotics-uri-py", str(cm.exception))
+            for uri in ("package://pkg/robot.urdf", (self.base_path / "robot.urdf").as_uri()):
+                with self.subTest(source=uri), self.assertRaisesRegex(ImportError, "resolve-robotics-uri-py"):
+                    builder.add_urdf(uri, up_axis="Z")
 
-            # model:// mesh URI warns
-            urdf = self.SIMPLE_URDF.format(geo=self.MESH_GEO.format(filename="model://m/mesh.obj"))
-            with self.assertWarns(UserWarning) as cm:
-                builder.add_urdf(urdf, up_axis="Z")
-            self.assertIn("resolve-robotics-uri-py", str(cm.warning))
+            for uri in ("model://m/mesh.obj", (self.base_path / "mesh.obj").as_uri()):
+                urdf = self.SIMPLE_URDF.format(geo=self.MESH_GEO.format(filename=uri))
+                with self.subTest(asset=uri), self.assertWarnsRegex(UserWarning, "resolve-robotics-uri-py"):
+                    builder.add_urdf(urdf, up_axis="Z")
+
+            with self.assertRaisesRegex(ImportError, "package_dirs"):
+                builder.add_urdf(self.SIMPLE_URDF.format(geo=self.SPHERE_GEO), package_dirs=[str(self.base_path)])
 
     def test_unresolved_package_warning(self):
         """Test warning when package cannot be found."""
@@ -2014,7 +2139,7 @@ class TestUrdfUriResolution(unittest.TestCase):
             builder = newton.ModelBuilder()
             with self.assertWarns(UserWarning) as cm:
                 builder.add_urdf(str(misleading / "urdf" / "robot.urdf"), up_axis="Z")
-            self.assertIn('could not resolve package "pkg"', str(cm.warning))
+            self.assertIn('Could not resolve package "pkg"', str(cm.warning))
             self.assertEqual(builder.shape_count, 0)
 
     @unittest.skipUnless(resolve_robotics_uri, "resolve-robotics-uri-py not installed")
