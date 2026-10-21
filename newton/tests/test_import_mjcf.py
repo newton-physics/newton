@@ -10606,6 +10606,47 @@ class TestMjcfIncludeMeshdir(unittest.TestCase):
             root, _ = _load_and_expand_mjcf(f'<mujoco><include file="{robot_path}"/></mujoco>')
             self.assertEqual(root.find(".//mesh").get("file"), included_mesh)
 
+    def test_xml_string_include_absolute_asset_dir(self):
+        """Prefer an absolute asset directory over the included file's directory with an XML-string root."""
+        for attr in ("meshdir", "assetdir"):
+            with self.subTest(attr), tempfile.TemporaryDirectory() as tmpdir:
+                assets_dir = os.path.join(tmpdir, "assets")
+                models_dir = os.path.join(tmpdir, "models")
+                os.makedirs(assets_dir)
+                os.makedirs(models_dir)
+                asset_mesh = os.path.join(assets_dir, "cube.stl")
+                self._create_cube_stl(asset_mesh)
+                self._create_cube_stl(os.path.join(models_dir, "cube.stl"))
+                robot_path = os.path.join(models_dir, "robot.xml")
+                with open(robot_path, "w") as f:
+                    f.write(
+                        f'<mujoco><compiler {attr}="{assets_dir}"/>'
+                        '<asset><mesh name="cube" file="cube.stl"/></asset></mujoco>'
+                    )
+
+                root, _ = _load_and_expand_mjcf(f'<mujoco><include file="{robot_path}"/></mujoco>')
+                self.assertEqual(root.find(".//mesh").get("file"), asset_mesh)
+
+    def test_include_inherits_main_strippath(self):
+        """Apply the main model's strippath when searching its meshdir for included assets."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            for subdir in ("assets/sub", "models/sub"):
+                os.makedirs(os.path.join(tmpdir, subdir))
+            main_mesh = os.path.join(tmpdir, "assets", "cube.stl")
+            self._create_cube_stl(main_mesh)
+            self._create_cube_stl(os.path.join(tmpdir, "assets", "sub", "cube.stl"))
+            self._create_cube_stl(os.path.join(tmpdir, "models", "sub", "cube.stl"))
+            with open(os.path.join(tmpdir, "models", "robot.xml"), "w") as f:
+                f.write('<mujoco><asset><mesh name="cube" file="sub/cube.stl"/></asset></mujoco>')
+            main_path = os.path.join(tmpdir, "scene.xml")
+            with open(main_path, "w") as f:
+                f.write(
+                    '<mujoco><compiler meshdir="assets" strippath="true"/><include file="models/robot.xml"/></mujoco>'
+                )
+
+            root, _ = _load_and_expand_mjcf(main_path)
+            self.assertEqual(root.find(".//mesh").get("file"), main_mesh)
+
     def test_include_without_meshdir_still_works(self):
         """Test that includes without meshdir resolve relative to included file."""
         with tempfile.TemporaryDirectory() as tmpdir:
