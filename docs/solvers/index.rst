@@ -340,7 +340,7 @@ constraints, with unified compliant ALM by default and a deprecated legacy AVBD 
      - |yes|
    * - :attr:`~newton.Model.joint_friction`
      - |no|
-     - |no|
+     - |yes| :sup:`9`
      - |no|
      - |no|
      - |yes|
@@ -348,7 +348,7 @@ constraints, with unified compliant ALM by default and a deprecated legacy AVBD 
      - |yes|
    * - :attr:`~newton.Model.joint_limit_lower` / :attr:`~newton.Model.joint_limit_upper`
      - |yes|
-     - |yes| :sup:`9`
+     - |yes| :sup:`10`
      - |yes| :sup:`2`
      - |yes|
      - |yes|
@@ -364,7 +364,7 @@ constraints, with unified compliant ALM by default and a deprecated legacy AVBD 
      - |no|
    * - :attr:`~newton.Model.joint_effort_limit`
      - |no|
-     - |yes| :sup:`10`
+     - |yes| :sup:`11`
      - |no|
      - |no|
      - |yes|
@@ -372,7 +372,7 @@ constraints, with unified compliant ALM by default and a deprecated legacy AVBD 
      - |yes|
    * - :attr:`~newton.Model.joint_velocity_limit`
      - |no|
-     - |yes| :sup:`11`
+     - |yes| :sup:`12`
      - |no|
      - |no|
      - |no|
@@ -446,7 +446,7 @@ constraints, with unified compliant ALM by default and a deprecated legacy AVBD 
      - |no|
    * - Mimic joints
      - |yes| :sup:`3`
-     - |yes| :sup:`12`
+     - |yes| :sup:`13`
      - |yes| :sup:`4`
      - |yes| :sup:`5`
      - |yes| :sup:`6`
@@ -458,7 +458,7 @@ constraints, with unified compliant ALM by default and a deprecated legacy AVBD 
      - |no|
      - |no|
      - |no|
-     - |yes| :sup:`13`
+     - |yes| :sup:`14`
      - |no|
 
 | :sup:`3` Featherstone eliminates follower degrees of freedom from its reduced dynamics and transfers follower forces and inertia to the reference joint.
@@ -467,11 +467,12 @@ constraints, with unified compliant ALM by default and a deprecated legacy AVBD 
 | :sup:`6` MuJoCo lowers each joint-owned relationship to joint equality constraints. Multi-axis D6 relationships produce one equality constraint per axis.
 | :sup:`7` VBD interprets ``joint_target_kd`` and ``joint_limit_kd`` as absolute damping coefficients in physical units.
 | :sup:`8` Steel rejects models with disabled articulation joints instead of ignoring them; a disabled loop-closing joint starts as a released closure.
-| :sup:`9` Steel enforces joint limits as hard unilateral constraint rows when constructed with ``enable_joint_limits=True`` (off by default).
-| :sup:`10` Steel clamps the explicit joint drive force to the effort limit. With the default ``drive_mode="augmented"`` the implicit stiffness and damping response is unbounded, so under a large external load the drive reaction can exceed the limit; the PGS drive rows of ``drive_mode="rows"`` bound the complete reaction.
-| :sup:`11` Steel enforces velocity limits of PRISMATIC, REVOLUTE, and D6 DOFs when constructed with ``enable_joint_velocity_limits=True`` and ``solve_mode="matrix_free"``. With ``drive_mode="rows"``, driven DOFs are clamped at the end of every solver iteration instead of using velocity-limit rows (``fuse_joint_velocity_limits``).
-| :sup:`12` With ``solve_mode="matrix_free"``, Steel enforces each mimic relationship within one articulation as one bilateral constraint row per follower coordinate; mimics of BALL, FREE, and DISTANCE joints and mimics across articulations are rejected. It also enforces loop-closing BALL joints as point constraints. ``solve_mode="split"`` rejects mimic relationships and loop-closing joints; the propagation contact responses (``articulated_contact_response``) reject loop-closing joints and solve mimic rows iteratively.
-| :sup:`13` See :ref:`Particle-body attachments` for authoring and semantics. Attachments spanning two
+| :sup:`9` Steel enforces dry joint friction of PRISMATIC, REVOLUTE, BALL, and D6 DOFs as one bounded constraint row per DOF when constructed with ``enable_joint_friction=True`` and ``solve_mode="matrix_free"`` (off by default, experimental).
+| :sup:`10` Steel enforces joint limits as hard unilateral constraint rows when constructed with ``enable_joint_limits=True`` (off by default).
+| :sup:`11` Steel clamps the explicit joint drive force to the effort limit. With the default ``drive_mode="augmented"`` the implicit stiffness and damping response is unbounded, so under a large external load the drive reaction can exceed the limit; the PGS drive rows of ``drive_mode="rows"`` bound the complete reaction.
+| :sup:`12` Steel enforces velocity limits of PRISMATIC, REVOLUTE, and D6 DOFs when constructed with ``enable_joint_velocity_limits=True`` and ``solve_mode="matrix_free"``. With ``drive_mode="rows"``, driven DOFs are clamped at the end of every solver iteration instead of using velocity-limit rows (``fuse_joint_velocity_limits``).
+| :sup:`13` With ``solve_mode="matrix_free"``, Steel enforces each mimic relationship within one articulation as one bilateral constraint row per follower coordinate; mimics of BALL, FREE, and DISTANCE joints and mimics across articulations are rejected. It also enforces loop-closing BALL joints as point constraints. ``solve_mode="split"`` rejects mimic relationships and loop-closing joints; the propagation contact responses (``articulated_contact_response``) reject loop-closing joints and solve mimic rows iteratively.
+| :sup:`14` See :ref:`Particle-body attachments` for authoring and semantics. Attachments spanning two
   solvers are coupled by :class:`~newton.solvers.experimental.coupled.SolverCoupledADMM` instead.
 
 .. _Particle-body attachments:

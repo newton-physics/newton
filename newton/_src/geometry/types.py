@@ -232,7 +232,7 @@ class Mesh:
         self._validate_indices(self._vertices, self._indices)
         self._normals = np.array(normals, dtype=np.float32).reshape(-1, 3) if normals is not None else None
         self._uvs = np.array(uvs, dtype=np.float32).reshape(-1, 2) if uvs is not None else None
-        self._color: Vec3 | None = None
+        self._color: wp.vec3 | None = None
         self.color = color
         self._opacity: float | None = None
         self.opacity = opacity
@@ -797,6 +797,8 @@ class Mesh:
         """
         Create a copy of this mesh, optionally with new vertices or indices.
 
+        Mesh data is copied independently; the SDF is shared when ``vertices`` and ``indices`` are omitted.
+
         Args:
             vertices: New vertices to use (default: current vertices).
             indices: New indices to use (default: current indices).
@@ -832,9 +834,9 @@ class Mesh:
             texture_transform=self._texture_transform,
         )
         if not recompute_inertia:
-            m.inertia = self.inertia
+            m.inertia = wp.mat33(self.inertia)
             m.mass = self.mass
-            m.com = self.com
+            m.com = wp.vec3(self.com)
             m.has_inertia = self.has_inertia
         # Only carry mesh-topology-derived caches forward when the geometry
         # is unchanged. ``_collision_edges`` indexes the original vertex
@@ -1544,13 +1546,13 @@ class Mesh:
         return self._uvs
 
     @property
-    def color(self) -> Vec3 | None:
+    def color(self) -> wp.vec3 | None:
         """Optional display RGB color with values in [0, 1]."""
         return self._color
 
     @color.setter
     def color(self, value: Vec3 | None):
-        self._color = value
+        self._color = wp.vec3(value) if value is not None else None
 
     @property
     def opacity(self) -> float | None:

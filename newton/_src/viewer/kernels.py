@@ -80,6 +80,7 @@ def apply_picking_force_kernel(
     body_mass: wp.array[float],
     body_inv_inertia: wp.array[wp.mat33],
     pick_effective_mass: wp.array[float],
+    pick_os_inertia: wp.array[wp.mat33],
 ):
     pick_body = pick_body_arr[0]
     if pick_body < 0:
@@ -101,18 +102,22 @@ def apply_picking_force_kernel(
     offset = pick_pos_world - com_world
     pick_vel = velocity_at_point(body_qd[pick_body], offset)
 
-    # Adjust force to mass for more adaptive manipulation of picked bodies.
-    force_multiplier = 10.0 + body_mass[pick_body]
-
-    pick_force = force_multiplier * (
-        pick_state[0].pick_stiffness * (pick_target_world - pick_pos_world) - (pick_state[0].pick_damping * pick_vel)
+    # Command an acceleration of the pick point so gains are mass-independent,
+    # then map it to a force through the operational-space inertia at that point.
+    pick_accel = pick_state[0].pick_stiffness * (pick_target_world - pick_pos_world) - (
+        pick_state[0].pick_damping * pick_vel
     )
 
-    # Clamp force magnitude to prevent runaway divergence on light objects (#2361).
-    # Uses the effective mass (total articulation mass for linked bodies,
-    # own mass for free bodies) so picking a light robot link still allows
-    # enough force to move the whole chain.
     max_acceleration = pick_state[0].pick_max_acceleration * 9.81
+
+    # F = Lambda a, so each eigen-direction of the anisotropic inertia gets its own mass and
+    # an oblique pull does not over-command the reachable direction.
+    body_rotation = wp.transform_get_rotation(X_wb)
+    pick_force = wp.quat_rotate(body_rotation, pick_os_inertia[0] * wp.quat_rotate_inv(body_rotation, pick_accel))
+
+    # Clamp force magnitude to prevent runaway divergence on light objects.
+    # The articulation total bounds the force so picking a light link can still
+    # move the whole chain.
     max_force = max_acceleration * pick_effective_mass[pick_body]
     force_mag = wp.length(pick_force)
     if force_mag > max_force:
@@ -124,7 +129,6 @@ def apply_picking_force_kernel(
     # links, so bound it using the picked body's own mass and inertia.
     mass = body_mass[pick_body]
     if mass > 0.0:
-        body_rotation = wp.transform_get_rotation(X_wb)
         torque_body = wp.quat_rotate_inv(body_rotation, pick_torque)
         angular_acceleration_body = body_inv_inertia[pick_body] * torque_body
         rotational_acceleration_sq = wp.dot(torque_body, angular_acceleration_body) / mass

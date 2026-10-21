@@ -13,6 +13,7 @@ import inspect
 import unittest
 from contextlib import nullcontext
 from types import SimpleNamespace
+from unittest import mock
 from unittest.mock import Mock, patch
 
 import numpy as np
@@ -22,6 +23,7 @@ import newton
 from newton._src.geometry.sdf_texture import TextureSDFData, create_empty_texture_sdf_data
 from newton._src.geometry.sdf_utils import SDF, SDFData
 from newton._src.viewer.camera import Camera
+from newton._src.viewer.gl.gui import UI
 from newton._src.viewer.viewer_bvh import _bounds_lines, _query_bounds
 from newton._src.viewer.viewer_collision import CollisionInspector
 from newton._src.viewer.viewer_gl import ViewerGL
@@ -37,6 +39,64 @@ from newton._src.viewer.viewer_properties import (
 )
 from newton._src.viewer.viewer_workspace import ModelTree, ViewerWorkspace
 from newton.tests.unittest_utils import patch_sys_module
+
+
+class TestViewerUI(unittest.TestCase):
+    def setUp(self) -> None:
+        try:
+            from imgui_bundle import imgui, imguizmo
+        except ImportError as exc:
+            self.skipTest(f"Viewer UI dependencies not available: {exc}")
+
+        context = imgui.create_context()
+        self.addCleanup(imgui.destroy_context, context)
+        # Exercise ImGui state without an OpenGL renderer or window.
+        self.ui = UI.__new__(UI)
+        self.ui.imgui = imgui
+        self.ui.giz = imguizmo.im_guizmo
+        self.ui.io = imgui.get_io()
+        self.ui.io.set_ini_filename("")
+        self.ui.io.display_size = (640, 480)
+        self.ui.io.backend_flags |= imgui.BackendFlags_.renderer_has_textures
+        self.ui.is_available = True
+        self.ui._frame_time = None
+
+    def test_frame_delta(self) -> None:
+        """Advance ImGui time by elapsed frame durations, including a repeated timestamp."""
+        elapsed = 0.0
+        with mock.patch(
+            "newton._src.viewer.gl.gui.perf_counter",
+            side_effect=[0.0, 0.025, 0.050, 0.060, 0.060],
+        ):
+            for delta in (1.0 / 60.0, 0.025, 0.025, 0.010, 1e-6):
+                with self.subTest(delta=delta):
+                    self.ui.begin_frame()
+                    try:
+                        elapsed += delta
+                        self.assertAlmostEqual(self.ui.io.delta_time, delta)
+                        self.assertAlmostEqual(self.ui.imgui.get_time(), elapsed)
+                    finally:
+                        self.ui.imgui.end_frame()
+
+    def test_dpi_scaling(self) -> None:
+        """Keep style sizes stable on reapplication and restore them at scale one."""
+        imgui = self.ui.imgui
+        font = self.ui.io.fonts.add_font_default()
+        self.ui._setup_dark_style()
+        text_color = tuple(imgui.get_style().color_(imgui.Col_.text))
+        for scale in (1.0, 2.0, 2.0, 1.5, 1.0):
+            with self.subTest(scale=scale):
+                expected_style = imgui.Style()
+                expected_style.scale_all_sizes(scale)
+                self.ui.dpi_scale = scale
+                self.ui._apply_dpi_scaling()
+                style = imgui.get_style()
+                self.assertEqual(tuple(style.window_padding), (10.0 * scale, 6.0 * scale))
+                # This size is not explicitly overridden by the Newton theme.
+                self.assertEqual(tuple(style.separator_text_padding), tuple(expected_style.separator_text_padding))
+                self.assertEqual(style.font_scale_dpi, scale)
+                self.assertEqual(tuple(style.color_(imgui.Col_.text)), text_color)
+                self.assertEqual(self.ui.io.fonts.fonts[0], font)
 
 
 def _make_gl_state(paused: bool = False, step_requested: bool = False) -> ViewerGL:
