@@ -4088,6 +4088,7 @@ class ModelBuilder:
 
         custom_references = set(self._custom_frequency_counts) | set(builder._custom_frequency_counts)
         valid_references = entity_kinds | custom_references
+        references_resolved = True
 
         for freq_key, frequency in builder.custom_frequencies.items():
             existing = self.custom_frequencies.get(freq_key)
@@ -4111,10 +4112,19 @@ class ModelBuilder:
             reference_key = None if reference is None else self._builder_frequency_key(reference)
             reference_domains = entity_kinds if isinstance(reference, Model.AttributeFrequency) else custom_references
             if reference_key not in (None, "world") and reference_key not in reference_domains:
-                raise ValueError(
-                    f"Unknown references value '{attr.references}'. "
-                    f"Valid values are: {sorted(entity_kinds)} or custom frequencies."
+                unused_custom_reference = (
+                    isinstance(reference, str)
+                    and isinstance(attr.frequency, str)
+                    and not attr.values
+                    and builder._custom_frequency_counts.get(attr.frequency, 0) == 0
                 )
+                if unused_custom_reference:
+                    references_resolved = False
+                else:
+                    raise ValueError(
+                        f"Unknown references value '{attr.references}'. "
+                        f"Valid values are: {sorted(entity_kinds)} or custom frequencies."
+                    )
 
             if (
                 attr.values
@@ -4140,7 +4150,10 @@ class ModelBuilder:
                     f"({existing!r} != {finalizer!r})."
                 )
 
-        validated[builder] = cache_key
+        # Adding rows does not change the schema epoch. Recheck deferred references
+        # on the next merge so default-only rows cannot bypass validation.
+        if references_resolved:
+            validated[builder] = cache_key
 
     def add_articulation(
         self, joints: list[int], label: str | None = None, custom_attributes: dict[str, Any] | None = None

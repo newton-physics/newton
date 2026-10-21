@@ -2163,6 +2163,47 @@ class TestCustomFrequencyAttributes(unittest.TestCase):
         for source in sources:
             self.assertEqual(source.custom_attributes["sensor_body"].values, [])
 
+    def test_merge_unused_reference_registered_later(self):
+        """Allow unused reference declarations, then validate and offset their rows."""
+        for method in ("add_builder", "replicate"):
+            with self.subTest(method=method):
+                source = ModelBuilder()
+                source.add_custom_frequency(ModelBuilder.CustomFrequency(name="sensor"))
+                source.add_custom_attribute(
+                    ModelBuilder.CustomAttribute(name="sensor_tag", frequency="sensor", dtype=wp.int32)
+                )
+                source.add_custom_attribute(
+                    ModelBuilder.CustomAttribute(
+                        name="sensor_target", frequency="sensor", dtype=wp.int32, references="marker", default=0
+                    )
+                )
+                builder = ModelBuilder()
+                merge = getattr(builder, method)
+                args = (source,) if method == "add_builder" else (source, 1)
+                for _ in range(3):
+                    merge(*args)
+                model = builder.finalize(device="cpu")
+                self.assertEqual(model.get_custom_frequency_count("sensor"), 0)
+                self.assertFalse(hasattr(model, "sensor_target"))
+
+                # Adding a row must invalidate the deferred check, even when
+                # the reference itself still has only a default value.
+                source.add_custom_values(sensor_tag=10)
+                with self.assertRaisesRegex(ValueError, "Unknown references value 'marker'"):
+                    merge(*args)
+
+                source.add_custom_frequency(ModelBuilder.CustomFrequency(name="marker"))
+                source.add_custom_attribute(
+                    ModelBuilder.CustomAttribute(name="marker_tag", frequency="marker", dtype=wp.int32)
+                )
+                source.add_custom_values(marker_tag=20)
+                merge(*args)
+                merge(*args)
+                model = builder.finalize(device="cpu")
+                np.testing.assert_array_equal(model.sensor_target.numpy(), [0, 1])
+                np.testing.assert_array_equal(model.sensor_tag.numpy(), [10, 10])
+                np.testing.assert_array_equal(model.marker_tag.numpy(), [20, 20])
+
     def test_custom_frequency_unknown_raises_keyerror(self):
         """Test that get_custom_frequency_count raises KeyError for unknown frequencies."""
         builder = ModelBuilder()
