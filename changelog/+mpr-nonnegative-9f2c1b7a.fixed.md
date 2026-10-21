@@ -1,1 +1,1 @@
-Avoid falsely rejecting valid MPR portals due to roundoff when all barycentric weights are nonnegative.
+Fix convex contacts on large mesh triangles being rejected due to roundoff in MPR witness validation.
