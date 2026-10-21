@@ -90,12 +90,15 @@ on refresh, inspect only changes since that evidence was gathered.
 2. Identify adaptations required by changes to Newton APIs, defaults,
    dependencies, or simulation behavior. Trace each to the underlying change and
    PR, establish why it was necessary, and assess whether users need it too.
-3. Inspect available QA evidence, distinguishing source inspection from runtime
-   validation. If necessity or behavior preservation is unclear, record the
+3. Inspect available evidence, distinguishing source inspection from runtime
+   validation. Source tracing can confirm API migrations or documented default
+   changes; claims of preserved numerical behavior need relevant runtime evidence.
+   If necessity or behavior preservation is unclear, record the
    question in a separate internal note or release-audit report, including any
-   unexplained retuning or relaxed assertions. Route required runtime comparisons
-   of the previous and adapted setups to release-audit/QA, using the previous
-   release as a reference; do not rerun them on each notes refresh or present
+   unexplained retuning or relaxed assertions. Ask the release manager to arrange
+   targeted QA comparisons of the previous and adapted setups, using the previous
+   release as a reference. The release-audit skill does not run these comparisons.
+   Do not rerun them on each notes refresh or present
    unconfirmed adjustments as upgrade advice. Keep investigation details out of
    the public release-note draft.
 4. For confirmed downstream-relevant adaptations, explain who is affected, the
@@ -103,11 +106,11 @@ on refresh, inspect only changes since that evidence was gathered.
    revalidation. Include a compact before/after example when useful, the
    originating PR, and a release-tagged example link.
 
-For GitHub Release notes, put compatibility and migration guidance in `## Notes`,
-and removals, deprecations, or required platform/dependency actions in
-`## Announcements`. In internal announcements, include a short upgrade bullet
+For GitHub Release notes, follow the Style rules below: use the focused sections
+for feature releases and `## Notes` / `## Announcements` for patch releases.
+In internal announcements, include a short upgrade bullet
 and link the public guidance when available. Link an existing upgrade guide if
-useful; drafting notes does not require creating one. Keep audit counts internal.
+useful; drafting notes does not require creating one.
 Passing adapted examples or unchanged examples do not establish numerical
 equivalence, universal compatibility, or that no user action is required.
 
