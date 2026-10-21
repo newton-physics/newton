@@ -108,7 +108,17 @@ def _frame_shape_bounds(
 
 
 class ViewerWorkspace:
-    """Own UI selection and presentation without taking ownership of simulation."""
+    """Coordinate ViewerGL panels, selection, and edits for the active layer.
+
+    The application owns the simulation loop and objects. ViewerSession resolves
+    their live bindings, ModelTree indexes topology, and PropertyInspector maps
+    attribute metadata to widgets. This class connects those services to ImGui
+    and authorizes edits; it does not construct or rebuild Models or solvers.
+
+    Scene-owned caches and history are released on rebinding, while presentation
+    preferences survive example switches. Explicit simulation bindings support
+    inspection without adopting the example runner's history lifecycle.
+    """
 
     def __init__(self, gui: ViewerGui) -> None:
         self.gui = gui
@@ -243,6 +253,12 @@ class ViewerWorkspace:
                     setattr(timeline, name, value)
 
     def bind(self, example: ViewerExample | None) -> None:
+        """Refresh the active scene, preserving preferences across example changes.
+
+        Called during drawing as well as example setup, so unchanged bindings
+        reuse their tree and history. A different Model discards topology,
+        selection, and display buffers before inspection resumes.
+        """
         if example is not self.example:
             self.save_preferences()
             self._active_timeline = None
@@ -280,12 +296,18 @@ class ViewerWorkspace:
             self._active_timeline = self.history = None
 
     def before_step(self) -> bool:
+        """Advance replay and return whether the example runner may step live physics.
+
+        Reaching the newest snapshot still consumes this playback tick. The next
+        call permits simulation to continue from its untouched live state.
+        """
         if self.history is not None and self.history.replaying:
             self.history.advance(1 if not self.viewer.is_paused() else 1 / self.history.playback_speed)
             return False
         return True
 
     def render_example(self) -> None:
+        """Capture a live frame or render the selected snapshot through the example."""
         if self.history is None:
             self.example.render()
         else:
@@ -517,7 +539,13 @@ class ViewerWorkspace:
         return None
 
     def read(self, owner: object, name: str, start: int, count: int = 1, *, live: bool = False) -> np.ndarray:
-        """Read a selected slice, never the entire state or replicated worlds."""
+        """Return a cached host slice, restricting readback to requested storage rows.
+
+        Static metadata is cached until selection or scene invalidation. State
+        and Control callers must pass ``live=True``: that cache refreshes on a
+        timer, history cursor changes, and edits. Returned arrays may share cache
+        storage and must not be used to mutate device data; use ``apply_edit()``.
+        """
         array = getattr(owner, name, None)
         if array is None or count <= 0:
             return np.empty(0)
@@ -738,6 +766,8 @@ class ViewerWorkspace:
         self.bind(self.example)
         timeline = getattr(self.example, "timeline", self.history)
         cursor = (id(timeline), timeline.index) if timeline is not None else None
+        # Property readouts need not synchronize the device at render frequency.
+        # Scrubbing while paused must bypass that throttle to show the chosen frame.
         if started - self._live_time > 0.15 or (self.viewer.is_paused() and cursor != self._last_timeline_cursor):
             self._live_cache.clear()
             self._live_time = started
@@ -1557,9 +1587,11 @@ class ViewerWorkspace:
         )
 
     def can_edit_state(self) -> bool:
+        """Allow state mutation only while paused at the newest retained frame."""
         return self.viewer.is_paused() and self._at_live_frame()
 
     def can_edit_control(self) -> bool:
+        """Allow live inputs while running or paused, but never during historical replay."""
         return self._at_live_frame()
 
     def _capture_control_initial(self) -> None:
@@ -2001,7 +2033,27 @@ class ViewerWorkspace:
         joint_index: int | None = None,
         save_undo: bool = True,
     ) -> bool:
-        """Update live storage in place; never branch simulation from display history."""
+        """Validate and apply an inspector edit without replacing device allocations.
+
+        Control edits are allowed at the live frame; state edits also require a
+        pause. Joint coordinate/velocity edits update only the joint's descendant
+        branch through masked forward kinematics, then synchronize the example's
+        alternate state buffer. History is refreshed after paused edits, never
+        used as a starting point for resimulation.
+
+        Args:
+            owner: Live component or namespace container holding the array.
+            attr: Unqualified array attribute on the owner.
+            start: First storage row to replace; count is inferred from values.
+            values: Finite replacement values, converted to the stored dtype.
+            joint_index: Owning joint for coordinate/DOF edits. If omitted, a
+                single selected joint may supply it.
+            save_undo: Save the previous values. Drag gestures manage their own
+                initial undo snapshot and pass False for intermediate changes.
+
+        Returns:
+            True if applied; False if editing is disallowed or validation fails.
+        """
         control = self.is_control_owner(owner)
         if not (self.can_edit_control() if control else self.can_edit_state()):
             self.message = (

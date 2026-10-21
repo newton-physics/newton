@@ -82,6 +82,14 @@ def _layout_labels(
 
 
 class ContactLabels(ShaderGL):
+    """Batch font-atlas glyphs anchored to cached contact witnesses in scene space.
+
+    The caller controls label eligibility and supplies immutable label batches.
+    Camera, viewport, DPI, or batch identity changes rebuild screen placement;
+    stationary frames reuse uploaded geometry. Labels retain witness depth so
+    opaque geometry occludes them and later transparent passes attenuate them.
+    """
+
     def __init__(self, gl: ModuleType) -> None:
         import pyglet.font
         from pyglet.graphics.shader import Shader, ShaderProgram
@@ -174,6 +182,12 @@ class ContactLabels(ShaderGL):
         self.count = 0
 
     def render(self, renderer: RendererGL, labels: Sequence[tuple[ArrayLike, str, bool]]) -> None:
+        """Draw (witness positions, number text, selected) entries in the scene viewport.
+
+        Replace the label sequence when contents change; its identity is part of
+        the layout cache key. Each entry can contain both opposing witnesses,
+        coalesced only when their projected numbers would overlap each other.
+        """
         gl = self._gl
         gl.glBindVertexArray(self.vao)
         _, _, width, height = renderer._get_scene_viewport()

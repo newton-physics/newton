@@ -1,7 +1,14 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 The Newton Developers
 # SPDX-License-Identifier: Apache-2.0
 
-"""Camera-adaptive collision surfaces and visual shells for physics inspection."""
+"""Camera-adaptive collision surfaces and visual shells for physics inspection.
+
+RendererGL owns framebuffer, blending, and depth-mask setup. These shaders share
+its opaque depth and transparency passes: diagnostics write depth before faded
+surfaces composite over them, so X-ray reveals contacts without drawing through
+opaque foreground geometry. Surface and wire shading remain separate to avoid
+paying for a geometry shader when only filled surfaces are needed.
+"""
 
 from __future__ import annotations
 
@@ -25,6 +32,12 @@ if TYPE_CHECKING:
 
 
 def _proximity_vertex(source: str) -> str:
+    """Add instance-box camera clearance to the shared shape vertex shader.
+
+    The resulting proximity is constant across a rigid instance, avoiding a
+    patchwork of opaque and transparent triangles. SdfMeshLOD's pass culling
+    mirrors this calculation and must stay conservative if the formula changes.
+    """
     # Evaluate once per vertex from the existing instance transform. No per-frame
     # host transforms, camera-dependent batches or extra instance buffers.
     source = source.replace(
@@ -86,7 +99,13 @@ def _render_inspection_object(obj: MeshGL | MeshInstancerGL, pass_draws: str) ->
 
 
 class PhysicsSurfaceShader(ShaderShape):
-    """Fade inspection surfaces while retaining spatially precise shadows."""
+    """Split colliders between opaque and faded passes while retaining shadow coverage.
+
+    Proximity partitions collision instances between passes; visual shells and
+    deformable surfaces use their own opacity rules. Shadow sampling reuses the
+    regular shape shader. X-ray opacity is a display aid and does not redefine
+    an object's physical material or the shadow caster geometry.
+    """
 
     @staticmethod
     def _shader_sources(enable_transparency: bool) -> tuple[str, str]:
@@ -471,7 +490,13 @@ void main() {
 
 
 class PhysicsShellShader(ShaderGL):
-    """Draw the filtered wire overlay; filled shells use PhysicsSurfaceShader."""
+    """Draw wires with projected-density filtering and face-winding contrast.
+
+    Triangle inradius in pixels limits wire opacity so small or densely meshed
+    objects do not become solid-looking. Back-facing wires use lower contrast
+    based on winding, not other meshes' depths. Filled shells use the cheaper
+    PhysicsSurfaceShader path without the wire geometry stage.
+    """
 
     def __init__(self, gl: ModuleType) -> None:
         import re  # noqa: PLC0415

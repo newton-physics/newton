@@ -28,6 +28,8 @@ _LEVELS = ((10, "Debug"), (20, "Info"), (30, "Warning"), (40, "Error"), (50, "Cr
 
 @dataclass(frozen=True, slots=True)
 class ConsoleEntry:
+    """Immutable formatted log text, safe to retain without the originating traceback."""
+
     sequence: int
     timestamp: str
     level: int
@@ -43,7 +45,13 @@ class ConsoleEntry:
 
 
 class ConsoleBuffer(logging.Handler):
-    """Capture text on producer threads without touching ImGui or retaining tracebacks."""
+    """Bound log storage by entries, characters, and lines on producer threads.
+
+    logging.Handler serializes emit calls with its lock; snapshot and clear use
+    the same lock. Only immutable formatted entries cross into the GUI, which
+    must never run inside emit. LogRecords and exception tracebacks are not kept,
+    avoiding accidental retention of scene objects through stack frames.
+    """
 
     def __init__(self, *, capacity: int = 4000, max_characters: int = 4 * 1024 * 1024, max_lines: int = 20000) -> None:
         super().__init__(logging.DEBUG)
@@ -99,6 +107,7 @@ class ConsoleBuffer(logging.Handler):
             self.handleError(record)
 
     def snapshot(self) -> tuple[int, tuple[ConsoleEntry, ...], int]:
+        """Return a consistent revision, entry tuple, and eviction count for GUI caching."""
         self.acquire()
         try:
             return self.revision, tuple(self.entries), self.discarded
@@ -117,7 +126,13 @@ class ConsoleBuffer(logging.Handler):
 
 
 class ConsoleCapture:
-    """Own the GUI sink and scoped Newton warning routing across viewer lifetimes."""
+    """Own a viewer's log sink and share scoped warning routing with other viewers.
+
+    The first capture installs the Newton warning hook; the last close restores
+    it only if no other code has replaced it. Logger verbosity is increased only
+    on request and restored with the same ownership check. Call close when the
+    viewer is disposed so global hooks do not retain an obsolete GUI sink.
+    """
 
     _active: ClassVar[set[ConsoleCapture]] = set()
     _previous_warning: ClassVar[Callable[..., None] | None] = None

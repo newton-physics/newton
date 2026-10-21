@@ -137,7 +137,14 @@ def _gather_live_labels(
 
 
 class CollisionInspector:
-    """Read no collision arrays until expanded, selected, or explicitly visualized."""
+    """Inspect transient contact buffers and pipeline stages on demand.
+
+    Tree availability uses Python bindings only. Detailed rows are read while
+    paused and cached for that inspection snapshot; contact indices identify
+    buffer slots, not persistent physical contacts. Changing frame or resuming
+    clears slot selection and dependent labels. Candidate pairs are available
+    only at the live frame because history does not record broadphase buffers.
+    """
 
     root = ("collision", 0)
     page_size = 128
@@ -233,6 +240,13 @@ class CollisionInspector:
         return self.cache[key]
 
     def sync(self, *, force: bool = False) -> None:
+        """Refresh collision rows when inspection context changes or Refresh is requested.
+
+        The token tracks Model, pause state, contact storage, and historical
+        cursor. Running mode exposes settings without downloading contact rows.
+        ``force`` bypasses both the interest check and token cache, for changes
+        to a paused buffer that do not advance viewer time.
+        """
         ws, tree = self.workspace, self.tree
         if tree is None or self.root not in tree.labels:
             return

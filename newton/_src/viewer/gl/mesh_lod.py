@@ -17,7 +17,17 @@ if TYPE_CHECKING:
 
 
 class SdfMeshLOD:
-    """Cache sampled display meshes; the collision SDF always stays unchanged."""
+    """Choose display-only SDF mesh detail for one instanced batch and owning layer.
+
+    Level zero is the original mesh; coarser levels are extracted lazily at
+    strides dividing the SDF subgrid size. The source SDF and collision queries
+    remain unchanged. Cached meshes are registered in the owning layer, even if
+    another layer is active when rendering requests a new level.
+
+    Camera and shadow passes use their own frusta and resolution limits. Draw
+    ranges preserve instance order so transforms, visibility, and picking indices
+    keep referring to the original batch.
+    """
 
     def __init__(self, viewer: ViewerGL, batch: ViewerBase.ShapeInstances) -> None:
         self.viewer = proxy(viewer)
@@ -34,6 +44,7 @@ class SdfMeshLOD:
         self.meshes = {0: viewer.objects[batch.mesh]}
 
     def mesh(self, level: int) -> MeshGL:
+        """Return a cached display mesh, falling back to level zero for empty extraction."""
         if level not in self.meshes:
             from ...geometry.sdf_texture import compute_isomesh_from_texture_sdf  # noqa: PLC0415
             from ...geometry.types import GeoType  # noqa: PLC0415
@@ -76,6 +87,7 @@ class SdfMeshLOD:
         return np.all(distance + extent >= -allowance, axis=1)
 
     def _draws(self, levels: np.ndarray, visible: np.ndarray) -> tuple[tuple[MeshGL, int, int], ...]:
+        """Group contiguous instances as (mesh, first, count), without sorting the batch."""
         levels = np.where(visible, levels, -1)
         boundaries = np.r_[0, np.flatnonzero(np.diff(levels)) + 1, len(levels)]
         return tuple(
@@ -99,6 +111,12 @@ class SdfMeshLOD:
         return self._draws(levels, self._visible(matrix, centers, axes))
 
     def prepare(self, renderer: RendererGL, obj: MeshInstancerGL) -> None:
+        """Prepare camera-relative bounds and pass-specific draws for this frame.
+
+        Projected voxel size selects detail per instance. Hysteresis preserves a
+        previous coarse level near a threshold to avoid oscillation while moving
+        the camera. Shadow draws subsequently reuse these transformed bounds.
+        """
         # Reuse the matrices already staged for GL. This adds no per-frame
         # device readback on the host-upload path, and only small transforms
         # when explicit CUDA/GL interoperability is enabled.
@@ -118,6 +136,8 @@ class SdfMeshLOD:
         for level, stride in enumerate(self.strides[1:], 1):
             threshold = np.full(len(transforms), 0.5)
             if previous is not None and len(previous) == len(levels):
+                # Enter a coarse level below half a pixel; leave it only after
+                # its projected cells grow beyond three quarters of a pixel.
                 threshold[previous >= level] = 0.75
             levels[pixels * stride < threshold] = level
         obj._lod_levels = levels

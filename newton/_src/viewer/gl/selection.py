@@ -203,7 +203,13 @@ void main() {
 
 
 class SelectionOutline:
-    """Render a union mask of selected shapes, then composite its outside edge."""
+    """Outline the union of selected geometry rather than each shape separately.
+
+    The mask samples resolved scene depth and stores coverage plus visible depth
+    in a two-channel texture. Compositing only the union's outside edge avoids
+    internal seams when selecting a body or articulation. RendererGL invokes it
+    before transparency so foreground shells also attenuate the outline.
+    """
 
     def __init__(self, gl: ModuleType) -> None:
         from pyglet.graphics.shader import Shader, ShaderProgram
@@ -253,6 +259,12 @@ class SelectionOutline:
             raise RuntimeError("Selection framebuffer is incomplete")
 
     def render(self, renderer: RendererGL, instances: Sequence[tuple[MeshInstancerGL | MeshGL, int]]) -> None:
+        """Draw selected batch slots, or display-space meshes marked with index -1.
+
+        The caller must resolve multisampled depth before this pass. An index of
+        -1 is reserved for compact deformable selection meshes whose vertices
+        already include world and layer transforms.
+        """
         gl = self.gl
         self._resize(renderer)
         gl.glDrawBuffer(gl.GL_COLOR_ATTACHMENT0)

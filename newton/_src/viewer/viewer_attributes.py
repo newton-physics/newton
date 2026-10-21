@@ -33,7 +33,17 @@ def resolve_attribute(owner: object, name: str) -> tuple[object | None, str, Any
 def component_attributes(
     model: Model, owner: object, component: Model.AttributeAssignment
 ) -> Iterator[tuple[str, Model.AttributeSpec, object, str, Any]]:
-    """Use registered frequencies and actual component storage, including optional arrays."""
+    """Discover populated inspector fields without reading device array contents.
+
+    Custom assignment metadata determines the component; built-ins are resolved
+    against its actual storage. Internal compaction data is omitted from the
+    inspector. Namespace containers remain intact so edits reach the original
+    owner rather than a flattened copy.
+
+    Yields:
+        Qualified name, attribute specification, storage owner, unqualified name,
+        and value. The value is a reference to existing storage, not a snapshot.
+    """
     for name, spec in model._iter_attribute_specs():
         if name.startswith("_") or spec.compaction_policy in ("world_start", "color_groups", "passthrough"):
             continue
@@ -85,8 +95,17 @@ def frequency_row_label(frequency: Model.AttributeFrequency | str, index: int) -
 
 @dataclass
 class PropertyDomain:
+    """Describe the rows belonging to an inspector selection, independently of widgets.
+
+    Keep ranges lazy for large worlds and meshes. The inspector expands joint
+    selections to coordinate/DOF spans only when their fields are displayed.
+    """
+
     model: Model
+    """Model whose attribute registry and topology define the rows."""
     frequency: Model.AttributeFrequency | str
+    """Built-in or solver-defined attribute frequency to inspect."""
     indices: Sequence[int] | np.ndarray
-    # JOINT_COORD and JOINT_DOF rows are indexed by joint, not scalar coordinate.
+    """Global row indices, or joint indices when ``joints`` is True."""
     joints: bool = False
+    """Resolve JOINT_COORD/JOINT_DOF spans through the Model's joint start arrays."""

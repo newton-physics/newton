@@ -28,14 +28,26 @@ if TYPE_CHECKING:
 
 @dataclass
 class PropertyEdit:
+    """Proposed widget value and gesture boundaries; never a device-side mutation."""
+
     value: Any
+    """Value to apply only when ``changed`` is True."""
     changed: bool = False
+    """Whether this draw produced an accepted editable value."""
     activated: bool = False
+    """Whether a gesture started, allowing the caller to capture one undo baseline."""
     finished: bool = False
+    """Whether ImGui reports that an edited item was deactivated."""
 
 
 class PhysicsWidgets:
-    """Render shared physics types with explicit units and edit permissions."""
+    """Render physics values without knowing their simulation owner or frequency.
+
+    Callers supply host values, units, and edit permissions, then consume a
+    PropertyEdit to update storage. Widgets own only presentation state such as
+    quaternion display mode. Repeated fields require distinct ImGui ID scopes;
+    labels alone are not unique across objects or custom namespaces.
+    """
 
     accent = (0.96, 0.61, 0.32, 1)
     muted = (0.65, 0.65, 0.65, 1)
@@ -727,6 +739,13 @@ class PhysicsWidgets:
         format_spec: str | None = None,
         slider: bool = False,
     ) -> PropertyEdit:
+        """Render a bounded slider or constant-speed numeric drag with text entry.
+
+        ``bounds=None`` leaves the value unbounded; it does not create an
+        artificial slider range. ``speed`` is the value change per drag pixel,
+        independent of the current value's magnitude. Formatting affects display
+        precision only, preserving stored values until an edit is accepted.
+        """
         ui = self.ui
         self._label(label, editable, unit, reason, inline=True, width=label_width)
         if width is not None:
@@ -1029,6 +1048,16 @@ class PhysicsWidgets:
 
     @staticmethod
     def rotation_quaternion(values: ArrayLike, mode: str, degrees: bool = True) -> np.ndarray:
+        """Convert an editor representation to a normalized XYZW quaternion.
+
+        Euler modes use the fixed-axis order encoded in the mode name. Axis-angle
+        uses XYZ plus angle; rotation-vector magnitude is the angle. ``degrees``
+        applies only to angles, not axis components or quaternion coefficients.
+
+        Raises:
+            ValueError: Values are nonfinite, a quaternion has zero length, or a
+                nonzero angle is paired with a zero axis.
+        """
         values = np.asarray(values, dtype=np.float64)
         if not np.isfinite(values).all():
             raise ValueError("Enter finite rotation values.")
@@ -1090,6 +1119,9 @@ class PhysicsWidgets:
             np.allclose(original, state["q"], atol=1e-7, rtol=0)
             or (mode != "Quaternion" and np.allclose(-original, state["q"], atol=1e-7, rtol=0))
         )
+        # Equivalent quaternions can have opposite signs, and Euler angles have
+        # many equivalent branches. Keep the user's representation through a
+        # drag instead of repeatedly converting it back to a canonical branch.
         if changed_mode or units_changed or not same_q:
             try:
                 values = self.rotation_values(original, mode, state["degrees"])

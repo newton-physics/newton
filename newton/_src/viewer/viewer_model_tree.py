@@ -22,7 +22,16 @@ if TYPE_CHECKING:
 
 
 class ModelTree:
-    """Show every world, indexing topology only for expanded or inspected worlds."""
+    """Index one Model's explorer hierarchy independently of its presentation.
+
+    World boundary arrays are read at construction; object topology is loaded
+    only for expanded or inspected worlds. Keys retain global Model indices,
+    so filtering and visibility never renumber objects or their world offsets.
+    Resource and custom-frequency catalogs add their own keys lazily.
+
+    Cached topology assumes a fixed Model layout. Construct a new tree after a
+    Model rebuild; ``rebuild()`` only regenerates the visible explorer rows.
+    """
 
     def __init__(
         self,
@@ -93,6 +102,7 @@ class ModelTree:
         self.rebuild()
 
     def ranges(self, kind: str, world: int) -> list[tuple[int, int]]:
+        """Return half-open global index ranges; world -1 includes shared objects."""
         starts = self.starts[kind]
         pairs = ((0, starts[0]), (starts[-2], starts[-1])) if world < 0 else ((starts[world], starts[world + 1]),)
         return [(int(a), int(b)) for a, b in pairs if b > a]
@@ -139,6 +149,12 @@ class ModelTree:
         return caption
 
     def ensure_world(self, world: int) -> None:
+        """Load one world's topology once, without materializing other worlds.
+
+        Device reads are restricted to this world's object ranges. Joint/body
+        parentage builds the hierarchy; shapes are children of their owning body,
+        while parentless bodies and static geometry receive separate groups.
+        """
         if world in self.loaded_worlds:
             return
         self.loaded_worlds.add(world)

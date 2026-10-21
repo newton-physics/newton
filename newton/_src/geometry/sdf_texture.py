@@ -3192,6 +3192,8 @@ def _generate_isomesh_texture_kernel(
             else:
                 t = wp.clamp((isovalue - val_0) / val_diff, MC_EDGE_CLAMP_MIN, MC_EDGE_CLAMP_MAX)
                 p = p_0 + t * (p_1 - p_0)
+            # Marching-cubes edge coordinates span a unit cell; convert back to
+            # the original voxel lattice before applying physical voxel spacing.
             vol_idx = p * float(cell_stride) + wp.vec3(float(x_id), float(y_id), float(z_id))
             local_pos = sdf.sdf_box_lower + wp.cw_mul(vol_idx, sdf.voxel_size)
             vertices[3 * out_idx + 3 * fi + vi] = local_pos
@@ -3211,6 +3213,11 @@ def compute_isomesh_from_texture_sdf(
 
     Iterates over coarse cells that have subgrids (the narrow-band region
     where the surface lives) and runs marching cubes on their fine voxels.
+    A larger cell_stride samples the existing SDF at lower resolution; it does
+    not modify SDF storage. Thin features may disappear, so coarse results are
+    intended for display, not as replacement collision geometry. Extraction
+    reads allocation metadata and generated vertices back to the host and
+    should be cached rather than repeated every render frame.
 
     Args:
         tex_data_array: Warp array of :class:`TextureSDFData` structs.
@@ -3226,6 +3233,10 @@ def compute_isomesh_from_texture_sdf(
 
     Returns:
         :class:`~newton.Mesh` with the isosurface, or ``None`` if empty.
+
+    Raises:
+        ValueError: An initialized subgrid has a nonpositive cell_stride or a
+            stride that does not divide its size.
     """
     from .sdf_mc import get_mc_tables  # noqa: PLC0415
     from .types import Mesh  # noqa: PLC0415
@@ -3241,6 +3252,8 @@ def compute_isomesh_from_texture_sdf(
     subgrid_size = int(entry["subgrid_size"])
     if subgrid_size == 0:
         return None
+    # Both marching-cubes passes must tile each active subgrid exactly. A partial
+    # final cell would sample across its boundary and disagree with neighboring grids.
     if cell_stride < 1 or subgrid_size % cell_stride:
         raise ValueError("cell_stride must be positive and divide the SDF subgrid size")
     samples = subgrid_size // cell_stride

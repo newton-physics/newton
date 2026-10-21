@@ -26,6 +26,10 @@ class ViewerSession:
     References remain owned by the application. A state provider resolves the
     current input buffer after a simulation swaps its double-buffered states.
     This adapter does not step, reset, render, or record the simulation.
+
+    Bindings describe one viewer layer. Replacing a Model or its solver requires
+    rebinding the session; this object does not migrate state across topology
+    changes. Explicit bindings are separate from the example-runner convention.
     """
 
     def __init__(
@@ -37,6 +41,17 @@ class ViewerSession:
         collision_pipeline: CollisionPipeline | None = None,
         contacts: Contacts | None = None,
     ) -> None:
+        """Bind existing simulation objects without copying their arrays.
+
+        Args:
+            state: Live State, or a provider evaluated on each lookup. Use a
+                provider when the simulation swaps State objects after stepping.
+            control: Live inputs that the inspector may edit in place.
+            solver: Solver used to discover settings and inspection resources.
+            collision_pipeline: Optional pipeline for collision diagnostics.
+            contacts: Contact buffer produced by the application. Binding it
+                does not run collision detection or populate the buffer.
+        """
         self._state = state
         self._control = control
         self._solver = solver
@@ -52,7 +67,15 @@ class ViewerSession:
         return session
 
     def live_state(self, fallback: State | None = None) -> State | None:
-        """Resolve the current live state without caching a swapped-out buffer."""
+        """Resolve the current live state without caching a swapped-out buffer.
+
+        The example adapter prefers ``state_0`` to ``state``. If the binding
+        resolves to None, return the caller's fallback, usually the last logged
+        State. Historical display-state substitution belongs to the caller.
+
+        Raises:
+            TypeError: The binding resolves to a non-State object other than None.
+        """
         state = self._state
         if self._example is not None:
             state = getattr(self._example, "state_0", getattr(self._example, "state", None))
@@ -105,7 +128,12 @@ class ViewerSession:
         return True
 
     def collision_pipelines(self, model: Model) -> list[tuple[str, CollisionPipeline]]:
-        """Discover only Python references; never inspect or transfer device arrays."""
+        """Return named pipelines belonging to the given Model, deduplicated by identity.
+
+        Inspect only direct attributes of the example, Model, and solver. Avoid
+        recursively traversing application objects or transferring device arrays;
+        applications with deeper ownership can provide an explicit pipeline.
+        """
         result: list[tuple[str, CollisionPipeline]] = []
         seen: set[int] = set()
         if self._pipeline is not None and self._pipeline.model is model:

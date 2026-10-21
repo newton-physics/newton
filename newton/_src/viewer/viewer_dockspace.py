@@ -14,7 +14,16 @@ if TYPE_CHECKING:
 
 
 class ViewerDockspace:
-    """Keep panel placement independent of example and logger lifetimes."""
+    """Arrange the viewport and logged outputs within one application window.
+
+    Stable ImGui window IDs preserve placement as examples and logger contents
+    change. This object owns panel layout, not images, plots, or GL textures.
+    Floating panels stay inside the same native window and GL context.
+
+    The viewport samples the renderer's existing framebuffer. Its logical-pixel
+    content rectangle drives scene rendering, camera projection, and input hit
+    testing; it does not request a second scene render or a host image copy.
+    """
 
     viewport_name = "Viewport###workspace_viewport"
     plots_name = "Plots###workspace_plots"
@@ -82,6 +91,12 @@ class ViewerDockspace:
         self._placed.add(name)
 
     def draw(self, rect: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+        """Lay out panels and return the visible viewport rectangle in ImGui pixels.
+
+        Coordinates use a top-left origin. The workspace converts them to GL
+        framebuffer pixels and a bottom-left origin, including DPI scaling. A
+        hidden viewport returns a minimal rectangle and clears viewport_visible.
+        """
         ws = self.workspace
         ui, scale = ws.gui.ui.imgui, ws.widgets.scale
         images, plots = ws.viewer._image_logger, ws.viewer._plot_logger

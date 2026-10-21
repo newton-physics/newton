@@ -28,6 +28,12 @@ if TYPE_CHECKING:
 
 @dataclass
 class DeformableObject:
+    """Explorer grouping over catalog particle IDs and primary-Model element indices.
+
+    A grouping does not own simulation arrays. Ranges stay lazy until inspection
+    or selection needs explicit indices, including loose-particle world groups.
+    """
+
     kind: str
     label: str
     world: int
@@ -37,7 +43,12 @@ class DeformableObject:
 
 
 class ParticleSource:
-    """Identify particles by model, independent of the rigid model being drawn."""
+    """Map a particle Model into a disjoint catalog ID range.
+
+    Coupled examples can log particles from an auxiliary Model. ``offset`` is
+    added only to explorer identities; simulation arrays keep their Model-local
+    indices. Logged points identify the displayed State without copying it.
+    """
 
     def __init__(self, model: Model, offset: int) -> None:
         self.model = model
@@ -222,7 +233,13 @@ def _pick_index(distances: wp.array[float], nearest: wp.array[float], index: wp.
 
 
 class DeformableCatalog:
-    """Index CPU topology once; expand particle and element rows in small pages."""
+    """Index deformable topology lazily and keep paged explorer identities stable.
+
+    The primary Model supplies surfaces and volumes. Auxiliary particle-only
+    Models exposed by conventional examples get disjoint particle ID ranges;
+    triangle and tetrahedron indices always refer to the primary Model.
+    Topology caches live for one Model layout and are recreated on scene rebuild.
+    """
 
     page_size = 256
 
@@ -689,7 +706,13 @@ class DeformableCatalog:
 
 
 class DeformableSelection:
-    """Upload only selected vertices; share the regular depth-tested outline."""
+    """Gather selected vertices into a compact mesh for depth-tested highlighting.
+
+    Selection changes rebuild compact topology; frame updates gather positions
+    on the device using source-local particle indices. Output vertices already
+    include world spacing and the layer transform, so the outline pass uses an
+    identity instance transform. Call close before discarding the selection.
+    """
 
     def __init__(self, workspace: ViewerWorkspace, keys: Sequence[TreeKey]) -> None:
         from .gl.opengl import MeshGL  # noqa: PLC0415
@@ -797,7 +820,12 @@ class DeformableSelection:
 
 
 class DeformableDisplay:
-    """Apply the same display offsets and visibility to soft and rigid worlds."""
+    """Apply world spacing and layer transforms without changing simulation positions.
+
+    Display points and radii update on the device each frame. Triangle filtering
+    is rebuilt only when appearance groups or visibility change. World offsets
+    are indexed by original world ID, independent of which worlds are visible.
+    """
 
     def __init__(self, viewer: ViewerBase) -> None:
         self.model = viewer.model

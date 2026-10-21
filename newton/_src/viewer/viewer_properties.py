@@ -57,7 +57,17 @@ def joint_editor_options(
 
 
 class PropertyInspector:
-    """Discover fields once per selection; transfer only displayed rows from the GPU."""
+    """Map registered State, Control, and Model attributes to typed GUI fields.
+
+    Selection domains are cached by Model identity and selection. Attribute
+    availability is resolved from current component storage, so optional and
+    namespaced fields need no solver-specific UI. Only open groups and visible
+    pages request values through the workspace's bounded read cache.
+
+    Widgets propose edits; the workspace authorizes and applies them to live
+    storage. Model fields and reference indices remain read-only because changing
+    them may invalidate topology or solver allocations.
+    """
 
     kinds: ClassVar[dict[str, Model.AttributeFrequency]] = {
         "joint": Frequency.JOINT,
@@ -83,6 +93,7 @@ class PropertyInspector:
         self.domains.clear()
 
     def _contexts(self) -> None:
+        """Merge selected row domains without merging different Models or frequencies."""
         ws = self.workspace
         selection = frozenset(getattr(ws, "selection", ()) or (ws.selected or ("scene", 0),))
         key = (id(ws.model), selection)
@@ -477,6 +488,8 @@ class PropertyInspector:
         start, count = index * spec.row_width, spec.row_width
         joint = index if domain.joints else None
         if domain.joints:
+            # A joint is one explorer item but owns a variable-length span in
+            # coordinate/DOF storage. row_width alone cannot describe that span.
             offsets = "joint_q_start" if domain.frequency == Frequency.JOINT_COORD else "joint_qd_start"
             span = ws.read(model, offsets, index, 2).astype(int)
             start, count = int(span[0]), int(span[1] - span[0])

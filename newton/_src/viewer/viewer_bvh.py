@@ -199,11 +199,18 @@ def _frame_bounds(
 
 @dataclass
 class BvhResource:
+    """Locate a live acceleration structure without retaining a stale BVH handle."""
+
     owner: object
+    """Application or Model object that owns the resource."""
     attribute: str
+    """Attribute resolved again whenever the resource is inspected."""
     usage: str
+    """Human-readable purpose shown in the inspector."""
     local: bool = False
+    """Whether bounds need a shape instance transform to reach simulation space."""
     index: int | None = None
+    """Optional entry within an owner attribute containing multiple resources."""
 
     def get(self) -> wp.Bvh | wp.Mesh | None:
         value = getattr(self.owner, self.attribute, None)
@@ -213,7 +220,18 @@ class BvhResource:
 
 
 class BvhResources:
-    """Discover host-owned BVHs lazily; only a selected BVH adds GPU work."""
+    """Discover acceleration structures and draw bounded, live leaf-box diagnostics.
+
+    Discovery examines Python references; only selection requests GPU work.
+    Visualization traverses the current BVH and displays primitive bounds, not
+    internal tree-node topology. Model-owned shape/particle BVHs are refitted
+    from the displayed live state; solver-owned structures are inspected as-is.
+    History does not retain BVHs, so diagnostics are hidden during replay.
+
+    CUDA graphs cache refit, traversal, and line generation by buffer identity.
+    Lines stay on the device when CUDA/GL interop is available; focusing performs
+    a separate full-bounds reduction with only six floats returned to the host.
+    """
 
     root = ("bvh_collection", 0)
     meshes = ("bvh_collection", "meshes")
@@ -526,6 +544,11 @@ class BvhResources:
                 self.model.bvh_refit_particles(state)
 
     def _refit_signature(self, resource: wp.Bvh | wp.Mesh, state: State | None) -> tuple[Hashable, ...]:
+        """Include refit inputs not already covered by the line-generation graph key.
+
+        Array contents may change in place between launches, but replacing an
+        allocation or alternating particle-state buffers requires another graph.
+        """
         if state is None:
             return ()
         model = self.model
@@ -552,6 +575,12 @@ class BvhResources:
         empty_vec: wp.array[wp.vec3],
         empty_int: wp.array[int],
     ) -> list[Any]:
+        """Bind bounds in their native frame and the transforms into display space.
+
+        Mesh bounds are shape-local; query BVHs are in simulation space. The
+        kernels apply shape/body transforms when needed, then world spacing,
+        then the layer transform. Empty typed arrays represent absent inputs.
+        """
         viewer, model = ws.viewer, self.model
         mesh = isinstance(resource, wp.Mesh)
         state = self._state(ws)
@@ -710,6 +739,7 @@ class BvhResources:
         self.error = ""
 
     def close(self, viewer: ViewerBase) -> None:
+        """Release overlay GL storage and captured graphs before changing scenes."""
         previous = viewer.lines.pop(self._line_name, None)
         if previous is not None:
             previous.destroy()

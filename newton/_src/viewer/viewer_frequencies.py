@@ -30,7 +30,13 @@ def attribute_value(model: Model, name: str) -> Any:
 
 
 class FrequencyCatalog:
-    """Index ownership once; materialize labels and tree nodes only on demand."""
+    """Expose registered custom frequencies without solver-specific naming rules.
+
+    Ownership arrays are read once for this Model. An explicit articulation
+    association takes precedence over a single unambiguous world reference;
+    otherwise rows remain shared. Labels and paged tree nodes are materialized
+    on demand. Recreate the catalog when the Model's frequency layout changes.
+    """
 
     page_size = 128
 

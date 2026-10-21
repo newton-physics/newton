@@ -23,7 +23,12 @@ if TYPE_CHECKING:
 
 
 class TimelineView:
-    """Render contact and motion tracks with exact frame navigation."""
+    """Present WorkspaceHistory without owning snapshots or stepping the simulation.
+
+    Navigation updates the history cursor; the example runner decides whether
+    to replay or advance live physics. Readout filtering and plot scaling are
+    presentation-only and never interpolate the underlying recorded state.
+    """
 
     def __init__(self, history: WorkspaceHistory) -> None:
         self.history = history

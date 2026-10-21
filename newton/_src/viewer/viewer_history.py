@@ -94,10 +94,19 @@ def _count_self_contact_pairs(
 
 @dataclass
 class HistoryFrame:
+    """Host-side display snapshot, not a resumable solver checkpoint.
+
+    Component dictionaries contain copied NumPy arrays keyed by attribute name
+    (``namespace:name`` for custom attributes). Contact and observable arrays
+    retain active rows only; solver scratch data and internal state are excluded.
+    """
+
     time: float
+    """Simulation time in seconds."""
     state: dict[str, np.ndarray]
     contacts: dict[str, np.ndarray]
     size: int
+    """Bytes occupied by copied array data, excluding Python container overhead."""
     touching: int = 0
     depth_mm: float = 0
     body_speed: float = float("nan")
@@ -114,7 +123,17 @@ class HistoryFrame:
 
 
 class WorkspaceHistory:
-    """Keep display snapshots separate from the solver's live state."""
+    """Record bounded example display snapshots without rewinding the solver.
+
+    Capture copies declared arrays to the host at rendered frame boundaries.
+    Replay uploads a selected snapshot into separate display buffers and invokes
+    the example's render callback. The live simulation remains at the newest
+    frame and can step again only after playback reaches that frame.
+
+    This adapter relies on conventional example attributes, not arbitrary solver
+    checkpoints. Memory and frame limits evict the oldest snapshots; ``index``
+    is relative to retained frames and ``first_frame`` counts evicted frames.
+    """
 
     contact_fields = ("shape0", "shape1", "point0", "point1", "offset0", "offset1", "normal", "margin0", "margin1")
     soft_contact_fields = ("indices", "particle", "barycentric", "shape", "body_pos", "body_vel", "normal")
@@ -217,6 +236,16 @@ class WorkspaceHistory:
         return np.concatenate(parts)
 
     def capture(self, *, replace: bool = False) -> None:
+        """Copy the current example frame, evicting old snapshots to stay bounded.
+
+        Args:
+            replace: Permit replacing the newest snapshot at the same simulation
+                time, for example after an edit while paused. Otherwise repeated
+                renders at that time do not trigger another capture.
+
+        Oversized snapshots stop recording rather than transferring unbounded
+        device data. A successful capture moves the cursor to the newest frame.
+        """
         if not self.recording or self._recording_blocked:
             return
         example = self.example
@@ -337,7 +366,13 @@ class WorkspaceHistory:
         self.loaded_index = -1
 
     def render(self) -> None:
-        """Substitute display data only for render(), restoring all live references."""
+        """Render live data or temporarily substitute the selected historical frame.
+
+        Replay buffers are uploaded only when the cursor or their storage changes.
+        Conventional example state/contact/time references are restored in a
+        finally block, including when rendering fails. The callback must only
+        render: these snapshots omit solver state required to resume stepping.
+        """
         example = self.example
         if not self.replaying:
             example.render()
@@ -451,7 +486,12 @@ class WorkspaceHistory:
         self._plot_revision = getattr(self, "_plot_revision", 0) + 1
 
     def plot_samples(self, low: int, high: int, bins: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-        """Preserve short contact peaks and average motion within each pixel bin."""
+        """Reduce an inclusive retained-frame range to approximately ``bins`` samples.
+
+        Return bin centers, edges, three contact-count series, and two mean-speed
+        series. Contacts use maxima to preserve brief impacts; motion uses means.
+        All inputs come from the host-side plot ring, with no device readback.
+        """
         key = (self.first_frame, low, high, bins, getattr(self, "_plot_revision", 0))
         if getattr(self, "_plot_cache_key", None) != key:
             indices = np.arange(low, high + 1)

@@ -85,7 +85,13 @@ def _sample_joint_frames(
 
 
 class JointSelectionGroup:
-    """Draw a selected subtree with one bounded device transfer per frame."""
+    """Gather selected joint frames once, then batch their screen-sized glyphs.
+
+    GPU sampling reads displayed body transforms, so annotations follow maximal
+    coordinate solvers and history without assuming joint_q is current. One
+    compact host transfer covers only selected joints. Tessellation is reused
+    while sampled frames, camera, visibility, and sizing settings are unchanged.
+    """
 
     def __init__(self, workspace: ViewerWorkspace, indices: Sequence[int] | np.ndarray) -> None:
         self.joints = tuple(JointSelection(workspace, index) for index in sorted(indices))

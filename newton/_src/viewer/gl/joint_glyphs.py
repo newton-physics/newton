@@ -52,6 +52,14 @@ void main() {
 
 
 class JointGlyphShader(ShaderGL):
+    """Draw CPU-tessellated joint annotations with scene depth and optional OIT.
+
+    Vertices contain homogeneous clip positions and RGBA colors. Preserve clip W
+    rather than submitting normalized device coordinates: depth interpolation
+    and transparency weighting must agree with the rest of the scene. The caller
+    supplies the opaque or translucent batch and owns blending/depth-write state.
+    """
+
     def __init__(self, gl: ModuleType) -> None:
         from pyglet.graphics.shader import Shader, ShaderProgram
 
@@ -73,6 +81,12 @@ class JointGlyphShader(ShaderGL):
     def render(
         self, vertices: np.ndarray, *, oit: bool = False, reference: float = 1.0, depth_equal: bool = False
     ) -> None:
+        """Upload an interleaved float32 (N, 8) triangle batch and draw it.
+
+        ``reference`` is the view-depth normalization distance for weighted
+        transparency. ``depth_equal`` lets coplanar stroke foregrounds cover
+        earlier glyph fragments without disabling scene depth testing.
+        """
         if not len(vertices):
             return
         gl = self._gl
