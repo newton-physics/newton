@@ -8981,7 +8981,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 pair_world = getattr(mujoco_attrs, "pair_world", None) if mujoco_attrs is not None else None
                 if pair_world is not None:
                     pair_world_np = pair_world.numpy()
-                    nworld_total = model.world_count if model.world_count > 0 else 1
+                    nworld_total = nworld
                     # Build per-world row lists (excluding global rows) so that
                     # per-world rows are resolved by rank within their world
                     # rather than by a count-derived stride. This correctly
