@@ -459,7 +459,8 @@ class Example:
         )
         self.camera_transforms = wp.array(
             [
-                _look_at_transform((-2.4, -2.5, 1.3), (-2.4, 0.0, 1.1)),
+                # Leave room for the cable's sideways swing and lowest tip.
+                _look_at_transform((-2.65, -3.2, 1.3), (-2.65, 0.0, 0.85)),
                 _look_at_transform((0.0, -1.8, 1.2), (0.0, 0.0, 0.55)),
                 _look_at_transform((2.4, -1.4, 1.45), (2.4, 0.2, 1.25)),
             ],
