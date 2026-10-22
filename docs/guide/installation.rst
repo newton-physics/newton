@@ -229,7 +229,7 @@ simultaneously on the GPU:
 
     # Replicate into parallel worlds
     builder = newton.ModelBuilder()
-    builder.replicate(template, world_count=1024)
+    builder.replicate(template, copy_count=1024)
     builder.add_ground_plane()
     model = builder.finalize()
 

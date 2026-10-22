@@ -706,12 +706,14 @@ def parse_mjcf(
                         normals = np.array(mesh_attrib["normal"].split(), dtype=np.float32)
                     except ValueError as exc:
                         raise ValueError(f"Inline MJCF mesh {name!r} has invalid normal data.") from exc
-                    if len(normals) != 3 * len(vertices):
+                    if len(normals) not in (3, 3 * len(vertices)):
                         raise ValueError(
-                            f"Inline MJCF mesh {name!r} normal data must contain 3 values per vertex; "
+                            f"Inline MJCF mesh {name!r} normal data must contain 3 shared values or 3 values per vertex; "
                             f"got {len(normals)} values for {len(vertices)} vertices."
                         )
                     normals = normals.reshape(-1, 3)
+                    if len(normals) == 1:
+                        normals = np.repeat(normals, len(vertices), axis=0)
 
                 texcoords = None
                 if "texcoord" in mesh_attrib:
