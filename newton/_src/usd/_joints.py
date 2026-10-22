@@ -71,6 +71,25 @@ def resolve_joint_parent_child(
         return parent_id, child_id
 
 
+def _collision_enabled_authored(joint_prim: Usd.Prim) -> bool:
+    """Whether the joint prim authors ``physics:collisionEnabled`` (an explicit per-joint choice)."""
+    attr = joint_prim.GetAttribute("physics:collisionEnabled")
+    return bool(attr) and attr.HasAuthoredValue()
+
+
+def _joint_filters_parent(
+    joint_prim: Usd.Prim, joint_desc: UsdPhysics.JointDesc, is_fixed: bool, scene_filter_parent: bool
+) -> bool:
+    """Resolve ``collision_filter_parent`` for a joint prim.
+
+    An authored ``physics:collisionEnabled`` wins. Otherwise the PhysicsScene's ``mjc:flag:filterparent``
+    applies to non-fixed joints; fixed joints keep the filter because MuJoCo welds those bodies.
+    """
+    if _collision_enabled_authored(joint_prim):
+        return not joint_desc.collisionEnabled
+    return scene_filter_parent or is_fixed
+
+
 def parse_joint(
     joint_desc: UsdPhysics.JointDesc,
     incoming_xform: wp.transform | None = None,
@@ -100,8 +119,13 @@ def parse_joint(
     _should_write_solreflimit_mode: Callable[[], bool],
     _should_write_solreflimit_gain_baseline: Callable[[], bool],
     resolve_joint_parent_child: Callable[..., Any],
+    scene_filter_parent: bool = True,
 ) -> int | None:
-    """Parse a joint description and add it to the builder. Returns the resulting joint index if successful, None otherwise."""
+    """Parse a joint description and add it to the builder. Returns the resulting joint index if successful, None otherwise.
+
+    ``scene_filter_parent`` is the PhysicsScene's ``mjc:flag:filterparent`` value; it decides
+    ``collision_filter_parent`` for non-fixed joints that do not author ``physics:collisionEnabled``.
+    """
     from pxr import UsdPhysics
 
     if not joint_desc.jointEnabled and only_load_enabled_joints:
@@ -135,7 +159,8 @@ def parse_joint(
         "parent_xform": parent_tf,
         "child_xform": child_tf,
         "label": joint_path,
-        "collision_filter_parent": parent_id != -1 and not joint_desc.collisionEnabled,
+        "collision_filter_parent": parent_id != -1
+        and _joint_filters_parent(joint_prim, joint_desc, key == UsdPhysics.ObjectType.FixedJoint, scene_filter_parent),
         "enabled": joint_desc.jointEnabled,
         "custom_attributes": joint_custom_attrs,
     }
@@ -540,6 +565,7 @@ def parse_merged_joints(
     _should_write_solreflimit_mode: Callable[[], bool],
     _should_write_solreflimit_gain_baseline: Callable[[], bool],
     resolve_joint_parent_child: Callable[..., Any],
+    scene_filter_parent: bool = True,
 ) -> int | None:
     """Combine multiple single-DOF joints between the same two bodies into one D6 joint.
 
@@ -573,6 +599,7 @@ def parse_merged_joints(
     angular_initial_vel: list[float | None] = []
     enabled_count = 0
     collision_filter_parent = False
+    collision_enabled_authored = False
 
     # Find the first enabled joint to use as representative for transforms and metadata
     first_desc = None
@@ -645,6 +672,9 @@ def parse_merged_joints(
         if not jd.jointEnabled and only_load_enabled_joints:
             continue
         collision_filter_parent = collision_filter_parent or not jd.collisionEnabled
+        collision_enabled_authored = collision_enabled_authored or _collision_enabled_authored(
+            stage.GetPrimAtPath(jd.primPath)
+        )
         jp_prim = stage.GetPrimAtPath(jd.primPath)
         if collect_schema_attrs:
             R.collect_prim_attrs(jp_prim)
@@ -780,7 +810,8 @@ def parse_merged_joints(
         parent_xform=parent_tf,
         child_xform=child_tf,
         label=label,
-        collision_filter_parent=parent_id != -1 and collision_filter_parent,
+        collision_filter_parent=parent_id != -1
+        and (collision_filter_parent if collision_enabled_authored else scene_filter_parent),
         enabled=first_desc.jointEnabled,
         custom_attributes=joint_custom_attrs,
     )

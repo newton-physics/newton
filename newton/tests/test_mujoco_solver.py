@@ -2777,6 +2777,42 @@ class TestMuJoCoSolverCollisionMasks(unittest.TestCase):
                 self.assertEqual((min(hand, finger), max(hand, finger)) in excludes, opt_out)
                 self.assertEqual((min(parent, child), max(parent, child)) in excludes, not opt_out)
 
+    def test_opted_out_joint_collides_with_weld_parent_across_shapeless_body(self):
+        """An opted-out hinge below a shapeless fixed body must reach the shaped weld parent in MuJoCo."""
+        import mujoco
+
+        for filter_parent in (True, False):
+            with self.subTest(collision_filter_parent=filter_parent):
+                builder = newton.ModelBuilder()
+                hand = builder.add_link(
+                    xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()), mass=1.0, inertia=wp.mat33(np.eye(3))
+                )
+                builder.add_shape_sphere(hand, radius=0.2)
+                palm = builder.add_link(
+                    xform=wp.transform((0.0, 0.0, 1.05), wp.quat_identity()), mass=0.1, inertia=wp.mat33(np.eye(3))
+                )
+                finger = builder.add_link(
+                    xform=wp.transform((0.0, 0.0, 1.1), wp.quat_identity()), mass=0.1, inertia=wp.mat33(np.eye(3))
+                )
+                builder.add_shape_sphere(finger, radius=0.2)
+                root = builder.add_joint_free(hand)
+                weld = builder.add_joint_fixed(
+                    hand, palm, parent_xform=wp.transform((0.0, 0.0, 0.05), wp.quat_identity())
+                )
+                hinge = builder.add_joint_revolute(
+                    palm,
+                    finger,
+                    axis=newton.Axis.Z,
+                    parent_xform=wp.transform((0.0, 0.0, 0.05), wp.quat_identity()),
+                    collision_filter_parent=filter_parent,
+                )
+                builder.add_articulation([root, weld, hinge])
+                model = builder.finalize(device="cpu")
+
+                solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+                mujoco.mj_forward(solver.mj_model, solver.mj_data)
+                self.assertEqual(solver.mj_data.ncon, 0 if filter_parent else 1)
+
     def test_sparse_filters_query_only_selected_pairs(self):
         """Query filters only for pairs in the selected collision graph."""
 

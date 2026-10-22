@@ -6334,25 +6334,37 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Decide whether MuJoCo's native parent-child filter must be disabled for the template world.
 
         MuJoCo's ``filterparent`` rule filters every contact between a body's weld group and the
-        weld group of its tree parent. Newton stores that choice per joint (``collision_filter_parent``)
-        and only as direct parent-child shape pairs, so when a tree joint of the template world lets
-        a parent-child shape pair collide, the native rule has to be switched off. The weld-group
-        pairs of the joints that still filter are returned as body excludes so their contacts stay
-        filtered, including pairs across FIXED joints that Newton never stores. Only tree joints
-        count: the first selected joint attaching a body is its tree edge, later ones close loops and
-        become equality constraints that MuJoCo does not filter. A joint without any colliding
-        parent-child shape pair keeps the native behaviour.
+        weld group of its tree parent. Newton stores that choice per joint
+        (:attr:`Model.joint_collision_filter_parent`) and only exports direct parent-child shape
+        pairs, so when a non-fixed tree joint of the template world opted out, the native rule has
+        to be switched off. The weld-group body pairs of the joints that still filter are returned
+        as excludes so their contacts stay filtered, including pairs across FIXED joints and
+        shapeless bodies that Newton never stores. Only tree joints count: the first selected joint
+        attaching a body is its tree edge, later ones close loops and become equality constraints
+        that MuJoCo does not filter.
 
         Returns:
             ``(disable_native_filter, extra_body_filters)``.
         """
+        if model.joint_collision_filter_parent is None:
+            return False, []
         joint_type = model.joint_type.numpy()
         joint_parent = model.joint_parent.numpy()
         joint_child = model.joint_child.numpy()
+        joint_filter_parent = model.joint_collision_filter_parent.numpy()
         weld_root = {int(body): int(body) for body in selected_bodies}
         tree_joints: dict[int, int] = {}
         for joint in selected_joints:
             tree_joints.setdefault(int(joint_child[joint]), int(joint))
+
+        # Non-fixed tree joints below another selected body, with their filter choice.
+        edges = [
+            (int(joint_parent[joint]), child, bool(joint_filter_parent[joint]))
+            for child, joint in tree_joints.items()
+            if joint_type[joint] != JointType.FIXED and int(joint_parent[joint]) in weld_root
+        ]
+        if all(filtering for _, _, filtering in edges):
+            return False, []
 
         # Bodies joined by FIXED tree joints share a weld root. A pass settles one tree level.
         changed = True
@@ -6360,48 +6372,21 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             changed = False
             for child, joint in tree_joints.items():
                 parent = int(joint_parent[joint])
-                if joint_type[joint] != JointType.FIXED or parent not in weld_root or child not in weld_root:
+                if joint_type[joint] != JointType.FIXED or parent not in weld_root:
                     continue
                 if weld_root[child] != weld_root[parent]:
                     weld_root[child] = weld_root[parent]
                     changed = True
 
         shape_set = {int(s) for s in colliding_shapes}
-        body_shapes = {body: [s for s in model.body_shapes.get(body, ()) if s in shape_set] for body in weld_root}
-
-        # Direct parent-child shape pairs of the non-fixed tree joints, one bulk filter query.
-        edges: list[tuple[int, int]] = []
-        pair_counts: list[int] = []
-        candidate_pairs: list[tuple[int, int]] = []
-        for child, joint in tree_joints.items():
-            parent = int(joint_parent[joint])
-            if joint_type[joint] == JointType.FIXED or parent not in weld_root or child not in weld_root:
-                continue
-            pairs = [
-                (parent_shape, child_shape)
-                for child_shape in body_shapes[child]
-                for parent_shape in body_shapes[parent]
-            ]
-            edges.append((parent, child))
-            pair_counts.append(len(pairs))
-            candidate_pairs.extend(pairs)
-        if not candidate_pairs:
-            return False, []
-        filtered = model.shape_collision_filter_mask(np.asarray(candidate_pairs, dtype=np.int64).reshape((-1, 2)))
-        ends = np.cumsum(pair_counts)
-        starts = ends - np.asarray(pair_counts)
-        opted_out = [not filtered[start:end].all() for start, end in zip(starts, ends, strict=True)]
-        if not any(opted_out):
-            return False, []
-
         members: dict[int, list[int]] = {}
         for body, root in weld_root.items():
-            if body_shapes[body]:
+            if any(s in shape_set for s in model.body_shapes.get(body, ())):
                 members.setdefault(root, []).append(body)
         existing = {tuple(sorted((int(a), int(b)))) for a, b in body_filters}
         extra: list[tuple[int, int]] = []
-        for (parent, child), out in zip(edges, opted_out, strict=True):
-            if out:
+        for parent, child, filtering in edges:
+            if not filtering:
                 continue
             for body_1 in members.get(child, ()):
                 for body_2 in members.get(weld_root[parent], ()):

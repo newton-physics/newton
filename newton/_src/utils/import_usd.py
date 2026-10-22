@@ -278,7 +278,7 @@ def parse_usd(
             regardless of whether visual shapes exist on the same body. Note that
             ``hide_collision_shapes=True`` still suppresses the VISIBLE flag for
             colliders on bodies with visual-only geometry. Default is False.
-        parse_mujoco_options: Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
+        parse_mujoco_options: Whether MuJoCo solver options from the PhysicsScene should be parsed. If False, solver options are not loaded and custom attributes retain their default values; the scene's ``mjc:flag:filterparent``, which sets ``collision_filter_parent`` on imported joints that do not author ``physics:collisionEnabled``, is then ignored as well. Default is True.
         convert_mjc_equality_constraints: Whether MuJoCo equality schemas should be converted to Newton loop
             joints or mimic constraints while preserving MuJoCo equality metadata for SolverMuJoCo. If False,
             equality constraints are preserved in the ``mujoco:equality_constraint`` custom-attribute namespace
@@ -1213,6 +1213,9 @@ def parse_usd(
             verbose=verbose,
         )
 
+    # PhysicsScene ``mjc:flag:filterparent``; resolved below once the scene prim is known.
+    scene_filter_parent = True
+
     def parse_joint(
         joint_desc: UsdPhysics.JointDesc,
         incoming_xform: wp.transform | None = None,
@@ -1246,6 +1249,7 @@ def parse_usd(
             _should_write_solreflimit_mode=_should_write_solreflimit_mode,
             _should_write_solreflimit_gain_baseline=_should_write_solreflimit_gain_baseline,
             resolve_joint_parent_child=resolve_joint_parent_child,
+            scene_filter_parent=scene_filter_parent,
         )
 
     def parse_merged_joints(
@@ -1278,6 +1282,7 @@ def parse_usd(
             _should_write_solreflimit_mode=_should_write_solreflimit_mode,
             _should_write_solreflimit_gain_baseline=_should_write_solreflimit_gain_baseline,
             resolve_joint_parent_child=resolve_joint_parent_child,
+            scene_filter_parent=scene_filter_parent,
         )
 
     # Looking for and parsing the attributes on PhysicsScene prims
@@ -1304,6 +1309,13 @@ def parse_usd(
         # Storing Physics Scene attributes
         for a in physics_scene_prim.GetAttributes():
             scene_attributes[a.GetName()] = a.Get()
+
+        # Like the MJCF flag, mjc:flag:filterparent changes the Newton model (the joints' parent
+        # filter) rather than a solver option, and follows the same parse_mujoco_options gate.
+        if parse_mujoco_options:
+            filter_parent_attr = physics_scene_prim.GetAttribute("mjc:flag:filterparent")
+            if filter_parent_attr and filter_parent_attr.HasAuthoredValue():
+                scene_filter_parent = bool(filter_parent_attr.Get())
 
         # Parse custom attribute declarations from PhysicsScene prim
         # This must happen before processing any other prims

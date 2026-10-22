@@ -20,6 +20,60 @@ from newton.tests.unittest_utils import USD_AVAILABLE
 
 class TestImportUsdJoints(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_scene_filterparent_flag_sets_joint_parent_filter(self):
+        """Honor the PhysicsScene's mjc:flag:filterparent on joints that do not author collisionEnabled (#4693)."""
+        from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics
+
+        def make_stage(scene_flag):
+            stage = Usd.Stage.CreateInMemory()
+            UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
+            UsdGeom.SetStageMetersPerUnit(stage, 1.0)
+            scene = UsdPhysics.Scene.Define(stage, "/physicsScene")
+            if scene_flag is not None:
+                scene.GetPrim().CreateAttribute("mjc:flag:filterparent", Sdf.ValueTypeNames.Bool).Set(scene_flag)
+            for name, x in (("Plain", 0.0), ("Authored", 5.0)):
+                root = UsdGeom.Xform.Define(stage, f"/{name}")
+                UsdPhysics.ArticulationRootAPI.Apply(root.GetPrim())
+                for body, z in (("Parent", 1.0), ("Child", 1.1)):
+                    sphere = UsdGeom.Sphere.Define(stage, f"/{name}/{body}")
+                    sphere.CreateRadiusAttr(0.2)
+                    UsdGeom.Xformable(sphere).AddTranslateOp().Set(Gf.Vec3d(x, 0.0, z))
+                    UsdPhysics.RigidBodyAPI.Apply(sphere.GetPrim())
+                    UsdPhysics.CollisionAPI.Apply(sphere.GetPrim())
+                joint = UsdPhysics.RevoluteJoint.Define(stage, f"/{name}/Joint")
+                joint.CreateBody0Rel().SetTargets([f"/{name}/Parent"])
+                joint.CreateBody1Rel().SetTargets([f"/{name}/Child"])
+                joint.CreateLocalPos0Attr().Set(Gf.Vec3f(0.0, 0.0, 0.1))
+                joint.CreateAxisAttr().Set(UsdGeom.Tokens.z)
+                if name == "Authored":
+                    # an explicit per-joint choice wins over the scene flag
+                    joint.CreateCollisionEnabledAttr(False)
+            return stage
+
+        def filters(builder):
+            return {
+                label: bool(builder.joint_collision_filter_parent[i])
+                for i, label in enumerate(builder.joint_label)
+                if label.endswith("/Joint")
+            }
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(make_stage(False))
+        self.assertEqual(filters(builder), {"/Plain/Joint": False, "/Authored/Joint": True})
+        model = builder.finalize(device="cpu")
+        self.assertEqual(len(model.shape_collision_filter_pairs), 1)
+
+        for scene_flag in (True, None):
+            with self.subTest(scene_flag=scene_flag):
+                builder = newton.ModelBuilder()
+                builder.add_usd(make_stage(scene_flag))
+                self.assertEqual(filters(builder), {"/Plain/Joint": True, "/Authored/Joint": True})
+
+        builder = newton.ModelBuilder()
+        builder.add_usd(make_stage(False), parse_mujoco_options=False)
+        self.assertEqual(filters(builder), {"/Plain/Joint": True, "/Authored/Joint": True})
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_scene_drive_scale_and_per_import_joint_defaults(self):
         """Use scene drive scaling and keep joint defaults scoped to each import."""
         from pxr import Sdf, Usd, UsdGeom, UsdPhysics
