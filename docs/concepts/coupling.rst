@@ -149,12 +149,13 @@ The protocol currently covers these concepts:
 - ``coupling_eval_effective_mass()`` and
   ``coupling_eval_effective_mass_block()`` let a solver provide endpoint
   effective mass instead of using raw model mass and inertia.
-- ``coupling_effective_mass_model_flags()`` names the
-  :class:`~newton.ModelFlags` whose notification changes a solver's effective
-  masses. The default is ``BODY_INERTIAL_PROPERTIES``. Proxy and ADMM couplers
-  evaluate effective masses again after a notification that any entry names.
-  The evaluation runs on the host, so issue those notifications outside graph
-  capture.
+- ``coupling_effective_mass_refresh_flags()`` names the
+  :class:`~newton.ModelFlags` after which a solver's effective masses need
+  refreshing. The default covers body, body inertial, joint DOF, armature and
+  reference-pose updates, and a solver can return a narrower set. Proxy and
+  ADMM couplers evaluate effective masses again after a notification that any
+  entry names. The evaluation runs on the host, so issue those notifications
+  outside graph capture.
 
 Force injection itself is not a hook. Couplers write into public
 ``state.body_f``, ``state.particle_f``, and ``control.joint_f`` buffers, then
@@ -412,7 +413,7 @@ joint-space mass matrix with armature at ``model.joint_q``; kinematic DOFs take
 the large armature that Steel's solve gives them. The endpoint is a body-frame
 offset from the body COM. The effective mass is evaluated on the host, so query
 it outside graph capture. Steel names body, body inertial, joint and joint DOF
-notifications in ``coupling_effective_mass_model_flags()``, so in a proxy or
+notifications in ``coupling_effective_mass_refresh_flags()``, so in a proxy or
 ADMM coupler with a Steel entry issue those outside graph capture too. When the
 coupler runs more than one iteration, Steel's next step after a coupler state
 write saves the friction-patch history; after an iteration restart, it restores

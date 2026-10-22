@@ -45,7 +45,7 @@ Supported hook signatures are:
     def coupling_notify_iteration_restarts(enabled) -> None: ...
 
 
-    def coupling_effective_mass_model_flags() -> int: ...
+    def coupling_effective_mass_refresh_flags() -> int: ...
 
 
     def coupling_supports_inertial_property_refresh() -> bool: ...
@@ -265,12 +265,20 @@ class CouplingInterface:
         """
         del enabled
 
-    def coupling_effective_mass_model_flags(self) -> int:
-        """Return the :class:`~newton.ModelFlags` whose notification changes this solver's effective masses.
+    def coupling_effective_mass_refresh_flags(self) -> int:
+        """Return the :class:`~newton.ModelFlags` after which this solver's effective masses need refreshing.
 
         Proxy and ADMM couplers evaluate effective masses again on the host after these notifications.
+        The default covers body, body inertial, joint DOF, armature and reference-pose updates;
+        a solver whose effective masses depend on fewer properties can return a narrower set.
         """
-        return int(ModelFlags.BODY_INERTIAL_PROPERTIES)
+        return int(
+            ModelFlags.BODY_INERTIAL_PROPERTIES
+            | ModelFlags.BODY_PROPERTIES
+            | ModelFlags.JOINT_DOF_PROPERTIES
+            | ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES
+            | ModelFlags.JOINT_REFERENCE_POSE_PROPERTIES
+        )
 
     def coupling_supports_inertial_property_refresh(self) -> bool:
         """Return whether inertial property refresh is safe during graph capture.

@@ -3097,7 +3097,7 @@ class SolverSteel(SolverBase, CouplingInterface):
             self._friction_patches.reserve_history_snapshot()
 
     @override
-    def coupling_effective_mass_model_flags(self) -> int:
+    def coupling_effective_mass_refresh_flags(self) -> int:
         """Return the model flags after which the articulated effective masses change."""
         return int(
             ModelFlags.JOINT_PROPERTIES

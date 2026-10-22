@@ -352,16 +352,11 @@ class _StepCountingCopySolver(SolverBase, CouplingInterface):
 
 
 class _EffectiveMassCountingSolver(_StepCountingCopySolver):
-    """Copy solver that counts effective-mass evaluations and names its own refresh flags."""
-
-    refresh_flags = int(newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+    """Copy solver that counts effective-mass evaluations and keeps the default refresh flags."""
 
     def __init__(self, model):
         super().__init__(model)
         self.effective_mass_evals = 0
-
-    def coupling_effective_mass_model_flags(self) -> int:
-        return self.refresh_flags
 
     def coupling_eval_effective_mass_block(self, *args, **kwargs):
         self.effective_mass_evals += 1
@@ -369,7 +364,8 @@ class _EffectiveMassCountingSolver(_StepCountingCopySolver):
 
 
 class _JointEffectiveMassCountingSolver(_EffectiveMassCountingSolver):
-    refresh_flags = int(newton.ModelFlags.JOINT_PROPERTIES)
+    def coupling_effective_mass_refresh_flags(self) -> int:
+        return int(newton.ModelFlags.JOINT_PROPERTIES)
 
 
 class _BodyObservableCopySolver(_StepCountingCopySolver):
@@ -2916,6 +2912,48 @@ class TestSolverMuJoCoCouplingHooks(unittest.TestCase):
         np.testing.assert_allclose(effective_mass.numpy(), model.body_mass.numpy(), rtol=1.0e-5)
         np.testing.assert_allclose(effective_inertia.numpy(), model.body_inertia.numpy(), rtol=1.0e-5)
 
+    def test_proxy_effective_mass_follows_armature(self):
+        """Refresh a MuJoCo source's proxy mass after an armature change."""
+        try:
+            SolverMuJoCo.import_mujoco()
+        except ImportError as exc:
+            self.skipTest(str(exc))
+
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        body = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3) * 0.01))
+        joint = builder.add_joint_revolute(
+            parent=-1,
+            child=body,
+            axis=newton.Axis.Z,
+            child_xform=wp.transform((-1.0, 0.0, 0.0), wp.quat_identity()),
+        )
+        builder.add_articulation([joint])
+        model = builder.finalize(device="cpu")
+        coupled = SolverCoupledProxy(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(
+                    name="src",
+                    solver=lambda view: SolverMuJoCo(view, disable_contacts=True),
+                    bodies=[body],
+                    joints=[joint],
+                ),
+                SolverCoupled.Entry(name="dst", solver=_StepCountingCopySolver),
+            ],
+            coupling=SolverCoupledProxy.Config(
+                proxies=[SolverCoupledProxy.Proxy(source="src", destination="dst", bodies=[body])]
+            ),
+        )
+        proxy = int(coupled._proxy_mappings[0].proxy_ids_local.numpy()[0])
+
+        def proxy_mass():
+            return float(coupled.view("dst").body_mass.numpy()[proxy])
+
+        before = proxy_mass()
+        model.joint_armature.fill_(100.0)
+        coupled.notify_model_changed(newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES)
+        self.assertGreater(proxy_mass(), 10.0 * before)
+
     def test_gravity_acceleration_hook_uses_body_gravcomp(self):
         try:
             SolverMuJoCo.import_mujoco()
@@ -3476,9 +3514,18 @@ class TestSolverCoupledBodyProxyInertia(unittest.TestCase):
 
     def test_effective_mass_refresh_follows_source_flags(self):
         """Evaluate proxy effective masses again only after a notification that an entry names."""
+        flags = newton.ModelFlags
+        default_refreshing = {
+            flags.BODY_INERTIAL_PROPERTIES,
+            flags.BODY_PROPERTIES,
+            flags.JOINT_DOF_PROPERTIES,
+            flags.JOINT_DOF_INERTIAL_PROPERTIES,
+            flags.JOINT_REFERENCE_POSE_PROPERTIES,
+        }
         for source, refreshing in (
-            (_EffectiveMassCountingSolver, newton.ModelFlags.BODY_INERTIAL_PROPERTIES),
-            (_JointEffectiveMassCountingSolver, newton.ModelFlags.JOINT_PROPERTIES),
+            (_EffectiveMassCountingSolver, default_refreshing),
+            # The destination keeps the default flags, and the coupler refreshes on the union.
+            (_JointEffectiveMassCountingSolver, default_refreshing | {flags.JOINT_PROPERTIES}),
         ):
             builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
             body = builder.add_body(mass=1.0, inertia=wp.mat33(np.eye(3)))
@@ -3495,14 +3542,17 @@ class TestSolverCoupledBodyProxyInertia(unittest.TestCase):
             )
             solver = _StepCountingCopySolver.instances["src"]
             for flag in (
-                newton.ModelFlags.JOINT_PROPERTIES,
-                newton.ModelFlags.JOINT_DOF_PROPERTIES,
-                newton.ModelFlags.BODY_PROPERTIES,
-                newton.ModelFlags.BODY_INERTIAL_PROPERTIES,
+                flags.JOINT_PROPERTIES,
+                flags.JOINT_DOF_PROPERTIES,
+                flags.JOINT_DOF_INERTIAL_PROPERTIES,
+                flags.JOINT_REFERENCE_POSE_PROPERTIES,
+                flags.BODY_PROPERTIES,
+                flags.BODY_INERTIAL_PROPERTIES,
+                flags.SHAPE_PROPERTIES,
             ):
                 before = solver.effective_mass_evals
                 coupled.notify_model_changed(flag)
-                expected = 1 if flag in (refreshing, newton.ModelFlags.BODY_INERTIAL_PROPERTIES) else 0
+                expected = 1 if flag in refreshing else 0
                 self.assertEqual(solver.effective_mass_evals - before, expected, msg=f"{source.__name__} {flag!r}")
 
     def test_body_proxy_aitken_relaxation_converges_affine_fixed_point(self):
