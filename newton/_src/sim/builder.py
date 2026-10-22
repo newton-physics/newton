@@ -4297,7 +4297,7 @@ class ModelBuilder:
         mesh_maxhullvert: int | None = None,
         force_position_velocity_actuation: bool = False,
         override_root_xform: bool = False,
-        joint_damping_mode: Literal["passive", "drive"] | None = None,
+        joint_damping_mode: Literal["passive", "drive"] = "passive",
         package_dirs: list[str] | None = None,
     ):
         """
@@ -4402,18 +4402,12 @@ class ModelBuilder:
                 damping > 0, :attr:`~newton.JointTargetMode.EFFORT` if a drive is present but both gains are zero
                 (direct torque control), or :attr:`~newton.JointTargetMode.NONE` if no drive/actuation is applied.
             joint_damping_mode: How to interpret URDF ``<dynamics damping>``.
-                ``"passive"`` imports it into ``joint_damping`` and keeps drive
+                ``"passive"`` (default) imports it into ``joint_damping`` and keeps drive
                 damping at ``default_joint_cfg.target_kd``. ``"drive"`` imports it
                 into ``joint_target_kd``; absent values use ``default_joint_cfg.target_kd``.
                 In drive mode, passive damping uses ``default_joint_cfg.damping``
-                for revolute, prismatic, and planar joints.
+                for revolute, prismatic, and planar joints, preserving the Newton 1.6 mapping.
                 XPBD/VBD do not consume passive joint damping.
-
-                .. deprecated:: 1.7
-                    The implicit None default retains the drive mapping and warns
-                    when the URDF authors damping. The default will become
-                    ``"passive"`` in Newton 1.8. Pass either mode explicitly to
-                    silence the warning; both explicit modes remain supported.
         """
         from ..utils.import_urdf import parse_urdf  # noqa: PLC0415
 
