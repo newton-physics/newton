@@ -787,10 +787,11 @@ class ViewerBase(ABC):
         """Notify the viewer that parts of its :class:`~newton.Model` were modified.
 
         The viewer refreshes the cached data affected by ``flags``. It currently
-        handles :attr:`ModelFlags.SHAPE_GEOMETRY <newton.ModelFlags.SHAPE_GEOMETRY>`, such as
+        handles only :attr:`ModelFlags.SHAPE_ACTIVE <newton.ModelFlags.SHAPE_ACTIVE>`, such as
         a body variant selection by :meth:`~newton.Model.select_body_variants`, by filtering
-        the rendered instances of each shape batch without regrouping or recompiling geometry. Other flags are ignored
-        because the viewer reads the corresponding data every frame or does not render it.
+        the rendered instances of each shape batch without regrouping or recompiling geometry.
+        Other flags are ignored; call :meth:`set_model` again after changing shape data such as
+        transforms, scales, or sources.
 
         .. experimental::
 
@@ -799,7 +800,7 @@ class ViewerBase(ABC):
         Args:
             flags: Bit-mask of :class:`~newton.ModelFlags` indicating which model properties changed.
         """
-        if self.model is None or not flags & newton.ModelFlags.SHAPE_GEOMETRY:
+        if self.model is None or not flags & newton.ModelFlags.SHAPE_ACTIVE:
             return
         self._select_shape_instances()
         if self._sdf_isomesh_populated:

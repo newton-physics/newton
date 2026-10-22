@@ -655,7 +655,7 @@ class ViewerViser(ViewerBase):
 
     @override
     def notify_model_changed(self, flags: newton.ModelFlags | int) -> None:
-        if self.model is None or not flags & newton.ModelFlags.SHAPE_GEOMETRY:
+        if self.model is None or not flags & newton.ModelFlags.SHAPE_ACTIVE:
             return
         super().notify_model_changed(flags)
         self._build_packed_shape_arrays()

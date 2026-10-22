@@ -431,14 +431,16 @@ geometry. Inactive variant shapes are skipped by :class:`~newton.CollisionPipeli
 support :meth:`~newton.viewer.ViewerBase.notify_model_changed` (``ViewerGL``, ``ViewerViser``, and
 ``ViewerNull``). Current limitations:
 
-- Every world stores all variant shapes of its body, so memory and collision setup grow with the
-  catalog size.
+- Every world stores all variant shapes of its body, so model memory and broad-phase work grow with
+  the catalog size. Automatic contact capacities are sized for the largest variant of each body.
 - Contacts must come from :class:`~newton.CollisionPipeline`: ``SolverMuJoCo`` requires
   ``use_mujoco_contacts=False``, ``SolverKamino`` requires ``use_collision_detector=False``, and
   ``SolverImplicitMPM`` is unsupported.
-- The shape BVH used by sensors and ray casts still contains inactive variant shapes.
+- After a selection change, the next :meth:`~newton.Model.bvh_refit_shapes` rebuilds the shape BVH
+  used by sensors and ray casts. The rebuild synchronizes with the host, so a CUDA graph that
+  captured the refit must be recaptured.
 - ``ViewerUSD``, ``ViewerRerun``, ``ViewerFile``, and ``ViewerRTX`` raise
-  :class:`NotImplementedError` when notified of a selection change.
+  :class:`NotImplementedError` when notified of a selection change in a model with variants.
 
 
 .. _World-entity partitioning:

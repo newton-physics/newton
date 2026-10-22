@@ -1411,7 +1411,7 @@ class ViewerFile(ViewerBase):
 
     @override
     def notify_model_changed(self, flags: ModelFlags | int) -> None:
-        if flags & ModelFlags.SHAPE_GEOMETRY and self.model is not None and self.model.body_variant_count > 0:
+        if flags & ModelFlags.SHAPE_ACTIVE and self.model is not None and self.model.body_variant_count > 0:
             raise NotImplementedError(
                 "ViewerFile does not support shape geometry changes such as body variant selection."
             )

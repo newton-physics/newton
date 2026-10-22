@@ -67,6 +67,30 @@ def _shape_collide_mask(model: Model, shape_count: int | None = None) -> np.ndar
     return (flags & int(ShapeFlags.COLLIDE_SHAPES)) != 0
 
 
+def _variant_capacity_mask(model: Model, mask: np.ndarray) -> np.ndarray:
+    """Restrict ``mask`` to the variant with the most masked shapes of each body for capacity estimates.
+
+    Only one variant per body is active at a time, so counting every variant would size contact
+    buffers for the whole catalog.
+    """
+    if getattr(model, "body_variant_count", 0) == 0:
+        return mask
+    ranges = model._body_variant_shape_range.numpy()
+    variant_start = model.body_variant_start.numpy()
+    counts = np.concatenate(([0], np.cumsum(mask)))
+    counts = counts[ranges[:, 1]] - counts[ranges[:, 0]]
+    variant_body = np.repeat(np.arange(len(variant_start) - 1), np.diff(variant_start))
+    # Sort by body, then by descending count; the first variant of each body is its largest.
+    order = np.lexsort((-counts, variant_body))
+    first = np.concatenate(([True], variant_body[order][1:] != variant_body[order][:-1]))
+    kept = np.zeros(len(counts), dtype=bool)
+    kept[order[first]] = True
+    excluded = np.zeros(len(mask) + 1, dtype=np.int64)
+    np.add.at(excluded, ranges[~kept, 0], 1)
+    np.add.at(excluded, ranges[~kept, 1], -1)
+    return mask & (np.cumsum(excluded[:-1]) == 0)
+
+
 _ANALYTIC_PRIMITIVE_PAIRS = frozenset(
     {
         (int(GeoType.PLANE), int(GeoType.SPHERE)),
@@ -671,6 +695,11 @@ def _estimate_rigid_contact_details(model: Model) -> _RigidContactCountEstimate:
 
     shape_types = model.shape_type.numpy()
     colliding_mask = _shape_collide_mask(model, len(shape_types))
+    if getattr(model, "body_variant_count", 0) > 0:
+        colliding_mask = _variant_capacity_mask(model, colliding_mask)
+        if pair_count > 0:
+            pairs = model.shape_contact_pairs.numpy()
+            pair_count = int(np.count_nonzero(colliding_mask[pairs[:, 0]] & colliding_mask[pairs[:, 1]]))
 
     mesh_mask = colliding_mask & ((shape_types == int(GeoType.MESH)) | (shape_types == int(GeoType.HFIELD)))
     plane_mask = colliding_mask & (shape_types == int(GeoType.PLANE))
@@ -2021,13 +2050,20 @@ class CollisionPipeline:
                 use_lean_gjk_mpr = not bool(lean_unsupported & set(route_shape_types.tolist()))
 
                 if max_triangle_pairs is None:
+                    # Size for the largest variant of each body, not every variant.
+                    capacity_mask = _variant_capacity_mask(model, route_mask)
+                    capacity_pairs = explicit_pairs_host
+                    if capacity_pairs is not None and capacity_mask is not route_mask:
+                        capacity_pairs = capacity_pairs[
+                            capacity_mask[capacity_pairs[:, 0]] & capacity_mask[capacity_pairs[:, 1]]
+                        ]
                     # NXN/SAP count from shape masks without materializing the model's lazy pair array.
                     triangle_pair_estimate = _estimate_triangle_pair_details(
                         model,
-                        explicit_pairs_host,
-                        route_mask,
-                        mesh_mask | heightfield_mask,
-                        planar_sdf_mask,
+                        capacity_pairs,
+                        capacity_mask,
+                        (mesh_mask | heightfield_mask) & capacity_mask,
+                        planar_sdf_mask & capacity_mask,
                         hydroelastic=hydroelastic_sdf is not None,
                     )
                     max_triangle_pairs = _resolve_auto_triangle_pairs(

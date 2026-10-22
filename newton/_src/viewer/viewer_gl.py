@@ -878,7 +878,7 @@ class ViewerGL(ViewerBase):
     @override
     def notify_model_changed(self, flags: nt.ModelFlags | int) -> None:
         super().notify_model_changed(flags)
-        if self.model is not None and flags & nt.ModelFlags.SHAPE_GEOMETRY:
+        if self.model is not None and flags & nt.ModelFlags.SHAPE_ACTIVE:
             self._rebuild_gl_shape_caches()
 
     @override

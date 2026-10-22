@@ -76,13 +76,25 @@ class TestBodyVariants(unittest.TestCase):
             changed_world_mask=world_mask,
         )
 
-        self.assertEqual(flags, newton.ModelFlags.SHAPE_GEOMETRY | newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
+        self.assertEqual(flags, newton.ModelFlags.SHAPE_ACTIVE | newton.ModelFlags.BODY_INERTIAL_PROPERTIES)
         # Body 1 reselects its current variant and body 2's index is out of range: neither world changed.
         np.testing.assert_array_equal(world_mask.numpy(), [True, False, False, False])
         np.testing.assert_array_equal(model.body_variant.numpy(), [1, 0, 0])
         np.testing.assert_array_equal(model.shape_active.numpy()[:3], [False, True, True])
         np.testing.assert_array_equal(model.shape_active.numpy()[3:9], [True, False, False] * 2)
         self.assertLess(model.body_mass.numpy()[0], initial_mass[0])
+
+        # Ray casts rebuild the shape BVH: the ray passes above world 0's spheres but hits world 1's cube.
+        model.bvh_refit_shapes(model.state())
+        shape_id = wp.zeros(2, dtype=wp.int32, device="cpu")
+        newton.intersect_ray(
+            model,
+            ray_origins=wp.array([(-2.0, 0.0, 0.4)] * 2, dtype=wp.vec3, device="cpu"),
+            ray_directions=wp.array([(1.0, 0.0, 0.0)] * 2, dtype=wp.vec3, device="cpu"),
+            ray_worlds=wp.array([0, 1], dtype=wp.int32, device="cpu"),
+            out_shape_id=shape_id,
+        )
+        np.testing.assert_array_equal(shape_id.numpy(), [-1, 3])
         np.testing.assert_allclose(model.body_mass.numpy()[1:], initial_mass[1:])
 
         model.select_body_variants(wp.array([0, -1, 1], dtype=wp.int32, device="cpu"))

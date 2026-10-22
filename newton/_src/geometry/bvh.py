@@ -181,10 +181,15 @@ def compute_enabled_shapes(
     shape_flags: wp.array[wp.int32],
     shape_flags_mask: wp.int32,
     shape_opacity: wp.array[wp.float32],
+    shape_active: wp.array[wp.bool],
     out_shape_enabled: wp.array[wp.uint32],
     out_shape_enabled_count: wp.array[wp.int32],
 ):
     tid = wp.tid()
+
+    # Inactive body-variant shapes are not part of the scene.
+    if shape_active.shape[0] > 0 and not shape_active[tid]:
+        return
 
     flags = shape_flags[tid]
 

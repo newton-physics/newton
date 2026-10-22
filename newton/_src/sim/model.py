@@ -897,6 +897,10 @@ class Model:
 
         # Shape and particle BVH structures and related fields
         self.bvh_shapes: wp.Bvh | None = None
+        self._bvh_shapes_build_options: tuple[str | None, ShapeFlags] | None = None
+        """Constructor and shape-flag mask of the last :meth:`bvh_build_shapes`, reused for rebuilds."""
+        self._bvh_shapes_stale: bool = False
+        """Whether a body variant selection changed the shapes that :meth:`bvh_refit_shapes` must include."""
         """BVH over selected shapes, indexed by ``bvh_shape_enabled``. Built by :meth:`ModelBuilder.finalize`."""
         self.bvh_shapes_group_roots: wp.array[wp.int32] | None = None
         """Per-world BVH group roots for shapes, shape ``[world_count + 1]`` (last slot is global)."""
@@ -1818,6 +1822,8 @@ class Model:
         device = self.device
         shape_count = self.shape_count
         world_count_total = self.world_count + 1
+        self._bvh_shapes_build_options = (bvh_constructor, shape_flags)
+        self._bvh_shapes_stale = False
 
         self.bvh_shape_bounds = wp.empty((shape_count, 2), dtype=wp.vec3f, ndim=2, device=device)
         wp.launch_tiled(
@@ -1843,6 +1849,7 @@ class Model:
                 self.shape_flags,
                 int(shape_flags),
                 self.shape_opacity if self.shape_opacity is not None else wp.empty(0, dtype=wp.float32, device=device),
+                self.shape_active if self.body_variant_count > 0 else wp.empty(0, dtype=wp.bool, device=device),
                 self.bvh_shape_enabled,
                 num_enabled,
             ],
@@ -1879,7 +1886,8 @@ class Model:
         The shape BVH is built automatically by :meth:`ModelBuilder.finalize`.
         Manually populated models must call :meth:`bvh_build_shapes` first.
         Updates world-space shape transforms from ``state.body_q`` and refits
-        the BVH in place.
+        the BVH in place. After :meth:`select_body_variants` changes the active
+        shapes, the next call rebuilds the BVH from the active shapes instead.
 
         Args:
             state: Current simulation state with body transforms.
@@ -1893,6 +1901,10 @@ class Model:
             return
         if self.bvh_shape_enabled is None:
             raise RuntimeError("Model.bvh_refit_shapes() requires Model.bvh_build_shapes() to have been called first.")
+        if self._bvh_shapes_stale:
+            constructor, shape_flags = self._bvh_shapes_build_options
+            self.bvh_build_shapes(state, bvh_constructor=constructor, shape_flags=shape_flags)
+            return
         if self.bvh_shape_count_enabled == 0:
             return
         if self.bvh_shapes is None:
@@ -2167,8 +2179,10 @@ class Model:
         Activates the selected variant's shapes, deactivates the body's other variant shapes,
         and writes the variant's mass, center of mass, and inertia, including their inverses,
         to the body. Inactive shapes do not collide in :class:`~newton.CollisionPipeline` and are
-        not rendered, but the shape BVH used by sensors still contains them. Shapes added to the
-        body directly remain active for every variant.
+        not rendered. The next :meth:`bvh_refit_shapes` rebuilds the shape BVH used by sensors and
+        ray casts without them; that rebuild synchronizes with the host, so do not replay it from a
+        captured CUDA graph across selection changes. Shapes added to the body directly remain active
+        for every variant.
 
         Each body may appear at most once per call. The selection runs as a single kernel launch
         without host synchronization, so it can be captured in a CUDA graph. Notify solvers and viewers with the returned flags::
@@ -2208,9 +2222,10 @@ class Model:
             raise ValueError(
                 f"changed_world_mask must have shape ({self.world_count + 1},), got {changed_world_mask.shape}."
             )
-        flags = int(ModelFlags.SHAPE_GEOMETRY | ModelFlags.BODY_INERTIAL_PROPERTIES)
+        flags = int(ModelFlags.SHAPE_ACTIVE | ModelFlags.BODY_INERTIAL_PROPERTIES)
         if self.body_variant_count == 0 or variants.shape[0] == 0:
             return flags
+        self._bvh_shapes_stale = self._bvh_shapes_build_options is not None
         wp.launch(
             _select_body_variants_kernel,
             dim=variants.shape[0],
