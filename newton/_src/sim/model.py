@@ -24,6 +24,7 @@ from ..utils.deprecation import RemovedAttribute, warn_deprecation
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
 from .contacts import Contacts
 from .control import Control
+from .deformable_visual import DeformableVisualMesh
 from .shape_contact_pairs import _ShapeContactPairs
 from .state import State
 
@@ -1061,6 +1062,15 @@ class Model:
         Components: [0] k_mu [Pa], [1] k_lambda [Pa], [2] k_damp [Pa·s].
         Stored per-element; kernels multiply by rest volume internally."""
 
+        self.deformable_visual_meshes: list[DeformableVisualMesh] = []
+        """High-resolution visual meshes embedded in deformables, skinned from the
+        simulation state for visualization only (see
+        :meth:`~newton.ModelBuilder.add_deformable_visual_mesh`). Empty when no
+        visual meshes were attached.
+
+        .. experimental::
+
+            This attribute may change without a formal deprecation cycle."""
         self.muscle_start: wp.array[wp.int32] | None = None
         """Start index of the first muscle point per muscle, shape [muscle_count], int."""
         self.muscle_params: wp.array2d[wp.float32] | None = None
@@ -1400,6 +1410,13 @@ class Model:
         """Total number of rigid-body-to-particle attachments in the system."""
         self.muscle_count: int = 0
         """Total number of muscles in the system."""
+        self.deformable_visual_mesh_count: int = 0
+        """Total number of deformable visual meshes.
+
+        .. experimental::
+
+            Deformable visual APIs may change without a formal deprecation cycle.
+        """
         self.articulation_count: int = 0
         """Total number of articulations in the system."""
         self.joint_dof_count: int = 0
