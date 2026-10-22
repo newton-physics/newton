@@ -233,6 +233,11 @@ an error if either case would create a chain. When importing URDF,
 :meth:`newton.ModelBuilder.add_urdf` composes chained ``<mimic>`` coefficients
 into direct references to independent joints.
 
+When importing USD, equivalent reciprocal mimic declarations are stored as a
+single relationship. This supports assets that declare both directions through
+Newton or PhysX mimic schemas. The first imported relationship is retained;
+conflicting reciprocal declarations and unsupported chains still raise an error.
+
 Call :func:`newton.eval_mimic` before :func:`newton.eval_fk` when
 maximal-coordinate body poses should reflect the mimic relationship.
 :class:`newton.solvers.SolverSemiImplicit` enforces these relationships with
