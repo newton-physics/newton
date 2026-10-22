@@ -35,7 +35,7 @@ from ...sim import (
     State,
     StateFlags,
 )
-from ...sim.articulation import eval_fk, eval_orphan_joints_fk
+from ...sim.articulation import eval_fk
 from ...sim.collide import _estimate_rigid_contact_max, _estimate_rigid_contact_max_per_world
 from ...sim.contacts import GENERATION_SENTINEL as _GENERATION_SENTINEL
 from ...sim.graph_coloring import color_graph, plot_graph
@@ -6246,31 +6246,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
 
         eval_fk(model, state.joint_q, state.joint_qd, state)
 
-        if self._has_orphan_world_root_joints:
-            wp.launch(
-                eval_orphan_joints_fk,
-                dim=model.joint_count,
-                inputs=[
-                    self._orphan_world_root_joint_mask,
-                    state.joint_q,
-                    state.joint_qd,
-                    model.joint_q_start,
-                    model.joint_qd_start,
-                    model.joint_type,
-                    model.joint_parent,
-                    model.joint_child,
-                    model.joint_X_p,
-                    model.joint_X_c,
-                    model.joint_axis,
-                    model.joint_dof_dim,
-                    model.body_com,
-                    model.body_flags,
-                    BodyFlags.ALL,
-                ],
-                outputs=[state.body_q, state.body_qd],
-                device=model.device,
-            )
-
         if is_mjwarp:
             self._update_body_observables(model, state, mj_data, observables)
 
@@ -7090,83 +7065,16 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             dtype=np.int32,
         )
 
-        # Classify joints outside articulations as standalone roots or loop closures.
+        # Joints outside articulations close loops; every other joint belongs to an articulation.
         joints_unassigned = selected_joints[joint_articulation[selected_joints] == -1]
         joints_articulated = selected_joints[joint_articulation[selected_joints] >= 0]
+        joints_loop = np.asarray(joints_unassigned, dtype=np.int32)
 
-        # Bodies already owned by an articulation must not be created again as standalone bodies.
         articulated_bodies = {int(body) for body in joint_child[joints_articulated]}
         articulated_bodies.update(int(body) for body in joint_parent[joints_articulated] if body >= 0)
 
-        # Imported MJCF equalities also appear as unassigned joints. Keep them as constraints.
-        equality_loop_joints = set()
-        if eq_constraint_target_kind is not None and eq_constraint_target is not None:
-            for i in selected_constraints:
-                if (
-                    int(eq_constraint_target_kind[i]) == int(MjcEqualityTargetKind.JOINT)
-                    and eq_constraint_target[i] >= 0
-                ):
-                    equality_loop_joints.add(int(eq_constraint_target[i]))
-        joints_static_roots = []
-        joints_dynamic_roots = []
-        standalone_root_bodies = set()
-        for joint in joints_unassigned:
-            child = int(joint_child[joint])
-            # The first eligible world joint creates the standalone body.
-            if (
-                joint_parent[joint] == -1
-                and child not in articulated_bodies
-                and child not in standalone_root_bodies
-                and int(joint) not in equality_loop_joints
-            ):
-                if joint_type[joint] == JointType.FIXED:
-                    joints_static_roots.append(int(joint))
-                else:
-                    joints_dynamic_roots.append(int(joint))
-                standalone_root_bodies.add(child)
-
-        # Keep fixed and dynamic roots separate because they use different MuJoCo body creation paths.
-        joints_static_roots = np.asarray(joints_static_roots, dtype=np.int32)
-        joints_dynamic_roots = np.asarray(joints_dynamic_roots, dtype=np.int32)
-        standalone_root_set = set(joints_static_roots) | set(joints_dynamic_roots)
-
-        # Only the joints that own a standalone body may update body state after
-        # eval_fk; every other unassigned joint is a loop closure whose child is
-        # already posed through its articulation or standalone root. The mask is
-        # indexed by global joint index and launched over every joint, so classify
-        # over the whole model: with separate_worlds the conversion sets above only
-        # cover the template world, but replica worlds hold copies of the same roots.
-        orphan_world_root_joint_mask_np = np.zeros(model.joint_count, dtype=np.int32)
-        all_articulated_joints = np.where(joint_articulation >= 0)[0]
-        all_articulated_bodies = {int(body) for body in joint_child[all_articulated_joints]}
-        all_articulated_bodies.update(int(body) for body in joint_parent[all_articulated_joints] if body >= 0)
-        all_equality_loop_joints = set()
-        if eq_constraint_target_kind is not None and eq_constraint_target is not None:
-            for i in range(len(eq_constraint_target)):
-                if (
-                    int(eq_constraint_target_kind[i]) == int(MjcEqualityTargetKind.JOINT)
-                    and eq_constraint_target[i] >= 0
-                ):
-                    all_equality_loop_joints.add(int(eq_constraint_target[i]))
-        mask_root_bodies = set()
-        for joint in np.where(joint_articulation == -1)[0]:
-            child = int(joint_child[joint])
-            if (
-                joint_parent[joint] == -1
-                and child not in all_articulated_bodies
-                and child not in mask_root_bodies
-                and int(joint) not in all_equality_loop_joints
-            ):
-                orphan_world_root_joint_mask_np[int(joint)] = 1
-                mask_root_bodies.add(child)
-
-        # Once each standalone body has a world root, its other unassigned joints are loop closures.
-        joints_loop = np.asarray(
-            [joint for joint in joints_unassigned if joint not in standalone_root_set], dtype=np.int32
-        )
-
         # Every selected body needs exactly one creation path before its shapes and state can be converted.
-        instantiated_bodies = articulated_bodies | standalone_root_bodies
+        instantiated_bodies = articulated_bodies
         missing_bodies = [int(body) for body in selected_bodies if int(body) not in instantiated_bodies]
         if missing_bodies:
             missing_body_set = set(missing_bodies)
@@ -7182,18 +7090,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             if len(related_joints) > 5:
                 related_joints = [*related_joints[:5], "..."]
             raise ValueError(
-                "SolverMuJoCo cannot convert bodies that are outside articulations and have no standalone "
-                f"joint to world. Bodies: {missing_labels}. Related joints: {related_joints}."
-            )
-
-        if standalone_root_set:
-            root_labels = [model.joint_label[int(joint)] for joint in sorted(standalone_root_set)]
-            displayed_root_labels = root_labels if len(root_labels) <= 5 else [*root_labels[:5], "..."]
-            warnings.warn(
-                f"SolverMuJoCo is converting {len(root_labels)} joint(s) outside articulations as standalone "
-                f"world roots: {displayed_root_labels}. This fallback is specific to SolverMuJoCo.",
-                NewtonWarning,
-                stacklevel=2,
+                "SolverMuJoCo cannot convert bodies that are outside articulations. "
+                f"Bodies: {missing_labels}. Related joints: {related_joints}."
             )
 
         # sort joints topologically depth-first since this is the order that will also be used
@@ -7872,14 +7770,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             mj_bodies.append(body)
             return body, parent, child, child_is_kinematic, j_type, child_xform
 
-        # Standalone world-fixed bodies are static (or mocap when kinematic)
-        # MuJoCo bodies, not loop constraints or synthetic Newton articulations.
-        for j in joints_static_roots:
-            _, _, child, _, _, _ = add_body_from_joint(int(j), mocap=None)
-            add_geoms(child)
-
-        # Add articulation joints and standalone dynamic roots.
-        joints_with_bodies = np.concatenate((joint_order, joints_dynamic_roots))
+        # Add articulation joints.
+        joints_with_bodies = joint_order
         for j in joints_with_bodies:
             parent = int(joint_parent[j])
             j_type = int(joint_type[j])
@@ -8563,7 +8455,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if len(spec.bodies) != len(selected_bodies) + 1:  # +1 for the world body
             raise ValueError(
                 "The number of bodies in the MuJoCo model does not match the number of selected bodies in the Newton model. "
-                "Make sure each body belongs to an articulation or has a standalone joint to world."
+                "Make sure each body belongs to an articulation."
             )
 
         # add contact exclusions between bodies to ensure parent <> child collisions are ignored
@@ -8707,13 +8599,6 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 )
         self.mj_q_start = wp.array(mj_q_start_np, dtype=wp.int32, device=model.device)
         self.mj_qd_start = wp.array(mj_qd_start_np, dtype=wp.int32, device=model.device)
-
-        # Standalone world-root joints (not part of any articulation) are skipped by
-        # eval_fk, so their body state is updated separately after each eval_fk call.
-        self._orphan_world_root_joint_mask = wp.array(
-            orphan_world_root_joint_mask_np, dtype=wp.int32, device=model.device
-        )
-        self._has_orphan_world_root_joints = bool(orphan_world_root_joint_mask_np.any())
         if self.enable_sleeping:
             qpos_treeid_np = np.full(self.mj_model.nq, -1, dtype=np.int32)
             for jointid in range(self.mj_model.njnt):
