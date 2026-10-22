@@ -270,35 +270,34 @@ state objects — simply omit them:
 
 .. _custom-drive-inputs:
 
-Custom Drive Inputs
--------------------
+Custom Inputs
+-------------
 
-A drive may need an array beyond the positions, velocities and targets the
-actuator already reads. It lists the array names in
-:attr:`DriveBase.custom_inputs`. These values are caller-owned inputs for the
-current evaluation, so they are always read from the ``sim_control`` argument
-of :meth:`Actuator.step`, even when a value describes physical state such as an
-estimated load or measured temperature.
+A drive can read extra arrays from ``sim_control`` beyond the positions,
+velocities and targets the actuator already reads, e.g. an estimated load.  It declares
+them in :attr:`DriveBase.custom_inputs`, which maps each array name to its
+frequency, i.e. what the array has one entry for:
 
-:class:`Actuator` reads each declared value and passes it unchanged to
-:meth:`DriveBase.compute` in the ``custom_inputs`` mapping, keyed by attribute
-name. A missing attribute is passed as ``None``. The drive owns requiredness,
-fallback behavior, and all type, length, dtype, device, shape, and semantic
-validation. A drive called directly receives the same mapping explicitly; it
-does not look for custom values on a simulation state or control object.
+* a built-in Newton frequency:
+  :attr:`Model.AttributeFrequency.JOINT_DOF <newton.Model.AttributeFrequency.JOINT_DOF>`,
+  one entry per DOF;
+* a custom frequency: ``"actuator:actuator"``, one entry per actuator.
+  :class:`~newton.ModelBuilder` creates it: :meth:`~newton.ModelBuilder.add_actuator`
+  returns the index of each actuator, and the model stores its world and DOF
+  as ``model.actuator.actuator_world`` and ``model.actuator.actuator_dof``.
+  Every actuator built by the builder also writes its effort before clamping
+  to ``control.actuator_computed_effort``.
 
-For actuators created by :class:`~newton.ModelBuilder`,
-:meth:`Actuator.register_custom_attributes` automatically registers every
-name declared by the drive as a ``wp.float32`` joint-DOF array on
-:class:`~newton.Control`. Registration allocates the array but does not
-populate or clear it. Write every declared value before each actuator
-evaluation to avoid reusing stale data. Users of another simulation engine
-provide the same-named arrays through their ``sim_control`` adapter instead.
+For actuators created by :class:`~newton.ModelBuilder`, the declared arrays are
+registered on :class:`~newton.Control` automatically.  The caller writes them
+before each :meth:`Actuator.step`; registration does not fill or clear them.
 
-:meth:`Actuator.sim_state` returns an empty container with exactly the fields
-the actuator reads from ``sim_state``; :meth:`Actuator.sim_control` is its
-counterpart and includes all declared custom inputs. Passing your own object or
-a mapping to :meth:`Actuator.step` is also supported.
+Users of another simulation engine pass their own arrays instead: any object
+or mapping that provides the same-named arrays works as ``sim_state`` and
+``sim_control`` in :meth:`Actuator.step`.  To see which names an actuator
+needs, use :meth:`Actuator.sim_state` and :meth:`Actuator.sim_control`: they
+return empty containers with exactly the fields the actuator reads, including
+all declared custom inputs, ready to be filled with the engine's arrays.
 
 .. warning::
 
@@ -306,6 +305,8 @@ a mapping to :meth:`Actuator.step` is also supported.
    ``state_1`` each step, so a ``sim_state`` built once from ``state_0`` still
    points at that buffer after the swap and the actuator reads stale positions
    and velocities. Re-point its fields every step.
+
+See :ref:`custom_attributes` for custom attributes and frequencies in general.
 
 In the loop below the drive declares one array named ``extra_input``:
 
@@ -327,6 +328,11 @@ In the loop below the drive declares one array named ``extra_input``:
 
        solver.step(state_0, state_1, control, contacts, dt)
        state_0, state_1 = state_1, state_0
+
+.. deprecated:: 1.8
+
+   Declaring :attr:`DriveBase.custom_inputs` as a tuple of names is
+   deprecated; the names are read as joint-DOF inputs.
 
 .. _neural-network-checkpoints:
 
@@ -590,6 +596,9 @@ Input processors
 * :class:`InputProcessorBacklash` — position on the link side of a backlash
   joint (stateless).
 
+Multiple input processors can be stacked on a single actuator; they are applied
+in sequence.
+
 Drives
 ^^^^^^
 
@@ -608,8 +617,20 @@ Drives
 
 See the API documentation for each drive's control-law equations.
 
+Clamping
+^^^^^^^^
+
+* :class:`ClampingMaxEffort` — symmetric clamp to ±max_effort per actuator.
+* :class:`ClampingDCMotor` — velocity-dependent effort saturation using the DC
+  motor effort-speed characteristic.
+* :class:`ClampingPositionBased` — position-dependent effort limits via
+  interpolated lookup table (e.g. for linkage-driven joints).
+
+Multiple clamping objects can be stacked on a single actuator; they are applied
+in sequence.
+
 Battery
-^^^^^^^
+-------
 
 A battery powers one or more actuators, and its voltage sags with their total
 effort.
@@ -637,8 +658,6 @@ effort.
 from ``control.actuator_supply_voltage``.  The drive lists this array in its
 :attr:`DriveBase.custom_inputs` with the per-actuator frequency
 ``"actuator:actuator"``.
-:meth:`~newton.ModelBuilder.finalize` warns when such an actuator has no
-battery, since its supply voltage stays 0 V.
 
 Below, the hip and knee share one battery and the ankle draws from another:
 
@@ -682,18 +701,6 @@ Below, the hip and knee share one battery and the ankle draws from another:
        update_battery_supply(model, control)
        solver.step(state_0, state_1, control, None, dt)
        state_0, state_1 = state_1, state_0
-
-Clamping
-^^^^^^^^
-
-* :class:`ClampingMaxEffort` — symmetric clamp to ±max_effort per actuator.
-* :class:`ClampingDCMotor` — velocity-dependent effort saturation using the DC
-  motor effort-speed characteristic.
-* :class:`ClampingPositionBased` — position-dependent effort limits via
-  interpolated lookup table (e.g. for linkage-driven joints).
-
-Multiple clamping objects can be stacked on a single actuator; they are applied
-in sequence.
 
 Customization
 -------------
