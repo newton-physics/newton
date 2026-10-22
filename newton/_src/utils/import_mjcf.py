@@ -411,7 +411,7 @@ def parse_mjcf(
         parse_meshes: Whether geometries of type `"mesh"` should be parsed. If False, geometries of type `"mesh"` are ignored.
         parse_sites: Whether sites (non-colliding reference points) should be parsed. If False, sites are ignored.
         parse_visuals: Whether visual geometries (non-collision shapes) should be loaded. If False, visual shapes are not loaded (different from `hide_visuals` which loads but hides them). Default is True.
-        parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values. Default is True.
+        parse_mujoco_options: Whether solver options from the MJCF `<option>` tag should be parsed. If False, solver options are not loaded and custom attributes retain their default values; the ``gravity`` and ``filterparent`` flags, which change the Newton model rather than a solver option, are then ignored as well. Default is True.
         up_axis: The up axis of the MuJoCo scene. The default is Z up.
         ignore_names: A list of regular expressions. Bodies and joints with a name matching one of the regular expressions will be ignored.
         ignore_classes: A list of regular expressions. Bodies and joints with a class matching one of the regular expressions will be ignored.
@@ -568,15 +568,10 @@ def parse_mjcf(
     if len(inertia_group_range) != 2:
         raise ValueError("MJCF compiler inertiagrouprange must contain exactly 2 integers.")
 
-    # MuJoCo's filterparent flag decides whether parent and child bodies may collide. Newton keeps that
-    # decision on the joints (collision_filter_parent), so it is honored whether or not the solver
-    # options are parsed. FIXED joints keep the filter: MuJoCo welds those bodies together.
+    # Like gravity, filterparent changes the Newton model rather than a solver option: it decides
+    # whether the imported joints filter parent-child collisions (collision_filter_parent). FIXED
+    # joints keep the filter because MuJoCo welds those bodies together.
     filter_parent = True
-    for option_elem in root.findall("option"):
-        for flag_elem in option_elem.findall("flag"):
-            if "filterparent" in flag_elem.attrib:
-                filter_parent = SolverMuJoCo._parse_enable_disable(flag_elem.attrib["filterparent"])
-    joint_filter_parent = None if filter_parent else False
 
     # Parse MJCF compiler and option tags for ONCE and WORLD frequency custom attributes
     # WORLD frequency attributes use index 0 here; they get remapped during add_world()
@@ -615,11 +610,15 @@ def parse_mjcf(
                     builder.custom_attributes[key].values[0] = value
                 if "gravity" in flag_elem.attrib:
                     gravity_enabled = SolverMuJoCo._parse_enable_disable(flag_elem.attrib["gravity"])
+                if "filterparent" in flag_elem.attrib:
+                    filter_parent = SolverMuJoCo._parse_enable_disable(flag_elem.attrib["filterparent"])
         if not gravity_enabled:
             if builder.current_world >= 0:
                 builder.world_gravity[builder.current_world] = wp.vec3()
             else:
                 builder.gravity = wp.vec3()
+
+    joint_filter_parent = None if filter_parent else False
 
     class_parent = {}
     class_children = {}
