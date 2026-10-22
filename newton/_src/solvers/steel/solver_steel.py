@@ -9329,6 +9329,7 @@ class SolverSteel(SolverBase):
         self._launch_tree_fk(
             "public",
             [
+                None,  # The tree plan already supplies the traversal order.
                 model.joint_articulation,
                 state_out.joint_q,
                 state_out.joint_qd,

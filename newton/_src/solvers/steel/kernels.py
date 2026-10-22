@@ -1064,6 +1064,7 @@ def _get_tree_fk_kernel(lanes: int, mode: str):
             level_offsets: wp.array2d[int],
             segment_offsets: wp.array[int],
             segment_joints: wp.array[int],
+            joint_order: wp.array[int],
             joint_articulation: wp.array[int],
             joint_q: wp.array[float],
             joint_qd: wp.array[float],
@@ -1100,6 +1101,7 @@ def _get_tree_fk_kernel(lanes: int, mode: str):
                             eval_single_articulation_fk(
                                 joint,
                                 joint + 1,
+                                joint_order,
                                 joint_articulation,
                                 joint_q,
                                 joint_qd,

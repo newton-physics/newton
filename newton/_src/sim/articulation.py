@@ -403,6 +403,7 @@ def eval_joint_child_state(
 def eval_single_articulation_fk(
     joint_start: int,
     joint_end: int,
+    joint_order: wp.array[int],
     joint_articulation: wp.array[int],
     joint_q: wp.array[float],
     joint_qd: wp.array[float],
@@ -423,7 +424,10 @@ def eval_single_articulation_fk(
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
 ):
-    for i in range(joint_start, joint_end):
+    for joint in range(joint_start, joint_end):
+        i = joint
+        if joint_order:
+            i = joint_order[joint]
         if joint_mask:
             if not joint_mask[i]:
                 # Descendants read the preserved parent pose and velocity from state.
@@ -482,6 +486,7 @@ def eval_single_articulation_fk(
 def eval_articulation_fk(
     articulation_start: wp.array[int],
     articulation_end: wp.array[int],
+    joint_order: wp.array[int],
     articulation_count: int,  # total number of articulations
     articulation_mask: wp.array[
         bool
@@ -532,6 +537,7 @@ def eval_articulation_fk(
     eval_single_articulation_fk(
         joint_start,
         joint_end,
+        joint_order,
         joint_articulation,
         joint_q,
         joint_qd,
@@ -571,8 +577,17 @@ def eval_fk(
     The written :attr:`State.body_qd` values use Newton's public body-twist
     convention ``(v_com_world, omega_world)``.
 
-    Stale joint coordinates can overwrite simulated body state. Use
-    :func:`eval_ik` to refresh the input arrays from body state when needed.
+    To edit a branch while preserving the rest of a simulated articulation:
+    refresh stale joint coordinates with :func:`eval_ik` if needed, edit the
+    desired joint coordinates, and pass a ``joint_mask`` selecting the edited
+    joint and all descendants that should follow it. Use :attr:`Model.joint_ancestor`
+    to identify those descendants. Selecting only the edited joint leaves its
+    descendants' body poses and velocities unchanged.
+
+    An :func:`eval_ik` / full FK round trip can change unrelated bodies when
+    simulated poses or velocities do not exactly satisfy the joint constraints,
+    as well as through numerical roundoff. The joint mask preserves unselected
+    body state exactly instead of reconstructing it from joint coordinates.
 
     Args:
         model: The model to evaluate.
@@ -585,11 +600,11 @@ def eval_fk(
         body_flag_filter: Body flag filter controlling which bodies are written to in ``state.body_q`` and
             ``state.body_qd``. Default updates both dynamic and kinematic bodies. Bodies that do not
             match the filter retain their existing values; they are not zeroed or invalidated.
-        joint_mask: Optional bool array on ``model.device``, shape [joint_count]. Only enabled joints
+        joint_mask: Optional bool array on ``model.device``, shape [joint_count]. Only selected joints
             update their child bodies; unselected joints preserve the existing body pose and velocity.
             This only selects FK writes and is independent of :attr:`Model.joint_enabled`.
-            Enabled joints use their parents' current state, whether preserved or updated by this call.
-            Descendants are not enabled automatically: include them to propagate an edit through a branch.
+            Selected joints use their parents' current state, whether preserved or updated by this call.
+            Descendants are not selected automatically: include them to propagate an edit through a branch.
             Intersects with ``mask`` or ``indices`` and ``body_flag_filter``. Supports autodiff and
             graph capture, including changes to mask values between graph replays.
 
@@ -681,6 +696,7 @@ def eval_fk(
         inputs=[
             model.articulation_start,
             model.articulation_end,
+            model._fk_joint_order,
             model.articulation_count,
             mask,
             indices,

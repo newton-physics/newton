@@ -15276,6 +15276,17 @@ class ModelBuilder:
                     fk_level_joints,
                     fk_level_parent_pos,
                 ) = fk_topology
+                # Preserve joint IDs while visiting parents first in serial FK.
+                # Already ordered models need no permutation or indexed reads.
+                if np.any((joint_articulation_np >= 0) & (parent_joint > np.arange(self.joint_count))):
+                    fk_joint_order = np.arange(self.joint_count, dtype=np.int32)
+                    for art_idx in range(self.articulation_count):
+                        first = fk_level_joint_start[fk_articulation_level_start[art_idx]]
+                        last = fk_level_joint_start[fk_articulation_level_start[art_idx + 1]]
+                        fk_joint_order[articulation_start[art_idx] : articulation_end[art_idx]] = fk_level_joints[
+                            first:last
+                        ]
+                    m._fk_joint_order = wp.array(fk_joint_order, dtype=wp.int32)
                 fk_level_capacity = int(np.max(np.diff(fk_level_joint_start), initial=1))
                 if fk_level_capacity <= FK_TILE_MAX_LEVEL_WIDTH:
                     m._fk_articulation_level_start = wp.array(fk_articulation_level_start, dtype=wp.int32)
