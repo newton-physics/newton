@@ -1143,8 +1143,7 @@ by joint type:
   remain ordinary static MuJoCo geometry rather than mocap bodies.
 
 Mocap bodies posed from Newton joints, both fixed roots and massless
-kinematic roots, follow the model and state every step, including steps
-where ``update_data_interval`` skips pushing the joint state. MuJoCo does not
+kinematic roots, are updated together with the joint state. MuJoCo does not
 wake sleeping bodies resting on a moving mocap body, so when sleeping is
 enabled, moving one of these roots wakes its world.
 
@@ -1161,12 +1160,11 @@ MuJoCo has no prescribed degrees of freedom. Following its idiom for
 scripted bodies, each kinematic root gets a mocap target body and a weld
 equality that is active exactly while the root is kinematic:
 
-- Every step the target is moved to the pose prescribed by
-  :attr:`~newton.State.joint_q` and :attr:`~newton.State.joint_qd`,
-  including steps where ``update_data_interval`` skips pushing the rest
-  of the state. The target leads the prescribed pose by the weld's
-  damping-to-stiffness ratio so the weld does not drag the body toward
-  the mocap's zero velocity.
+- Whenever the joint state is pushed into MuJoCo, the target is moved to
+  the pose prescribed by :attr:`~newton.State.joint_q` and
+  :attr:`~newton.State.joint_qd`. The target leads the prescribed pose by
+  the weld's damping-to-stiffness ratio so the weld does not drag the body
+  toward the mocap's zero velocity during the step.
 - The weld time constant is two timesteps (eight under RK4, whose
   intermediate stages destabilize stiffer welds), set from the step size
   independently of MuJoCo's REFSAFE flag.

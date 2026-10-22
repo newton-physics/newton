@@ -4365,7 +4365,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             sleep_tolerance: Sleep velocity tolerance. If None, uses model custom attribute or MuJoCo default (0.001).
             disable_contacts: If True, disable contact computation in MuJoCo. If False, enable it. If None, use the model custom attribute or enable it by default.
             disable_sensors: If True, disable sensor computation in MuJoCo. If False, enable it. If None, use the model custom attribute or enable it by default. ``body_qdd`` and ``body_parent_f`` are still computed on either backend when requested through solver observables or legacy output-state fields.
-            update_data_interval: Frequency (in simulation steps) at which to push the Newton joint state into the MuJoCo Data object. If 0, it is never pushed after initialization. Mocap bodies posed from Newton joints, such as fixed roots and the targets of kinematic roots, are still updated every step.
+            update_data_interval: Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
             save_to_mjcf: Optional path to save the generated MJCF model file.
             use_mujoco_contacts: If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
             use_speculative_contacts: Add frictionless normal constraints for separated Newton
@@ -4951,10 +4951,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             raise ValueError("use_speculative_contacts=True requires a finite positive timestep.")
         if self.use_mujoco_cpu:
             self._apply_mjc_control(self.model, state_in, control, self.mj_data)
-            push_state = self.update_data_interval > 0 and self._step % self.update_data_interval == 0
-            if push_state or self._jnt_mocap is not None:
+            if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
                 # XXX updating the mujoco state at every step may introduce numerical instability
-                self._update_mjc_data(self.mj_data, self.model, state_in, dt=dt, write_state=push_state)
+                self._update_mjc_data(self.mj_data, self.model, state_in, dt=dt)
             self.mj_model.opt.timestep = dt
             needs_body_observables = (
                 state_out.body_qdd is not None
@@ -4976,9 +4975,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             with wp.ScopedDevice(self.model.device), self._scoped_mujoco_warp_execution():
                 self._enable_rne_postconstraint(state_out, observables)
                 self._apply_mjc_control(self.model, state_in, control, self.mjw_data)
-                push_state = self.update_data_interval > 0 and self._step % self.update_data_interval == 0
-                if push_state or self._jnt_mocap is not None:
-                    self._update_mjc_data(self.mjw_data, self.model, state_in, dt=dt, write_state=push_state)
+                if self.update_data_interval > 0 and self._step % self.update_data_interval == 0:
+                    self._update_mjc_data(self.mjw_data, self.model, state_in, dt=dt)
                 self.mjw_model.opt.timestep.fill_(dt)
                 if not self.mjw_model.opt.run_collision_detection:
                     if contacts is None:
@@ -6011,7 +6009,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             dt: Step size that kinematic weld targets lead the prescribed pose by;
                 ``0`` places them at the prescribed pose.
             write_state: If ``False``, only the mocap poses of fixed roots, massless
-                kinematic roots, and kinematic weld targets are written.
+                kinematic roots, and kinematic weld targets are written, as after
+                a joint-frame notification.
         """
         is_mjwarp = SolverMuJoCo._data_is_mjwarp(mj_data)
         single_world_template = False

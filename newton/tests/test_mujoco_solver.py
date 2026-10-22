@@ -2412,8 +2412,8 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
             qd[:] = rates
         return q, qd
 
-    def test_kinematic_roots_track_between_state_pushes(self):
-        """MuJoCo keeps each kinematic root joint type on its prescribed path between state pushes."""
+    def test_kinematic_roots_track_prescribed_motion_within_a_step(self):
+        """MuJoCo integrates each kinematic root joint type to its prescribed pose at the end of a step."""
         dt = 0.002
         # Every joint type under the default integrator; the free joint, which moves in all six
         # directions, covers RK4's own weld tuning and independence from REFSAFE.
@@ -2425,32 +2425,27 @@ class TestMuJoCoSolverKinematicBodyProperties(unittest.TestCase):
                 if "refsafe" in config:
                     model.mujoco.flag_refsafe.fill_(config["refsafe"])
                 solver = SolverMuJoCo(
-                    model,
-                    use_mujoco_cpu=use_mujoco_cpu,
-                    update_data_interval=5,
-                    disable_contacts=True,
-                    integrator=config.get("integrator"),
+                    model, use_mujoco_cpu=use_mujoco_cpu, disable_contacts=True, integrator=config.get("integrator")
                 )
                 mjc_body = int(np.flatnonzero(solver.mjc_body_to_newton.numpy()[0] == body)[0])
-                # RK4 leaves xpos/xquat at its last stage, one step ahead; its stages
-                # also make the weld cancellation approximate.
-                rk4 = config.get("integrator") == "rk4"
-                pose_lead, tol = (dt, 1.0e-5) if rk4 else (0.0, 1.0e-6)
+                tol = 1.0e-5 if config.get("integrator") == "rk4" else 1.0e-6
                 state_0, state_1, control = model.state(), model.state(), model.control()
                 expected_state = model.state()
-                for i in range(40):
+                for i in range(20):
                     q, qd = self._prescribed_root_motion(model, kind, i * dt)
                     state_0.joint_q.assign(q)
                     state_0.joint_qd.assign(qd)
-                    q, qd = self._prescribed_root_motion(model, kind, i * dt + pose_lead)
+                    solver.step(state_0, state_1, control, None, dt)
+                    q, _ = self._prescribed_root_motion(model, kind, (i + 1) * dt)
                     expected_state.joint_q.assign(q)
                     newton.eval_fk(model, expected_state.joint_q, expected_state.joint_qd, expected_state)
                     expected = expected_state.body_q.numpy()[body]
-                    solver.step(state_0, state_1, control, None, dt)
-                    # Between pushes, MuJoCo's pose comes from its own integration against the targets.
+                    # Recompute kinematics from the qpos MuJoCo integrated during the step.
                     if use_mujoco_cpu:
+                        solver._mujoco.mj_kinematics(solver.mj_model, solver.mj_data)
                         xpos, xquat = solver.mj_data.xpos[mjc_body], solver.mj_data.xquat[mjc_body]
                     else:
+                        solver._mujoco_warp.kinematics(solver.mjw_model, solver.mjw_data)
                         xpos = solver.mjw_data.xpos.numpy()[0, mjc_body]
                         xquat = solver.mjw_data.xquat.numpy()[0, mjc_body]
                     np.testing.assert_allclose(xpos, expected[:3], atol=tol)
