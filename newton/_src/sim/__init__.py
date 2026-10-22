@@ -8,7 +8,10 @@ from .collision_schedule import CollisionSubstepScheduler
 from .contact_kinematics import eval_rigid_contact_kinematics
 from .contacts import Contacts
 from .control import Control
-from .deformable_visual import DeformableVisualMesh
+from .deformable_visual import (
+    DeformableVisualMesh,
+    DeformableVisuals,
+)
 from .enums import (
     BodyFlags,
     JointTargetMode,
@@ -30,6 +33,7 @@ __all__ = [
     "Contacts",
     "Control",
     "DeformableVisualMesh",
+    "DeformableVisuals",
     "JointTargetMode",
     "JointType",
     "Model",

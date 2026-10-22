@@ -3,12 +3,15 @@
 
 """Tests for deformable visual meshes: binding kinds, ownership, validation, skinning."""
 
+import math
 import unittest
+from pathlib import Path
 
 import numpy as np
 import warp as wp
 
 import newton
+from newton._src.sim.deformable_visual import compute_deformable_visual_mesh_normals, skin_deformable_visual_mesh
 from newton.tests.unittest_utils import assert_np_equal
 
 
@@ -46,8 +49,245 @@ def _add_soft(builder):
 _QUAD = np.array([0, 1, 2, 0, 2, 3], dtype=np.int32)
 
 
+def _skin(model, mesh, state):
+    out = wp.empty(mesh.vertex_count, dtype=wp.vec3, device=model.device)
+    skin_deformable_visual_mesh(mesh, state, model, out)
+    return out.numpy()
+
+
 class TestDeformableVisualMeshBindings(unittest.TestCase):
     """Core binding correctness for every kind."""
+
+    def test_particle_kind_follows_particles(self):
+        """A particle-bound visual mesh with a 1:1 map equals particle_q, and the
+        model output carries the invariant index, kind, world, and UVs."""
+        builder = newton.ModelBuilder()
+        _add_cloth(builder)
+        n = builder.particle_count
+        verts = np.array(builder.particle_q, dtype=np.float32)
+        uvs = np.linspace(0.0, 1.0, n * 2, dtype=np.float32).reshape(n, 2)
+        expected_vertices, expected_uvs = verts.copy(), uvs.copy()
+        indices, particles = _QUAD.copy(), np.arange(n, dtype=np.int32)
+        index = builder.add_deformable_visual_mesh(
+            verts, indices, kind="particle", particles=particles, uvs=uvs, texture=Path("skin.png"), label="skin"
+        )
+        verts[:] = 100.0
+        uvs[:] = 0.0
+        indices[:] = 0
+        particles[:] = 0
+        model = builder.finalize()
+
+        self.assertEqual(model.deformable_visual_mesh_count, 1)
+        rm = model.deformable_visual_meshes[index]
+        self.assertEqual(rm.kind, newton.DeformableVisualMesh.Kind.PARTICLE)
+        self.assertEqual(rm.index, index)
+        self.assertEqual(rm.label, "skin")
+        self.assertEqual(rm.texture, "skin.png")
+        assert_np_equal(rm.rest_vertices.numpy(), expected_vertices)
+        assert_np_equal(rm.uvs.numpy(), expected_uvs, tol=1.0e-6)
+        assert_np_equal(rm.indices.numpy(), _QUAD)
+        assert_np_equal(rm.parent.numpy(), np.arange(n, dtype=np.int32))
+
+        state = model.state()
+        moved = state.particle_q.numpy()
+        moved[:, 2] += 1.5
+        state.particle_q = wp.array(moved, dtype=wp.vec3)
+        assert_np_equal(_skin(model, rm, state), moved, tol=1.0e-5)
+
+    def test_triangle_embedding_follows_surface(self):
+        """An independently discretized vertex projects onto its closest owning
+        triangle (normal offset dropped) and follows the surface; the weights
+        form a partition of unity."""
+        builder = newton.ModelBuilder()
+        _add_cloth(builder)
+        # A vertex hovering above the cloth plane and one inside a triangle.
+        verts = np.array([[0.25, 0.1, 0.3], [0.6, 0.4, 0.0], [1.0, 1.0, 0.0], [0.1, 0.9, 0.0]], dtype=np.float32)
+        builder.add_deformable_visual_mesh(verts, _QUAD, kind="triangle", tri_range=(0, builder.tri_count))
+        model = builder.finalize()
+        rm = model.deformable_visual_meshes[0]
+
+        self.assertEqual(rm.kind, newton.DeformableVisualMesh.Kind.TRIANGLE)
+        weights = rm.weights.numpy()
+        assert_np_equal(weights.sum(axis=1), np.ones(len(verts), dtype=np.float32), tol=1.0e-5)
+        parents = rm.parent.numpy()
+        self.assertTrue((parents >= 0).all() and (parents < model.tri_count).all())
+
+        # At rest the skinned vertex is the projection: z collapses onto the plane.
+        state = model.state()
+        skinned = _skin(model, rm, state)
+        self.assertAlmostEqual(float(skinned[0, 2]), 0.0, places=5)
+
+        # A rigid translation of the cloth carries the projected vertices with it.
+        shift = np.array([0.5, -1.0, 2.0], dtype=np.float32)
+        state.particle_q = wp.array(state.particle_q.numpy() + shift, dtype=wp.vec3)
+        assert_np_equal(_skin(model, rm, state), skinned + shift, tol=1.0e-4)
+
+    def test_tet_embedding_partition_of_unity_and_rigid_motion(self):
+        """Tet barycentric weights sum to one; embedded vertices follow a rigid
+        translation and rotation of the soft body exactly."""
+        builder = newton.ModelBuilder()
+        _add_soft(builder)
+        verts = np.array(
+            [[0.25, 0.25, 0.25], [0.75, 0.75, 0.75], [0.5, 0.5, 0.5], [0.1, 0.9, 0.4]],
+            dtype=np.float32,
+        )
+        builder.add_deformable_visual_mesh(verts, _QUAD, kind="tet", tet_range=(0, builder.tet_count))
+        model = builder.finalize()
+        rm = model.deformable_visual_meshes[0]
+
+        self.assertEqual(rm.kind, newton.DeformableVisualMesh.Kind.TET)
+        weights = rm.weights.numpy()
+        assert_np_equal(weights.sum(axis=1), np.ones(len(verts), dtype=np.float32), tol=1.0e-5)
+
+        state = model.state()
+        shift = np.array([1.0, 2.0, 3.0], dtype=np.float32)
+        state.particle_q = wp.array(state.particle_q.numpy() + shift, dtype=wp.vec3)
+        assert_np_equal(_skin(model, rm, state), verts + shift, tol=1.0e-4)
+
+        rot = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]], dtype=np.float32)
+        state2 = model.state()
+        state2.particle_q = wp.array((model.state().particle_q.numpy() @ rot.T).astype(np.float32), dtype=wp.vec3)
+        assert_np_equal(_skin(model, rm, state2), verts @ rot.T, tol=1.0e-4)
+
+    def test_body_binding_follows_bodies(self):
+        """A body-bound visual mesh follows its nearest body's current pose."""
+        builder = newton.ModelBuilder()
+        b0 = builder.add_body(xform=wp.transform(wp.vec3(0.0, 0.0, 0.0), wp.quat_identity()))
+        b1 = builder.add_body(xform=wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()))
+        builder.add_shape_sphere(b0, radius=0.1)
+        builder.add_shape_sphere(b1, radius=0.1)
+        verts = np.array(
+            [[0.0, 0.1, 0.0], [0.1, 0.0, 0.0], [1.0, 0.1, 0.0], [0.9, 0.0, 0.0]],
+            dtype=np.float32,
+        )
+        builder.add_deformable_visual_mesh(verts, _QUAD, kind="body", bodies=[b0, b1])
+        model = builder.finalize()
+        rm = model.deformable_visual_meshes[0]
+
+        self.assertEqual(rm.kind, newton.DeformableVisualMesh.Kind.BODY)
+        parents = rm.parent.numpy()
+        self.assertEqual(parents[0], b0)
+        self.assertEqual(parents[2], b1)
+
+        # Translate body 1 only; its two vertices move, body 0's stay.
+        state = model.state()
+        body_q = state.body_q.numpy()
+        body_q[b1, :3] += (0.0, 0.0, 2.0)
+        state.body_q = wp.array(body_q, dtype=wp.transform)
+        skinned = _skin(model, rm, state)
+        assert_np_equal(skinned[:2], verts[:2], tol=1.0e-5)
+        assert_np_equal(skinned[2:], verts[2:] + np.array([0.0, 0.0, 2.0], dtype=np.float32), tol=1.0e-5)
+        body_q[b1, 3:] = (0, 0, math.sqrt(0.5), math.sqrt(0.5))
+        state.body_q.assign(body_q)
+        rotated = np.column_stack((1.0 - verts[2:, 1], verts[2:, 0] - 1.0, np.full(2, 2.0)))
+        skinned = _skin(model, rm, state)
+        assert_np_equal(skinned[:2], verts[:2], tol=1.0e-5)
+        assert_np_equal(skinned[2:], rotated, tol=1.0e-5)
+
+    def test_body_binding_keeps_candidate_order_for_ties(self):
+        """Nearest origins select the first candidate, retaining rotated offsets."""
+        builder = newton.ModelBuilder()
+        left = builder.add_body(xform=wp.transform((-1, 0, 0), wp.quat_identity()))
+        right = builder.add_body(xform=wp.transform((1, 0, 0), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), math.pi / 2)))
+        points = np.array([[0, 1, 0], [-0.5, 0, 0], [0.5, 0, 1]], dtype=np.float32)
+        builder.add_deformable_visual_mesh(points, [0, 1, 2], kind="body", bodies=[right, left])
+        model = builder.finalize(device="cpu")
+        mesh = model.deformable_visual_meshes[0]
+        np.testing.assert_array_equal(mesh.parent.numpy(), [right, left, right])
+        np.testing.assert_allclose(mesh.local_offsets.numpy(), [[1, 1, 0], [0.5, 0, 0], [0, 0.5, 1]], atol=1e-6)
+        np.testing.assert_allclose(_skin(model, mesh, model.state()), points, atol=1e-6)
+
+    def test_triangle_embedding_uses_closest_edges_and_corners(self):
+        """Euclidean projection must not become independent barycentric clamping."""
+        builder = newton.ModelBuilder()
+        for point in [(0, 0, 0), (2, 0, 0), (1, 1, 0)]:
+            builder.add_particle(wp.vec3(*point), wp.vec3(0), mass=1.0)
+        builder.add_triangle(0, 1, 2)
+        vertices = np.array(
+            [[1, -0.5, 0], [-0.5, 1, 0], [2.5, 1, 0], [-1, -1, 0], [3, -1, 0], [1, 2, 0], [1, 0.2, 3]], dtype=np.float32
+        )
+        expected = np.array([[1, 0, 0], [0.25, 0.25, 0], [1.75, 0.25, 0], [0, 0, 0], [2, 0, 0], [1, 1, 0], [1, 0.2, 0]])
+        builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind="triangle", tri_range=(0, 1))
+        model = builder.finalize()
+        assert_np_equal(_skin(model, model.deformable_visual_meshes[0], model.state()), expected, tol=1.0e-6)
+
+    def test_triangle_embedding_selects_closest_nondegenerate_parent(self):
+        """Ignore collapsed triangles when choosing the closest surface."""
+        builder = newton.ModelBuilder()
+        points = [(0, 0, 0), (2, 0, 0), (1, 1, 0), (0, -1.1, 0), (1, -2, 0), (2, -1.1, 0)]
+        for point in points:
+            builder.add_particle(wp.vec3(*point), wp.vec3(0), mass=1.0)
+        builder.add_triangle(0, 1, 2)
+        builder.add_triangle(3, 4, 5)
+        # A formerly valid triangle can be degenerate in a separate visual bind pose.
+        for point in [(4, 0, 0), (5, 0, 0), (4, 1, 0)]:
+            builder.add_particle(wp.vec3(*point), wp.vec3(0), mass=1.0)
+        builder.add_triangle(6, 7, 8)
+        builder.particle_q[6:9] = [wp.vec3(1, -0.5, 0)] * 3
+        vertices = np.array([[1, -0.5, 0], [1.01, -0.5, 0], [1, -0.49, 0]], dtype=np.float32)
+        builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind="triangle", tri_range=(0, 3))
+        model = builder.finalize()
+        mesh = model.deformable_visual_meshes[0]
+        np.testing.assert_array_equal(mesh.parent.numpy(), [0, 0, 0])
+        assert_np_equal(_skin(model, mesh, model.state()), np.array([[1, 0, 0], [1.01, 0, 0], [1, 0, 0]]), tol=1.0e-6)
+
+        with self.assertRaisesRegex(ValueError, "degenerate"):
+            builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind="triangle", tri_range=(2, 3))
+
+    def test_triangle_embedding_far_from_surface(self):
+        """Bind distant vertices to the closest surface without losing their weights."""
+        builder = newton.ModelBuilder()
+        for x in (2000.0, 1000.1552):
+            start = builder.particle_count
+            for point in ((x, 0, 0), (x + 1, 0, 0), (x, 1, 0)):
+                builder.add_particle(wp.vec3(*point), wp.vec3(0), mass=1.0)
+            builder.add_triangle(start, start + 1, start + 2)
+        vertices = np.array(
+            [
+                [-0.009496063, 0.39774823, 0.12428024],
+                [0.00046608306, 0.8325083, 0.13732179],
+                [0.0004659774, 0.6846791, 0.16780631],
+            ],
+            dtype=np.float32,
+        )
+        builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind="triangle", tri_range=(0, 2))
+        # Automatic binding runs on the CPU, independently of the simulation device.
+        model = builder.finalize(device="cpu")
+        mesh = model.deformable_visual_meshes[0]
+        np.testing.assert_array_equal(mesh.parent.numpy(), [1, 1, 1])
+        np.testing.assert_allclose(mesh.weights.numpy().sum(axis=1), 1.0, atol=1.0e-6)
+        visuals = model.deformable_visuals()
+        model.update_deformable_visuals(model.state(), visuals)
+        expected = np.column_stack((np.full(3, 1000.1552), vertices[:, 1], np.zeros(3)))
+        np.testing.assert_allclose(visuals.get_points(mesh).numpy(), expected, rtol=1.0e-7, atol=1.0e-6)
+
+    def test_automatic_binding_preserves_ties_and_thin_elements(self):
+        """Equal candidates choose the first parent, including thin or inverted elements."""
+        for kind in ("triangle", "tet"):
+            with self.subTest(kind=kind):
+                builder = newton.ModelBuilder()
+                corners = [(0, 0, 0), (1, 0, 0), (0, 1.0e-5, 0), (0, 0, 1)]
+                for corner in corners:
+                    builder.add_particle(wp.vec3(*corner), wp.vec3(0), mass=1.0)
+                if kind == "triangle":
+                    builder.add_triangle(0, 1, 2)
+                    builder.add_triangle(0, 1, 2)
+                    owning_range = {"tri_range": (0, 2)}
+                    vertices = np.array([[0.2, 2.0e-6, 0], [0.4, 1.0e-6, 0], [0.1, 5.0e-6, 0]], dtype=np.float32)
+                else:
+                    builder.add_tetrahedron(0, 1, 2, 3)
+                    builder.add_tetrahedron(0, 1, 2, 3)
+                    # Binding must handle an inverted current pose, too.
+                    builder.particle_q[3] = wp.vec3(0, 0, -1)
+                    owning_range = {"tet_range": (0, 2)}
+                    vertices = np.array(
+                        [[0.1, 2.0e-6, -0.2], [0.2, 1.0e-6, -0.3], [0.1, 3.0e-6, -0.1]], dtype=np.float32
+                    )
+                builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind=kind, **owning_range)
+                model = builder.finalize()
+                mesh = model.deformable_visual_meshes[0]
+                np.testing.assert_array_equal(mesh.parent.numpy(), [0, 0, 0])
+                assert_np_equal(_skin(model, mesh, model.state()), vertices, tol=1.0e-6)
 
     def test_outside_tet_vertex_clamps_within_owning_range(self):
         """Log fallback binding and keep normalized weights inside the owning range."""
@@ -95,6 +335,166 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
         rm = model.deformable_visual_meshes[0]
         assert_np_equal(rm.parent.numpy(), np.zeros(4, dtype=np.int32))
         assert_np_equal(rm.weights.numpy(), np.full((4, 4), 0.25, dtype=np.float32), tol=0.0)
+
+    def test_precomputed_weights_preserve_translation(self):
+        """Normalize accepted rounding errors so bindings preserve translations."""
+        builder = newton.ModelBuilder()
+        _add_soft(builder)
+        for kind, arity, owning_range in (("triangle", 3, {"tri_range": (0, 1)}), ("tet", 4, {"tet_range": (0, 1)})):
+            weights = np.full((3, arity), 1.0 / arity, dtype=np.float32)
+            weights[0, 0] += 9.0e-5
+            weights[1] = 0.0
+            weights[1, :2] = [-1.0e-5, 1.0 + 1.0e-5]
+            builder.add_deformable_visual_mesh(
+                np.zeros((3, 3)), [0, 1, 2], kind=kind, parent=[0, 0, 0], weights=weights, **owning_range
+            )
+        model = builder.finalize(device="cpu")
+        state = model.state()
+        before = [_skin(model, mesh, state) for mesh in model.deformable_visual_meshes]
+        translation = np.array([1000.0, -500.0, 250.0], dtype=np.float32)
+        state.particle_q.assign(state.particle_q.numpy() + translation)
+        for mesh, initial in zip(model.deformable_visual_meshes, before, strict=True):
+            with self.subTest(kind=mesh.kind):
+                np.testing.assert_allclose(_skin(model, mesh, state), initial + translation, rtol=0, atol=1.0e-4)
+                self.assertTrue(np.all(mesh.weights.numpy() >= 0))
+                np.testing.assert_allclose(mesh.weights.numpy().sum(axis=1), 1.0, rtol=0, atol=1.0e-7)
+
+    def test_normals_recompute_from_current_positions(self):
+        """compute_deformable_visual_mesh_normals yields unit normals for the deformed quad."""
+        builder = newton.ModelBuilder()
+        _add_cloth(builder)
+        verts = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [1.0, 1.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
+        builder.add_deformable_visual_mesh(verts, _QUAD, kind="particle", particles=np.arange(4, dtype=np.int32))
+        model = builder.finalize()
+        rm = model.deformable_visual_meshes[0]
+        points = wp.array(verts, dtype=wp.vec3, device=model.device)
+        normals = wp.empty(4, dtype=wp.vec3, device=model.device)
+        compute_deformable_visual_mesh_normals(points, rm.indices, normals)
+        n = normals.numpy()
+        assert_np_equal(np.linalg.norm(n, axis=1), np.ones(4, dtype=np.float32), tol=1.0e-5)
+        assert_np_equal(n[:, 2], np.ones(4, dtype=np.float32), tol=1.0e-5)
+
+
+class TestDeformableVisuals(unittest.TestCase):
+    """Shared current visual data allocated and updated through Model."""
+
+    @staticmethod
+    def _model():
+        builder = newton.ModelBuilder()
+        _add_cloth(builder)
+        particle_indices = np.array([0, 1, 5, 4], dtype=np.int32)
+        vertices = np.asarray(builder.particle_q, dtype=np.float32)[particle_indices]
+        builder.add_deformable_visual_mesh(
+            vertices,
+            _QUAD,
+            kind="particle",
+            particles=particle_indices,
+            label="first",
+        )
+        second_particles = np.array([6, 7, 11], dtype=np.int32)
+        builder.add_deformable_visual_mesh(
+            np.asarray(builder.particle_q, dtype=np.float32)[second_particles],
+            [0, 1, 2],
+            kind="particle",
+            particles=second_particles,
+            label="second",
+        )
+        return builder.finalize(), particle_indices, vertices
+
+    def test_allocate_update_and_access_mesh_ranges(self):
+        """Different mesh sizes share one output without overlapping ranges."""
+        model, _particle_indices, _vertices = self._model()
+
+        visuals = model.deformable_visuals()
+
+        self.assertIsInstance(visuals, newton.DeformableVisuals)
+        self.assertIs(visuals.model, model)
+        self.assertEqual(visuals.device, model.device)
+        self.assertEqual(visuals.vertex_count, 7)
+        self.assertEqual(visuals.mesh_ranges, ((0, 4), (4, 7)))
+        self.assertEqual(len(visuals.points), 7)
+        self.assertEqual(len(visuals.normals), 7)
+        self.assertIsNone(visuals.state)
+
+        with self.assertRaisesRegex(RuntimeError, "update_deformable_visuals"):
+            visuals.get_points(model.deformable_visual_meshes[0])
+
+        state = model.state()
+        moved = state.particle_q.numpy()
+        moved[:, 2] += 1.25
+        state.particle_q.assign(moved)
+
+        self.assertIs(model.update_deformable_visuals(state, visuals), visuals)
+        self.assertIs(visuals.state, state)
+        for mesh in model.deformable_visual_meshes:
+            assert_np_equal(visuals.get_points(mesh).numpy(), moved[mesh.parent.numpy()], tol=1.0e-6)
+            normals = visuals.get_normals(mesh).numpy()
+            assert_np_equal(np.linalg.norm(normals, axis=1), np.ones(mesh.vertex_count, dtype=np.float32), tol=1.0e-5)
+
+    def test_reuse_and_simultaneous_states_keep_fixed_independent_buffers(self):
+        """Reuse a buffer across states, or allocate separate outputs to retain both."""
+        model, particle_indices, _vertices = self._model()
+        state_a = model.state()
+        state_b = model.state()
+        moved_b = state_b.particle_q.numpy()
+        moved_b[:, 0] += 3.0
+        state_b.particle_q.assign(moved_b)
+
+        visuals = model.deformable_visuals()
+        points_ptr = visuals.points.ptr
+        model.update_deformable_visuals(state_a, visuals)
+        points_a = visuals.get_points(0).numpy().copy()
+        model.update_deformable_visuals(state_b, visuals)
+
+        self.assertEqual(visuals.points.ptr, points_ptr)
+        self.assertIs(visuals.state, state_b)
+        assert_np_equal(visuals.get_points(0).numpy(), moved_b[particle_indices], tol=1.0e-6)
+        self.assertFalse(np.allclose(points_a, visuals.get_points(0).numpy()))
+
+        visuals_a = model.deformable_visuals()
+        visuals_b = model.deformable_visuals()
+        model.update_deformable_visuals(state_a, visuals_a)
+        independent_a = visuals_a.get_points(0).numpy().copy()
+        model.update_deformable_visuals(state_b, visuals_b)
+
+        self.assertNotEqual(visuals_a.points.ptr, visuals_b.points.ptr)
+        assert_np_equal(visuals_a.get_points(0).numpy(), independent_a, tol=0.0)
+        assert_np_equal(visuals_b.get_points(0).numpy(), moved_b[particle_indices], tol=1.0e-6)
+
+    def test_update_is_cuda_graph_capturable(self):
+        """Replay captured skinning after changing the simulation state."""
+        model, _particle_indices, _vertices = self._model()
+        if not model.device.is_cuda:
+            self.skipTest("CUDA graph capture requires a CUDA device")
+
+        state = model.state()
+        visuals = model.deformable_visuals()
+        model.update_deformable_visuals(state, visuals)
+
+        with wp.ScopedCapture(model.device) as capture:
+            model.update_deformable_visuals(state, visuals)
+
+        moved = state.particle_q.numpy()
+        moved[:, 1] += 2.0
+        state.particle_q.assign(moved)
+        wp.capture_launch(capture.graph)
+        visuals.wait()
+
+        for mesh in model.deformable_visual_meshes:
+            assert_np_equal(visuals.get_points(mesh).numpy(), moved[mesh.parent.numpy()], tol=1.0e-6)
+
+    def test_rejects_results_and_meshes_from_another_model(self):
+        """Output buffers and mesh handles cannot be used with another model."""
+        model_a, _particle_indices, _vertices = self._model()
+        model_b, _particle_indices, _vertices = self._model()
+        visuals_a = model_a.deformable_visuals()
+
+        with self.assertRaisesRegex(ValueError, "created for another model"):
+            model_b.update_deformable_visuals(model_b.state(), visuals_a)
+
+        model_a.update_deformable_visuals(model_a.state(), visuals_a)
+        with self.assertRaisesRegex(ValueError, "does not belong"):
+            visuals_a.get_points(model_b.deformable_visual_meshes[0])
 
 
 class TestDeformableVisualMeshValidation(unittest.TestCase):

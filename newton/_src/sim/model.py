@@ -24,7 +24,12 @@ from ..utils.deprecation import RemovedAttribute, warn_deprecation
 from ..utils.mesh import MeshAdjacency, MeshAdjacencyData
 from .contacts import Contacts
 from .control import Control
-from .deformable_visual import DeformableVisualMesh
+from .deformable_visual import (
+    DeformableVisualMesh,
+    DeformableVisuals,
+    compute_deformable_visual_mesh_normals,
+    skin_deformable_visual_mesh,
+)
 from .shape_contact_pairs import _ShapeContactPairs
 from .state import State
 
@@ -1975,6 +1980,83 @@ class Model:
             self, state, self.bvh_particles.lowers, self.bvh_particles.uppers, self.bvh_particles.groups
         )
         self.bvh_particles.refit()
+
+    def deformable_visuals(self) -> DeformableVisuals:
+        """Allocate current points and normals for deformable visual meshes.
+
+        The returned buffers are model-compatible and reusable across
+        simulation states. Populate them with
+        :meth:`update_deformable_visuals` before reading or rendering them.
+
+        Returns:
+            Uninitialized current deformable visual data.
+
+        .. experimental::
+
+            This API may change without a formal deprecation cycle while
+            deformable visual support is experimental.
+        """
+        return DeformableVisuals(self)
+
+    def update_deformable_visuals(self, state: State, visuals: DeformableVisuals) -> DeformableVisuals:
+        """Update current deformable visual points and normals from a state.
+
+        This method reuses the fixed buffers allocated by
+        :meth:`deformable_visuals` and performs no structural allocation.
+
+        Args:
+            state: Simulation state containing current particle positions and
+                body transforms.
+            visuals: Model-compatible destination for current visual data.
+
+        Returns:
+            The updated ``visuals`` object.
+
+        Raises:
+            TypeError: If ``visuals`` is not :class:`DeformableVisuals`.
+            ValueError: If the output belongs to another model or the required
+                state arrays are missing or on another device.
+
+        .. experimental::
+
+            This API may change without a formal deprecation cycle while
+            deformable visual support is experimental.
+        """
+        if not isinstance(visuals, DeformableVisuals):
+            raise TypeError(f"visuals must be DeformableVisuals, got {type(visuals).__name__}")
+        visuals._validate_model(self)
+
+        needs_particles = any(mesh.kind != DeformableVisualMesh.Kind.BODY for mesh in self.deformable_visual_meshes)
+        needs_bodies = self.body_count > 0 and any(
+            mesh.kind == DeformableVisualMesh.Kind.BODY for mesh in self.deformable_visual_meshes
+        )
+        if needs_particles and state.particle_q is None:
+            raise ValueError("State.particle_q is required by this model's deformable visual meshes")
+        if needs_bodies and state.body_q is None:
+            raise ValueError("State.body_q is required by this model's body-bound deformable visual meshes")
+        if needs_particles and state.particle_q.device != self.device:
+            raise ValueError(
+                f"State particle device {state.particle_q.device} does not match model device {self.device}"
+            )
+        if needs_bodies and state.body_q.device != self.device:
+            raise ValueError(f"State body device {state.body_q.device} does not match model device {self.device}")
+
+        visuals.normals.zero_()
+        for mesh, (start, end) in zip(self.deformable_visual_meshes, visuals.mesh_ranges, strict=True):
+            skin_deformable_visual_mesh(mesh, state, self, visuals.points, device=self.device, out_offset=start)
+            compute_deformable_visual_mesh_normals(
+                visuals.points,
+                mesh.indices,
+                visuals.normals,
+                device=self.device,
+                point_offset=start,
+                normal_offset=start,
+                vertex_count=end - start,
+                clear=False,
+            )
+
+        visuals._mark_updated(state)
+        return visuals
 
     def state(self, requires_grad: bool | None = None) -> State:
         """
