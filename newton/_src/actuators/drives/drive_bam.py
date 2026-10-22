@@ -96,16 +96,16 @@ class DriveBAM(DriveBase):
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
         supply_from_battery = float(bool(args.get("supply_from_battery", False)))
-        required = {"kp", "kt", "resistance", "max_pwm"} | (set() if supply_from_battery else {"vin"})
+        required = {"kt", "resistance"} | (set() if supply_from_battery else {"vin"})
         missing = required - set(args)
         if missing:
             raise ValueError(f"DriveBAM is missing parameter(s): {', '.join(sorted(missing))}")
         resolved = {
-            "kp": args["kp"],
+            "kp": args.get("kp", 0.0),
             "kt": args["kt"],
             "resistance": args["resistance"],
             "vin": args.get("vin", 0.0),
-            "max_pwm": args["max_pwm"],
+            "max_pwm": args.get("max_pwm", 1.0),
             "max_current": args.get("max_current", 0.0),
             "supply_from_battery": supply_from_battery,
         }
