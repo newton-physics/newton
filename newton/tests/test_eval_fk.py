@@ -134,7 +134,7 @@ def _build_loop_model(test, device):
     return model
 
 
-def _eval_fk_serial(model, state, mask=None, indices=None, body_flag_filter=newton.BodyFlags.ALL):
+def _eval_fk_serial(model, state, mask=None, indices=None, body_flag_filter=newton.BodyFlags.ALL, joint_mask=None):
     count = len(indices) if indices is not None else model.articulation_count
     wp.launch(
         eval_articulation_fk,
@@ -160,19 +160,20 @@ def _eval_fk_serial(model, state, mask=None, indices=None, body_flag_filter=newt
             model.body_com,
             model.body_flags,
             int(body_flag_filter),
-            None,
+            joint_mask,
         ],
         outputs=[state.body_q, state.body_qd],
         device=model.device,
     )
 
 
-def _eval_fk_parallel(model, state, mask=None, indices=None, body_flag_filter=newton.BodyFlags.ALL):
+def _eval_fk_parallel(model, state, mask=None, indices=None, body_flag_filter=newton.BodyFlags.ALL, joint_mask=None):
     count = len(indices) if indices is not None else model.articulation_count
     block_dim = TILE_BLOCK_DIM if model.device.is_cuda else 1
     kernel = create_eval_articulation_fk_tile(
         model._fk_level_capacity,
         body_flag_filter == newton.BodyFlags.ALL,
+        joint_mask is not None,
     )
     wp.launch_tiled(
         kernel,
@@ -200,6 +201,7 @@ def _eval_fk_parallel(model, state, mask=None, indices=None, body_flag_filter=ne
             model.body_com,
             model.body_flags,
             int(body_flag_filter),
+            joint_mask,
         ],
         outputs=[state.body_q, state.body_qd],
         device=model.device,
@@ -429,6 +431,19 @@ def test_body_flag_filter(test, device):
     for invalid_mask in invalid_masks:
         with test.assertRaisesRegex(ValueError, "joint_mask"):
             newton.eval_fk(model, state.joint_q, state.joint_qd, state, joint_mask=invalid_mask)
+
+    # Preserve intermediate parents and joints across the wide level's tile chunks.
+    mask.assign(np.arange(model.joint_count) % 3 == 1)
+    state.body_q.assign(before_q)
+    state.body_qd.assign(before_qd)
+    expected.body_q.assign(before_q)
+    expected.body_qd.assign(before_qd)
+    expected.joint_q.assign(state.joint_q)
+    expected.joint_qd.assign(state.joint_qd)
+    _eval_fk_serial(model, expected, body_flag_filter=newton.BodyFlags.DYNAMIC, joint_mask=mask)
+    _eval_fk_parallel(model, state, body_flag_filter=newton.BodyFlags.DYNAMIC, joint_mask=mask)
+    assert_np_equal(state.body_q.numpy(), expected.body_q.numpy(), tol=1.0e-6)
+    assert_np_equal(state.body_qd.numpy(), expected.body_qd.numpy(), tol=1.0e-6)
 
 
 def test_rod_serial_tiled_fk_parity(test, device):

@@ -590,8 +590,8 @@ def eval_fk(
             This only selects FK writes and is independent of :attr:`Model.joint_enabled`.
             Enabled joints use their parents' current state, whether preserved or updated by this call.
             Descendants are not enabled automatically: include them to propagate an edit through a branch.
-            Intersects with ``mask`` or ``indices`` and ``body_flag_filter``. Masked evaluation uses
-            the serial-per-articulation kernel, including on CUDA, and supports autodiff and graph capture.
+            Intersects with ``mask`` or ``indices`` and ``body_flag_filter``. Supports autodiff and
+            graph capture, including changes to mask values between graph replays.
 
     Raises:
         ValueError: If both articulation filters are supplied, or ``joint_mask`` has the wrong dtype,
@@ -615,7 +615,13 @@ def eval_fk(
     if num_articulations == 0:
         return
 
-    if joint_mask is None and model.device.is_cuda and model._fk_articulation_level_start is not None:
+    # Masked chains have no intra-level parallelism. Serial FK skips unselected
+    # joints without the tiled kernel's inter-level barriers.
+    if (
+        model.device.is_cuda
+        and model._fk_articulation_level_start is not None
+        and (joint_mask is None or model._fk_level_capacity > 1)
+    ):
         requires_grad = (
             model.requires_grad
             or joint_q.requires_grad
@@ -633,6 +639,7 @@ def eval_fk(
             kernel = create_eval_articulation_fk_tile(
                 model._fk_level_capacity,
                 body_flag_filter == BodyFlags.ALL,
+                joint_mask is not None,
             )
             inputs = [
                 model._fk_articulation_level_start,
@@ -656,6 +663,7 @@ def eval_fk(
                 model.body_com,
                 model.body_flags,
                 body_flag_filter,
+                joint_mask,
             ]
             wp.launch_tiled(
                 kernel=kernel,
