@@ -108,8 +108,8 @@ class Example:
         self.worlds_per_col = 4
         self.world_count_total = self.worlds_per_row * self.worlds_per_col
 
-        self.time = 0.0
-        self.time_delta = 0.005
+        self.sim_time = 0.0
+        self.frame_dt = 0.005
 
         self.viewer = viewer
         self.show_robot_camera = False
@@ -298,12 +298,12 @@ class Example:
             (self.worlds_per_col * H, self.worlds_per_row * W, 4), dtype=wp.uint8, device=device
         )
 
-    def step(self):
+    def step(self) -> None:
         wp.launch(
             animate_franka,
             self.model.joint_count,
             [
-                self.time,
+                self.sim_time,
                 self.model.joint_type,
                 self.model.joint_dof_dim,
                 self.model.joint_q_start,
@@ -314,12 +314,12 @@ class Example:
             outputs=[self.state.joint_q],
         )
         newton.eval_fk(self.model, self.state.joint_q, self.state.joint_qd, self.state)
-        self.time += self.time_delta
+        self.sim_time += self.frame_dt
 
-    def render(self):
+    def render(self) -> None:
         sensor_image_is_main_view = self.render_sensors()
 
-        self.viewer.begin_frame(0.0)
+        self.viewer.begin_frame(self.sim_time)
         if not sensor_image_is_main_view:
             self.viewer.log_state(self.state)
         self.viewer.end_frame()

@@ -418,11 +418,16 @@ def eval_single_articulation_fk(
     body_com: wp.array[wp.vec3],
     body_flags: wp.array[wp.int32],
     body_flag_filter: int,
+    joint_mask: wp.array[bool],
     # outputs
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
 ):
     for i in range(joint_start, joint_end):
+        if joint_mask:
+            if not joint_mask[i]:
+                # Descendants read the preserved parent pose and velocity from state.
+                continue
         articulation = joint_articulation[i]
         if articulation == -1:
             continue
@@ -497,6 +502,7 @@ def eval_articulation_fk(
     body_com: wp.array[wp.vec3],
     body_flags: wp.array[wp.int32],
     body_flag_filter: int,
+    joint_mask: wp.array[bool],
     # outputs
     body_q: wp.array[wp.transform],
     body_qd: wp.array[wp.spatial_vector],
@@ -541,6 +547,7 @@ def eval_articulation_fk(
         body_com,
         body_flags,
         body_flag_filter,
+        joint_mask,
         # outputs
         body_q,
         body_qd,
@@ -555,7 +562,9 @@ def eval_fk(
     mask: wp.array[bool] | None = None,
     indices: wp.array[int] | None = None,
     body_flag_filter: int = BodyFlags.ALL,
-):
+    *,
+    joint_mask: wp.array[bool] | None = None,
+) -> None:
     """
     Evaluates the model's forward kinematics given the joint coordinates and updates the state's body information (:attr:`State.body_q` and :attr:`State.body_qd`).
 
@@ -576,10 +585,26 @@ def eval_fk(
         body_flag_filter: Body flag filter controlling which bodies are written to in ``state.body_q`` and
             ``state.body_qd``. Default updates both dynamic and kinematic bodies. Bodies that do not
             match the filter retain their existing values; they are not zeroed or invalidated.
+        joint_mask: Optional bool array on ``model.device``, shape [joint_count]. Only enabled joints
+            update their child bodies; unselected joints preserve the existing body pose and velocity.
+            This only selects FK writes and is independent of :attr:`Model.joint_enabled`.
+            Enabled joints use their parents' current state, whether preserved or updated by this call.
+            Descendants are not enabled automatically: include them to propagate an edit through a branch.
+            Intersects with ``mask`` or ``indices`` and ``body_flag_filter``. Masked evaluation uses
+            the serial-per-articulation kernel, including on CUDA, and supports autodiff and graph capture.
+
+    Raises:
+        ValueError: If both articulation filters are supplied, or ``joint_mask`` has the wrong dtype,
+            shape, or device.
     """
     # Validate inputs
     if mask is not None and indices is not None:
         raise ValueError("Cannot specify both mask and indices parameters")
+    if joint_mask is not None:
+        if joint_mask.dtype != wp.bool or joint_mask.shape != (model.joint_count,):
+            raise ValueError("joint_mask must be a bool array with shape (model.joint_count,)")
+        if joint_mask.device != model.device:
+            raise ValueError("joint_mask must be on the model device")
 
     # Determine launch dimensions
     if indices is not None:
@@ -590,7 +615,7 @@ def eval_fk(
     if num_articulations == 0:
         return
 
-    if model.device.is_cuda and model._fk_articulation_level_start is not None:
+    if joint_mask is None and model.device.is_cuda and model._fk_articulation_level_start is not None:
         requires_grad = (
             model.requires_grad
             or joint_q.requires_grad
@@ -666,6 +691,7 @@ def eval_fk(
             model.body_com,
             model.body_flags,
             body_flag_filter,
+            joint_mask,
         ],
         outputs=[
             state.body_q,

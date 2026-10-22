@@ -1,0 +1,1 @@
+Keep world positions fixed when toggling visibility in the ViewerGL explorer, and filter hidden worlds from shape and SDF instance batches. Add `reflow=False` to `ViewerBase.set_visible_worlds()` for callers that want to preserve the existing world layout.

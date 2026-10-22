@@ -10,8 +10,8 @@ import numpy as np
 import warp as wp
 
 from newton._src.viewer import viewer_gl
+from newton._src.viewer.gui.viewer_gui import ViewerGui
 from newton._src.viewer.plot_logger import PlotLogger
-from newton._src.viewer.viewer_gui import ViewerGui
 from newton._src.viewer.viewer_rtx import ViewerRTX
 from newton._src.viewer.viewer_usd import UsdGeom
 from newton.tests.unittest_utils import patch_sys_module
@@ -30,6 +30,8 @@ class _ViewerPlottingTests:
         self.addCleanup(self.viewer.close)
         self.logger = self.viewer._plot_logger
         self.imgui = mock.MagicMock()
+        self.imgui.begin.return_value = (True, None)
+        self.imgui.get_content_region_avail.return_value = SimpleNamespace(x=360.0, y=600.0)
         self.gui = ViewerGui.__new__(ViewerGui)
         self.gui._viewer = self.viewer
         self.gui.ui = SimpleNamespace(imgui=self.imgui, io=SimpleNamespace(display_size=(1280, 720)), dpi_scale=1.0)
@@ -47,7 +49,7 @@ class _ViewerPlottingTests:
     def test_array_creates_plot_window(self):
         """Make logged arrays available to the plot window."""
         self.viewer.log_array("observations", np.arange(6).reshape(2, 3))
-        self.imgui.begin.return_value = False
+        self.imgui.begin.return_value = (False, None)
         self.gui._render_scalar_plots()
         self.imgui.begin.assert_called_once_with("Plots")
         self.get_gl.assert_not_called()

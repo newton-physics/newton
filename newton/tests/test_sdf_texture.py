@@ -1087,6 +1087,22 @@ def test_texture_sdf_isomesh_extraction(test, device):
     test.assertGreater(len(iso_mesh.vertices), 0, "Isomesh should have vertices")
     test.assertGreater(len(iso_mesh.indices), 0, "Isomesh should have faces")
 
+    coarse = compute_isomesh_from_texture_sdf(
+        tex_array, 0, tex_sdf.subgrid_start_slots, coarse_dims, device=device, cell_stride=2
+    )
+    test.assertIsNotNone(coarse)
+    test.assertLess(len(coarse.indices), len(iso_mesh.indices))
+    test.assertTrue(np.isfinite(coarse.vertices).all())
+    test.assertGreaterEqual(int(coarse.indices.min()), 0)
+    test.assertLess(int(coarse.indices.max()), len(coarse.vertices))
+    tolerance = 2.0 * np.linalg.norm(np.asarray(tex_sdf.voxel_size))
+    np.testing.assert_allclose(coarse.vertices.min(axis=0), iso_mesh.vertices.min(axis=0), atol=tolerance)
+    np.testing.assert_allclose(coarse.vertices.max(axis=0), iso_mesh.vertices.max(axis=0), atol=tolerance)
+    with test.assertRaises(ValueError):
+        compute_isomesh_from_texture_sdf(
+            tex_array, 0, tex_sdf.subgrid_start_slots, coarse_dims, device=device, cell_stride=3
+        )
+
 
 def test_texture_sdf_isomesh_with_isovalue(test, device):
     """Extract offset isosurface from texture SDF and validate vertex positions.

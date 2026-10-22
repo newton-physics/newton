@@ -8,6 +8,16 @@ the per-helper tests in ``test_viewer_image_logger.py`` cannot reach
 without instantiating ``ImageLogger`` itself.
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing import Any
+
+    from numpy.typing import ArrayLike
+
+
 import contextlib
 import types
 import unittest
@@ -23,7 +33,7 @@ from newton.tests.unittest_utils import patch_sys_module
 class _GLuintArray(list):
     """Stand-in for a ctypes ``GLuint * n`` array: integer-indexable."""
 
-    def __init__(self, size: int, *initial):
+    def __init__(self, size: int, *initial: Any):
         data = list(initial) + [0] * (size - len(initial))
         super().__init__(data)
 
@@ -38,11 +48,11 @@ class _GLuintHolder:
 class _GLTypeFactory:
     """Supports both ``gl.GLuint()`` (holder) and ``gl.GLuint * n`` (array type)."""
 
-    def __call__(self, *args) -> _GLuintHolder:
+    def __call__(self, *args: Any) -> _GLuintHolder:
         return _GLuintHolder(args[0] if args else 0)
 
     def __mul__(self, n: int):
-        def ctor(*values):
+        def ctor(*values: ArrayLike):
             return _GLuintArray(n, *values)
 
         return ctor
@@ -102,19 +112,19 @@ class _FakeGL:
     def glBindTexture(self, target, tex_id):
         self.calls.append(("glBindTexture", (target, tex_id)))
 
-    def glTexParameteri(self, *args):
+    def glTexParameteri(self, *args: Any):
         self.calls.append(("glTexParameteri", args))
 
-    def glTexImage2D(self, *args):
+    def glTexImage2D(self, *args: Any):
         self.calls.append(("glTexImage2D", args))
 
-    def glTexSubImage2D(self, *args):
+    def glTexSubImage2D(self, *args: Any):
         self.calls.append(("glTexSubImage2D", args))
 
     def glBindBuffer(self, target, buf_id):
         self.calls.append(("glBindBuffer", (target, buf_id)))
 
-    def glBufferData(self, *args):
+    def glBufferData(self, *args: Any):
         self.calls.append(("glBufferData", args))
 
     def glDeleteTextures(self, n, arr):
@@ -192,7 +202,7 @@ class TestImageLoggerOrchestration(_ImageLoggerFixture):
         # Force the next glTexSubImage2D (inside _upload_cpu) to blow up.
         original = self.fake_gl.glTexSubImage2D
 
-        def _boom(*args):
+        def _boom(*args: Any):
             raise RuntimeError("simulated GL failure")
 
         self.fake_gl.glTexSubImage2D = _boom
@@ -299,7 +309,7 @@ class TestImageLoggerCleanup(_ImageLoggerFixture):
         """Verify cleanup warnings include GL deletion failures."""
         self.logger.log("cam0", np.zeros((8, 8), dtype=np.uint8))
 
-        def _boom(*args):
+        def _boom(*args: Any):
             raise RuntimeError("simulated driver error")
 
         self.fake_gl.glDeleteTextures = _boom
@@ -352,14 +362,17 @@ class _FakeRenderer:
     def has_exit(self):
         return False
 
-    def render(self, *args):
+    def render(self, *args: Any):
         self.render_calls.append(args)
 
-    def render_texture(self, *args):
+    def render_texture(self, *args: Any):
         self.render_texture_calls.append(args)
 
     def present(self):
         self.present_count += 1
+
+    def _get_scene_viewport(self) -> tuple[int, int, int, int]:
+        return (0, 0, self._screen_width, self._screen_height)
 
 
 class _FakeFullscreenImageLogger:
@@ -389,7 +402,8 @@ class TestViewerGLFullscreenMainImage(unittest.TestCase):
         viewer._image_logger = _FakeFullscreenImageLogger(texture)
         viewer._last_time = 0.0
         viewer.wind = None
-        viewer.camera = object()
+        viewer.camera = types.SimpleNamespace()
+        viewer.show_ui = False
         viewer.objects = {"mesh": object()}
         viewer.lines = {}
         viewer.wireframe_shapes = {}
@@ -433,7 +447,7 @@ class TestViewerGLFullscreenMainImage(unittest.TestCase):
 class TestViewerGuiDrawsLoggedImages(unittest.TestCase):
     def test_render_ui_draws_viewer_image_logger(self):
         """Verify the shared GUI draws whichever viewer owns the image logger."""
-        from newton._src.viewer.viewer_gui import _SIDEBAR_WIDTH_PX, ViewerGui  # noqa: PLC0415
+        from newton._src.viewer.gui.viewer_gui import _SIDEBAR_WIDTH_PX, ViewerGui  # noqa: PLC0415
 
         gui = ViewerGui.__new__(ViewerGui)
         gui._viewer = types.SimpleNamespace(_image_logger=mock.Mock())
@@ -445,12 +459,15 @@ class TestViewerGuiDrawsLoggedImages(unittest.TestCase):
 class TestViewerGLImageWindowSurvivesExampleSwitch(unittest.TestCase):
     def test_clear_model_keeps_drawing_logged_images(self):
         """Verify the image window is still drawn after clear_model drops example UI callbacks."""
-        from newton._src.viewer import viewer_gl, viewer_gui  # noqa: PLC0415
+        from newton._src.viewer import viewer_gl  # noqa: PLC0415
+        from newton._src.viewer.gui import viewer_gui  # noqa: PLC0415
 
         renderer = mock.MagicMock()
         renderer.window.get_framebuffer_size.return_value = (640, 480)
         renderer.window.get_size.return_value = (640, 480)
-        fake_ui = types.SimpleNamespace(is_available=True, imgui=mock.MagicMock(), dpi_scale=1.0)
+        fake_ui = types.SimpleNamespace(
+            is_available=True, imgui=mock.MagicMock(), io=types.SimpleNamespace(config_flags=0), dpi_scale=1.0
+        )
         with (
             wp.ScopedDevice("cpu"),
             mock.patch.object(viewer_gl, "RendererGL", return_value=renderer),
@@ -461,13 +478,12 @@ class TestViewerGLImageWindowSurvivesExampleSwitch(unittest.TestCase):
         self.addCleanup(viewer.close)
 
         viewer.clear_model()
-        panels = ("_render_gizmos", "_render_left_panel", "_render_stats_overlay", "_render_scalar_plots")
-        with contextlib.ExitStack() as stack:
-            for panel in panels:
-                stack.enter_context(mock.patch.object(viewer.gui, panel))
+        viewer.gui.workspace = mock.Mock()
+        with mock.patch.object(viewer.gui, "_render_gizmos"):
             viewer.gui._render_ui()
 
-        viewer._image_logger.draw.assert_called_once()
+        viewer.gui.workspace.draw.assert_called_once()
+        viewer._image_logger.draw.assert_not_called()
 
 
 class TestViewerRTXLogImage(unittest.TestCase):
@@ -633,7 +649,7 @@ class TestViewerGLInitialization(unittest.TestCase):
                 return (640, 480)
 
         class _FakeRenderer:
-            def __init__(self, *args, **kwargs):
+            def __init__(self, *args: Any, **kwargs: Any):
                 self.window = _FakeWindow()
                 self.closed = False
 

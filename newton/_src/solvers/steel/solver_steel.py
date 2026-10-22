@@ -9700,6 +9700,7 @@ class SolverSteel(SolverBase):
                 model.body_flags,
                 int(BodyFlags.ALL),
                 self._dynamics_art_active,
+                None,
             ],
             [state_out.body_q, state_out.body_qd],
         )

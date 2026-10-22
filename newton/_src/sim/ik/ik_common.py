@@ -46,6 +46,7 @@ def _eval_fk_articulation_batched(
     joint_dof_dim: wp.array2d[wp.int32],
     body_com: wp.array[wp.vec3],
     body_flags: wp.array[wp.int32],
+    joint_mask: wp.array[bool],
     body_q: wp.array2d[wp.transform],
     body_qd: wp.array2d[wp.spatial_vector],
 ):
@@ -72,6 +73,7 @@ def _eval_fk_articulation_batched(
         body_com,
         body_flags,
         int(BodyFlags.ALL),
+        joint_mask,
         body_q[problem_idx],
         body_qd[problem_idx],
     )
@@ -100,6 +102,7 @@ def eval_fk_batched(model, joint_q, joint_qd, body_q, body_qd):
             model.joint_dof_dim,
             model.body_com,
             model.body_flags,
+            None,
         ],
         outputs=[body_q, body_qd],
         device=model.device,

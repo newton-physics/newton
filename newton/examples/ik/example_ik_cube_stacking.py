@@ -247,6 +247,9 @@ class Example:
 
         self.collision_pipeline = newton.CollisionPipeline(self.model)
         self.contacts = self.collision_pipeline.contacts()
+        self.solver_observables = self.solver.observables(
+            kinds={newton.solvers.SolverBase.ObservableKind.CONTACT_F}, contacts=self.contacts
+        )
 
         # Setup ik and tasks
         self.state = self.model.state()
@@ -293,7 +296,14 @@ class Example:
 
             self.state_0.clear_forces()
 
-            self.solver.step(self.state_0, self.state_1, self.control, self.contacts, self.sim_dt)
+            self.solver.step(
+                self.state_0,
+                self.state_1,
+                self.control,
+                self.contacts,
+                self.sim_dt,
+                observables=self.solver_observables,
+            )
 
             # swap states
             self.state_0, self.state_1 = self.state_1, self.state_0
@@ -322,7 +332,7 @@ class Example:
     def render(self):
         self.viewer.begin_frame(self.sim_time)
         self.viewer.log_state(self.state_0)
-        self.viewer.log_contacts(self.contacts, self.state_0)
+        self.viewer.log_contacts(self.contacts, self.state_0, observables=self.solver_observables)
         self.viewer.end_frame()
 
     def build_franka_with_table(self):

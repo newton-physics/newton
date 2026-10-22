@@ -822,7 +822,9 @@ class TestShapeColors(unittest.TestCase):
 
         self.assertFalse(msaa_resolved)
         transparent_shader.set_oit_enabled.assert_called_once_with(False)
-        renderer._render_blended_transparent_objects.assert_called_once_with([("transparent", transparent_object)])
+        renderer._render_blended_transparent_objects.assert_called_once_with(
+            [("transparent", transparent_object)], shells=[], collisions=[], wires=[], envelopes={}
+        )
         renderer._render_transparent_objects.assert_not_called()
         # The opaque MSAA target stays multisampled; no early resolve is needed.
         renderer._resolve_msaa_frame.assert_not_called()

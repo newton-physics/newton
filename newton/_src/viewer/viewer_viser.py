@@ -4,13 +4,15 @@
 from __future__ import annotations
 
 import collections
+import copy
 import inspect
 import logging
 import os
 import queue
 import time
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, Literal
 from urllib.parse import urlparse
@@ -19,9 +21,6 @@ import numpy as np
 import warp as wp
 
 import newton
-
-if TYPE_CHECKING:
-    import viser
 
 from ..core.host_transform import (
     transform_assign_position_wxyz,
@@ -43,6 +42,10 @@ from .image_logger import (
 from .picking import Picking
 from .utils import prepare_viewer_texture, promote_to_clamped_float_array, to_numpy
 from .viewer import ViewerBase, is_jupyter_notebook
+
+if TYPE_CHECKING:
+    import viser
+
 
 # ViewerGL uses 0.07 clip-space units; 56 px matches that at an 800 px viewport.
 _GIZMO_SCALE_PX = 56.0
@@ -217,7 +220,7 @@ class ViewerViser(ViewerBase):
         def separator(self) -> None:
             self._next_handle("separator", lambda _key: self._add(self._viewer._server.gui.add_divider))
 
-        def _input(self, kind: str, label: str, value: Any, factory: Callable, **properties) -> tuple[bool, Any]:
+        def _input(self, kind: str, label: str, value: Any, factory: Callable, **properties: Any) -> tuple[bool, Any]:
             """Create or reconcile a persistent input and consume its queued edit."""
 
             def create(key):
@@ -245,7 +248,7 @@ class ViewerViser(ViewerBase):
             minimum: float,
             maximum: float,
             format: str = "%.3f",
-            **_kwargs,
+            **_kwargs: Any,
         ) -> tuple[bool, float]:
             return self._input(
                 "slider_float",
@@ -264,7 +267,7 @@ class ViewerViser(ViewerBase):
             minimum: int,
             maximum: int,
             _format: str = "%d",
-            **_kwargs,
+            **_kwargs: Any,
         ) -> tuple[bool, int]:
             return self._input(
                 "slider_int",
@@ -283,7 +286,7 @@ class ViewerViser(ViewerBase):
             _step: float = 0.0,
             _step_fast: float = 0.0,
             format: str = "%.3f",
-            **_kwargs,
+            **_kwargs: Any,
         ) -> tuple[bool, float]:
             return self._input(
                 "input_float",
@@ -616,6 +619,42 @@ class ViewerViser(ViewerBase):
         self._reset_camera_to_default(self._get_camera_up_axis())
 
     @override
+    @contextmanager
+    def _preserve_display_options(self, *, switching: bool = False) -> Iterator[None]:
+        """Preserve native wireframe choices and each client's view on reset."""
+        wireframe = self._display_options_user.get("wireframe") if switching else self._wireframe
+        if not switching:
+            camera_request = copy.deepcopy(self._camera_request)
+            camera_fov = self._camera_fov_radians
+            camera_pitch, camera_yaw = self._camera_pitch, self._camera_yaw
+            client_cameras = {
+                client_id: {
+                    name: copy.deepcopy(getattr(client.camera, name))
+                    for name in ("position", "look_at", "up_direction", "fov", "near", "far")
+                }
+                for client_id, client in self._server.get_clients().items()
+            }
+        try:
+            with super()._preserve_display_options(switching=switching):
+                yield
+        finally:
+            if wireframe is not None:
+                self._set_wireframe(wireframe)
+            if not switching:
+                self._camera_fov_radians = camera_fov
+                self._camera_pitch, self._camera_yaw = camera_pitch, camera_yaw
+                if camera_request is not None:
+                    self._set_camera_request(*camera_request)
+                # Client navigation is independent of the cached request used
+                # for new connections. Restore each connected view separately.
+                for client_id, client in self._server.get_clients().items():
+                    if client_id in client_cameras:
+                        with client.atomic():
+                            for name, value in client_cameras[client_id].items():
+                                setattr(client.camera, name, value)
+            self._sync_gui_controls()
+
+    @override
     def _init_extra_layer_state(self, layer):
         """Initialize Viser-specific per-layer interaction state."""
         super()._init_extra_layer_state(layer)
@@ -654,14 +693,15 @@ class ViewerViser(ViewerBase):
             self._reset_camera_to_default(up_axis)
 
     @override
-    def set_visible_worlds(self, worlds: Sequence[int] | None) -> None:
+    def set_visible_worlds(self, worlds: Sequence[int] | None, *, reflow: bool = True) -> None:
         """Set visible worlds and keep picking visibility in sync.
 
         Args:
             worlds: World indices to show, or ``None`` to show all worlds.
+            reflow: Recompute a compact layout. If False, preserve world positions.
         """
         previous_batches = tuple(self._shape_instances.values())
-        super().set_visible_worlds(worlds)
+        super().set_visible_worlds(worlds, reflow=reflow)
         # Batches absent from the new selection will no longer be logged.
         for shapes in previous_batches:
             self.log_instances(shapes.name, shapes.mesh, None, None, None, None, hidden=True)
@@ -1117,7 +1157,7 @@ class ViewerViser(ViewerBase):
         position, wxyz = transform_to_position_wxyz(transform)
         handles: dict[str, Any] = {}
 
-        def add_handle(kind: str, axes: tuple[Axis, ...], **kwargs):
+        def add_handle(kind: str, axes: tuple[Axis, ...], **kwargs: Any):
             active_axes = tuple(axis in axes for axis in (Axis.X, Axis.Y, Axis.Z))
             handle = self._server.scene.add_transform_controls(
                 name=self._gizmo_scene_path(name, kind),
@@ -1401,6 +1441,7 @@ class ViewerViser(ViewerBase):
                         self._end_gizmo_drag(name)
             elif event_type == "viewer_option":
                 _, attribute, value = event
+                self._display_options_user[attribute] = value
                 if attribute == "wireframe":
                     self._set_wireframe(value)
                 else:
@@ -3337,7 +3378,7 @@ class ViewerViser(ViewerBase):
                     "": "application/octet-stream",
                 }
 
-                def __init__(self, *args, **kwargs):
+                def __init__(self, *args: Any, **kwargs: Any):
                     self.recording_data = recording_data
                     super().__init__(*args, directory=client_dir, **kwargs)
 
@@ -3357,7 +3398,7 @@ class ViewerViser(ViewerBase):
                         # Serve viser client files
                         super().do_GET()
 
-                def log_message(self, format, *args):
+                def log_message(self, format, *args: Any):
                     pass  # Suppress log messages
 
             return RecordingHandler

@@ -1310,6 +1310,7 @@ def _get_tree_fk_kernel(lanes: int, mode: str):
             body_flags: wp.array[wp.int32],
             body_flag_filter: int,
             articulation_active: wp.array[int],
+            joint_mask: wp.array[bool],
             body_q: wp.array[wp.transform],
             body_qd: wp.array[wp.spatial_vector],
         ):
@@ -1344,6 +1345,7 @@ def _get_tree_fk_kernel(lanes: int, mode: str):
                                 body_com,
                                 body_flags,
                                 body_flag_filter,
+                                joint_mask,
                                 body_q,
                                 body_qd,
                             )

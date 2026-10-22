@@ -13999,6 +13999,21 @@ class ModelBuilder:
             m.requires_grad = requires_grad
 
             m.world_count = self.world_count
+            # Retain compact object identities for inspection after the builder
+            # is released. Ranges refer to the same finalized particle/elements.
+            m._deformable_objects = tuple(
+                (kind, label, world, p0, p1, e0, e1)
+                for kind, element in (("surface", "tri"), ("volume", "tet"))
+                for label, world, p0, p1, e0, e1 in zip(
+                    getattr(self, kind + "_label"),
+                    getattr(self, kind + "_world"),
+                    getattr(self, "_" + kind + "_particle_start"),
+                    getattr(self, "_" + kind + "_particle_end"),
+                    getattr(self, "_" + kind + "_" + element + "_start"),
+                    getattr(self, "_" + kind + "_" + element + "_end"),
+                    strict=True,
+                )
+            )
 
             # ---------------------
             # particles

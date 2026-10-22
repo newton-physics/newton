@@ -160,6 +160,7 @@ def _eval_fk_serial(model, state, mask=None, indices=None, body_flag_filter=newt
             model.body_com,
             model.body_flags,
             int(body_flag_filter),
+            None,
         ],
         outputs=[state.body_q, state.body_qd],
         device=model.device,
@@ -315,6 +316,7 @@ def test_noncontiguous_bodies_and_external_parent(test, device):
 
 
 def test_body_flag_filter(test, device):
+    """Intersect body and joint write masks with articulation selections while preserving parent state."""
     model = _build_heterogeneous_model(device)
     body_flags = model.body_flags.numpy()
     body_flags[model.joint_child.numpy()[1]] = int(newton.BodyFlags.KINEMATIC)
@@ -326,6 +328,107 @@ def test_body_flag_filter(test, device):
     _eval_fk_parallel(model, state_parallel, body_flag_filter=newton.BodyFlags.DYNAMIC)
     assert_np_equal(state_parallel.body_q.numpy(), state_reference.body_q.numpy(), tol=1.0e-6)
     assert_np_equal(state_parallel.body_qd.numpy(), state_reference.body_qd.numpy(), tol=1.0e-6)
+
+    # A branch edit must use the current parent state and preserve other bodies,
+    # even when their stored coordinates disagree with those body transforms.
+    state = model.state()
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+    before_q, before_qd = state.body_q.numpy().copy(), state.body_qd.numpy().copy()
+    selected = np.zeros(model.joint_count, dtype=bool)
+    selected[1:3] = True
+    children = model.joint_child.numpy()
+    state.joint_q.fill_(0.83)
+    state.joint_qd.fill_(0.27)
+    mask = wp.array(selected, dtype=bool, device=device)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state, joint_mask=mask)
+    untouched = np.ones(model.body_count, dtype=bool)
+    untouched[children[selected]] = False
+    assert_np_equal(state.body_q.numpy()[untouched], before_q[untouched])
+    assert_np_equal(state.body_qd.numpy()[untouched], before_qd[untouched])
+    test.assertGreater(np.linalg.norm(state.body_q.numpy()[children[selected]] - before_q[children[selected]]), 0.01)
+    # An unmasked evaluation with only the selected coordinates changed is an
+    # independent reference: the stale inputs for other joints must be ignored.
+    expected = model.state()
+    reference_q = model.joint_q.numpy().copy()
+    reference_qd = model.joint_qd.numpy().copy()
+    reference_q[selected] = 0.83
+    reference_qd[selected] = 0.27
+    expected.joint_q.assign(reference_q)
+    expected.joint_qd.assign(reference_qd)
+    newton.eval_fk(model, expected.joint_q, expected.joint_qd, expected)
+    assert_np_equal(state.body_q.numpy(), expected.body_q.numpy(), tol=1.0e-6)
+    assert_np_equal(state.body_qd.numpy(), expected.body_qd.numpy(), tol=1.0e-6)
+    # Articulation and body filters still intersect the per-joint write mask.
+    for selection in (
+        {"indices": wp.array([1], dtype=int, device=device)},
+        {"mask": wp.array([False, True, True], dtype=bool, device=device)},
+    ):
+        state.body_q.assign(before_q)
+        state.body_qd.assign(before_qd)
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state, joint_mask=mask, **selection)
+        assert_np_equal(state.body_q.numpy(), before_q)
+        assert_np_equal(state.body_qd.numpy(), before_qd)
+
+    for selection in (
+        {"indices": wp.array([0], dtype=int, device=device)},
+        {"mask": wp.array([True, False, False], dtype=bool, device=device)},
+    ):
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state, joint_mask=mask, **selection)
+        assert_np_equal(state.body_q.numpy(), expected.body_q.numpy(), tol=1.0e-6)
+        assert_np_equal(state.body_qd.numpy(), expected.body_qd.numpy(), tol=1.0e-6)
+
+    # A captured call reads mask values at replay time, without rebuilding the graph.
+    if model.device.is_cuda:
+        with wp.ScopedCapture(device=device) as capture:
+            newton.eval_fk(model, state.joint_q, state.joint_qd, state, joint_mask=mask)
+    mask.zero_()
+    state.body_q.assign(before_q)
+    state.body_qd.assign(before_qd)
+    if model.device.is_cuda:
+        wp.capture_launch(capture.graph)
+    else:
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state, joint_mask=mask)
+    assert_np_equal(state.body_q.numpy(), before_q)
+    assert_np_equal(state.body_qd.numpy(), before_qd)
+    mask.assign(selected)
+    if model.device.is_cuda:
+        wp.capture_launch(capture.graph)
+    else:
+        newton.eval_fk(model, state.joint_q, state.joint_qd, state, joint_mask=mask)
+    assert_np_equal(state.body_q.numpy(), expected.body_q.numpy(), tol=1.0e-6)
+    assert_np_equal(state.body_qd.numpy(), expected.body_qd.numpy(), tol=1.0e-6)
+
+    state.body_q.assign(before_q)
+    state.body_qd.assign(before_qd)
+    newton.eval_fk(
+        model, state.joint_q, state.joint_qd, state, body_flag_filter=newton.BodyFlags.DYNAMIC, joint_mask=mask
+    )
+    assert_np_equal(state.body_q.numpy()[children[1]], before_q[children[1]])
+    assert_np_equal(state.body_qd.numpy()[children[1]], before_qd[children[1]])
+    reference_q[1] = model.joint_q.numpy()[1]
+    reference_qd[1] = model.joint_qd.numpy()[1]
+    expected.joint_q.assign(reference_q)
+    expected.joint_qd.assign(reference_qd)
+    newton.eval_fk(model, expected.joint_q, expected.joint_qd, expected)
+    assert_np_equal(state.body_q.numpy(), expected.body_q.numpy(), tol=1.0e-6)
+    assert_np_equal(state.body_qd.numpy(), expected.body_qd.numpy(), tol=1.0e-6)
+
+    mask.fill_(True)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, state, joint_mask=mask)
+    newton.eval_fk(model, state.joint_q, state.joint_qd, expected)
+    # Serial and tiled FK accumulate floating-point roundoff differently along chains.
+    assert_np_equal(state.body_q.numpy(), expected.body_q.numpy(), tol=2.0e-5)
+    assert_np_equal(state.body_qd.numpy(), expected.body_qd.numpy(), tol=2.0e-5)
+    invalid_masks = [
+        wp.zeros(1, dtype=bool, device=device),
+        wp.zeros(model.joint_count, dtype=int, device=device),
+        wp.zeros((model.joint_count, 1), dtype=bool, device=device),
+    ]
+    if model.device.is_cuda:
+        invalid_masks.append(wp.zeros(model.joint_count, dtype=bool, device="cpu"))
+    for invalid_mask in invalid_masks:
+        with test.assertRaisesRegex(ValueError, "joint_mask"):
+            newton.eval_fk(model, state.joint_q, state.joint_qd, state, joint_mask=invalid_mask)
 
 
 def test_rod_serial_tiled_fk_parity(test, device):
@@ -448,30 +551,60 @@ def test_wide_level_serial_fallback(test, device):
     assert_np_equal(state_public.body_qd.numpy(), state_reference.body_qd.numpy(), tol=1.0e-6)
 
 
-def _eval_fk_gradients(device, use_public):
+def _eval_fk_gradients(
+    model: newton.Model,
+    body: int,
+    use_public: bool,
+    joint_mask: wp.array[bool] | None = None,
+) -> tuple[np.ndarray, np.ndarray, newton.State]:
     """Differentiate the last articulation through public or reference serial FK."""
-    model, body = _build_gradient_model(device)
     state = model.state(requires_grad=True)
     state.joint_q.assign(np.linspace(0.2, -0.4, model.joint_coord_count, dtype=np.float32))
     state.joint_qd.assign(np.linspace(0.5, -0.3, model.joint_dof_count, dtype=np.float32))
-    loss = wp.zeros(1, dtype=float, device=device, requires_grad=True)
+    loss = wp.zeros(1, dtype=float, device=model.device, requires_grad=True)
 
     with wp.Tape() as tape:
         if use_public:
-            newton.eval_fk(model, state.joint_q, state.joint_qd, state)
+            newton.eval_fk(model, state.joint_q, state.joint_qd, state, joint_mask=joint_mask)
         else:
             _eval_fk_serial(model, state)
-        wp.launch(_body_loss, dim=1, inputs=[state.body_q, state.body_qd, body], outputs=[loss], device=device)
+        wp.launch(_body_loss, dim=1, inputs=[state.body_q, state.body_qd, body], outputs=[loss], device=model.device)
     tape.backward(loss)
-    return tape.gradients[state.joint_q].numpy(), tape.gradients[state.joint_qd].numpy()
+    return tape.gradients[state.joint_q].numpy(), tape.gradients[state.joint_qd].numpy(), state
 
 
 def test_public_gradients(test, device):
-    """Compare public and reference serial FK gradients across multiple articulations."""
-    serial_q, serial_qd = _eval_fk_gradients(device, use_public=False)
-    public_q, public_qd = _eval_fk_gradients(device, use_public=True)
+    """Compare unmasked gradients with serial FK and masked gradients with finite differences."""
+    model, body = _build_gradient_model(device)
+    serial_q, serial_qd, _ = _eval_fk_gradients(model, body, use_public=False)
+    public_q, public_qd, _ = _eval_fk_gradients(model, body, use_public=True)
     assert_np_equal(public_q, serial_q, tol=2.0e-5)
     assert_np_equal(public_qd, serial_qd, tol=2.0e-5)
+
+    selected = np.ones(model.joint_count, dtype=bool)
+    selected[[6, 8]] = False  # Preserve a root and an intermediate parent in the last chain.
+    mask = wp.array(selected, dtype=bool, device=device)
+    grad_q, grad_qd, state = _eval_fk_gradients(model, body, use_public=True, joint_mask=mask)
+    assert_np_equal(grad_q[~selected], np.zeros(2, dtype=np.float32))
+    assert_np_equal(grad_qd[~selected], np.zeros(2, dtype=np.float32))
+    test.assertGreater(np.linalg.norm(grad_q), 0.01)
+    test.assertGreater(np.linalg.norm(grad_qd), 0.01)
+
+    loss = wp.zeros(1, dtype=float, device=device)
+    epsilon = 1.0e-3
+    for array, gradient in ((state.joint_q, grad_q), (state.joint_qd, grad_qd)):
+        original = array.numpy().copy()
+        direction = np.linspace(0.1, 0.9, len(original), dtype=np.float32)
+        losses = []
+        for sign in (-1, 1):
+            array.assign(original + sign * epsilon * direction)
+            wp.copy(state.body_q, model.body_q)
+            wp.copy(state.body_qd, model.body_qd)
+            newton.eval_fk(model, state.joint_q, state.joint_qd, state, joint_mask=mask)
+            wp.launch(_body_loss, dim=1, inputs=[state.body_q, state.body_qd, body], outputs=[loss], device=device)
+            losses.append(float(loss.numpy()[0]))
+        array.assign(original)
+        test.assertAlmostEqual(float(gradient @ direction), (losses[1] - losses[0]) / (2 * epsilon), delta=2.0e-4)
 
 
 add_function_test(
@@ -516,7 +649,7 @@ add_function_test(
     TestEvalFK,
     "test_public_gradients",
     test_public_gradients,
-    get_selected_cuda_test_devices(),
+    get_test_devices(),
 )
 
 
