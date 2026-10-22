@@ -1209,7 +1209,7 @@ def test_regularization_weights_reach_the_propagation_rows(test, device):
     A row regularizes against its unsplit diagonal ``d``: ``w = 1 / (1 + g d / d_s)`` for the split diagonal ``d_s``.
     """
     model = _combination_scene(device)
-    state = _settled_state(model, 60)
+    state = _settled_state(model, 90)
     for response in RESPONSES:
         with test.subTest(response=response):
             solver, _, _ = _one_step(
