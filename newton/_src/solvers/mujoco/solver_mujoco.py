@@ -450,6 +450,37 @@ def _make_nonplanar_mujoco_mesh(
 # single shared entry) when ``separate_worlds`` is enabled. Passed to
 # ``mujoco_warp.put_model`` via ``batch_sizes`` so per-world values can be
 # written by ``notify_model_changed``.
+def _parent_child_contacts_allowed(model: Model) -> bool:
+    """Whether ``model`` leaves a colliding shape pair across a non-fixed joint unfiltered.
+
+    MuJoCo filters parent-child contacts itself (its ``filterparent`` flag). Newton stores that
+    choice per joint (``collision_filter_parent``) and exports the filtered pairs as excludes, so
+    the native rule has to be switched off whenever a joint opted out, or those contacts never
+    appear. FIXED joints are skipped: MuJoCo welds those bodies, and welded geoms never collide.
+    """
+    if model.joint_count == 0 or model.shape_count == 0:
+        return False
+    joint_type = model.joint_type.numpy()
+    joint_parent = model.joint_parent.numpy()
+    joint_child = model.joint_child.numpy()
+    shape_flags = model.shape_flags.numpy()
+    collide = int(ShapeFlags.COLLIDE_SHAPES)
+    for joint in range(model.joint_count):
+        parent, child = int(joint_parent[joint]), int(joint_child[joint])
+        if parent < 0 or joint_type[joint] == JointType.FIXED:
+            continue
+        parent_shapes = [s for s in model.body_shapes.get(parent, ()) if shape_flags[s] & collide]
+        if not parent_shapes:
+            continue
+        for child_shape in model.body_shapes.get(child, ()):
+            if not shape_flags[child_shape] & collide:
+                continue
+            for parent_shape in parent_shapes:
+                if not model.shape_collision_filter_contains(parent_shape, child_shape):
+                    return True
+    return False
+
+
 _MJW_BATCHED_MODEL_FIELDS = (
     "qpos0",
     "qpos_spring",
@@ -4624,6 +4655,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         enableflags = sum(
             int(getattr(mujoco.mjtEnableBit, f"mjENBL_{name.upper()}")) for name in self._ENABLE_FLAGS if flags[name]
         )
+        if _parent_child_contacts_allowed(model):
+            # Newton exports its parent-child filters as explicit excludes. MuJoCo must not add its own
+            # weld-based parent filter on top when the model lets such a shape pair collide (#4693).
+            disableflags |= int(mujoco.mjtDisableBit.mjDSBL_FILTERPARENT)
 
         # mujoco_warp.put_model() rejects non-zero margins on box-box pairs
         # (default NATIVECCD path) or any box/mesh pair when MULTICCD is enabled.

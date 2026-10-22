@@ -2672,6 +2672,39 @@ class TestMuJoCoSolverCollisionMasks(unittest.TestCase):
 
         self.assertTrue(result.skipped)
 
+    def test_unfiltered_parent_joint_disables_native_parent_filter(self):
+        """A joint with collision_filter_parent=False lets parent and child collide in MuJoCo as well."""
+        import mujoco
+
+        for filter_parent in (True, False):
+            with self.subTest(collision_filter_parent=filter_parent):
+                builder = newton.ModelBuilder()
+                parent = builder.add_link(
+                    xform=wp.transform((0.0, 0.0, 1.0), wp.quat_identity()), mass=1.0, inertia=wp.mat33(np.eye(3))
+                )
+                builder.add_shape_sphere(parent, radius=0.2)
+                child = builder.add_link(
+                    xform=wp.transform((0.0, 0.0, 1.1), wp.quat_identity()), mass=1.0, inertia=wp.mat33(np.eye(3))
+                )
+                builder.add_shape_sphere(child, radius=0.2)
+                root = builder.add_joint_free(parent)
+                hinge = builder.add_joint_revolute(
+                    parent,
+                    child,
+                    axis=newton.Axis.Z,
+                    parent_xform=wp.transform((0.0, 0.0, 0.1), wp.quat_identity()),
+                    collision_filter_parent=filter_parent,
+                )
+                builder.add_articulation([root, hinge])
+                model = builder.finalize(device="cpu")
+
+                solver = SolverMuJoCo(model, use_mujoco_cpu=True)
+                native_filter = bool(solver.mj_model.opt.disableflags & int(mujoco.mjtDisableBit.mjDSBL_FILTERPARENT))
+                self.assertEqual(native_filter, not filter_parent)
+                self.assertEqual(solver.mj_model.nexclude, 1 if filter_parent else 0)
+                mujoco.mj_forward(solver.mj_model, solver.mj_data)
+                self.assertEqual(solver.mj_data.ncon, 0 if filter_parent else 1)
+
     def test_sparse_filters_query_only_selected_pairs(self):
         """Query filters only for pairs in the selected collision graph."""
 

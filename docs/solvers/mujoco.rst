@@ -885,8 +885,12 @@ attribute described below and requires ``island`` to remain enabled.
 Unknown flags and the Warp-unsupported
 ``override``, ``fwdinv``, ``diagexact``, ``midphase``, and ``autoreset``
 flags are warned about and ignored during MJCF import. ``filterparent``
-is also warned about and ignored because imported parent-child collision
-filters are not controlled by this flag.
+is not stored as a flag attribute: the MJCF importer honors
+``filterparent="disable"`` by creating the imported joints with
+``collision_filter_parent=False``, and :class:`~newton.solvers.SolverMuJoCo`
+switches off MuJoCo's native parent-child filter whenever the Newton model
+leaves a parent-child shape pair unfiltered, so native and Newton contacts
+agree.
 
 ``gravity="disable"`` sets Newton's builder gravity to zero, affecting
 all solvers and content already added to the shared builder. Inside
