@@ -275,6 +275,12 @@ class IKOptimizerLBFGS:
             self.joint_S_s = None
 
     def _alloc_line_search_buffers(self, grad: bool, line_search_alphas: Sequence[float]) -> None:
+        """Allocate candidate evaluation buffers with independent adjoints when needed.
+
+        Args:
+            grad: Whether candidate evaluation requires autodiff gradient storage.
+            line_search_alphas: Step-length multipliers for the candidate configurations.
+        """
         device = self.device
         model = self.model
 

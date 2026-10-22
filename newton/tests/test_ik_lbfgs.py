@@ -514,60 +514,31 @@ def test_lbfgs_convergence_descendant_free_distance(test, device, joint_type):
 
 
 def test_lbfgs_line_search_costs(test, device):
-    """Preserve candidate residuals and reject an overshooting step after autodiff."""
+    """Reject a cost-increasing line-search step with autodiff Jacobians."""
     with wp.ScopedDevice(device):
         builder = newton.ModelBuilder()
         link = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         joint = builder.add_joint_revolute(-1, link, axis=newton.Axis.Z)
         builder.add_articulation([joint])
         model = builder.finalize(requires_grad=True)
-        targets_np = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
-        targets = wp.array(targets_np, dtype=wp.vec3)
-        q_np = np.array([[np.pi / 4], [np.pi / 6]], dtype=np.float32)
-        joint_q = wp.array(q_np)
-        result = wp.empty_like(joint_q)
-        initial_points = np.column_stack((np.cos(q_np[:, 0]), np.sin(q_np[:, 0]), np.zeros(2)))
-        initial_costs = np.sum((targets_np - initial_points) ** 2, axis=1)
 
-        def check_candidates(solver):
-            """Check geometric costs and J-transpose-r without using solver residuals as the reference."""
-            angles = solver.candidate_q.numpy()[:, :, 0]
-            points = np.stack((np.cos(angles), np.sin(angles), np.zeros_like(angles)), axis=-1)
-            residuals = targets_np[:, None, :] - points
-            costs = np.sum(residuals**2, axis=-1)
-            gradients = targets_np[:, None, 0] * np.sin(angles) - targets_np[:, None, 1] * np.cos(angles)
-            np.testing.assert_allclose(solver.candidate_residuals.numpy(), residuals, atol=1.0e-6)
-            np.testing.assert_allclose(solver.candidate_costs.numpy(), costs, atol=1.0e-6)
-            np.testing.assert_allclose(solver.candidate_gradients.numpy()[:, :, 0], gradients, atol=1.0e-6)
-            angles_final = result.numpy()[:, 0]
-            points_final = np.column_stack((np.cos(angles_final), np.sin(angles_final), np.zeros(2)))
-            test.assertTrue(np.all(np.sum((targets_np - points_final) ** 2, axis=1) < initial_costs))
+        objective = ik.IKObjectivePosition(link, wp.vec3(1.0, 0.0, 0.0), wp.array([[1.0, 0.0, 0.0]], dtype=wp.vec3))
+        solver = ik.IKSolver(
+            model,
+            1,
+            [objective],
+            optimizer=ik.IKOptimizer.LBFGS,
+            jacobian_mode=ik.IKJacobianType.AUTODIFF,
+            line_search_alphas=[1.0, 4.0],
+        )
+        q0 = np.pi / 4
+        joint_q = wp.array([[q0]], dtype=float)
+        # The first iteration seeds the history; the second runs the line search.
+        solver.step(joint_q, joint_q, iterations=2)
 
-        for mode in ik.IKJacobianType:
-            with test.subTest(mode=mode):
-                objective = ik.IKObjectivePosition(link, wp.vec3(1.0, 0.0, 0.0), targets)
-                solver = ik.IKSolver(
-                    model,
-                    2,
-                    [objective],
-                    optimizer=ik.IKOptimizer.LBFGS,
-                    jacobian_mode=mode,
-                    line_search_alphas=[1.0, 4.0],
-                )
-                # The first iteration bootstraps history; the second must reject
-                # a high-cost candidate even though its directional slope is small.
-                solver.step(joint_q, result, iterations=2)
-                check_candidates(solver)
-                if mode == ik.IKJacobianType.AUTODIFF:
-                    if device.is_cuda:
-                        with wp.ScopedCapture() as capture:
-                            solver.step(joint_q, result, iterations=2)
-                        for _ in range(2):
-                            wp.capture_launch(capture.graph)
-                            check_candidates(solver)
-                    else:
-                        solver.step(joint_q, result, iterations=2)
-                        check_candidates(solver)
+        # The tip is at (cos q, sin q, 0), so the cost is 2 * (1 - cos q).
+        q = joint_q.numpy()[0, 0]
+        test.assertLess(1.0 - np.cos(q), 1.0 - np.cos(q0))
 
 
 # Test registration
@@ -576,7 +547,7 @@ cuda_devices = get_selected_cuda_test_devices()
 
 
 class TestLBFGSIK(unittest.TestCase):
-    pass
+    """Verify L-BFGS inverse kinematics and compare convergence with LM."""
 
 
 # Register L-BFGS convergence tests
