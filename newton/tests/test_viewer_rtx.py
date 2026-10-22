@@ -130,6 +130,7 @@ class TestViewerRTXWindowCleanup(unittest.TestCase):
         viewer = ViewerRTX.__new__(ViewerRTX)
         viewer.stage = mock.Mock()
         viewer._borrowed_stage = None
+        viewer._layers = {}
         viewer._headless = False
         viewer._window = None
         viewer.gui = None
@@ -154,6 +155,7 @@ class TestViewerRTXWindowCleanup(unittest.TestCase):
         with (
             mock.patch.object(viewer, "_add_camera_lights_and_render_product"),
             mock.patch.object(viewer, "_apply_ground_material"),
+            mock.patch.object(viewer, "_prepare_shape_color_materials"),
             mock.patch.object(viewer, "_init_window", side_effect=fail_after_window_creation),
             mock.patch.object(viewer, "_release_runtime_scene"),
             mock.patch.object(viewer, "_destroy_ovrtx"),
@@ -590,6 +592,37 @@ class TestViewerRTXRendering(unittest.TestCase):
                     self.assertIs(viewer.get_frame(output=target), target)
                     np.testing.assert_array_equal(target.numpy(), rgb)
 
+                finally:
+                    viewer.close()
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_runtime_shape_colors(self):
+        """Recolor one of two initially identical shapes without changing its neighbor."""
+        builder = newton.ModelBuilder()
+        for y in (-0.4, 0.4):
+            body = builder.add_body(xform=wp.transform((0.0, y, 0.0), wp.quat_identity()))
+            builder.add_shape_box(body, hx=0.25, hy=0.25, hz=0.25, color=(1.0, 0.0, 0.0))
+        model = builder.finalize()
+        state = model.state()
+        for asynchronous in (False, True):
+            with self.subTest(async_rendering=asynchronous):
+                model.shape_color.assign([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+                viewer = ViewerRTX(width=64, height=48, headless=True, async_rendering=asynchronous)
+                try:
+                    viewer.set_model(model)
+                    viewer.set_camera(pos=wp.vec3(2.0, 0.0, 0.0), pitch=0.0, yaw=180.0)
+                    for frame_index, channel in enumerate((0, 1, 2)):
+                        colors = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32)
+                        colors[0, channel] = 1.0
+                        model.shape_color.assign(colors)
+                        viewer.begin_frame(frame_index / 60.0)
+                        viewer.log_state(state)
+                        viewer.end_frame()
+                        rgb = viewer.get_frame().numpy()
+                        for half, expected in ((rgb[:, :32], channel), (rgb[:, 32:], 0)):
+                            other = np.max(np.delete(half, expected, axis=2), axis=2)
+                            colored = (half[:, :, expected] > 32) & (half[:, :, expected] // 2 > other)
+                            self.assertGreater(np.count_nonzero(colored), 8, f"frame {frame_index}, channel {expected}")
                 finally:
                     viewer.close()
 

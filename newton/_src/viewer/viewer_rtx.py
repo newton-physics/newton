@@ -842,11 +842,36 @@ void main() {
 
     # ------------------------------------------------------------- OVRTX init
 
+    def _prepare_shape_color_materials(self) -> None:
+        """Let untextured shape materials read each instance's runtime color."""
+        from pxr import Sdf, UsdShade
+
+        for shapes in self._shape_instances.values():
+            if shapes.geo_type == newton.GeoType.PLANE:
+                continue
+            for path in self._instance_prim_paths.get(self._qualify(shapes.name), ()):
+                material, _ = UsdShade.MaterialBindingAPI(self.stage.GetPrimAtPath(path)).ComputeBoundMaterial()
+                surface = UsdShade.Shader(self.stage.GetPrimAtPath(f"{material.GetPath()}/PreviewSurface"))
+                if not surface:
+                    continue
+                diffuse = surface.GetInput("diffuseColor")
+                # Preserve texture connections and materials already prepared by another instance.
+                if not diffuse or diffuse.HasConnectedSource():
+                    continue
+                reader = UsdShade.Shader.Define(self.stage, f"{material.GetPath()}/ShapeColor")
+                reader.CreateIdAttr("UsdPrimvarReader_float3")
+                reader.CreateInput("varname", Sdf.ValueTypeNames.Token).Set("displayColor")
+                reader.CreateInput("fallback", Sdf.ValueTypeNames.Float3).Set(diffuse.Get())
+                reader.CreateOutput("result", Sdf.ValueTypeNames.Float3)
+                diffuse.ConnectToSource(reader.ConnectableAPI(), "result")
+
     def _init_ovrtx(self):
         """Serialise the USD stage, create the OVRTX renderer and load the scene."""
 
         self._add_camera_lights_and_render_product()
         self._apply_ground_material()
+        if self._borrowed_stage is None and not any(layer_id != _DEFAULT_LAYER_ID for layer_id in self._layers):
+            self._prepare_shape_color_materials()
         ovrtx_usd_path = None
         if self._borrowed_stage is None:
             # HACK? Export to a unique temp path so OVRTX never uses a cached version
@@ -1581,12 +1606,12 @@ void main() {
             super().log_state(state)
         else:
             # Render phase: flat arrays (built at end of build phase) handle all shape
-            # transform updates in a single kernel launch — no per-batch work needed here.
+            # transform updates in a single kernel launch.
+            self._sync_shape_colors_from_model()
             show_ground = self.show_ground
             show_ground_changed = show_ground != self._last_show_ground
             layer_hidden = self._layer_force_hidden() if show_ground_changed else False
             for shapes in self._shape_instances.values():
-                shapes.colors_changed = False
                 if show_ground_changed and int(shapes.geo_type) == int(newton.GeoType.PLANE):
                     qualified = self._qualify(shapes.name)
                     # Re-derive through the same predicate the build path uses, so
@@ -1721,6 +1746,7 @@ void main() {
         self._apply_ovstage_population_changes()
         self._update_ovrtx_camera()
         self._update_ovrtx_transforms()
+        self._update_ovrtx_shape_colors()
         self._update_ovrtx_instance_visibility()
         self._update_ovrtx_point_batches()
         self._update_ovrtx_mesh_points()
@@ -2274,6 +2300,33 @@ void main() {
                     device=matrices.device,
                 )
                 self._write_ovstage_matrix_attribute(paths[:count], matrices)
+
+    def _update_ovrtx_shape_colors(self) -> None:
+        """Publish changed single-model colors after the previous render finishes."""
+        if self._use_layered_transform_updates or self.model_shape_color is None:
+            return
+        if not any(shapes.colors_changed for shapes in self._shape_instances.values()):
+            return
+        colors = self.model_shape_color.numpy()
+        offset = 0
+        for shapes in self._shape_instances.values():
+            count = len(shapes.colors)
+            batch_colors = colors[offset : offset + count]
+            offset += count
+            if not shapes.colors_changed:
+                continue
+            shapes.colors_changed = False
+            name = self._qualify(shapes.name)
+            previous = self._instance_specs.get(name)
+            paths = self._instance_prim_paths.get(name)
+            if previous is None or paths is None or shapes.geo_type == newton.GeoType.PLANE:
+                continue
+            old_colors = previous[2][0]
+            if np.array_equal(batch_colors, old_colors):
+                continue
+            tensors = [self._make_laned_array_dltensor(color, lanes=3) for color in batch_colors]
+            self._write_runtime_attribute(paths, "primvars:displayColor", tensors, is_array=True)
+            self._instance_specs[name] = (previous[0], previous[1], (batch_colors.copy(), *previous[2][1:]))
 
     def _update_ovrtx_instance_visibility(self):
         if self._rtx is None:
