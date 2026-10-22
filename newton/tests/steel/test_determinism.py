@@ -495,21 +495,35 @@ def test_deterministic_launches_replay_identically(test, device):
     torsion_model = _build_contact_scene(device, worlds=8, torsion_radius=0.02)
     ant_model = _build_contact_scene(device, worlds=8, boxes=0)
     friction_model = _build_contact_scene(device, worlds=8, joint_friction=0.4)
-    tray_model = _build_contact_scene(device, worlds=8, kinematic_tray=True)
-    propagation = [
-        (f"{response}_{name}", tray_model, {**options, "articulated_contact_response": response})
-        for response in PROPAGATION_RESPONSES
-        for name, options in (("cached", MATRIX_FREE_OPTIONS), ("warmstart", WARMSTART_OPTIONS))
-    ]
-    for name, scene, options in (
-        *propagation,
-        ("matrix_free", model, MATRIX_FREE_OPTIONS),
-        ("split", model, SPLIT_OPTIONS),
-        ("torsion", torsion_model, TORSION_OPTIONS),
-        ("warmstart", model, WARMSTART_OPTIONS),
-        ("sparse", ant_model, SPARSE_OPTIONS),
-        ("joint_friction", friction_model, FRICTION_OPTIONS),
-    ):
+    _check_launches_replay(
+        test,
+        (
+            ("matrix_free", model, MATRIX_FREE_OPTIONS),
+            ("split", model, SPLIT_OPTIONS),
+            ("torsion", torsion_model, TORSION_OPTIONS),
+            ("warmstart", model, WARMSTART_OPTIONS),
+            ("sparse", ant_model, SPARSE_OPTIONS),
+            ("joint_friction", friction_model, FRICTION_OPTIONS),
+        ),
+    )
+
+
+def test_deterministic_propagation_launches_replay_identically(test, device):
+    """Reproduce every launch of both propagation responses bitwise, with and without the warm start."""
+    model = _build_contact_scene(device, worlds=8, kinematic_tray=True)
+    _check_launches_replay(
+        test,
+        [
+            (f"{response}_{name}", model, {**options, "articulated_contact_response": response})
+            for response in PROPAGATION_RESPONSES
+            for name, options in (("cached", MATRIX_FREE_OPTIONS), ("warmstart", WARMSTART_OPTIONS))
+        ],
+    )
+
+
+def _check_launches_replay(test, configurations):
+    """Rerun every solver launch of 12 steps three times from a snapshot and require identical outputs."""
+    for name, scene, options in configurations:
         with test.subTest(name):
             solver = SolverSteel(scene, deterministic=RUN_TO_RUN, **options)
             test.assertEqual(solver._sparse_mass_matrix_size is not None, name == "sparse")
@@ -869,7 +883,6 @@ add_function_test(
 for _fn in (
     test_crba_fill_par_dof_is_batch_invariant,
     test_deterministic_runs_are_bitwise_identical,
-    test_deterministic_propagation_runs_are_bitwise_identical,
     test_warm_started_full_reset_matches_fresh_solver,
     test_deterministic_launches_replay_identically,
     test_deterministic_joint_rows_follow_articulation_order,
@@ -879,6 +892,16 @@ for _fn in (
 ):
     add_function_test(TestSteelDeterminism, _fn.__name__, _fn, devices=cuda_devices)
 
+
+class TestSteelPropagationDeterminism(unittest.TestCase):
+    pass
+
+
+for _fn in (
+    test_deterministic_propagation_runs_are_bitwise_identical,
+    test_deterministic_propagation_launches_replay_identically,
+):
+    add_function_test(TestSteelPropagationDeterminism, _fn.__name__, _fn, devices=cuda_devices)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
