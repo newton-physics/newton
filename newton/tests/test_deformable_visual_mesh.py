@@ -526,6 +526,24 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
                     assert_np_equal(mesh.parent.numpy(), np.arange(3 * i, 3 * i + 3, dtype=np.int32))
                     assert_np_equal(_skin(model, mesh, state), positions[3 * i : 3 * i + 3])
 
+    def test_visual_copy_empty_label_prefix(self):
+        """Keep empty prefixes and unlabeled visual meshes unchanged when copying."""
+        source = newton.ModelBuilder()
+        vertices = np.eye(3, dtype=np.float32)
+        for point in vertices:
+            source.add_particle(wp.vec3(*point), wp.vec3(0), mass=1.0)
+        for label in ("skin", None):
+            source.add_deformable_visual_mesh(vertices, [0, 1, 2], kind="particle", particles=[0, 1, 2], label=label)
+        scene = newton.ModelBuilder()
+        for prefix in (None, "", "copy"):
+            scene.add_builder(source, label_prefix=prefix)
+        scene.replicate(source, copy_count=3, separate_worlds=False, label_prefixes=[None, "", "copy"])
+        model = scene.finalize(device="cpu")
+        self.assertEqual(
+            [mesh.label for mesh in model.deformable_visual_meshes],
+            ["skin", "", "skin", "", "copy/skin", ""] * 2,
+        )
+
     def test_normals_recompute_from_current_positions(self):
         """compute_deformable_visual_mesh_normals yields unit normals for the deformed quad."""
         builder = newton.ModelBuilder()

@@ -127,11 +127,16 @@ class TestDeformableVisualGaussianBuilder(unittest.TestCase):
                 builder = newton.ModelBuilder()
                 if mode == "shared_world":
                     builder.begin_world()
-                builder.replicate(source, copy_count=2, separate_worlds=mode == "separate_worlds")
+                builder.replicate(
+                    source, copy_count=2, separate_worlds=mode == "separate_worlds", label_prefixes=["", "copy"]
+                )
                 if mode == "shared_world":
                     builder.end_world()
                 model = builder.finalize(device="cpu")
                 self.assertEqual(model.deformable_visual_gaussian_count, 2)
+                self.assertEqual(
+                    [visual.label for visual in model.deformable_visual_gaussians], ["soft_splats", "copy/soft_splats"]
+                )
                 self.assertEqual([visual.world for visual in model.deformable_visual_gaussians], worlds)
                 np.testing.assert_array_equal(model.shape_world.numpy(), worlds)
                 for i, visual in enumerate(model.deformable_visual_gaussians):

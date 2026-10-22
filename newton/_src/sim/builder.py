@@ -3862,7 +3862,7 @@ class ModelBuilder:
                         merged["shape"] = spec["shape"] + int(starts("shape")[copy_index])
                     merged["label"] = rebase_path(spec.get("label"), path_prefixes[copy_index])
                     prefix = label_prefixes[copy_index]
-                    if prefix is not None and merged["label"]:
+                    if prefix and merged["label"]:
                         merged["label"] = prefix + "/" + merged["label"]
                     for name in ("body_path", "sim_path", "graphics_path"):
                         merged[name] = rebase_path(spec.get(name), path_prefixes[copy_index], required=True)
