@@ -22,6 +22,7 @@ import warp as wp
 import newton
 from newton.examples import _ExampleBrowser
 from newton.examples.basic.example_basic_pendulum import Example as PendulumExample
+from newton.exceptions import NewtonWarning
 from newton.viewer import ViewerViser
 
 
@@ -370,6 +371,65 @@ class TestViewerViserInteraction(unittest.TestCase):
                 material = self.read_glb_material(self.viewer._scene_handles["textured"])
                 self.assertEqual(material["alphaMode"], "BLEND")
                 self.assertAlmostEqual(material["pbrMetallicRoughness"]["baseColorFactor"][3], opacity)
+
+    def test_deformable_texture_reuse_and_replacement(self):
+        """Keep decoded visual textures until the source or model changes."""
+        import trimesh
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "red.png"
+            builder = newton.ModelBuilder()
+            vertices = ((0, 0, 0), (1, 0, 0), (0, 1, 0))
+            for point in vertices:
+                builder.add_particle(point, (0, 0, 0), mass=1.0)
+            builder.add_deformable_visual_mesh(
+                vertices,
+                (0, 1, 2),
+                kind="particle",
+                particles=(0, 1, 2),
+                uvs=((0, 0), (1, 0), (0, 1)),
+                texture=path,
+            )
+            model = builder.finalize(device="cpu")
+            state = model.state()
+            self.viewer.set_model(model)
+            name = "/model/deformable_visual_meshes/mesh_0"
+
+            # Hidden visuals must not load their missing texture or create geometry.
+            self.viewer.show_deformable_visual_meshes = False
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                self.viewer.log_state(state)
+            self.assertIsNone(self.server.scene.get_handle_by_name(name))
+
+            self.viewer.show_deformable_visual_meshes = True
+            for source, color in ((path, (255, 0, 0, 255)), (Path(directory) / "green.png", (0, 255, 0, 255))):
+                Image.new("RGBA", (2, 2), color).save(source)
+                model.deformable_visual_meshes[0].texture = str(source)
+                self.viewer.log_state(state)
+                source.unlink()
+                with warnings.catch_warnings():
+                    warnings.simplefilter("error")
+                    self.viewer.log_state(state)
+                handle = self.server.scene.get_handle_by_name(name)
+                scene = trimesh.load_scene(io.BytesIO(handle.glb_data), file_type="glb", process=False)
+                mesh = next(iter(scene.geometry.values()))
+                np.testing.assert_array_equal(np.asarray(mesh.visual.material.baseColorTexture)[0, 0], color)
+                self.viewer.show_deformable_visual_meshes = False
+                self.viewer.log_state(state)
+                self.assertFalse(handle.visible)
+                self.viewer.show_deformable_visual_meshes = True
+
+            model.deformable_visual_meshes[0].texture = str(Path(directory) / "missing.png")
+            with self.assertWarnsRegex(NewtonWarning, "Failed to load texture image"):
+                self.viewer.log_state(state)
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                self.viewer.log_state(state)
+            self.viewer.set_model(model)
+            with self.assertWarnsRegex(NewtonWarning, "Failed to load texture image"):
+                self.viewer.log_state(state)
 
     def test_textured_batches_update_uniform_opacity(self):
         """Keep opaque textured models quiet and update their real GLB material on opacity changes."""

@@ -1810,6 +1810,16 @@ class ViewerViser(ViewerBase):
             self._sync_gizmo_handles(entry)
 
     @override
+    def _log_deformable_visual_mesh(self, name, points, indices, *, hidden=False, texture=None, **kwargs):
+        name = self._qualify(name)
+        if hidden:
+            handle = self._scene_handles.get(name)
+            if handle is not None:
+                handle.visible = False
+            return
+        self.log_mesh(name, points, indices, texture=self._deformable_visual_texture(name, texture), **kwargs)
+
+    @override
     def log_mesh(
         self,
         name: str,
@@ -2579,6 +2589,8 @@ class ViewerViser(ViewerBase):
         """
         self._running = False
         self._end_atomic_frame()
+        for layer in self.layers.values():
+            layer._deformable_visual_textures.clear()
         self.hide_loading_splash()
         for name in list(self._gizmo_handles):
             self._remove_gizmo(name)

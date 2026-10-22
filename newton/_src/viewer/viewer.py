@@ -633,6 +633,7 @@ class ViewerBase(ABC):
         layer._deformable_visuals_explicit = False
         layer._deformable_visual_mesh_scratch: dict[int, tuple[wp.array, wp.array]] = {}
         layer._deformable_visual_mesh_null_offsets: wp.array | None = None
+        layer._deformable_visual_textures: dict[str, tuple[str, np.ndarray | None]] = {}
         layer._user_spacing: tuple[float, float, float] | None = None
         layer._visible_worlds: set[int] | None = None
         layer._visible_worlds_mask: wp.array | None = None
@@ -3462,6 +3463,19 @@ class ViewerBase(ABC):
                         color=color,
                         opacity=opacity,
                     )
+
+    def _deformable_visual_texture(self, name, texture):
+        """Decode immutable path textures once per visual mesh and model layer."""
+        if not isinstance(texture, str):
+            self._deformable_visual_textures.pop(name, None)
+            return texture
+        cached = self._deformable_visual_textures.get(name)
+        if cached is None or cached[0] != texture:
+            from .utils import prepare_viewer_texture  # noqa: PLC0415
+
+            cached = (texture, prepare_viewer_texture(texture))
+            self._deformable_visual_textures[name] = cached
+        return cached[1]
 
     def _log_deformable_visual_mesh(self, name, points, indices, **kwargs):
         """Let backends reuse the immutable texture while geometry changes."""
