@@ -467,7 +467,7 @@ class TestCollisionPipeline(unittest.TestCase):
     @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
     def test_create_from_usd_reads_all_attributes(self):
         """Fall back to CollisionPipeline.__init__ defaults when NewtonCollisionPipelineAPI
-        is applied but unauthored, then use the authored newton:collisionPipeline:*
+        is applied but unauthored, then use the authored newton:collision:*
         values once every attribute is set."""
         from pxr import Usd, UsdPhysics
 
@@ -517,23 +517,23 @@ class TestCollisionPipeline(unittest.TestCase):
         # With the API applied and everything authored, create_from_usd should use the
         # authored values.
 
-        scene_prim.GetAttribute("newton:collisionPipeline:maxRigidContacts").Set(19)
-        scene_prim.GetAttribute("newton:collisionPipeline:broadPhase").Set("sap")
-        scene_prim.GetAttribute("newton:collisionPipeline:maxTrianglePairs").Set(500000)
-        scene_prim.GetAttribute("newton:collisionPipeline:reduceContacts").Set(False)
-        scene_prim.GetAttribute("newton:collisionPipeline:maxSoftContacts").Set(128)
-        scene_prim.GetAttribute("newton:collisionPipeline:softContactGap").Set(0.02)
-        scene_prim.GetAttribute("newton:collisionPipeline:enableRigidSoftFullSurfaceContact").Set(True)
-        scene_prim.GetAttribute("newton:collisionPipeline:requiresGrad").Set("true")
-        scene_prim.GetAttribute("newton:collisionPipeline:deterministic").Set(True)
-        scene_prim.GetAttribute("newton:collisionPipeline:includeStaticKinematicPairs").Set(False)
-        scene_prim.GetAttribute("newton:collisionPipeline:maxShapePairs").Set(2048)
-        scene_prim.GetAttribute("newton:collisionPipeline:contactMatching").Set("sticky")
-        scene_prim.GetAttribute("newton:collisionPipeline:contactMatchingPosThreshold").Set(0.01)
-        scene_prim.GetAttribute("newton:collisionPipeline:contactMatchingNormalDotThreshold").Set(0.9)
-        scene_prim.GetAttribute("newton:collisionPipeline:contactReport").Set(True)
-        scene_prim.GetAttribute("newton:collisionPipeline:verifyBuffers").Set(False)
-        scene_prim.GetAttribute("newton:collisionPipeline:maxSpeculativeContactGap").Set(0.15)
+        scene_prim.GetAttribute("newton:collision:maxRigidContacts").Set(19)
+        scene_prim.GetAttribute("newton:collision:broadPhase").Set("sap")
+        scene_prim.GetAttribute("newton:collision:maxTrianglePairs").Set(500000)
+        scene_prim.GetAttribute("newton:collision:reduceContacts").Set(False)
+        scene_prim.GetAttribute("newton:collision:maxSoftContacts").Set(128)
+        scene_prim.GetAttribute("newton:collision:softContactGap").Set(0.02)
+        scene_prim.GetAttribute("newton:collision:enableRigidSoftFullSurfaceContact").Set(True)
+        scene_prim.GetAttribute("newton:collision:requiresGrad").Set("true")
+        scene_prim.GetAttribute("newton:collision:deterministic").Set(True)
+        scene_prim.GetAttribute("newton:collision:includeStaticKinematicPairs").Set(False)
+        scene_prim.GetAttribute("newton:collision:maxShapePairs").Set(2048)
+        scene_prim.GetAttribute("newton:collision:contactMatching").Set("sticky")
+        scene_prim.GetAttribute("newton:collision:contactMatchingPosThreshold").Set(0.01)
+        scene_prim.GetAttribute("newton:collision:contactMatchingNormalDotThreshold").Set(0.9)
+        scene_prim.GetAttribute("newton:collision:contactReport").Set(True)
+        scene_prim.GetAttribute("newton:collision:verifyBuffers").Set(False)
+        scene_prim.GetAttribute("newton:collision:maxSpeculativeContactGap").Set(0.15)
 
         pipeline = CollisionPipeline.create_from_usd(model, scene_prim)
 
@@ -601,13 +601,13 @@ class TestCollisionPipeline(unittest.TestCase):
         # -1 is a documented sentinel meaning "unset" for these attributes, distinct
         # from leaving them unauthored, so it should still fall back to the default.
         prim = scene.GetPrim()
-        prim.GetAttribute("newton:collisionPipeline:maxRigidContacts").Set(-1)
-        prim.GetAttribute("newton:collisionPipeline:maxSoftContacts").Set(-1)
-        prim.GetAttribute("newton:collisionPipeline:maxShapePairs").Set(-1)
-        prim.GetAttribute("newton:collisionPipeline:maxTrianglePairs").Set(-1)
+        prim.GetAttribute("newton:collision:maxRigidContacts").Set(-1)
+        prim.GetAttribute("newton:collision:maxSoftContacts").Set(-1)
+        prim.GetAttribute("newton:collision:maxShapePairs").Set(-1)
+        prim.GetAttribute("newton:collision:maxTrianglePairs").Set(-1)
         # -inf is the documented sentinel for optional float attributes.
-        prim.GetAttribute("newton:collisionPipeline:softContactGap").Set(float("-inf"))
-        prim.GetAttribute("newton:collisionPipeline:maxSpeculativeContactGap").Set(float("-inf"))
+        prim.GetAttribute("newton:collision:softContactGap").Set(float("-inf"))
+        prim.GetAttribute("newton:collision:maxSpeculativeContactGap").Set(float("-inf"))
 
         sentinel_pipeline = CollisionPipeline.create_from_usd(model, scene)
         self.assertEqual(sentinel_pipeline.rigid_contact_max, default_pipeline.rigid_contact_max)
@@ -617,8 +617,8 @@ class TestCollisionPipeline(unittest.TestCase):
         self.assertEqual(sentinel_pipeline.speculative_contact_gap_max, default_pipeline.speculative_contact_gap_max)
 
         # **overrides take precedence over authored USD values.
-        prim.GetAttribute("newton:collisionPipeline:broadPhase").Set("sap")
-        prim.GetAttribute("newton:collisionPipeline:reduceContacts").Set(True)
+        prim.GetAttribute("newton:collision:broadPhase").Set("sap")
+        prim.GetAttribute("newton:collision:reduceContacts").Set(True)
         override_pipeline = CollisionPipeline.create_from_usd(model, scene, broad_phase="nxn", reduce_contacts=False)
         self.assertEqual(override_pipeline.broad_phase_mode, "nxn")
         self.assertFalse(override_pipeline.reduce_contacts)
@@ -627,7 +627,7 @@ class TestCollisionPipeline(unittest.TestCase):
         # default, so the contact_report/contact_matching cross-field check must be
         # evaluated after overrides are merged in, not before -- otherwise a
         # contact_matching override could never satisfy it.
-        prim.GetAttribute("newton:collisionPipeline:contactReport").Set(True)
+        prim.GetAttribute("newton:collision:contactReport").Set(True)
         override_matching_pipeline = CollisionPipeline.create_from_usd(model, scene, contact_matching="latest")
         self.assertTrue(override_matching_pipeline.contact_report)
         self.assertEqual(override_matching_pipeline.contact_matching, "latest")
@@ -651,15 +651,15 @@ class TestCollisionPipeline(unittest.TestCase):
         scene_prim = UsdPhysics.Scene.Define(stage, "/World/physicsScene").GetPrim()
         scene_prim.ApplyAPI("NewtonCollisionPipelineAPI")
 
-        scene_prim.GetAttribute("newton:collisionPipeline:softContactGap").Set(-0.1)
-        with self.assertWarnsRegex(UserWarning, r"newton:collisionPipeline:softContactGap=-0\.\d+ is invalid"):
+        scene_prim.GetAttribute("newton:collision:softContactGap").Set(-0.1)
+        with self.assertWarnsRegex(UserWarning, r"newton:collision:softContactGap=-0\.\d+ is invalid"):
             pipeline = CollisionPipeline.create_from_usd(model, scene_prim)
         self.assertAlmostEqual(pipeline.soft_contact_gap, default_pipeline.soft_contact_gap)
-        scene_prim.GetAttribute("newton:collisionPipeline:softContactGap").Clear()
+        scene_prim.GetAttribute("newton:collision:softContactGap").Clear()
 
-        scene_prim.GetAttribute("newton:collisionPipeline:maxSpeculativeContactGap").Set(-0.1)
+        scene_prim.GetAttribute("newton:collision:maxSpeculativeContactGap").Set(-0.1)
         with self.assertWarnsRegex(
-            UserWarning, r"newton:collisionPipeline:maxSpeculativeContactGap=-0\.\d+ is invalid"
+            UserWarning, r"newton:collision:maxSpeculativeContactGap=-0\.\d+ is invalid"
         ):
             pipeline = CollisionPipeline.create_from_usd(model, scene_prim)
         self.assertEqual(pipeline.speculative_contact_gap_max, default_pipeline.speculative_contact_gap_max)
@@ -679,10 +679,10 @@ class TestCollisionPipeline(unittest.TestCase):
         UsdGeom.SetStageMetersPerUnit(stage, 0.01)  # centimeters
         scene_prim = UsdPhysics.Scene.Define(stage, "/World/physicsScene").GetPrim()
         scene_prim.ApplyAPI("NewtonCollisionPipelineAPI")
-        scene_prim.GetAttribute("newton:collisionPipeline:softContactGap").Set(2.0)
-        scene_prim.GetAttribute("newton:collisionPipeline:contactMatchingPosThreshold").Set(1.0)
-        scene_prim.GetAttribute("newton:collisionPipeline:maxSpeculativeContactGap").Set(15.0)
-        scene_prim.GetAttribute("newton:collisionPipeline:contactMatching").Set("latest")
+        scene_prim.GetAttribute("newton:collision:softContactGap").Set(2.0)
+        scene_prim.GetAttribute("newton:collision:contactMatchingPosThreshold").Set(1.0)
+        scene_prim.GetAttribute("newton:collision:maxSpeculativeContactGap").Set(15.0)
+        scene_prim.GetAttribute("newton:collision:contactMatching").Set("latest")
 
         pipeline = CollisionPipeline.create_from_usd(model, scene_prim)
 
@@ -705,7 +705,7 @@ class TestCollisionPipeline(unittest.TestCase):
         UsdGeom.SetStageMetersPerUnit(stage, 0.01)
         scene_prim = UsdPhysics.Scene.Define(stage, "/World/physicsScene").GetPrim()
         scene_prim.ApplyAPI("NewtonCollisionPipelineAPI")
-        scene_prim.GetAttribute("newton:collisionPipeline:softContactGap").Set(2.0)
+        scene_prim.GetAttribute("newton:collision:softContactGap").Set(2.0)
 
         with self.assertRaisesRegex(ValueError, "not supported for models with rigid shapes"):
             CollisionPipeline.create_from_usd(model, scene_prim)
@@ -749,7 +749,7 @@ class TestCollisionPipeline(unittest.TestCase):
         # approaches at 60 m/s (1 m per 1/60 s step). Only the authored speculative gap of
         # 0.5 m can detect that contact.
         scene_prim = self._define_usd_sphere_on_box(stage, sphere_height=1.9, sphere_velocity_z=-60.0)
-        scene_prim.GetAttribute("newton:collisionPipeline:maxSpeculativeContactGap").Set(0.5)
+        scene_prim.GetAttribute("newton:collision:maxSpeculativeContactGap").Set(0.5)
 
         builder = newton.ModelBuilder()
         result = builder.add_usd(stage)
@@ -780,7 +780,7 @@ class TestCollisionPipeline(unittest.TestCase):
         scene_prim = self._define_usd_sphere_on_box(
             stage, meters_per_unit=0.01, sphere_radius=100.0, sphere_height=140.0
         )
-        scene_prim.GetAttribute("newton:collisionPipeline:softContactGap").Set(2.0)
+        scene_prim.GetAttribute("newton:collision:softContactGap").Set(2.0)
 
         builder = newton.ModelBuilder()
         with self.assertWarnsRegex(UserWarning, "non-unit linear units are not supported"):
@@ -806,7 +806,7 @@ class TestCollisionPipeline(unittest.TestCase):
         stage = Usd.Stage.CreateInMemory()
         scene_prim = UsdPhysics.Scene.Define(stage, "/physicsScene").GetPrim()
         scene_prim.ApplyAPI("NewtonCollisionPipelineAPI")
-        scene_prim.GetAttribute("newton:collisionPipeline:softContactGap").Set(0.05)
+        scene_prim.GetAttribute("newton:collision:softContactGap").Set(0.05)
 
         with self.assertWarnsRegex(DeprecationWarning, "soft_contact_margin"):
             pipeline = CollisionPipeline.create_from_usd(model, scene_prim, soft_contact_margin=0.2)
@@ -884,61 +884,61 @@ class TestCollisionPipeline(unittest.TestCase):
         scene_prim.ApplyAPI("NewtonCollisionPipelineAPI")
 
         # Invalid token value.
-        scene_prim.GetAttribute("newton:collisionPipeline:broadPhase").Set("not_a_valid_mode")
+        scene_prim.GetAttribute("newton:collision:broadPhase").Set("not_a_valid_mode")
         with self.assertRaisesRegex(
-            ValueError, r"newton:collisionPipeline:broadPhase must be one of .*, got 'not_a_valid_mode'"
+            ValueError, r"newton:collision:broadPhase must be one of .*, got 'not_a_valid_mode'"
         ):
             CollisionPipeline.create_from_usd(model, scene_prim)
-        scene_prim.GetAttribute("newton:collisionPipeline:broadPhase").Clear()
+        scene_prim.GetAttribute("newton:collision:broadPhase").Clear()
 
         # Negative integers other than the -1 sentinel are illegal.
-        scene_prim.GetAttribute("newton:collisionPipeline:maxTrianglePairs").Set(-5)
+        scene_prim.GetAttribute("newton:collision:maxTrianglePairs").Set(-5)
         with self.assertRaisesRegex(
-            ValueError, r"newton:collisionPipeline:maxTrianglePairs must be a positive integer or -1, got -5"
+            ValueError, r"newton:collision:maxTrianglePairs must be a positive integer or -1, got -5"
         ):
             CollisionPipeline.create_from_usd(model, scene_prim)
-        scene_prim.GetAttribute("newton:collisionPipeline:maxTrianglePairs").Clear()
+        scene_prim.GetAttribute("newton:collision:maxTrianglePairs").Clear()
 
         # 0 is illegal for maxTrianglePairs.
-        scene_prim.GetAttribute("newton:collisionPipeline:maxTrianglePairs").Set(0)
+        scene_prim.GetAttribute("newton:collision:maxTrianglePairs").Set(0)
         with self.assertRaisesRegex(
-            ValueError, r"newton:collisionPipeline:maxTrianglePairs must be a positive integer or -1, got 0"
+            ValueError, r"newton:collision:maxTrianglePairs must be a positive integer or -1, got 0"
         ):
             CollisionPipeline.create_from_usd(model, scene_prim)
-        scene_prim.GetAttribute("newton:collisionPipeline:maxTrianglePairs").Clear()
+        scene_prim.GetAttribute("newton:collision:maxTrianglePairs").Clear()
 
         # contactReport=True requires contactMatching != "disabled" (the default).
-        scene_prim.GetAttribute("newton:collisionPipeline:contactReport").Set(True)
+        scene_prim.GetAttribute("newton:collision:contactReport").Set(True)
         with self.assertRaisesRegex(
             ValueError,
             r"physicsScene: contact_report=True requires contact_matching != 'disabled'",
         ):
             CollisionPipeline.create_from_usd(model, scene_prim)
-        scene_prim.GetAttribute("newton:collisionPipeline:contactReport").Clear()
+        scene_prim.GetAttribute("newton:collision:contactReport").Clear()
 
         # 0 is illegal for maxShapePairs: only -1 (sentinel) or positive values are valid.
-        scene_prim.GetAttribute("newton:collisionPipeline:maxShapePairs").Set(0)
+        scene_prim.GetAttribute("newton:collision:maxShapePairs").Set(0)
         with self.assertRaisesRegex(
-            ValueError, r"newton:collisionPipeline:maxShapePairs must be a positive integer or -1, got 0"
+            ValueError, r"newton:collision:maxShapePairs must be a positive integer or -1, got 0"
         ):
             CollisionPipeline.create_from_usd(model, scene_prim)
-        scene_prim.GetAttribute("newton:collisionPipeline:maxShapePairs").Clear()
+        scene_prim.GetAttribute("newton:collision:maxShapePairs").Clear()
 
         # Float outside the valid [-1, 1] range.
-        scene_prim.GetAttribute("newton:collisionPipeline:contactMatchingNormalDotThreshold").Set(1.5)
+        scene_prim.GetAttribute("newton:collision:contactMatchingNormalDotThreshold").Set(1.5)
         with self.assertRaisesRegex(
             ValueError,
-            r"newton:collisionPipeline:contactMatchingNormalDotThreshold must be a finite number in \[-1.0, 1.0\], "
+            r"newton:collision:contactMatchingNormalDotThreshold must be a finite number in \[-1.0, 1.0\], "
             r"got 1.5",
         ):
             CollisionPipeline.create_from_usd(model, scene_prim)
-        scene_prim.GetAttribute("newton:collisionPipeline:contactMatchingNormalDotThreshold").Clear()
+        scene_prim.GetAttribute("newton:collision:contactMatchingNormalDotThreshold").Clear()
 
         # Non-positive hashtable size factor.
-        scene_prim.GetAttribute("newton:collisionPipeline:contactReductionHashtableSizeFactor").Set(0.0)
+        scene_prim.GetAttribute("newton:collision:contactReductionHashtableSizeFactor").Set(0.0)
         with self.assertRaisesRegex(
             ValueError,
-            r"newton:collisionPipeline:contactReductionHashtableSizeFactor must be a finite number > 0, got 0.0",
+            r"newton:collision:contactReductionHashtableSizeFactor must be a finite number > 0, got 0.0",
         ):
             CollisionPipeline.create_from_usd(model, scene_prim)
 
@@ -967,8 +967,8 @@ class TestCollisionPipeline(unittest.TestCase):
         stage = Usd.Stage.CreateInMemory()
         scene_prim = UsdPhysics.Scene.Define(stage, "/World/physicsScene").GetPrim()
         scene_prim.ApplyAPI("NewtonCollisionPipelineAPI")
-        scene_prim.GetAttribute("newton:collisionPipeline:broadPhase").Set("nxn")
-        scene_prim.GetAttribute("newton:collisionPipeline:contactReductionHashtableSizeFactor").Set(0.5)
+        scene_prim.GetAttribute("newton:collision:broadPhase").Set("nxn")
+        scene_prim.GetAttribute("newton:collision:contactReductionHashtableSizeFactor").Set(0.5)
 
         pipeline = CollisionPipeline.create_from_usd(model, scene_prim)
 

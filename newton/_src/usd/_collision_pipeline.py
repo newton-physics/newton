@@ -35,11 +35,11 @@ def integer(path: str, name: str, value: Any, *, allow_minus_one: bool = False, 
         result = operator.index(value)
     except TypeError as error:
         raise ValueError(f"{path}: {name} must be an integer, got {value!r}.") from error
+    suffix = " or -1" if allow_minus_one else ""
     if result < 0 and not (allow_minus_one and result == -1):
-        suffix = " or -1" if allow_minus_one else ""
-        raise ValueError(f"{path}: {name} must be non-negative{suffix}, got {result}.")
+        requirement = "a positive integer" if disallow_zero else "non-negative"
+        raise ValueError(f"{path}: {name} must be {requirement}{suffix}, got {result}.")
     if result == 0 and disallow_zero:
-        suffix = " or -1" if allow_minus_one else ""
         raise ValueError(f"{path}: {name} must be a positive integer{suffix}, got {result}.")
     return result
 
