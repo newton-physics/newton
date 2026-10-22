@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-from typing import Any, ClassVar
+from typing import Any
 
 import warp as wp
 
@@ -24,6 +24,7 @@ def _bam_effort_kernel(
     kt: wp.array[float],
     resistance: wp.array[float],
     vin: wp.array[float],
+    supply_from_battery: wp.array[float],
     supply_voltage: wp.array[float],
     efforts: wp.array[float],
 ):
@@ -31,7 +32,7 @@ def _bam_effort_kernel(
     vel = velocities[vel_indices[i]]
 
     supply = vin[i]
-    if supply_voltage:
+    if supply_from_battery[i] != 0.0:
         supply = supply_voltage[i]
 
     duty = (target_pos[target_pos_indices[i]] - positions[pos_indices[i]]) * kp[i]
@@ -92,11 +93,9 @@ class DriveBAM(DriveBase):
           (:meth:`~newton.ModelBuilder.add_battery`) for a sagging supply.
     """
 
-    SHARED_PARAMS: ClassVar[set[str]] = {"supply_from_battery"}
-
     @classmethod
     def resolve_arguments(cls, args: dict[str, Any]) -> dict[str, Any]:
-        supply_from_battery = bool(args.get("supply_from_battery", False))
+        supply_from_battery = float(bool(args.get("supply_from_battery", False)))
         required = {"kp", "kt", "resistance", "max_pwm"} | (set() if supply_from_battery else {"vin"})
         missing = required - set(args)
         if missing:
@@ -126,7 +125,7 @@ class DriveBAM(DriveBase):
         vin: wp.array[float],
         max_pwm: wp.array[float],
         max_current: wp.array[float] | None = None,
-        supply_from_battery: bool = False,
+        supply_from_battery: wp.array[float] | None = None,
     ):
         """Initialize the BAM drive.
 
@@ -141,10 +140,10 @@ class DriveBAM(DriveBase):
             max_pwm: Largest duty cycle magnitude. Shape ``(N,)``.
             max_current: Firmware current limit [A]; 0 disables it. Shape
                 ``(N,)``. ``None`` disables it.
-            supply_from_battery: Read the supply voltage from the
-                ``actuator_supply_voltage`` input, as written by
-                :func:`~newton.actuators.update_battery_supply`, instead of
-                *vin*. Shared by all actuators of a group.
+            supply_from_battery: Per actuator, nonzero to read the supply
+                voltage from the ``actuator_supply_voltage`` input, as written
+                by :func:`~newton.actuators.update_battery_supply`, instead of
+                *vin*. Shape ``(N,)``. ``None`` uses *vin* everywhere.
 
         Raises:
             ValueError: An array shape does not match *kp*, or *kt* or
@@ -163,13 +162,17 @@ class DriveBAM(DriveBase):
         """Largest duty cycle magnitude, shape (N,)."""
         self.max_current = max_current if max_current is not None else wp.zeros(n, dtype=float, device=kp.device)
         """Firmware current limit [A], 0 when disabled, shape (N,)."""
-        self.supply_from_battery = supply_from_battery
-        """Whether the supply voltage is read from the ``actuator_supply_voltage`` input written by the battery."""
+        self.supply_from_battery = (
+            supply_from_battery if supply_from_battery is not None else wp.zeros(n, dtype=float, device=kp.device)
+        )
+        """Per actuator, nonzero when the supply voltage is read from the battery's ``actuator_supply_voltage`` input,
+        shape (N,)."""
         from ..actuator import ACTUATOR_FREQUENCY  # noqa: PLC0415
 
         # ACTUATOR_FREQUENCY is the per-actuator frequency: one entry per actuator of the model, not per DOF.
-        self.custom_inputs = {"actuator_supply_voltage": ACTUATOR_FREQUENCY} if supply_from_battery else {}
-        for name in ("kt", "resistance", "vin", "max_pwm", "max_current"):
+        uses_battery = bool(self.supply_from_battery.numpy().any())
+        self.custom_inputs = {"actuator_supply_voltage": ACTUATOR_FREQUENCY} if uses_battery else {}
+        for name in ("kt", "resistance", "vin", "max_pwm", "max_current", "supply_from_battery"):
             shape = getattr(self, name).shape
             if shape != n:
                 raise ValueError(f"{name} shape {shape} must match kp shape {n}")
@@ -206,21 +209,20 @@ class DriveBAM(DriveBase):
 
         Args:
             custom_inputs: Holds the ``actuator_supply_voltage`` array [V],
-                one entry per slot, when :attr:`supply_from_battery` is set.
+                one entry per slot, when an actuator has
+                :attr:`supply_from_battery` set.
 
         Raises:
-            ValueError: :attr:`supply_from_battery` is set and
+            ValueError: An actuator has :attr:`supply_from_battery` set and
                 ``actuator_supply_voltage`` is missing.
 
         See :meth:`DriveBase.compute` for the other arguments.
         """
         supply_voltage = None
-        if self.supply_from_battery:
+        if self.custom_inputs:
             supply_voltage = (custom_inputs or {}).get("actuator_supply_voltage")
             if supply_voltage is None:
-                raise ValueError(
-                    "DriveBAM(supply_from_battery=True) requires 'actuator_supply_voltage' on sim_control."
-                )
+                raise ValueError("DriveBAM with supply_from_battery requires 'actuator_supply_voltage' on sim_control.")
         wp.launch(
             kernel=_bam_effort_kernel,
             dim=len(forces),
@@ -237,6 +239,7 @@ class DriveBAM(DriveBase):
                 self.kt,
                 self.resistance,
                 self.vin,
+                self.supply_from_battery,
                 supply_voltage,
             ],
             outputs=[forces],

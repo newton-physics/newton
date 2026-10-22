@@ -15718,8 +15718,9 @@ class ModelBuilder:
                     assigned = (actuator_battery.values if actuator_battery is not None else None) or []
                     missing = [
                         row
-                        for row in entry.actuator_indices
-                        if row >= len(assigned) or assigned[row] is None or assigned[row] < 0
+                        for row, args in zip(entry.actuator_indices, entry.drive_args, strict=True)
+                        if args.get("supply_from_battery")
+                        and (row >= len(assigned) or assigned[row] is None or assigned[row] < 0)
                     ]
                     if missing:
                         warnings.warn(

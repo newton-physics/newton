@@ -2902,7 +2902,7 @@ def parse_usd(
 
         drive_kwargs = {name: value for name, value in parsed.drive_kwargs.items() if name not in add_actuator_params}
         battery_path = parsed.battery_path
-        if battery_path is not None and "supply_from_battery" in getattr(parsed.drive_class, "SHARED_PARAMS", ()):
+        if battery_path is not None and "supply_from_battery" in inspect.signature(parsed.drive_class).parameters:
             drive_kwargs["supply_from_battery"] = True
         actuator = builder.add_actuator(
             parsed.drive_class,

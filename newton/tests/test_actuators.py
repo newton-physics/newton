@@ -2866,8 +2866,8 @@ class TestDriveBAM(unittest.TestCase):
 
         The knee and ankle actuators name the battery in ``newton:battery``
         and read the supply from Control. The toe actuator has no battery and
-        keeps ``vin``. ``newton:minVoltage`` falls back to 0, and
-        ``replicate`` gives each world its own battery.
+        keeps ``vin``, in the same actuator group. ``newton:minVoltage`` falls
+        back to 0, and ``replicate`` gives each world its own battery.
         """
         names = ("knee", "ankle", "toe")
         parents = ("Base", "knee_link", "ankle_link")
@@ -2943,11 +2943,12 @@ def Xform "World"
         np.testing.assert_allclose(model.actuation.battery_sag_gain.numpy(), [0.5, 0.5])
         np.testing.assert_allclose(model.actuation.battery_min_voltage.numpy(), [0.0, 0.0])
         np.testing.assert_allclose(model.control().actuator_supply_voltage.numpy(), np.where(on_battery, 6.0, 0.0))
-        by_supply = {actuator.drive.supply_from_battery: actuator for actuator in model.actuators}
+        self.assertEqual(len(model.actuators), 1)
+        actuator = model.actuators[0]
         np.testing.assert_array_equal(
-            np.unique(by_supply[True].indices.numpy() % n), sorted([dofs["knee"], dofs["ankle"]])
+            actuator.drive.supply_from_battery.numpy(),
+            np.isin(actuator.indices.numpy() % n, [dofs["knee"], dofs["ankle"]]).astype(np.float32),
         )
-        np.testing.assert_array_equal(np.unique(by_supply[False].indices.numpy() % n), [dofs["toe"]])
 
     def test_add_battery_rejects_invalid_input(self):
         """add_battery rejects bad voltages and actuators that are taken, missing, or in another world."""
@@ -3500,7 +3501,6 @@ def Xform "World"
         builder.replicate(template, 2)
         model = builder.finalize()
 
-        self.assertEqual(DriveBAM.SHARED_PARAMS, {"supply_from_battery"})
         self.assertEqual(len(model.actuators), 2)
 
         knee, backlash, ankle, toe = (
