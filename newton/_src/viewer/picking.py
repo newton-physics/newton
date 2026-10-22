@@ -29,7 +29,8 @@ class Picking:
     This is useful to move objects around interactively, for example to check
     solver resilience or how well a policy copes with disturbances.
 
-    The built-in viewers create one for the current model, exposed as
+    :class:`~newton.viewer.ViewerGL`, :class:`~newton.viewer.ViewerRTX`, and
+    :class:`~newton.viewer.ViewerViser` create one in ``set_model()``, expose it as
     ``viewer.picking``, and drive it from the mouse. Use this class directly to
     add picking to a custom application:
 
@@ -53,7 +54,7 @@ class Picking:
 
     def __init__(
         self,
-        model: newton.Model,
+        model: newton.Model | None,
         *,
         pick_stiffness: float = 500.0,
         pick_damping: float = 45.0,
@@ -64,7 +65,8 @@ class Picking:
         Initializes the picking system. All parameters are fixed at construction.
 
         Args:
-            model: The model to pick from.
+            model: The model to pick from. ``None`` creates an inactive controller whose
+                methods do nothing.
             pick_stiffness: Stiffness of the picking spring, in acceleration per unit
                 displacement [1/s^2]. The commanded acceleration is mapped to a force
                 through the operational-space inertia at the pick point, so gains are
@@ -111,14 +113,8 @@ class Picking:
         pick_state_np[0]["pick_stiffness"] = pick_stiffness
         pick_state_np[0]["pick_damping"] = pick_damping
         pick_state_np[0]["pick_max_acceleration"] = pick_max_acceleration
-        self.pick_state = wp.array(pick_state_np, dtype=PickingState, device=model.device if model else "cpu", ndim=1)
-        """Spring state, shape [1]. Its fields are ``picked_point_local`` (anchor in the body frame [m]),
-        ``picked_point_world`` and ``picking_target_world`` (anchor and target in simulation space [m]),
-        and the ``pick_stiffness``, ``pick_damping``, and ``pick_max_acceleration`` gains given to the
-        constructor."""
+        self._pick_state = wp.array(pick_state_np, dtype=PickingState, device=model.device if model else "cpu", ndim=1)
 
-        self.pick_dist = 0.0
-        """Distance along the ray from its start to the last pick hit [m]."""
         self._picking_active = False
 
         # Operational-space inertia at the pick point in the picked body's frame, set on every pick.
@@ -161,7 +157,7 @@ class Picking:
                 state.body_qd,
                 state.body_f,
                 self.pick_body,
-                self.pick_state,
+                self._pick_state,
                 self.model.body_flags,
                 self.model.body_com,
                 self.model.body_mass,
@@ -359,7 +355,7 @@ class Picking:
                 ray_start,
                 ray_dir,
                 world_offset,
-                self.pick_state,
+                self._pick_state,
             ],
             device=self.model.device,
         )
@@ -367,16 +363,17 @@ class Picking:
     def pick(self, state: newton.State, ray_start: wp.vec3f, ray_dir: wp.vec3f) -> None:
         """Pick the body whose shape the ray hits first and anchor the spring at the hit point.
 
-        Shapes in worlds hidden by :attr:`visible_worlds_mask` are ignored. If the ray hits
-        nothing, or hits a kinematic body, nothing is picked and :meth:`is_picking` returns
-        ``False``. This call synchronizes with the device.
+        Any previous pick is released first. Shapes in worlds hidden by
+        :attr:`visible_worlds_mask` are ignored. If the ray hits nothing, a static shape, or a
+        kinematic body, nothing is picked and :meth:`is_picking` returns ``False``. This call
+        synchronizes with the device.
 
         Args:
             state: The simulation state supplying body poses.
             ray_start: Ray origin in the offset (rendered) space [m].
             ray_dir: Unit ray direction in the offset (rendered) space.
         """
-
+        self.release()
         if self.model is None:
             return
 
@@ -439,8 +436,6 @@ class Picking:
         body_index = self._min_body_index.numpy()[0]
 
         if dist < 1.0e10 and body_index >= 0:
-            self.pick_dist = dist
-
             # Ensures that the ray direction and start point are vec3f objects
             d = wp.vec3f(d[0], d[1], d[2])
             p = wp.vec3f(p[0], p[1], p[2])
@@ -463,7 +458,7 @@ class Picking:
                 kernel=compute_pick_state_kernel,
                 dim=1,
                 inputs=[state.body_q, self.model.body_flags, body_index, hit_point_world],
-                outputs=[self.pick_body, self.pick_state],
+                outputs=[self.pick_body, self._pick_state],
                 device=self.model.device,
             )
 

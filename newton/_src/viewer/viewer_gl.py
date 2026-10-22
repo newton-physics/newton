@@ -1955,7 +1955,7 @@ class ViewerGL(ViewerBase):
             return
 
         # Get the pick target and current picked point on geometry (in physics space)
-        pick_state = self.picking.pick_state.numpy()
+        pick_state = self.picking._pick_state.numpy()
 
         pick_target = pick_state[0]["picking_target_world"]
         picked_point = pick_state[0]["picked_point_world"]

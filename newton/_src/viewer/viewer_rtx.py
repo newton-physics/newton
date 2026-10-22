@@ -1617,7 +1617,7 @@ void main() {
                 self._hide_picking_line()
             return
 
-        pick_state = self.picking.pick_state.numpy()
+        pick_state = self.picking._pick_state.numpy()
         pick_target = pick_state[0]["picking_target_world"]
         picked_point = pick_state[0]["picked_point_world"]
 

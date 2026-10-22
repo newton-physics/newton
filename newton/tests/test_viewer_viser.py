@@ -462,7 +462,7 @@ class TestViewerViserInteraction(unittest.TestCase):
                     wxyz=(1.0, 0.0, 0.0, 0.0),
                 )
                 self.wait_for(
-                    lambda: np.isclose(self.viewer.picking.pick_state.numpy()[0]["picking_target_world"][1], -1.0)
+                    lambda: np.isclose(self.viewer.picking._pick_state.numpy()[0]["picking_target_world"][1], -1.0)
                 )
                 state.clear_forces()
                 if graph is None:

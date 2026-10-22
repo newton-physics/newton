@@ -83,9 +83,9 @@ class TestPickingSetup(unittest.TestCase):
 
         self.assertFalse(picking.is_picking())
         self.assertEqual(picking.pick_body.numpy()[0], -1)
-        self.assertIsNotNone(picking.pick_state)
-        self.assertEqual(picking.pick_state.shape[0], 1)
-        pick_state_np = picking.pick_state.numpy()[0]
+        self.assertIsNotNone(picking._pick_state)
+        self.assertEqual(picking._pick_state.shape[0], 1)
+        pick_state_np = picking._pick_state.numpy()[0]
         self.assertEqual(pick_state_np["pick_stiffness"], 100.0)
         self.assertEqual(pick_state_np["pick_damping"], 10.0)
 
@@ -107,10 +107,12 @@ class TestPickingSetup(unittest.TestCase):
         self.assertEqual(picking.pick_body.numpy()[0], -1)
 
     def test_pick_miss_remains_inactive(self):
-        """pick() with a ray that misses all geometry leaves picking inactive."""
+        """pick() with a ray that misses all geometry releases any previous pick."""
         model = _make_single_sphere_model(device="cpu")
         state = model.state()
         picking = Picking(model)
+        picking.pick(state, wp.vec3(0.0, 0.0, -2.0), wp.vec3(0.0, 0.0, 1.0))
+        self.assertTrue(picking.is_picking())
 
         # Ray far from the sphere
         ray_start = wp.vec3(10.0, 10.0, 0.0)
@@ -133,8 +135,6 @@ class TestPickingSetup(unittest.TestCase):
 
         self.assertTrue(picking.is_picking())
         self.assertEqual(picking.pick_body.numpy()[0], 0)
-        self.assertGreater(picking.pick_dist, 0.0)
-        self.assertLess(picking.pick_dist, 1.0e10)
 
     def test_pick_kinematic_body_remains_inactive(self):
         """pick() ignores kinematic bodies so no body is selected."""
@@ -274,9 +274,9 @@ def _apply_picking_target(
     picking: Picking, state: newton.State, target: tuple[float, float, float], body: int = 0
 ) -> np.ndarray:
     """Apply one picking step and return the controller wrench."""
-    pick_state = picking.pick_state.numpy()
+    pick_state = picking._pick_state.numpy()
     pick_state[0]["picking_target_world"] = target
-    picking.pick_state.assign(pick_state)
+    picking._pick_state.assign(pick_state)
     state.body_f.zero_()
     picking.apply_force(state)
     return state.body_f.numpy()[body].copy()
@@ -341,7 +341,7 @@ def _picked_mass(test: TestPickingSetup, model: newton.Model, ray_start, ray_dir
 
     body = int(picking.pick_body.numpy()[0])
     direction = np.asarray(direction, dtype=float)
-    picked = np.array(picking.pick_state.numpy()[0]["picked_point_world"], dtype=float)
+    picked = np.array(picking._pick_state.numpy()[0]["picked_point_world"], dtype=float)
     force = _apply_picking_target(picking, state, tuple(picked + _PICK_DISPLACEMENT * direction), body=body)[:3]
 
     assert_np_equal(np.cross(force, direction), np.zeros(3), tol=1.0e-4)
@@ -404,7 +404,7 @@ def test_picking_oblique_pull_per_direction_mass(test: TestPickingSetup, device)
     picking.pick(state, *_FINGER_RAY)
     os_inertia = picking._pick_os_inertia.numpy()[0]
 
-    picked = np.array(picking.pick_state.numpy()[0]["picked_point_world"], dtype=float)
+    picked = np.array(picking._pick_state.numpy()[0]["picked_point_world"], dtype=float)
     target = picked + _PICK_DISPLACEMENT * np.array([1.0, 1.0, 0.0])
     force = _apply_picking_target(picking, state, tuple(target), body=1)[:3]
 
@@ -548,7 +548,7 @@ def test_picking_torque_limit_cable(test: TestPickingSetup, device):
     picking.pick(state_in, wp.vec3(0.025, 0.0, 1.0), wp.vec3(0.0, 0.0, -1.0))
     picked_body = int(picking.pick_body.numpy()[0])
     test.assertEqual(picked_body, bodies[num_links // 2])
-    pick_state = picking.pick_state.numpy()
+    pick_state = picking._pick_state.numpy()
     anchor = np.array(pick_state[0]["picking_target_world"], dtype=np.float32)
 
     dt = 1.0 / 600.0
@@ -556,7 +556,7 @@ def test_picking_torque_limit_cable(test: TestPickingSetup, device):
     for step in range(300):
         target = anchor + np.array([0.0, 0.5 * min(1.0, step / 150.0), 0.0], dtype=np.float32)
         pick_state[0]["picking_target_world"] = target
-        picking.pick_state.assign(pick_state)
+        picking._pick_state.assign(pick_state)
         state_in.clear_forces()
         picking.apply_force(state_in)
         solver.step(state_in, state_out, control, None, dt)
