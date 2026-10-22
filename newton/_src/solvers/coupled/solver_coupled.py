@@ -2056,12 +2056,19 @@ class SolverCoupled(SolverBase, CouplingInterface):
                     )
                 continue
             rows = projection.local_to_global
-            if free_root_joints is not None and attribute.frequency in _FREE_ROOT_JOINT_FREQUENCIES:
+            has_free_root_rows = free_root_joints is not None and attribute.frequency in _FREE_ROOT_JOINT_FREQUENCIES
+            if has_free_root_rows:
                 # Synthesized rows select parent row 0 as a placeholder; the
                 # FREE joint row values replace them below.
                 rows = [max(row, 0) for row in rows]
             indices = self._expanded_row_indices(rows, attribute.row_width)
-            selected = self._select_attribute_value(value, indices, preserve_empty_sentinel=has_empty_sentinel)
+            if has_free_root_rows and source_value_count == 0 and not has_empty_sentinel:
+                # The parent has no rows of this frequency, e.g. joint
+                # coordinates in a model with only FIXED joints, so every view
+                # row is a synthesized FREE joint row.
+                selected = self._zero_rows(value, len(indices))
+            else:
+                selected = self._select_attribute_value(value, indices, preserve_empty_sentinel=has_empty_sentinel)
             if selected is None:
                 raise ValueError(f"Cannot compact model attribute {full_name!r} with indices {indices!r}")
             if attribute.references is not None:
@@ -2086,6 +2093,20 @@ class SolverCoupled(SolverBase, CouplingInterface):
                 self._update_view_attribute_value(view, full_name, selected)
             else:
                 self._set_view_attribute_value(view, full_name, selected)
+
+    @staticmethod
+    def _zero_rows(value, count: int):
+        """Return ``count`` zero rows with the dtype, row shape, and device of an indexed attribute value."""
+        if isinstance(value, wp.array):
+            return wp.zeros(
+                (count, *value.shape[1:]),
+                dtype=value.dtype,
+                device=value.device,
+                requires_grad=value.requires_grad,
+            )
+        if isinstance(value, list):
+            return [_attribute_zero_value(value)] * count
+        return np.zeros((count, *value.shape[1:]), dtype=value.dtype)
 
     @staticmethod
     def _write_rows(value, rows: Sequence[int], row_values: Sequence[Any]):

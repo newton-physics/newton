@@ -492,6 +492,16 @@ class TestModelView(unittest.TestCase):
         self.assertEqual(view.shape_flags.shape[0], 1)
         self.assertEqual(self.model.body_mass.shape[0], 2)
 
+    def test_control_uses_view_joint_arrays(self):
+        """Controls created from a view should use the view's joint arrays."""
+        view = ModelView(self.model, "test")
+        view.joint_dof_count = 6
+        view.joint_f = wp.full(6, 2.0, dtype=float, device="cpu")
+
+        np.testing.assert_array_equal(view.control().joint_f.numpy(), np.full(6, 2.0))
+        self.assertIs(view.control(clone_variables=False).joint_f, view.joint_f)
+        self.assertEqual(self.model.control().joint_f.shape[0], 12)
+
     def test_zero_count_override_exposes_empty_frequency_arrays(self):
         """Zero-count views should expose empty arrays, not parent arrays."""
         builder = newton.ModelBuilder()
@@ -1780,6 +1790,38 @@ class TestSolverCoupledBasic(unittest.TestCase):
         for entry_state in (entry.state_0, entry.state_1):
             np.testing.assert_allclose(entry_state.joint_q.numpy()[coord : coord + 7], body_q[child], atol=1.0e-6)
             np.testing.assert_allclose(entry_state.joint_qd.numpy()[dof : dof + 6], body_qd[child], atol=1.0e-6)
+
+    def test_split_fixed_articulation_gets_free_root(self):
+        """Synthesize a FREE root joint when the model has no joint coordinates or DOFs."""
+        builder = newton.ModelBuilder()
+        inertia = wp.mat33(np.eye(3) * 0.01)
+        base = builder.add_link(mass=1.0, inertia=inertia)
+        child = builder.add_link(
+            xform=wp.transform(wp.vec3(0.3, 0.0, 0.0), wp.quat_identity()), mass=1.0, inertia=inertia
+        )
+        mount = builder.add_joint_fixed(-1, base)
+        weld = builder.add_joint_fixed(
+            base, child, parent_xform=wp.transform(wp.vec3(0.3, 0.0, 0.0), wp.quat_identity())
+        )
+        builder.add_articulation([mount, weld])
+        model = builder.finalize(device="cpu")
+        self.assertEqual(model.joint_dof_count, 0)
+
+        coupled = SolverCoupled(
+            model=model,
+            entries=[
+                SolverCoupled.Entry(name="base", solver=SolverFeatherstone, bodies=[base], joints=[mount]),
+                SolverCoupled.Entry(name="child", solver=SolverFeatherstone, bodies=[child]),
+            ],
+        )
+
+        view = coupled.view("child")
+        np.testing.assert_array_equal(view.joint_type.numpy(), [int(newton.JointType.FREE)])
+        np.testing.assert_allclose(view.joint_q.numpy(), [0.3, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0])
+        self.assertEqual(view.joint_qd.shape[0], 6)
+        body_q = _step_coupled(model, coupled)
+        np.testing.assert_allclose(body_q[base, :3], [0.0, 0.0, 0.0], atol=1.0e-6)
+        self.assertLess(body_q[child, 2], -0.01)
 
     def test_split_articulation_mujoco_child_moves_with_parent(self):
         """Let SolverMuJoCo step a split child through its synthesized FREE root joint."""
