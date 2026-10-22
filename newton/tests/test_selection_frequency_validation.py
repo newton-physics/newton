@@ -178,7 +178,7 @@ class TestSelectionFrequencyValidation(unittest.TestCase):
         b_j1 = builder.add_joint_revolute(b_root, b_tip)
         builder.add_articulation([a_j0, a_j1], label="robot_a")
         builder.add_articulation([b_j0, b_j1], label="robot_b")
-        model = builder.finalize(device="cpu")
+        model = builder.finalize(device="cpu", skip_validation_joints=True)
         view = ArticulationView(model, "robot_*")
 
         self.assertFalse(view.joints_contiguous)
@@ -525,7 +525,7 @@ class TestSelectionFrequencyValidation(unittest.TestCase):
                 first_tip_joint = tip_joint
         builder.joint_articulation[first_tip_joint] = -1
         builder.joint_parent[first_tip_joint] = -1
-        model = builder.finalize()
+        model = builder.finalize(skip_validation_joints=True)
 
         with self.assertRaisesRegex(ValueError, "BODY layout is unavailable"):
             ArticulationView(model, "robot_*")
