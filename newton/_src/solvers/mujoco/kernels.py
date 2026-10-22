@@ -974,6 +974,7 @@ def convert_warp_coords_to_mj_kernel(
     qvel: wp.array2d[wp.float32],
     mocap_pos: wp.array2d[wp.vec3],
     mocap_quat: wp.array2d[wp.quat],
+    mocap_root_moved: wp.array[wp.bool],
 ):
     """Push Newton joint coordinates to MuJoCo and pose the mocap bodies driven by Newton joints.
 
@@ -982,7 +983,8 @@ def convert_warp_coords_to_mj_kernel(
     of a kinematic root (``-1`` if none). Weld targets (``jnt_mocap_lead``) lead
     the prescribed pose by ``kinematic_lookahead`` so the weld's spring cancels
     its damping against the mocap's zero velocity. With ``write_state`` False
-    only mocap poses are written.
+    only mocap poses are written. ``mocap_root_moved`` flags worlds whose mocap
+    roots moved, since MuJoCo does not wake trees resting on a moving mocap body.
     """
     worldid, jntid = wp.tid()
 
@@ -1018,8 +1020,16 @@ def convert_warp_coords_to_mj_kernel(
                 body_com,
                 lookahead,
             )
+            quat = quat_xyzw_to_wxyz(target.q)
+            if mocap_root_moved and lookahead == 0.0:
+                old_quat = mocap_quat[worldid, mocap]
+                delta = wp.length(target.p - mocap_pos[worldid, mocap]) + wp.length(
+                    wp.vec4(quat[0] - old_quat[0], quat[1] - old_quat[1], quat[2] - old_quat[2], quat[3] - old_quat[3])
+                )
+                if delta > 1.0e-6:
+                    mocap_root_moved[worldid] = True
             mocap_pos[worldid, mocap] = target.p
-            mocap_quat[worldid, mocap] = quat_xyzw_to_wxyz(target.q)
+            mocap_quat[worldid, mocap] = quat
 
     if not write_state:
         return

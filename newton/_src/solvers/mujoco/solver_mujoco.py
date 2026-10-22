@@ -4365,7 +4365,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             sleep_tolerance: Sleep velocity tolerance. If None, uses model custom attribute or MuJoCo default (0.001).
             disable_contacts: If True, disable contact computation in MuJoCo. If False, enable it. If None, use the model custom attribute or enable it by default.
             disable_sensors: If True, disable sensor computation in MuJoCo. If False, enable it. If None, use the model custom attribute or enable it by default. ``body_qdd`` and ``body_parent_f`` are still computed on either backend when requested through solver observables or legacy output-state fields.
-            update_data_interval: Frequency (in simulation steps) at which to update the MuJoCo Data object from the Newton state. If 0, Data is never updated after initialization.
+            update_data_interval: Frequency (in simulation steps) at which to push the Newton joint state into the MuJoCo Data object. If 0, it is never pushed after initialization. Mocap bodies posed from Newton joints, such as fixed roots and the targets of kinematic roots, are still updated every step.
             save_to_mjcf: Optional path to save the generated MJCF model file.
             use_mujoco_contacts: If True, use the MuJoCo contact solver. If False, use the Newton contact solver (newton contacts must be passed in through the step function in that case).
             use_speculative_contacts: Add frictionless normal constraints for separated Newton
@@ -4495,6 +4495,7 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         self._jnt_mocap_lead: wp.array[wp.bool] | None = None
         self._kinematic_mocap_root_bodies: np.ndarray | None = None
         self._kinematic_weld_dt: float | None = None
+        self._mocap_root_moved: wp.array[wp.bool] | None = None
         self.mjc_actuator_ctrl_source: wp.array[wp.int32] | None = None
         """Control source for each MuJoCo actuator.
 
@@ -6007,9 +6008,10 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Push Newton joint state to MuJoCo and pose the mocap bodies driven by Newton joints.
 
         Args:
-            dt: Step size the targets lead the prescribed pose by; ``0`` places
-                them exactly at the prescribed pose.
-            write_state: If ``False``, only the kinematic targets are updated.
+            dt: Step size that kinematic weld targets lead the prescribed pose by;
+                ``0`` places them at the prescribed pose.
+            write_state: If ``False``, only the mocap poses of fixed roots, massless
+                kinematic roots, and kinematic weld targets are written.
         """
         is_mjwarp = SolverMuJoCo._data_is_mjwarp(mj_data)
         single_world_template = False
@@ -6048,6 +6050,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         if self._kinematic_target_eq is not None and mjw_data is not None and dt > 0.0:
             lookahead = self._update_kinematic_weld_solref(dt)
         sleep_redirect = is_mjwarp and self.enable_sleeping and write_state
+        mocap_root_moved = self._mocap_root_moved if is_mjwarp and jnt_mocap is not None else None
+        if mocap_root_moved is not None:
+            mocap_root_moved.zero_()
         wp.launch(
             convert_warp_coords_to_mj_kernel,
             dim=(nworld, joints_per_world),
@@ -6079,9 +6084,12 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                 qvel,
                 mjw_data.mocap_pos if jnt_mocap is not None else None,
                 mjw_data.mocap_quat if jnt_mocap is not None else None,
+                mocap_root_moved,
             ],
             device=model.device,
         )
+        if mocap_root_moved is not None and not self._initial_model_sync:
+            self._wake_sleeping_worlds(mocap_root_moved)
 
         if not is_mjwarp and jnt_mocap is not None:
             mj_data.mocap_pos[:] = mjw_data.mocap_pos.numpy()[0]
@@ -8682,10 +8690,15 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         # Only roots kinematic at conversion get one.
         kinematic_target_names = []
         kinematic_target_eq_ids = []
+        body_names = {body.name for body in spec.bodies}
         for _, root_body, is_kinematic in kinematic_target_roots:
-            target = spec.worldbody.add_body(
-                name=f"{root_body.name}_kinematic_target", pos=root_body.pos, quat=root_body.quat, mocap=True
-            )
+            name = f"{root_body.name}_kinematic_target"
+            suffix = 1
+            while name in body_names:
+                suffix += 1
+                name = f"{root_body.name}_kinematic_target_{suffix}"
+            body_names.add(name)
+            target = spec.worldbody.add_body(name=name, pos=root_body.pos, quat=root_body.quat, mocap=True)
             eq = spec.add_equality(objtype=mujoco.mjtObj.mjOBJ_BODY)
             eq.type = mujoco.mjtEq.mjEQ_WELD
             eq.active = is_kinematic
@@ -8914,8 +8927,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
             else:
                 self.mjc_mocap_to_newton_jnt = None
 
-            # Bodies that need a weld target to be kinematic: movable roots and every
-            # non-root body. Massless kinematic roots are mocap bodies that cannot be dynamic.
+            # Bodies that may only be kinematic if they already have a weld target: every
+            # body except fixed roots and massless kinematic roots, which are mocap bodies.
             fixed_roots = (joint_parent == -1) & (joint_dof_dim[:, 0] + joint_dof_dim[:, 1] == 0)
             self._kinematic_needs_target = np.ones(model.body_count, dtype=bool)
             self._kinematic_needs_target[joint_child[fixed_roots]] = False
@@ -9184,6 +9197,8 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
                     dtype=wp.int32,
                     device=self.model.device,
                 )
+                if self._jnt_mocap is not None:
+                    self._mocap_root_moved = wp.zeros(nworld, dtype=wp.bool, device=self.model.device)
 
             if not self.use_mujoco_cpu:
                 if self._deterministic != wp.DeterministicMode.NOT_GUARANTEED:

@@ -1142,6 +1142,12 @@ by joint type:
 - **World-attached shapes that are not part of an articulation**
   remain ordinary static MuJoCo geometry rather than mocap bodies.
 
+Mocap bodies posed from Newton joints, both fixed roots and massless
+kinematic roots, follow the model and state every step, including steps
+where ``update_data_interval`` skips pushing the joint state. MuJoCo does not
+wake sleeping bodies resting on a moving mocap body, so when sleeping is
+enabled, moving one of these roots wakes its world.
+
 If you edit :attr:`~newton.Model.joint_X_p` or :attr:`~newton.Model.joint_X_c`
 for a fixed-root articulation after constructing the solver, call
 :meth:`~newton.solvers.SolverBase.notify_model_changed` with the
