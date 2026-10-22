@@ -2592,7 +2592,27 @@ class SolverSteel(SolverBase):
     ) -> "SolverSteel.Observables":
         """Allocate observable arrays; ``body_awake`` starts with the solver's current flags.
 
-        See :meth:`SolverBase.observables` for the shared allocation contract and errors.
+        See :meth:`SolverBase.observables` for the shared allocation contract. Allocating
+        ``BODY_AWAKE`` launches a kernel, so call this before graph capture.
+
+        Args:
+            kinds: Observable kinds to allocate, as in :meth:`SolverBase.observables`.
+            contacts: Contact storage for contact-indexed kinds, as in :meth:`SolverBase.observables`.
+            requires_grad: Whether allocated arrays require gradients, as in
+                :meth:`SolverBase.observables`.
+
+        Returns:
+            The solver-owned observable container with the requested arrays allocated.
+
+        Raises:
+            ValueError: If ``BODY_AWAKE`` is requested without ``enable_sleeping``.
+                :meth:`SolverBase.observables` lists the other ``TypeError`` and
+                ``ValueError`` cases.
+
+        .. experimental::
+
+            The solver observable API may change while additional solvers and
+            observable categories are migrated to it.
         """
         observables = super().observables(kinds, contacts=contacts, requires_grad=requires_grad)
         if observables.is_requested(self.ObservableKind.BODY_AWAKE):
