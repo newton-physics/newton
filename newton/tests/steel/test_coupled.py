@@ -685,12 +685,18 @@ def test_effective_mass_follows_solve_armature(test, device):
         model.joint_armature.assign(armature)
         coupled.notify_model_changed(newton.ModelFlags.JOINT_DOF_INERTIAL_PROPERTIES)
         test.assertAlmostEqual(mass(), 303.01, delta=1.0e-2, msg=name)
-        # Making the hinged cube kinematic takes the welded tip with it.
+        # Welding the tip 2 m out gives 3 H / r^2 with H = 4 + I_yy + 100 kg m^2.
+        joint_X_p = model.joint_X_p.numpy()
+        joint_X_p[1, 0] = 2.0
+        model.joint_X_p.assign(joint_X_p)
+        coupled.notify_model_changed(newton.ModelFlags.JOINT_PROPERTIES)
+        test.assertAlmostEqual(mass(), 78.0, delta=1.0e-2, msg=name)
+        # Making the hinged cube kinematic takes the welded tip with it: 3e10 / r^2.
         flags = model.body_flags.numpy()
         flags[0] |= int(newton.BodyFlags.KINEMATIC)
         model.body_flags.assign(flags)
         coupled.notify_model_changed(newton.ModelFlags.BODY_PROPERTIES)
-        test.assertGreater(mass(), 1.0e10, msg=name)
+        test.assertGreater(mass(), 1.0e9, msg=name)
 
 
 def test_offset_contact_turns_hinge(test, device):
