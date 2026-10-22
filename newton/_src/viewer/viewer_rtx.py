@@ -1333,6 +1333,7 @@ void main() {
     def _populate_shapes(self):
         self._model_shape_opacities_device = None
         self._shape_opacities_changed_device = None
+        # The flat RTX geometry and its model indices survive viewer batch repopulation.
         # A borrowed stage already contains the model's geometry.
         if self._borrowed_stage is None:
             super()._populate_shapes()
@@ -1628,7 +1629,6 @@ void main() {
         else:
             # Render phase: flat arrays (built at end of build phase) handle all shape
             # transform updates in a single kernel launch.
-            self._sync_shape_opacities_from_model()
             show_ground = self.show_ground
             show_ground_changed = show_ground != self._last_show_ground
             layer_hidden = self._layer_force_hidden() if show_ground_changed else False
@@ -2332,8 +2332,6 @@ void main() {
             or not self._shape_opacity_batches
         ):
             return
-        if not any(shapes.opacities_changed for shapes in self._shape_instances.values()):
-            return
         if self._model_shape_opacities_device is not None:
             self._shape_opacities_changed_device.zero_()
             wp.launch(
@@ -2345,13 +2343,9 @@ void main() {
                 record_tape=False,
             )
             if not self._shape_opacities_changed_device.numpy()[0]:
-                for shapes in self._shape_instances.values():
-                    shapes.opacities_changed = False
                 return
         opacities = np.clip(self.model.shape_opacity.numpy(), 0.0, 1.0)
         had_fractional_opacity = self._uses_fractional_opacity
-        for shapes in self._shape_instances.values():
-            shapes.opacities_changed = False
         for name, shape_indices in self._shape_opacity_batches.items():
             batch_opacities = opacities[shape_indices]
             previous = self._instance_specs.get(name)
@@ -2368,7 +2362,11 @@ void main() {
                 tensors = [np.array([value], dtype=np.float32) for value in values]
                 self._write_runtime_attribute(paths, f"primvars:{attribute}", tensors, is_array=True)
             self._instance_specs[name] = (previous[0], previous[1], (*previous[2][:2], batch_opacities.copy()))
-        if self._uses_fractional_opacity and not had_fractional_opacity:
+        if (
+            self._uses_fractional_opacity
+            and not had_fractional_opacity
+            and "omni:rtx:rt:fractionalOpacity" not in self._rtx_render_settings
+        ):
             self._write_runtime_attribute(
                 [self._render_product_path], "omni:rtx:rt:fractionalOpacity", np.array([True], dtype=np.bool_)
             )
