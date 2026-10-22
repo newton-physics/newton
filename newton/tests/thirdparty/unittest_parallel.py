@@ -862,6 +862,9 @@ def initialize_test_process(lock, shared_index, args, temp_dir):
             # Using a shared cache for all test processes
             wp.config.kernel_cache_dir = os.getenv("WARP_CACHE_ROOT")
 
+        # Initialize here so the init banner never lands in a test's captured output.
+        wp.init()
+
 
 if __name__ == "__main__":  # pragma: no cover
     main()
