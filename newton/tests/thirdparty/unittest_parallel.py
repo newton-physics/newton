@@ -456,6 +456,9 @@ def main(argv=None):
             if args.verbose > 1:
                 print(file=sys.stderr)
 
+            # Initialize here so the init banner never lands in a test's captured output.
+            wp.init()
+
             # Run the tests in serial
             start_time = time.perf_counter()
 
