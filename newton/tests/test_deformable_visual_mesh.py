@@ -3,16 +3,62 @@
 
 """Tests for deformable visual meshes: binding kinds, ownership, validation, skinning."""
 
+import contextlib
 import math
+import os
+import tempfile
 import unittest
+import warnings
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import warp as wp
 
 import newton
 from newton._src.sim.deformable_visual import compute_deformable_visual_mesh_normals, skin_deformable_visual_mesh
-from newton.tests.unittest_utils import assert_np_equal
+from newton._src.viewer.viewer_file import HAS_CBOR2
+from newton.exceptions import NewtonWarning
+from newton.tests.unittest_utils import USD_AVAILABLE, assert_np_equal
+from newton.viewer import ViewerFile, ViewerNull, ViewerUSD
+
+
+class _MeshProbe(ViewerNull):
+    """Captures every ``log_mesh`` call keyed by object name."""
+
+    def __init__(self):
+        super().__init__(num_frames=1)
+        self.calls: dict[str, dict] = {}
+
+    def log_mesh(
+        self,
+        name,
+        points,
+        indices,
+        normals=None,
+        uvs=None,
+        texture=None,
+        hidden=False,
+        backface_culling=True,
+        color=None,
+        roughness=None,
+        metallic=None,
+        dynamic=False,
+        opacity=None,
+    ):
+        self.calls[name] = {
+            "points": None if points is None else points.numpy(),
+            "normals": None if normals is None else normals.numpy(),
+            "uvs": None if uvs is None else uvs.numpy(),
+            "texture": texture,
+            "hidden": hidden,
+            "opacity": opacity,
+        }
+
+    def _frame(self, state, t=0.0):
+        self.begin_frame(t)
+        self.log_state(state)
+        self.end_frame()
 
 
 def _add_cloth(builder):
@@ -844,5 +890,390 @@ class TestDeformableVisualMeshValidation(unittest.TestCase):
                 np.testing.assert_array_equal(mesh.parent.numpy(), expected)
 
 
+class TestDeformableVisualMeshViewer(unittest.TestCase):
+    """ViewerBase drawing: naming, visibility, world offsets, and shared output."""
+
+    @staticmethod
+    def _cloth_skin_builder(label="skin"):
+        builder = newton.ModelBuilder()
+        _add_cloth(builder)
+        n = builder.particle_count
+        verts = np.array(builder.particle_q, dtype=np.float32)
+        uvs = np.linspace(0.0, 1.0, n * 2, dtype=np.float32).reshape(n, 2)
+        # A non-degenerate grid quad (0-1-5-4) so face normals are well defined.
+        quad = np.array([0, 1, 5, 0, 5, 4], dtype=np.int32)
+        builder.add_deformable_visual_mesh(
+            verts, quad, kind="particle", particles=np.arange(n, dtype=np.int32), uvs=uvs, label=label
+        )
+        return builder, uvs
+
+    def test_viewer_draws_skinned_mesh_with_invariant_name(self):
+        """The mesh is drawn under its invariant index name with skinned points,
+        recomputed normals, and preserved UVs."""
+        builder, uvs = self._cloth_skin_builder()
+        model = builder.finalize()
+        viewer = _MeshProbe()
+        viewer.set_model(model)
+
+        state = model.state()
+        moved = state.particle_q.numpy()
+        moved[:, 2] += 1.5
+        state.particle_q = wp.array(moved, dtype=wp.vec3)
+        viewer._frame(state)
+
+        call = viewer.calls["/model/deformable_visual_meshes/mesh_0_skin"]
+        self.assertFalse(call["hidden"])
+        assert_np_equal(call["points"], moved, tol=1.0e-5)
+        assert_np_equal(call["uvs"], uvs, tol=1.0e-6)
+        self.assertIsNotNone(call["normals"])
+        # Unit normals on every vertex the triangles reference.
+        referenced = np.linalg.norm(call["normals"][[0, 1, 4, 5]], axis=1)
+        assert_np_equal(referenced, np.ones(4, dtype=np.float32), tol=1.0e-4)
+
+    def test_viewer_consumes_explicit_deformable_visuals_without_updating_again(self):
+        """A viewer reads shared output without recomputing the skinning."""
+        builder, _uvs = self._cloth_skin_builder()
+        model = builder.finalize()
+        state = model.state()
+        moved = state.particle_q.numpy().copy()
+        moved[:, 2] += 0.75
+        state.particle_q.assign(moved)
+        visuals = model.deformable_visuals()
+        model.update_deformable_visuals(state, visuals)
+
+        live = moved.copy()
+        live[:, 2] += 1.0
+        state.particle_q.assign(live)
+
+        viewer = _MeshProbe()
+        viewer.set_model(model)
+        viewer.set_deformable_visuals(visuals)
+        viewer._frame(state)
+
+        call = viewer.calls["/model/deformable_visual_meshes/mesh_0_skin"]
+        assert_np_equal(call["points"], moved, tol=1.0e-5)
+
+        with self.assertRaisesRegex(ValueError, "another state"):
+            viewer._frame(model.state(), 1.0)
+
+        viewer.set_deformable_visuals(None)
+        viewer._frame(state, 2.0)
+        call = viewer.calls["/model/deformable_visual_meshes/mesh_0_skin"]
+        assert_np_equal(call["points"], live, tol=1.0e-5)
+
+    def test_viewer_name_is_valid_for_usd_paths(self):
+        """Visual mesh names keep the invariant index without creating invalid USD prim names."""
+        builder, _uvs = self._cloth_skin_builder(label="123 bad/skin!")
+        model = builder.finalize()
+
+        viewer = _MeshProbe()
+        viewer.set_model(model)
+        viewer._frame(model.state())
+
+        self.assertIn("/model/deformable_visual_meshes/mesh_0_123_bad_skin", viewer.calls)
+
+    @unittest.skipUnless(USD_AVAILABLE, "Requires usd-core")
+    def test_viewer_usd_accepts_deformable_visual_mesh_name(self):
+        """Export deformed points and bounds without hidden geometry updates."""
+        from pxr import UsdGeom
+
+        builder, _uvs = self._cloth_skin_builder(label="123 bad/skin!")
+        model = builder.finalize()
+
+        with tempfile.NamedTemporaryFile(suffix=".usd", delete=False) as tmp:
+            file_path = tmp.name
+
+        try:
+            viewer = ViewerUSD(file_path, num_frames=4)
+            viewer.set_model(model)
+            state = model.state()
+            mesh = model.deformable_visual_meshes[0]
+            rest = state.particle_q.numpy().copy()
+            for frame, visible in enumerate((True, False, False, True)):
+                state.particle_q.assign(rest + np.array([0.0, 0.0, frame], dtype=np.float32))
+                viewer.show_deformable_visual_meshes = visible
+                viewer.begin_frame(frame / 60.0)
+                viewer.log_state(state)
+                viewer.end_frame()
+            path = "/root/model/deformable_visual_meshes/mesh_0_123_bad_skin"
+            prim = UsdGeom.Mesh(viewer.stage.GetPrimAtPath(path))
+            self.assertTrue(prim)
+            self.assertEqual(prim.GetPointsAttr().GetTimeSamples(), [0.0, 3.0])
+            self.assertEqual(prim.GetExtentAttr().GetTimeSamples(), [0.0, 3.0])
+            for frame in (0, 3):
+                points = np.asarray(prim.GetPointsAttr().Get(frame))
+                assert_np_equal(np.asarray(prim.GetExtentAttr().Get(frame)), np.array([points.min(0), points.max(0)]))
+            for frame, visible in enumerate((True, False, False, True)):
+                self.assertEqual(prim.GetVisibilityAttr().Get(frame), "inherited" if visible else "invisible")
+            assert_np_equal(np.asarray(prim.GetPointsAttr().Get(3)), _skin(model, mesh, state))
+            viewer.close()
+        finally:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+
+    def test_sim_triangles_stay_visible_and_mesh_toggles(self):
+        """Visual meshes draw in addition to the simulation triangles; toggling
+        show_deformable_visual_meshes hides the mesh but keeps valid geometry registered."""
+        builder, _uvs = self._cloth_skin_builder()
+        model = builder.finalize()
+        viewer = _MeshProbe()
+        viewer.set_model(model)
+        state = model.state()
+
+        viewer._frame(state)
+        self.assertFalse(viewer.calls["/model/triangles"]["hidden"])
+        self.assertFalse(viewer.calls["/model/deformable_visual_meshes/mesh_0_skin"]["hidden"])
+
+        viewer.show_deformable_visual_meshes = False
+        viewer._frame(state, 1.0)
+        call = viewer.calls["/model/deformable_visual_meshes/mesh_0_skin"]
+        self.assertTrue(call["hidden"])
+        self.assertEqual(len(call["points"]), model.deformable_visual_meshes[0].vertex_count)
+        self.assertFalse(viewer.calls["/model/triangles"]["hidden"])
+
+    def test_skinned_mesh_toggle_is_independent_from_show_visual(self):
+        """Skinned meshes remain visible when regular visual shapes are hidden."""
+        builder, _uvs = self._cloth_skin_builder()
+        model = builder.finalize()
+        viewer = _MeshProbe()
+        viewer.set_model(model)
+        state = model.state()
+
+        viewer.show_visual = False
+        viewer._frame(state)
+        name = "/model/deformable_visual_meshes/mesh_0_skin"
+        self.assertFalse(viewer.calls[name]["hidden"])
+        self.assertTrue(viewer.show_deformable_visual_meshes)
+
+    def test_replicated_worlds_use_distinct_names_and_device_offsets(self):
+        """Replicated meshes draw under distinct names, each offset by its own
+        world offset."""
+        source = newton.ModelBuilder()
+        _add_cloth(source)
+        n = source.particle_count
+        verts = np.array(source.particle_q, dtype=np.float32)
+        source.add_deformable_visual_mesh(
+            verts, _QUAD, kind="particle", particles=np.arange(n, dtype=np.int32), label="skin"
+        )
+        builder = newton.ModelBuilder()
+        builder.replicate(source, 2)
+        model = builder.finalize()
+
+        viewer = _MeshProbe()
+        viewer.set_model(model)
+        viewer.set_world_offsets((4.0, 0.0, 0.0))
+        viewer._frame(model.state())
+
+        offsets = viewer.world_offsets.numpy()
+        p0 = viewer.calls["/model/deformable_visual_meshes/mesh_0_skin"]["points"]
+        p1 = viewer.calls["/model/deformable_visual_meshes/mesh_1_skin"]["points"]
+        assert_np_equal(p0, verts + offsets[0], tol=1.0e-5)
+        assert_np_equal(p1, verts + offsets[1], tol=1.0e-5)
+
+        state = model.state()
+        moved = state.particle_q.numpy().copy()
+        moved[n:, 2] += 1.25
+        state.particle_q.assign(moved)
+        viewer._frame(state, 1.0)
+        p0 = viewer.calls["/model/deformable_visual_meshes/mesh_0_skin"]["points"]
+        p1 = viewer.calls["/model/deformable_visual_meshes/mesh_1_skin"]["points"]
+        assert_np_equal(p0, verts + offsets[0], tol=1.0e-5)
+        assert_np_equal(p1, moved[n:] + offsets[1], tol=1.0e-5)
+
+        viewer.activate("rotated")
+        viewer.set_model(model)
+        viewer.set_world_offsets((4.0, 0.0, 0.0))
+        viewer.set_layer_transform(
+            "rotated", wp.transform((1.0, 2.0, 3.0), wp.quat_from_axis_angle(wp.vec3(1, 0, 0), math.pi / 2))
+        )
+        viewer._frame(state, 2.0)
+        for world in range(2):
+            name = f"/layers/rotated/model/deformable_visual_meshes/mesh_{world}_skin"
+            original = viewer.calls[f"/model/deformable_visual_meshes/mesh_{world}_skin"]
+            # A quarter turn around X maps (x, y, z) to (x, -z, y).
+            expected = original["points"][:, [0, 2, 1]].copy()
+            expected[:, 1] *= -1
+            expected += [1, 2, 3]
+            assert_np_equal(viewer.calls[name]["points"], expected, tol=1.0e-5)
+            normals = original["normals"][:, [0, 2, 1]].copy()
+            normals[:, 1] *= -1
+            assert_np_equal(viewer.calls[name]["normals"], normals, tol=1.0e-5)
+        viewer.set_visible_worlds([1])
+        viewer._frame(state, 2.5)
+        self.assertTrue(viewer.calls["/layers/rotated/model/deformable_visual_meshes/mesh_0_skin"]["hidden"])
+        self.assertFalse(viewer.calls["/layers/rotated/model/deformable_visual_meshes/mesh_1_skin"]["hidden"])
+        viewer.show_deformable_visual_meshes = False
+        viewer._frame(state, 3.0)
+        self.assertTrue(viewer.calls["/layers/rotated/model/deformable_visual_meshes/mesh_0_skin"]["hidden"])
+        self.assertFalse(viewer.calls["/model/deformable_visual_meshes/mesh_0_skin"]["hidden"])
+
+    def test_viewer_reuses_null_world_offsets(self):
+        """Reuse one fallback offset buffer when no world offsets are configured."""
+        builder, _uvs = self._cloth_skin_builder()
+        model = builder.finalize()
+        viewer = _MeshProbe()
+        viewer.set_model(model)
+        viewer.world_offsets = None
+
+        viewer._frame(model.state())
+        offsets = viewer._deformable_visual_mesh_null_offsets
+        self.assertIsNotNone(offsets)
+        self.assertIs(viewer.layer._deformable_visual_mesh_null_offsets, offsets)
+
+        viewer._frame(model.state(), 1.0)
+        self.assertIs(viewer._deformable_visual_mesh_null_offsets, offsets)
+
+    def test_null_viewer_does_not_evaluate_visuals(self):
+        """Leave shared visual output unevaluated when no renderer consumes it."""
+        builder, _uvs = self._cloth_skin_builder()
+        model = builder.finalize(device="cpu")
+        visuals = model.deformable_visuals()
+        viewer = ViewerNull()
+        viewer.set_model(model)
+        viewer.set_deformable_visuals(visuals)
+        viewer.log_state(model.state())
+        self.assertIsNone(visuals.state)
+
+    def test_viewer_file_roundtrips_deformable_visual_mesh(self):
+        """Replay replicated skins with shared RGBA images and path textures."""
+        builder = newton.ModelBuilder()
+        _add_cloth(builder)
+        n = builder.particle_count
+        verts = np.array(builder.particle_q, dtype=np.float32)
+        uvs = np.linspace(0.0, 1.0, n * 2, dtype=np.float32).reshape(n, 2)
+        texture = np.arange(16, dtype=np.uint8).reshape(2, 2, 4)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "texture.ppm"
+            path.write_bytes(b"P6\n2 2\n255\n" + texture[:, :, :3].tobytes())
+            for label, source in (("image", texture), ("path", path)):
+                builder.add_deformable_visual_mesh(
+                    verts,
+                    _QUAD,
+                    kind="particle",
+                    particles=np.arange(n, dtype=np.int32),
+                    uvs=uvs,
+                    texture=source,
+                    label=label,
+                )
+            scene = newton.ModelBuilder()
+            scene.replicate(builder, 2)
+            model = scene.finalize()
+            state = model.state()
+            moved = state.particle_q.numpy().copy()
+            moved[n:, 2] += 1.0
+            state.particle_q.assign(moved)
+            for suffix in ("json", "bin"):
+                if suffix == "bin" and not HAS_CBOR2:
+                    continue
+                with self.subTest(format=suffix):
+                    file_path = str(Path(directory) / f"recording.{suffix}")
+                    recorder = ViewerFile(file_path, auto_save=False)
+                    recorder.set_model(model)
+                    visuals = model.deformable_visuals()
+                    recorder.set_deformable_visuals(visuals)
+                    recorder.log_state(state)
+                    self.assertIsNone(visuals.state)
+                    recorder.save_recording()
+                    playback = ViewerFile(file_path, auto_save=False)
+                    playback.load_recording()
+                    restored_model = newton.Model()
+                    playback.load_model(restored_model)
+                    restored_state = restored_model.state()
+                    playback.load_state(restored_state, 0)
+                    self.assertEqual(restored_model.deformable_visual_mesh_count, 4)
+                    for mesh in restored_model.deformable_visual_meshes:
+                        self.assertIsInstance(mesh, newton.DeformableVisualMesh)
+                        self.assertEqual(mesh.kind, newton.DeformableVisualMesh.Kind.PARTICLE)
+                        assert_np_equal(mesh.rest_vertices.numpy(), verts)
+                        assert_np_equal(mesh.uvs.numpy(), uvs)
+                        if mesh.label == "image":
+                            np.testing.assert_array_equal(mesh.texture, texture)
+                        else:
+                            self.assertEqual(mesh.label, "path")
+                            self.assertEqual(mesh.texture, str(path))
+                        assert_np_equal(_skin(restored_model, mesh, restored_state), moved[mesh.parent.numpy()])
+
+    def test_gl_reuses_skinned_textures_but_updates_regular_meshes(self):
+        """Reuse visual textures without changing ordinary mutable mesh uploads."""
+        from newton._src.viewer.gl.opengl import RendererGL  # noqa: PLC0415
+        from newton.tests.test_viewer_get_frame import _make_headless_viewer_gl_or_skip  # noqa: PLC0415
+
+        with (
+            wp.ScopedDevice("cpu"),
+            tempfile.TemporaryDirectory() as directory,
+            contextlib.closing(_make_headless_viewer_gl_or_skip(self)) as viewer,
+        ):
+            texture = np.zeros((2, 2, 3), dtype=np.uint8)
+            texture[:, :, 0] = 255
+            path = Path(directory) / "texture.ppm"
+            path.write_bytes(b"P6\n2 2\n255\n" + texture.tobytes())
+            for source in (str(path), texture):
+                with self.subTest(source=type(source).__name__):
+                    builder = newton.ModelBuilder()
+                    vertices = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0]], dtype=np.float32)
+                    for point in vertices:
+                        builder.add_particle(wp.vec3(*point), wp.vec3(0), mass=1.0)
+                    builder.add_deformable_visual_mesh(
+                        vertices,
+                        [0, 1, 2],
+                        kind="particle",
+                        particles=[0, 1, 2],
+                        uvs=[[0, 0], [1, 0], [0, 1]],
+                        texture=source,
+                    )
+                    model = builder.finalize()
+                    viewer.set_model(model)
+                    viewer.show_particles = False
+                    state = model.state()
+                    with mock.patch.object(RendererGL.gl, "glTexImage2D", wraps=RendererGL.gl.glTexImage2D) as upload:
+                        for visible in (True, True, False, True):
+                            viewer.show_deformable_visual_meshes = visible
+                            viewer.log_state(state)
+                        self.assertEqual(upload.call_count, 1)
+                        viewer.show_deformable_visual_meshes = False
+                        viewer.log_state(state)
+                        with mock.patch.object(
+                            RendererGL.gl, "glBufferData", wraps=RendererGL.gl.glBufferData
+                        ) as geometry_upload:
+                            viewer.log_state(state)
+                            viewer.log_state(state)
+                            self.assertEqual(geometry_upload.call_count, 0)
+                        viewer.show_deformable_visual_meshes = True
+                        viewer.log_state(state)
+
+                        mesh = model.deformable_visual_meshes[0]
+                        replacement = np.zeros((2, 2, 3), dtype=np.uint8)
+                        mesh.texture = replacement
+                        viewer.log_state(state)
+                        self.assertEqual(upload.call_count, 2)
+                        mesh.texture = None
+                        viewer.log_state(state)
+                        self.assertEqual(upload.call_count, 2)
+                        viewer.log_mesh("ordinary", mesh.rest_vertices, mesh.indices, uvs=mesh.uvs, texture=replacement)
+                        replacement[:] = 127
+                        viewer.log_mesh("ordinary", mesh.rest_vertices, mesh.indices, uvs=mesh.uvs, texture=replacement)
+                        self.assertEqual(upload.call_count, 4)
+                        mesh.texture = source
+                        viewer.set_model(model)
+                        viewer.log_state(state)
+                        self.assertEqual(upload.call_count, 5)
+                        mesh.texture = str(Path(directory) / "missing.png")
+                        with self.assertWarnsRegex(NewtonWarning, "Failed to load texture"):
+                            viewer.log_state(state)
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("error")
+                            viewer.log_state(state)
+                            viewer.log_state(state)
+                        mesh.texture = source
+                        viewer.set_camera(pos=wp.vec3(0.3, -2.0, 2.0), pitch=-40.0, yaw=90.0)
+                        viewer.show_ground = False
+                        viewer.begin_frame(0.0)
+                        viewer.log_state(state)
+                        viewer.end_frame()
+                        frame = viewer.get_frame().numpy().astype(np.int32)
+                        red = (frame[:, :, 0] > frame[:, :, 1] + 30) & (frame[:, :, 0] > frame[:, :, 2] + 30)
+                        self.assertTrue(red.any(), "The restored visual texture must be sampled by the shader")
+
+
 if __name__ == "__main__":
-    unittest.main()
+    unittest.main(verbosity=2)

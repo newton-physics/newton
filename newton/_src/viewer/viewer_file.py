@@ -18,6 +18,7 @@ from warp._src import types as warp_types
 from ..core.types import override
 from ..geometry import Mesh
 from ..sim import Model, State
+from ..sim.deformable_visual import DeformableVisualMesh
 from ..sim.shape_contact_pairs import _ShapeContactPairs
 from .viewer import ViewerBase
 
@@ -792,7 +793,7 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
 
     # NumPy scalar types
     if type_name.startswith("numpy."):
-        if type_name == "numpy.ndarray":
+        if type_name in ("numpy.ndarray", "numpy.ndarray_ref"):
             return deserialize_ndarray(data, format_type, cache)
 
         scalar_name = type_name.removeprefix("numpy.")
@@ -866,6 +867,26 @@ def deserialize(data, callback, _path="", format_type="json", cache: ArrayCache 
                     deserialize(value, callback, f"{_path}.{attr}" if _path else attr, format_type, cache),
                 )
             return ns
+
+        if type_name == "DeformableVisualMesh" and data.get("__module__") == DeformableVisualMesh.__module__:
+            attributes = {
+                attr: deserialize(value, callback, f"{_path}.{attr}" if _path else attr, format_type, cache)
+                for attr, value in data["attributes"].items()
+            }
+            return DeformableVisualMesh(
+                kind=attributes["kind"],
+                rest_vertices=attributes["rest_vertices"],
+                indices=attributes["indices"],
+                parent=attributes["parent"],
+                weights=attributes.get("weights"),
+                local_offsets=attributes.get("local_offsets"),
+                uvs=attributes.get("uvs"),
+                texture=attributes.get("texture"),
+                world=attributes.get("world", -1),
+                label=attributes.get("label", ""),
+                index=attributes.get("index", -1),
+            )
+
         # Fallback: return a flat dict of decoded attributes for other custom classes.
         return {
             attr: deserialize(value, callback, f"{_path}.{attr}" if _path else attr, format_type, cache)
@@ -1220,6 +1241,12 @@ class ViewerFile(ViewerBase):
         if model is not None and not self._model_recorded:
             self.record_model(model)
             self._model_recorded = True
+
+    @override
+    def _log_deformable_visual_meshes(self, state: State):
+        # Record simulation data; playback evaluates visuals when it renders.
+        if type(self).log_mesh is not ViewerFile.log_mesh:
+            super()._log_deformable_visual_meshes(state)
 
     @override
     def log_state(self, state: State):

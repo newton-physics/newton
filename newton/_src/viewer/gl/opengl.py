@@ -212,6 +212,7 @@ class MeshGL:
         self.indices = None
         self.normals = None  # scratch buffer used during normal recomputation
         self.texture_id = None
+        self._texture_source = None
         self.opacity = 1.0
 
         # Set up vertex attributes in the packed format the shaders expect
@@ -303,7 +304,7 @@ class MeshGL:
             # Ignore any errors if the GL context has already been torn down
             pass
 
-    def update(self, points, indices, normals, uvs, texture=None, opacity=None):
+    def update(self, points, indices, normals, uvs, texture=None, opacity=None, *, reuse_texture=False):
         """Update vertex positions in the VBO.
 
         Args:
@@ -378,7 +379,7 @@ class MeshGL:
             else:
                 gl.glBufferData(gl.GL_ARRAY_BUFFER, host_vertices.nbytes, host_vertices.ctypes.data, gl.GL_STATIC_DRAW)
 
-        self.update_texture(texture)
+        self.update_texture(texture, reuse_texture=reuse_texture)
 
     def recompute_normals(self):
         if self._points is None or self.indices is None:
@@ -392,7 +393,11 @@ class MeshGL:
             device=self.device,
         )
 
-    def update_texture(self, texture=None):
+    def update_texture(self, texture=None, *, reuse_texture=False):
+        # Only immutable model visuals opt in; ordinary log_mesh calls can
+        # mutate an image in place and must upload it again.
+        if reuse_texture and texture is self._texture_source:
+            return
         gl = RendererGL.gl
         texture_image = None
         if texture is not None:
@@ -407,6 +412,7 @@ class MeshGL:
                 except Exception:
                     pass
                 self.texture_id = None
+            self._texture_source = texture
             return
 
         if self.texture_id is not None:
@@ -416,6 +422,7 @@ class MeshGL:
                 pass
             self.texture_id = None
 
+        self._texture_source = texture
         texture_id = _upload_texture_from_file(gl, texture_image)
         if not texture_id:
             return
