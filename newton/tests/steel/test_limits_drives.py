@@ -361,13 +361,16 @@ def _run_layout_trajectory(device, response, iterations):
         solver.step(state_0, state_1, control, contacts, 1.0 / 240.0)
         dense_count = int(solver._constraint_count.numpy()[0])
         mf_count = int(solver._mf_constraint_count.numpy()[0])
+        propagation_count = int(solver._propagation_constraint_count.numpy()[0])
         samples.append(
             {
                 "dense_count": dense_count,
                 "row_type": solver._row_type.numpy()[0, :dense_count].copy(),
                 "impulses": solver._impulses.numpy()[0, :dense_count].copy(),
                 "mf_row_type": solver._mf_row_type.numpy()[0, :mf_count].copy(),
-                "propagation_count": int(solver._propagation_constraint_count.numpy()[0]),
+                "mf_impulses": solver._mf_impulses.numpy()[0, :mf_count].copy(),
+                "propagation_count": propagation_count,
+                "propagation_impulses": solver._propagation_impulses.numpy()[0, :propagation_count].copy(),
                 "joint_q": state_1.joint_q.numpy().copy(),
                 "joint_qd": state_1.joint_qd.numpy().copy(),
             }
@@ -405,6 +408,12 @@ def test_propagation_solves_every_row_family(test, device):
                     test.assertEqual(int(np.sum(sample["mf_row_type"] == PGS_CONSTRAINT_TYPE_CONTACT)), 0)
                 limit_rows = np.flatnonzero(samples[0]["row_type"] == PGS_CONSTRAINT_TYPE_JOINT_LIMIT)
                 test.assertGreater(float(np.max(np.abs(samples[0]["impulses"][limit_rows]))), 0.0)
+                # The propagation and velocity-limit solves apply impulses too.
+                test.assertGreater(max(float(np.max(np.abs(s["propagation_impulses"]))) for s in samples), 0.0)
+                velocity_limit_impulses = [
+                    s["mf_impulses"][s["mf_row_type"] == PGS_CONSTRAINT_TYPE_JOINT_VELOCITY_LIMIT] for s in samples
+                ]
+                test.assertGreater(max(float(np.max(np.abs(i))) for i in velocity_limit_impulses), 0.0)
 
 
 class TestSteelJointLimitActivationGap(unittest.TestCase):
