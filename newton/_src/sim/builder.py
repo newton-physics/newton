@@ -29,6 +29,7 @@ from ..core._warnings import _external_warning_stacklevel
 from ..core.host_transform import (
     pack_transforms,
     pack_warp_values,
+    quat_rotate_rows,
     store_transform_rows,
     transform_inverse,
     transform_inverse_rows,
@@ -3855,8 +3856,9 @@ class ModelBuilder:
                         # World-fixed offsets need the same placement as static shapes.
                         local = np.array(spec["local_offsets"], dtype=np.float32, copy=True)
                         if xforms[copy_index] is not None:
-                            for point in np.flatnonzero(parents < 0):
-                                local[point] = wp.transform_point(xforms[copy_index], wp.vec3(*local[point]))
+                            xform = np.asarray(xforms[copy_index], dtype=np.float32)
+                            fixed = parents < 0
+                            local[fixed] = quat_rotate_rows(xform[3:], local[fixed]) + xform[:3]
                         merged["local_offsets"] = local
                     if "shape" in spec:
                         merged["shape"] = spec["shape"] + int(starts("shape")[copy_index])
@@ -7882,13 +7884,15 @@ class ModelBuilder:
                 spec["_body_worlds"] = np.asarray(original_body_group, dtype=np.int32)[parents]
             local = np.array(spec["local_offsets"], dtype=np.float32, copy=True)
             remapped = parents.copy()
-            for point, parent in enumerate(parents):
+            for parent in np.unique(parents):
+                selected = parents == parent
                 survivor = parent
                 if parent in body_merged_parent:
                     # The merge transform maps the removed body's local frame to its survivor.
-                    local[point] = wp.transform_point(body_merged_transform[parent], wp.vec3(*local[point]))
+                    xform = np.asarray(body_merged_transform[parent], dtype=np.float32)
+                    local[selected] = quat_rotate_rows(xform[3:], local[selected]) + xform[:3]
                     survivor = body_merged_parent[parent]
-                remapped[point] = body_remap[survivor]
+                remapped[selected] = body_remap[survivor]
             spec["parent"] = remapped
             spec["local_offsets"] = local
 
@@ -13001,9 +13005,15 @@ class ModelBuilder:
         quat = body_q[:, 3:7]  # (x, y, z, w)
         verts = np.asarray(vertices, dtype=np.float64)
 
-        # Nearest body per vertex (the candidate count is small for a cable/rod).
-        dist = np.linalg.norm(verts[:, None, :] - pos[None, :, :], axis=2)
-        nearest = np.argmin(dist, axis=1)
+        # Bound temporary memory by vertex count, not vertices times bodies.
+        nearest = np.zeros(len(verts), dtype=np.int32)
+        best_distance = np.full(len(verts), np.inf)
+        for index, origin in enumerate(pos):
+            delta = verts - origin
+            distance = np.einsum("ij,ij->i", delta, delta)
+            closer = distance < best_distance  # Equal distances keep the first candidate.
+            nearest[closer] = index
+            best_distance[closer] = distance[closer]
         parent = bodies[nearest].astype(np.int32)
 
         # local_offset = conjugate(q) rotated (vertex - body_pos)

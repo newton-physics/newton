@@ -318,6 +318,7 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
                 self.assertEqual(model.body_count, 0 if fixed_to_world else 1)
 
                 scene = newton.ModelBuilder()
+                scene.add_body(xform=wp.transform((100.0, 0.0, 0.0), wp.quat_identity()))
                 scene.replicate(
                     builder, 2, xforms=[wp.transform_identity(), wp.transform((0.0, 0.0, 4.0), wp.quat_identity())]
                 )
@@ -328,6 +329,19 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
                     output.points.numpy(), np.vstack((vertices, vertices + np.array([0, 0, 4]))), tol=1.0e-6
                 )
                 self.assertEqual([mesh.world for mesh in replicated.deformable_visual_meshes], [0, 1])
+
+    def test_body_binding_keeps_candidate_order_for_ties(self):
+        """Nearest origins select the first candidate, retaining rotated offsets."""
+        builder = newton.ModelBuilder()
+        left = builder.add_body(xform=wp.transform((-1, 0, 0), wp.quat_identity()))
+        right = builder.add_body(xform=wp.transform((1, 0, 0), wp.quat_from_axis_angle(wp.vec3(0, 0, 1), math.pi / 2)))
+        points = np.array([[0, 1, 0], [-0.5, 0, 0], [0.5, 0, 1]], dtype=np.float32)
+        builder.add_deformable_visual_mesh(points, [0, 1, 2], kind="body", bodies=[right, left])
+        model = builder.finalize(device="cpu")
+        mesh = model.deformable_visual_meshes[0]
+        np.testing.assert_array_equal(mesh.parent.numpy(), [right, left, right])
+        np.testing.assert_allclose(mesh.local_offsets.numpy(), [[1, 1, 0], [0.5, 0, 0], [0, 0.5, 1]], atol=1e-6)
+        np.testing.assert_allclose(_skin(model, mesh, model.state()), points, atol=1e-6)
 
     def test_triangle_embedding_uses_closest_edges_and_corners(self):
         """Euclidean projection must not become independent barycentric clamping."""
