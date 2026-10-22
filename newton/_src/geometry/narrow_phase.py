@@ -12,7 +12,6 @@ import warp as wp
 from ..core.types import MAXVAL, Devicelike
 from ..geometry.collision_convex import ConvexQueryResult, create_write_convex_query_result
 from ..geometry.collision_core import (
-    ENABLE_TILE_BVH_QUERY,
     check_infinite_plane_bsphere_overlap,
     compute_bounding_sphere_from_aabb,
     compute_tight_aabb_from_support,
@@ -3553,8 +3552,7 @@ class NarrowPhase:
                 ]
             else:
                 midphase_kernel = narrow_phase_find_mesh_triangle_overlaps_kernel
-                second_dim = self.tile_size_mesh_convex if ENABLE_TILE_BVH_QUERY else 1
-                midphase_dim = [self.num_tile_blocks, second_dim]
+                midphase_dim = [self.num_tile_blocks, self.tile_size_mesh_convex]
                 midphase_inputs = [
                     shape_types,
                     shape_transform,
