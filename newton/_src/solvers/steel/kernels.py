@@ -7787,6 +7787,45 @@ def accumulate_propagation_warmstart_body_impulses(
             wp.atomic_add(propagation_body_impulses, bb, k, propagation_J_b[world, row, k] * impulse)
 
 
+@wp.kernel
+def accumulate_propagation_warmstart_body_impulses_ordered(
+    propagation_constraint_count: wp.array[int],
+    propagation_body_a: wp.array2d[int],
+    propagation_body_b: wp.array2d[int],
+    propagation_J_a: wp.array3d[float],
+    propagation_J_b: wp.array3d[float],
+    propagation_MiJt_a: wp.array3d[float],
+    propagation_MiJt_b: wp.array3d[float],
+    propagation_impulses: wp.array2d[float],
+    propagation_max_constraints: int,
+    # in/out
+    propagation_body_qd: wp.array2d[float],
+    propagation_body_impulses: wp.array2d[float],
+):
+    """Turn the seeded propagation impulses into body twists and pending body impulses, summed in row order.
+
+    One thread per world and twist component walks the rows; a row's bodies belong to the row's world.
+    """
+    world, k = wp.tid()
+    count = wp.min(propagation_constraint_count[world], propagation_max_constraints)
+    for row in range(count):
+        impulse = propagation_impulses[world, row]
+        if impulse == 0.0:
+            continue
+        ba = propagation_body_a[world, row]
+        bb = propagation_body_b[world, row]
+        if ba >= 0:
+            propagation_body_qd[ba, k] = propagation_body_qd[ba, k] + propagation_MiJt_a[world, row, k] * impulse
+            propagation_body_impulses[ba, k] = (
+                propagation_body_impulses[ba, k] + propagation_J_a[world, row, k] * impulse
+            )
+        if bb >= 0:
+            propagation_body_qd[bb, k] = propagation_body_qd[bb, k] + propagation_MiJt_b[world, row, k] * impulse
+            propagation_body_impulses[bb, k] = (
+                propagation_body_impulses[bb, k] + propagation_J_b[world, row, k] * impulse
+            )
+
+
 # Coloring of the propagation contact units ("propagation_colored").
 #
 # Two units conflict when they share a body with a response: their twist updates and deferred
@@ -7856,6 +7895,63 @@ def collect_propagation_units(
     unit_body_a[base + idx] = body_a
     unit_body_b[base + idx] = body_b
     unit_len[base + idx] = contact_slots_needed[c]
+
+
+@wp.kernel(enable_backward=False)
+def collect_propagation_units_ordered(
+    keys: wp.array[int],
+    sorted_contacts: wp.array[int],
+    segment_start: wp.array[int],
+    segment_count: int,
+    contact_path: wp.array[int],
+    contact_shape0: wp.array[int],
+    contact_shape1: wp.array[int],
+    contact_art_a: wp.array[int],
+    contact_art_b: wp.array[int],
+    articulation_response_dof_count: wp.array[int],
+    shape_body: wp.array[int],
+    contact_slots_needed: wp.array[int],
+    propagation_max_constraints: int,
+    # in/out
+    world_unit_cursor: wp.array[int],
+    # outputs
+    unit_contact: wp.array[int],
+    unit_body_a: wp.array[int],
+    unit_body_b: wp.array[int],
+    unit_len: wp.array[int],
+):
+    """Gather the propagation contacts into per-world unit lists in contact-index order.
+
+    Reads the contacts sorted by world and row family; the kept contacts of a world are a prefix
+    of its propagation segment, so a contact's unit index is its position in the segment.
+    """
+    i = wp.tid()
+    key = keys[i]
+    if key >= segment_count:
+        return
+    c = sorted_contacts[i]
+    if contact_path[c] != 2:
+        return
+    world = key // CONTACT_ROW_FAMILIES
+    idx = i - segment_start[key]
+    if idx >= propagation_max_constraints:
+        return
+    base = world * propagation_max_constraints
+    body_a = -1
+    body_b = -1
+    art_a = contact_art_a[c]
+    art_b = contact_art_b[c]
+    shape_a = contact_shape0[c]
+    shape_b = contact_shape1[c]
+    if shape_a >= 0 and art_a >= 0 and articulation_response_dof_count[art_a] > 0:
+        body_a = shape_body[shape_a]
+    if shape_b >= 0 and art_b >= 0 and articulation_response_dof_count[art_b] > 0:
+        body_b = shape_body[shape_b]
+    unit_contact[base + idx] = c
+    unit_body_a[base + idx] = body_a
+    unit_body_b[base + idx] = body_b
+    unit_len[base + idx] = contact_slots_needed[c]
+    wp.atomic_max(world_unit_cursor, world, idx + 1)
 
 
 @wp.kernel(enable_backward=False)
@@ -8060,6 +8156,67 @@ def build_propagation_body_map_partitioned(
                 if slot < max_propagation_bodies:
                     propagation_body_list[world, slot] = bb
                     propagation_body_local_slot[bb] = slot
+
+
+@wp.kernel
+def mark_propagation_bodies(
+    propagation_constraint_count: wp.array[int],
+    propagation_body_a: wp.array2d[int],
+    propagation_body_b: wp.array2d[int],
+    propagation_max_constraints: int,
+    # outputs
+    propagation_body_seen: wp.array[int],
+):
+    """Flag the bodies touched by each world's propagation rows."""
+    world, i = wp.tid()
+    if i >= wp.min(propagation_constraint_count[world], propagation_max_constraints):
+        return
+    body_a = propagation_body_a[world, i]
+    body_b = propagation_body_b[world, i]
+    if body_a >= 0:
+        propagation_body_seen[body_a] = 1
+    if body_b >= 0:
+        propagation_body_seen[body_b] = 1
+
+
+@wp.kernel
+def build_propagation_body_map_ordered(
+    world_body_start: wp.array[int],
+    world_bodies: wp.array[int],
+    propagation_body_seen: wp.array[int],
+    body_to_articulation: wp.array[int],
+    propagation_cache_art_eligible: wp.array[int],
+    partitioned: int,
+    # outputs
+    propagation_body_list: wp.array2d[int],
+    propagation_body_count: wp.array[int],
+    propagation_cache_body_count: wp.array[int],
+    propagation_body_local_slot: wp.array[int],
+):
+    """List each world's flagged bodies by body index, cache-eligible bodies first when ``partitioned``.
+
+    One thread per world walks the world's candidate bodies, so the slots follow body order rather than
+    the order in which GPU threads claim them.
+    """
+    world = wp.tid()
+    start = world_body_start[world]
+    end = world_body_start[world + 1]
+    count = int(0)
+    for pass_index in range(1 + partitioned):
+        want_eligible = 1 - pass_index
+        for i in range(start, end):
+            body = world_bodies[i]
+            if propagation_body_seen[body] == 0:
+                continue
+            if partitioned != 0:
+                if propagation_cache_art_eligible[body_to_articulation[body]] != want_eligible:
+                    continue
+            propagation_body_list[world, count] = body
+            propagation_body_local_slot[body] = count
+            count += 1
+        if pass_index == 0:
+            propagation_cache_body_count[world] = count
+    propagation_body_count[world] = count
 
 
 @wp.kernel

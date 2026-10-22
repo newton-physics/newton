@@ -62,6 +62,7 @@ from .kernels import (
     accumulate_contact_watermark,
     accumulate_group_diag_worlds,
     accumulate_propagation_warmstart_body_impulses,
+    accumulate_propagation_warmstart_body_impulses_ordered,
     accumulate_row_watermarks,
     accumulate_sparse_diagonal_response_diag,
     advance_world_contact_counters,
@@ -88,12 +89,14 @@ from .kernels import (
     build_mf_body_map,
     build_mf_contact_rows,
     build_propagation_body_map,
+    build_propagation_body_map_ordered,
     build_propagation_body_map_partitioned,
     build_propagation_contact_rows,
     cholesky_loop,
     classify_local_solve_worlds,
     clear_local_solve_diag,
     collect_propagation_units,
+    collect_propagation_units_ordered,
     compact_local_pair_candidates,
     compute_com_transforms,
     compute_compact_diagonal_inverse_mass,
@@ -150,6 +153,7 @@ from .kernels import (
     integrate_generalized_joints,
     invert_lower_factor_grouped,
     local_solve_launch_gate,
+    mark_propagation_bodies,
     pgs_solve_loop,
     pgs_solve_mf_loop,
     populate_connect_J_for_size,
@@ -2059,14 +2063,17 @@ class SolverSteel(SolverBase):
                 :ref:`Deterministic Contacts`). A world that overflows a row capacity keeps the rows of its
                 earliest contacts and drops the rest, so unchanged inputs drop the same contacts every step;
                 overflowed steps remain flagged in :attr:`constraint_overflow`. The mode adds a per-step
-                sort of the contacts by world and row family and 24 bytes of storage per contact slot.
-                Requires ``articulated_contact_response="immediate"``; ``GPU_TO_GPU`` is not supported. Passing
-                an unsupported mode raises :class:`ValueError`. An inherited unsupported mode emits a
+                sort of the contacts by world and row family and 24 bytes of storage per contact slot. With
+                the ``"propagation"`` and ``"propagation_colored"`` responses it also lists each world's
+                contact-active bodies by body index and sums each body's warm-start seed in row order;
+                ``"propagation_colored"`` regroups a world's contact rows by color, an order fixed by the
+                contact set. ``"propagation_fused"`` and ``GPU_TO_GPU`` are not supported. Passing an
+                unsupported mode raises :class:`ValueError`. An inherited unsupported mode emits a
                 :class:`~newton.exceptions.NewtonWarning` and falls back to the strongest supported one:
-                ``GPU_TO_GPU`` runs ``RUN_TO_RUN``, and any mode runs ``NOT_GUARANTEED`` with the propagation
-                responses. :attr:`deterministic` reports the mode that runs, after any fallback. Steel's kernel
-                modules always opt out of Warp's ``deterministic`` module option, so a process-wide
-                ``wp.config.deterministic`` only selects this mode.
+                ``GPU_TO_GPU`` runs ``RUN_TO_RUN``, and any mode runs ``NOT_GUARANTEED`` with
+                ``"propagation_fused"``. :attr:`deterministic` reports the mode that runs, after any fallback.
+                Steel's kernel modules always opt out of Warp's ``deterministic`` module option, so a
+                process-wide ``wp.config.deterministic`` only selects this mode.
         """
         self._kernel_overrides = current_kernel_overrides()
         if contact_compliance:
@@ -2300,10 +2307,10 @@ class SolverSteel(SolverBase):
                 f"got {articulated_contact_response!r}"
             )
         self._articulated_contact_response = articulated_contact_response
-        if articulated_contact_response == "immediate":
-            supported_mode = wp.DeterministicMode.RUN_TO_RUN
-        else:
+        if articulated_contact_response == "propagation_fused":
             supported_mode = wp.DeterministicMode.NOT_GUARANTEED
+        else:
+            supported_mode = wp.DeterministicMode.RUN_TO_RUN
         inherited = deterministic is None
         if inherited:
             deterministic = wp.config.deterministic
@@ -2323,8 +2330,7 @@ class SolverSteel(SolverBase):
             raise ValueError("SolverSteel supports deterministic=RUN_TO_RUN or NOT_GUARANTEED, not GPU_TO_GPU")
         if _DETERMINISM_RANK[deterministic] > _DETERMINISM_RANK[supported_mode]:
             raise ValueError(
-                "deterministic=RUN_TO_RUN requires articulated_contact_response='immediate', "
-                f"got {articulated_contact_response!r}"
+                "deterministic=RUN_TO_RUN does not support articulated_contact_response='propagation_fused'"
             )
         self._deterministic = deterministic
         self._ordered_rows = deterministic == wp.DeterministicMode.RUN_TO_RUN
@@ -9929,6 +9935,22 @@ class SolverSteel(SolverBase):
         for size in self._propagation_cached_warps:
             art_eligible[(plan.response_dof_count == size) & (plan.is_free_rigid == 0)] = 1
         self._propagation_cache_art_eligible = wp.array(art_eligible, dtype=wp.int32, device=device)
+        self._propagation_world_body_start = None
+        self._propagation_world_bodies = None
+        if self._ordered_rows and self._propagation_needs_body_map:
+            # Tree bodies of each solve world's responding articulations, by body index.
+            articulation_start = model.articulation_start.numpy()
+            joint_child = model.joint_child.numpy()
+            world_bodies = [[] for _ in range(worlds)]
+            for art in np.flatnonzero(plan.response_dof_count > 0):
+                tree_joints = slice(int(articulation_start[art]), int(plan.articulation_joint_end[art]))
+                world_bodies[int(plan.articulation_world[art])].extend(joint_child[tree_joints].tolist())
+            world_bodies = [np.unique(np.asarray(listed, dtype=np.int32)) for listed in world_bodies]
+            start = np.concatenate(([0], np.cumsum([listed.size for listed in world_bodies])))
+            self._propagation_world_body_start = wp.array(start, dtype=wp.int32, device=device)
+            self._propagation_world_bodies = wp.array(
+                np.concatenate([*world_bodies, np.zeros(1, dtype=np.int32)]), dtype=wp.int32, device=device
+            )
         if self._propagation_colored:
             self._allocate_colored_buffers(model, rows)
 
@@ -10115,13 +10137,23 @@ class SolverSteel(SolverBase):
         if self._propagation_colored:
             # Color the contacts and move their slots into color order before the rows are built.
             self._color_world_unit_cursor.zero_()
+            if self._ordered_rows:
+                collect_kernel = collect_propagation_units_ordered
+                contact_order = [
+                    self._contact_sort_keys,
+                    self._contact_sort_values,
+                    self._contact_segments[0],
+                    self._contact_segment_count,
+                    self._contact_path,
+                ]
+            else:
+                collect_kernel = collect_propagation_units
+                contact_order = [contacts.rigid_contact_count, self._contact_path, self._contact_world]
             wp.launch(
-                collect_propagation_units,
+                collect_kernel,
                 dim=contacts.rigid_contact_max,
                 inputs=[
-                    contacts.rigid_contact_count,
-                    self._contact_path,
-                    self._contact_world,
+                    *contact_order,
                     contacts.rigid_contact_shape0,
                     contacts.rigid_contact_shape1,
                     self._contact_art_a,
@@ -10220,7 +10252,17 @@ class SolverSteel(SolverBase):
             outputs=[self._propagation_constraint_count],
             device=model.device,
         )
-        if self._propagation_cached_kernels:
+        if self._propagation_world_bodies is not None:
+            self._build_propagation_body_map_ordered(partitioned=bool(self._propagation_cached_kernels))
+            if self._propagation_cached_kernels:
+                wp.launch(
+                    compute_propagation_cache_world_flag,
+                    dim=self._world_count,
+                    inputs=[self._propagation_cache_body_count, self._propagation_cache_max_bodies],
+                    outputs=[self._propagation_cache_world_flag],
+                    device=model.device,
+                )
+        elif self._propagation_cached_kernels:
             # Cache-eligible bodies claim the slot prefix, so free bodies and other articulations
             # take neither cache capacity nor the cached path.
             for want_eligible in (1, 0):
@@ -10273,6 +10315,41 @@ class SolverSteel(SolverBase):
                 ],
                 device=model.device,
             )
+
+    def _build_propagation_body_map_ordered(self, *, partitioned: bool) -> None:
+        """List each world's propagation bodies by body index, independent of thread order."""
+        device = self.model.device
+        wp.launch(
+            mark_propagation_bodies,
+            dim=(self._world_count, self._propagation_max_constraints),
+            inputs=[
+                self._propagation_constraint_count,
+                self._propagation_body_a,
+                self._propagation_body_b,
+                self._propagation_max_constraints,
+            ],
+            outputs=[self._propagation_body_seen],
+            device=device,
+        )
+        wp.launch(
+            build_propagation_body_map_ordered,
+            dim=self._world_count,
+            inputs=[
+                self._propagation_world_body_start,
+                self._propagation_world_bodies,
+                self._propagation_body_seen,
+                self._body_to_articulation,
+                self._propagation_cache_art_eligible,
+                int(partitioned),
+            ],
+            outputs=[
+                self._propagation_body_list,
+                self._propagation_body_count,
+                self._propagation_cache_body_count,
+                self._propagation_body_local_slot,
+            ],
+            device=device,
+        )
 
     def _propagation_setup(self, state_in: State, state_aug: State, dt: float) -> None:
         """Factor the trees, compute the body responses and twists, and the row responses and biases.
@@ -10740,9 +10817,17 @@ class SolverSteel(SolverBase):
     def _apply_propagation_warmstart_velocity(self) -> None:
         """Install the velocity of the seeded propagation impulses into the twists and ``v_out``."""
         self._snapshot_propagation_cache_twists()
+        # Ordered rows sum each body's seeded impulses in row order; the default scatters them atomically.
+        if self._ordered_rows:
+            kernel, dim = accumulate_propagation_warmstart_body_impulses_ordered, (self._world_count, 6)
+        else:
+            kernel, dim = (
+                accumulate_propagation_warmstart_body_impulses,
+                self._world_count * self._propagation_max_constraints,
+            )
         wp.launch(
-            accumulate_propagation_warmstart_body_impulses,
-            dim=self._world_count * self._propagation_max_constraints,
+            kernel,
+            dim=dim,
             inputs=[
                 self._propagation_constraint_count,
                 self._propagation_body_a,
