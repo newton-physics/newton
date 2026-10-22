@@ -45,6 +45,7 @@ from .camera import Camera
 from .gl.frame_cache import FrameCache
 from .gl.icon import set_window_icon
 from .image_logger import ImageLogger, _validate
+from .kernels import detect_shape_color_changes
 from .picking import Picking
 from .plot_logger import PlotLogger
 from .utils import OPAQUE_OPACITY_THRESHOLD
@@ -870,7 +871,8 @@ void main() {
 
         self._add_camera_lights_and_render_product()
         self._apply_ground_material()
-        if self._borrowed_stage is None and not any(layer_id != _DEFAULT_LAYER_ID for layer_id in self._layers):
+        self._use_layered_transform_updates = any(layer_id != _DEFAULT_LAYER_ID for layer_id in self._layers)
+        if self._borrowed_stage is None and not self._use_layered_transform_updates:
             self._prepare_shape_color_materials()
         ovrtx_usd_path = None
         if self._borrowed_stage is None:
@@ -939,7 +941,6 @@ void main() {
                 self._destroy_ovrtx()
                 raise RuntimeError(f"Failed to create window: {e}") from e
 
-        self._use_layered_transform_updates = any(layer_id != _DEFAULT_LAYER_ID for layer_id in self._layers)
         if self._use_layered_transform_updates:
             self._prim_count = 0
         elif self._borrowed_stage is None:
@@ -1312,6 +1313,8 @@ void main() {
 
     @override
     def _populate_shapes(self):
+        self._packed_shape_colors_device = None
+        self._shape_colors_changed_device = None
         # A borrowed stage already contains the model's geometry.
         if self._borrowed_stage is None:
             super()._populate_shapes()
@@ -2307,6 +2310,21 @@ void main() {
             return
         if not any(shapes.colors_changed for shapes in self._shape_instances.values()):
             return
+        if self._packed_shape_colors_device is not None:
+            self._shape_colors_changed_device.zero_()
+            wp.launch(
+                kernel=detect_shape_color_changes,
+                dim=len(self.model_shape_color),
+                inputs=[self.model_shape_color, self._packed_shape_colors_device],
+                outputs=[self._shape_colors_changed_device],
+                device=self.model_shape_color.device,
+                record_tape=False,
+            )
+            # Read only a scalar when the packed colors still match the rendered scene.
+            if not self._shape_colors_changed_device.numpy()[0]:
+                for shapes in self._shape_instances.values():
+                    shapes.colors_changed = False
+                return
         colors = self.model_shape_color.numpy()
         offset = 0
         for shapes in self._shape_instances.values():
@@ -2327,6 +2345,10 @@ void main() {
             tensors = [self._make_laned_array_dltensor(color, lanes=3) for color in batch_colors]
             self._write_runtime_attribute(paths, "primvars:displayColor", tensors, is_array=True)
             self._instance_specs[name] = (previous[0], previous[1], (batch_colors.copy(), *previous[2][1:]))
+        if self._packed_shape_colors_device is None:
+            self._packed_shape_colors_device = wp.empty_like(self.model_shape_color)
+            self._shape_colors_changed_device = wp.zeros(1, dtype=wp.int32, device=self.model_shape_color.device)
+        wp.copy(self._packed_shape_colors_device, self.model_shape_color)
 
     def _update_ovrtx_instance_visibility(self):
         if self._rtx is None:
@@ -2899,6 +2921,8 @@ void main() {
         self._prim_world = None
         self._prim_matrices = None
         self._use_layered_transform_updates = False
+        self._packed_shape_colors_device = None
+        self._shape_colors_changed_device = None
 
         self._last_state = None
         self._last_control = None
