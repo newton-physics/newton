@@ -1,1 +1,0 @@
-Fix `SolverImplicitMPM` failing on dense and fixed grids with capped particle strain bases (`picN`), which assumed one strain node per particle when assigning node volumes and transferring point warm starts.

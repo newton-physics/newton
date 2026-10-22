@@ -1,1 +1,0 @@
-Activate implicit MPM particle contacts (`pic*` collider bases) within 0.25 voxels of colliders and let them close the remaining gap within the step instead of stopping material before it reaches the surface. Collider adhesion acts on these contacts once they touch. Grid-based collider nodes keep enforcing the full contact condition. No changes are required.
