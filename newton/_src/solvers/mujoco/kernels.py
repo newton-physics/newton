@@ -3292,7 +3292,8 @@ def update_pair_properties_kernel(
     (solref, solimp, margin, gap, friction) from Newton custom attributes.
     ``mjc_pair_to_newton_pair`` resolves each slot to the Newton row that produced
     it, so a slot is read by the world that authored it: template-world rows are
-    offset per world, global rows are read by every world at their absolute index.
+    resolved by rank within each world, global rows are read by every world at
+    their absolute index.
     An unmapped slot is -1 and is left at MuJoCo's own value.
     """
     world, mjc_pair = wp.tid()

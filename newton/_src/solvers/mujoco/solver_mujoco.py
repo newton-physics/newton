@@ -4562,10 +4562,9 @@ class SolverMuJoCo(SolverBase, CouplingInterface):
         """Mapping from MuJoCo [world, pair] to Newton contact pair row index.
 
         Records, for every ``spec.add_pair()`` in :meth:`_init_pairs`, which Newton
-        ``mujoco:pair_*`` row produced that MuJoCo pair. Template-world rows are
-        offset per world, so each world reads its own replicated row; global rows
-        (``pair_world`` < 0) are read at their absolute index by every world. A value
-        of -1 indicates an unmapped slot.
+        ``mujoco:pair_*`` row produced that MuJoCo pair.         Template-world rows are resolved by rank within each world, so each world
+        reads its own replicated row; global rows (``pair_world`` < 0) are read at
+        their absolute index by every world. A value of -1 indicates an unmapped slot.
 
         Shape [nworld, npair], dtype int32."""
         self._mjc_pair_to_newton_pair_dict: dict[int, int] = {}
