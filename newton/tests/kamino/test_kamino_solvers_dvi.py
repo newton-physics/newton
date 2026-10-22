@@ -1281,7 +1281,7 @@ class TestDVISolver(NewtonTestCase):
     def test_03d_dvi_direct_block_honors_per_world_iteration_counts(self):
         """Honor each world's projected and bilateral iteration schedule."""
         builder = newton.ModelBuilder()
-        builder.replicate(builder=basics.build_boxes_hinged(), world_count=3)
+        builder.replicate(builder=basics.build_boxes_hinged(), copy_count=3)
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
             model=model,
@@ -1383,7 +1383,7 @@ class TestDVISolver(NewtonTestCase):
     def test_03d1_sparse_dvi_honors_per_world_bilateral_intervals(self):
         """Restrict sparse bilateral re-solves to each world's configured interval."""
         builder = newton.ModelBuilder()
-        builder.replicate(builder=basics.build_boxes_hinged(), world_count=2)
+        builder.replicate(builder=basics.build_boxes_hinged(), copy_count=2)
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
             model=model,
@@ -2233,7 +2233,7 @@ class TestDVISolver(NewtonTestCase):
 
     def test_05_dvi_solve_multi_world_contacts(self):
         builder = newton.ModelBuilder()
-        builder.replicate(builder=basics.build_box_on_plane(ground=True), world_count=4)
+        builder.replicate(builder=basics.build_box_on_plane(ground=True), copy_count=4)
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
             model=model,
@@ -2264,7 +2264,7 @@ class TestDVISolver(NewtonTestCase):
         """Verify dense and sparse DVI map packed contacts to raw topology."""
         for sparse in (False, True):
             builder = newton.ModelBuilder()
-            builder.replicate(builder=basics.build_box_on_plane(ground=True), world_count=8)
+            builder.replicate(builder=basics.build_box_on_plane(ground=True), copy_count=8)
             model = ModelKamino.from_newton(builder.finalize(device=self.device))
             model, data, state, limits, detector, jacobians = make_containers(
                 model=model,
@@ -2319,7 +2319,7 @@ class TestDVISolver(NewtonTestCase):
         for sparse in (False, True):
             with self.subTest(sparse=sparse):
                 builder = newton.ModelBuilder()
-                builder.replicate(builder=_build_five_box_stack(), world_count=4)
+                builder.replicate(builder=_build_five_box_stack(), copy_count=4)
                 model = ModelKamino.from_newton(builder.finalize(device=self.device))
                 model, data, state, limits, detector, jacobians = make_containers(
                     model=model,
@@ -2669,7 +2669,7 @@ class TestDVISolver(NewtonTestCase):
 
     def test_06a_dvi_masked_reset_preserves_unselected_worlds(self):
         builder = newton.ModelBuilder()
-        builder.replicate(basics.build_box_on_plane(ground=True), world_count=3)
+        builder.replicate(basics.build_box_on_plane(ground=True), copy_count=3)
         model = ModelKamino.from_newton(builder.finalize(device=self.device))
         model, data, state, limits, detector, jacobians = make_containers(
             model=model,
