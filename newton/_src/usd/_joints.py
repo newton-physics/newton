@@ -599,7 +599,6 @@ def parse_merged_joints(
     angular_initial_vel: list[float | None] = []
     enabled_count = 0
     collision_filter_parent = False
-    collision_enabled_authored = False
 
     # Find the first enabled joint to use as representative for transforms and metadata
     first_desc = None
@@ -671,11 +670,11 @@ def parse_merged_joints(
         jd = joint_descriptions[jp]
         if not jd.jointEnabled and only_load_enabled_joints:
             continue
-        collision_filter_parent = collision_filter_parent or not jd.collisionEnabled
-        collision_enabled_authored = collision_enabled_authored or _collision_enabled_authored(
-            stage.GetPrimAtPath(jd.primPath)
-        )
         jp_prim = stage.GetPrimAtPath(jd.primPath)
+        # the merged joint filters if any sibling does, each resolved against the scene flag
+        collision_filter_parent = collision_filter_parent or _joint_filters_parent(
+            jp_prim, jd, False, scene_filter_parent
+        )
         if collect_schema_attrs:
             R.collect_prim_attrs(jp_prim)
 
@@ -810,8 +809,7 @@ def parse_merged_joints(
         parent_xform=parent_tf,
         child_xform=child_tf,
         label=label,
-        collision_filter_parent=parent_id != -1
-        and (collision_filter_parent if collision_enabled_authored else scene_filter_parent),
+        collision_filter_parent=parent_id != -1 and collision_filter_parent,
         enabled=first_desc.jointEnabled,
         custom_attributes=joint_custom_attrs,
     )
