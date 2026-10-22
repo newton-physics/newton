@@ -493,7 +493,7 @@ class TestModelView(unittest.TestCase):
         self.assertEqual(self.model.body_mass.shape[0], 2)
 
     def test_control_uses_view_joint_arrays(self):
-        """Controls created from a view should use the view's joint arrays."""
+        """Create controls from the view's joint arrays."""
         view = ModelView(self.model, "test")
         view.joint_dof_count = 6
         view.joint_f = wp.full(6, 2.0, dtype=float, device="cpu")
@@ -1550,7 +1550,7 @@ class TestSolverCoupledBasic(unittest.TestCase):
         )
         template.add_articulation([root, shoulder, elbow])
         builder = newton.ModelBuilder()
-        builder.replicate(template, world_count=world_count)
+        builder.replicate(template, world_count)
         model = builder.finalize(device="cpu")
 
         bpw, jpw = template.body_count, template.joint_count
