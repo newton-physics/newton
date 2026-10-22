@@ -47,24 +47,10 @@ An actuator is composed from three building blocks, applied in this order:
 **Input processors**
    Optionally transform the inputs of the drive: the simulation state it
    reads (positions, velocities) and the commands (control targets and
-   feedforward terms).  Processors run in list order; each one receives the
-   inputs returned by the previous one.
-
-   :class:`InputProcessorDelay` delays command inputs by *N* actuator timesteps, modeling
-   communication or processing latency.  The delay always produces output;
-   when the buffer is empty or a DOF has ``delay_steps == 0``, the current
-   command inputs are used directly.  When underfilled, the lag is clamped
-   to the available history so the oldest available entry is returned.
-
-   :class:`InputProcessorBacklash` models an encoder on the link side of a
-   backlash joint.  The backlash itself is a passive joint with a small
-   motion range, placed in series between the actuated joint and the link;
-   the solver handles the dead zone.  The drive reads the sum of the actuated
-   and the backlash joint positions; the velocity stays that of the actuated
-   joint.
-
-   In USD, processors keep the order of the actuator prim's ``apiSchemas``,
-   and a joint parameter is a relationship, e.g. ``rel newton:backlashJoint``.
+   feedforward terms) — for example a command delay or an encoder on the
+   link side of a backlash joint.  Multiple input processors can be combined
+   on a single actuator.  See the individual input processor class
+   documentation for details.
 
 **Drive**
    Computes raw actuator effort [N or N·m] from the current simulator state
@@ -203,13 +189,12 @@ reusable from a custom simulator or test harness:
 Stateful Actuators
 ------------------
 
-Drives that maintain internal state (e.g. :class:`DrivePID` with an
-integral accumulator, :class:`DriveNeuralGRU` with hidden state, or
-:class:`DriveNeuralLSTM` with hidden/cell state) and
-actuators with stateful input processors (e.g. :class:`InputProcessorDelay`)
-require explicit double-buffered state management.  Create two state objects
-with :meth:`Actuator.state` and swap them
-after each step:
+An actuator whose drive or input processors keep internal state requires
+explicit double-buffered state management.  Stateful drives are, e.g.,
+:class:`DrivePID` with an integral accumulator, :class:`DriveNeuralGRU` with
+hidden state, and :class:`DriveNeuralLSTM` with hidden/cell state; a stateful
+input processor is, e.g., :class:`InputProcessorDelay`.  Create two state
+objects with :meth:`Actuator.state` and swap them after each step:
 
 .. testcode:: actuator-usage
 
@@ -412,14 +397,6 @@ than the control law nominally asks for. The trade-off is between stability at
 large timesteps with the implicit mode, and fidelity to the requested gains at
 small timesteps with the explicit mode.
 
-With an :class:`~newton.actuators.InputProcessorBacklash`, the drive reads the
-link side of the backlash joint, but the predicted state still uses the
-response of the actuated joint alone. While the backlash gap is open, the
-motor's effort does not reach the link, yet the solve assumes it does, so it
-applies less effort than needed to close the gap.
-:meth:`~newton.actuators.Actuator.set_effort_mode_implicit` warns about this
-combination.
-
 The implicit effort mode necessarily requires the joint-space inverse mass
 matrix. This is supplied by a :class:`~newton.actuators.JointSpaceResponse`, which
 is refreshed once per step at the current pose:
@@ -551,20 +528,41 @@ response update can be captured in one CUDA graph.
 explicit mode. :class:`~newton.actuators.Actuator.ImplicitOptions` sets the
 solve's iteration count and convergence tolerances.
 
-The following built-in drives support the implicit mode (neural drives require
-the ONNX backend):
+The following built-in drives support the implicit mode:
 :class:`~newton.actuators.DrivePD`,
 :class:`~newton.actuators.DrivePID`,
 :class:`~newton.actuators.DriveNeuralMLP` and
 :class:`~newton.actuators.DriveNeuralLSTM`.
-
 The neural drives enter the solve as a per-step linearization of the
-network. Its slopes come from a Warp autodiff pass over the loaded network, so
-only the ONNX backend supports them (see :ref:`neural-network-checkpoints`);
-with a Torch checkpoint
+network, whose slopes come from a Warp autodiff pass over the loaded network.
+
+Limitations of the implicit mode.  In the cases marked *error*,
 :meth:`~newton.actuators.Actuator.set_effort_mode_implicit` raises
-``NotImplementedError``. :class:`~newton.actuators.DriveNeuralMLP` also
-needs a single-step input history (``input_idx == [0]``).
+``NotImplementedError`` instead of falling back silently:
+
+* **Other drives** (error), e.g. :class:`~newton.actuators.DriveBAM` and
+  :class:`~newton.actuators.DriveNeuralGRU`: they define no
+  :attr:`~newton.actuators.DriveBase.evaluate_force` law for the solve.
+* **Torch neural checkpoints** (error): the linearization needs Warp autodiff
+  over the network, which only the ONNX backend provides (see
+  :ref:`neural-network-checkpoints`).
+  :class:`~newton.actuators.DriveNeuralMLP` also needs a single-step input
+  history (``input_idx == [0]``).
+* **Differentiable actuators** (error): an actuator built with
+  ``requires_grad=True`` cannot be solved implicitly, because the solve has no
+  adjoint.
+* **Custom inputs without** :meth:`~newton.actuators.DriveBase.prepare_implicit`
+  (error): a drive that declares
+  :attr:`~newton.actuators.DriveBase.custom_inputs` must pass them to the
+  solve, or the solve would ignore them.
+* **Backlash is not modeled** (warning): an actuator with an
+  :class:`~newton.actuators.InputProcessorBacklash` is accepted with a
+  :class:`~newton.exceptions.NewtonWarning`, because the result is only
+  approximate.  The drive reads the link side of the backlash joint, while the
+  solve predicts the end-of-step state from the response of the actuated joint
+  alone.  While the backlash gap is open, the motor's effort does not reach
+  the link, yet the solve assumes it does, so it applies less effort than
+  needed to close the gap.
 
 Differentiability and Graph Capture
 -----------------------------------
@@ -590,9 +588,7 @@ Input processors
 
 * :class:`InputProcessorDelay` — circular-buffer delay for control targets (stateful).
 * :class:`InputProcessorBacklash` — position on the link side of a backlash
-  joint (stateless).  :meth:`~newton.ModelBuilder.add_actuator`
-  takes the backlash joint as a joint index or joint label in
-  ``backlash_joint``.
+  joint (stateless).
 
 Drives
 ^^^^^^
@@ -616,8 +612,7 @@ Battery
 ^^^^^^^
 
 A battery powers one or more actuators, and its voltage sags with their total
-effort.  Batteries belong to actuators, not to DOFs: two actuators on the same
-DOF can draw from different batteries.
+effort.
 
 * :meth:`~newton.ModelBuilder.add_actuator` returns the index of the actuator
   in per-actuator arrays.  :meth:`~newton.ModelBuilder.add_battery` takes these
@@ -638,19 +633,12 @@ DOF can draw from different batteries.
   batteries or of the batteries in the worlds of a mask.  Batteries added
   outside any world are reset only without a mask.
 
-:class:`DriveBAM` with ``supply_from_control=True`` reads
-``actuator_supply_voltage`` instead of ``vin``; it declares it in
+:class:`DriveBAM` with ``supply_from_control=True`` reads its supply voltage
+from ``control.actuator_supply_voltage``.  The drive lists this array in its
 :attr:`DriveBase.custom_inputs` with the per-actuator frequency
 ``"actuator:actuator"``.
 :meth:`~newton.ModelBuilder.finalize` warns when such an actuator has no
 battery, since its supply voltage stays 0 V.
-
-In USD, a ``NewtonBattery`` prim authors ``newton:nominalVoltage``,
-``newton:sagGain`` and ``newton:minVoltage``, and each ``NewtonActuator`` that
-draws from it names it in its ``newton:battery`` relationship.
-:meth:`~newton.ModelBuilder.add_usd` adds the battery for those actuators with
-:meth:`~newton.ModelBuilder.add_battery`, and their :class:`DriveBAM` drives
-get ``supply_from_control=True``.
 
 Below, the hip and knee share one battery and the ankle draws from another:
 
