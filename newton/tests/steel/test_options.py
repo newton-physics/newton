@@ -182,7 +182,6 @@ _SOLVES = {
     "matrix_free": {},
     "phased": {"row_schedule": "phased"},
     "propagation": {"articulated_contact_response": "propagation"},
-    "propagation_fused": {"articulated_contact_response": "propagation_fused"},
     "propagation_colored": {"articulated_contact_response": "propagation_colored"},
     "split": {"solve_mode": "split"},
 }
@@ -1198,24 +1197,12 @@ class TestSteelPrivateApi(unittest.TestCase):
                 for response in ("propagation", "propagation_colored"):
                     solver = SolverSteel(cuda_model, articulated_contact_response=response)
                     self.assertEqual(solver.deterministic, mode.RUN_TO_RUN)
-                for inherited in (mode.RUN_TO_RUN, mode.GPU_TO_GPU):
-                    wp.config.deterministic = inherited
-                    with self.assertWarnsRegex(
-                        newton.exceptions.NewtonWarning, "'propagation_fused' supports at most NOT_GUARANTEED"
-                    ):
-                        solver = SolverSteel(cuda_model, articulated_contact_response="propagation_fused")
-                    self.assertEqual(solver.deterministic, mode.NOT_GUARANTEED)
         finally:
             wp.config.deterministic = saved
         with self.assertRaisesRegex(ValueError, "GPU_TO_GPU"):
             SolverSteel(model, solve_mode="split", deterministic=mode.GPU_TO_GPU)
         with self.assertRaises(TypeError):
             SolverSteel(model, solve_mode="split", deterministic=True)
-        if cuda_model is not None:
-            with self.assertRaisesRegex(
-                ValueError, "does not support articulated_contact_response='propagation_fused'"
-            ):
-                SolverSteel(cuda_model, deterministic=mode.RUN_TO_RUN, articulated_contact_response="propagation_fused")
 
     def test_step_option_assignment_validates_like_the_constructor(self):
         """Reject invalid step-option assignments, keep the previous value, and normalize valid ones."""
