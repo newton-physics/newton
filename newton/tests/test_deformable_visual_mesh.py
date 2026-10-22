@@ -3,6 +3,7 @@
 
 """Tests for deformable visual meshes: binding kinds, ownership, validation, skinning."""
 
+import contextlib
 import math
 import os
 import tempfile
@@ -18,6 +19,7 @@ import warp as wp
 import newton
 from newton._src.sim.deformable_visual import compute_deformable_visual_mesh_normals, skin_deformable_visual_mesh
 from newton._src.utils.import_usd_deformable_visual import _sim_bind_positions
+from newton._src.viewer.viewer_file import HAS_CBOR2
 from newton.examples.sensors.example_deformable_visual_mesh_camera import (
     Example as DeformableVisualMeshCameraExample,
 )
@@ -376,6 +378,8 @@ class TestDeformableVisualMeshBindings(unittest.TestCase):
         mesh = model.deformable_visual_meshes[0]
         np.testing.assert_array_equal(mesh.parent.numpy(), [0, 0, 0])
         assert_np_equal(_skin(model, mesh, model.state()), np.array([[1, 0, 0], [1.01, 0, 0], [1, 0, 0]]), tol=1.0e-6)
+        with self.assertRaisesRegex(ValueError, "degenerate"):
+            builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind="triangle", tri_range=(2, 3))
 
     def test_automatic_binding_preserves_ties_and_thin_elements(self):
         """Equal candidates choose the first parent, including thin or inverted elements."""
@@ -825,10 +829,10 @@ class TestDeformableVisualMeshValidation(unittest.TestCase):
 
     def test_rejects_nonunit_precomputed_weights(self):
         """Reject weights that would scale translations or collapse visual points."""
+        builder = self._soft_builder()
         for kind, arity in (("triangle", 3), ("tet", 4)):
             for total in (0.0, 0.5, 2.0):
                 with self.subTest(kind=kind, total=total):
-                    builder = self._soft_builder()
                     options = {"tri_range" if kind == "triangle" else "tet_range": (0, 1)}
                     with self.assertRaisesRegex(ValueError, "sum to one"):
                         builder.add_deformable_visual_mesh(
@@ -845,16 +849,38 @@ class TestDeformableVisualMeshValidation(unittest.TestCase):
         """Drivers spanning two replicated worlds raise when the model is built."""
         source = newton.ModelBuilder()
         _add_cloth(source)
-        n = source.particle_count
-        builder = newton.ModelBuilder()
-        builder.replicate(source, 2)
-        verts = np.zeros((4, 3), dtype=np.float32)
-        # One driver from world 0, three from world 1.
-        builder.add_deformable_visual_mesh(
-            verts, _QUAD, kind="particle", particles=[0, n, n + 1, n + 2], label="crossworld"
+        _add_soft(source)
+        source.add_body()
+        vertices = np.array([[0, 0, 0], [10, 0, 0], [10, 1, 0]], dtype=np.float32)
+        modes = (
+            ("particle", {"particles": [0, source.particle_count, source.particle_count + 1]}),
+            (
+                "triangle",
+                {
+                    "tri_range": (0, 2 * source.tri_count),
+                    "parent": [0, source.tri_count, source.tri_count],
+                    "weights": [[1, 0, 0]] * 3,
+                },
+            ),
+            (
+                "tet",
+                {
+                    "tet_range": (0, 2 * source.tet_count),
+                    "parent": [0, source.tet_count, source.tet_count],
+                    "weights": [[1, 0, 0, 0]] * 3,
+                },
+            ),
+            ("body", {"bodies": [0, 1]}),
         )
-        with self.assertRaisesRegex(ValueError, "single world"):
-            builder.finalize()
+        for kind, options in modes:
+            with self.subTest(kind=kind):
+                builder = newton.ModelBuilder()
+                builder.replicate(
+                    source, 2, xforms=[wp.transform_identity(), wp.transform((10, 0, 0), wp.quat_identity())]
+                )
+                builder.add_deformable_visual_mesh(vertices, [0, 1, 2], kind=kind, **options)
+                with self.assertRaisesRegex(ValueError, "single world"):
+                    builder.finalize(device="cpu")
 
     def test_replicate_validates_visual_namespace_arguments(self):
         """Require one destination namespace per world and a paired source namespace."""
@@ -1173,6 +1199,8 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
             moved[n:, 2] += 1.0
             state.particle_q.assign(moved)
             for suffix in ("json", "bin"):
+                if suffix == "bin" and not HAS_CBOR2:
+                    continue
                 with self.subTest(format=suffix):
                     file_path = str(Path(directory) / f"recording.{suffix}")
                     recorder = ViewerFile(file_path, auto_save=False)
@@ -1206,7 +1234,11 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
         from newton._src.viewer.gl.opengl import RendererGL  # noqa: PLC0415
         from newton.tests.test_viewer_get_frame import _make_headless_viewer_gl_or_skip  # noqa: PLC0415
 
-        with wp.ScopedDevice("cpu"), tempfile.TemporaryDirectory() as directory:
+        with (
+            wp.ScopedDevice("cpu"),
+            tempfile.TemporaryDirectory() as directory,
+            contextlib.closing(_make_headless_viewer_gl_or_skip(self)) as viewer,
+        ):
             texture = np.zeros((2, 2, 3), dtype=np.uint8)
             texture[:, :, 0] = 255
             path = Path(directory) / "texture.ppm"
@@ -1226,67 +1258,57 @@ class TestDeformableVisualMeshViewer(unittest.TestCase):
                         texture=source,
                     )
                     model = builder.finalize()
-                    viewer = _make_headless_viewer_gl_or_skip(self)
-                    try:
-                        viewer.set_model(model)
-                        viewer.show_particles = False
-                        state = model.state()
+                    viewer.set_model(model)
+                    viewer.show_particles = False
+                    state = model.state()
+                    with mock.patch.object(RendererGL.gl, "glTexImage2D", wraps=RendererGL.gl.glTexImage2D) as upload:
+                        for visible in (True, True, False, True):
+                            viewer.show_deformable_visual_meshes = visible
+                            viewer.log_state(state)
+                        self.assertEqual(upload.call_count, 1)
+                        viewer.show_deformable_visual_meshes = False
+                        viewer.log_state(state)
                         with mock.patch.object(
-                            RendererGL.gl, "glTexImage2D", wraps=RendererGL.gl.glTexImage2D
-                        ) as upload:
-                            for visible in (True, True, False, True):
-                                viewer.show_deformable_visual_meshes = visible
-                                viewer.log_state(state)
-                            self.assertEqual(upload.call_count, 1)
-                            viewer.show_deformable_visual_meshes = False
+                            RendererGL.gl, "glBufferData", wraps=RendererGL.gl.glBufferData
+                        ) as geometry_upload:
                             viewer.log_state(state)
-                            with mock.patch.object(
-                                RendererGL.gl, "glBufferData", wraps=RendererGL.gl.glBufferData
-                            ) as geometry_upload:
-                                viewer.log_state(state)
-                                viewer.log_state(state)
-                                self.assertEqual(geometry_upload.call_count, 0)
-                            viewer.show_deformable_visual_meshes = True
                             viewer.log_state(state)
+                            self.assertEqual(geometry_upload.call_count, 0)
+                        viewer.show_deformable_visual_meshes = True
+                        viewer.log_state(state)
 
-                            mesh = model.deformable_visual_meshes[0]
-                            replacement = np.zeros((2, 2, 3), dtype=np.uint8)
-                            mesh.texture = replacement
+                        mesh = model.deformable_visual_meshes[0]
+                        replacement = np.zeros((2, 2, 3), dtype=np.uint8)
+                        mesh.texture = replacement
+                        viewer.log_state(state)
+                        self.assertEqual(upload.call_count, 2)
+                        mesh.texture = None
+                        viewer.log_state(state)
+                        self.assertEqual(upload.call_count, 2)
+                        viewer.log_mesh("ordinary", mesh.rest_vertices, mesh.indices, uvs=mesh.uvs, texture=replacement)
+                        replacement[:] = 127
+                        viewer.log_mesh("ordinary", mesh.rest_vertices, mesh.indices, uvs=mesh.uvs, texture=replacement)
+                        self.assertEqual(upload.call_count, 4)
+                        mesh.texture = source
+                        viewer.set_model(model)
+                        viewer.log_state(state)
+                        self.assertEqual(upload.call_count, 5)
+                        mesh.texture = str(Path(directory) / "missing.png")
+                        with self.assertWarnsRegex(NewtonWarning, "Failed to load texture"):
                             viewer.log_state(state)
-                            self.assertEqual(upload.call_count, 2)
-                            mesh.texture = None
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("error")
                             viewer.log_state(state)
-                            self.assertEqual(upload.call_count, 2)
-                            viewer.log_mesh(
-                                "ordinary", mesh.rest_vertices, mesh.indices, uvs=mesh.uvs, texture=replacement
-                            )
-                            replacement[:] = 127
-                            viewer.log_mesh(
-                                "ordinary", mesh.rest_vertices, mesh.indices, uvs=mesh.uvs, texture=replacement
-                            )
-                            self.assertEqual(upload.call_count, 4)
-                            mesh.texture = source
-                            viewer.set_model(model)
                             viewer.log_state(state)
-                            self.assertEqual(upload.call_count, 5)
-                            mesh.texture = str(Path(directory) / "missing.png")
-                            with self.assertWarnsRegex(NewtonWarning, "Failed to load texture"):
-                                viewer.log_state(state)
-                            with warnings.catch_warnings():
-                                warnings.simplefilter("error")
-                                viewer.log_state(state)
-                                viewer.log_state(state)
-                            mesh.texture = source
-                            viewer.set_camera(pos=wp.vec3(0.3, -2.0, 2.0), pitch=-40.0, yaw=90.0)
-                            viewer.show_ground = False
-                            viewer.begin_frame(0.0)
-                            viewer.log_state(state)
-                            viewer.end_frame()
-                            frame = viewer.get_frame().numpy().astype(np.int32)
-                            red = (frame[:, :, 0] > frame[:, :, 1] + 30) & (frame[:, :, 0] > frame[:, :, 2] + 30)
-                            self.assertTrue(red.any(), "The restored visual texture must be sampled by the shader")
-                    finally:
-                        viewer.close()
+                        mesh.texture = source
+                        viewer.set_camera(pos=wp.vec3(0.3, -2.0, 2.0), pitch=-40.0, yaw=90.0)
+                        viewer.show_ground = False
+                        viewer.begin_frame(0.0)
+                        viewer.log_state(state)
+                        viewer.end_frame()
+                        frame = viewer.get_frame().numpy().astype(np.int32)
+                        red = (frame[:, :, 0] > frame[:, :, 1] + 30) & (frame[:, :, 0] > frame[:, :, 2] + 30)
+                        self.assertTrue(red.any(), "The restored visual texture must be sampled by the shader")
 
 
 class TestDeformableVisualMeshSensor(unittest.TestCase):

@@ -212,6 +212,7 @@ class MeshGL:
         self.indices = None
         self.normals = None  # scratch buffer used during normal recomputation
         self.texture_id = None
+        self._texture_source = None
         self.opacity = 1.0
 
         # Set up vertex attributes in the packed format the shaders expect
@@ -395,7 +396,7 @@ class MeshGL:
     def update_texture(self, texture=None, *, reuse_texture=False):
         # Only immutable model visuals opt in; ordinary log_mesh calls can
         # mutate an image in place and must upload it again.
-        if reuse_texture and texture is getattr(self, "_texture_source", None):
+        if reuse_texture and texture is self._texture_source:
             return
         gl = RendererGL.gl
         texture_image = None
@@ -426,7 +427,6 @@ class MeshGL:
         if not texture_id:
             return
         self.texture_id = texture_id
-        self._texture_source = texture
 
     def render(self):
         if not self.hidden:

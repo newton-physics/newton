@@ -964,6 +964,7 @@ class ViewerGL(ViewerBase):
             opacity,
         )
 
+    @override
     def _log_deformable_visual_mesh(self, name, points, indices, *, hidden=False, **kwargs):
         name = self._qualify(name)
         existing = self.objects.get(name)
