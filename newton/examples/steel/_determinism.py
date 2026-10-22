@@ -46,6 +46,7 @@ class DeterminismExample:
         side_offset: tuple[float, float, float],
         camera: dict,
     ):
+        """Create the four copies of ``scene``, bind each to a viewer layer and capture their frame."""
         self.viewer = viewer
         self.fps = 50
         self.frame_dt = 1.0 / self.fps
@@ -161,6 +162,7 @@ class _SimulationCopy:
         deterministic: bool,
         color: tuple[float, float, float],
     ):
+        """Build the scene on a ground plane with its shapes tinted ``color`` and create the solver and pipeline."""
         self.layer_id = layer_id
         builder = newton.ModelBuilder()
         # The ground plane takes its gap from this builder.
@@ -183,6 +185,7 @@ class _SimulationCopy:
         newton.eval_fk(self.model, self.model.joint_q, self.model.joint_qd, self.state_0)
 
     def step(self, control: newton.Control, dt: float):
+        """Collide and advance this copy by one substep."""
         self.state_0.clear_forces()
         self.collision_pipeline.collide(self.state_0, self.contacts)
         self.solver.step(self.state_0, self.state_1, control, self.contacts, dt)
@@ -191,4 +194,5 @@ class _SimulationCopy:
 
 @wp.kernel(enable_backward=False)
 def _advance_step_index(step_index: wp.array[wp.int32]):
+    """Count the substeps taken, for the device-side control."""
     step_index[0] = step_index[0] + 1
