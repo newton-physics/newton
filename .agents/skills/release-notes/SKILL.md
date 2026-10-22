@@ -93,24 +93,24 @@ on refresh, inspect only changes since that evidence was gathered.
 3. Inspect available evidence, distinguishing source inspection from runtime
    validation. Source tracing can confirm API migrations or documented default
    changes; claims of preserved numerical behavior need relevant runtime evidence.
-   If necessity or behavior preservation is unclear, record the
-   question in a separate internal note or release-audit report, including any
+   If necessity or behavior preservation is unclear, record the question in a
+   separate internal note or release-audit report, including any
    unexplained retuning or relaxed assertions. Ask the release manager to arrange
    targeted QA comparisons of the previous and adapted setups, using the previous
    release as a reference. The release-audit skill does not run these comparisons.
-   Do not rerun them on each notes refresh or present
-   unconfirmed adjustments as upgrade advice. Keep investigation details out of
-   the public release-note draft.
+   Reuse existing QA results on notes refresh unless relevant changes require
+   revalidation. Do not present unconfirmed adjustments as upgrade advice. Keep
+   investigation details out of the public release-note draft.
 4. For confirmed downstream-relevant adaptations, explain who is affected, the
    prior behavior or failure symptom, the required adjustment, and recommended
    revalidation. Include a compact before/after example when useful, the
    originating PR, and a release-tagged example link.
 
-For GitHub Release notes, follow the Style rules below: use the focused sections
-for feature releases and `## Notes` / `## Announcements` for patch releases.
-In internal announcements, include a short upgrade bullet
-and link the public guidance when available. Link an existing upgrade guide if
-useful; drafting notes does not require creating one.
+Place confirmed upgrade guidance according to the Style rules below, including
+`## Notes` for compatibility or migration advice in any release. When confirmed
+upgrade guidance exists, summarize it in an internal-announcement bullet and
+link the public guidance when available. Link an existing upgrade guide if useful;
+drafting notes does not require creating one.
 Passing adapted examples or unchanged examples do not establish numerical
 equivalence, universal compatibility, or that no user action is required.
 
