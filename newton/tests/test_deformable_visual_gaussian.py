@@ -417,6 +417,31 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
         imported_axes = _quat_matrix(imported.rotations[0]) @ np.diag(imported.scales[0])
         np.testing.assert_allclose(imported_axes @ imported_axes.T, expected_covariance, rtol=1.0e-5, atol=1.0e-7)
 
+    def test_rest_shape_does_not_change_initial_visual_covariance(self):
+        """Without a bind pose, render the authored splats despite a different physics rest shape."""
+        from pxr import Sdf
+
+        stage = self._stage()
+        tet = self._add_volume(stage, "/World/Bear")
+        rest = np.asarray(tet.GetPointsAttr().Get()) * 0.5
+        tet.GetPrim().CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(rest.tolist())
+        self._add_gaussian(stage, "/World/Bear/Gaussian", [(0.2, 0.2, 0.2)])
+        builder = newton.ModelBuilder()
+        builder.add_usd(stage)
+        model = builder.finalize(device="cpu")
+        np.testing.assert_allclose(model.tet_poses.numpy()[0], 2.0 * np.eye(3))
+        visuals = model.deformable_visuals()
+        state = model.state()
+        for stretch in (1.0, 1.5):
+            state.particle_q.assign(model.particle_q.numpy() * stretch)
+            model.update_deformable_visuals(state, visuals)
+            transform = visuals.get_gaussian_transforms(0).numpy()[0]
+            scales = visuals.get_gaussian_scales(0).numpy()[0]
+            np.testing.assert_allclose(transform[:3], np.full(3, 0.2 * stretch), atol=1.0e-6)
+            axes = _quat_matrix(transform[3:]) @ np.diag(scales)
+            expected = np.diag((stretch * np.array([0.05, 0.04, 0.03])) ** 2)
+            np.testing.assert_allclose(axes @ axes.T, expected, atol=1.0e-7)
+
     def test_simulation_bind_pose_drives_centers_and_covariance(self):
         """Keep visual reference geometry separate from the simulation's rest tet."""
         from pxr import Sdf, UsdGeom
@@ -433,6 +458,9 @@ class TestDeformableVisualGaussianUSDImport(unittest.TestCase):
                 tet = self._add_volume(stage, "/World/Bear")
                 tet.GetPointsAttr().Set((bind @ motion.T + translation).tolist())
                 prim = tet.GetPrim()
+                prim.CreateAttribute("physics:restShapePoints", Sdf.ValueTypeNames.Point3fArray).Set(
+                    (bind * 0.5).tolist()
+                )
                 prim.AddAppliedSchema("PhysicsDeformablePoseAPI:bind")
                 prim.CreateAttribute("physics:deformablePose:bind:purposes", Sdf.ValueTypeNames.TokenArray).Set(
                     ["bindPose"]
