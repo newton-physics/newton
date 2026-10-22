@@ -83,6 +83,7 @@ class InputProcessorBase:
 
     :meth:`~newton.ModelBuilder.add_actuator` accepts a joint index or a joint
     label for each of these parameters, or ``None`` for the actuated joint.
+    The joint must be a single-DOF joint of the same type as the actuated joint.
     It passes the joint to the constructor as two index arrays:
     ``<name>_indices`` into ``joint_qd``-shaped arrays and
     ``<name>_pos_indices`` into ``joint_q``-shaped arrays.

@@ -2953,8 +2953,11 @@ class _RemapVelocityIndices(InputProcessorBase):
 class TestInputProcessors(unittest.TestCase):
     """Input processors composed through ModelBuilder.add_actuator."""
 
-    def test_add_actuator_rejects_targets_of_other_worlds(self):
-        """The actuated DOF and a backlash joint must belong to the current world or be global."""
+    def test_add_actuator_rejects_invalid_targets(self):
+        """The actuated DOF and a backlash joint must belong to the current world or be global.
+
+        The backlash joint must also have the type of the actuated joint.
+        """
         template = newton.ModelBuilder()
         link = template.add_link()
         template.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
@@ -2971,6 +2974,11 @@ class TestInputProcessors(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "joint index 0 belongs to world 0"):
             builder.add_actuator(
                 DrivePD, index=1, kp=1.0, input_processors=[(InputProcessorBacklash, {"backlash_joint": 0})]
+            )
+        slider = builder.add_joint_prismatic(parent=-1, child=builder.add_link(), axis=newton.Axis.Z)
+        with self.assertRaisesRegex(ValueError, "must have the type of the actuated joint"):
+            builder.add_actuator(
+                DrivePD, index=1, kp=1.0, input_processors=[(InputProcessorBacklash, {"backlash_joint": slider})]
             )
 
     def test_processor_must_keep_vel_indices(self):

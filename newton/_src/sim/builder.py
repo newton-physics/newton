@@ -3264,7 +3264,7 @@ class ModelBuilder:
             ValueError: *index* belongs to another world than the current
                 one, or a joint parameter of an input
                 processor does not identify a single-DOF joint of the current
-                world or a global joint.
+                world or a global joint, of the same type as the actuated joint.
         """
         if controller_class is not _DEPRECATED_ACTUATOR_DRIVE_UNSET:
             if drive_class is not None:
@@ -3333,6 +3333,13 @@ class ModelBuilder:
                     resolved_proc[f"{name}_pos_indices"] = pos_index if pos_index is not None else index
                     continue
                 joint = self._resolve_actuator_joint(joint, proc_class.__name__, name, world=self.current_world)
+                if index < self.joint_dof_count:
+                    actuated = bisect_right(self.joint_qd_start, index) - 1
+                    if self.joint_type[joint] != self.joint_type[actuated]:
+                        raise ValueError(
+                            f"{proc_class.__name__}: '{name}' joint '{self.joint_label[joint]}' must have the type "
+                            f"of the actuated joint '{self.joint_label[actuated]}'"
+                        )
                 resolved_proc[f"{name}_indices"] = self.joint_qd_start[joint]
                 resolved_proc[f"{name}_pos_indices"] = self.joint_q_start[joint]
             proc_shared_names = getattr(proc_class, "SHARED_PARAMS", set())
