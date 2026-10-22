@@ -244,6 +244,22 @@ rendering a loaded model, build its shape BVH with
 :meth:`~newton.Model.bvh_build_shapes` and its particle BVH if particles are
 enabled. See :ref:`usd_parsing` for imported graphics and bind-pose support.
 
+The combined camera example loads ``deformable_visual_mesh_camera.usda``.
+Its scene setup references numeric arrays in the adjacent
+``deformable_visual_mesh_camera_geometry.usdc`` file. Keep both files and
+``deformable_visual_uv_grid.png`` together when copying the asset.
+
+To inspect or edit the geometry, export the binary layer to a temporary text
+layer. Run from the repository root, edit the temporary file, then export it
+back. This preserves USD attribute types and avoids storing two copies of
+the arrays:
+
+.. code-block:: bash
+
+    uv run python -c 'from pxr import Sdf; Sdf.Layer.FindOrOpen("newton/examples/assets/deformable_visual_mesh_camera_geometry.usdc").Export("/tmp/deformable_visual_mesh_camera_geometry.usda")'
+    # Edit /tmp/deformable_visual_mesh_camera_geometry.usda, then:
+    uv run python -c 'from pxr import Sdf; Sdf.Layer.FindOrOpen("/tmp/deformable_visual_mesh_camera_geometry.usda").Export("newton/examples/assets/deformable_visual_mesh_camera_geometry.usdc")'
+
 .. _viewer-live-plots:
 
 Live Plots
