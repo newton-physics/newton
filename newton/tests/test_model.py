@@ -3432,8 +3432,6 @@ class TestModelJoints(unittest.TestCase):
         parent = builder.add_link()
         child = builder.add_link()
 
-        # World-root joints are intentionally allowed without articulation
-        # metadata, so use a non-root joint to exercise orphan validation.
         builder.add_joint_revolute(parent=parent, child=child, label="orphan_joint")
 
         # finalize() should raise ValueError about orphan joints
@@ -3443,16 +3441,29 @@ class TestModelJoints(unittest.TestCase):
         self.assertIn("not belonging to any articulation", str(context.exception))
         self.assertIn("orphan_joint", str(context.exception))
 
-    def test_articulation_validation_allows_standalone_world_root(self):
-        """Test that a standalone world-root joint does not require an articulation."""
+    def test_articulation_validation_rejects_standalone_world_root(self):
+        """Test that a world-root joint outside any articulation is rejected."""
         builder = ModelBuilder()
         body = builder.add_link()
-        joint = builder.add_joint_fixed(parent=-1, child=body, label="standalone_root")
+        builder.add_joint_fixed(parent=-1, child=body, label="standalone_root")
 
-        model = builder.finalize()
+        with self.assertRaises(ValueError) as context:
+            builder.finalize()
 
-        self.assertEqual(model.articulation_count, 0)
-        self.assertEqual(model.joint_articulation.numpy()[joint], -1)
+        self.assertIn("not belonging to any articulation", str(context.exception))
+        self.assertIn("standalone_root", str(context.exception))
+
+    def test_articulation_validation_world_chain_rejected(self):
+        """A two-link chain to world without an articulation is rejected."""
+        builder = newton.ModelBuilder()
+        link_a = builder.add_link()
+        link_b = builder.add_link()
+        builder.add_joint_revolute(parent=-1, child=link_a, label="root_joint")
+        builder.add_joint_revolute(parent=link_a, child=link_b, label="elbow_joint")
+
+        with self.assertRaises(ValueError) as context:
+            builder.finalize()
+        self.assertIn("not belonging to any articulation", str(context.exception))
 
     def test_articulation_validation_multiple_orphan_joints(self):
         """Test error message shows multiple orphan joints."""
@@ -3806,7 +3817,9 @@ class TestModelJoints(unittest.TestCase):
                     builder.add_articulation([reference])
                 if membership == "follower":
                     builder.add_articulation([follower])
-                model = builder.finalize(device="cpu")
+                # Joints outside articulations are rejected by default; this test only
+                # checks that mimic metadata survives finalize.
+                model = builder.finalize(device="cpu", skip_validation_joints=True)
                 np.testing.assert_array_equal(model.joint_mimic_joint.numpy(), [-1, reference])
 
     def test_joint_mimic_validates_dimensions(self):
