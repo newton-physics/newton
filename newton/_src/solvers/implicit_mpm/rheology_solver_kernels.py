@@ -16,11 +16,6 @@ _DELASSUS_PROXIMAL_REG = wp.constant(1.0e-6)
 _SLIDING_NEWTON_TOL = wp.constant(1.0e-7)
 """Tolerance for the Newton method to solve for the sliding velocity"""
 
-_INCLUDE_LEFTOVER_STRAIN = wp.constant(True)
-"""Whether to include leftover strain (due to not fully-converged implicit solve) in the elastic strain.
-
-Enabled by default to preserve the kinematic strain increment when the implicit solve has not fully converged.
-Development toggle for experimentation."""
 
 _USE_CAM_CLAY = wp.constant(False)
 """Use Modified Cam-Clay flow rule instead of the piecewise-linear anisotropic one. Development toggle for experimentation."""
@@ -302,6 +297,7 @@ def postprocess_stress_and_strain(
     strain_rhs: wp.array[vec6],
     stress: wp.array[vec6],
     velocity: wp.array[wp.vec3],
+    include_unconverged_strain: bool,
     elastic_strain: wp.array[vec6],
     plastic_strain: wp.array[vec6],
 ):
@@ -309,7 +305,8 @@ def postprocess_stress_and_strain(
 
     Uses the generic (non-specialized) flow-rule solver to ensure correct
     results regardless of which compile-time flags were active during the
-    iterative solve.
+    iterative solve. With ``include_unconverged_strain``, the elastic strain
+    also receives the flow-rule residual left by an unconverged solve.
     """
     tau_i = wp.tid()
 
@@ -348,7 +345,7 @@ def postprocess_stress_and_strain(
     )
     world_plastic_strain_new = _local_to_world(loc_plastic_strain_new, rot) - offset_strain
 
-    if _INCLUDE_LEFTOVER_STRAIN:
+    if include_unconverged_strain:
         minus_elastic_strain -= world_plastic_strain - world_plastic_strain_new
 
     elastic_strain[tau_i] = -minus_elastic_strain

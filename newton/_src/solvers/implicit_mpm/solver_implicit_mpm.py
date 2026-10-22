@@ -923,6 +923,25 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
         """Maximum number of iterations for the rheology solver."""
         tolerance: float = 1.0e-4
         """Tolerance for the rheology solver."""
+        carry_residual_strain: Literal["none", "unconverged", "sampled"] = "none"
+        """Residual strain carried into the elastic strain, beyond the strain consistent with the solved stress.
+
+        ``"none"`` updates the elastic strain from the solved stress only.
+        ``"unconverged"`` uses the kinematic strain increment minus the plastic strain
+        increment at each strain-basis node, which adds the flow-rule residual left
+        by an unconverged solve. ``"sampled"`` samples ``dt * grad(v)`` minus the
+        plastic strain increment at each particle, which also keeps the strain that
+        the strain basis cannot represent.
+
+        With ``"none"``, soft materials relax when solves stop at ``max_iterations``.
+        The residual modes keep that strain but can destabilize stiff materials at
+        low iteration counts. Use ``"none"`` for stiff materials and ``"unconverged"`` for
+        compliant elastic materials.
+
+        .. experimental::
+
+            The residual strain modes may change without prior notice.
+        """
         solver: _RheologySolverName | Sequence[_RheologySolverName] = "auto"
         """Solver to use for the rheology solver. ``"auto"`` selects ``"gs"``
         for Q1 velocity basis and ``"gs-batched"`` for higher-order bases
@@ -1582,6 +1601,9 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
 
         self.max_iterations = config.max_iterations
         self.tolerance = float(config.tolerance)
+        if config.carry_residual_strain not in ("none", "unconverged", "sampled"):
+            raise ValueError(f"Invalid carry_residual_strain: {config.carry_residual_strain}")
+        self.carry_residual_strain = config.carry_residual_strain
 
         self.temporary_store = temporary_store
         self.verbose = verbose if verbose is not None else wp.config.log_level <= wp.LOG_DEBUG
@@ -3810,7 +3832,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                 dim=node_count,
                 inputs=[M_diag, scratch.elastic_strain_delta_field.dof_values],
             )
-        if self._mpm_model.has_hardening:
+        if self._mpm_model.has_hardening or self.carry_residual_strain == "sampled":
             wp.launch(
                 inverse_scale_sym_tensor,
                 dim=node_count,
@@ -3870,6 +3892,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     if not self.strain_basis.startswith("pic") and _parse_grid_basis_name(self.strain_basis)[2]
                     else 0
                 ),
+                include_unconverged_strain=self.carry_residual_strain == "unconverged",
             )
             contact_temporaries = []
             contact_cell_offsets = None
@@ -3992,6 +4015,7 @@ class SolverImplicitMPM(SolverBase, CouplingInterface):
                     at=pic,
                     values={
                         "dt": dt,
+                        "kinematic_elastic_strain": self.carry_residual_strain == "sampled",
                         "particle_flags": mpm_model.material_particle_flags,
                         "particle_density": mpm_model.particle_density,
                         "particle_volume": mpm_model.material_particle_volume,

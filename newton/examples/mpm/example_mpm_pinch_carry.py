@@ -144,6 +144,7 @@ class Example:
         config.integration_scheme = args.integration_scheme
         config.max_iterations = args.max_iterations
         config.tolerance = args.tolerance
+        config.carry_residual_strain = args.carry_residual_strain
         config.velocity_basis = args.velocity_basis
         config.collider_basis = args.collider_basis
         config.collider_velocity_mode = args.collider_velocity_mode
@@ -371,6 +372,12 @@ class Example:
         parser.add_argument("--collider-basis", type=str, default="pic27")
         parser.add_argument("--max-iterations", "-it", type=int, default=50)
         parser.add_argument("--tolerance", "-tol", type=float, default=1.0e-5)
+        parser.add_argument(
+            "--carry-residual-strain",
+            choices=["none", "unconverged", "sampled"],
+            default="unconverged",
+            help="Keep the strain an unconverged solve leaves; the grip relaxes without it.",
+        )
         parser.add_argument(
             "--gs-colored-contacts",
             action=argparse.BooleanOptionalAction,

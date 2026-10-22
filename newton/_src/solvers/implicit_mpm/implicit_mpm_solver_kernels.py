@@ -427,6 +427,7 @@ def update_particle_strains(
     elastic_strain_delta: fem.Field,
     stress: fem.Field,
     dt: float,
+    kinematic_elastic_strain: bool,
     particle_flags: wp.array[wp.int32],
     particle_density: wp.array[float],
     particle_volume: wp.array[float],
@@ -463,8 +464,12 @@ def update_particle_strains(
     # elastic strain
     prev_strain = elastic_strain_prev[s.qp_index]
     vel_grad = fem.grad(grid_vel, s)
-    skew = 0.5 * dt * (vel_grad - wp.transpose(vel_grad))
-    strain_delta = elastic_strain_delta(s) + skew
+    if kinematic_elastic_strain:
+        # The particle's own strain increment, minus the plastic part, including strain the basis cannot represent
+        strain_delta = dt * vel_grad - p_strain_delta
+    else:
+        skew = 0.5 * dt * (vel_grad - wp.transpose(vel_grad))
+        strain_delta = elastic_strain_delta(s) + skew
 
     # The skew-symmetric part of the velocity gradient is used as a linearized
     # approximation of the finite rotation increment (matches standard deformation gradient update).

@@ -370,6 +370,8 @@ class RheologyData:
         strain_environment_offsets: Strain-node offsets delimiting independent
             environments, shape ``[environment_count + 1]``. ``None`` for a
             single shared solve.
+        include_unconverged_strain: Whether the elastic strain increment
+            includes the flow-rule residual of an unconverged solve.
     """
 
     strain_mat: sp.BsrMatrix
@@ -391,6 +393,7 @@ class RheologyData:
     has_dilatancy: bool = False
     strain_velocity_node_count: int = -1
     strain_nodes_per_cell: int = 0
+    include_unconverged_strain: bool = False
 
 
 @dataclass
@@ -628,6 +631,7 @@ class _DelassusOperator:
                 self.rheology.elastic_strain_delta,
                 self.rheology.stress,
                 self.momentum.velocity,
+                self.rheology.include_unconverged_strain,
             ],
             outputs=[
                 self.rheology.elastic_strain_delta,

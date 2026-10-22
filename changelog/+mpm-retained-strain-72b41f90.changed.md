@@ -1,1 +1,0 @@
-Retain the elastic strain left by an unconverged implicit MPM solve instead of discarding it. Deformation and contact forces can change when solves stop at `max_iterations`; increase `max_iterations` or use more substeps for converged results.
