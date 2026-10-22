@@ -99,13 +99,13 @@ def _build_heterogeneous_model(device):
 
 
 def _build_gradient_model(device):
-    """Build two six-joint articulations for batched FK differentiation."""
+    """Build ordered and reverse-ordered six-joint articulations for FK differentiation."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    for _ in range(2):
+    for reverse in (False, True):
         joints = []
-        parent = -1
-        for axis in (newton.Axis.X, newton.Axis.Y, newton.Axis.Z) * 2:
-            child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
+        bodies = [builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3))) for _ in range(6)]
+        chain = list(zip([-1, *bodies[:-1]], bodies, (newton.Axis.X, newton.Axis.Y, newton.Axis.Z) * 2, strict=True))
+        for parent, child, axis in reversed(chain) if reverse else chain:
             joints.append(
                 builder.add_joint_revolute(
                     parent=parent,
@@ -114,9 +114,8 @@ def _build_gradient_model(device):
                     parent_xform=wp.transform(wp.vec3(0.2, 0.1, 0.3), wp.quat_identity()),
                 )
             )
-            parent = child
         builder.add_articulation(joints)
-    return builder.finalize(device=device, requires_grad=True), parent
+    return builder.finalize(device=device, requires_grad=True), bodies[-1]
 
 
 def _build_loop_model(test, device):
@@ -142,6 +141,7 @@ def _eval_fk_serial(model, state, mask=None, indices=None, body_flag_filter=newt
         inputs=[
             model.articulation_start,
             model.articulation_end,
+            model._fk_joint_order,
             model.articulation_count,
             mask,
             indices,
@@ -297,14 +297,15 @@ def test_empty_articulation_selection(test, device):
 
 
 def test_noncontiguous_bodies_and_external_parent(test, device):
+    """Evaluate reverse-ordered joints with noncontiguous bodies and a preserved external parent."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     external_parent = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
     root = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
     builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
     child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-    root_joint = builder.add_joint_revolute(parent=external_parent, child=root, axis=newton.Axis.Z)
     child_joint = builder.add_joint_revolute(parent=root, child=child, axis=newton.Axis.Y)
-    builder.add_articulation([root_joint, child_joint])
+    root_joint = builder.add_joint_revolute(parent=external_parent, child=root, axis=newton.Axis.Z)
+    builder.add_articulation([child_joint, root_joint])
     model = builder.finalize(device=device)
     model.joint_q.assign(np.array([0.4, -0.2], dtype=np.float32))
     model.joint_qd.assign(np.array([0.7, -0.3], dtype=np.float32))
@@ -315,6 +316,16 @@ def test_noncontiguous_bodies_and_external_parent(test, device):
     _eval_fk_parallel(model, state_parallel)
     assert_np_equal(state_parallel.body_q.numpy(), state_reference.body_q.numpy(), tol=1.0e-6)
     assert_np_equal(state_parallel.body_qd.numpy(), state_reference.body_qd.numpy(), tol=1.0e-6)
+
+    for selected in ([True, True], [True, False]):
+        joint_mask = wp.array(selected, dtype=bool, device=device)
+        state_reference = model.state()
+        _eval_fk_parallel(model, state_reference, joint_mask=joint_mask)
+        for requires_grad in (False, True):
+            state = model.state(requires_grad=requires_grad)
+            newton.eval_fk(model, state.joint_q, state.joint_qd, state, joint_mask=joint_mask)
+            assert_np_equal(state.body_q.numpy(), state_reference.body_q.numpy(), tol=1.0e-6)
+            assert_np_equal(state.body_qd.numpy(), state_reference.body_qd.numpy(), tol=1.0e-6)
 
 
 def test_body_flag_filter(test, device):
@@ -539,9 +550,10 @@ def test_cyclic_articulation_serial_fallback(test, device):
 
 
 def test_wide_level_serial_fallback(test, device):
+    """Visit parents first in a reverse-ordered tree too wide for tiled FK."""
     builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
     root = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
-    joints = [builder.add_joint_revolute(parent=-1, child=root, axis=newton.Axis.Z)]
+    joints = []
     for i in range(FK_TILE_MAX_LEVEL_WIDTH + 1):
         child = builder.add_link(mass=1.0, inertia=wp.mat33(np.eye(3)))
         joints.append(
@@ -552,6 +564,7 @@ def test_wide_level_serial_fallback(test, device):
                 parent_xform=wp.transform(wp.vec3(0.001 * i, 0.0, 0.0), wp.quat_identity()),
             )
         )
+    joints.append(builder.add_joint_revolute(parent=-1, child=root, axis=newton.Axis.Z))
     builder.add_articulation(joints)
     model = builder.finalize(device=device)
     model.joint_q.assign(np.linspace(-0.1, 0.1, model.joint_coord_count, dtype=np.float32))
@@ -564,6 +577,14 @@ def test_wide_level_serial_fallback(test, device):
     newton.eval_fk(model, state_public.joint_q, state_public.joint_qd, state_public)
     assert_np_equal(state_public.body_q.numpy(), state_reference.body_q.numpy(), tol=1.0e-6)
     assert_np_equal(state_public.body_qd.numpy(), state_reference.body_qd.numpy(), tol=1.0e-6)
+
+    q = model.joint_q.numpy()
+    root_pose = wp.transform(wp.vec3(0.0), wp.quat_from_axis_angle(wp.vec3(0.0, 0.0, 1.0), float(q[-1])))
+    child_pose = wp.transform(
+        wp.vec3(0.001 * FK_TILE_MAX_LEVEL_WIDTH, 0.0, 0.0),
+        wp.quat_from_axis_angle(wp.vec3(0.0, 1.0, 0.0), float(q[-2])),
+    )
+    assert_np_equal(state_public.body_q.numpy()[child], np.array(root_pose * child_pose), tol=1.0e-6)
 
 
 def _eval_fk_gradients(
@@ -597,7 +618,7 @@ def test_public_gradients(test, device):
     assert_np_equal(public_qd, serial_qd, tol=2.0e-5)
 
     selected = np.ones(model.joint_count, dtype=bool)
-    selected[[6, 8]] = False  # Preserve a root and an intermediate parent in the last chain.
+    selected[[11, 9]] = False  # Preserve a root and an intermediate parent in the reverse-ordered chain.
     mask = wp.array(selected, dtype=bool, device=device)
     grad_q, grad_qd, state = _eval_fk_gradients(model, body, use_public=True, joint_mask=mask)
     assert_np_equal(grad_q[~selected], np.zeros(2, dtype=np.float32))
