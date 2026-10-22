@@ -1180,6 +1180,8 @@ infinite-mass constraint:
   act through the weld, which yields slightly within each step. Newton's
   output state always reports the prescribed motion.
 
+.. _mujoco-kinematic-switching:
+
 Switching kinematic roots at runtime
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

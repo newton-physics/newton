@@ -454,7 +454,7 @@ kinematic roots with a weld to a target that tracks the prescribed motion. This 
 
 - Only roots that are kinematic in some world when the solver is created can be switched between kinematic and
   dynamic at runtime. To start such a root dynamic, mark it kinematic before creating the solver and switch it to
-  dynamic afterwards.
+  dynamic afterwards (see :ref:`Switching kinematic roots at runtime <mujoco-kinematic-switching>`).
 - Kinematic roots keep their real mass, so contacts on a light kinematic body under a heavy load are softer than an
   infinite-mass collider's.
 - A kinematic root without mass or inertia is driven as a MuJoCo mocap body. It cannot be switched to dynamic, and
