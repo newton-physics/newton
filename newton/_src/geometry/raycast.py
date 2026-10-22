@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 import warp as wp
 
 from ..core import MAXVAL
+from .bvh import BVH_SHAPE_INACTIVE
 from .types import GeoType
 
 if TYPE_CHECKING:
@@ -1014,6 +1015,8 @@ def intersect_ray(
             bvh_shape_id = wp.int32(0)
 
             while wp.bvh_query_next(query, bvh_shape_id, min_dist):
+                if bvh_shape_enabled[bvh_shape_id] == BVH_SHAPE_INACTIVE:
+                    continue
                 shape_id = wp.int32(bvh_shape_enabled[bvh_shape_id])
                 geom_type = shape_type[shape_id]
 
@@ -1060,7 +1063,7 @@ def intersect_ray(
         inputs=[
             model.bvh_shapes.id,
             model.bvh_shapes_group_roots,
-            model.bvh_shape_enabled,
+            model._bvh_shape_active_leaves,
             model.bvh_shape_world_transforms,
             model.shape_type,
             model.shape_scale,

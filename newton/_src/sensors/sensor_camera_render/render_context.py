@@ -491,7 +491,7 @@ class RenderContext:
                     model.bvh_shapes.id if model.bvh_shapes is not None else 0,
                     model.bvh_shapes_group_roots,
                     # Shapes
-                    model.bvh_shape_enabled,
+                    model._bvh_shape_active_leaves,
                     self._get_shape_render_type(),  # HFIELD and CONVEX_MESH remapped to MESH
                     model.shape_scale,
                     model.shape_color,

@@ -436,9 +436,9 @@ support :meth:`~newton.viewer.ViewerBase.notify_model_changed` (``ViewerGL``, ``
 - Contacts must come from :class:`~newton.CollisionPipeline`: ``SolverMuJoCo`` requires
   ``use_mujoco_contacts=False``, ``SolverKamino`` requires ``use_collision_detector=False``, and
   ``SolverImplicitMPM`` is unsupported.
-- After a selection change, the next :meth:`~newton.Model.bvh_refit_shapes` rebuilds the shape BVH
-  used by sensors and ray casts. The rebuild synchronizes with the host, so a CUDA graph that
-  captured the refit must be recaptured.
+- :class:`~newton.sensors.SensorCamera` and :func:`~newton.intersect_ray` skip inactive variant shapes
+  after the next :meth:`~newton.Model.bvh_refit_shapes`. Their BVH leaves remain, so rays near a body
+  also visit its inactive variants. The deprecated ``SensorTiledCamera`` raises for models with variants.
 - ``ViewerUSD``, ``ViewerRerun``, ``ViewerFile``, and ``ViewerRTX`` raise
   :class:`NotImplementedError` when notified of a selection change in a model with variants.
 
