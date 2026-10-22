@@ -944,7 +944,7 @@ class TestControllerJointImpedance(unittest.TestCase):
         builder.add_articulation(
             [builder.add_joint_revolute(parent=-1, child=controlled, axis=wp.vec3(0.0, 0.0, 1.0))], label="robot"
         )
-        model = builder.finalize(device=device)
+        model = builder.finalize(device=device, skip_validation_joints=True)
         with self.assertRaises(ValueError):
             ControllerJointImpedance(
                 model,
