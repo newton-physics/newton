@@ -117,14 +117,14 @@ class DeterminismExample:
     def render(self):
         """Draw both copies of each mode overlaid, the default pair left and the deterministic pair right."""
         self.viewer.begin_frame(self.sim_time)
-        for copies in self.copies.values():
+        for (mode, copies), side in zip(self.copies.items(), ("left", "right"), strict=True):
             for copy in copies:
                 self.viewer.activate(copy.layer_id)
                 self.viewer.log_state(copy.state_0)
-        self.viewer.log_scalar("Default (left), max divergence [mm]", 1.0e3 * self.max_divergence["default"])
-        self.viewer.log_scalar(
-            "Deterministic (right), max divergence [mm]", 1.0e3 * self.max_divergence["deterministic"]
-        )
+            # The plot is named under the active layer, one of this mode's copies.
+            self.viewer.log_scalar(
+                f"{mode.capitalize()} ({side}), max divergence [mm]", 1.0e3 * self.max_divergence[mode]
+            )
         self.viewer.end_frame()
 
     def gui(self, ui):
