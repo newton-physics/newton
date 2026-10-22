@@ -24,12 +24,15 @@ belong to a volume deformable.
 
 from __future__ import annotations
 
+import logging
 import warnings
 
 import numpy as np
 import warp as wp
 
 from .import_usd_deformable_utils import _DeformableImportContext
+
+logger = logging.getLogger(__name__)
 
 
 def _transform_points_np(world_mat, points: np.ndarray) -> np.ndarray:
@@ -279,7 +282,7 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
             spec["sim_path"] = sim_path
             spec["graphics_path"] = path
             if ctx.verbose:
-                print(f"  Embedded visual mesh {path} ({len(world_verts)} verts) in {family} {sim_path}.")
+                logger.info("  Embedded visual mesh %s (%d verts) in %s %s.", path, len(world_verts), family, sim_path)
 
         for prim in ctx.prims.visual_gaussians.get(body_path, ()):
             path = str(prim.GetPath())
@@ -329,4 +332,4 @@ def _deformable_import_visual(ctx: _DeformableImportContext) -> None:
             spec["graphics_path"] = path
             ctx.path_shape_map[path] = spec["shape"]
             if ctx.verbose:
-                print(f"  Embedded Gaussian graphics {path} ({gaussian.count} splats) in volume {sim_path}.")
+                logger.info("  Embedded Gaussian graphics %s (%d splats) in volume %s.", path, gaussian.count, sim_path)

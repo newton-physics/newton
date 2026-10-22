@@ -34,6 +34,14 @@ python -m newton.examples
 
 To install from source with [uv](https://docs.astral.sh/uv/), see the [installation guide](https://newton-physics.github.io/newton/latest/guide/installation.html).
 
+## Community Projects
+
+Explore community solvers, integrations, and applications through the [`newton-physics` topic on GitHub](https://github.com/topics/newton-physics).
+
+To share your own project, add the `newton-physics` topic to your public repository's **About** section. See [GitHub's guide to repository topics](https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/classifying-your-repository-with-topics) for instructions.
+
+Projects opt in by adding the topic; inclusion does not imply endorsement or support by the Newton maintainers. External solvers and extensions are maintained separately from Newton. Check each project's documentation for maturity, compatibility, and support.
+
 ## Examples
 
 Before running the examples below, install Newton with the examples extra:

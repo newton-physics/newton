@@ -298,26 +298,26 @@ def _has_implicit_pd(act_type: int, k_p: float, k_d: float) -> bool:
     ) and (k_p > 0.0 or k_d > 0.0)
 
 
-def _has_missing_implicit_pd_gains(act_type: int, k_p: float, k_d: float) -> bool:
-    """Returns whether an implicit-PD actuation type has no effective gain."""
-    if act_type == JointActuationType.VELOCITY:
-        return k_d == 0.0
-    return (
-        act_type
-        in (
-            JointActuationType.POSITION,
-            JointActuationType.POSITION_VELOCITY,
-            JointActuationType.POSITION_VELOCITY_FORCE,
+def _has_missing_implicit_pd_gains(
+    act_type: int | np.ndarray,
+    k_p: float | np.ndarray,
+    k_d: float | np.ndarray,
+) -> np.bool_ | np.ndarray:
+    """Returns whether implicit-PD actuation types have no effective gain."""
+    missing_velocity_gain = (act_type == JointActuationType.VELOCITY) & (k_d == 0.0)
+    missing_position_gain = (
+        np.isin(
+            act_type,
+            (
+                JointActuationType.POSITION,
+                JointActuationType.POSITION_VELOCITY,
+                JointActuationType.POSITION_VELOCITY_FORCE,
+            ),
         )
-        and k_p == 0.0
-        and k_d == 0.0
+        & (k_p == 0.0)
+        & (k_d == 0.0)
     )
-
-
-def _validate_implicit_pd_gains(act_type: JointActuationType, k_p: float, k_d: float, *, label: str) -> None:
-    """Raises if an implicit-PD actuation type has no effective gain."""
-    if _has_missing_implicit_pd_gains(act_type, k_p, k_d):
-        raise ValueError(f"Invalid implicit-PD actuation: {act_type.name} requires a non-zero gain ({label}).")
+    return missing_velocity_gain | missing_position_gain
 
 
 def _is_bounded_effort_limit(tau_max: float) -> bool:
@@ -363,6 +363,14 @@ def is_bounded_effort_limit_wp(tau_max: float) -> bool:
     # Checking against JOINT_TAUMAX is important, because the Newton ModelBuilder will insert
     # JOINT_TAUMAX as a default value if no effort limit is specified.
     return wp.isfinite(tau_max) and tau_max < JOINT_TAUMAX
+
+
+@wp.func
+def clamp_joint_effort_wp(tau: float, tau_max: float) -> float:
+    """Clamp an actuator command to a bounded effort limit; pass unbounded commands through."""
+    if is_bounded_effort_limit_wp(tau_max):
+        return wp.clamp(tau, -tau_max, tau_max)
+    return tau
 
 
 @wp.func
@@ -1984,11 +1992,11 @@ class JointsData:
     h_j := a_j * dq_j^{-} + dt * tau_j_tot
     dq_b_j := inv_m_j * h_j
     ```
-    For unbounded implicit PD, the joint dynamics constraint includes
-    ``tau_j_tot`` according to the actuation type:
+    For DoFs with armature, viscous damping or unbounded implicit PD, this path
+    assembles ``tau_j_tot`` as follows according to the actuation type:
 
-    - ``PASSIVE``: ``tau_j``
-    - ``FORCE``: ``tau_j + tau_j_ff``
+    - ``PASSIVE``: ``clamp(tau_j, -tau_j_max, tau_j_max)``
+    - ``FORCE``: ``clamp(tau_j + tau_j_ff, -tau_j_max, tau_j_max)``
     - ``POSITION``: ``tau_j + k_p_j * (q_j_ref - q_j^{-})``
     - ``VELOCITY``: ``tau_j + k_d_j * dq_j_ref``
     - ``POSITION_VELOCITY``:

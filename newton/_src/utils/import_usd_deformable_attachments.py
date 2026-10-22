@@ -11,6 +11,7 @@ index remap. Driven by :func:`.import_usd.parse_usd` via a
 
 from __future__ import annotations
 
+import logging
 import math
 import warnings
 from collections.abc import Mapping, Sequence
@@ -18,6 +19,7 @@ from typing import Any
 
 import warp as wp
 
+from ..exceptions import NewtonWarning
 from .import_usd_deformable_utils import (
     _attachment_vec3_list,
     _attachment_vec3_tuples,
@@ -27,6 +29,8 @@ from .import_usd_deformable_utils import (
     _mark_attachment_unsupported,
     _resolve_attachment_target,
 )
+
+logger = logging.getLogger(__name__)
 
 
 def _deformable_import_attachments(ctx: _DeformableImportContext, attachments_in_shared_graphs: set[str]) -> None:
@@ -214,6 +218,7 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, attachments_in
                 warnings.warn(
                     f"{path}: physics:src1 target '{src1}' could not be resolved as an xform; "
                     "skipping that attachment site.",
+                    NewtonWarning,
                     stacklevel=2,
                 )
                 continue
@@ -236,7 +241,7 @@ def _deformable_import_attachments(ctx: _DeformableImportContext, attachments_in
             path_attachment_map[path] = joints
             attrs["joint_indices"] = list(joints)
             if verbose:
-                print(f"Added PhysicsAttachment {path} with {len(joints)} joint(s).")
+                logger.info("Added PhysicsAttachment %s with %s joint(s).", path, len(joints))
 
 
 def _deformable_remap_collapsed(
@@ -275,6 +280,7 @@ def _deformable_remap_collapsed(
                 warnings.warn(
                     f"{path}: joint {j} was removed by collapse_fixed_joints; dropping it from "
                     f"the returned index maps.",
+                    NewtonWarning,
                     stacklevel=3,
                 )
         return remapped
@@ -314,6 +320,7 @@ def _element_collision_filter_groups(
             warnings.warn(
                 f"{filter_path}: PhysicsElementCollisionFilter authors groupElemIndices{which} without "
                 f"groupElemCounts{which}; empty counts select all elements, so the indices are ignored.",
+                NewtonWarning,
                 stacklevel=2,
             )
         return [[]], True  # all elements, paired against every group of the other side
@@ -324,6 +331,7 @@ def _element_collision_filter_groups(
             warnings.warn(
                 f"{filter_path}: PhysicsElementCollisionFilter groupElemCounts{which} has a negative "
                 f"count {count}; skipping.",
+                NewtonWarning,
                 stacklevel=2,
             )
             return None
@@ -334,6 +342,7 @@ def _element_collision_filter_groups(
             warnings.warn(
                 f"{filter_path}: PhysicsElementCollisionFilter groupElemCounts{which} sum exceeds the "
                 f"groupElemIndices{which} length ({len(indices)}); skipping.",
+                NewtonWarning,
                 stacklevel=2,
             )
             return None
@@ -343,6 +352,7 @@ def _element_collision_filter_groups(
         warnings.warn(
             f"{filter_path}: PhysicsElementCollisionFilter groupElemIndices{which} has "
             f"{len(indices) - offset} trailing index(es) not covered by groupElemCounts{which}; skipping.",
+            NewtonWarning,
             stacklevel=2,
         )
         return None
@@ -392,6 +402,7 @@ def _deformable_import_element_collision_filters(ctx: _DeformableImportContext) 
                         warnings.warn(
                             f"{filter_path}: element index {idx} is not an imported segment of cable "
                             f"'{src_path}'; skipping that element.",
+                            NewtonWarning,
                             stacklevel=2,
                         )
                         continue
@@ -413,12 +424,14 @@ def _deformable_import_element_collision_filters(ctx: _DeformableImportContext) 
             warnings.warn(
                 f"{filter_path}: PhysicsElementCollisionFilter on cloth/volume source '{src_path}' is not "
                 "supported (no per-element rigid shapes); skipping.",
+                NewtonWarning,
                 stacklevel=2,
             )
             return None
         warnings.warn(
             f"{filter_path}: PhysicsElementCollisionFilter source '{src_path}' is not an imported "
             "deformable or collider; skipping.",
+            NewtonWarning,
             stacklevel=2,
         )
         return None
@@ -456,6 +469,7 @@ def _deformable_import_element_collision_filters(ctx: _DeformableImportContext) 
                 f"{path}: PhysicsElementCollisionFilter has {len(groups0)} src0 group(s) but "
                 f"{len(groups1)} src1 group(s); groups must pair one-to-one (or a side must author "
                 "no groupElemCounts to pair against all groups); skipping.",
+                NewtonWarning,
                 stacklevel=2,
             )
             continue
@@ -478,4 +492,4 @@ def _deformable_import_element_collision_filters(ctx: _DeformableImportContext) 
         if skip:
             continue
         if verbose:
-            print(f"Applied PhysicsElementCollisionFilter {path}: {len(seen_pairs)} shape pair(s).")
+            logger.info("Applied PhysicsElementCollisionFilter %s: %s shape pair(s).", path, len(seen_pairs))

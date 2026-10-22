@@ -8,6 +8,7 @@ import warnings
 import warp as wp
 
 from ...core.types import override
+from ...exceptions import NewtonDeprecationWarning
 from ...sim import Contacts, Control, JointType, Model, ModelFlags, State, StateFlags
 from ...sim.joint_mimic import has_supported_joint_mimics
 from ..coupled.interface import CouplingInterface
@@ -255,12 +256,12 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
             velocities incrementally. ``True`` temporarily retains the legacy
             full-step velocity reconstruction for compatibility.
         """
-        warnings.warn(_COMPUTE_BODY_VELOCITY_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_COMPUTE_BODY_VELOCITY_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         return self._compute_body_velocity_from_position_delta
 
     @compute_body_velocity_from_position_delta.setter
     def compute_body_velocity_from_position_delta(self, value: bool) -> None:
-        warnings.warn(_COMPUTE_BODY_VELOCITY_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        warnings.warn(_COMPUTE_BODY_VELOCITY_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
         self._compute_body_velocity_from_position_delta = value
 
     @override
@@ -632,12 +633,18 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                     body_q_pre_solve = wp.clone(state_out.body_q)
                     body_qd_pre_solve = wp.clone(state_out.body_qd)
 
+            # Reset multipliers per step; only autodiff needs fresh iteration outputs.
             spring_constraint_lambdas = None
             if model.spring_count:
-                spring_constraint_lambdas = wp.empty_like(model.spring_rest_length)
+                spring_constraint_lambdas = wp.zeros_like(model.spring_rest_length, requires_grad=requires_grad)
             edge_constraint_lambdas = None
             if model.edge_count:
-                edge_constraint_lambdas = wp.empty_like(model.edge_rest_angle)
+                edge_constraint_lambdas = wp.zeros_like(model.edge_rest_angle, requires_grad=requires_grad)
+            tet_constraint_lambdas = None
+            if model.tet_count:
+                tet_constraint_lambdas = wp.zeros(
+                    model.tet_count * 2, dtype=float, device=model.device, requires_grad=requires_grad
+                )
 
             if model.tendon_segment_count > 0 and body_q is not None:
                 self._load_tendon_history(state_in)
@@ -726,7 +733,9 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
 
                         # distance constraints
                         if model.spring_count:
-                            spring_constraint_lambdas.zero_()
+                            spring_constraint_lambdas_next = (
+                                wp.empty_like(spring_constraint_lambdas) if requires_grad else spring_constraint_lambdas
+                            )
                             wp.launch(
                                 kernel=solve_springs,
                                 dim=model.spring_count,
@@ -741,13 +750,16 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                     dt,
                                     spring_constraint_lambdas,
                                 ],
-                                outputs=[particle_deltas],
+                                outputs=[spring_constraint_lambdas_next, particle_deltas],
                                 device=model.device,
                             )
+                            spring_constraint_lambdas = spring_constraint_lambdas_next
 
                         # bending constraints
                         if model.edge_count:
-                            edge_constraint_lambdas.zero_()
+                            edge_constraint_lambdas_next = (
+                                wp.empty_like(edge_constraint_lambdas) if requires_grad else edge_constraint_lambdas
+                            )
                             wp.launch(
                                 kernel=bending_constraint,
                                 dim=model.edge_count,
@@ -761,12 +773,16 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                     dt,
                                     edge_constraint_lambdas,
                                 ],
-                                outputs=[particle_deltas],
+                                outputs=[edge_constraint_lambdas_next, particle_deltas],
                                 device=model.device,
                             )
+                            edge_constraint_lambdas = edge_constraint_lambdas_next
 
                         # tetrahedral FEM
                         if model.tet_count:
+                            tet_constraint_lambdas_next = (
+                                wp.empty_like(tet_constraint_lambdas) if requires_grad else tet_constraint_lambdas
+                            )
                             wp.launch(
                                 kernel=solve_tetrahedra,
                                 dim=model.tet_count,
@@ -780,10 +796,12 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                                     model.tet_materials,
                                     dt,
                                     self.soft_body_relaxation,
+                                    tet_constraint_lambdas,
                                 ],
-                                outputs=[particle_deltas],
+                                outputs=[tet_constraint_lambdas_next, particle_deltas],
                                 device=model.device,
                             )
+                            tet_constraint_lambdas = tet_constraint_lambdas_next
 
                         particle_q, particle_qd = self._apply_particle_deltas(
                             model, state_in, state_out, particle_deltas, dt
@@ -1247,7 +1265,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
                         device=model.device,
                     )
                 if contacts is not None and contacts.force is not None and contacts.force.ptr != contact_f.ptr:
-                    contacts.force.assign(contact_f)
+                    wp.copy(contacts.force, contact_f, count=contacts.force.shape[0])
 
             # Populate optional ``body_parent_f`` (incoming joint
             # wrench per body) from the per-joint accumulated child-side
@@ -1497,7 +1515,7 @@ class SolverXPBD(TendonStateMixin, SolverBase, CouplingInterface):
         warnings.warn(
             "SolverXPBD.update_contacts() is deprecated in Newton 1.7; request SolverBase.ObservableKind.CONTACT_F and pass "
             "SolverBase.Observables to step().",
-            DeprecationWarning,
+            NewtonDeprecationWarning,
             stacklevel=2,
         )
         self._apply_module_options()
