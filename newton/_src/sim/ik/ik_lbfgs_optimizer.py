@@ -294,15 +294,23 @@ class IKOptimizerLBFGS:
             self.joint_S_s = None
 
     def _alloc_line_search_buffers(self, grad: bool, line_search_alphas: Sequence[float]) -> None:
-        """Allocate candidate storage with the same initial body poses as the solver."""
+        """Allocate candidate evaluation buffers with independent adjoints when needed.
+
+        Seed candidate body poses from the model, as for the solver buffers.
+
+        Args:
+            grad: Whether candidate evaluation requires autodiff gradient storage.
+            line_search_alphas: Step-length multipliers for the candidate configurations.
+        """
         device = self.device
         model = self.model
 
         self.line_search_alphas = wp.array(line_search_alphas, dtype=wp.float32, device=device)
 
         self.candidate_q = wp.zeros((self.n_batch, self.n_line_search, self.n_coords), dtype=wp.float32, device=device)
+        # Keep adjoints separate so tape.zero() cannot erase line-search residuals.
         self.candidate_residuals = wp.zeros(
-            (self.n_batch, self.n_line_search, self.n_residuals), dtype=wp.float32, device=device
+            (self.n_batch, self.n_line_search, self.n_residuals), dtype=wp.float32, requires_grad=grad, device=device
         )
         if self.n_line_search > 0:
             self.candidate_problem_idx = wp.zeros((self.n_batch, self.n_line_search), dtype=wp.int32, device=device)

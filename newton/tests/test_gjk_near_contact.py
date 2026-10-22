@@ -14,6 +14,8 @@ from newton._src.geometry.simplex_solver import create_solve_closest_distance
 from newton._src.geometry.support_function import GenericShapeData, SupportMapDataProvider, support_map
 from newton.tests.unittest_utils import add_function_test, get_test_devices
 
+_F32_EPS = float(np.finfo(np.float32).eps)
+
 
 @wp.kernel
 def _query_box_gap(gap: float, direction: float, output: wp.array[float]):
@@ -176,7 +178,7 @@ def _query_pairs_at_cutoffs(
 
 
 def test_positive_sub_tolerance_gap(test, device):
-    """Return positive gaps and oriented unit normals below the 0.1 mm convergence tolerance."""
+    """Return positive gaps and oriented unit normals below the 0.1 mm near-contact threshold."""
     for gap in (1e-3, 1.1e-4, 9.5e-5, 5e-5, 1e-5, 1e-6, 1e-7, 5e-9):
         for direction in (-1.0, 1.0):
             with test.subTest(gap=gap, direction=direction):
@@ -479,8 +481,8 @@ def test_separation_cutoff_matches_exact_query_at_the_boundary(test, device):
     test.assertGreater(float(np.mean(stopped)), 0.5)
 
 
-def test_separation_cutoff_keeps_contact_at_the_exact_boundary(test, device):
-    """Keep the contact of a cylinder pair whose total gap equals its exact float32 distance."""
+def test_separation_cutoff_decides_contact_near_the_boundary(test, device):
+    """Decide the contact of a cylinder pair within float32 rounding of its exact distance."""
     type_a, scale_a, type_b, scale_b, rotation, position = _BOUNDARY_PAIRS[2]
     exact = wp.zeros((1, 1, 11), dtype=float, device=device)
     wp.launch(
@@ -496,23 +498,30 @@ def test_separation_cutoff_keeps_contact_at_the_exact_boundary(test, device):
         outputs=[exact],
         device=device,
     )
-    # The exact query's distance differs by device rounding; on CPU it is 0.1076592430472374.
-    gap = float(exact.numpy()[0, 0, 1])
-    builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
-    cfg = builder.ShapeConfig(gap=0.5 * gap, margin=0.0)
-    body_a = builder.add_body(xform=wp.transform_identity())
-    builder.add_shape_cylinder(body_a, radius=scale_a[0], half_height=scale_a[1], cfg=cfg)
-    body_b = builder.add_body(xform=wp.transform(wp.vec3(*position), wp.quat(*rotation)))
-    builder.add_shape_cylinder(body_b, radius=scale_b[0], half_height=scale_b[1], cfg=cfg)
-    model = builder.finalize(device=device)
-    pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
-    contacts = pipeline.contacts()
-    pipeline.collide(model.state(), contacts)
-    test.assertEqual(int(contacts.rigid_contact_count.numpy()[0]), 1)
+    # On CPU this is 0.1076592430472374; separately compiled CUDA kernels round it differently.
+    distance = float(exact.numpy()[0, 0, 1])
+
+    def contact_count(gap):
+        builder = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
+        cfg = builder.ShapeConfig(gap=0.5 * gap, margin=0.0)
+        body_a = builder.add_body(xform=wp.transform_identity())
+        builder.add_shape_cylinder(body_a, radius=scale_a[0], half_height=scale_a[1], cfg=cfg)
+        body_b = builder.add_body(xform=wp.transform(wp.vec3(*position), wp.quat(*rotation)))
+        builder.add_shape_cylinder(body_b, radius=scale_b[0], half_height=scale_b[1], cfg=cfg)
+        model = builder.finalize(device=device)
+        pipeline = newton.CollisionPipeline(model, broad_phase="nxn")
+        contacts = pipeline.contacts()
+        pipeline.collide(model.state(), contacts)
+        return int(contacts.rigid_contact_count.numpy()[0])
+
+    # Both distances converge only to float32 rounding of the coordinates involved.
+    tolerance = 32.0 * _F32_EPS * (np.abs(position).sum() + sum(scale_a) + sum(scale_b))
+    test.assertEqual(contact_count(distance + tolerance), 1)
+    test.assertEqual(contact_count(distance - tolerance), 0)
 
 
 class TestGJKNearContact(unittest.TestCase):
-    """Preserve geometric separation independently of the convergence tolerance."""
+    """Preserve geometric separation independently of the near-contact threshold."""
 
 
 devices = get_test_devices()
@@ -526,7 +535,7 @@ for _test in (
     test_separation_cutoff_matches_exact_query_within_cutoff,
     test_positional_iteration_arguments_keep_their_meaning,
     test_separation_cutoff_matches_exact_query_at_the_boundary,
-    test_separation_cutoff_keeps_contact_at_the_exact_boundary,
+    test_separation_cutoff_decides_contact_near_the_boundary,
 ):
     add_function_test(TestGJKNearContact, _test.__name__, _test, devices=devices)
 
