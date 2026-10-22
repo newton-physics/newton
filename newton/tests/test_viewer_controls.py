@@ -19,6 +19,7 @@ from newton._src.geometry.sdf_texture import TextureSDFData, create_empty_textur
 from newton._src.geometry.sdf_utils import SDF, SDFData
 from newton._src.viewer.camera import Camera
 from newton._src.viewer.gui.collision import CollisionInspector
+from newton._src.viewer.gui.imgui_backend import ImGuiBackend
 from newton._src.viewer.gui.properties import (
     Assignment,
     Frequency,
@@ -26,15 +27,14 @@ from newton._src.viewer.gui.properties import (
     component_attributes,
     joint_editor_options,
 )
-from newton._src.viewer.gui.ui import UI
 from newton._src.viewer.gui.viewer_gui import ViewerGui
 from newton._src.viewer.gui.workspace import ViewerWorkspace
+from newton._src.viewer.viewer_bindings import InspectionBindings
 from newton._src.viewer.viewer_bvh import _bounds_lines, _query_bounds
 from newton._src.viewer.viewer_gl import ViewerGL
-from newton._src.viewer.viewer_history import WorkspaceHistory
+from newton._src.viewer.viewer_history import FrameHistory
 from newton._src.viewer.viewer_model_tree import ModelTree
 from newton._src.viewer.viewer_null import ViewerNull
-from newton._src.viewer.viewer_session import ViewerSession
 from newton.tests.unittest_utils import patch_sys_module
 
 
@@ -48,7 +48,7 @@ class TestViewerUI(unittest.TestCase):
         context = imgui.create_context()
         self.addCleanup(imgui.destroy_context, context)
         # Exercise ImGui state without an OpenGL renderer or window.
-        self.ui = UI.__new__(UI)
+        self.ui = ImGuiBackend.__new__(ImGuiBackend)
         self.ui.imgui = imgui
         self.ui.giz = imguizmo.im_guizmo
         self.ui.io = imgui.get_io()
@@ -62,7 +62,7 @@ class TestViewerUI(unittest.TestCase):
         """Advance ImGui time by elapsed frame durations, including a repeated timestamp."""
         elapsed = 0.0
         with mock.patch(
-            "newton._src.viewer.gui.ui.perf_counter",
+            "newton._src.viewer.gui.imgui_backend.perf_counter",
             side_effect=[0.0, 0.025, 0.050, 0.060, 0.060],
         ):
             for delta in (1.0 / 60.0, 0.025, 0.025, 0.010, 1e-6):
@@ -710,8 +710,8 @@ class TestViewerProperties(unittest.TestCase):
         self.assertIs(ws.live_state(), state)
         viewer.log_state(historical)
         self.assertIs(ws.live_state(), historical)
-        self.assertIs(ws.session.solver, solver)
-        self.assertEqual(ws.session.collision_pipelines(model), [("Collision pipeline", pipeline)])
+        self.assertIs(ws.bindings.solver, solver)
+        self.assertEqual(ws.bindings.collision_pipelines(model), [("Collision pipeline", pipeline)])
         inspector = PropertyInspector(ws)
         inspector._contexts()
         control_domain = next(domain for domain in inspector.domains if domain.frequency == Frequency.JOINT_COORD)
@@ -725,19 +725,19 @@ class TestViewerProperties(unittest.TestCase):
         # when a conventional example would otherwise supply a fallback.
         replacement = model.control()
         viewer.set_control(replacement)
-        self.assertIs(ws.session.control, replacement)
-        self.assertIs(ws.session.solver, solver)
+        self.assertIs(ws.bindings.control, replacement)
+        self.assertIs(ws.bindings.solver, solver)
         ws.example = SimpleNamespace(model=model, state_0=state, control=control, solver=solver, pipeline=pipeline)
         viewer.set_control(None)
         viewer.set_solver(None)
         viewer.set_collision_pipeline(None)
-        self.assertIsNone(ws.session.control)
-        self.assertIsNone(ws.session.solver)
-        self.assertEqual(ws.session.collision_pipelines(model), [])
+        self.assertIsNone(ws.bindings.control)
+        self.assertIsNone(ws.bindings.solver)
+        self.assertEqual(ws.bindings.collision_pipelines(model), [])
         viewer.set_control(control)
         viewer.set_solver(solver)
         viewer.set_collision_pipeline(pipeline)
-        self.assertIs(ws.session.control, control)
+        self.assertIs(ws.bindings.control, control)
         self.assertTrue(ws._history_compatible)
 
         # Layers retain separate components and logged states. Invalid model
@@ -750,16 +750,16 @@ class TestViewerProperties(unittest.TestCase):
         other_model = builder.finalize(device="cpu")
         viewer.set_model(other_model)
         ws.model = other_model
-        self.assertIsNone(ws.session.control)
+        self.assertIsNone(ws.bindings.control)
         for setter, component in ((viewer.set_solver, solver), (viewer.set_collision_pipeline, pipeline)):
             with self.assertRaisesRegex(ValueError, "active model"):
                 setter(component)
         viewer.set_control(other_model.control())
-        self.assertIsNot(ws.session.control, control)
+        self.assertIsNot(ws.bindings.control, control)
         viewer.activate(original_layer)
         ws.model = model
-        self.assertIs(ws.session.control, control)
-        self.assertIs(ws.session.solver, solver)
+        self.assertIs(ws.bindings.control, control)
+        self.assertIs(ws.bindings.solver, solver)
         self.assertIs(viewer._last_state, historical)
 
         # Another layer can have identical array dimensions but a different
@@ -768,11 +768,11 @@ class TestViewerProperties(unittest.TestCase):
         viewer.set_model(rebuilt)
         ws.model = rebuilt
         ws.example = SimpleNamespace(model=model, state_0=state, control=control)
-        self.assertIsNone(ws.session.control)
+        self.assertIsNone(ws.bindings.control)
         self.assertFalse(ws._history_compatible)
         self.assertIsNone(viewer._last_state)
         ws.model = model
-        self.assertIs(ws.session.control, control)
+        self.assertIs(ws.bindings.control, control)
         self.assertTrue(ws._history_compatible)
 
     def test_element_selection_property_domains(self) -> None:
@@ -815,7 +815,7 @@ class TestViewerProperties(unittest.TestCase):
         )
         model = builder.finalize(device="cpu")
         example = SimpleNamespace(viewer=SimpleNamespace(model=model), render=Mock())
-        history = WorkspaceHistory(example)
+        history = FrameHistory(example)
         self.assertIs(history.model, model)
         history.capture()
         self.assertFalse(history.frames)
@@ -827,7 +827,7 @@ class TestViewerProperties(unittest.TestCase):
         example.state_0 = model.state()
         example.control = model.control()
         example.state_0.solver_scratch = wp.zeros(1, device="cpu")
-        history = WorkspaceHistory(example)
+        history = FrameHistory(example)
         history.capture()
         self.assertNotIn("solver_scratch", history.frames[0].state)
         np.testing.assert_array_equal(history.frames[0].state["probe:sample"], [3.0])
@@ -1078,7 +1078,7 @@ class TestCollisionInspector(unittest.TestCase):
                     selected=None,
                     _at_live_frame=lambda: True,
                 )
-                ws.session = ViewerSession.from_example(ws.example)
+                ws.bindings = InspectionBindings.from_example(ws.example)
                 ws.select = lambda key, workspace=ws: setattr(workspace, "selected", key)
                 inspector = CollisionInspector(ws)
                 # A logged frame takes precedence over an example's other

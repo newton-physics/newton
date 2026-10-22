@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from .viewer_types import ViewerExample
 
 
-class ViewerSession:
+class InspectionBindings:
     """Combine independently supplied components with a conventional example.
 
     References belong to one viewer layer and remain application-owned. State
@@ -45,11 +45,11 @@ class ViewerSession:
     @classmethod
     def from_example(
         cls, example: ViewerExample | None, *, components: Mapping[str, Any] | None = None
-    ) -> ViewerSession:
+    ) -> InspectionBindings:
         """Adapt the example runner's storage convention at one boundary."""
-        session = cls(components=components)
-        session._example = example
-        return session
+        bindings = cls(components=components)
+        bindings._example = example
+        return bindings
 
     def live_state(self, fallback: State | None = None) -> State | None:
         """Resolve the current live state without caching a swapped-out buffer.

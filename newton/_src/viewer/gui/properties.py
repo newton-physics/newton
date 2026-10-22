@@ -20,14 +20,14 @@ from ...sim.model import Model
 from ...sim.state import State
 from ..viewer_attributes import (
     Assignment,
+    AttributeRows,
     Frequency,
-    PropertyDomain,
     attribute_summary,
     component_attributes,
     frequency_row_label,
     resolve_attribute,
 )
-from ..viewer_frequencies import FrequencyCatalog
+from ..viewer_frequencies import CustomFrequencyIndex
 from .widgets import PropertyEdit
 
 if TYPE_CHECKING:
@@ -86,7 +86,7 @@ class PropertyInspector:
         """Initialize selection-derived property domains and the active component tab."""
         self.workspace = workspace
         self.context_key = None
-        self.domains: list[PropertyDomain] = []
+        self.domains: list[AttributeRows] = []
         self.component = Assignment.STATE
 
     def clear(self) -> None:
@@ -111,12 +111,12 @@ class PropertyInspector:
             # Preserve lazy ranges for whole worlds and large deformables.
             self.domains = domains
             return
-        merged: dict[tuple[int, Model.AttributeFrequency | str, bool], list[PropertyDomain]] = defaultdict(list)
+        merged: dict[tuple[int, Model.AttributeFrequency | str, bool], list[AttributeRows]] = defaultdict(list)
         for domain in domains:
             key = (id(domain.model), domain.frequency, domain.joints)
             merged[key].append(domain)
         self.domains = [
-            PropertyDomain(
+            AttributeRows(
                 group[0].model,
                 group[0].frequency,
                 sorted({int(index) for domain in group for index in domain.indices}),
@@ -125,10 +125,10 @@ class PropertyInspector:
             for group in merged.values()
         ]
 
-    def _selection_domains(self, selected: TreeKey) -> list[PropertyDomain]:
+    def _selection_domains(self, selected: TreeKey) -> list[AttributeRows]:
         """Resolve one object into registered row domains, including related vertices and DOFs."""
         ws = self.workspace
-        domains: list[PropertyDomain] = []
+        domains: list[AttributeRows] = []
         model = ws.model
         kind, index = selected
 
@@ -146,7 +146,7 @@ class PropertyInspector:
                 indices = np.asarray(indices, dtype=int)
                 indices = indices[spans[indices - first + 1] > spans[indices - first]]
             if len(indices):
-                domains.append(PropertyDomain(source, frequency, indices, joints=joints))
+                domains.append(AttributeRows(source, frequency, indices, joints=joints))
 
         if kind in self.kinds:
             if kind == "particle":
@@ -172,7 +172,7 @@ class PropertyInspector:
                             add(frequency, rows)
                 add(Frequency.JOINT_COORD, joints, joints=True)
                 add(Frequency.JOINT_DOF, joints, joints=True)
-        elif (frequency := FrequencyCatalog.frequency((kind, index))) is not None:
+        elif (frequency := CustomFrequencyIndex.frequency((kind, index))) is not None:
             add(frequency, [index])
         elif kind == "frequency":
             frequency, indices = ws.tree.custom.groups[selected]
@@ -206,7 +206,7 @@ class PropertyInspector:
                 add(frequency, range(count))
         return domains
 
-    def _owner(self, domain: PropertyDomain, component: Model.AttributeAssignment) -> Model | State | Control | None:
+    def _owner(self, domain: AttributeRows, component: Model.AttributeAssignment) -> Model | State | Control | None:
         """Resolve the Model, displayed State, or Control for a property domain.
 
         Historical Control comes from the display snapshot; secondary particle
@@ -221,7 +221,7 @@ class PropertyInspector:
                 return None
             if ws.history is not None and ws.history.replaying:
                 return ws.history.display_control
-            return ws.session.control
+            return ws.bindings.control
         if domain.model is ws.model:
             return getattr(ws.viewer, "_last_state", None) or ws.live_state()
         return next((s.state for s in ws.tree.deformables.sources if s.model is domain.model), None)
@@ -290,7 +290,7 @@ class PropertyInspector:
 
     def _collect(
         self, component: Model.AttributeAssignment
-    ) -> dict[str | None, list[tuple[PropertyDomain, str, Model.AttributeSpec, object, str, Any]]]:
+    ) -> dict[str | None, list[tuple[AttributeRows, str, Model.AttributeSpec, object, str, Any]]]:
         """Determine populated groups from metadata and storage, without reading live arrays."""
         groups = defaultdict(list)
         attributes = {}
@@ -324,7 +324,7 @@ class PropertyInspector:
     def _component(
         self,
         component: Model.AttributeAssignment,
-        groups: dict[str | None, list[tuple[PropertyDomain, str, Model.AttributeSpec, object, str, Any]]] | None = None,
+        groups: dict[str | None, list[tuple[AttributeRows, str, Model.AttributeSpec, object, str, Any]]] | None = None,
     ) -> None:
         """Draw one component with built-in fields, namespace tabs, and applicable resource or Control actions."""
         ws, w, ui = self.workspace, self.workspace.widgets, self.workspace.gui.ui.imgui
@@ -395,7 +395,7 @@ class PropertyInspector:
 
     def _fields(
         self,
-        fields: Sequence[tuple[PropertyDomain, str, Model.AttributeSpec, object, str, Any]],
+        fields: Sequence[tuple[AttributeRows, str, Model.AttributeSpec, object, str, Any]],
         component: Model.AttributeAssignment,
         *,
         flat: bool = False,
@@ -428,7 +428,7 @@ class PropertyInspector:
 
     def _prefetch(
         self,
-        domain: PropertyDomain,
+        domain: AttributeRows,
         spec: Model.AttributeSpec,
         owner: object,
         attr: str,
@@ -489,7 +489,7 @@ class PropertyInspector:
 
     def _field(
         self,
-        domain: PropertyDomain,
+        domain: AttributeRows,
         name: str,
         spec: Model.AttributeSpec,
         owner: object,
@@ -612,7 +612,7 @@ class PropertyInspector:
         if model is not ws.model:
             return None
         if isinstance(frequency, str):
-            return FrequencyCatalog.key(frequency, index)
+            return CustomFrequencyIndex.key(frequency, index)
         if frequency == Frequency.WORLD:
             key = ("root", index)
             return key if key in ws.tree.roots else ("root", -1)
@@ -635,7 +635,7 @@ class PropertyInspector:
         return tree.labels.get(target, frequency_row_label(frequency, index))
 
     def _references(
-        self, label: str, values: ArrayLike, spec: Model.AttributeSpec, domain: PropertyDomain, start: int, reason: str
+        self, label: str, values: ArrayLike, spec: Model.AttributeSpec, domain: AttributeRows, start: int, reason: str
     ) -> None:
         """Draw integer references with navigation to valid target objects.
 

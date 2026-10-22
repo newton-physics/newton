@@ -125,7 +125,7 @@ class HistoryFrame:
         return self.soft_shape_contacts + self.soft_self_contacts
 
 
-class WorkspaceHistory:
+class FrameHistory:
     """Record bounded example display snapshots without rewinding the solver.
 
     Capture copies declared arrays to the host at rendered frame boundaries.

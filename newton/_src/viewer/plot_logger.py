@@ -12,7 +12,7 @@ import numpy as np
 import warp as wp
 
 if TYPE_CHECKING:
-    from .gui.ui import UI
+    from .gui.imgui_backend import ImGuiBackend
 
 
 class PlotLogger:
@@ -186,7 +186,7 @@ class PlotLogger:
         finally:
             imgui.end()
 
-    def draw_content(self, ui: UI) -> None:
+    def draw_content(self, ui: ImGuiBackend) -> None:
         """Render plots in the current window using its available width."""
         imgui, s = ui.imgui, ui.dpi_scale
         scalar_arrays = self._scalar_arrays

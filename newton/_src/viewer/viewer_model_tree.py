@@ -12,7 +12,7 @@ import numpy as np
 import warp as wp
 
 from ..sim.model import Model
-from .viewer_session import ViewerSession
+from .viewer_bindings import InspectionBindings
 
 if TYPE_CHECKING:
     from typing import Any
@@ -39,16 +39,16 @@ class ModelTree:
         world: int = 0,
         *,
         example: ViewerExample | None = None,
-        session: ViewerSession | None = None,
+        bindings: InspectionBindings | None = None,
     ) -> None:
         """Create resource catalogs and world roots, materializing only the initial world.
 
         Cache world boundary arrays and ownership metadata on the host. Object
-        topology for other worlds remains lazy; the session supplies inspected
+        topology for other worlds remains lazy; the bindings supply inspected
         solver resources without transferring live state here.
         """
         self.model = model
-        self.session = session if session is not None else ViewerSession.from_example(example)
+        self.bindings = bindings if bindings is not None else InspectionBindings.from_example(example)
         self.children: defaultdict[TreeKey, list[TreeKey]] = defaultdict(list)
         self.labels: dict[TreeKey, str] = {}
         self.expanded: set[TreeKey] = set()
@@ -64,12 +64,12 @@ class ModelTree:
         self.collision: CollisionInspector | None = None
         self.kinds = ("body", "joint", "shape", "articulation")
         from .viewer_deformables import DeformableCatalog  # noqa: PLC0415
-        from .viewer_frequencies import FrequencyCatalog  # noqa: PLC0415
-        from .viewer_resources import GeometryResources  # noqa: PLC0415
+        from .viewer_frequencies import CustomFrequencyIndex  # noqa: PLC0415
+        from .viewer_resources import GeometryInspector  # noqa: PLC0415
 
         self.deformables = DeformableCatalog(model, example)
-        self.custom = FrequencyCatalog(model)
-        self.resources = GeometryResources(model, example, session=self.session)
+        self.custom = CustomFrequencyIndex(model)
+        self.resources = GeometryInspector(model, example, bindings=self.bindings)
         # These small boundary arrays scale with worlds, not scene objects.
         self.starts: dict[str, np.ndarray] = {}
         for kind in (*self.kinds, "particle"):

@@ -15,7 +15,7 @@ import warp as wp
 from ...sim.collide import CollisionPipeline
 from ...sim.contacts import Contacts
 from ...sim.model import Model
-from ..viewer_attributes import Assignment, Frequency, PropertyDomain, attribute_summary, resolve_attribute
+from ..viewer_attributes import Assignment, AttributeRows, Frequency, attribute_summary, resolve_attribute
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -231,16 +231,16 @@ class CollisionInspector:
         """Prefer explicitly logged Contacts over the example fallback, or return None."""
         ws = self.workspace
         logged = getattr(ws.viewer, "_last_contacts", None)
-        bound = ws.session.contacts
+        bound = ws.bindings.contacts
         for value in (logged, bound):
             if isinstance(value, Contacts):
                 return value
         return None
 
     def _sources(self) -> list[tuple[str, CollisionPipeline]]:
-        """Resolve collision pipelines associated with the workspace Model through its session."""
+        """Resolve collision pipelines associated with the workspace Model through its bindings."""
         ws = self.workspace
-        return ws.session.collision_pipelines(ws.model)
+        return ws.bindings.collision_pipelines(ws.model)
 
     def read(self, owner: object, name: str, start: int = 0, count: int = 1) -> np.ndarray:
         """Cache a host copy of an array slice until the contact snapshot is invalidated."""
@@ -517,7 +517,7 @@ class CollisionInspector:
                     name.rsplit(":", maxsplit=1)[-1],
                     values,
                     spec,
-                    PropertyDomain(ws.model, spec.frequency, [0]),
+                    AttributeRows(ws.model, spec.frequency, [0]),
                     start,
                     "Collision output; read only.",
                 )

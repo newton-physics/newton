@@ -21,9 +21,9 @@ from ...sim.articulation import eval_fk, eval_ik
 from ...sim.enums import BodyFlags, JointType, ModelFlags
 from ...sim.model import Model
 from ...sim.state import State
-from ..viewer_history import WorkspaceHistory, _component_arrays
+from ..viewer_bindings import InspectionBindings
+from ..viewer_history import FrameHistory, _component_arrays
 from ..viewer_model_tree import ModelTree
-from ..viewer_session import ViewerSession
 from .dockspace import ViewerDockspace
 from .timeline import TimelineView
 from .widgets import PhysicsWidgets
@@ -110,7 +110,7 @@ def _frame_shape_bounds(
 class ViewerWorkspace:
     """Coordinate ViewerGL panels, selection, and edits for the active layer.
 
-    The application owns the simulation loop and objects. ViewerSession resolves
+    The application owns the simulation loop and objects. InspectionBindings resolves
     their live bindings, ModelTree indexes topology, and PropertyInspector maps
     attribute metadata to widgets. This class connects those services to ImGui
     and authorizes edits; it does not construct or rebuild Models or solvers.
@@ -126,7 +126,7 @@ class ViewerWorkspace:
         self.widgets = PhysicsWidgets(gui)
         self.viewer = gui._viewer
         self.example: ViewerExample | None = None
-        self.history: WorkspaceHistory | None = None
+        self.history: FrameHistory | None = None
         self.model: Model | None = None
         self.tree: ModelTree | None = None
         self.world = 0
@@ -200,23 +200,25 @@ class ViewerWorkspace:
         self.collision = CollisionInspector(self)
 
     @property
-    def session(self) -> ViewerSession:
+    def bindings(self) -> InspectionBindings:
         """Use explicit application bindings before the conventional example adapter."""
         components = getattr(self.viewer, "_inspection_components", None)
         key = (id(self.model), id(self.example), id(components))
-        if getattr(self, "_session_key", None) != key:
-            candidate = ViewerSession.from_example(self.example)
+        if getattr(self, "_bindings_key", None) != key:
+            candidate = InspectionBindings.from_example(self.example)
             compatible = self.model is None or candidate.matches_model(self.model)
-            self._session = ViewerSession.from_example(self.example if compatible else None, components=components)
+            self._bindings = InspectionBindings.from_example(
+                self.example if compatible else None, components=components
+            )
             # The example runner records its own buffers. Explicit setters may
             # expose those same objects without disabling the existing timeline.
             self._history_compatible = (
                 compatible
-                and self._session.control is getattr(self.example, "control", None)
-                and self._session.solver is getattr(self.example, "solver", None)
+                and self._bindings.control is getattr(self.example, "control", None)
+                and self._bindings.solver is getattr(self.example, "solver", None)
             )
-            self._session_key = key
-        return self._session
+            self._bindings_key = key
+        return self._bindings
 
     def save_preferences(self) -> None:
         """Retain BVH and timeline display options across example or history rebinding in this workspace."""
@@ -235,7 +237,7 @@ class ViewerWorkspace:
             self.tree.resources.bvhs.close(self.viewer)
         self.gui.ui.section_errors.clear()
         self._active_timeline = self.history = self.example = self.model = self.tree = None
-        self._session = self._session_key = None
+        self._bindings = self._bindings_key = None
         if inspector := getattr(self, "property_inspector", None):
             inspector.clear()
         self.viewport_controls.clear_scene()
@@ -293,7 +295,7 @@ class ViewerWorkspace:
             timeline = getattr(example, "timeline", None)
             if timeline is None:
                 if self.history is None:
-                    self.history = WorkspaceHistory(example)
+                    self.history = FrameHistory(example)
                     self._bind_timeline(TimelineView(self.history))
                     self.history.capture()
                 timeline = self._active_timeline
@@ -328,19 +330,19 @@ class ViewerWorkspace:
         """Initialize scene metadata for any consumer, regardless of visible tabs."""
         if self.model is None:
             return
-        session = self.session
-        if self.tree is not None and self.tree.session is not session:
-            previous = self.tree.session
-            if previous.solver is not session.solver or previous.collision_pipelines(
+        bindings = self.bindings
+        if self.tree is not None and self.tree.bindings is not bindings:
+            previous = self.tree.bindings
+            if previous.solver is not bindings.solver or previous.collision_pipelines(
                 self.model
-            ) != session.collision_pipelines(self.model):
+            ) != bindings.collision_pipelines(self.model):
                 self.tree.resources.bvhs.close(self.viewer)
                 self.tree = None
                 self.select(None)
             else:
-                self.tree.session = self.tree.resources.bvhs.session = session
+                self.tree.bindings = self.tree.resources.bvhs.bindings = bindings
         if self.tree is None:
-            self.tree = ModelTree(self.model, example=self.example, session=session)
+            self.tree = ModelTree(self.model, example=self.example, bindings=bindings)
             for name, value in getattr(self, "_bvh_options", {}).items():
                 setattr(self.tree.resources.bvhs, name, value)
         self.collision.attach(self.tree)
@@ -1576,7 +1578,7 @@ class ViewerWorkspace:
         kind, index = key
         flags = int(self.tree.meta.get(key, {}).get("flags", 0))
         if kind == "body":
-            runtime = type(self.session.solver).__name__ in ("SolverMuJoCo", "SolverXPBD")
+            runtime = type(self.bindings.solver).__name__ in ("SolverMuJoCo", "SolverXPBD")
             enabled = runtime and self.can_edit_state() and not flags & int(BodyFlags.PROXY)
             options = (
                 (BodyFlags.DYNAMIC, "dynamic", "Dynamic: responds to forces"),
@@ -1644,7 +1646,7 @@ class ViewerWorkspace:
         # Its values must never replace the live example's reset baseline.
         if not self._at_live_frame():
             return
-        control = self.session.control
+        control = self.bindings.control
         if control is not getattr(self, "_control_owner", None):
             self._control_owner = control
             self._control_initial = {
@@ -1657,7 +1659,7 @@ class ViewerWorkspace:
             self.message = "Return to the live frame to reset Control inputs."
             return False
         self._capture_control_initial()
-        arrays = _component_arrays(self.session.control)
+        arrays = _component_arrays(self.bindings.control)
         if not arrays:
             return False
         initial = self._control_initial
@@ -1689,7 +1691,7 @@ class ViewerWorkspace:
 
     def is_control_owner(self, owner: object) -> bool:
         """Recognize the live Control and its registered namespace containers."""
-        return self.session.owns_control(owner)
+        return self.bindings.owns_control(owner)
 
     def set_flag(self, kind: str, index: int, flag: int) -> None:
         """Set a body motion flag or toggle shape visibility, notifying its solver or renderer.
@@ -1707,7 +1709,7 @@ class ViewerWorkspace:
         array[index : index + 1].fill_(value)
         try:
             if kind == "body":
-                self.session.solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
+                self.bindings.solver.notify_model_changed(ModelFlags.BODY_PROPERTIES)
             else:
                 self.viewer._rebuild_shape_batches_for_opacity_groups()
                 self.gui.update_shape_counts(self.model)
@@ -1906,7 +1908,7 @@ class ViewerWorkspace:
     def _solver_properties(self) -> None:
         """Show available solver iteration, convergence, and method settings as read-only properties."""
         ui, w = self.gui.ui.imgui, self.widgets
-        solver = self.session.solver
+        solver = self.bindings.solver
         if solver is None:
             return
         ui.text(type(solver).__name__.removeprefix("Solver"))
@@ -1962,7 +1964,7 @@ class ViewerWorkspace:
     def _shape_solver_properties(self, index: int) -> None:
         """Resolve a shape to its MuJoCo geometry and lazily display effective contact parameters."""
         w = self.widgets
-        solver = self.session.solver
+        solver = self.bindings.solver
         model = getattr(solver, "mjw_model", None)
         if model is None:
             return
@@ -2003,8 +2005,8 @@ class ViewerWorkspace:
                 )
 
     def live_state(self) -> State | None:
-        """Resolve the application live State through the session, falling back to the last logged State."""
-        return self.session.live_state(getattr(self.viewer, "_last_state", None))
+        """Resolve the application live State through the bindings, falling back to the last logged State."""
+        return self.bindings.live_state(getattr(self.viewer, "_last_state", None))
 
     def joint_display_state(self) -> State | SimpleNamespace | None:
         """Recover reduced coordinates for maximal-coordinate solvers on demand."""
@@ -2014,7 +2016,7 @@ class ViewerWorkspace:
             return shown
         timeline = getattr(self.example, "timeline", self.history)
         historical = timeline is not None and timeline.frames and timeline.index < len(timeline.frames) - 1
-        maximal = type(self.session.solver).__name__ in (
+        maximal = type(self.bindings.solver).__name__ in (
             "SolverXPBD",
             "SolverVBD",
             "SolverSemiImplicit",
@@ -2146,7 +2148,7 @@ class ViewerWorkspace:
             mask, indices = self._joint_edit_mask(joint_index)
             if mask is None or int(self.read(self.model, "joint_type", joint_index)[0]) == int(JointType.ROD):
                 return False
-            if type(self.session.solver).__name__ in (
+            if type(self.bindings.solver).__name__ in (
                 "SolverXPBD",
                 "SolverVBD",
                 "SolverSemiImplicit",

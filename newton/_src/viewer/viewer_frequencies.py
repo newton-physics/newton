@@ -29,7 +29,7 @@ def attribute_value(model: Model, name: str) -> Any:
     return getattr(model, name, None)
 
 
-class FrequencyCatalog:
+class CustomFrequencyIndex:
     """Index solver-defined row types so they can appear as explorer objects.
 
     An attribute frequency describes what each row belongs to, not how often

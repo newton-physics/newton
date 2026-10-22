@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class UI:
+class ImGuiBackend:
     """Adapt a pyglet window to optional ImGui rendering, input, timing, and DPI.
 
     This backend owns GUI frame setup and recovery; scene inspection and viewer

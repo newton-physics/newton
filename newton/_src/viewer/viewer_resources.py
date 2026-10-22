@@ -23,21 +23,21 @@ if TYPE_CHECKING:
     from newton._src.viewer.viewer_types import TreeKey, ViewerExample
 
     from .gui.widgets import PhysicsWidgets
-    from .viewer_session import ViewerSession
+    from .viewer_bindings import InspectionBindings
 
 
-class GeometryResources:
+class GeometryInspector:
     """Read metadata on demand, without building SDFs or downloading texture pixels."""
 
     root = ("sdf_collection", 0)
     page_size = 128
 
     def __init__(
-        self, model: Model, example: ViewerExample | None = None, *, session: ViewerSession | None = None
+        self, model: Model, example: ViewerExample | None = None, *, bindings: InspectionBindings | None = None
     ) -> None:
         """Create lazy SDF and BVH catalogs without reading texture payloads or SDF rows."""
         self.model = model
-        self.bvhs = BvhResources(model, example, session=session)
+        self.bvhs = BvhResources(model, example, bindings=bindings)
         data = model._texture_sdf_data
         self.count = len(data) if data is not None else 0
         self._shape_pages = {}

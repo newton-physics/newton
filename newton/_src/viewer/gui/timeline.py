@@ -18,19 +18,19 @@ if TYPE_CHECKING:
 
     from numpy.typing import ArrayLike
 
-    from newton._src.viewer.viewer_history import HistoryFrame, WorkspaceHistory
+    from newton._src.viewer.viewer_history import FrameHistory, HistoryFrame
     from newton.viewer import ViewerBase
 
 
 class TimelineView:
-    """Present WorkspaceHistory without owning snapshots or stepping the simulation.
+    """Present FrameHistory without owning snapshots or stepping the simulation.
 
     Navigation updates the history cursor; the example runner decides whether
     to replay or advance live physics. Readout filtering and plot scaling are
     presentation-only and never interpolate the underlying recorded state.
     """
 
-    def __init__(self, history: WorkspaceHistory) -> None:
+    def __init__(self, history: FrameHistory) -> None:
         """Bind the presentation to an existing history store without owning simulation snapshots."""
         self.history = history
 

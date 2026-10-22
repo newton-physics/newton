@@ -94,7 +94,7 @@ def frequency_row_label(frequency: Model.AttributeFrequency | str, index: int) -
 
 
 @dataclass
-class PropertyDomain:
+class AttributeRows:
     """Describe the rows belonging to an inspector selection, independently of widgets.
 
     Keep ranges lazy for large worlds and meshes. The inspector expands joint

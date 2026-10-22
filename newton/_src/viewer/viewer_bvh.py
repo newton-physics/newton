@@ -15,7 +15,7 @@ import warp as wp
 from ..geometry.tri_mesh_collision import TriMeshCollisionDetector
 from ..geometry.types import GeoType
 from ..sim.collide import CollisionPipeline
-from .viewer_session import ViewerSession
+from .viewer_bindings import InspectionBindings
 
 if TYPE_CHECKING:
     from collections.abc import Hashable
@@ -239,11 +239,11 @@ class BvhResources:
     page_size = 128
 
     def __init__(
-        self, model: Model, example: ViewerExample | None = None, *, session: ViewerSession | None = None
+        self, model: Model, example: ViewerExample | None = None, *, bindings: InspectionBindings | None = None
     ) -> None:
         """Initialize lazy BVH discovery and per-selection drawing caches for one Model."""
         self.model, self.example = model, example
-        self.session = session if session is not None else ViewerSession.from_example(example)
+        self.bindings = bindings if bindings is not None else InspectionBindings.from_example(example)
         self.entries = {}
         self._mesh_ids = None
         self._shape_pages = {}
@@ -342,12 +342,12 @@ class BvhResources:
         later inspection resolves the current resource rather than a snapshot.
         """
         seen = set()
-        for name, pipeline in self.session.collision_pipelines(self.model):
+        for name, pipeline in self.bindings.collision_pipelines(self.model):
             detector = pipeline._soft_self_contact_detector
             if detector is not None and id(detector) not in seen:
                 seen.add(id(detector))
                 self._add_detector(tree, detector, name)
-        for owner in (self.example, self.model, self.session.solver):
+        for owner in (self.example, self.model, self.bindings.solver):
             for name, value in vars(owner).items() if hasattr(owner, "__dict__") else ():
                 if id(value) in seen:
                     continue

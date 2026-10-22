@@ -27,7 +27,7 @@ from newton.selection import ArticulationView
 
 from ...core.host_transform import transform_assign, transform_assign_matrix, transform_to_matrix
 from ...core.types import Axis
-from .ui import UI
+from .imgui_backend import ImGuiBackend
 
 if TYPE_CHECKING:
     from numpy.typing import ArrayLike
@@ -50,7 +50,7 @@ class ViewerGui:
         viewers capture Newton logs when the optional GUI backend is available.
         """
         self._viewer = viewer
-        self.ui = UI(window)
+        self.ui = ImGuiBackend(window)
         self.ui.key_press_filter = self._filter_gui_key_press
 
         # UI callback registry. Backend viewers (GL/RTX) register their

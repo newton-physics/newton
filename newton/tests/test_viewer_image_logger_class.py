@@ -472,7 +472,7 @@ class TestViewerGLImageWindowSurvivesExampleSwitch(unittest.TestCase):
             wp.ScopedDevice("cpu"),
             mock.patch.object(viewer_gl, "RendererGL", return_value=renderer),
             mock.patch.object(viewer_gl, "ImageLogger"),
-            mock.patch.object(viewer_gui, "UI", return_value=fake_ui),
+            mock.patch.object(viewer_gui, "ImGuiBackend", return_value=fake_ui),
         ):
             viewer = viewer_gl.ViewerGL(headless=False)
         self.addCleanup(viewer.close)

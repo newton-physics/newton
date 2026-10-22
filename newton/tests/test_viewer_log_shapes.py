@@ -10,7 +10,7 @@ import warp as wp
 
 import newton
 from newton._src.viewer.kernels import _CONTACT_MODE_COLORS
-from newton._src.viewer.viewer_history import WorkspaceHistory
+from newton._src.viewer.viewer_history import FrameHistory
 from newton.tests.unittest_utils import add_function_test, assert_np_equal, get_test_devices
 from newton.viewer import ViewerNull
 
@@ -206,7 +206,7 @@ class TestLogContacts(unittest.TestCase):
         example.render = lambda: viewer.log_contacts(
             example.contacts, example.state, observables=example.solver_observables
         )
-        history = WorkspaceHistory(example)
+        history = FrameHistory(example)
         history.capture()
         observables.contact_f.zero_()
         example.sim_time = 1.0 / 60.0
@@ -293,7 +293,7 @@ class TestLogContacts(unittest.TestCase):
         )
         example.state.body_q.assign([wp.transform_identity()] * model.body_count)
         example.render = lambda: viewer.log_contacts(example.contacts, example.contact_state)
-        history = WorkspaceHistory(example)
+        history = FrameHistory(example)
         history.capture()
         saved_poses = state.body_q.numpy().copy()
         state.body_q.assign([wp.transform_identity()] * model.body_count)

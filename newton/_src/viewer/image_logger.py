@@ -25,7 +25,7 @@ import warp as wp
 from ..exceptions import NewtonWarning
 
 if TYPE_CHECKING:
-    from .gui.ui import UI
+    from .gui.imgui_backend import ImGuiBackend
 
 
 _ACCEPTED_C = (1, 3, 4)
@@ -481,7 +481,7 @@ class ImageLogger:
             # reflects reality and the window can be re-opened via the dropdown.
             self._selected = None
 
-    def draw_content(self, ui: UI, name: str) -> None:
+    def draw_content(self, ui: ImGuiBackend, name: str) -> None:
         """Draw an image atlas inside the current window without copying pixels."""
         entry = self._images.get(name)
         if entry is None or entry.n == 0 or entry.tex_id == 0:
