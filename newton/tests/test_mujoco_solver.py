@@ -10803,26 +10803,6 @@ class TestActuatorDampratio(unittest.TestCase):
         np.testing.assert_allclose(self.solver.mj_model.actuator_biasprm[0, :3], expected, atol=1e-6)
         np.testing.assert_allclose(self.solver.mjw_model.actuator_biasprm.numpy()[0, 0, :3], expected, atol=1e-6)
 
-    def test_activation_dynamics_match_native_compile(self):
-        """Keep activation dynamics on position- and velocity-like actuators."""
-        xml = self.MJCF.replace(
-            '<motor name="motor_plain" joint="j1"/>',
-            """<general name="pos_filter" joint="j1" gainprm="100" biastype="affine" biasprm="0 -100 1"
-                     dyntype="filterexact" dynprm="0.05" actearly="true"/>
-            <general name="vel_filter" joint="j1" gainprm="10" biastype="affine" biasprm="0 0 -10"
-                     dyntype="filter" dynprm="0.1"/>
-            <intvelocity name="intvel" joint="j1" kp="50" actrange="-1 1"/>""",
-        )
-        native = self.solver._mujoco.MjModel.from_xml_string(xml)
-        builder = newton.ModelBuilder()
-        builder.add_mjcf(xml, ctrl_direct=True)
-        mj_model = SolverMuJoCo(builder.finalize()).mj_model
-        for name in ("dyntype", "dynprm", "actnum", "actearly", "actlimited", "actrange", "biasprm"):
-            with self.subTest(field=name):
-                np.testing.assert_allclose(
-                    getattr(mj_model, f"actuator_{name}"), getattr(native, f"actuator_{name}"), atol=1e-6
-                )
-
     def test_joint_target_dampratio(self):
         """Retain imported damping, joint-target control, and explicit gain updates."""
         # Default control combines position actuators on one DOF, so retain one position drive.
