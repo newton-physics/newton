@@ -27,7 +27,7 @@ from .gl.opengl import LinesGL, MeshGL, MeshInstancerGL, RendererGL
 from .image_logger import ImageLogger
 from .picking import Picking
 from .plot_logger import PlotLogger
-from .utils import OPAQUE_OPACITY_THRESHOLD
+from .utils import OPAQUE_OPACITY_THRESHOLD, gaussian_display_colors
 from .viewer import _DEFAULT_LAYER_ID, ViewerBase
 from .viewer_gui import ViewerGui
 from .wind import Wind
@@ -1595,8 +1595,6 @@ class ViewerGL(ViewerBase):
         self.objects[name].update_from_points(points, radii, colors)
         self.objects[name].hidden = hidden
 
-    _SH_C0 = 0.28209479177387814
-
     def _create_gaussian_mesh(self):
         """Create a very low-poly sphere mesh dedicated to Gaussian splat rendering."""
         mesh = nt.Mesh.create_sphere(1.0, num_latitudes=3, num_longitudes=4, compute_inertia=False)
@@ -1671,7 +1669,7 @@ class ViewerGL(ViewerBase):
             vbo[:, 15] = 1.0
 
             if sh is not None and sh.shape[1] >= 3:
-                colors = np.ascontiguousarray((self._SH_C0 * sh[:, :3] + 0.5).clip(0.0, 1.0).astype(np.float32))
+                colors = np.ascontiguousarray(gaussian_display_colors(sh, gaussian.sh_color_space))
             else:
                 colors = np.ones((n, 3), dtype=np.float32)
 

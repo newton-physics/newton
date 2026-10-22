@@ -297,6 +297,20 @@ class TestModelBuilderBvhConstructor(unittest.TestCase):
         self.assertEqual(wp_bvh.call_args.kwargs["constructor"], "sah")
 
 
+class TestGaussian(unittest.TestCase):
+    def test_gaussian_sh_color_space_affects_identity(self):
+        """Default to sRGB and include the SH color space in Gaussian equality and hash."""
+        kwargs = {
+            "positions": np.zeros((1, 3), dtype=np.float32),
+            "sh_coeffs": np.zeros((1, 3), dtype=np.float32),
+        }
+        self.assertEqual(newton.Gaussian(**kwargs).sh_color_space, newton.utils.ColorSpace.SRGB)
+        srgb = newton.Gaussian(**kwargs, sh_color_space=newton.utils.ColorSpace.SRGB)
+        linear = newton.Gaussian(**kwargs, sh_color_space=newton.utils.ColorSpace.LINEAR)
+        self.assertNotEqual(srgb, linear)
+        self.assertNotEqual(hash(srgb), hash(linear))
+
+
 class TestModelMesh(unittest.TestCase):
     def setUp(self):
         """Keep backend stubs isolated from persistent mesh caches."""
