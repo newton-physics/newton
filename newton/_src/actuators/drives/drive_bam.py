@@ -88,7 +88,8 @@ class DriveBAM(DriveBase):
           gearbox friction, which depends on the joint load;
         * optionally an :class:`~newton.actuators.InputProcessorDelay` for
           command latency, an :class:`~newton.actuators.InputProcessorBacklash`
-          for gearbox backlash, and a battery for a sagging supply.
+          for gearbox backlash, and a battery
+          (:meth:`~newton.ModelBuilder.add_battery`) for a sagging supply.
     """
 
     SHARED_PARAMS: ClassVar[set[str]] = {"supply_from_battery"}
@@ -131,7 +132,8 @@ class DriveBAM(DriveBase):
             kp: Duty cycle per position error [1/rad or 1/m]. Shape ``(N,)``.
             kt: Torque constant [N·m/A]. Shape ``(N,)``.
             resistance: Motor resistance [Ω]. Shape ``(N,)``.
-            vin: Supply voltage [V], used unless *supply_from_battery*.
+            vin: Supply voltage [V]. Required; ignored when
+                *supply_from_battery* is set.
                 Shape ``(N,)``.
             max_pwm: Largest duty cycle magnitude. Shape ``(N,)``.
             max_current: Firmware current limit [A]; 0 disables it. Shape
@@ -160,8 +162,10 @@ class DriveBAM(DriveBase):
         """Firmware current limit [A], 0 when disabled, shape (N,)."""
         self.supply_from_battery = supply_from_battery
         """Whether the supply voltage is read from the ``actuator_supply_voltage`` input written by the battery."""
-        # "actuator:actuator" is the per-actuator frequency: one entry per actuator of the model, not per DOF.
-        self.custom_inputs = {"actuator_supply_voltage": "actuator:actuator"} if supply_from_battery else {}
+        from ..actuator import ACTUATOR_FREQUENCY  # noqa: PLC0415
+
+        # ACTUATOR_FREQUENCY is the per-actuator frequency: one entry per actuator of the model, not per DOF.
+        self.custom_inputs = {"actuator_supply_voltage": ACTUATOR_FREQUENCY} if supply_from_battery else {}
         for name in ("kt", "resistance", "vin", "max_pwm", "max_current"):
             shape = getattr(self, name).shape
             if shape != n:

@@ -88,6 +88,8 @@ class ActuatorParsed:
     component_specs: list[tuple[type[ClampingBase | InputProcessorBase], dict[str, Any]]] = field(default_factory=list)
     target_path: str = ""
     """Joint target path (USD prim path of the driven joint)."""
+    battery_path: str | None = None
+    """USD prim path of the ``NewtonBattery`` the actuator draws from, or ``None``."""
 
     def __init__(
         self,
@@ -96,6 +98,7 @@ class ActuatorParsed:
         component_specs: list[tuple[type[ClampingBase | InputProcessorBase], dict[str, Any]]] | None = None,
         target_path: str = "",
         *,
+        battery_path: str | None = None,
         controller_class: type[DriveBase] | object = _DEPRECATED_UNSET,
         controller_kwargs: dict[str, Any] | object = _DEPRECATED_UNSET,
     ) -> None:
@@ -106,6 +109,8 @@ class ActuatorParsed:
             drive_kwargs: Parsed drive constructor arguments.
             component_specs: Parsed input processor and clamping specifications.
             target_path: USD prim path of the driven joint.
+            battery_path: USD prim path of the ``NewtonBattery`` the actuator
+                draws from, or ``None``.
             controller_class: Deprecated in Newton 1.6; use ``drive_class``.
             controller_kwargs: Deprecated in Newton 1.6; use ``drive_kwargs``.
         """
@@ -127,6 +132,7 @@ class ActuatorParsed:
         self.drive_kwargs = {} if drive_kwargs is _DEPRECATED_UNSET else drive_kwargs
         self.component_specs = [] if component_specs is None else component_specs
         self.target_path = target_path
+        self.battery_path = battery_path
 
     @property
     def controller_class(self) -> type[DriveBase]:
@@ -332,11 +338,20 @@ def register_actuator_component(
     )
 
 
-def _parse_battery_prim(prim) -> dict[str, float] | None:
-    """Parse a ``NewtonBattery`` prim into :meth:`~newton.ModelBuilder.add_battery` kwargs.
+def parse_battery_prim(prim) -> dict[str, float] | None:
+    """Parse a USD ``NewtonBattery`` prim into keyword arguments for :meth:`~newton.ModelBuilder.add_battery`.
 
-    ``newton:sagGain`` and ``newton:minVoltage`` fall back to 0. Returns
-    ``None`` if the prim is not a ``NewtonBattery``.
+    ``newton:sagGain`` and ``newton:minVoltage`` fall back to 0. The
+    actuators that draw from the battery name it in their ``newton:battery``
+    relationship; :func:`parse_actuator_prim` reports it as
+    :attr:`ActuatorParsed.battery_path`.
+
+    Args:
+        prim: USD prim to parse.
+
+    Returns:
+        ``{"nominal_voltage": ..., "sag_gain": ..., "min_voltage": ...}``, or
+        ``None`` if the prim is not a ``NewtonBattery``.
 
     Raises:
         ValueError: The prim has no ``newton:nominalVoltage``.
@@ -351,18 +366,6 @@ def _parse_battery_prim(prim) -> dict[str, float] | None:
     if "nominal_voltage" not in kwargs:
         raise ValueError(f"Battery prim '{prim.GetPath()}' is missing newton:nominalVoltage")
     return kwargs
-
-
-def _get_actuator_battery(prim) -> str | None:
-    """Return the ``NewtonBattery`` path bound to an actuator prim by ``newton:battery``, or ``None``."""
-    targets = _get_relationship_targets(prim, "newton:battery")
-    if len(targets) > 1:
-        warnings.warn(
-            f"Actuator prim {prim.GetPath()} has {len(targets)} batteries; only the first is used",
-            NewtonWarning,
-            stacklevel=2,
-        )
-    return targets[0] if targets else None
 
 
 def parse_actuator_prim(prim, *, allow_unsafe_torch_checkpoints: bool = False) -> ActuatorParsed | None:
@@ -492,9 +495,18 @@ def parse_actuator_prim(prim, *, allow_unsafe_torch_checkpoints: bool = False) -
                 raise ValueError(f"Actuator prim '{prim.GetPath()}': {exc}") from None
         drive_kwargs = {name: value for name, value in drive_kwargs.items() if name not in claimed}
 
+    batteries = _get_relationship_targets(prim, "newton:battery")
+    if len(batteries) > 1:
+        warnings.warn(
+            f"Actuator prim {prim.GetPath()} has {len(batteries)} batteries; only the first is used",
+            NewtonWarning,
+            stacklevel=2,
+        )
+
     return ActuatorParsed(
         drive_class=drive_class,
         drive_kwargs=drive_kwargs,
         component_specs=component_specs,
         target_path=target_paths[0],
+        battery_path=batteries[0] if batteries else None,
     )

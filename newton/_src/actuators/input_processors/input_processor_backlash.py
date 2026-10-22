@@ -69,9 +69,9 @@ class InputProcessorBacklash(InputProcessorBase):
         """Initialize the backlash processor.
 
         Args:
-            backlash_joint_indices: Per-DOF index of the backlash joint into
+            backlash_joint_indices: Per-actuator index of the backlash joint into
                 ``joint_qd``-shaped arrays, shape ``(N,)``.
-            backlash_joint_pos_indices: Per-DOF index of the backlash joint
+            backlash_joint_pos_indices: Per-actuator index of the backlash joint
                 into ``joint_q``-shaped arrays, shape ``(N,)``. Defaults to
                 *backlash_joint_indices*.
         """

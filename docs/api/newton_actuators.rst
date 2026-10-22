@@ -53,6 +53,7 @@ construction.
    :signatures: long
 
    parse_actuator_prim
+   parse_battery_prim
    register_actuator_component
    reset_battery_supply
    update_battery_supply

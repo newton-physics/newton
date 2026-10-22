@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import bisect
 import copy
 import ctypes
 import functools
@@ -904,8 +905,8 @@ class ModelBuilder:
         Each element in ``indices`` is a single DOF index.  The entry key is
         ``(drive_class, input_processor_key, clamping_key, drive_shared_key)``
         where shared params (e.g. ``model_path``, lookup tables) must
-        be identical across all actuators in a group.  Per-DOF params such
-        as delay step values may differ within a group.
+        be identical across all actuators in a group.  Per-actuator params
+        such as delay step values may differ within a group.
         """
 
         drive_class: type  # DriveBase subclass (e.g. DrivePD)
@@ -935,6 +936,7 @@ class ModelBuilder:
             input_processor_classes: tuple = (),
             input_processor_shared_kwargs: tuple = (),
             input_processor_args: list[list[dict[str, Any]]] | None = None,
+            actuator_indices: list[int] | None = None,
         ):
             """Initialize an actuator entry.
 
@@ -943,6 +945,10 @@ class ModelBuilder:
                     :class:`~newton.actuators.InputProcessorDelay` in
                     *input_processor_classes* and its per-actuator params in
                     *input_processor_args* instead.
+                actuator_indices: Index of each actuator in per-actuator
+                    arrays, as returned by :meth:`ModelBuilder.add_actuator`.
+                    Entries built by hand without it get no per-actuator
+                    arrays.
             """
             self.drive_class = drive_class
             self.clamping_classes = clamping_classes
@@ -955,7 +961,7 @@ class ModelBuilder:
             self.input_processor_classes = input_processor_classes
             self.input_processor_shared_kwargs = input_processor_shared_kwargs
             self.input_processor_args = input_processor_args if input_processor_args is not None else []
-            self.actuator_indices = []
+            self.actuator_indices = actuator_indices if actuator_indices is not None else []
             if delay_args is _ACTUATOR_ENTRY_DELAY_ARGS_UNSET:
                 return
             warnings.warn(_ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
@@ -972,16 +978,50 @@ class ModelBuilder:
         def delay_args(self) -> list[dict[str, Any]]:
             """Deprecated alias for the delay entries of :attr:`input_processor_args`.
 
+            The returned list is a new list holding the per-actuator delay
+            dicts: changing a dict changes the entry, but appending to the
+            list does not. Assign a new list to replace the delay entries.
+
             .. deprecated:: 1.8
                 Use :attr:`input_processor_args` instead.
             """
+            warnings.warn(_ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+            slot = self._delay_slot()
+            if slot is None:
+                return []
+            return [per_actuator[slot] for per_actuator in self.input_processor_args]
+
+        @delay_args.setter
+        def delay_args(self, value: list[dict[str, Any]]) -> None:
             from ..actuators.input_processors.input_processor_delay import InputProcessorDelay  # noqa: PLC0415
 
             warnings.warn(_ACTUATOR_ENTRY_DELAY_ARGS_DEPRECATION_MSG, NewtonDeprecationWarning, stacklevel=2)
+            value = [dict(delay) for delay in value]
+            if not self.input_processor_args:
+                self.input_processor_args = [[] for _ in value]
+            if len(value) != len(self.input_processor_args):
+                raise ValueError(
+                    f"delay_args has {len(value)} entries but the entry has {len(self.input_processor_args)} actuators"
+                )
+            slot = self._delay_slot()
+            if slot is None:
+                self.input_processor_classes = (InputProcessorDelay, *self.input_processor_classes)
+                self.input_processor_shared_kwargs = ({}, *self.input_processor_shared_kwargs)
+                self.input_processor_args = [
+                    [delay, *rest] for delay, rest in zip(value, self.input_processor_args, strict=True)
+                ]
+                return
+            for per_actuator, delay in zip(self.input_processor_args, value, strict=True):
+                per_actuator[slot] = delay
+
+        def _delay_slot(self) -> int | None:
+            """Return the position of the delay among the input processors, or ``None``."""
+            from ..actuators.input_processors.input_processor_delay import InputProcessorDelay  # noqa: PLC0415
+
             for i, proc_class in enumerate(self.input_processor_classes):
                 if issubclass(proc_class, InputProcessorDelay):
-                    return [per_actuator[i] for per_actuator in self.input_processor_args]
-            return []
+                    return i
+            return None
 
     @dataclass
     class BvhConfig:
@@ -3192,7 +3232,7 @@ class ModelBuilder:
         Multiple calls with the same *drive_class*, *clamping*
         types, and identical shared parameters are accumulated into one
         :class:`~newton.actuators.Actuator` instance during
-        :meth:`finalize <ModelBuilder.finalize>`.  Per-DOF parameters,
+        :meth:`finalize <ModelBuilder.finalize>`.  Per-actuator parameters,
         such as delay step values, may differ within the same group.
 
         Args:
@@ -3218,9 +3258,14 @@ class ModelBuilder:
 
         Returns:
             The index of the actuator in per-actuator arrays, e.g. for
-            :meth:`add_battery`. The model stores the world and DOF of each
-            actuator as ``actuator.actuator_world`` and
-            ``actuator.actuator_dof``.
+            :meth:`add_battery`. The model stores the DOF of each actuator
+            as ``model.actuation.actuator_dof``.
+
+        Raises:
+            ValueError: *index* belongs to another world than the current
+                one, or a joint parameter of an input
+                processor does not identify a single-DOF joint of the current
+                world or a global joint.
         """
         if controller_class is not _DEPRECATED_ACTUATOR_DRIVE_UNSET:
             if drive_class is not None:
@@ -3232,6 +3277,13 @@ class ModelBuilder:
 
         if index is None:
             raise TypeError("add_actuator() missing required argument: 'index'")
+        if 0 <= index < self.joint_dof_count:
+            dof_world = self.joint_world[bisect.bisect_right(self.joint_qd_start, index) - 1]
+            if dof_world not in (-1, self.current_world):
+                raise ValueError(
+                    f"add_actuator: DOF index {index} belongs to world {dof_world}, "
+                    f"but the actuator is added to world {self.current_world}"
+                )
 
         clamping = clamping or []
         input_processors = list(input_processors or [])
@@ -3328,14 +3380,15 @@ class ModelBuilder:
             ),
         )
 
-        from ..actuators.actuator import register_actuator_frequency  # noqa: PLC0415
+        from ..actuators.actuator import ACTUATOR_NAMESPACE, register_actuator_frequency  # noqa: PLC0415
 
-        if not self.has_custom_attribute("actuator:actuator_dof"):
+        if not self.has_custom_attribute(f"{ACTUATOR_NAMESPACE}:actuator_dof"):
             register_actuator_frequency(self)
-        row = {"actuator:actuator_dof": index}
-        if self.has_custom_attribute("actuator:actuator_battery"):
-            row["actuator:actuator_battery"] = -1
-        actuator = self.add_custom_values(**row)["actuator:actuator_dof"]
+        row = {f"{ACTUATOR_NAMESPACE}:actuator_dof": index}
+        # Once add_battery has registered actuator_battery, keep it complete: every actuator row needs a value
+        if self.has_custom_attribute(f"{ACTUATOR_NAMESPACE}:actuator_battery"):
+            row[f"{ACTUATOR_NAMESPACE}:actuator_battery"] = -1
+        actuator = self.add_custom_values(**row)[f"{ACTUATOR_NAMESPACE}:actuator_dof"]
         entry.indices.append(index)
         entry.pos_indices.append(pos_index if pos_index is not None else index)
         entry.drive_args.append(drive_array_params)
@@ -3355,7 +3408,7 @@ class ModelBuilder:
         :func:`~newton.actuators.reset_battery_supply` restores the nominal
         voltage. ``control.actuator_supply_voltage`` starts at the nominal
         voltage. The battery parameters are stored on the :class:`~newton.Model`
-        under the ``actuator`` namespace as ``battery_nominal_voltage``,
+        under the ``actuation`` namespace as ``battery_nominal_voltage``,
         ``battery_sag_gain``, ``battery_min_voltage`` and ``battery_world``,
         and the battery of each actuator as ``actuator_battery`` (``-1`` for
         none). :meth:`replicate` copies the batteries into every world.
@@ -3367,7 +3420,7 @@ class ModelBuilder:
             nominal_voltage: Voltage without load [V].
             sag_gain: Voltage drop per unit of total effort [V/N or V/(N·m)].
             min_voltage: Lower bound of the sagged voltage [V], at most
-                *nominal_voltage*. 0 means no floor.
+                *nominal_voltage*. With 0 the voltage only stays non-negative.
 
         Returns:
             The index of the battery.
@@ -3378,7 +3431,7 @@ class ModelBuilder:
                 does not exist, belongs to another world, or already has a
                 battery.
         """
-        from ..actuators.actuator import ACTUATOR_FREQUENCY  # noqa: PLC0415
+        from ..actuators.actuator import ACTUATOR_FREQUENCY, ACTUATOR_NAMESPACE  # noqa: PLC0415
         from ..actuators.battery import register_battery_attributes  # noqa: PLC0415
 
         if not 0.0 <= min_voltage <= nominal_voltage:
@@ -3389,31 +3442,35 @@ class ModelBuilder:
             raise ValueError(f"sag_gain must be non-negative, got {sag_gain}")
         actuators = [int(actuator) for actuator in actuators]
         actuator_count = self._custom_frequency_counts.get(ACTUATOR_FREQUENCY, 0)
-        actuator_world = self.custom_attributes.get("actuator:actuator_world")
-        actuator_battery = self.custom_attributes.get("actuator:actuator_battery")
-        assigned = (actuator_battery.values if actuator_battery is not None else None) or []
+        actuator_dof = self.custom_attributes[f"{ACTUATOR_NAMESPACE}:actuator_dof"].values if actuator_count else []
+        if not self.has_custom_attribute(f"{ACTUATOR_NAMESPACE}:battery_nominal_voltage"):
+            register_battery_attributes(self)
+            self._process_custom_attributes(
+                list(range(actuator_count)), {f"{ACTUATOR_NAMESPACE}:actuator_battery": -1}, ACTUATOR_FREQUENCY
+            )
         for actuator in actuators:
             if not 0 <= actuator < actuator_count:
                 raise ValueError(f"add_battery: actuator {actuator} does not exist")
-            world = actuator_world.values[actuator]
+            dof = actuator_dof[actuator]
+            if not 0 <= dof < self.joint_dof_count:
+                raise ValueError(f"add_battery: actuator {actuator} acts on DOF {dof}, which does not exist")
+            world = self.joint_world[bisect.bisect_right(self.joint_qd_start, dof) - 1]
             if world != self.current_world:
                 raise ValueError(f"add_battery: actuator {actuator} belongs to world {world}")
-            if actuator < len(assigned) and assigned[actuator] is not None and assigned[actuator] >= 0:
-                raise ValueError(f"add_battery: actuator {actuator} already draws from battery {assigned[actuator]}")
-        if not self.has_custom_attribute("actuator:battery_nominal_voltage"):
-            register_battery_attributes(self)
-            self.custom_attributes["actuator:actuator_battery"].values = [-1] * actuator_count
+            battery = self.custom_attributes[f"{ACTUATOR_NAMESPACE}:actuator_battery"].values[actuator]
+            if battery >= 0:
+                raise ValueError(f"add_battery: actuator {actuator} already draws from battery {battery}")
         battery = self.add_custom_values(
             **{
-                "actuator:battery_nominal_voltage": nominal_voltage,
-                "actuator:battery_sag_gain": sag_gain,
-                "actuator:battery_min_voltage": min_voltage,
+                f"{ACTUATOR_NAMESPACE}:battery_nominal_voltage": nominal_voltage,
+                f"{ACTUATOR_NAMESPACE}:battery_sag_gain": sag_gain,
+                f"{ACTUATOR_NAMESPACE}:battery_min_voltage": min_voltage,
             }
-        )["actuator:battery_nominal_voltage"]
+        )[f"{ACTUATOR_NAMESPACE}:battery_nominal_voltage"]
         if actuators:
             self._process_custom_attributes(
                 actuators,
-                {"actuator:actuator_battery": battery, "actuator_supply_voltage": nominal_voltage},
+                {f"{ACTUATOR_NAMESPACE}:actuator_battery": battery, "actuator_supply_voltage": nominal_voltage},
                 ACTUATOR_FREQUENCY,
             )
         return battery
@@ -3421,14 +3478,14 @@ class ModelBuilder:
     def _resolve_actuator_joint(self, joint: int | str, owner: str, name: str, world: int | None = None) -> int:
         """Resolve a joint index or joint label to a single-DOF joint index.
 
-        A label is looked up among the joints of *world*, or among all joints
-        when *world* is ``None``.
+        With *world* given, the joint must belong to that world or be global
+        (world ``-1``), and a label is looked up among those joints only.
         """
         if isinstance(joint, str):
             matches = [
                 i
                 for i, label in enumerate(self.joint_label)
-                if label == joint and (world is None or self.joint_world[i] == world)
+                if label == joint and (world is None or self.joint_world[i] in (-1, world))
             ]
             if len(matches) != 1:
                 problem = "unknown" if not matches else f"ambiguous ({len(matches)} joints with this)"
@@ -3436,6 +3493,11 @@ class ModelBuilder:
             joint = matches[0]
         if not 0 <= joint < self.joint_count:
             raise ValueError(f"{owner}: '{name}' joint index {joint} is out of range")
+        if world is not None and self.joint_world[joint] not in (-1, world):
+            raise ValueError(
+                f"{owner}: '{name}' joint index {joint} belongs to world {self.joint_world[joint]}, "
+                f"but the actuator is added to world {world}"
+            )
         next_start = self.joint_qd_start[joint + 1] if joint + 1 < self.joint_count else self.joint_dof_count
         if next_start - self.joint_qd_start[joint] != 1:
             raise ValueError(
@@ -4190,9 +4252,11 @@ class ModelBuilder:
         self.joint_coord_count += copy_count * counts["joint_coord"]
         self.joint_constraint_count += copy_count * counts["joint_constraint"]
 
+        from ..actuators.actuator import ACTUATOR_FREQUENCY  # noqa: PLC0415
+
         for copy_index, world in enumerate(worlds.tolist()):
             entity_offsets = {kind: int(starts(kind)[copy_index]) for kind in counts}
-            actuator_offset = self._custom_frequency_counts.get("actuator:actuator", 0)
+            actuator_offset = self._custom_frequency_counts.get(ACTUATOR_FREQUENCY, 0)
             self._merge_builder_custom_attributes(builder, entity_offsets, world, label_prefixes[copy_index])
             self._merge_builder_actuators(
                 builder,
@@ -15596,7 +15660,7 @@ class ModelBuilder:
             )
 
             # Create actuators from accumulated entries
-            from ..actuators.actuator import Actuator  # noqa: PLC0415
+            from ..actuators.actuator import ACTUATOR_NAMESPACE, Actuator  # noqa: PLC0415
 
             m.actuators = []
             for entry in self.actuator_entries.values():
@@ -15638,6 +15702,7 @@ class ModelBuilder:
                     )
                     clamping_objs.append(comp_class(**comp_arrays, **shared_kw))
 
+                has_rows = len(entry.actuator_indices) == len(entry.indices)
                 actuator = Actuator(
                     indices=indices,
                     drive=drive,
@@ -15645,12 +15710,12 @@ class ModelBuilder:
                     pos_indices=pos_indices_arg,
                     requires_grad=requires_grad,
                     input_processors=input_processor_objs,
-                    actuator_indices=self._build_index_array(entry.actuator_indices, device),
-                    control_computed_output_attr="actuator_computed_effort",
+                    actuator_indices=self._build_index_array(entry.actuator_indices, device) if has_rows else None,
+                    control_computed_output_attr="actuator_computed_effort" if has_rows else None,
                 )
 
                 if "actuator_supply_voltage" in drive.custom_inputs:
-                    actuator_battery = self.custom_attributes.get("actuator:actuator_battery")
+                    actuator_battery = self.custom_attributes.get(f"{ACTUATOR_NAMESPACE}:actuator_battery")
                     assigned = (actuator_battery.values if actuator_battery is not None else None) or []
                     missing = [
                         row
@@ -15736,10 +15801,6 @@ class ModelBuilder:
                 )
 
             self._finalize_custom_frequency_metadata(m, device)
-
-            from ..actuators.battery import finalize_battery_actuators  # noqa: PLC0415
-
-            finalize_battery_actuators(self, m)
 
             m.bvh_build_shapes(
                 m,

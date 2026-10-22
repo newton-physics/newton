@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import warp as wp
 
-from .actuator import ACTUATOR_FREQUENCY
+from .actuator import ACTUATOR_FREQUENCY, ACTUATOR_NAMESPACE
 
 if TYPE_CHECKING:
     from ..sim.builder import ModelBuilder
@@ -16,8 +16,7 @@ if TYPE_CHECKING:
     from ..sim.model import Model
 
 SUPPLY_VOLTAGE_ATTR = "actuator_supply_voltage"
-BATTERY_NAMESPACE = "actuator"
-BATTERY_FREQUENCY = f"{BATTERY_NAMESPACE}:battery"
+BATTERY_FREQUENCY = f"{ACTUATOR_NAMESPACE}:battery"
 
 
 @wp.kernel
@@ -60,7 +59,15 @@ def _battery_reset_kernel(
 
 
 def register_battery_attributes(builder: ModelBuilder) -> None:
-    """Register the battery frequency and its custom attributes on *builder*.
+    """Register the battery frequency and its attributes on *builder*.
+
+    Registers the battery frequency ``actuation:battery`` with the battery
+    parameters, the battery of each actuator ``actuator_battery`` (``-1`` for
+    none) and the per-actuator supply voltage on Control. It also registers ``battery_actuator_start`` (one entry per battery plus
+    one) and ``battery_actuators`` (all actuators, sorted by battery), which
+    :meth:`~newton.ModelBuilder.finalize` builds from ``actuator_battery`` so
+    that battery ``b`` draws from the actuators
+    ``battery_actuators[battery_actuator_start[b]:battery_actuator_start[b + 1]]``.
 
     :meth:`~newton.ModelBuilder.add_battery` calls this with the first battery.
 
@@ -69,11 +76,21 @@ def register_battery_attributes(builder: ModelBuilder) -> None:
     """
     from ..sim.model import Model  # noqa: PLC0415
 
-    builder.add_custom_frequency(builder.CustomFrequency(name="battery", namespace=BATTERY_NAMESPACE))
+    builder.add_custom_frequency(builder.CustomFrequency(name="battery", namespace=ACTUATOR_NAMESPACE))
+    builder.add_custom_attribute(
+        builder.CustomAttribute(
+            name="actuator_battery",
+            dtype=wp.int32,
+            frequency=ACTUATOR_FREQUENCY,
+            default=-1,
+            references=BATTERY_FREQUENCY,
+            namespace=ACTUATOR_NAMESPACE,
+        )
+    )
     for name in ("battery_nominal_voltage", "battery_sag_gain", "battery_min_voltage"):
         builder.add_custom_attribute(
             builder.CustomAttribute(
-                name=name, dtype=wp.float32, frequency=BATTERY_FREQUENCY, default=0.0, namespace=BATTERY_NAMESPACE
+                name=name, dtype=wp.float32, frequency=BATTERY_FREQUENCY, default=0.0, namespace=ACTUATOR_NAMESPACE
             )
         )
     builder.add_custom_attribute(
@@ -83,18 +100,33 @@ def register_battery_attributes(builder: ModelBuilder) -> None:
             frequency=BATTERY_FREQUENCY,
             default=-1,
             references="world",
-            namespace=BATTERY_NAMESPACE,
+            namespace=ACTUATOR_NAMESPACE,
         )
     )
     builder.add_custom_attribute(
         builder.CustomAttribute(
-            name="actuator_battery",
+            name="battery_actuator_start",
+            dtype=wp.int32,
+            frequency=BATTERY_FREQUENCY,
+            default=0,
+            namespace=ACTUATOR_NAMESPACE,
+        )
+    )
+    builder._add_custom_attribute_model_finalizer(
+        f"{ACTUATOR_NAMESPACE}:battery_actuator_start", _finalize_battery_actuator_start
+    )
+    builder.add_custom_attribute(
+        builder.CustomAttribute(
+            name="battery_actuators",
             dtype=wp.int32,
             frequency=ACTUATOR_FREQUENCY,
             default=-1,
-            references=BATTERY_FREQUENCY,
-            namespace=BATTERY_NAMESPACE,
+            references=ACTUATOR_FREQUENCY,
+            namespace=ACTUATOR_NAMESPACE,
         )
+    )
+    builder._add_custom_attribute_model_finalizer(
+        f"{ACTUATOR_NAMESPACE}:battery_actuators", _finalize_battery_actuators
     )
     builder.add_custom_attribute(
         builder.CustomAttribute(
@@ -107,32 +139,40 @@ def register_battery_attributes(builder: ModelBuilder) -> None:
     )
 
 
-def finalize_battery_actuators(builder: ModelBuilder, model: Model) -> None:
-    """Store the actuators of each battery on *model*, grouped by battery.
-
-    Sets ``model.actuator.battery_actuator_start`` (one entry per battery plus
-    one) and ``model.actuator.battery_actuators``, so battery ``b`` draws from
-    the actuators ``battery_actuators[battery_actuator_start[b]:battery_actuator_start[b + 1]]``.
-    :meth:`~newton.ModelBuilder.finalize` calls this automatically.
-    """
-    batteries = getattr(model, BATTERY_NAMESPACE, None)
-    if getattr(batteries, "battery_nominal_voltage", None) is None:
-        return
-    battery_count = len(batteries.battery_nominal_voltage)
+def _battery_actuator_order(builder: ModelBuilder, model: Model) -> tuple[np.ndarray, np.ndarray]:
+    """Return all actuator rows sorted by battery, unassigned last, and the start of each battery's rows."""
+    battery_count = model.custom_frequency_counts.get(BATTERY_FREQUENCY, 0)
     actuator_battery = np.array(
-        [
-            -1 if b is None else b
-            for b in builder.custom_attributes[f"{BATTERY_NAMESPACE}:actuator_battery"].values or ()
-        ],
-        dtype=np.int64,
+        builder.custom_attributes[f"{ACTUATOR_NAMESPACE}:actuator_battery"].values or [], dtype=np.int64
     )
-    rows = np.flatnonzero(actuator_battery >= 0)
-    order = np.argsort(actuator_battery[rows], kind="stable")
-    counts = np.bincount(actuator_battery[rows], minlength=battery_count)
-    batteries.battery_actuator_start = wp.array(
-        np.concatenate(([0], np.cumsum(counts))), dtype=wp.int32, device=model.device
+    order = np.argsort(np.where(actuator_battery < 0, battery_count, actuator_battery), kind="stable")
+    counts = np.bincount(actuator_battery[actuator_battery >= 0], minlength=battery_count)
+    return order, np.concatenate(([0], np.cumsum(counts)))
+
+
+def _finalize_battery_actuator_start(
+    builder: ModelBuilder, model: Model, attribute: ModelBuilder.CustomAttribute
+) -> None:
+    _, start = _battery_actuator_order(builder, model)
+    model.add_attribute(
+        attribute.name,
+        wp.array(start, dtype=wp.int32, device=model.device),
+        attribute.frequency,
+        attribute.assignment,
+        attribute.namespace,
     )
-    batteries.battery_actuators = wp.array(rows[order], dtype=wp.int32, device=model.device)
+
+
+def _finalize_battery_actuators(builder: ModelBuilder, model: Model, attribute: ModelBuilder.CustomAttribute) -> None:
+    order, _ = _battery_actuator_order(builder, model)
+    model.add_attribute(
+        attribute.name,
+        wp.array(order, dtype=wp.int32, device=model.device),
+        attribute.frequency,
+        attribute.assignment,
+        attribute.namespace,
+        attribute.references,
+    )
 
 
 def update_battery_supply(model: Model, control: Control, *, effort: wp.array[float] | None = None) -> None:
@@ -158,9 +198,9 @@ def update_battery_supply(model: Model, control: Control, *, effort: wp.array[fl
     actuator before clamping, which actuators built by
     :class:`~newton.ModelBuilder` write there on every step.
 
-    The battery parameters are ``model.actuator.battery_nominal_voltage``,
+    The battery parameters are ``model.actuation.battery_nominal_voltage``,
     ``battery_sag_gain`` and ``battery_min_voltage``, indexed by battery;
-    ``model.actuator.battery_world`` gives the world of each battery, e.g.
+    ``model.actuation.battery_world`` gives the world of each battery, e.g.
     to randomize the parameters per world.
 
     The supply and the drives form an explicit feedback loop. For
@@ -241,7 +281,7 @@ def reset_battery_supply(model: Model, control: Control, *, world_mask: wp.array
 
 
 def _require_batteries(model: Model) -> Any:
-    batteries = getattr(model, BATTERY_NAMESPACE, None)
+    batteries = getattr(model, ACTUATOR_NAMESPACE, None)
     if getattr(batteries, "battery_nominal_voltage", None) is None:
         raise ValueError("The model has no batteries; add them with ModelBuilder.add_battery()")
     return batteries

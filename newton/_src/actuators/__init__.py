@@ -11,7 +11,14 @@ from .input_processors import (
     InputProcessorDelay,
 )
 from .joint_space_response import JointSpaceResponse
-from .usd_parser import ActuatorParsed, ComponentKind, SchemaNames, parse_actuator_prim, register_actuator_component
+from .usd_parser import (
+    ActuatorParsed,
+    ComponentKind,
+    SchemaNames,
+    parse_actuator_prim,
+    parse_battery_prim,
+    register_actuator_component,
+)
 
 __all__ = [
     "Actuator",
@@ -34,6 +41,7 @@ __all__ = [
     "JointSpaceResponse",
     "SchemaNames",
     "parse_actuator_prim",
+    "parse_battery_prim",
     "register_actuator_component",
     "reset_battery_supply",
     "update_battery_supply",

@@ -45,10 +45,11 @@ from newton.actuators import (
     InputProcessorDelay,
     JointSpaceResponse,
     parse_actuator_prim,
+    parse_battery_prim,
     reset_battery_supply,
     update_battery_supply,
 )
-from newton.exceptions import NewtonWarning
+from newton.exceptions import NewtonDeprecationWarning, NewtonWarning
 from newton.selection import ArticulationView
 
 try:
@@ -2761,8 +2762,8 @@ class TestDriveBAM(unittest.TestCase):
         dofs = template.joint_dof_count
         knees, backlashes, ankles = ([j, j + dofs] for j in (0, 1, 2))
         knee_servos, ankle_servos = [0, 2], [1, 3]
-        np.testing.assert_array_equal(model.actuator.actuator_battery.numpy(), [0, 0, 1, 1])
-        np.testing.assert_array_equal(model.actuator.actuator_dof.numpy(), [knees[0], ankles[0], knees[1], ankles[1]])
+        np.testing.assert_array_equal(model.actuation.actuator_battery.numpy(), [0, 0, 1, 1])
+        np.testing.assert_array_equal(model.actuation.actuator_dof.numpy(), [knees[0], ankles[0], knees[1], ankles[1]])
         q = np.array([0.3, 0.015, -0.1, -0.2, -0.017, 1.4], dtype=np.float32)
         state = model.state()
         control = model.control()
@@ -2791,7 +2792,7 @@ class TestDriveBAM(unittest.TestCase):
             np.testing.assert_allclose(effort[ankles], kt * current["ankle"], rtol=1e-5)
             np.testing.assert_array_equal(effort[backlashes], [0.0, 0.0])
             np.testing.assert_allclose(
-                control.actuator_computed_effort.numpy(), effort[model.actuator.actuator_dof.numpy()]
+                control.actuator_computed_effort.numpy(), effort[model.actuation.actuator_dof.numpy()]
             )
             update_battery_supply(model, control)
             drawn = sum(np.abs(kt * current[servo]) for servo in duty)
@@ -2920,6 +2921,13 @@ def Xform "World"
 }}
 """
         )
+        self.assertEqual(
+            parse_battery_prim(stage.GetPrimAtPath("/World/Robot/battery")),
+            {"nominal_voltage": 6.0, "sag_gain": 0.5, "min_voltage": 0.0},
+        )
+        for name, battery_path in (("knee", "/World/Robot/battery"), ("toe", None)):
+            parsed = parse_actuator_prim(stage.GetPrimAtPath(f"/World/Robot/{name}_actuator"))
+            self.assertEqual(parsed.battery_path, battery_path)
         template = newton.ModelBuilder(gravity=(0.0, 0.0, 0.0))
         path_joint_map = parse_usd(template, stage)["path_joint_map"]
         builder = newton.ModelBuilder()
@@ -2928,12 +2936,12 @@ def Xform "World"
 
         n = template.joint_dof_count
         dofs = {name: template.joint_qd_start[path_joint_map[f"/World/Robot/{name}"]] for name in names}
-        on_battery = np.isin(model.actuator.actuator_dof.numpy() % n, [dofs["knee"], dofs["ankle"]])
-        expected_battery = np.where(on_battery, model.actuator.actuator_world.numpy(), -1)
-        np.testing.assert_array_equal(model.actuator.actuator_battery.numpy(), expected_battery)
-        np.testing.assert_allclose(model.actuator.battery_nominal_voltage.numpy(), [6.0, 6.0])
-        np.testing.assert_allclose(model.actuator.battery_sag_gain.numpy(), [0.5, 0.5])
-        np.testing.assert_allclose(model.actuator.battery_min_voltage.numpy(), [0.0, 0.0])
+        on_battery = np.isin(model.actuation.actuator_dof.numpy() % n, [dofs["knee"], dofs["ankle"]])
+        expected_battery = np.where(on_battery, model.actuation.actuator_dof.numpy() // n, -1)
+        np.testing.assert_array_equal(model.actuation.actuator_battery.numpy(), expected_battery)
+        np.testing.assert_allclose(model.actuation.battery_nominal_voltage.numpy(), [6.0, 6.0])
+        np.testing.assert_allclose(model.actuation.battery_sag_gain.numpy(), [0.5, 0.5])
+        np.testing.assert_allclose(model.actuation.battery_min_voltage.numpy(), [0.0, 0.0])
         np.testing.assert_allclose(model.control().actuator_supply_voltage.numpy(), np.where(on_battery, 6.0, 0.0))
         by_supply = {actuator.drive.supply_from_battery: actuator for actuator in model.actuators}
         np.testing.assert_array_equal(
@@ -3259,6 +3267,26 @@ class _RemapVelocityIndices(InputProcessorBase):
 class TestInputProcessors(unittest.TestCase):
     """Input processors composed through ModelBuilder.add_actuator."""
 
+    def test_add_actuator_rejects_targets_of_other_worlds(self):
+        """The actuated DOF and a backlash joint must belong to the current world or be global."""
+        template = newton.ModelBuilder()
+        link = template.add_link()
+        template.add_joint_revolute(parent=-1, child=link, axis=newton.Axis.Z)
+        builder = newton.ModelBuilder()
+        builder.add_world(template)
+        builder.begin_world()
+        builder.add_builder(template)
+        builder.add_actuator(
+            DrivePD, index=1, kp=1.0, input_processors=[(InputProcessorBacklash, {"backlash_joint": 1})]
+        )
+
+        with self.assertRaisesRegex(ValueError, "DOF index 0 belongs to world 0"):
+            builder.add_actuator(DrivePD, index=0, kp=1.0)
+        with self.assertRaisesRegex(ValueError, "joint index 0 belongs to world 0"):
+            builder.add_actuator(
+                DrivePD, index=1, kp=1.0, input_processors=[(InputProcessorBacklash, {"backlash_joint": 0})]
+            )
+
     def test_processor_must_keep_vel_indices(self):
         """Actuator.step rejects a processor that replaces ``vel_indices``."""
         n = 2
@@ -3363,8 +3391,8 @@ def Xform "World"
         processor tokens have no registered USD schema, so they must be found
         next to the registered clamping schema.
 
-        The knee becomes one actuator and the ankle and toe another, without a
-        per-joint mask and without ``SHARED_PARAMS`` on the drive. All share the
+        The knee becomes one actuator and the ankle and toe another, because
+        only the knee has a backlash processor. All share the
         same fixed lag although they are in different actuators with different
         slot layouts. Joint velocities are zero.
         """
@@ -3547,18 +3575,63 @@ def Xform "World"
         expected = run(model.actuators[0], model)
         np.testing.assert_allclose(expected, [10.0, 10.0, 10.0, 20.0])
 
-        with self.assertWarns(DeprecationWarning):
+        with self.assertWarnsRegex(NewtonDeprecationWarning, "1.8"):
             legacy_model = build(delay_steps=2)
         np.testing.assert_allclose(run(legacy_model.actuators[0], legacy_model), expected)
 
-        with self.assertWarns(DeprecationWarning):
+        with self.assertWarnsRegex(NewtonDeprecationWarning, "1.8"):
             self.assertIs(newton.actuators.Delay, InputProcessorDelay)
 
         legacy_drive = DrivePD(kp=wp.array([10.0], dtype=wp.float32), kd=wp.array([0.0], dtype=wp.float32))
         legacy_delay = InputProcessorDelay(delay_steps=wp.array([2], dtype=wp.int32))
-        with self.assertWarns(DeprecationWarning):
+        with self.assertWarnsRegex(NewtonDeprecationWarning, "1.8"):
             legacy_actuator = Actuator(indices=wp.array([0], dtype=wp.uint32), drive=legacy_drive, delay=legacy_delay)
         np.testing.assert_allclose(run(legacy_actuator, model), expected)
+
+    def test_deprecated_delay_aliases_warn_and_forward(self):
+        """Every deprecated delay alias warns with the 1.8 deprecation and reaches the input processor."""
+        from newton.actuators import ComponentKind  # noqa: PLC0415
+
+        drive = DrivePD(kp=wp.array([10.0], dtype=wp.float32), kd=wp.array([0.0], dtype=wp.float32))
+        delay = InputProcessorDelay(delay_steps=wp.array([2], dtype=wp.int32))
+        actuator = Actuator(indices=wp.array([0], dtype=wp.uint32), drive=drive, input_processors=[delay])
+        deprecated = self.assertWarnsRegex(NewtonDeprecationWarning, "1.8")
+
+        with deprecated:
+            self.assertIs(actuator.delay, delay)
+        replacement = InputProcessorDelay(delay_steps=wp.array([1], dtype=wp.int32))
+        with deprecated:
+            actuator.delay = replacement
+        self.assertEqual(actuator.input_processors, [replacement])
+
+        state = actuator.state()
+        with deprecated:
+            self.assertIs(state.delay_state, state.input_processor_states[0])
+        with deprecated:
+            legacy_state = Actuator.State(delay_state=state.input_processor_states[0])
+        self.assertIs(legacy_state.input_processor_states[0], state.input_processor_states[0])
+
+        with deprecated:
+            entry = newton.ModelBuilder.ActuatorEntry(
+                DrivePD, (), (), {}, [0], [0], [{"kp": 1.0, "kd": 0.0}], [{"delay_steps": 2}], [[]]
+            )
+        self.assertEqual(entry.input_processor_classes, (InputProcessorDelay,))
+        with deprecated:
+            self.assertEqual(entry.delay_args, [{"delay_steps": 2}])
+        with deprecated:
+            entry.delay_args = [{"delay_steps": 3}]
+        self.assertEqual(entry.input_processor_args, [[{"delay_steps": 3}]])
+
+        for legacy in (lambda: ComponentKind.DELAY, lambda: ComponentKind["DELAY"], lambda: ComponentKind("delay")):
+            with deprecated:
+                self.assertIs(legacy(), ComponentKind.INPUT_PROCESSOR)
+
+        targets = wp.array([1.0], dtype=wp.float32)
+        indices = wp.array([0], dtype=wp.uint32)
+        delay_state, next_state = replacement.state(1, actuator.device), replacement.state(1, actuator.device)
+        with deprecated:
+            replacement.update_state(targets, targets, None, indices, indices, delay_state, next_state)
+        np.testing.assert_array_equal(next_state.num_pushes.numpy(), [1])
 
 
 # ---------------------------------------------------------------------------

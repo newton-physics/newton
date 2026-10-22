@@ -50,29 +50,20 @@ _CONTROLLER_STATE_DEPRECATION_MSG = (
 )
 
 
-ACTUATOR_FREQUENCY = "actuator:actuator"
+ACTUATOR_NAMESPACE = "actuation"
+ACTUATOR_FREQUENCY = f"{ACTUATOR_NAMESPACE}:actuator"
 
 
 def register_actuator_frequency(builder: ModelBuilder) -> None:
-    """Register the per-actuator frequency and its ``actuator_world`` and ``actuator_dof`` attributes.
+    """Register the per-actuator frequency and its ``actuator_dof`` attribute.
 
-    :meth:`~newton.ModelBuilder.add_actuator` calls this automatically and
-    registers it with the first actuator.
+    :meth:`~newton.ModelBuilder.add_actuator` calls this automatically with
+    the first actuator.
 
     Args:
         builder: Newton model builder on which to register the frequency.
     """
-    builder.add_custom_frequency(builder.CustomFrequency(name="actuator", namespace="actuator"))
-    builder.add_custom_attribute(
-        builder.CustomAttribute(
-            name="actuator_world",
-            dtype=wp.int32,
-            frequency=ACTUATOR_FREQUENCY,
-            default=-1,
-            references="world",
-            namespace="actuator",
-        )
-    )
+    builder.add_custom_frequency(builder.CustomFrequency(name="actuator", namespace=ACTUATOR_NAMESPACE))
     builder.add_custom_attribute(
         builder.CustomAttribute(
             name="actuator_dof",
@@ -80,7 +71,7 @@ def register_actuator_frequency(builder: ModelBuilder) -> None:
             frequency=ACTUATOR_FREQUENCY,
             default=-1,
             references="joint_dof",
-            namespace="actuator",
+            namespace=ACTUATOR_NAMESPACE,
         )
     )
 
@@ -473,7 +464,8 @@ class Actuator:
                 effort. None to skip writing computed effort. Without
                 *actuator_indices* the effort is added per DOF like the
                 output; with *actuator_indices* it is written per actuator
-                at :attr:`actuator_indices`.
+                at :attr:`actuator_indices`. Skipped while *sim_control* has
+                no such array or it is ``None``.
             requires_grad: Allocate intermediate arrays with gradient support
                 for differentiable simulation.
             input_processors: Input processors applied in list order to the
@@ -589,7 +581,8 @@ class Actuator:
             Container whose slots are the required ``sim_control`` attributes.
 
         Note:
-            Leaving the feedforward field unassigned means no feedforward term.
+            Leaving the feedforward field unassigned means no feedforward term,
+            and leaving the computed output field unassigned skips it.
         """
         fields = self._required_attributes.get("sim_control", ())
         return _input_container_class("sim_control", fields)()
@@ -602,9 +595,9 @@ class Actuator:
         :attr:`~DriveBase.custom_inputs` is registered as a ``wp.float32``
         array on :class:`~newton.Control` with its declared frequency, and
         :attr:`control_computed_output_attr` too when :attr:`actuator_indices`
-        is set, as a per-actuator array (``actuator:actuator`` frequency).
+        is set, as a per-actuator array (``actuation:actuator`` frequency).
         Registration allocates the arrays but does not populate or clear
-        them; the caller must update their values before each actuator
+        them; the caller must update the declared inputs before each actuator
         evaluation.
 
         This method is a Newton convenience. Other simulation engines should
@@ -911,7 +904,7 @@ class Actuator:
             self.control_computed_output_attr is not None
             and self.control_computed_output_attr != self.control_output_attr
         ):
-            computed_output = _require_array(sim_control, self.control_computed_output_attr)
+            computed_output = _get_attribute(sim_control, self.control_computed_output_attr, None)
         per_actuator = self.actuator_indices is not None
         wp.launch(
             kernel=_scatter_add_kernel,

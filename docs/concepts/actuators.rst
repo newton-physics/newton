@@ -281,10 +281,10 @@ frequency, i.e. what the array has one entry for:
 * a built-in Newton frequency:
   :attr:`Model.AttributeFrequency.JOINT_DOF <newton.Model.AttributeFrequency.JOINT_DOF>`,
   one entry per DOF;
-* a custom frequency: ``"actuator:actuator"``, one entry per actuator.
+* a custom frequency: ``"actuation:actuator"``, one entry per actuator.
   :class:`~newton.ModelBuilder` creates it: :meth:`~newton.ModelBuilder.add_actuator`
-  returns the index of each actuator, and the model stores its world and DOF
-  as ``model.actuator.actuator_world`` and ``model.actuator.actuator_dof``.
+  returns the index of each actuator, and the model stores its DOF as
+  ``model.actuation.actuator_dof``.
   Every actuator built by the builder also writes its effort before clamping
   to ``control.actuator_computed_effort``.
 
@@ -639,14 +639,14 @@ effort.
   in per-actuator arrays.  :meth:`~newton.ModelBuilder.add_battery` takes these
   indices and adds a battery for those actuators in the current world.  The
   battery parameters live on the :class:`~newton.Model` as
-  ``model.actuator.battery_*``, so :meth:`~newton.ModelBuilder.replicate`
-  copies them into every world, and ``model.actuator.battery_world`` maps
+  ``model.actuation.battery_*``, so :meth:`~newton.ModelBuilder.replicate`
+  copies them into every world, and ``model.actuation.battery_world`` maps
   each battery to its world, e.g. to randomize the parameters per world.
-  ``model.actuator.actuator_battery``, ``actuator_dof`` and ``actuator_world``
-  give the battery, DOF and world of each actuator.
+  ``model.actuation.actuator_battery`` and ``actuator_dof`` give the battery
+  and DOF of each actuator.
 * Each actuator built by :class:`~newton.ModelBuilder` writes its effort
   before clamping to ``control.actuator_computed_effort``, one entry per
-  actuator.  :func:`update_battery_supply` sums it per battery, sags the
+  actuator.  :func:`update_battery_supply` sums its magnitude per battery, sags the
   voltage, down to a minimum, and writes it into
   ``control.actuator_supply_voltage``.  Call it once per step after the
   actuators; the drives read the voltage on the next step.
@@ -657,7 +657,7 @@ effort.
 :class:`DriveBAM` with ``supply_from_battery=True`` reads its supply voltage
 from ``control.actuator_supply_voltage``.  The drive lists this array in its
 :attr:`DriveBase.custom_inputs` with the per-actuator frequency
-``"actuator:actuator"``.
+``"actuation:actuator"``.
 
 Below, the hip and knee share one battery and the ankle draws from another:
 

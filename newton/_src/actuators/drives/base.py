@@ -65,7 +65,7 @@ class DriveBase:
     * :attr:`Model.AttributeFrequency.JOINT_DOF <newton.Model.AttributeFrequency.JOINT_DOF>`
       arrays have one entry per DOF and are passed as they are; the drive
       indexes them with ``vel_indices``.
-    * ``"actuator:actuator"`` arrays have one entry per actuator of the model.
+    * ``"actuation:actuator"`` arrays have one entry per actuator of the model.
       The actuator gathers the entries of its slots through
       :attr:`~newton.actuators.Actuator.actuator_indices`, so the drive
       indexes them like its own parameters.
