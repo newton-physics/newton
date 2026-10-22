@@ -8195,28 +8195,37 @@ def build_propagation_body_map_ordered(
 ):
     """List each world's flagged bodies by body index, cache-eligible bodies first when ``partitioned``.
 
-    One thread per world walks the world's candidate bodies, so the slots follow body order rather than
+    One block per world scans the world's candidate bodies, so the slots follow body order rather than
     the order in which GPU threads claim them.
     """
-    world = wp.tid()
+    world, lane = wp.tid()
+    block_dim = wp.block_dim()
     start = world_body_start[world]
     end = world_body_start[world + 1]
     count = int(0)
     for pass_index in range(1 + partitioned):
         want_eligible = 1 - pass_index
-        for i in range(start, end):
-            body = world_bodies[i]
-            if propagation_body_seen[body] == 0:
-                continue
-            if partitioned != 0:
-                if propagation_cache_art_eligible[body_to_articulation[body]] != want_eligible:
-                    continue
-            propagation_body_list[world, count] = body
-            propagation_body_local_slot[body] = count
-            count += 1
-        if pass_index == 0:
+        for chunk in range(start, end, block_dim):
+            i = chunk + lane
+            body = int(-1)
+            listed = int(0)
+            if i < end:
+                body = world_bodies[i]
+                if propagation_body_seen[body] != 0:
+                    listed = 1
+                    if partitioned != 0:
+                        if propagation_cache_art_eligible[body_to_articulation[body]] != want_eligible:
+                            listed = 0
+            inclusive = wp.tile_scan_inclusive(wp.tile(listed))
+            if listed != 0:
+                slot = count + wp.untile(inclusive) - 1
+                propagation_body_list[world, slot] = body
+                propagation_body_local_slot[body] = slot
+            count += wp.tile_extract(inclusive, block_dim - 1)
+        if pass_index == 0 and lane == 0:
             propagation_cache_body_count[world] = count
-    propagation_body_count[world] = count
+    if lane == 0:
+        propagation_body_count[world] = count
 
 
 @wp.kernel
