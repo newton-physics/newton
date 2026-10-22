@@ -328,6 +328,12 @@ Call it each frame before stepping the solver:
     viewer.apply_forces(state)
     solver.step(model, state, ...)
 
+The picking behind right-click dragging is a :class:`~newton.viewer.Picking` controller, exposed as
+``viewer.picking``. Applications with their own input handling or renderer can create one directly,
+call :meth:`~newton.viewer.Picking.pick`, :meth:`~newton.viewer.Picking.update`, and
+:meth:`~newton.viewer.Picking.release` from their cursor events, and call
+:meth:`~newton.viewer.Picking.apply_force` before each solver step.
+
 :meth:`~newton.viewer.ViewerGL.is_key_down` queries whether a key is currently pressed.
 Keys can be specified as single-character strings (``'w'``), special key names (``'space'``, ``'escape'``), or pyglet key constants:
 

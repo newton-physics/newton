@@ -2014,7 +2014,7 @@ class ViewerGL(ViewerBase):
             state: The current simulation state.
         """
         if self.picking_enabled and self.picking is not None:
-            self.picking._apply_picking_force(state)
+            self.picking.apply_force(state)
 
         if self.wind is not None:
             self.wind._apply_wind_force(state)

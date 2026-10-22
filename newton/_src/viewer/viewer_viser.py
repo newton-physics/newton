@@ -2602,7 +2602,7 @@ class ViewerViser(ViewerBase):
         # pick-body sentinel controls whether graph replay applies a force.
         # Disabling picking releases that sentinel, including captured graphs.
         if self.picking is not None:
-            self.picking._apply_picking_force(state)
+            self.picking.apply_force(state)
 
     def save_recording(self):
         """
