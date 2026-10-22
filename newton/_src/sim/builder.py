@@ -5,7 +5,6 @@
 
 from __future__ import annotations
 
-import bisect
 import copy
 import ctypes
 import functools
@@ -14,7 +13,7 @@ import logging
 import math
 import warnings
 import weakref
-from bisect import bisect_left
+from bisect import bisect_left, bisect_right
 from collections import Counter, deque
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
@@ -3278,7 +3277,7 @@ class ModelBuilder:
         if index is None:
             raise TypeError("add_actuator() missing required argument: 'index'")
         if 0 <= index < self.joint_dof_count:
-            dof_world = self.joint_world[bisect.bisect_right(self.joint_qd_start, index) - 1]
+            dof_world = self.joint_world[bisect_right(self.joint_qd_start, index) - 1]
             if dof_world not in (-1, self.current_world):
                 raise ValueError(
                     f"add_actuator: DOF index {index} belongs to world {dof_world}, "
@@ -3454,7 +3453,7 @@ class ModelBuilder:
             dof = actuator_dof[actuator]
             if not 0 <= dof < self.joint_dof_count:
                 raise ValueError(f"add_battery: actuator {actuator} acts on DOF {dof}, which does not exist")
-            world = self.joint_world[bisect.bisect_right(self.joint_qd_start, dof) - 1]
+            world = self.joint_world[bisect_right(self.joint_qd_start, dof) - 1]
             if world != self.current_world:
                 raise ValueError(f"add_battery: actuator {actuator} belongs to world {world}")
             battery = self.custom_attributes[f"{ACTUATOR_NAMESPACE}:actuator_battery"].values[actuator]

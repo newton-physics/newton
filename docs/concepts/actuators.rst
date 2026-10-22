@@ -270,8 +270,8 @@ state objects — simply omit them:
 
 .. _custom-drive-inputs:
 
-Custom Inputs
--------------
+Custom Drive Inputs
+-------------------
 
 A drive can read extra arrays from ``sim_control`` beyond the positions,
 velocities and targets the actuator already reads, e.g. an estimated load.  It declares
