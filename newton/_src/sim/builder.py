@@ -3415,7 +3415,9 @@ class ModelBuilder:
 
         Args:
             actuators: Actuators that draw from the battery, as returned by
-                :meth:`add_actuator`. They must belong to the current world.
+                :meth:`add_actuator`, so the actuators are added first. At
+                least one is required, and they must belong to the current
+                world.
             nominal_voltage: Voltage without load [V].
             sag_gain: Voltage drop per unit of total effort [V/N or V/(N·m)].
             min_voltage: Lower bound of the sagged voltage [V], at most
@@ -3425,7 +3427,7 @@ class ModelBuilder:
             The index of the battery.
 
         Raises:
-            ValueError: *min_voltage* is negative or exceeds
+            ValueError: *actuators* is empty, *min_voltage* is negative or exceeds
                 *nominal_voltage*, *sag_gain* is negative, or an actuator
                 does not exist, belongs to another world, or already has a
                 battery.
@@ -3440,13 +3442,13 @@ class ModelBuilder:
         if sag_gain < 0.0:
             raise ValueError(f"sag_gain must be non-negative, got {sag_gain}")
         actuators = [int(actuator) for actuator in actuators]
+        if not actuators:
+            raise ValueError("add_battery: at least one actuator is required")
         actuator_count = self._custom_frequency_counts.get(ACTUATOR_FREQUENCY, 0)
         actuator_dof = self.custom_attributes[f"{ACTUATOR_NAMESPACE}:actuator_dof"].values if actuator_count else []
         if not self.has_custom_attribute(f"{ACTUATOR_NAMESPACE}:battery_nominal_voltage"):
             register_battery_attributes(self)
-            self._process_custom_attributes(
-                list(range(actuator_count)), {f"{ACTUATOR_NAMESPACE}:actuator_battery": -1}, ACTUATOR_FREQUENCY
-            )
+        self._fill_actuator_battery()
         for actuator in actuators:
             if not 0 <= actuator < actuator_count:
                 raise ValueError(f"add_battery: actuator {actuator} does not exist")
@@ -3473,6 +3475,19 @@ class ModelBuilder:
                 ACTUATOR_FREQUENCY,
             )
         return battery
+
+    def _fill_actuator_battery(self) -> None:
+        """Set ``actuator_battery`` to -1 for actuator rows without a value, e.g. rows merged from a builder without batteries."""
+        from ..actuators.actuator import ACTUATOR_FREQUENCY, ACTUATOR_NAMESPACE  # noqa: PLC0415
+
+        attribute = self.custom_attributes.get(f"{ACTUATOR_NAMESPACE}:actuator_battery")
+        if attribute is None:
+            return
+        self._process_custom_attributes(
+            list(range(len(attribute.values or ()), self._custom_frequency_counts.get(ACTUATOR_FREQUENCY, 0))),
+            {f"{ACTUATOR_NAMESPACE}:actuator_battery": -1},
+            ACTUATOR_FREQUENCY,
+        )
 
     def _resolve_actuator_joint(self, joint: int | str, owner: str, name: str, world: int | None = None) -> int:
         """Resolve a joint index or joint label to a single-DOF joint index.
@@ -15661,6 +15676,7 @@ class ModelBuilder:
             # Create actuators from accumulated entries
             from ..actuators.actuator import ACTUATOR_NAMESPACE, Actuator  # noqa: PLC0415
 
+            self._fill_actuator_battery()
             m.actuators = []
             for entry in self.actuator_entries.values():
                 indices = self._build_index_array(entry.indices, device)

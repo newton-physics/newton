@@ -2920,7 +2920,8 @@ def parse_usd(
     for battery_path in battery_actuators.keys() - batteries.keys():
         raise ValueError(f"Actuators reference '{battery_path}' in 'newton:battery', which is not a NewtonBattery prim")
     for path, kwargs in batteries.items():
-        builder.add_battery(battery_actuators.get(path, []), **kwargs)
+        if path in battery_actuators:
+            builder.add_battery(battery_actuators[path], **kwargs)
 
     result = {
         "fps": stage.GetFramesPerSecond(),
